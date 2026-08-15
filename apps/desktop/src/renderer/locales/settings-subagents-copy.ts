@@ -150,6 +150,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
       local_read: { label: '代码阅读', description: '只读访问当前工作区，适合搜索、理解和总结代码。' },
       web_research: { label: '网络研究', description: '只使用联网搜索，适合查找外部资料和最新信息。' },
       implementation: { label: '实现代码', description: '可以读写文件并执行命令，在隔离 worktree 中完成改动。' },
+      tool_author: { label: '工具作者', description: '通过正式接口创建、安装并在沙箱中测试候选 Tool，不修改工作区源码。' },
     },
     thinking: {
       off: '关闭',
@@ -231,6 +232,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
       local_read: { label: 'Code reading', description: 'Read-only access to the current workspace for search, understanding, and summaries.' },
       web_research: { label: 'Web research', description: 'Web search only, for external sources and current information.' },
       implementation: { label: 'Implementation', description: 'Read and write files and run commands in an isolated worktree.' },
+      tool_author: { label: 'Tool author', description: 'Create, install, and sandbox-test Tool candidates through the formal authoring interface without editing workspace source.' },
     },
     thinking: {
       off: 'Off',

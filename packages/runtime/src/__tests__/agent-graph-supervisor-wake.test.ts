@@ -156,6 +156,45 @@ describe('Agent Graph supervisor wake delivery', () => {
     }
   });
 
+  test('does not retry a provider billing failure', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    let turns = 0;
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => snapshot(),
+      startTurn: async (_sessionId, input): Promise<GoalTurnOutcome> => {
+        turns += 1;
+        return {
+          kind: 'errored',
+          turnId: input.turnId,
+          reason: 'Turn ended with provider_billing',
+        };
+      },
+      inspectAttempt: async () => 'missing',
+      newId: sequentialIds(),
+    });
+    try {
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+
+      const wake = await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1');
+      assert.equal(turns, 1);
+      assert.equal(wake?.status, 'superseded');
+      assert.equal(wake?.attemptCount, 1);
+      assert.equal(wake?.failureReason, 'non_retryable:errored: Turn ended with provider_billing');
+      assert.deepEqual(
+        (await store.listAgentGraphSupervisorWakeAttempts('graph-1', 'graph-1:snapshot-1')).map(
+          (candidate) => candidate.status,
+        ),
+        ['superseded'],
+      );
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
+
   test('aggressively compacts after a context overflow before delivering a fresh turn', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     let turns = 0;

@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Tab, TabList } from '@astryxdesign/core';
 import type { AutomationModule, ExtensionModule } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
-import { ICON_SIZE, Blocks, CalendarCheck, Plug, Sun } from './icons.js';
+import { ICON_SIZE, Blocks, CalendarCheck, Monitor, Plug, Sun } from './icons.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
 export type ModuleHubHeader = {
@@ -51,6 +51,7 @@ export function ModuleHubSelector(props: ModuleHubSelectorProps) {
     const options = [
       ['skills', copy.extensions.skills, <Blocks key="skills" size={ICON_SIZE.chrome} aria-hidden="true" />],
       ['mcp', copy.extensions.mcp, <Plug key="mcp" size={ICON_SIZE.chrome} aria-hidden="true" />],
+      ['ui', copy.extensions.ui, <Monitor key="ui" size={ICON_SIZE.chrome} aria-hidden="true" />],
     ] as const;
     const selectedLabel = options.find(([value]) => value === props.value)?.[1] ?? copy.extensions.skills;
     return (

@@ -529,6 +529,16 @@ export class AgentGraphSupervisorWakeCoordinator {
             return;
           }
           lastFailure = wakeOutcomeFailure(outcome);
+          if (isNonRetryableSupervisorFailure(lastFailure)) {
+            await this.#input.wakeStore.completeAgentGraphSupervisorWakeAttempt({
+              graphId: wake.graphId,
+              wakeId: wake.wakeId,
+              attemptId,
+              status: 'superseded',
+              failureReason: `non_retryable:${lastFailure}`.slice(0, 4_000),
+            });
+            return;
+          }
           await this.#markRetryable(wake.graphId, wake.wakeId, attemptId, lastFailure);
           if (outcome.kind === 'context_overflow' || isSupervisorContextOverflow(lastFailure)) {
             overflowAttempt = { attemptId, turnId, failureReason: lastFailure };
@@ -536,6 +546,16 @@ export class AgentGraphSupervisorWakeCoordinator {
         } catch (error) {
           if (this.#sessionWakesSuppressed(wake.rootSessionId)) return;
           lastFailure = errorMessage(error);
+          if (isNonRetryableSupervisorFailure(lastFailure)) {
+            await this.#input.wakeStore.completeAgentGraphSupervisorWakeAttempt({
+              graphId: wake.graphId,
+              wakeId: wake.wakeId,
+              attemptId,
+              status: 'superseded',
+              failureReason: `non_retryable:${lastFailure}`.slice(0, 4_000),
+            });
+            return;
+          }
           await this.#markRetryable(wake.graphId, wake.wakeId, attemptId, lastFailure);
           if (isSupervisorContextOverflow(lastFailure)) {
             overflowAttempt = { attemptId, turnId, failureReason: lastFailure };
@@ -823,6 +843,11 @@ function isSupervisorContextOverflow(failureReason: string): boolean {
     normalized.includes('context budget exhausted') ||
     isContextOverflowErrorText(failureReason)
   );
+}
+
+function isNonRetryableSupervisorFailure(failureReason: string): boolean {
+  const normalized = failureReason.toLowerCase();
+  return normalized.includes('provider_billing') || normalized.includes('provider billing');
 }
 
 function projectAgentGraphSupervisorPartialResult(

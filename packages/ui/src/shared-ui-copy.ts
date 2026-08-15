@@ -53,6 +53,7 @@ export interface SharedUiCopy {
       selectorLabel: (module: string) => string;
       skills: string;
       mcp: string;
+      ui: string;
     };
     automations: {
       title: string;
@@ -159,6 +160,7 @@ const SHARED_UI_COPY = {
         selectorLabel: (module) => `扩展内容：${module}`,
         skills: '技能',
         mcp: 'MCP',
+        ui: 'UI',
       },
       automations: {
         title: '定时任务',
@@ -248,6 +250,7 @@ const SHARED_UI_COPY = {
         selectorLabel: (module) => `Extension content: ${module}`,
         skills: 'Skills',
         mcp: 'MCP',
+        ui: 'UI',
       },
       automations: {
         title: 'Scheduled tasks',

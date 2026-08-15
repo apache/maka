@@ -496,6 +496,20 @@ async function bridgeResult<T>(operation: () => Promise<T>, code: string): Promi
 
 const makaBridge = {
   runtimeHost,
+  uiExtensions: {
+    list() {
+      return invokeActiveRuntimeHost('ui-extensions:list');
+    },
+    importLocal() {
+      return invokeActiveRuntimeHost('ui-extensions:importLocal');
+    },
+    setEnabled(extensionId: string, enabled: boolean) {
+      return invokeActiveRuntimeHost('ui-extensions:setEnabled', extensionId, enabled);
+    },
+    remove(extensionId: string) {
+      return invokeActiveRuntimeHost('ui-extensions:remove', extensionId);
+    },
+  },
   runtimeHostProfiles: {
     getSnapshot() {
       return ipcRenderer.invoke('runtime-host-profiles:getSnapshot');

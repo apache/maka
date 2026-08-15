@@ -701,6 +701,13 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   // ── Process-singleton deps ─────────────────────────────────────────────
   /** Canonical-named tools available this session. */
   tools: MakaTool[];
+  /**
+   * Optional trusted catalog reader. When present, Runtime snapshots the full
+   * Core + Extension Tool surface once at the beginning of every `send()`.
+   * The returned tools still pass through apply-patch routing, availability,
+   * argument validation, permission, sandbox, and ToolRuntime settlement.
+   */
+  resolveTools?: () => readonly MakaTool[];
   /** Active profile and enforcement capability snapshot for this session backend. */
   sandboxDiagnosticsSnapshot?: SandboxDiagnosticsSnapshot;
   /** Diagnostic-only Plan Mode/execution identity snapshot. */
@@ -825,6 +832,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
     sessionId: string;
     turnId: string;
     runId: string;
+    /** Exact Host Tool snapshot selected for this send, when this is the main call. */
+    tools?: readonly MakaTool[];
   }) => void | Promise<void>;
   /**
    * Optional artifact recorder. Runtime derives only deterministic candidates
@@ -1046,7 +1055,7 @@ export class AiSdkBackend implements AgentBackend {
   private readonly maxSteps: number | undefined;
   private readonly providerRetrySleep: (delayMs: number, signal: AbortSignal) => Promise<void>;
   private readonly modelAdapter: ModelAdapter;
-  private readonly toolAvailabilityRuntime: ToolAvailabilityRuntime;
+  private readonly memoryTools: readonly MakaTool[];
   private readonly applyPatchProfile: ApplyPatchProfile | null;
 
   /**
@@ -1107,14 +1116,8 @@ export class AiSdkBackend implements AgentBackend {
       appendTurnTailPrompt: (content, turnTailPrompt) =>
         this.appendTurnTailPrompt(content, turnTailPrompt),
     });
-    if (
-      input.tools.some(
-        (tool) => tool.name === MEMORY_REMEMBER_TOOL_NAME || tool.name === MEMORY_EXTRACT_TOOL_NAME,
-      )
-    ) {
-      throw new Error('Long-term Memory trigger tool names are reserved by Runtime');
-    }
-    const memoryTools = input.memoryExtraction
+    validateHostToolSnapshot(input.tools);
+    this.memoryTools = input.memoryExtraction
       ? buildMemoryExtractionTriggerTools({
           capabilities: input.memoryExtraction,
           snapshot: (trigger, context) => this.memorySourceSnapshot(trigger, context),
@@ -1132,14 +1135,28 @@ export class AiSdkBackend implements AgentBackend {
       : [];
     const runtime = resolveModelRuntime(input.connection, input.modelId);
     this.applyPatchProfile = runtime.applyPatchProfile;
-    const modelTools = routeApplyPatchTools(input.tools, this.applyPatchProfile);
-    this.toolAvailabilityRuntime = new ToolAvailabilityRuntime(
-      // The archive decoder is a runtime protocol tool, not a host binding:
-      // this session's placeholders name it, so this session advertises it.
-      bindToolResultArchiveDecoder([...modelTools, ...memoryTools], input.toolResultArchive),
-      input.toolAvailability,
-      buildInvalidMakaTool(),
-    );
+  }
+
+  private snapshotToolAvailability(): {
+    readonly hostTools: readonly MakaTool[];
+    readonly runtime: ToolAvailabilityRuntime;
+  } {
+    const hostTools = Object.freeze([...(this.input.resolveTools?.() ?? this.input.tools)]);
+    validateHostToolSnapshot(hostTools);
+    const modelTools = routeApplyPatchTools(hostTools, this.applyPatchProfile);
+    return {
+      hostTools,
+      runtime: new ToolAvailabilityRuntime(
+        // The archive decoder is a runtime protocol tool, not a host binding:
+        // this session's placeholders name it, so this session advertises it.
+        bindToolResultArchiveDecoder(
+          [...modelTools, ...this.memoryTools],
+          this.input.toolResultArchive,
+        ),
+        this.input.toolAvailability,
+        buildInvalidMakaTool(),
+      ),
+    };
   }
 
   private memorySourceSnapshot(
@@ -1594,14 +1611,6 @@ export class AiSdkBackend implements AgentBackend {
         toSandboxRunTraceProjection(this.input.sandboxDiagnosticsSnapshot),
       );
     }
-    const providerRequestTracker = this.createProviderRequestTracker({
-      turnId,
-      callKind: 'main',
-      modelId: this.input.modelId,
-      runId: scope.runId,
-    });
-    const providerRequestTraceId = providerRequestTracker?.traceId;
-
     // --- Resolve model (API key already attached at construct time) ---
     let model: unknown;
     try {
@@ -1653,11 +1662,20 @@ export class AiSdkBackend implements AgentBackend {
       throw new Error(`Invalid tool mode: ${String(requestedToolMode)}`);
     }
     const toolMode = requestedToolMode;
-    if (toolMode === 'code_mode' && this.input.tools.some((tool) => tool.name === 'exec')) {
+    const toolSnapshot = this.snapshotToolAvailability();
+    const providerRequestTracker = this.createProviderRequestTracker({
+      turnId,
+      callKind: 'main',
+      modelId: this.input.modelId,
+      runId: scope.runId,
+      tools: toolSnapshot.hostTools,
+    });
+    const providerRequestTraceId = providerRequestTracker?.traceId;
+    if (toolMode === 'code_mode' && toolSnapshot.hostTools.some((tool) => tool.name === 'exec')) {
       throw new Error('Tool name "exec" is reserved for Code Mode.');
     }
     const plan = projectToolModePlan(
-      this.toolAvailabilityRuntime.prepare(
+      toolSnapshot.runtime.prepare(
         (input.runtimeContext ?? []).filter((event) => event.turnId !== turnId),
         requiredOrchestrationTools,
       ),
@@ -3301,6 +3319,7 @@ export class AiSdkBackend implements AgentBackend {
     turnId: string;
     callKind: ModelCallKind;
     modelId: string;
+    tools?: readonly MakaTool[];
     /**
      * Stated by every caller, never defaulted: an unattributed provider request
      * is silently dropped by usage accounting, so the compiler has to be the
@@ -3322,6 +3341,7 @@ export class AiSdkBackend implements AgentBackend {
               sessionId: this.sessionId,
               turnId: input.turnId,
               runId,
+              ...(input.tools ? { tools: input.tools } : {}),
             })
         : undefined;
     if (!persistCapture && !accounting && !beforeDispatch) return undefined;
@@ -4828,6 +4848,21 @@ function buildInvalidMakaTool(): MakaTool<{ tool?: string; error?: string }, nev
       );
     },
   };
+}
+
+function validateHostToolSnapshot(tools: readonly MakaTool[]): void {
+  const names = new Map<string, string>();
+  for (const tool of tools) {
+    const key = tool.name.toLowerCase();
+    if (key === MEMORY_REMEMBER_TOOL_NAME || key === MEMORY_EXTRACT_TOOL_NAME) {
+      throw new Error('Long-term Memory trigger tool names are reserved by Runtime');
+    }
+    const existing = names.get(key);
+    if (existing) {
+      throw new Error(`Tool names "${existing}" and "${tool.name}" conflict`);
+    }
+    names.set(key, tool.name);
+  }
 }
 
 function priorReplayFailureTrace(replay: {

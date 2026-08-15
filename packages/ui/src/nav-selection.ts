@@ -1,5 +1,5 @@
 export type SessionFilter = 'chats' | 'flagged' | 'archived';
-export type ExtensionModule = 'skills' | 'mcp';
+export type ExtensionModule = 'skills' | 'mcp' | 'ui';
 export type AutomationModule = 'scheduled-tasks' | 'daily-review';
 
 export type NavSelection =

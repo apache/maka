@@ -111,6 +111,19 @@ import {
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
+import { HostExtensionController } from './extension-controller.js';
+import {
+  InstalledToolPackageExtensionLoader,
+  StaticTrustedToolExtensionLoader,
+  type StaticTrustedToolExtensionRevision,
+} from './extension-loader.js';
+import { HostExtensionRuntime } from './extension-runtime.js';
+import { HostExtensionStateStore } from './extension-state-store.js';
+import { HostExtensionUiStateStore } from './extension-ui-state-store.js';
+import { ToolPackageStore } from './tool-package-store.js';
+import { HostToolPackageManagementTools } from './tool-package-management-tools.js';
+import { UiPackageStore } from './ui-package-store.js';
+import { HostUiPackageManagementTools } from './ui-package-management-tools.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
 import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
@@ -174,12 +187,14 @@ import {
 
 export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition {
   readonly workspaceExecution: RuntimeHostWorkspaceExecutionComposition;
+  readonly extensions: HostExtensionRuntime;
 }
 
 export interface CreateExecutionRuntimeHostCompositionOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
+  readonly trustedToolExtensions?: readonly StaticTrustedToolExtensionRevision[];
 }
 
 export interface ExecutionRuntimeHostCompositionDependencies {
@@ -203,6 +218,35 @@ export async function createExecutionRuntimeHostComposition(
 ): Promise<ExecutionRuntimeHostComposition> {
   const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
   await stores.sessionStore.ready();
+  const extensions = new HostExtensionRuntime();
+  const toolPackageStore = new ToolPackageStore(context.owner.controlDirectory);
+  const uiPackageStore = new UiPackageStore(context.owner.controlDirectory);
+  const extensionLoader = new InstalledToolPackageExtensionLoader(
+    new StaticTrustedToolExtensionLoader(options.trustedToolExtensions),
+    toolPackageStore,
+    uiPackageStore,
+  );
+  const extensionController = new HostExtensionController(
+    extensions,
+    extensionLoader,
+    new HostExtensionStateStore(context.owner.controlDirectory),
+    context.requestDrain,
+    new HostExtensionUiStateStore(context.owner.controlDirectory),
+    uiPackageStore,
+  );
+  const toolPackageManagement = new HostToolPackageManagementTools(
+    context.owner.controlDirectory,
+    extensionController,
+    extensions,
+    toolPackageStore,
+  );
+  const uiPackageManagement = new HostUiPackageManagementTools(
+    context.owner.controlDirectory,
+    extensionController,
+    extensions,
+    uiPackageStore,
+  );
+  extensions.registerHostTools([...toolPackageManagement.tools(), ...uiPackageManagement.tools()]);
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let taskLedgerStore:
     | Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>
@@ -390,7 +434,7 @@ export async function createExecutionRuntimeHostComposition(
     const childAgentTools = createHostChildAgentToolComposition({
       taskLedger,
       builtinTools,
-      hostTools,
+      hostTools: [...hostTools, ...toolPackageManagement.authorTools()],
       worktreePatchWriteBackAvailable: true,
     });
     const openedGraphControlStore = createAgentGraphControlStore(
@@ -666,6 +710,7 @@ export async function createExecutionRuntimeHostComposition(
               backendContext.sessionId,
             ),
             runtimeCommitSink: stores.runtimeEventStore,
+            extensions,
             requestDrain: context.requestDrain,
           })),
     );
@@ -692,7 +737,7 @@ export async function createExecutionRuntimeHostComposition(
         if (tools.length !== header.subagentRuntime.toolNames.length) {
           throw new Error('Subagent runtime tool snapshot is unavailable');
         }
-        return tools.map((tool) => tool.name);
+        return extensions.resolveTools(sessionId, tools, { exact: true }).map((tool) => tool.name);
       }
       if (header.subagentParent) {
         throw new Error('Linked child session is missing its durable runtime snapshot');
@@ -706,7 +751,7 @@ export async function createExecutionRuntimeHostComposition(
           runtimePolicyStores.runtimePolicy.getSnapshot(),
         ]);
         const runProfile = hostedExecutionRunProfile(header.toolProfile);
-        return createInteractiveRunComposer({
+        const composition = createInteractiveRunComposer({
           runtimePolicy: runtimePolicySnapshot,
           skills,
           memory: requireMemory(memory),
@@ -736,7 +781,10 @@ export async function createExecutionRuntimeHostComposition(
                 },
               }
             : {}),
-        }).tools.map((tool) => tool.name);
+        });
+        return extensions
+          .resolveTools(sessionId, composition.tools, { exact: runProfile !== undefined })
+          .map((tool) => tool.name);
       } finally {
         capabilitySnapshot?.release();
       }
@@ -754,7 +802,7 @@ export async function createExecutionRuntimeHostComposition(
           requireClientCapabilities(clientCapabilities).snapshotForSession(previewSessionId);
         try {
           const runtimePolicySnapshot = await runtimePolicyStores.runtimePolicy.getSnapshot();
-          return createInteractiveRunComposer({
+          const composition = createInteractiveRunComposer({
             runtimePolicy: runtimePolicySnapshot,
             skills,
             memory: requireMemory(memory),
@@ -771,7 +819,10 @@ export async function createExecutionRuntimeHostComposition(
               mode: collaborationMode,
               permissionMode,
             },
-          }).tools.map((tool) => tool.name);
+          });
+          return extensions
+            .resolveTools(previewSessionId, composition.tools)
+            .map((tool) => tool.name);
         } finally {
           capabilitySnapshot?.release();
         }
@@ -1287,6 +1338,13 @@ export async function createExecutionRuntimeHostComposition(
     let recoverySessions: Awaited<ReturnType<typeof stores.sessionStore.listForRecovery>> = [];
     domainModules = [
       createRuntimeHostDomainModule({
+        id: 'extension',
+        handlers: [extensionController.handlers],
+        recovery: { state: () => extensionController.recover() },
+        drain: [() => extensionController.beginDrain(), () => extensions.beginDrain()],
+        close: [() => extensions.close()],
+      }),
+      createRuntimeHostDomainModule({
         id: 'memory',
         handlers: [requireMemory(memory).handlers],
         recovery: {
@@ -1539,6 +1597,7 @@ export async function createExecutionRuntimeHostComposition(
       handlers,
       moduleIds: Object.freeze(domainModules.map(({ id }) => id)),
       workspaceExecution: requireWorkspaceExecution(workspaceExecution),
+      extensions,
       continuity: continuityCoordinator,
       clientCapabilities,
       configurationChanges,
@@ -1640,6 +1699,11 @@ export async function createExecutionRuntimeHostComposition(
     }
     try {
       await stores.sessionStore.close?.();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      await extensions.close();
     } catch (closeError) {
       errors.push(closeError);
     }

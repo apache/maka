@@ -1,6 +1,11 @@
 import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
 
-export const SUBAGENT_PROFILES = ['local_read', 'web_research', 'implementation'] as const;
+export const SUBAGENT_PROFILES = [
+  'local_read',
+  'web_research',
+  'implementation',
+  'tool_author',
+] as const;
 export type SubagentProfile = (typeof SUBAGENT_PROFILES)[number];
 
 export const MAX_SUBAGENT_PRESETS = 64;

@@ -56,6 +56,7 @@ export * from './project-catalog.js';
 export * from './project-catalog-change.js';
 export * from './execution-inspect.js';
 export * from './external-session.js';
+export * from './extension.js';
 export * from './message.js';
 export * from './operations.js';
 export * from './runtime-resource.js';
@@ -72,7 +73,7 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 20 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 21 as const;
 // Transcript pages amortize storage and network round trips with a 512 KiB raw
 // payload. Base64 expansion plus the bounded fragment envelope must still fit in
 // one transport message; narrower domains retain their own encoded limits.

@@ -30,6 +30,38 @@ export {
 } from './candidate.js';
 export { createUnavailableDomainOperationHandlers } from './operation-dispatcher.js';
 export {
+  HostExtensionRuntime,
+  type HostExtensionToolResolver,
+  type HostPreparedToolExtensionRevisionInput,
+  type HostToolExtensionRevisionInput,
+  type HostTrustedToolExtensionRevisionInput,
+  type HostUiExtensionRevisionInput,
+  type HostExtensionRevisionInput,
+} from './extension-runtime.js';
+export {
+  HostExtensionLoaderError,
+  InstalledToolPackageExtensionLoader,
+  StaticTrustedToolExtensionLoader,
+  type HostTrustedToolExtensionLoader,
+  type StaticTrustedToolExtensionRevision,
+} from './extension-loader.js';
+export {
+  ToolPackageStore,
+  ToolPackageStoreError,
+  decodeToolPackageManifest,
+  type InstalledToolPackage,
+  type ToolPackageManifest,
+  type ToolPackageManifestTool,
+} from './tool-package-store.js';
+export {
+  UiPackageStore,
+  UiPackageStoreError,
+  decodeUiPackageManifest,
+  type InstalledUiPackage,
+  type UiPackageManifest,
+  type UiPackageManifestContribution,
+} from './ui-package-store.js';
+export {
   RuntimeHostRootAlreadyOwnedError,
   startExecutionRuntimeHostService,
   type ExecutionRuntimeHostServiceDependencies,

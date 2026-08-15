@@ -305,6 +305,16 @@ export interface PetPackChangedEvent {
   readonly ts: number;
 }
 
+export interface UiExtensionEntry {
+  readonly extensionId: string;
+  readonly revision: string;
+  readonly contributionIds: readonly string[];
+  readonly active: boolean;
+  readonly enabled: boolean;
+  readonly status: 'disabled' | 'active' | 'waiting' | 'failed';
+  readonly error: string | null;
+}
+
 export interface MakaBridge {
   runtimeHost: {
     query<K extends RendererRuntimeHostQueryOperation>(
@@ -315,6 +325,13 @@ export interface MakaBridge {
       operation: K,
       input: OperationInput<K>,
     ): Promise<OperationOutput<K>>;
+  };
+
+  uiExtensions: {
+    list(): Promise<readonly UiExtensionEntry[]>;
+    importLocal(): Promise<{ ok: true; extensionId: string; revision: string } | { ok: false; reason: 'cancelled' }>;
+    setEnabled(extensionId: string, enabled: boolean): Promise<{ ok: true }>;
+    remove(extensionId: string): Promise<{ ok: true }>;
   };
 
   runtimeHostProfiles: {
