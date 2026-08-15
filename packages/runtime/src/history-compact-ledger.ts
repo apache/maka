@@ -4,10 +4,23 @@ import {
   validateHistoryCompactCheckpointShape,
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
+import { detectHistoryCompactSummaryTruncation } from './history-compact-summary-validation.js';
 
 interface LedgerCheckpointCandidate {
   checkpoint: HistoryCompactCheckpoint;
   event: AgentRunEvent;
+}
+
+/**
+ * Legacy checkpoints predate the sectioned summarizer contract, so their
+ * summaries may omit `## Goal` etc. and remain usable. A truncated fragment,
+ * however, poisons every subsequent replay with a half-finished thought
+ * regardless of which writer produced it (#3029, #3041). The load path
+ * therefore rejects only truncated summaries and leaves section-less legacy
+ * summaries intact.
+ */
+function hasLoadableHistoryCompactSummary(checkpoint: HistoryCompactCheckpoint): boolean {
+  return !detectHistoryCompactSummaryTruncation(checkpoint.summary);
 }
 
 export async function loadLatestHistoryCompactCheckpointFromRunLedger(
@@ -26,7 +39,12 @@ export async function loadLatestHistoryCompactCheckpointFromRunLedger(
       );
       if (projected === null) return undefined;
       const checkpoint = projected?.data?.checkpoint;
-      if (validateHistoryCompactCheckpointShape(checkpoint, sessionId)) return checkpoint;
+      if (
+        validateHistoryCompactCheckpointShape(checkpoint, sessionId) &&
+        hasLoadableHistoryCompactSummary(checkpoint)
+      ) {
+        return checkpoint;
+      }
       replaceEventId = projected?.id;
     } catch {
       // Recover the derived projection from the canonical ledger below.
@@ -41,7 +59,10 @@ export async function loadLatestHistoryCompactCheckpointFromRunLedger(
       const event = events[eventIndex]!;
       if (event.type !== 'history_compact_checkpoint_recorded') continue;
       const checkpoint = event.data?.checkpoint;
-      if (validateHistoryCompactCheckpointShape(checkpoint, sessionId)) {
+      if (
+        validateHistoryCompactCheckpointShape(checkpoint, sessionId) &&
+        hasLoadableHistoryCompactSummary(checkpoint)
+      ) {
         candidates.push({ checkpoint, event });
       }
     }

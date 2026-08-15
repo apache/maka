@@ -184,6 +184,69 @@ describe('history compact checkpoint', () => {
     assert.equal(loaded?.checkpointId, latest.checkpointId);
   });
 
+  test('rejects a truncated checkpoint at load and recovers the prior valid one', async () => {
+    const valid = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0), textEvent(1)],
+      summary: 'legacy summary without sections but complete.',
+      now: 10,
+    });
+    // A truncated fragment that would otherwise win by coverage: the load gate
+    // must drop it and fall back to the previous complete checkpoint (#3041).
+    const poisoned = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0), textEvent(1), textEvent(2)],
+      summary: 'stops mid-thought：',
+      previousCheckpointId: valid.checkpointId,
+      now: 20,
+    });
+    const store = new StubAgentRunStore(
+      [run('run-valid', 10), run('run-poisoned', 20)],
+      new Map([
+        ['run-valid', [checkpointEvent('ledger-valid', 'run-valid', valid, 10)]],
+        ['run-poisoned', [checkpointEvent('ledger-poisoned', 'run-poisoned', poisoned, 20)]],
+      ]),
+    );
+
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+
+    assert.equal(loaded?.checkpointId, valid.checkpointId);
+  });
+
+  test('treats a truncated projection as invalid and repairs from the canonical ledger', async () => {
+    const valid = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0)],
+      summary: 'canonical complete summary',
+    });
+    const canonicalEvent = checkpointEvent('canonical-event', 'run-canonical', valid, 20);
+    const poisoned = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0), textEvent(1)],
+      summary: 'projection fragment cut off：',
+    });
+    const poisonedProjection = checkpointEvent('projection-event', 'run-projection', poisoned, 30);
+    const replacedEventIds: Array<string | undefined> = [];
+    const store = {
+      readEventProjection: async () => poisonedProjection,
+      repairEventProjection: async (
+        _sessionId: string,
+        _type: AgentRunEvent['type'],
+        _event: AgentRunEvent | null,
+        options?: { replaceEventId?: string },
+      ) => {
+        replacedEventIds.push(options?.replaceEventId);
+      },
+      listSessionRuns: async () => [run('run-canonical', 10)],
+      readEvents: async () => [canonicalEvent],
+    };
+
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+
+    assert.equal(loaded?.checkpointId, valid.checkpointId);
+    assert.deepEqual(replacedEventIds, [poisonedProjection.id]);
+  });
+
   test('loads the furthest checkpoint when a later run records stale coverage', async () => {
     const furthest = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',

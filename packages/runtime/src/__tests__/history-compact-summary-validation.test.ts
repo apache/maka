@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
+  detectHistoryCompactSummaryTruncation,
   HISTORY_COMPACT_REQUIRED_SECTIONS,
   validateHistoryCompactSummary,
 } from '../history-compact-summary-validation.js';
@@ -110,5 +111,27 @@ describe('validateHistoryCompactSummary', () => {
   test('accepts a closed fence and terminal punctuation', () => {
     const withFence = CONFORMING + '\n\n```sh\nnpm test\n```\n\nDone.';
     assert.equal(validateHistoryCompactSummary(withFence), undefined);
+  });
+});
+
+describe('detectHistoryCompactSummaryTruncation', () => {
+  test('flags a fragment ending on truncation punctuation regardless of sections', () => {
+    // Legacy summaries never carried the sectioned contract, so a section-less
+    // summary is still loadable; only the truncation signal matters at load.
+    assert.equal(detectHistoryCompactSummaryTruncation('legacy summary without sections.'), false);
+    assert.equal(detectHistoryCompactSummaryTruncation('legacy summary cut off：'), true);
+    assert.equal(detectHistoryCompactSummaryTruncation('ends with a dangling colon :'), true);
+  });
+
+  test('flags output that stops inside a code fence', () => {
+    assert.equal(detectHistoryCompactSummaryTruncation('```ts\nconst x = 1'), true);
+    // A closed fence followed by a sentence terminal is completion, not
+    // truncation (the same expectation as validateHistoryCompactSummary).
+    assert.equal(detectHistoryCompactSummaryTruncation('```ts\nconst x = 1\n```\n\nDone.'), false);
+  });
+
+  test('accepts sentence terminals as completion, not truncation', () => {
+    assert.equal(detectHistoryCompactSummaryTruncation('Done.'), false);
+    assert.equal(detectHistoryCompactSummaryTruncation('Done。'), false);
   });
 });

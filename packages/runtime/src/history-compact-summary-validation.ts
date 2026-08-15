@@ -55,6 +55,21 @@ const TRUNCATED_TAIL_PATTERN = /[:：,，、;；(（`—]\s*$/u;
 export type HistoryCompactSummaryRejection = 'missing_sections' | 'truncated';
 
 /**
+ * Writer-agnostic truncation detection: an odd number of code fences means the
+ * output stops inside a code block, and terminal dangling punctuation means it
+ * stops mid-thought. Legacy checkpoints (written before the sectioned
+ * summarizer prompt) never followed the section contract, but a truncated
+ * fragment is unusable regardless of writer era, so the load path applies this
+ * check to every checkpoint summary (#3041).
+ */
+export function detectHistoryCompactSummaryTruncation(summary: string): boolean {
+  // An odd number of fences means the output stops inside a code block.
+  const fenceCount = (summary.match(/^```/gm) ?? []).length;
+  if (fenceCount % 2 === 1) return true;
+  return TRUNCATED_TAIL_PATTERN.test(summary);
+}
+
+/**
  * Returns why the summary is malformed, or undefined when it satisfies the
  * contract. Callers map any rejection to `malformed_summary` and fail open.
  */
@@ -64,9 +79,6 @@ export function validateHistoryCompactSummary(
   if (REQUIRED_SECTION_HEADING_PATTERNS.some((pattern) => !pattern.test(summary))) {
     return 'missing_sections';
   }
-  // An odd number of fences means the output stops inside a code block.
-  const fenceCount = (summary.match(/^```/gm) ?? []).length;
-  if (fenceCount % 2 === 1) return 'truncated';
-  if (TRUNCATED_TAIL_PATTERN.test(summary)) return 'truncated';
+  if (detectHistoryCompactSummaryTruncation(summary)) return 'truncated';
   return undefined;
 }
