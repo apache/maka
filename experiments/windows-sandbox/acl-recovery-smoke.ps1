@@ -103,15 +103,16 @@ try {
       -Arguments @('/c:concurrent', "$root\ok.txt") -ReadRoots @($root) -TimeoutMs 120000
     $jobs += Start-Job -ScriptBlock {
       param($Launcher, $Request)
-      & $Launcher --appcontainer $Request *> $null
-      $LASTEXITCODE
+      $output = & $Launcher --appcontainer $Request 2>&1
+      [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($output -join ' | ') }
     } -ArgumentList $launcher, $requestPath
   }
-  $exitCodes = $jobs | Wait-Job | Receive-Job
+  $results = $jobs | Wait-Job | Receive-Job
   $jobs | Remove-Job
-  $failed = @($exitCodes | Where-Object { $_ -ne 0 })
+  $failed = @($results | Where-Object { $_.ExitCode -ne 0 })
   if ($failed.Count -gt 0) {
-    throw "Concurrent launches failed: $($exitCodes -join ', ')"
+    $detail = ($failed | ForEach-Object { "exit=$($_.ExitCode) output=$($_.Output)" }) -join "`n"
+    throw "Concurrent launches failed:`n$detail"
   }
   foreach ($root in $concurrentRoots) {
     if ((Get-Acl-Text $root) -match [regex]::Escape($appContainerSid)) {

@@ -26,6 +26,8 @@ deepseek.key
 
 # Generated Computer Use executor binary; provenance metadata stays tracked.
 apps/desktop/resources/bin/
+# Rebuilt from experiments/windows-sandbox by scripts/package-windows-x64.mjs.
+apps/desktop/resources/windows-sandbox/
 apps/desktop/bundled-git.json
 
 # Generated desktop release inputs and outputs.

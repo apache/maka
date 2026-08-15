@@ -162,6 +162,19 @@ export async function verifyPackagedWindowsApp(
       );
     }
     await assertMissing(sandboxManifest);
+
+    step('relaying command stdio through the packaged sandbox');
+    await run('pwsh', [
+      '-NoProfile',
+      '-File',
+      join(repoRoot, 'experiments', 'windows-sandbox', 'stdio-relay-smoke.ps1'),
+      '-LauncherPath',
+      sandboxExecutable,
+    ]);
+
+    step('running real filesystem-worker operations through the packaged sandbox');
+    const { verifyWindowsSandboxWorkerE2E } = await import('./verify-windows-sandbox-e2e.mjs');
+    await verifyWindowsSandboxWorkerE2E(sandboxExecutable);
   }
 
   step('reading the product version resource');

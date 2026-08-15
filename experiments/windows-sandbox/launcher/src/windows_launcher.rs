@@ -10,7 +10,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::Isolation::{
-    CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
+    CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::{
     CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, DuplicateTokenEx, FreeSid, GetTokenInformation,
@@ -158,9 +158,7 @@ unsafe fn sid_string(sid: *mut c_void) -> Result<String, String> {
 }
 
 struct AppContainerProfile {
-    name: Vec<u16>,
     sid: *mut c_void,
-    created: bool,
 }
 
 impl AppContainerProfile {
@@ -179,8 +177,7 @@ impl AppContainerProfile {
                 &mut sid,
             )
         };
-        let created = result >= 0;
-        if !created {
+        if result < 0 {
             const HRESULT_ALREADY_EXISTS: i32 = 0x8007_00B7u32 as i32;
             if result != HRESULT_ALREADY_EXISTS {
                 return Err(format!(
@@ -197,17 +194,19 @@ impl AppContainerProfile {
                 ));
             }
         }
-        Ok(Self { name, sid, created })
+        Ok(Self { sid })
     }
 }
 
 impl Drop for AppContainerProfile {
     fn drop(&mut self) {
+        // The named profile is deliberately left registered: concurrent broker
+        // launches share it, and deleting it here while another launch is
+        // between deriving the SID and CreateProcessW makes that launch fail.
+        // The profile is a stable, benign registration; grants tied to its SID
+        // are removed per-launch by the ACL ledger.
         unsafe {
             FreeSid(self.sid);
-            if self.created {
-                DeleteAppContainerProfile(self.name.as_ptr());
-            }
         }
     }
 }
