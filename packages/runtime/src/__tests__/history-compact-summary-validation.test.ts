@@ -7,8 +7,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
-  detectHistoryCompactSummaryTruncation,
   HISTORY_COMPACT_REQUIRED_SECTIONS,
+  isHistoryCompactSummaryTruncated,
   validateHistoryCompactSummary,
 } from '../history-compact-summary-validation.js';
 
@@ -99,8 +99,9 @@ describe('validateHistoryCompactSummary', () => {
 
   test('rejects a summary ending on truncation punctuation', () => {
     // Representative sample of the tail class; the full char list lives next to
-    // the regex so it stays co-located with the implementation it describes.
-    for (const tail of [':', '：', '`']) {
+    // the regex so it stays co-located with the implementation it describes. A
+    // backtick is deliberately absent: a trailing backtick also closes a fence.
+    for (const tail of [':', '：', '…']) {
       assert.equal(validateHistoryCompactSummary(CONFORMING + ' ' + tail), 'truncated', tail);
     }
     // Sentence terminals are completion, not truncation, and must be accepted.
@@ -114,24 +115,21 @@ describe('validateHistoryCompactSummary', () => {
   });
 });
 
-describe('detectHistoryCompactSummaryTruncation', () => {
-  test('flags a fragment ending on truncation punctuation regardless of sections', () => {
+describe('isHistoryCompactSummaryTruncated', () => {
+  test('rejects a truncated fragment and accepts a complete legacy summary without sections', () => {
     // Legacy summaries never carried the sectioned contract, so a section-less
     // summary is still loadable; only the truncation signal matters at load.
-    assert.equal(detectHistoryCompactSummaryTruncation('legacy summary without sections.'), false);
-    assert.equal(detectHistoryCompactSummaryTruncation('legacy summary cut off：'), true);
-    assert.equal(detectHistoryCompactSummaryTruncation('ends with a dangling colon :'), true);
+    assert.equal(isHistoryCompactSummaryTruncated('legacy summary without sections.'), false);
+    assert.equal(isHistoryCompactSummaryTruncated('legacy summary cut off：'), true);
   });
 
-  test('flags output that stops inside a code fence', () => {
-    assert.equal(detectHistoryCompactSummaryTruncation('```ts\nconst x = 1'), true);
-    // A closed fence followed by a sentence terminal is completion, not
-    // truncation (the same expectation as validateHistoryCompactSummary).
-    assert.equal(detectHistoryCompactSummaryTruncation('```ts\nconst x = 1\n```\n\nDone.'), false);
+  test('rejects output that stops inside a code fence even without sections', () => {
+    assert.equal(isHistoryCompactSummaryTruncated('```ts\nconst x = 1'), true);
   });
 
-  test('accepts sentence terminals as completion, not truncation', () => {
-    assert.equal(detectHistoryCompactSummaryTruncation('Done.'), false);
-    assert.equal(detectHistoryCompactSummaryTruncation('Done。'), false);
+  test('accepts a complete summary ending with a closed code fence', () => {
+    // The trailing backtick closes the fence; the even fence count already
+    // proves the block closed, so this is completion, not truncation.
+    assert.equal(isHistoryCompactSummaryTruncated('```ts\nconst x = 1\n```'), false);
   });
 });

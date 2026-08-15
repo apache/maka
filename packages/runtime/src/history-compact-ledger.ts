@@ -4,7 +4,7 @@ import {
   validateHistoryCompactCheckpointShape,
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
-import { detectHistoryCompactSummaryTruncation } from './history-compact-summary-validation.js';
+import { isHistoryCompactSummaryTruncated } from './history-compact-summary-validation.js';
 
 interface LedgerCheckpointCandidate {
   checkpoint: HistoryCompactCheckpoint;
@@ -12,15 +12,13 @@ interface LedgerCheckpointCandidate {
 }
 
 /**
- * Legacy checkpoints predate the sectioned summarizer contract, so their
- * summaries may omit `## Goal` etc. and remain usable. A truncated fragment,
- * however, poisons every subsequent replay with a half-finished thought
- * regardless of which writer produced it (#3029, #3041). The load path
- * therefore rejects only truncated summaries and leaves section-less legacy
- * summaries intact.
+ * Only truncation is load-bearing here: legacy summaries may omit the section
+ * contract and remain usable, but a truncated fragment poisons every replay
+ * (#3041). See `isHistoryCompactSummaryTruncated` for the writer-agnostic
+ * heuristic.
  */
 function hasLoadableHistoryCompactSummary(checkpoint: HistoryCompactCheckpoint): boolean {
-  return !detectHistoryCompactSummaryTruncation(checkpoint.summary);
+  return !isHistoryCompactSummaryTruncated(checkpoint.summary);
 }
 
 export async function loadLatestHistoryCompactCheckpointFromRunLedger(

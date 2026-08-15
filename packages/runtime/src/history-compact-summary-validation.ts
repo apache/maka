@@ -48,8 +48,15 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Terminal punctuation that indicates the output was cut off mid-thought. */
-const TRUNCATED_TAIL_PATTERN = /[:：,，、;；(（`—]\s*$/u;
+/**
+ * Terminal punctuation that indicates the output was cut off mid-thought.
+ * Best-effort by construction: a fragment ending mid-word (no punctuation) is
+ * undetectable, and code fences are handled separately by the fence count in
+ * `isHistoryCompactSummaryTruncated`. A trailing backtick is deliberately NOT
+ * here — it would also match a closed ``` fence, which is completion, not
+ * truncation.
+ */
+const TRUNCATED_TAIL_PATTERN = /[:：,，、;；…(（—]\s*$/u;
 
 /** Why a summary failed validation, for diagnostics and tests. */
 export type HistoryCompactSummaryRejection = 'missing_sections' | 'truncated';
@@ -57,12 +64,15 @@ export type HistoryCompactSummaryRejection = 'missing_sections' | 'truncated';
 /**
  * Writer-agnostic truncation detection: an odd number of code fences means the
  * output stops inside a code block, and terminal dangling punctuation means it
- * stops mid-thought. Legacy checkpoints (written before the sectioned
- * summarizer prompt) never followed the section contract, but a truncated
- * fragment is unusable regardless of writer era, so the load path applies this
- * check to every checkpoint summary (#3041).
+ * stops mid-thought. A complete summary that ends with a closed ``` fence is
+ * NOT truncated (the even fence count already proves the block closed), so the
+ * tail punctuation deliberately excludes a trailing backtick. Legacy
+ * checkpoints (written before the sectioned summarizer prompt) never followed
+ * the section contract, but a truncated fragment is unusable regardless of
+ * writer era, so the load path applies this check to every checkpoint summary
+ * (#3041).
  */
-export function detectHistoryCompactSummaryTruncation(summary: string): boolean {
+export function isHistoryCompactSummaryTruncated(summary: string): boolean {
   // An odd number of fences means the output stops inside a code block.
   const fenceCount = (summary.match(/^```/gm) ?? []).length;
   if (fenceCount % 2 === 1) return true;
@@ -79,6 +89,6 @@ export function validateHistoryCompactSummary(
   if (REQUIRED_SECTION_HEADING_PATTERNS.some((pattern) => !pattern.test(summary))) {
     return 'missing_sections';
   }
-  if (detectHistoryCompactSummaryTruncation(summary)) return 'truncated';
+  if (isHistoryCompactSummaryTruncated(summary)) return 'truncated';
   return undefined;
 }
