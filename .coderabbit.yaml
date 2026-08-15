@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: "en-US"
+tone_instructions: >-
+  Be concise, direct, and evidence-based. Report only concrete, reproducible
+  issues caused by the diff. Explain the impact and cite the relevant code.
+
+reviews:
+  profile: "chill"
+  poem: false
+  enable_prompt_for_ai_agents: false
+  request_changes_workflow: false
+
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  high_level_summary_instructions: |
+    Explain:
+    1. What problem the PR solves.
+    2. Whether it extends the existing source of truth or creates a parallel path.
+    3. Whether any added complexity is necessary.
+    4. The concrete risks and validation performed.
+
+  auto_review:
+    enabled: true
+    drafts: false
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
