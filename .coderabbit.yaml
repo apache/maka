@@ -8,6 +8,7 @@ tone_instructions: >-
 reviews:
   profile: "chill"
   poem: false
+  in_progress_fortune: false
   enable_prompt_for_ai_agents: false
   request_changes_workflow: false
 
