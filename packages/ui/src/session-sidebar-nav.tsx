@@ -1,14 +1,5 @@
 import type { ScheduledTask } from '@maka/core/scheduled-task';
-import {
-  AlertCircle,
-  Blocks,
-  Download,
-  MessageSquare,
-  Settings,
-  SquarePen,
-  Timer,
-  Upload,
-} from './icons.js';
+import { AlertCircle, Blocks, Download, Settings, SquarePen, Timer } from './icons.js';
 import type { NavModuleMemory, NavSelection } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
@@ -23,14 +14,11 @@ export function SessionSidebarNav(props: {
   moduleMemory?: NavModuleMemory;
   onSelect(selection: NavSelection): void;
   onNew(): void;
-  onImport?(): void;
 }) {
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
   const extensionsActive = props.selection.section === 'extensions';
   const automationsActive = props.selection.section === 'automations';
-  const activeSessionFilter =
-    props.selection.section === 'sessions' ? props.selection.filter : undefined;
   const moduleMemory = props.moduleMemory ?? { extensions: 'skills', automations: 'scheduled-tasks' };
   const activeScheduledTaskCount = (props.scheduledTasks ?? []).filter(
     (task) => task.status === 'active',
@@ -42,10 +30,10 @@ export function SessionSidebarNav(props: {
   //
   // SideNavSection, like the footer below, rather than a bare fragment in a
   // product div: the section is what owns the space BETWEEN nav rows
-  // (`items` → --spacing-0-5). Handed to `topContent` as a plain div these three
+  // (`items` → --spacing-0-5). Handed to `topContent` as a plain div these rows
   // were the only group on the rail outside that authority, so they stacked
   // edge to edge — invisible expanded, where the label separates the rows, and
-  // plainly three-icons-as-one-slab at 48px. The header is hidden because the
+  // plainly icons-as-one-slab at 48px. The header is hidden because the
   // rail landmark already names the panel; the title stays for a11y.
   return (
     <SideNavSection title={copy.mainLabel} isHeaderHidden className="maka-session-panel-top">
@@ -56,16 +44,16 @@ export function SessionSidebarNav(props: {
         onClick={props.onNew}
         endContent={<kbd className="maka-nav-kbd" aria-hidden="true">⌘ N</kbd>}
       />
-      {props.onImport && (
-        <SideNavItem label={copy.importSession} icon={Upload} size="md" onClick={props.onImport} />
-      )}
-      <SideNavItem
-        label={copy.conversations}
-        icon={MessageSquare}
-        size="md"
-        isSelected={activeSessionFilter === 'chats'}
-        onClick={() => props.onSelect({ section: 'sessions', filter: 'chats' })}
-      />
+      {/* No 任务 row. Expanded, the list below IS that row's destination, and a
+          control that selects what is already on screen under it is the same
+          redundancy as the 会话 list heading this change deleted one row down.
+          Collapsed, the list is not rendered — but the rail cannot switch tasks
+          there either, so returning from 扩展 already means widening the rail,
+          which the titlebar's 展开侧边栏 toggle does unconditionally
+          (app-shell-chrome-actions.tsx) and which lands on a list where the
+          task you left is still `activeId` and still marked. Adding a row to
+          save that one click would be paying a permanent slot for a state the
+          user is leaving anyway. */}
       <SideNavItem
         label={copy.extensions}
         icon={Blocks}

@@ -38,6 +38,7 @@ import {
 } from './memory-extraction-proposal.js';
 import { isHistoryCompactContentEvent } from './history-compact.js';
 import {
+  isTextHistoryCompactCheckpoint,
   matchHistoryCompactCheckpointPrefix,
   renderHistoryCompactCheckpoint,
   type HistoryCompactCheckpoint,
@@ -208,7 +209,9 @@ export function buildMemoryCompactionSourceContext(
     messages.push(message);
     if (eventId) (positions[eventId] ??= []).push(index);
   };
-  if (options.previousCheckpoint) {
+  // Provider checkpoints are opaque transport state, not Memory evidence.
+  // Their covered RuntimeEvents remain the durable interpretation source.
+  if (options.previousCheckpoint && isTextHistoryCompactCheckpoint(options.previousCheckpoint)) {
     push(undefined, {
       role: 'user',
       content: [{ type: 'text', text: renderHistoryCompactCheckpoint(options.previousCheckpoint) }],

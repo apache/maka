@@ -463,6 +463,7 @@ export interface MakaBridge {
       sessionId: string,
       handler: (event: SessionEvent) => void,
       onSeeded?: () => void,
+      onObservationSeed?: (phase: 'pending' | 'ready') => void,
     ): () => void;
     subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void;
     archive(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
@@ -777,26 +778,6 @@ export interface MakaBridge {
     getAccountState(): Promise<{
       provider: 'github-copilot';
       runtimeState: 'not_logged_in' | 'authenticated' | 'refreshing' | 'refresh_failed' | 'storage_failed';
-      errorMessage?: string;
-    }>;
-    refreshTokens(): Promise<SubscriptionActionResult>;
-    logout(): Promise<SubscriptionActionResult>;
-  };
-  antigravitySubscription: {
-    isExperimentalEnabled(): Promise<boolean>;
-    getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
-    openAuthUrl(authRequestId: string): Promise<SubscriptionActionResult>;
-    completeAuthorization(authRequestId: string): Promise<SubscriptionActionResult>;
-    cancelAuthorization(authRequestId?: string): Promise<{ ok: true }>;
-    getAccountState(): Promise<{
-      provider: 'antigravity-subscription';
-      status: 'preview';
-      runtimeState:
-        | 'not_logged_in'
-        | 'authorizing'
-        | 'authenticated'
-        | 'refreshing'
-        | 'refresh_failed';
       errorMessage?: string;
     }>;
     refreshTokens(): Promise<SubscriptionActionResult>;

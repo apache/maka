@@ -65,6 +65,29 @@ export class HostExternalSessionCoordinator {
   readonly #discardImportedSession: HostExternalSessionCoordinatorOptions['discardImportedSession'];
   readonly #requestDrain: () => void;
 
+  /**
+   * One import per source at a time, keyed by adapter + source session.
+   *
+   * A repeat import is a legitimate request — it makes an independent copy, and
+   * a test below pins that. A repeat while the first is still running is not:
+   * it is one intent counted twice, and it lands two tasks the user has to tell
+   * apart and clean up.
+   *
+   * The guard has to be here rather than on the surface that asked. Import is a
+   * Host operation and the Host is what knows one is running; a client only
+   * knows about its own. The Settings page that replaced the import dialog can
+   * be unmounted mid-import by design, and its in-flight state goes with it —
+   * as would a second window's, or the CLI's.
+   *
+   * Coalesced, not rejected: the second caller gets the first one's outcome,
+   * success or failure, because it is the same operation. Entries are keyed on
+   * a JSON pair so no separator can be forged out of the ids themselves.
+   */
+  readonly #importsInFlight = new Map<
+    string,
+    Promise<OperationOutcome<'external-session.import'>>
+  >();
+
   constructor(options: HostExternalSessionCoordinatorOptions) {
     this.#adapters = options.adapters;
     this.#admission = options.admission;
@@ -146,6 +169,21 @@ export class HostExternalSessionCoordinator {
   }
 
   async importSession(
+    input: ExternalSessionImportInput,
+  ): Promise<OperationOutcome<'external-session.import'>> {
+    const key = JSON.stringify([input.adapterId, input.sourceSessionId]);
+    const running = this.#importsInFlight.get(key);
+    if (running) return running;
+    const attempt = this.#importSession(input);
+    this.#importsInFlight.set(key, attempt);
+    try {
+      return await attempt;
+    } finally {
+      this.#importsInFlight.delete(key);
+    }
+  }
+
+  async #importSession(
     input: ExternalSessionImportInput,
   ): Promise<OperationOutcome<'external-session.import'>> {
     const adapter = this.#adapters.get(input.adapterId);

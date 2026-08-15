@@ -8,6 +8,7 @@ import { toolResultActivityStatus } from '@maka/core/tool-result-status';
 import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 import type { ToolActivityItem } from './materialize.js';
 import { applyThinkingComplete, applyThinkingDelta } from './thinking-stream.js';
+import type { StreamingDisplayRedactionState } from './streaming-display-redaction.js';
 import { applyToolOutputChunk } from './tool-output-stream.js';
 
 type LiveTurnContentEvent = Extract<SessionEvent, { type: 'thinking_delta' | 'thinking_complete' | 'text_delta' | 'text_complete' | 'tool_start' | 'tool_output_delta' | 'tool_result_preview' | 'tool_result' }>;
@@ -18,6 +19,8 @@ export interface LiveThinkingProjection {
   complete: boolean;
   /** Raw source length, independent of redaction and display truncation. */
   sourceEndOffset?: number;
+  /** Internal bounded state; removed when the stream becomes terminal. */
+  redactionState?: StreamingDisplayRedactionState;
 }
 
 export interface LiveTurnStepProjection {
@@ -38,6 +41,8 @@ export interface LiveTextProjection {
   complete: boolean;
   /** Raw source length, independent of redaction and display truncation. */
   sourceEndOffset?: number;
+  /** Internal bounded state; removed when the stream becomes terminal. */
+  redactionState?: StreamingDisplayRedactionState;
 }
 
 export interface LiveSteeringProjection {
@@ -88,12 +93,22 @@ function projectToolActivityIdentity(event: {
 function terminalizeLiveSteps(steps: readonly LiveTurnStepProjection[]): LiveTurnStepProjection[] {
   return steps.map((step) => ({
     ...step,
-    ...(step.thinking ? { thinking: { ...step.thinking, complete: true } } : {}),
-    ...(step.text ? { text: { ...step.text, complete: true } } : {}),
+    ...(step.thinking ? { thinking: terminalThinking(step.thinking) } : {}),
+    ...(step.text ? { text: terminalText(step.text) } : {}),
     tools: step.tools.map((tool) => (
       isInFlightToolStatus(tool.status) ? { ...tool, status: 'interrupted' as const } : tool
     )),
   }));
+}
+
+function terminalThinking(thinking: LiveThinkingProjection): LiveThinkingProjection {
+  const { redactionState: _redactionState, ...safe } = thinking;
+  return { ...safe, complete: true };
+}
+
+function terminalText(text: LiveTextProjection): LiveTextProjection {
+  const { redactionState: _redactionState, ...safe } = text;
+  return { ...safe, complete: true };
 }
 
 function inferredContentOrder(step: LiveTurnStepProjection): LiveTurnStepContentKind[] {
@@ -243,7 +258,12 @@ export function applyLiveTurnEvent(
   let nextStep: LiveTurnStepProjection;
   if (event.type === 'thinking_delta') {
     const delta = replaySafeDelta(step.thinking?.sourceEndOffset, event);
-    const applied = applyThinkingDelta(step.thinking?.text ?? '', delta.text, { locale });
+    const applied = applyThinkingDelta(step.thinking?.text ?? '', delta.text, {
+      locale,
+      ...(step.thinking?.redactionState === undefined
+        ? {}
+        : { redactionState: step.thinking.redactionState }),
+    });
     nextStep = {
       ...step,
       thinking: {
@@ -253,6 +273,9 @@ export function applyLiveTurnEvent(
         ...(delta.sourceEndOffset === undefined
           ? {}
           : { sourceEndOffset: delta.sourceEndOffset }),
+        ...(applied.redactionState === undefined
+          ? {}
+          : { redactionState: applied.redactionState }),
       },
     };
   } else if (event.type === 'thinking_complete') {
@@ -270,7 +293,12 @@ export function applyLiveTurnEvent(
     };
   } else if (event.type === 'text_delta') {
     const delta = replaySafeDelta(step.text?.sourceEndOffset, event);
-    const applied = applyAssistantDelta(step.text?.text ?? '', delta.text, { locale });
+    const applied = applyAssistantDelta(step.text?.text ?? '', delta.text, {
+      locale,
+      ...(step.text?.redactionState === undefined
+        ? {}
+        : { redactionState: step.text.redactionState }),
+    });
     nextStep = {
       ...step,
       text: {
@@ -280,6 +308,9 @@ export function applyLiveTurnEvent(
         ...(delta.sourceEndOffset === undefined
           ? {}
           : { sourceEndOffset: delta.sourceEndOffset }),
+        ...(applied.redactionState === undefined
+          ? {}
+          : { redactionState: applied.redactionState }),
       },
     };
   } else if (event.type === 'text_complete') {

@@ -19,11 +19,20 @@ test('remounting a live surface leaves accumulated output settled', async ({
   const liveBubble = page.locator('.maka-bubble-streaming');
   await expect(liveBubble).toContainText(accumulatedOutput);
 
-  const sidebar = page.getByRole('navigation', { name: '对话列表' });
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
   await sidebar.getByRole('button', { name: '扩展' }).click();
   await expect(page.locator('[data-module="skills"]')).toBeVisible();
   await expect(liveBubble).toHaveCount(0);
-  await sidebar.getByRole('button', { name: '会话', exact: true }).click();
+  // Back the way the product actually offers: the rail is collapsed here, so
+  // the task rows are not rendered and there is no 任务 row to press (#2984).
+  // Widening it is the titlebar's job, and the task left behind is still
+  // `activeId`, so it comes back marked and one click away.
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  const currentTaskRow = sidebar.locator(
+    '[data-maka-contract="session-row"] [aria-current="page"]',
+  );
+  await expect(currentTaskRow).toHaveCount(1);
+  await currentTaskRow.click();
   await expect(liveBubble).toHaveCount(1);
   await expect(liveBubble).toContainText(accumulatedOutput);
 
@@ -126,7 +135,7 @@ test('returning to a live conversation restores output accumulated while away', 
   const liveBubble = page.locator('.maka-bubble-streaming');
   await expect(liveBubble).toContainText(accumulatedOutput);
 
-  const sidebar = page.getByRole('navigation', { name: '对话列表' });
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await expect(page.locator('[data-agents-page]')).toHaveAttribute(
     'data-sidebar-state',

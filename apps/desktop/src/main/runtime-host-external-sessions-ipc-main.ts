@@ -68,6 +68,13 @@ export function registerRuntimeHostExternalSessionsIpc(
         error.operation === 'external-session.import' &&
         error.code === 'commit_outcome_unknown'
       ) {
+        // "Unknown" means the task may well be in the catalog, so tell the
+        // shell to read it again. Without this, the only trace of a maybe-
+        // committed import is the banner on the page, and the page is gone the
+        // moment the user leaves Settings -- which is exactly when they come
+        // back and import the same conversation a second time. No id: the
+        // whole point is that we do not know which task, if any, landed.
+        deps.emitSessionsChanged('created');
         return {
           ok: false,
           reason: 'commit_outcome_unknown',

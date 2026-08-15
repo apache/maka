@@ -9,6 +9,7 @@ import {
   type LiveTurnProjection,
 } from '../live-turn-projection.js';
 import { overlayLiveTurn, type ToolActivityItem } from '../materialize.js';
+import { redactSecrets } from '../redact.js';
 
 // A client that just sent cannot read "has my turn started" off session status:
 // it is the same before the turn starts and after it ends. The arm carries
@@ -47,6 +48,45 @@ describe('the unconfirmed claim an arm carries', () => {
 });
 
 describe('applyLiveTurnEvent', () => {
+  it('keeps every streamed prefix oracle-equivalent and drops raw state on terminal events', () => {
+    const input = 'api_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY tail';
+    let projection: LiveTurnProjection | undefined;
+    let source = '';
+    for (const [index, text] of [...input].entries()) {
+      source += text;
+      projection = applyLiveTurnEvent(projection, {
+        type: 'text_delta',
+        id: `text-${index}`,
+        turnId: 'turn-redaction',
+        messageId: 'message-redaction',
+        ts: index,
+        text,
+      });
+      assert.ok(projection);
+      assert.equal(projection.steps[0]?.text?.text, redactSecrets(source));
+    }
+    assert.ok(projection);
+    assert.ok(projection.steps[0]?.text?.redactionState);
+
+    const aborted = applyLiveTurnEvent(projection, {
+      type: 'abort', id: 'abort-1', turnId: 'turn-redaction', ts: 100, reason: 'user_stop',
+    });
+    assert.equal(aborted?.steps[0]?.text?.text, redactSecrets(input));
+    assert.equal(aborted?.steps[0]?.text?.redactionState, undefined);
+
+    let thinking = applyLiveTurnEvent(undefined, {
+      type: 'thinking_delta', id: 'thinking-1', turnId: 'turn-error',
+      messageId: 'message-thinking', ts: 1, text: 'Authorization: Bearer secret-value',
+    });
+    assert.ok(thinking.steps[0]?.thinking?.redactionState);
+    thinking = applyLiveTurnEvent(thinking, {
+      type: 'error', id: 'error-1', turnId: 'turn-error', ts: 2,
+      recoverable: false, message: 'provider failed',
+    })!;
+    assert.equal(thinking.steps[0]?.thinking?.redactionState, undefined);
+    assert.equal(thinking.steps[0]?.thinking?.text.includes('secret-value'), false);
+  });
+
   it('folds replayed absolute deltas instead of appending a resubscription seed', () => {
     const seed = {
       type: 'text_delta' as const,

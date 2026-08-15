@@ -8,7 +8,6 @@ import {
   deriveConnectionSlug,
   validateSlug,
 } from '@maka/core/llm-connections';
-import { isWiredOAuthProvider } from '@maka/core/provider-registry';
 import {
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
@@ -88,7 +87,6 @@ export function AddProviderForm(props: {
   const showsDefaultModel = recommendedDefaultModel.trim() === '';
   const isCustomRelay = defaults.category === 'custom';
   const isExperimental = defaults.status === 'phase3-experimental';
-  const isWiredOAuth = isWiredOAuthProvider(props.providerType);
   const supportsRemoteDiscovery = providerSupportsModelDiscovery(props.providerType);
   const supportsApiKey = providerAuthSupportsApiKey(props.providerType);
   const requiresApiKey = providerAuthRequiresSecret(props.providerType) && supportsApiKey;
@@ -143,7 +141,7 @@ export function AddProviderForm(props: {
     if (isExperimental) {
       return setError({
         field: 'form',
-        message: isWiredOAuth ? copy.wiredLogin : copy.unwiredLogin,
+        message: copy.accountLogin,
       });
     }
     let normalizedRequestHeaders: Readonly<Record<string, string>>;
@@ -285,10 +283,8 @@ export function AddProviderForm(props: {
       {isExperimental && (
         <Banner
           status="info"
-          title={isWiredOAuth ? copy.wiredTitle : copy.unwiredTitle}
-          description={isWiredOAuth
-            ? copy.wiredDetail
-            : copy.unwiredDetail} />
+          title={copy.accountTitle}
+          description={copy.accountDetail} />
       )}
       <FormLayout>
         {supportsApiKey && (

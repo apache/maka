@@ -104,7 +104,7 @@ describe('deriveOnboardingState', () => {
     );
   });
 
-  it('accepts wired OAuth providers and ignores validation telemetry', () => {
+  it('accepts OAuth providers and ignores validation telemetry', () => {
     for (const connection of [
       realConnection({
         slug: 'claude-subscription',

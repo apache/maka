@@ -18,6 +18,7 @@ import type {
   PermissionSnapshot,
 } from '@maka/core/capabilities';
 import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
+import type { ExternalSessionSummary } from '@maka/core/external-session';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
@@ -31,6 +32,16 @@ import type { ConnectionsBridge } from '../../src/renderer/settings/providers-pa
 import type { ProjectRecord } from '@maka/core/project';
 import type { ArchivedTasksBridge } from '../../src/renderer/settings/tasks-settings-page';
 import { withScopedMakaBridge } from '../maka-bridge';
+import { getDailyReviewSettingsCopy } from '../../src/renderer/locales/settings-daily-review-copy';
+
+/**
+ * Read from the copy table, not typed out again. This selector matched a
+ * literal '跟随对话默认' that the 任务 rename retired, so it silently found
+ * nothing — and `scripts/storybook-visual-smoke.mjs` disables every `play`
+ * function, so CI could not tell us. A story that drives the UI by its visible
+ * text has to source that text where the UI does.
+ */
+const DAILY_REVIEW_DEFAULT_MODEL_LABEL = getDailyReviewSettingsCopy('zh').defaultModel;
 const STORY_PLATFORM = 'darwin' as const;
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -650,6 +661,28 @@ const makaBridge = {
   e2eFixture: {
     getState: async () => null,
   },
+  // 导入任务 reads another agent's session directory through Desktop Main. The
+  // fixture answers with one source and a short first page so the story shows
+  // the source switch, the archived filter, and 加载更多 together. It honours
+  // `includeArchived` and `cursor` rather than returning one fixed page:
+  // otherwise the archived row shows while its filter is off and 加载更多 hands
+  // back the first page forever, which is a control the story cannot be used to
+  // judge.
+  externalSessions: {
+    listSources: async () => ({ adapterIds: ['codex'] }),
+    list: async (input: { includeArchived?: boolean; cursor?: string }) => {
+      const visible = externalConversations.filter(
+        (conversation) => input.includeArchived || !conversation.archived,
+      );
+      const start = input.cursor === EXTERNAL_SECOND_PAGE ? EXTERNAL_PAGE_SIZE : 0;
+      const end = start + EXTERNAL_PAGE_SIZE;
+      return {
+        sessions: visible.slice(start, end),
+        nextCursor: end < visible.length ? EXTERNAL_SECOND_PAGE : null,
+      };
+    },
+    import: async () => ({ ok: false as const }),
+  },
   // Appearance mounts CustomPetSettingsSection, which reads and subscribes on
   // window.maka.pets. Without this fixture the catalog story throws on mount
   // (subscribeChanges of undefined) and the render smoke fails the page.
@@ -684,7 +717,7 @@ function archivedTask(
     isArchived: true,
     labels: [],
     hasUnread: false,
-    status: 'done',
+    status: 'archived',
     backend: 'ai-sdk',
     llmConnectionSlug: 'zai-live',
     connectionLocked: true,
@@ -729,6 +762,44 @@ const archivedTaskSessions: SessionSummary[] = [
   archivedTask('task-sort', '修复归档任务在导轨里的排序', 14, { projectId: 'proj-astryx' }),
   archivedTask('task-unfiled', 'Analyze entire project', 32),
   archivedTask('task-active', 'An active task the page must not list', 0, { isArchived: false }),
+];
+
+// 导入任务's rows come from another agent's directory, not from Maka's store:
+// a source-native id, the cwd it ran in, and whether that agent archived it.
+/**
+ * Two rows a page, so the default view — three unarchived conversations — is
+ * one short page plus 加载更多, and turning the archived filter on changes both
+ * the first page and how many pages there are.
+ */
+const EXTERNAL_PAGE_SIZE = 2;
+const EXTERNAL_SECOND_PAGE = 'page-2';
+
+const externalConversations: ExternalSessionSummary[] = [
+  {
+    id: 'codex-01930f',
+    name: 'Trace the flaky worktree teardown in CI',
+    cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
+    updatedAt: Date.now() - 42 * 60 * 1000,
+  },
+  {
+    id: 'codex-01930e',
+    name: '把 provider catalog 的分页改成游标',
+    cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
+    updatedAt: Date.now() - 3 * 60 * 60 * 1000,
+  },
+  {
+    id: 'codex-01930a',
+    name: 'Reproduce the SQLite lock contention under parallel evals',
+    cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
+    updatedAt: Date.now() - 2 * 24 * 60 * 60 * 1000,
+  },
+  {
+    id: 'codex-01929c',
+    name: 'Draft the release notes for 0.9.0',
+    cwd: '/Users/storybook-fixture-user/workspace/docs',
+    updatedAt: Date.now() - 6 * 24 * 60 * 60 * 1000,
+    archived: true,
+  },
 ];
 
 const archivedTaskProjects: ProjectRecord[] = [
@@ -1036,6 +1107,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
           onOpenDailyReview={noop}
           onOpenSession={noop}
           archivedTasks={archivedTasks}
+          onTaskImported={noop}
         />
       </div>
     </>
@@ -1067,7 +1139,7 @@ async function waitForStoryCondition(predicate: () => boolean, errorMessage: str
 async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise<HTMLButtonElement> {
   const selector = await waitForStoryButton(
     canvasElement,
-    (candidate) => candidate.textContent?.includes('跟随对话默认') === true,
+    (candidate) => candidate.textContent?.includes(DAILY_REVIEW_DEFAULT_MODEL_LABEL) === true,
   );
   await userEvent.click(selector);
   await waitForStoryCondition(
@@ -1240,4 +1312,24 @@ export const ArchivedTasks: Story = {
   render: () => (
     <SettingsStory section="archived-tasks" archivedTaskSessions={archivedTaskSessions} />
   ),
+};
+
+// Real path: 设置 → 导入任务 on a machine that has Codex installed.
+export const ImportTasks: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="import-tasks" />,
+};
+
+// Real path: the same page on a machine with no supported agent — the common
+// case, and the one where the source switch and the filter would be chrome
+// around nothing.
+export const ImportTasksNoSource: Story = {
+  decorators: [withScopedMakaBridge({
+    ...makaBridge,
+    externalSessions: {
+      ...makaBridge.externalSessions,
+      listSources: async () => ({ adapterIds: [] }),
+    },
+  })],
+  render: () => <SettingsStory section="import-tasks" />,
 };

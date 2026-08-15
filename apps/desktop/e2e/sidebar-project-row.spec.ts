@@ -10,7 +10,7 @@ test('project navigation and actions remain adjacent keyboard controls', async (
   await page.keyboard.press('Escape');
   await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();
 
-  const sidebar = page.getByRole('navigation', { name: '对话列表' });
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
   await sidebar.getByRole('radio', { name: '按项目', exact: true }).click();
 
   const projectRow = sidebar.locator(

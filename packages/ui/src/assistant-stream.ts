@@ -38,6 +38,12 @@
  */
 
 import { redactSecrets } from './redact.js';
+import {
+  appendStreamingDisplayRedaction,
+  createStreamingDisplayRedactionState,
+  truncateStreamingDisplayAppend,
+  type StreamingDisplayRedactionState,
+} from './streaming-display-redaction.js';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
@@ -65,6 +71,8 @@ export interface ApplyAssistantOptions {
   maxTotalChars?: number;
   /** Resolved UI locale for user-visible truncation markers. */
   locale?: UiLocale;
+  /** Differential-safe state returned by the preceding delta. */
+  redactionState?: StreamingDisplayRedactionState;
 }
 
 export interface ApplyAssistantResult {
@@ -74,6 +82,8 @@ export interface ApplyAssistantResult {
   redacted: boolean;
   /** True if any per-delta or total truncation happened during this call. */
   truncated: boolean;
+  /** Bounded state needed to keep later prefixes oracle-equivalent. */
+  redactionState?: StreamingDisplayRedactionState;
 }
 
 /**
@@ -81,24 +91,11 @@ export interface ApplyAssistantResult {
  * text. Pure: no React state, no DOM, no IPC.
  *
  * Pipeline (in order):
- *   1. `redactSecrets(rawDelta)` — per-delta mask. Catches secrets
- *      that arrive entirely within one delta.
- *   2. If the delta alone is over `maxDeltaChars`, tail-keep it
- *      with a head truncation marker. (A single multi-MB delta is
- *      a runtime misbehavior; renderer must not echo it raw into
- *      state. Tail-keep here mirrors thinking-stream — the user
- *      hasn't been reading inside the delta atomically.)
- *   3. Append to `prev`.
- *   4. `redactSecrets(appended)` — **cross-delta** mask. CRITICAL:
- *      streaming naturally splits tokens across deltas (e.g.
- *      `"Authorization: Bearer sk-"` arrives in delta N, then
- *      `"abcdef1234567890"` in delta N+1). Per-delta redaction
- *      alone can't catch a secret spanning the seam. This second
- *      pass over the freshly-appended candidate is the chokepoint
- *      that lets us assert: NO raw secret EVER enters
- *      live projection state. @kenji review @msg 3c01e901
- *      Blocker 1 — this MUST run before total-cap + setState.
- *   5. If the safe-appended exceeds `maxTotalChars`, head-keep
+ *   1. Append through the differential-safe redactor. It caches complete
+ *      lines and re-runs the whole-text oracle over only the mutable suffix.
+ *   2. If the delta alone is oversized, cap the already-redacted mutable
+ *      suffix so a cross-delta secret cannot leak through truncation.
+ *   3. If the safe-appended exceeds `maxTotalChars`, head-keep
  *      the prefix and append a trailing marker. (User reads the
  *      answer from top; we preserve what they've been reading
  *      and tell them the rest was cut.)
@@ -107,8 +104,8 @@ export interface ApplyAssistantResult {
  * the trailing-truncation marker), subsequent deltas are dropped
  * entirely.
  *
- * `redactSecrets` is idempotent on already-masked text, so the
- * double-redaction (per-delta + post-append) is correct.
+ * The carried state is opaque: live projection stores only a WeakMap key and
+ * length counters, never the raw mutable suffix as enumerable React state.
  */
 export function applyAssistantDelta(
   prev: string,
@@ -125,11 +122,17 @@ export function applyAssistantDelta(
   // violation. Drop it silently rather than coerce to '' and claim
   // redaction happened.
   if (typeof rawDelta !== 'string') {
-    return { text: prev ?? '', redacted: false, truncated: false };
+    return {
+      text: prev ?? '',
+      redacted: false,
+      truncated: false,
+      ...(options.redactionState === undefined
+        ? {}
+        : { redactionState: options.redactionState }),
+    };
   }
 
   const previousText = prev ?? '';
-
   // Short-circuit: if the buffer is already capped (ends with the
   // trailing marker AND is at maxTotal), drop further deltas
   // entirely. This avoids reprocessing redaction / cap on a stream
@@ -141,42 +144,57 @@ export function applyAssistantDelta(
     return { text: previousText, redacted: false, truncated: true };
   }
 
-  // L1: per-delta redaction. Catches secrets that arrive whole
-  // within this single delta.
+  const redactionState = options.redactionState ?? appendStreamingDisplayRedaction(
+    '',
+    previousText,
+    createStreamingDisplayRedactionState({
+      maxRecoveryChars: maxTotal + 1,
+      recovery: 'head',
+    }),
+  ).state;
+
+  // Oversize deltas keep the established redact-before-truncate behavior. Normal
+  // deltas stay raw until the line-aware append below so a later prefix can
+  // legitimately make an opaque token visible again.
   const redactedDelta = redactSecrets(rawDelta);
   const perDeltaRedactionHappened = redactedDelta !== rawDelta;
 
   // L2: per-delta cap. A single oversize delta gets tail-kept with
   // a head marker. (Aligns with C0 thinking-stream; the user hasn't
   // been reading inside the delta atomically.)
-  let delta = redactedDelta;
   let deltaTruncated = false;
-  if (delta.length > maxDelta) {
-    const keep = maxDelta - truncatedChunkMarker.length;
-    delta = truncatedChunkMarker + delta.slice(delta.length - keep);
-    deltaTruncated = true;
-  }
-
-  // L3: append.
-  const appended = previousText + delta;
-
-  const safeAppended = redactSecrets(appended);
-  const crossDeltaRedactionHappened = safeAppended !== appended;
+  const rawAppended = appendStreamingDisplayRedaction(
+    previousText,
+    rawDelta,
+    redactionState,
+  );
+  const appended = redactedDelta.length > maxDelta
+    ? truncateStreamingDisplayAppend(
+        previousText,
+        rawAppended,
+        maxDelta,
+        truncatedChunkMarker,
+      )
+    : rawAppended;
+  deltaTruncated = appended !== rawAppended;
 
   // L5: total cap. Head-keep the prefix the user has been reading;
   // mark the tail.
-  let result = safeAppended;
+  let result = appended.text;
   let totalTruncated = false;
   if (result.length > maxTotal) {
     const keep = maxTotal - truncatedTailMarker.length;
-    result = safeAppended.slice(0, keep) + truncatedTailMarker;
+    result = appended.text.slice(0, keep) + truncatedTailMarker;
     totalTruncated = true;
   }
 
   return {
     text: result,
-    redacted: perDeltaRedactionHappened || crossDeltaRedactionHappened,
+    redacted: perDeltaRedactionHappened || appended.redacted,
     truncated: deltaTruncated || totalTruncated,
+    ...(totalTruncated
+      ? {}
+      : { redactionState: appended.state }),
   };
 }
 

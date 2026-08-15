@@ -97,7 +97,7 @@ const sidebarSessions: SessionSummary[] = [
   makeSession({ id: 'session-active', name: '整理 Storybook 表面覆盖', lastMessageAt: NOW - 14 * 60_000, hasUnread: true, projectId: 'project-maka', cwd: '/workspace/maka-agent/.worktree/storybook' }),
   makeSession({ id: 'session-waiting', name: '等待权限确认的部署任务', status: 'waiting_for_user', lastMessageAt: NOW - 8 * 60_000, projectId: 'project-docs', cwd: '/workspace/docs' }),
   makeSession({ id: 'session-pinned', name: 'PR #435 发布风险清单', lastMessageAt: NOW - 76 * 60_000, isFlagged: true, projectId: 'project-maka', cwd: '/workspace/maka-agent' }),
-  makeSession({ id: 'session-review', name: '已完成的 smoke 回归', status: 'done', lastMessageAt: NOW - 3 * 60 * 60_000, projectId: 'project-archived', cwd: '/workspace/legacy' }),
+  makeSession({ id: 'session-aborted', name: '中止的 smoke 回归', status: 'aborted', lastMessageAt: NOW - 3 * 60 * 60_000, projectId: 'project-archived', cwd: '/workspace/legacy' }),
 ];
 
 function project(input: Partial<ProjectRecord> & Pick<ProjectRecord, 'id' | 'name'>): ProjectRecord {
@@ -386,7 +386,7 @@ function ComposedShell(props: {
             onWidthChange={noop}
             minWidth={180}
             maxWidth={480}
-            selection={{ section: 'sessions', filter: 'chats' }}
+            selection={{ section: 'sessions' }}
             sessions={sidebarRows}
             activeId={active?.id}
             groups={viewMode === 'project' ? projectGroups : undefined}

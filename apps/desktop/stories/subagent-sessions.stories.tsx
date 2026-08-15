@@ -357,7 +357,7 @@ function ProductRail(props: { activeSessionId: string }) {
   return (
     <div style={shell.rail}>
       <SessionListPanel
-        selection={{ section: 'sessions', filter: 'chats' }}
+        selection={{ section: 'sessions' }}
         sessions={sessions}
         activeId={activeRowId}
         width={260}

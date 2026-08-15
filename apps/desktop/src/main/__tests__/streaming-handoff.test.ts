@@ -266,6 +266,68 @@ describe('single live-turn handoff', () => {
     assert.equal(publications, 2);
   });
 
+  it('applies catch-up deltas immediately until the returning session is seeded', () => {
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
+      'session-1': armLiveTurn('turn-1'),
+    });
+    const liveTurnBySessionRef = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const frames: Array<() => void> = [];
+    let publications = 0;
+    const handlers = createAppShellSessionEventHandlers({
+      uiLocale: 'zh',
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef,
+      refreshMessages: async () => true,
+      refreshSessions: async () => [],
+      setLiveTurnBySession: (updater) => {
+        publications += 1;
+        liveTurns.set(updater);
+        liveTurnBySessionRef.current = liveTurns.get();
+      },
+      setInteractionBySession: interactions.set,
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+      scheduleFrame: (callback) => { frames.push(callback); },
+    });
+
+    handlers.markDisplayPending('session-1');
+    handlers.handleEvent('session-1', {
+      type: 'text_delta',
+      id: 'seed',
+      turnId: 'turn-1',
+      messageId: 'assistant-1',
+      ts: 1,
+      startOffset: 0,
+      text: 'prefix accumulated while away',
+    });
+    assert.equal(publications, 1);
+    assert.equal(frames.length, 0);
+    assert.equal(
+      liveTurns.get()['session-1']?.steps[0]?.text?.text,
+      'prefix accumulated while away',
+    );
+
+    handlers.flushDisplayEvents('session-1');
+    handlers.markDisplayReady('session-1');
+    handlers.handleEvent('session-1', {
+      type: 'text_delta',
+      id: 'live',
+      turnId: 'turn-1',
+      messageId: 'assistant-1',
+      ts: 2,
+      text: ' new',
+    });
+    assert.equal(publications, 1);
+    assert.equal(frames.length, 1);
+    frames.shift()?.();
+    assert.equal(publications, 2);
+    assert.equal(
+      liveTurns.get()['session-1']?.steps[0]?.text?.text,
+      'prefix accumulated while away new',
+    );
+  });
+
   it('shares pending display events across handler replacement', () => {
     const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
       'session-1': armLiveTurn('turn-1'),

@@ -977,6 +977,19 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       summary: 'The source turn called one opaque tool.',
       highWaterSeq: 3,
     });
+    const providerCheckpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-source',
+      coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
+      providerState: {
+        kind: 'openai_codex_remote_v2',
+        connectionSlug: 'codex-source',
+        modelId: 'gpt-5-codex',
+        itemId: 'cmp-source',
+        encryptedContent: 'OPAQUE_SOURCE_COMPACTION_STATE',
+      },
+      highWaterSeq: 4,
+      previousCheckpointId: checkpoint.checkpointId,
+    });
     await runStore.appendEvent('session-source', 'run-source', {
       type: 'provider_request_captured',
       id: 'capture-source',
@@ -1056,6 +1069,21 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
         highWaterSeq: checkpoint.highWaterSeq,
         boundaryKind: 'historyCompact',
         checkpoint,
+      },
+    });
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'history_compact_checkpoint_recorded',
+      id: 'provider-checkpoint-source',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 2.8,
+      data: {
+        checkpointId: providerCheckpoint.checkpointId,
+        highWaterName: providerCheckpoint.highWaterName,
+        highWaterSeq: providerCheckpoint.highWaterSeq,
+        boundaryKind: 'historyCompact',
+        checkpoint: providerCheckpoint,
       },
     });
     await runStore.appendEvent('session-source', 'run-source', {
@@ -1222,6 +1250,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
     assert.equal(targetAttempt.data?.traceId, targetCapture.data?.traceId);
     assert.equal(targetEvents[1]?.refs?.providerRequestTraceId, targetCapture.data?.traceId);
     assert.equal(targetEvents[1]?.refs?.traceEventId, targetCapture.id);
+    assert.doesNotMatch(JSON.stringify(targetOperationalEvents), /OPAQUE_SOURCE_COMPACTION_STATE/);
     const projectedCheckpoint = await runStore.readEventProjection?.(
       'session-target',
       'history_compact_checkpoint_recorded',

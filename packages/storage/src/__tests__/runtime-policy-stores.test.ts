@@ -613,6 +613,110 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('migrates a persisted Gemini CLI default to the remaining supported catalog', async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const retiredConnectionId = '11111111-1111-4111-8111-111111111111';
+      const googleConnectionId = '22222222-2222-4222-8222-222222222222';
+      await writeFile(
+        join(root, 'connection-catalog.json'),
+        `${JSON.stringify({
+          schemaVersion: 1,
+          revision: 2,
+          defaultTarget: {
+            connectionId: retiredConnectionId,
+            modelId: 'gemini-2.5-pro',
+          },
+          connections: [
+            {
+              connectionId: retiredConnectionId,
+              revision: 1,
+              slug: 'gemini-account',
+              name: 'Gemini account',
+              providerType: 'gemini-cli',
+              enabled: true,
+              enabledModelIds: ['gemini-2.5-pro'],
+              models: [],
+            },
+            {
+              connectionId: googleConnectionId,
+              revision: 1,
+              slug: 'google-api',
+              name: 'Google API',
+              providerType: 'google',
+              enabled: true,
+              enabledModelIds: ['gemini-2.5-pro'],
+              models: [],
+            },
+          ],
+        })}\n`,
+        'utf8',
+      );
+
+      const snapshot = await stores.connectionCatalog.getSnapshot();
+
+      assert.equal(snapshot.revision, 2);
+      assert.equal(snapshot.defaultTarget, null);
+      assert.deepEqual(
+        snapshot.connections.map(({ connectionId, providerType }) => ({
+          connectionId,
+          providerType,
+        })),
+        [{ connectionId: googleConnectionId, providerType: 'google' }],
+      );
+      const persisted = JSON.parse(
+        await readFile(join(root, 'connection-catalog.json'), 'utf8'),
+      ) as {
+        connections: Array<{ providerType: string }>;
+      };
+      assert.deepEqual(
+        persisted.connections.map(({ providerType }) => providerType),
+        ['gemini-cli', 'google'],
+      );
+    });
+  });
+
+  test('rejects a retired Gemini CLI record that collides with a maintained connection identity', async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const duplicateConnectionId = '11111111-1111-4111-8111-111111111111';
+      await writeFile(
+        join(root, 'connection-catalog.json'),
+        `${JSON.stringify({
+          schemaVersion: 1,
+          revision: 2,
+          defaultTarget: null,
+          connections: [
+            {
+              connectionId: duplicateConnectionId,
+              revision: 1,
+              slug: 'gemini-account',
+              name: 'Gemini account',
+              providerType: 'gemini-cli',
+              enabled: true,
+              enabledModelIds: ['gemini-2.5-pro'],
+              models: [],
+            },
+            {
+              connectionId: duplicateConnectionId,
+              revision: 1,
+              slug: 'google-api',
+              name: 'Google API',
+              providerType: 'google',
+              enabled: true,
+              enabledModelIds: ['gemini-2.5-pro'],
+              models: [],
+            },
+          ],
+        })}\n`,
+        'utf8',
+      );
+
+      await assert.rejects(
+        () => stores.connectionCatalog.getSnapshot(),
+        isStoreError('invalid_document'),
+      );
+    });
+  });
+
   test('validates credential locators and redacts credential status', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const required = await createConnection(
@@ -2038,18 +2142,13 @@ describe('runtime policy stores', () => {
         2,
         connectionDraft('public-copilot', 'github-copilot', 'Public Copilot'),
       );
-      const preview = await createConnection(
-        stores,
-        3,
-        connectionDraft('public-preview', 'gemini-cli', 'Public preview'),
-      );
       const apiKey = await createConnection(
         stores,
-        4,
+        3,
         connectionDraft('public-api-key', 'openai', 'Public API key'),
       );
 
-      for (const connection of [claude, codex, preview]) {
+      for (const connection of [claude, codex]) {
         await assert.rejects(
           () =>
             stores.credentialVault.set({

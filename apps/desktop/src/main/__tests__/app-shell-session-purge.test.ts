@@ -11,7 +11,7 @@ function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
     isArchived: true,
     labels: [],
     hasUnread: false,
-    status: 'done',
+    status: 'archived',
     backend: 'fake',
     llmConnectionSlug: 'test',
     connectionLocked: true,
@@ -19,6 +19,16 @@ function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
     permissionMode: 'ask',
     ...overrides,
   };
+}
+
+/**
+ * A task that left the archive. Both fields move together because that is what
+ * `SessionStore.unarchive` writes; flipping only `isArchived` would build a row
+ * the store cannot produce, and the sweep would then be tested against a state
+ * it will never meet.
+ */
+function restored(id: string): SessionSummary {
+  return summary(id, { isArchived: false, status: 'active' });
 }
 
 type SweepHarness = {
@@ -128,7 +138,7 @@ describe('purgeSessions', () => {
     // dialog was up has left it, and a sweep that deleted it anyway would be
     // acting outside what was agreed to.
     const h = harness();
-    const sessions = [summary('kept', { isArchived: false }), summary('doomed')];
+    const sessions = [restored('kept'), summary('doomed')];
     const restore = installWindow(h);
     const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined } });
 
@@ -148,7 +158,7 @@ describe('purgeSessions', () => {
     const sessions = [summary('first'), summary('second')];
     const restore = installWindow(h, {
       onRemove: (id) => {
-        if (id === 'first') sessions[1] = summary('second', { isArchived: false });
+        if (id === 'first') sessions[1] = restored('second');
       },
     });
     const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined } });

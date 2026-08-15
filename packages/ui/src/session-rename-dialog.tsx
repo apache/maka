@@ -45,8 +45,8 @@ export function SessionRenameDialog(props: {
   const [name, setName] = useState(target.name);
 
   const trimmed = name.trim();
-  // The row's own vocabulary: a conversation is 对话 everywhere else in the
-  // sidebar, and the header doubles as the field's (hidden) label.
+  // The row's own vocabulary: a session is 任务 everywhere the user can see
+  // one, and the header doubles as the field's (hidden) label.
   const title = target.kind === 'project' ? copy.renameProjectTitle : copy.renameAriaLabel;
 
   function submit(event: FormEvent<HTMLFormElement>) {

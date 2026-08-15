@@ -10,6 +10,7 @@ import type {
   ClientCapabilityCallFrame,
   OperationInput,
   OperationKey,
+  SessionAssistantStreamIdentity,
   SessionCatalogProjection,
   SessionContinuitySnapshot,
   SubscriptionFrame,
@@ -435,7 +436,10 @@ test('does not release or report a Revision the Host retained during cleanup', a
 test('resyncs Goal, exact interaction, and sidecar state after candidate replacement', async () => {
   const ref = 'maka://runtime/background-tasks/shell-1';
   const observations = new RuntimeHostSessionObservationRegistry();
-  const firstIpc = ipcHarness();
+  const resyncs: Array<{ channel: string; payload: unknown }> = [];
+  const firstIpc = ipcHarness((channel, payload) => {
+    resyncs.push({ channel, payload });
+  });
   const firstHost = connectionHarness('first-observer', {
     subscriptionSnapshot: continuitySnapshot({
       interactions: { pending: [pendingQuestion()] },
@@ -465,13 +469,14 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
     'before replacement',
   );
   await firstCandidate.close();
+  resyncs.length = 0;
 
   const secondIpc = ipcHarness();
-  const resyncs: Array<{ channel: string; payload: unknown }> = [];
   const sessionChanges: Array<{ reason: string; sessionId?: string }> = [];
   let terminalReattach: Promise<unknown> | undefined;
   const secondHost = connectionHarness('second-observer', {
     subscriptionSnapshot: continuitySnapshot({ interactions: { pending: [] } }),
+    activeAssistantStreams: [activeText('message-1')],
     runtimeResourcePty: ptySnapshot(ref, 'after replacement'),
   });
   const secondCandidate = await createDesktopRuntimeHostCandidate(
@@ -495,6 +500,29 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
     observations,
   );
 
+  const seedPendingAt = resyncs.findIndex(
+    ({ channel, payload }) =>
+      channel === 'sessions:observation-seed'
+      && (payload as { sessionId?: unknown; phase?: unknown }).sessionId === 'session-1'
+      && (payload as { phase?: unknown }).phase === 'pending',
+  );
+  const seedReadyAt = resyncs.findIndex(
+    ({ channel, payload }) =>
+      channel === 'sessions:observation-seed'
+      && (payload as { sessionId?: unknown; phase?: unknown }).sessionId === 'session-1'
+      && (payload as { phase?: unknown }).phase === 'ready',
+  );
+  assert.ok(seedPendingAt >= 0);
+  assert.ok(seedReadyAt > seedPendingAt);
+  const sessionEventIndexes = resyncs.flatMap(({ channel }, index) =>
+    channel === 'sessions:event:session-1' ? [index] : [],
+  );
+  assert.ok(sessionEventIndexes.length > 0);
+  assert.ok(
+    sessionEventIndexes.every(
+      (index) => index > seedPendingAt && index < seedReadyAt,
+    ),
+  );
   assert.ok(
     resyncs.some(
       ({ channel, payload }) =>
@@ -554,9 +582,98 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
   await observations.close();
 });
 
+test('retries candidate startup when a restored observation cannot seed', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const seedEvents: Array<{ channel: string; payload: unknown }> = [];
+  const firstIpc = ipcHarness((channel, payload) => {
+    seedEvents.push({ channel, payload });
+  });
+  const firstHost = connectionHarness('restore-source', {
+    sessionId: 'session-1',
+    subscriptionSnapshot: continuitySnapshot(),
+  });
+  const firstCandidate = await createDesktopRuntimeHostCandidate(
+    firstHost.connection,
+    deps(firstIpc),
+    observations,
+  );
+  await firstIpc.invoke('sessions:observe', 'session-1', 'observer-1');
+  await firstCandidate.close();
+  seedEvents.length = 0;
+
+  const failingHost = connectionHarness('restore-failure', {
+    sessionId: 'session-1',
+    subscriptionError: new Error('restore failed'),
+  });
+  await assert.rejects(
+    () =>
+      createDesktopRuntimeHostCandidate(
+        failingHost.connection,
+        {
+          ...deps(ipcHarness()),
+          renderer: {
+            send(channel, _host, payload) {
+              seedEvents.push({ channel, payload });
+            },
+          },
+        },
+        observations,
+      ),
+    /Failed to restore Session observations: session-1/,
+  );
+  assert.deepEqual(
+    seedEvents
+      .filter(({ channel }) => channel === 'sessions:observation-seed')
+      .map(({ payload }) => (payload as { phase?: unknown }).phase),
+    ['pending'],
+  );
+  seedEvents.length = 0;
+
+  const recoveredHost = connectionHarness('restore-recovered', {
+    sessionId: 'session-1',
+    subscriptionSnapshot: continuitySnapshot(),
+    activeAssistantStreams: [activeText('message-1')],
+  });
+  const recoveredCandidate = await createDesktopRuntimeHostCandidate(
+    recoveredHost.connection,
+    {
+      ...deps(ipcHarness()),
+      renderer: {
+        send(channel, _host, payload) {
+          seedEvents.push({ channel, payload });
+        },
+      },
+    },
+    observations,
+  );
+  const pendingAt = seedEvents.findIndex(
+    ({ channel, payload }) =>
+      channel === 'sessions:observation-seed'
+      && (payload as { phase?: unknown }).phase === 'pending',
+  );
+  const readyAt = seedEvents.findIndex(
+    ({ channel, payload }) =>
+      channel === 'sessions:observation-seed'
+      && (payload as { phase?: unknown }).phase === 'ready',
+  );
+  assert.ok(pendingAt >= 0);
+  assert.ok(readyAt > pendingAt);
+  const catchUpEventIndexes = seedEvents.flatMap(({ channel }, index) =>
+    channel === 'sessions:event:session-1' ? [index] : [],
+  );
+  assert.ok(catchUpEventIndexes.length > 0);
+  assert.ok(
+    catchUpEventIndexes.every(
+      (index) => index > pendingAt && index < readyAt,
+    ),
+  );
+  await recoveredCandidate.close();
+  await observations.close();
+});
+
 type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
 
-function ipcHarness() {
+function ipcHarness(onSend?: (channel: string, payload: unknown) => void) {
   const handlers = new Map<string, IpcHandler>();
   let epoch = TEST_TARGET_EPOCH;
   const sender = Object.assign(new EventEmitter(), {
@@ -564,11 +681,13 @@ function ipcHarness() {
     sent: [] as Array<{ channel: string; hostId?: string; payload: unknown }>,
     send(channel: string, ...args: unknown[]): void {
       const hostId = (args[0] as { hostId?: unknown } | undefined)?.hostId;
+      const payload = args.at(-1);
       sender.sent.push({
         channel,
         ...(typeof hostId === 'string' ? { hostId } : {}),
-        payload: args.at(-1),
+        payload,
       });
+      onSend?.(channel, payload);
     },
   });
   return {
@@ -668,6 +787,8 @@ function connectionHarness(
     sessionId?: string;
     revisionAbandon?: 'abandoned' | 'retained';
     subscriptionSnapshot?: SessionContinuitySnapshot;
+    activeAssistantStreams?: readonly SessionAssistantStreamIdentity[];
+    subscriptionError?: Error;
     runtimeResourcePty?: ReturnType<typeof ptySnapshot>;
   } = {},
 ) {
@@ -777,6 +898,7 @@ function connectionHarness(
       throw new Error(`Unexpected operation: ${operation}`);
     },
     openSessionSubscription: async ({ sessionId }: { sessionId: string }) => {
+      if (options.subscriptionError) throw options.subscriptionError;
       const subscriptionFrames = new AsyncFrameQueue();
       activeSubscriptionFrames = subscriptionFrames;
       const closeSubscription = () => subscriptionFrames.end();
@@ -798,7 +920,7 @@ function connectionHarness(
           projectionRevision: 1,
           session: { sessionId },
         },
-        activeAssistantStreams: [],
+        activeAssistantStreams: options.activeAssistantStreams ?? [],
         transcriptBootstrap: {
           throughSequence: null,
           overlayMessageCount: 0,
@@ -892,6 +1014,10 @@ function continuitySnapshot(
     interactions: { pending: [] },
     ...overrides,
   };
+}
+
+function activeText(messageId: string): SessionAssistantStreamIdentity {
+  return { kind: 'text', turnId: 'turn-1', messageId };
 }
 
 function pendingQuestion() {

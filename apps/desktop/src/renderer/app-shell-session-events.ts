@@ -40,15 +40,19 @@ export interface AppShellSessionEventHandlers {
   handleEvent(sessionId: string, event: SessionEvent): void;
   reconcilePersistedMessages(sessionId: string, messages: readonly StoredMessage[]): void;
   settleAssistantStreaming(sessionId: string, messageId?: string): Promise<void>;
+  flushDisplayEvents(sessionId: string): void;
+  markDisplayPending(sessionId: string): void;
+  markDisplayReady(sessionId: string): void;
 }
 
 export interface AppShellSessionDisplayBatch {
   readonly pendingEvents: Map<string, SessionEvent[]>;
+  readonly displayPendingSessions: Set<string>;
   framePending: boolean;
 }
 
 export function createAppShellSessionDisplayBatch(): AppShellSessionDisplayBatch {
-  return { pendingEvents: new Map(), framePending: false };
+  return { pendingEvents: new Map(), displayPendingSessions: new Set(), framePending: false };
 }
 
 export function createAppShellSessionEventHandlers(options: {
@@ -143,6 +147,24 @@ export function createAppShellSessionEventHandlers(options: {
     });
   }
 
+  function flushDisplayEvents(sessionId: string): void {
+    const events = takePendingDisplayEvents(sessionId);
+    if (events.length === 0) return;
+    updateLiveTurn(sessionId, events);
+  }
+
+  function markDisplayPending(sessionId: string): void {
+    displayBatch.displayPendingSessions.add(sessionId);
+  }
+
+  function markDisplayReady(sessionId: string): void {
+    displayBatch.displayPendingSessions.delete(sessionId);
+  }
+
+  function canBatchDisplayEvents(sessionId: string): boolean {
+    return !displayBatch.displayPendingSessions.has(sessionId);
+  }
+
   function updateLiveTurn(sessionId: string, events: readonly SessionEvent[]): void {
     setLiveTurnBySession((current) => replaceLiveTurns(current, new Map([[sessionId, events]])));
   }
@@ -217,6 +239,7 @@ export function createAppShellSessionEventHandlers(options: {
     if (
       scheduleFrame
       && activeIdRef.current === sessionId
+      && canBatchDisplayEvents(sessionId)
       && (event.type === 'text_delta' || event.type === 'thinking_delta')
     ) {
       scheduleDisplayEvent(sessionId, event);
@@ -311,7 +334,14 @@ export function createAppShellSessionEventHandlers(options: {
     }
   }
 
-  return { handleEvent, reconcilePersistedMessages, settleAssistantStreaming };
+  return {
+    handleEvent,
+    reconcilePersistedMessages,
+    settleAssistantStreaming,
+    flushDisplayEvents,
+    markDisplayPending,
+    markDisplayReady,
+  };
 }
 
 function sessionEventDiagnosticDetails(

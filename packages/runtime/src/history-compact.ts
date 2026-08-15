@@ -43,10 +43,11 @@ import {
   type CompactionDecisionKind,
 } from './compaction-boundary.js';
 import {
-  HistoryCompactCheckpoint,
+  type HistoryCompactCheckpoint,
   historyCompactCheckpointToRuntimeEvent,
   matchHistoryCompactCheckpointPrefix,
   midTurnHeadAnchorEvent,
+  projectHistoryCompactCheckpointReplay,
 } from './history-compact-checkpoint.js';
 import { isValidSynthesisSourceRef, type SynthesisSourceRef } from './context-source-ref.js';
 
@@ -91,12 +92,15 @@ export function evaluateHistoryCompactCheckpointReplay(
   options: HistoryCompactReplayOptions = {},
 ): HistoryCompactCheckpointReplayFit {
   const charsPerTokenResolved = options.charsPerToken ?? charsPerToken ?? 4;
-  const checkpointEvent = historyCompactCheckpointToRuntimeEvent(checkpoint);
-  const checkpointTokens = estimateRuntimeEventsTokens([checkpointEvent], charsPerTokenResolved);
-  const replayTokens = estimateRuntimeEventsTokens(
-    [checkpointEvent, ...replayTail],
-    charsPerTokenResolved,
-  );
+  const checkpointTokens =
+    checkpoint.version === 3
+      ? checkpoint.estimatedTokens
+      : estimateRuntimeEventsTokens(
+          [historyCompactCheckpointToRuntimeEvent(checkpoint)],
+          charsPerTokenResolved,
+        );
+  const replayTokens =
+    checkpointTokens + estimateRuntimeEventsTokens(replayTail, charsPerTokenResolved);
   const maxHistoryTokens = finitePositive(
     options.maxHistoryEstimatedTokens ?? maxHistoryEstimatedTokens,
   );
@@ -287,7 +291,11 @@ export function applyRuntimeEventHistoryCompact(
         increment(skippedReasonCounts, fit.reason);
       } else {
         return {
-          events: [historyCompactCheckpointToRuntimeEvent(checkpoint), ...replayTail],
+          events: projectHistoryCompactCheckpointReplay(
+            checkpoint,
+            match.coveredRuntimeEvents,
+            match.successorRuntimeEvents,
+          ),
           blocks: [],
           checkpoint,
           diagnosticPatch: {

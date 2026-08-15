@@ -13,7 +13,6 @@ import {
   type RelayModelProfile,
   type ThinkingLevel,
 } from '@maka/core/model-thinking';
-import { isWiredOAuthProvider } from '@maka/core/provider-registry';
 import {
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
@@ -35,7 +34,7 @@ import {
 
 // Maps an OAuth model-connection provider type to the browser-assisted login
 // service that can re-run its authorization from inside the connection dialog. Only
-// the loopback / polling services (Codex, Antigravity) are one-button-drivable
+// the browser-assisted services (Codex and xAI) are one-button-drivable
 // here; Claude's paste-code flow and plain API-key providers return null so the
 // notice falls back to prose instead of rendering a dead button.
 export interface OAuthLoginService {
@@ -54,11 +53,6 @@ export function oauthLoginServiceFor(providerType: ProviderType): OAuthLoginServ
       return {
         bridge: window.maka.xaiOAuth as unknown as OAuthLoginFlowBridge,
         display: { name: 'xAI Grok', shortName: 'SuperGrok / X Premium' },
-      };
-    case 'gemini-cli':
-      return {
-        bridge: window.maka.antigravitySubscription as unknown as OAuthLoginFlowBridge,
-        display: { name: 'Google Antigravity', shortName: 'Antigravity' },
       };
     default:
       return null;
@@ -555,15 +549,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     if (!releaseDelete) return;
     const lifecycle = connectionDetailLifecycleRef.current;
     setDeleting(true);
+    const usesOAuth = PROVIDER_DEFAULTS[connection.providerType].authKind === 'oauth_token';
     const ok = await toast.confirm({
       title: copy.deleteConnectionTitle(connection.name),
-      description: copy.deleteDescription(
-        props.isDefault,
-        isWiredOAuthProvider(connection.providerType),
-      ),
-      confirmLabel: isWiredOAuthProvider(connection.providerType)
-        ? copy.disconnectAndDelete
-        : copy.delete,
+      description: copy.deleteDescription(props.isDefault, usesOAuth),
+      confirmLabel: usesOAuth ? copy.disconnectAndDelete : copy.delete,
       cancelLabel: copy.cancel,
       destructive: true,
     });

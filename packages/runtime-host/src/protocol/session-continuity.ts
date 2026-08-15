@@ -2,6 +2,7 @@ import { TOOL_ACTIVITY_KINDS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/eve
 import type { ToolResultPreviewContent } from '@maka/core/events';
 import { decodeToolResultPreviewContent } from '@maka/core/tool-result-preview';
 import type { ToolActivityKind } from '@maka/core/events';
+import { isSessionStatus, type SessionStatus } from '@maka/core/session';
 import {
   assertExactKeys,
   requireCount,
@@ -41,15 +42,14 @@ export const SESSION_TOOL_NAME_MAX_BYTES = 256;
 export const SESSION_SUBSCRIPTION_FRAME_MAX_BYTES = 64 * 1024 - 1;
 export const SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES = 48 * 1024;
 
-export type SessionLifecycleStatus =
-  | 'active'
-  | 'running'
-  | 'waiting_for_user'
-  | 'blocked'
-  | 'review'
-  | 'done'
-  | 'archived'
-  | 'aborted';
+/**
+ * The wire status is core's `SessionStatus`, not a restatement of it. It used to
+ * be a hand-written union here plus a hand-written validator below — three
+ * copies of one enum, which is how `review` and `done` survived in two of them
+ * after the last writer went away. `session-catalog.ts` already validates the
+ * same field with core's `isSessionStatus`.
+ */
+export type SessionLifecycleStatus = SessionStatus;
 
 export interface SessionContinuityIdentity {
   sessionId: string;
@@ -964,17 +964,7 @@ function requireToolActivityKind(value: unknown): ToolActivityKind {
 }
 
 function requireSessionLifecycleStatus(value: unknown): SessionLifecycleStatus {
-  if (
-    value === 'active' ||
-    value === 'running' ||
-    value === 'waiting_for_user' ||
-    value === 'blocked' ||
-    value === 'review' ||
-    value === 'done' ||
-    value === 'archived' ||
-    value === 'aborted'
-  )
-    return value;
+  if (isSessionStatus(value)) return value;
   throw invalidProtocolFrame('Invalid Session lifecycle status');
 }
 

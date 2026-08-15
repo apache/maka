@@ -6,4 +6,8 @@
  * The backend has its own separate redactor (`@maka/core/redaction.ts`)
  * for log/persistence sanitization.
  */
-export { redactSecrets } from '@maka/core/display-redaction';
+export {
+  redactReversibleStreamingSuffix,
+  redactSecrets,
+  redactStableStreamingSuffix,
+} from '@maka/core/display-redaction';

@@ -2,11 +2,11 @@ import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import type { ExecutionLogCoverage } from '@maka/core/execution-log-coverage';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { ModelMessage } from './model-protocol.js';
 import { stableStringify } from './request-shape.js';
 
 export const HISTORY_COMPACT_SOURCE_POLICY_VERSION =
   'maka.compactable_runtime_event_projection.v1' as const;
-
 export interface HistoryCompactCheckpointSource {
   schemaVersion: 1;
   kind: 'runtime_event_projection';
@@ -55,9 +55,8 @@ export interface HistoryCompactMemoryExtractionBoundary {
   disposition?: 'eligible' | 'policy_denied';
 }
 
-export interface HistoryCompactCheckpoint {
+interface HistoryCompactCheckpointBase {
   kind: 'maka.history_compact_checkpoint';
-  version: 2;
   checkpointId: string;
   sessionId: string;
   createdAt: number;
@@ -72,16 +71,38 @@ export interface HistoryCompactCheckpoint {
   headAnchor?: HistoryCompactCheckpointHeadAnchor;
   /** Absent for manual/legacy checkpoints, present for automatic Memory extraction triggers. */
   memoryExtractionBoundary?: HistoryCompactMemoryExtractionBoundary;
-  summary: string;
   limitations: string[];
   estimatedTokens: number;
   previousCheckpointId?: string;
 }
 
-export interface BuildHistoryCompactCheckpointInput {
+export interface TextHistoryCompactCheckpoint extends HistoryCompactCheckpointBase {
+  version: 2;
+  summary: string;
+}
+
+export interface OpenAiCodexRemoteCompactState {
+  kind: 'openai_codex_remote_v2';
+  connectionSlug: string;
+  modelId: string;
+  itemId: string;
+  encryptedContent: string;
+}
+
+export type HistoryCompactProviderState = OpenAiCodexRemoteCompactState;
+
+export interface ProviderHistoryCompactCheckpoint extends HistoryCompactCheckpointBase {
+  version: 3;
+  providerState: HistoryCompactProviderState;
+}
+
+export type HistoryCompactCheckpoint =
+  | TextHistoryCompactCheckpoint
+  | ProviderHistoryCompactCheckpoint;
+
+interface BuildHistoryCompactCheckpointBaseInput {
   sessionId: string;
   coveredRuntimeEvents: readonly RuntimeEvent[];
-  summary: string;
   highWaterName?: string;
   highWaterSeq?: number;
   previousCheckpointId?: string;
@@ -93,6 +114,18 @@ export interface BuildHistoryCompactCheckpointInput {
   headAnchor?: HistoryCompactCheckpointHeadAnchor;
   memoryExtractionBoundary?: HistoryCompactMemoryExtractionBoundary;
 }
+
+export type BuildTextHistoryCompactCheckpointInput = BuildHistoryCompactCheckpointBaseInput & {
+  summary: string;
+  providerState?: never;
+};
+export type BuildProviderHistoryCompactCheckpointInput = BuildHistoryCompactCheckpointBaseInput & {
+  providerState: HistoryCompactProviderState;
+  summary?: never;
+};
+export type BuildHistoryCompactCheckpointInput =
+  | BuildTextHistoryCompactCheckpointInput
+  | BuildProviderHistoryCompactCheckpointInput;
 
 export type HistoryCompactCheckpointPrefixMatch =
   | {
@@ -109,6 +142,15 @@ export type HistoryCompactCheckpointPrefixMatch =
     };
 
 export function buildHistoryCompactCheckpoint(
+  input: BuildTextHistoryCompactCheckpointInput,
+): TextHistoryCompactCheckpoint;
+export function buildHistoryCompactCheckpoint(
+  input: BuildProviderHistoryCompactCheckpointInput,
+): ProviderHistoryCompactCheckpoint;
+export function buildHistoryCompactCheckpoint(
+  input: BuildHistoryCompactCheckpointInput,
+): HistoryCompactCheckpoint;
+export function buildHistoryCompactCheckpoint(
   input: BuildHistoryCompactCheckpointInput,
 ): HistoryCompactCheckpoint {
   if (input.coveredRuntimeEvents.length === 0) {
@@ -122,14 +164,20 @@ export function buildHistoryCompactCheckpoint(
   if (input.coveredRuntimeEvents.some((event) => event.partial === true)) {
     throw new Error('History compact checkpoint coverage must not include partial events');
   }
-  const summary = input.summary.trim();
-  if (summary.length === 0) {
+  const providerState = 'providerState' in input ? input.providerState : undefined;
+  const version = providerState ? 3 : 2;
+  const summary = typeof input.summary === 'string' ? input.summary.trim() : undefined;
+  if (!providerState && (!summary || summary.length === 0)) {
     throw new Error('History compact checkpoint requires a non-empty summary');
+  }
+  if (providerState && !validHistoryCompactProviderState(providerState)) {
+    throw new Error('History compact checkpoint requires valid provider compaction state');
   }
   // A mid_turn checkpoint folds a prefix that reaches into the current turn, so
   // its head anchor MUST be one of the covered events — the projection re-renders
   // that exact event verbatim after the block, and coverage stays contiguous.
-  const phase = input.phase === 'mid_turn' ? 'mid_turn' : undefined;
+  const phase: HistoryCompactCheckpointPhase | undefined =
+    input.phase === 'mid_turn' ? 'mid_turn' : undefined;
   let headAnchor: HistoryCompactCheckpointHeadAnchor | undefined;
   if (phase === 'mid_turn') {
     if (!input.headAnchor) {
@@ -186,13 +234,14 @@ export function buildHistoryCompactCheckpoint(
   const source = historyCompactCheckpointSource(input.sessionId, input.coveredRuntimeEvents);
   const checkpointId = `hcheckpoint-${sha256(
     stableStringify({
-      version: 2,
+      version,
       sessionId: input.sessionId,
       highWaterName,
       highWaterSeq,
       source,
       coverage,
-      summary,
+      ...(summary !== undefined ? { summary } : {}),
+      ...(providerState ? { providerState } : {}),
       previousCheckpointId: input.previousCheckpointId,
       // Only hash the phase/anchor when set so pre_turn checkpoint ids stay stable.
       ...(phase ? { phase, headAnchor } : {}),
@@ -201,9 +250,8 @@ export function buildHistoryCompactCheckpoint(
         : {}),
     }),
   ).slice(0, 32)}`;
-  const checkpoint: HistoryCompactCheckpoint = {
-    kind: 'maka.history_compact_checkpoint',
-    version: 2,
+  const common = {
+    kind: 'maka.history_compact_checkpoint' as const,
     checkpointId,
     sessionId: input.sessionId,
     createdAt,
@@ -216,22 +264,31 @@ export function buildHistoryCompactCheckpoint(
     ...(input.memoryExtractionBoundary
       ? { memoryExtractionBoundary: { ...input.memoryExtractionBoundary } }
       : {}),
-    summary,
-    limitations: [
-      'Replay-time summary of the covered RuntimeEvent prefix.',
-      'RuntimeEvent ledger remains the source of truth when exact wording matters.',
-    ],
+    limitations: providerState
+      ? [
+          'Provider-native replay state for the covered RuntimeEvent prefix.',
+          'RuntimeEvent ledger remains the source of truth when exact wording matters.',
+        ]
+      : [
+          'Replay-time summary of the covered RuntimeEvent prefix.',
+          'RuntimeEvent ledger remains the source of truth when exact wording matters.',
+        ],
     estimatedTokens: 0,
     ...(input.previousCheckpointId ? { previousCheckpointId: input.previousCheckpointId } : {}),
   };
+  const checkpoint: HistoryCompactCheckpoint = providerState
+    ? { ...common, version: 3, providerState }
+    : { ...common, version: 2, summary: summary! };
   checkpoint.estimatedTokens = estimateTokens(
-    renderHistoryCompactCheckpoint(checkpoint).length,
+    isProviderHistoryCompactCheckpoint(checkpoint)
+      ? JSON.stringify(historyCompactCheckpointToModelMessage(checkpoint)).length
+      : renderHistoryCompactCheckpoint(checkpoint).length,
     charsPerToken,
   );
   return checkpoint;
 }
 
-export function renderHistoryCompactCheckpoint(checkpoint: HistoryCompactCheckpoint): string {
+export function renderHistoryCompactCheckpoint(checkpoint: TextHistoryCompactCheckpoint): string {
   return [
     `<maka_history_compact_checkpoint id="${escapeAttribute(checkpoint.checkpointId)}" high_water="${escapeAttribute(checkpoint.highWaterName)}" seq="${checkpoint.highWaterSeq}" version="${checkpoint.version}">`,
     `summary: ${checkpoint.summary}`,
@@ -246,8 +303,65 @@ export function renderHistoryCompactCheckpoint(checkpoint: HistoryCompactCheckpo
   ].join('\n');
 }
 
-export function historyCompactCheckpointToRuntimeEvent(
+export function historyCompactCheckpointToModelMessage(
+  checkpoint: ProviderHistoryCompactCheckpoint,
+): ModelMessage {
+  return {
+    role: 'assistant',
+    content: [
+      {
+        type: 'custom',
+        kind: 'openai.compaction',
+        providerOptions: {
+          openai: {
+            itemId: checkpoint.providerState.itemId,
+            encryptedContent: checkpoint.providerState.encryptedContent,
+          },
+        },
+      },
+    ],
+  };
+}
+
+export function isProviderHistoryCompactCheckpoint(
   checkpoint: HistoryCompactCheckpoint,
+): checkpoint is ProviderHistoryCompactCheckpoint {
+  return checkpoint.version === 3;
+}
+
+export function isTextHistoryCompactCheckpoint(
+  checkpoint: HistoryCompactCheckpoint,
+): checkpoint is TextHistoryCompactCheckpoint {
+  return checkpoint.version === 2;
+}
+
+export function canReplayHistoryCompactCheckpointForModel(
+  checkpoint: HistoryCompactCheckpoint,
+  connection: { providerType: string; slug: string },
+  modelId: string,
+): boolean {
+  if (!isProviderHistoryCompactCheckpoint(checkpoint)) return true;
+  return (
+    connection.providerType === 'openai-codex' &&
+    checkpoint.providerState.connectionSlug === connection.slug &&
+    checkpoint.providerState.modelId === modelId
+  );
+}
+
+/** Whether this model's configured compactor can roll forward from this checkpoint value. */
+export function canContinueHistoryCompactCheckpointForModel(
+  checkpoint: HistoryCompactCheckpoint,
+  connection: { providerType: string; slug: string },
+  modelId: string,
+): boolean {
+  if (isTextHistoryCompactCheckpoint(checkpoint)) {
+    return connection.providerType !== 'openai-codex';
+  }
+  return canReplayHistoryCompactCheckpointForModel(checkpoint, connection, modelId);
+}
+
+export function historyCompactCheckpointToRuntimeEvent(
+  checkpoint: TextHistoryCompactCheckpoint,
 ): RuntimeEvent {
   return {
     id: `history-compact:${checkpoint.checkpointId}`,
@@ -275,7 +389,7 @@ export function validateHistoryCompactCheckpointShape(
     | undefined;
   return (
     checkpoint.kind === 'maka.history_compact_checkpoint' &&
-    checkpoint.version === 2 &&
+    (checkpoint.version === 2 || checkpoint.version === 3) &&
     nonEmpty(checkpoint.checkpointId) &&
     nonEmpty(checkpoint.sessionId) &&
     (sessionId === undefined || checkpoint.sessionId === sessionId) &&
@@ -308,13 +422,19 @@ export function validateHistoryCompactCheckpointShape(
         (checkpoint.memoryExtractionBoundary.disposition === undefined ||
           checkpoint.memoryExtractionBoundary.disposition === 'eligible' ||
           checkpoint.memoryExtractionBoundary.disposition === 'policy_denied'))) &&
-    typeof checkpoint.summary === 'string' &&
-    checkpoint.summary.trim().length > 0 &&
     Array.isArray(checkpoint.limitations) &&
     checkpoint.limitations.every(nonEmpty) &&
     Number.isFinite(checkpoint.estimatedTokens) &&
     (checkpoint.estimatedTokens ?? -1) >= 0 &&
-    (checkpoint.previousCheckpointId === undefined || nonEmpty(checkpoint.previousCheckpointId))
+    (checkpoint.previousCheckpointId === undefined || nonEmpty(checkpoint.previousCheckpointId)) &&
+    (checkpoint.version === 2
+      ? typeof checkpoint.summary === 'string' &&
+        checkpoint.summary.trim().length > 0 &&
+        !('providerState' in checkpoint)
+      : !('summary' in checkpoint) &&
+        validHistoryCompactProviderState(
+          (checkpoint as Partial<ProviderHistoryCompactCheckpoint>).providerState,
+        ))
   );
 }
 
@@ -433,20 +553,22 @@ export function matchHistoryCompactCheckpointPrefix(
 }
 
 /**
- * Deterministic replay projection for a checkpoint. `pre_turn` yields
- * `[compact block, ...tail]`; `mid_turn` re-inserts the covered head anchor
- * verbatim as `[compact block, head anchor, ...tail]` so the current turn's
- * user message stays exact even though coverage folded it. `coveredRuntimeEvents`
- * are the raw events the checkpoint covers (from `matchHistoryCompactCheckpointPrefix`).
+ * Deterministic RuntimeEvent projection for a checkpoint. V2 prepends its
+ * text block; V3 stays out of the event list and is materialized directly at
+ * the provider boundary. A `mid_turn` checkpoint re-inserts the covered head
+ * anchor verbatim so the current user message stays exact. `coveredRuntimeEvents`
+ * are the raw events matched by `matchHistoryCompactCheckpointPrefix`.
  */
 export function projectHistoryCompactCheckpointReplay(
   checkpoint: HistoryCompactCheckpoint,
   coveredRuntimeEvents: readonly RuntimeEvent[],
   replayTail: readonly RuntimeEvent[],
 ): RuntimeEvent[] {
-  const block = historyCompactCheckpointToRuntimeEvent(checkpoint);
   const anchor = midTurnHeadAnchorEvent(checkpoint, coveredRuntimeEvents);
-  return anchor ? [block, anchor, ...replayTail] : [block, ...replayTail];
+  const tail = anchor ? [anchor, ...replayTail] : [...replayTail];
+  return isTextHistoryCompactCheckpoint(checkpoint)
+    ? [historyCompactCheckpointToRuntimeEvent(checkpoint), ...tail]
+    : tail;
 }
 
 /** The covered head anchor event for a mid_turn checkpoint, or undefined. */
@@ -555,6 +677,18 @@ function sha256(value: string): string {
 
 function nonEmpty(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+function validHistoryCompactProviderState(value: unknown): value is HistoryCompactProviderState {
+  if (!value || typeof value !== 'object') return false;
+  const state = value as Partial<HistoryCompactProviderState>;
+  return (
+    state.kind === 'openai_codex_remote_v2' &&
+    nonEmpty(state.connectionSlug) &&
+    nonEmpty(state.modelId) &&
+    nonEmpty(state.itemId) &&
+    nonEmpty(state.encryptedContent)
+  );
 }
 
 function escapeAttribute(value: string): string {

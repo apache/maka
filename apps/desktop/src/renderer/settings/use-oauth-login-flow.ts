@@ -10,7 +10,7 @@ import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 // polling / loopback PKCE depending on the provider).
 //
 // Extracted from the SubscriptionLoginModal `startLogin` flow so BOTH the
-// OAuth catalog login modals (Codex / xAI / Antigravity) AND the model
+// OAuth catalog login modals (Codex / xAI) AND the model
 // connection detail sheet's 重新登录 affordance drive the same
 // getAuthUrl -> openAuthUrl -> refresh -> completeAuthorization sequence with
 // one authRequestId lifecycle, one synchronous pending-action guard, and
@@ -37,7 +37,6 @@ export interface SubscriptionSnapshot {
     | 'provider_rejected';
   email?: string;
   plan?: string;
-  status?: 'preview';
   errorMessage?: string;
 }
 

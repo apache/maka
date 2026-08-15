@@ -215,7 +215,7 @@ describe('runThreadSearch', () => {
       await runThreadSearch({ source: 'thread', query: 'roadmap', limit: 5 }, makeDeps(entries)),
     )[0]!;
     assert.deepEqual(titleHit.target, { kind: 'thread', sessionId: 's1' });
-    assert.equal(titleHit.summary, '会话标题');
+    assert.equal(titleHit.summary, '任务标题');
     assert.equal(titleHit.url, undefined);
     assert.match(titleHit.snippet ?? '', /\[redacted\]/);
     assert.equal(titleHit.snippet?.includes('sk-ant-test-secret-token-12345'), false);

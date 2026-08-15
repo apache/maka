@@ -167,7 +167,7 @@ describe('AppShell session settings actions', () => {
 
     assert.deepEqual(harness.successes, [
       {
-        title: '已切换当前会话模型',
+        title: '已切换当前任务模型',
         description: 'claude-haiku → claude-opus',
       },
     ]);

@@ -477,9 +477,9 @@ function makaRunHelpText(cliCommand: string): string {
     '  --thinking <level>        off|minimal|low|medium|high|xhigh|max|default',
     '  --timeout <seconds>       Invocation timeout',
     '  --max-steps <count>       Tool-step cap',
-    '  --yolo                    Give this session full access to your files and network',
-    '  --resume <session-id>     Continue an explicit compatible session',
-    '  --continue                Continue the latest compatible session for cwd',
+    '  --yolo                    Give this task full access to your files and network',
+    '  --resume <session-id>     Continue an explicit compatible task',
+    '  --continue                Continue the latest compatible task for cwd',
     '  --graph                   Run this turn in Graph Mode and wait for graph completion',
     '  -h, --help                Show help',
   ].join('\n');

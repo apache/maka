@@ -202,7 +202,7 @@ export async function runThreadSearch(
       results.push({
         source: THREAD_SOURCE,
         title: session.name,
-        summary: '会话标题',
+        summary: '任务标题',
         snippet,
         target: {
           kind: 'thread',

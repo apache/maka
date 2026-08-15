@@ -61,7 +61,7 @@ export function buildCapabilitySnapshotCollection(input: {
       feature: {
         state: 'partial',
         source: 'runtime',
-        reason: 'Daily Review 已聚合本地会话 / 工具 / 模型活动；当前不包含屏幕与应用级录制',
+        reason: 'Daily Review 已聚合本地任务 / 工具 / 模型活动；当前不包含屏幕与应用级录制',
       },
       requiredPermissions: [
         { id: 'screen_recording', required: false, status: permissions.screen_recording.status },

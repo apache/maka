@@ -57,7 +57,7 @@ describe('ProviderAuth contract', () => {
     expect(error.state).toBe('error');
   });
 
-  test('wired OAuth subscription providers expose real validation actions after login', () => {
+  test('OAuth subscription providers expose validation actions after login', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'claude-subscription',
       hasSecret: true,
@@ -77,7 +77,7 @@ describe('ProviderAuth contract', () => {
     expect(contract.actionAvailability.revoke_auth).toBe('available');
   });
 
-  test('a discovery-capable wired OAuth provider keeps fetch_models available after login', () => {
+  test('a discovery-capable OAuth provider keeps fetch_models available after login', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'openai-codex',
       hasSecret: true,
@@ -88,7 +88,7 @@ describe('ProviderAuth contract', () => {
     expect(contract.actionAvailability.fetch_models).toBe('available');
   });
 
-  test('wired OAuth subscription providers route missing login to the OAuth setup path', () => {
+  test('OAuth subscription providers route missing login to the OAuth setup path', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'openai-codex',
       hasSecret: false,
@@ -100,26 +100,6 @@ describe('ProviderAuth contract', () => {
     expect(contract.actionAvailability.start_oauth).toBe('available');
     expect(contract.actionAvailability.test_credentials).toBe('hidden');
     expect(contract.actionAvailability.fetch_models).toBe('hidden');
-  });
-
-  test('unwired OAuth providers stay preview-only and do not expose live actions', () => {
-    const contract = deriveProviderAuthContract({
-      providerType: 'gemini-cli',
-      hasSecret: true,
-      lastTestStatus: 'verified',
-    });
-
-    expect(contract.setupMode).toBe('oauth_preview');
-    expect(contract.state).toBe('preview_only');
-    expect(contract.validationStatus).toBe('not_run');
-    expect(contract.requiresSecret).toBe(true);
-    expect(contract.sendMayUseWithoutSecret).toBe(false);
-    expect(contract.actionAvailability.save_secret).toBe('hidden');
-    expect(contract.actionAvailability.test_credentials).toBe('hidden');
-    expect(contract.actionAvailability.fetch_models).toBe('hidden');
-    expect(contract.actionAvailability.start_oauth).toBe('preview_only');
-    expect(contract.actionAvailability.refresh_oauth).toBe('preview_only');
-    expect(contract.actionAvailability.revoke_auth).toBe('preview_only');
   });
 
   test('no-auth local providers can send without secret but are still not validated runtime probes', () => {

@@ -134,7 +134,7 @@ export function createAppShellE2eFixtureActions(options: {
     } else if (state.sidebarSection === 'daily-review') {
       setNavSelection({ section: 'automations', module: 'daily-review' });
     } else if (state.sidebarSection === 'sessions') {
-      setNavSelection({ section: 'sessions', filter: 'chats' });
+      setNavSelection({ section: 'sessions' });
     }
   }
 

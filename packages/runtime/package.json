@@ -64,6 +64,7 @@
     "./history-compact-checkpoint": "./dist/history-compact-checkpoint.js",
     "./history-compact-ledger": "./dist/history-compact-ledger.js",
     "./history-compact-summarizer": "./dist/history-compact-summarizer.js",
+    "./openai-codex-history-compactor": "./dist/openai-codex-history-compactor.js",
     "./interaction-authority": "./dist/interaction-authority.js",
     "./local-web-fetch": "./dist/local-web-fetch.js",
     "./memory-extraction": "./dist/memory-extraction.js",

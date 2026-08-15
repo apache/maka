@@ -420,7 +420,8 @@ export function useActiveSessionEvents(options: {
   activeIdRef: RefBox<string | undefined>;
   handleEvent: (sessionId: string, event: SessionEvent) => void;
   markSessionReadLocally: (sessionId: string, readMessages: readonly StoredMessage[]) => void;
-  onEventSeeded?: (sessionId: string) => void;
+  beginObservationSeed?: (sessionId: string) => number;
+  completeObservationSeed?: (sessionId: string, generation?: number) => void;
   setMessageLoadErrorBySession: (updater: (current: Record<string, string>) => Record<string, string>) => void;
   setMessageLoadPending: (pending: boolean) => void;
   setMessages: (messages: StoredMessage[]) => void;
@@ -464,8 +465,14 @@ export function useActiveSessionEvents(options: {
     });
     options.handleEvent(sessionId, event);
   });
-  const markEventSeeded = useEffectEvent((sessionId: string) => {
-    options.onEventSeeded?.(sessionId);
+  const beginObservationSeed = useEffectEvent((sessionId: string) => {
+    return options.beginObservationSeed?.(sessionId) ?? 0;
+  });
+  const completeObservationSeed = useEffectEvent((
+    sessionId: string,
+    generation?: number,
+  ) => {
+    options.completeObservationSeed?.(sessionId, generation);
   });
   const markSessionEventStreamClosed = useEffectEvent((sessionId: string) => {
     options.setSessionEventHealthBySession((current) => {
@@ -485,6 +492,7 @@ export function useActiveSessionEvents(options: {
 
   useLayoutEffect(() => {
     if (!activeId) return;
+    const observationGeneration = beginObservationSeed(activeId);
     let disposed = false;
     const transcript = new DesktopTranscriptRangeStore();
     const subscribedAt = Date.now();
@@ -529,7 +537,11 @@ export function useActiveSessionEvents(options: {
       (event) => {
         handleSessionEvent(activeId, event);
       },
-      () => markEventSeeded(activeId),
+      () => completeObservationSeed(activeId, observationGeneration),
+      (phase) => {
+        if (phase === 'pending') beginObservationSeed(activeId);
+        else completeObservationSeed(activeId);
+      },
     );
     return () => {
       disposed = true;
