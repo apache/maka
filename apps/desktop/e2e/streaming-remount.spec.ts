@@ -1,6 +1,7 @@
 import {
   FAKE_HOLD_OPEN_PROMPT,
   FAKE_HOLD_OPEN_REWRITE_PROMPT,
+  FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT,
 } from '@maka/runtime/fake-backend';
 import { expect, COMPOSER_INPUT, test } from './fixtures';
 
@@ -60,6 +61,46 @@ test('remounting a live surface leaves accumulated output settled', async ({
   ).__makaStreamingRemountObserved);
   expect(observed?.texts.some((text) => text.includes('<redacted>') && !text.includes(finalText)))
     .toBe(true);
+});
+
+test('keeps a completed reply after an interrupted turn and conversation remount', async ({
+  window: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill(FAKE_HOLD_OPEN_PROMPT);
+  await composer.press('Enter');
+  await expect(page.locator('.maka-bubble-streaming')).toContainText(
+    'Fake backend waiting for the test to stop the Turn.',
+  );
+  await page.getByRole('button', { name: '停止' }).click();
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+    timeout: 20_000,
+  });
+
+  await composer.fill(FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT);
+  await composer.press('Enter');
+  await expect(page.getByRole('button', { name: '停止' })).toBeVisible();
+  const steering = 'use the detailed response';
+  const completedReply = 'Large response complete.';
+  await composer.fill(steering);
+  await composer.press('Enter');
+  await expect(page.getByRole('log')).toContainText(completedReply);
+  await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, {
+    timeout: 20_000,
+  });
+
+  const sidebar = page.getByRole('navigation', { name: '对话列表' });
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  const originalSessionId = await sidebar.locator('[data-session-id]').first()
+    .getAttribute('data-session-id');
+  expect(originalSessionId).toBeTruthy();
+  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
+  await composer.fill('temporary conversation');
+  await composer.press('Enter');
+  await expect(page.getByRole('log')).toContainText('Fake backend received: temporary conversation');
+
+  await sidebar.locator(`[data-session-id="${originalSessionId}"]`).click();
+  await expect(page.getByRole('log')).toContainText(completedReply);
 });
 
 test('returning to a live conversation settles output accumulated while away', async ({

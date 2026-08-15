@@ -149,7 +149,7 @@ describe('single live-turn handoff', () => {
     assert.equal(markup.split(text).length - 1, 0);
   });
 
-  it('reduces events into the projection and settles only after committed history refreshes', async () => {
+  it('hands terminal streamed text to committed history without waiting for a render callback', async () => {
     const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
       'session-1': armLiveTurn('turn-1'),
     });
@@ -194,7 +194,7 @@ describe('single live-turn handoff', () => {
     assert.equal(terminal?.steps[0]?.tools[0]?.toolUseId, 'tool-1');
     assert.equal(terminal?.steps[0]?.text?.text, '答案');
 
-    await handlers.settleAssistantStreaming('session-1', 'assistant-1');
+    await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(liveTurns.get()['session-1'], undefined);
     assert.ok(refreshes.some((call) => call.required === 'assistant-1'));
   });
