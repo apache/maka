@@ -35,19 +35,6 @@ to the affected commits and ensure the final squash commit retains the trailer. 
 
 Tool(s) and scope:
 
-## Review path
-
-Select exactly one:
-
-- [ ] Independent human review required
-- [ ] Fast path proposed
-
-<!-- Explain why the change is low impact, easy to reverse, outside the
-protected areas in CONTRIBUTING.md, and which required checks passed. A
-maintainer makes the final determination. -->
-
-Fast-path rationale:
-
 ## Checklist
 
 - [ ] Tests cover the change and fail without it

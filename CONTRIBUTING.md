@@ -64,7 +64,7 @@ Material changes to user-visible behavior, public contracts, security, licensing
 
 A contribution may use the fast path and be merged without independent human review only when it is low impact, easy to reverse, does not affect a protected area above, and passes the required checks.
 
-The contributor must record why the fast path applies, and a maintainer makes the final determination. Tests, CI, documentation, and mechanical changes may qualify, but their file type does not exempt them from review.
+When using the fast path, the person merging the pull request must comment on how the final revision meets these criteria. Any later commit requires a fresh determination and comment. A maintainer makes the final determination. Tests, CI, documentation, and mechanical changes may qualify, but their file type does not exempt them from review.
 
 ## Provenance and licensing
 

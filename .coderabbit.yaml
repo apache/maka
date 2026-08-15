@@ -9,7 +9,6 @@ reviews:
   in_progress_fortune: false
   enable_prompt_for_ai_agents: false
   request_changes_workflow: false
-  suggested_reviewers: true
   auto_assign_reviewers: false
 
   path_instructions:
@@ -31,12 +30,12 @@ reviews:
     4. What code or tests, if any, can be deleted or simplified without weakening behavior or regression coverage.
     5. The concrete risks and validation performed.
 
-    End with a section named "Preliminary review path":
-    - Classify the PR as "Independent human review required", "Fast-path candidate", or "Insufficient information".
-    - Require independent human review when the PR materially affects user-visible behavior, public contracts, security, licensing, releases, or governance.
-    - Treat a PR as a fast-path candidate only when it appears low impact, easy to reverse, outside those protected areas, and the PR description contains a concrete fast-path rationale.
+    End with a section named "Review-relevant risks":
+    - Identify, with concrete evidence from the current diff, any apparent effect on user-visible behavior, public contracts, security, licensing, releases, or governance.
+    - For each apparent effect, state that material changes in that area require independent human review under the repository policy.
+    - If none is identified, state only that no protected-area effect was identified in the current diff.
     - Treat the final status of required checks as unverified unless direct evidence is available.
-    - Never present the assessment as authorization. State that a maintainer makes the final determination.
+    - Do not classify the PR as a fast-path candidate or present the assessment as authorization. State that the person performing the merge reviews the final diff and a maintainer makes the final determination.
 
   pre_merge_checks:
     description:
@@ -59,7 +58,7 @@ reviews:
 
           Never infer AI use from writing style, code style, commit structure, or perceived authorship. When no disclosure exists, use conditional language: "If generative tooling made a substantive contribution..."
 
-          On failure, explain the smallest corrective action. Remind the author that a human contributor remains responsible for correctness, provenance, licensing, and applicable ICLA representations; material AI output requires checking the tool's terms and possible third-party sources; the trailer must survive squash or amend; and AI review does not count as independent human review.
+          On failure, explain the smallest corrective action and refer the author to the "Human ownership and AI attribution" section of `CONTRIBUTING.md` for responsibility, provenance, licensing, and tool-output obligations. When a required trailer is missing or inconsistent, specifically remind the author that it must survive squash or amend.
 
   auto_review:
     enabled: true
