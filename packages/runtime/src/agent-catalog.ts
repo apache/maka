@@ -19,6 +19,8 @@ export const IMPLEMENTATION_AGENT_ID = 'implementation';
 export const IMPLEMENTATION_AGENT_PROFILE = 'implementation';
 export const TOOL_AUTHOR_AGENT_ID = 'tool-author';
 export const TOOL_AUTHOR_AGENT_PROFILE = 'tool_author';
+export const UI_AUTHOR_AGENT_ID = 'ui-author';
+export const UI_AUTHOR_AGENT_PROFILE = 'ui_author';
 export const BUILTIN_AGENT_PROFILES = SUBAGENT_PROFILES;
 export const AGENT_INVOCATION_FOREGROUND = 'foreground';
 export const AGENT_CONTEXT_ISOLATED = 'isolated';
@@ -37,10 +39,11 @@ export type AgentWriteBackMode =
   | 'decision'
   | 'artifact'
   | 'patch';
-export type AgentToolGroup = 'file_edit';
+export type AgentToolGroup = 'file_edit' | 'web_research';
 
 const AGENT_TOOL_GROUP_ALTERNATIVES = {
   file_edit: [['Write', 'Edit'], ['apply_patch']],
+  web_research: [['WebSearch'], ['WebFetch']],
 } as const satisfies Record<AgentToolGroup, readonly (readonly string[])[]>;
 
 export interface AgentProfileContract {
@@ -141,7 +144,7 @@ export const WEB_RESEARCH_AGENT_DEFINITION: AgentDefinition = {
   id: WEB_RESEARCH_AGENT_ID,
   profile: WEB_RESEARCH_AGENT_PROFILE,
   name: 'Web Research',
-  description: 'Network-backed web research with WebSearch only.',
+  description: 'Network-backed web research with search or direct page fetching.',
   contract: {
     capability: 'web_research',
     invocation: AGENT_INVOCATION_FOREGROUND,
@@ -151,10 +154,11 @@ export const WEB_RESEARCH_AGENT_DEFINITION: AgentDefinition = {
     supportedWriteBack: [AGENT_WRITE_BACK_SUMMARY],
   },
   permissionMode: 'execute',
-  tools: ['WebSearch'],
+  tools: ['WebSearch', 'WebFetch'],
+  toolGroups: ['web_research'],
   systemPrompt: [
     'You are a foreground web-research child agent.',
-    'Use only the provided WebSearch tool.',
+    'Use only the provided WebSearch and WebFetch tools. Use WebFetch when the task names a concrete URL and WebSearch when discovery is required.',
     'Do not read local files, use shell, browser, write, or nested agent tools.',
     'Return concise findings with source titles and URLs for every external claim.',
     'Separate sourced facts from your own inference.',
@@ -224,11 +228,39 @@ export const TOOL_AUTHOR_AGENT_DEFINITION: AgentDefinition = {
   ].join('\n'),
 };
 
+export const UI_AUTHOR_AGENT_DEFINITION: AgentDefinition = {
+  definitionVersion: 1,
+  id: UI_AUTHOR_AGENT_ID,
+  profile: UI_AUTHOR_AGENT_PROFILE,
+  name: 'UI Author',
+  description:
+    'Build, install, and sandbox-test immutable UI package candidates without editing the workspace or activating them for the parent Agent.',
+  contract: {
+    capability: UI_AUTHOR_AGENT_PROFILE,
+    invocation: AGENT_INVOCATION_FOREGROUND,
+    context: AGENT_CONTEXT_ISOLATED,
+    workspace: AGENT_WORKSPACE_SAME_WORKSPACE,
+    defaultWriteBack: AGENT_WRITE_BACK_SUMMARY,
+    supportedWriteBack: [AGENT_WRITE_BACK_SUMMARY],
+  },
+  permissionMode: 'execute',
+  tools: ['Read', 'Glob', 'Grep', 'inspect_ui', 'define_ui', 'test_ui'],
+  systemPrompt: [
+    'You are a foreground UI author child agent.',
+    'Use inspect_ui before authoring, define_ui to seal and install one immutable candidate revision, and test_ui to validate that exact revision when the parent task permits testing.',
+    'For a permitted app.root Session bridge, window.makaUI.sessions.list() resolves to an object shaped as { sessions: [{ id, lastMessageAt, ... }] }, not an array. Destructure or read result.sessions before choosing a Session. window.makaUI.sessions.send({ sessionId, text }) resolves to { ok, sessionId, turnId }; window.makaUI.sessions.stop(sessionId) resolves to { ok: true }.',
+    'After define_ui succeeds, its replayed function_call intentionally contains accepted/redacted document summary fields instead of the full HTML. This is privacy-preserving history, not a failed or incomplete call; use the returned extensionId and revision instead of redefining it.',
+    'Do not modify workspace source files and do not ask the parent Agent to install source code for you.',
+    'You cannot activate, publish state to, update, stop, or delete a UI for the parent Desktop scope. Return the installed extension id, revision, contribution ids, permissions, and concrete test evidence so the parent can independently accept or reject it.',
+  ].join('\n'),
+};
+
 export const BUILTIN_AGENT_DEFINITIONS: readonly AgentDefinition[] = [
   LOCAL_READ_AGENT_DEFINITION,
   WEB_RESEARCH_AGENT_DEFINITION,
   IMPLEMENTATION_AGENT_DEFINITION,
   TOOL_AUTHOR_AGENT_DEFINITION,
+  UI_AUTHOR_AGENT_DEFINITION,
 ];
 
 export function listBuiltinAgentDefinitions(

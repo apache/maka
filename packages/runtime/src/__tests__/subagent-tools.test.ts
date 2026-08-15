@@ -23,10 +23,14 @@ import {
   TOOL_AUTHOR_AGENT_DEFINITION,
   TOOL_AUTHOR_AGENT_ID,
   TOOL_AUTHOR_AGENT_PROFILE,
+  UI_AUTHOR_AGENT_DEFINITION,
+  UI_AUTHOR_AGENT_ID,
+  UI_AUTHOR_AGENT_PROFILE,
   WEB_RESEARCH_AGENT_ID,
   WEB_RESEARCH_AGENT_DEFINITION,
   WEB_RESEARCH_AGENT_PROFILE,
   assertAgentDefinitionRunnable,
+  buildToolsForAgentDefinition,
   evaluateAgentDefinitionAvailability,
   evaluateAgentDefinitionToolAccess,
   listBuiltinAgentDefinitions,
@@ -167,7 +171,7 @@ describe('subagent tools', () => {
     expect(localRead?.availability).toEqual({ status: 'available' });
   });
 
-  test('built-in catalog exposes web-research with only WebSearch and no local or write tools', () => {
+  test('built-in catalog exposes web-research with either search or direct fetch and no local tools', () => {
     const withWebSearch = listBuiltinAgentDefinitions({
       tools: [
         testCatalogTool('Read', 'read'),
@@ -177,8 +181,19 @@ describe('subagent tools', () => {
       ],
     });
     const webResearch = withWebSearch.find((definition) => definition.id === WEB_RESEARCH_AGENT_ID);
-    expect(webResearch?.tools).toEqual(['WebSearch']);
+    expect(webResearch?.tools).toEqual(['WebSearch', 'WebFetch']);
     expect(webResearch?.availability).toEqual({ status: 'available' });
+
+    const withWebFetch = listBuiltinAgentDefinitions({
+      tools: [testCatalogTool('WebFetch', 'web_read')],
+    }).find((definition) => definition.id === WEB_RESEARCH_AGENT_ID);
+    expect(withWebFetch?.availability).toEqual({ status: 'available' });
+    expect(
+      buildToolsForAgentDefinition(
+        [testCatalogTool('WebFetch', 'web_read')],
+        WEB_RESEARCH_AGENT_DEFINITION,
+      ).map((tool) => tool.name),
+    ).toEqual(['WebFetch']);
 
     expect(
       listBuiltinAgentDefinitions({
@@ -191,7 +206,7 @@ describe('subagent tools', () => {
     ).toEqual({
       status: 'unavailable',
       reason: 'missing_tools',
-      missingTools: ['WebSearch'],
+      missingTools: ['WebSearch', 'WebFetch'],
     });
   });
 
@@ -258,6 +273,38 @@ describe('subagent tools', () => {
     expect(TOOL_AUTHOR_AGENT_DEFINITION.tools).not.toContain('invoke_tool');
     expect(TOOL_AUTHOR_AGENT_DEFINITION.tools).not.toContain('Write');
     expect(TOOL_AUTHOR_AGENT_DEFINITION.tools).not.toContain('Bash');
+  });
+
+  test('built-in catalog exposes UI author only with the bounded authoring surface', () => {
+    const tools = [
+      testCatalogTool('Read', 'read'),
+      testCatalogTool('Glob', 'read'),
+      testCatalogTool('Grep', 'read'),
+      testCatalogTool('inspect_ui', 'read'),
+      testCatalogTool('define_ui', 'file_write'),
+      testCatalogTool('test_ui', 'read'),
+      testCatalogTool('manage_ui', 'file_write'),
+      testCatalogTool('publish_ui_state', 'file_write'),
+    ];
+    const definition = listBuiltinAgentDefinitions({ tools }).find(
+      (candidate) => candidate.id === UI_AUTHOR_AGENT_ID,
+    );
+    expect(definition?.availability).toEqual({ status: 'available' });
+    expect(definition?.profile).toBe(UI_AUTHOR_AGENT_PROFILE);
+    expect(definition?.tools).toEqual([
+      'Read',
+      'Glob',
+      'Grep',
+      'inspect_ui',
+      'define_ui',
+      'test_ui',
+    ]);
+    expect(UI_AUTHOR_AGENT_DEFINITION.contract.workspace).toBe(AGENT_WORKSPACE_SAME_WORKSPACE);
+    expect(UI_AUTHOR_AGENT_DEFINITION.contract.defaultWriteBack).toBe(AGENT_WRITE_BACK_SUMMARY);
+    expect(UI_AUTHOR_AGENT_DEFINITION.tools).not.toContain('manage_ui');
+    expect(UI_AUTHOR_AGENT_DEFINITION.tools).not.toContain('publish_ui_state');
+    expect(UI_AUTHOR_AGENT_DEFINITION.tools).not.toContain('Write');
+    expect(UI_AUTHOR_AGENT_DEFINITION.tools).not.toContain('Bash');
   });
 
   test('agent definition policy uses the explicit tool allowlist', () => {
@@ -337,6 +384,7 @@ describe('subagent tools', () => {
         categoryHint: 'web_read',
         impl: async () => ({}),
       },
+      testCatalogTool('WebFetch', 'web_read'),
       {
         name: 'ExploreAgent',
         description: 'deterministic exploration',
@@ -349,6 +397,11 @@ describe('subagent tools', () => {
       testCatalogTool('test_tool', 'shell_unsafe'),
       testCatalogTool('manage_tool', 'file_write'),
       testCatalogTool('invoke_tool', 'shell_unsafe'),
+      testCatalogTool('inspect_ui', 'read'),
+      testCatalogTool('define_ui', 'file_write'),
+      testCatalogTool('test_ui', 'read'),
+      testCatalogTool('manage_ui', 'file_write'),
+      testCatalogTool('publish_ui_state', 'file_write'),
     ]);
 
     expect(tools.map((tool) => tool.name)).toEqual([
@@ -356,6 +409,7 @@ describe('subagent tools', () => {
       'Glob',
       'Grep',
       'WebSearch',
+      'WebFetch',
       'Write',
       'Edit',
       'apply_patch',
@@ -365,12 +419,16 @@ describe('subagent tools', () => {
       'inspect_tools',
       'define_tool',
       'test_tool',
+      'inspect_ui',
+      'define_ui',
+      'test_ui',
     ]);
     expect([...CHILD_AGENT_TOOL_NAMES]).toEqual([
       'Read',
       'Glob',
       'Grep',
       'WebSearch',
+      'WebFetch',
       'Write',
       'Edit',
       'apply_patch',
@@ -380,6 +438,9 @@ describe('subagent tools', () => {
       'inspect_tools',
       'define_tool',
       'test_tool',
+      'inspect_ui',
+      'define_ui',
+      'test_ui',
     ]);
   });
 

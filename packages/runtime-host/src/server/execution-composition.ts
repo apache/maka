@@ -434,7 +434,11 @@ export async function createExecutionRuntimeHostComposition(
     const childAgentTools = createHostChildAgentToolComposition({
       taskLedger,
       builtinTools,
-      hostTools: [...hostTools, ...toolPackageManagement.authorTools()],
+      hostTools: [
+        ...hostTools,
+        ...toolPackageManagement.authorTools(),
+        ...uiPackageManagement.authorTools(),
+      ],
       worktreePatchWriteBackAvailable: true,
     });
     const openedGraphControlStore = createAgentGraphControlStore(

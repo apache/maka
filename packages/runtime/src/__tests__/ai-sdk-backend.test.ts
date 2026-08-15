@@ -5718,6 +5718,93 @@ describe('AiSdkBackend model history', () => {
 });
 
 describe('AiSdkBackend error surfaces', () => {
+  test('repairs nested JSON container strings only when the tool schema rejects the wire input', async () => {
+    const durable = durableTurnHarness('turn-1', 'define the UI');
+    const executions: unknown[] = [];
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'define-ui-1',
+                  toolName: 'define_ui',
+                  input: JSON.stringify({
+                    id: 'dev.maka.example',
+                    ui: JSON.stringify([{ id: 'stage', surface: 'app.root' }]),
+                  }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 0, reasoning: 0 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool(
+            'define_ui',
+            z.object({
+              id: z.string(),
+              ui: z.array(z.object({ id: z.string(), surface: z.string() })),
+            }),
+          ),
+          impl: async (input: unknown) => {
+            executions.push(input);
+            return { ok: true };
+          },
+        },
+      ],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drainDurably(backend.send(durable.input()), durable);
+
+    assert.deepEqual(executions, [
+      {
+        id: 'dev.maka.example',
+        ui: [{ id: 'stage', surface: 'app.root' }],
+      },
+    ]);
+  });
+
   test('generalizes model setup errors before emitting renderer events', async () => {
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',

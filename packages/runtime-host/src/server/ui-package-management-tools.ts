@@ -11,6 +11,7 @@ import { UiPackageService } from './ui-package-service.js';
 import { UiPackageStore } from './ui-package-store.js';
 
 export const DESKTOP_UI_EXTENSION_SCOPE = 'desktop-ui';
+const AUTHOR_UI_TOOL_NAMES = new Set(['inspect_ui', 'define_ui', 'test_ui']);
 const SURFACES = ['app.root', 'app.overlay'] as const;
 const contribution = z.object({
   id: z.string().min(1).max(128),
@@ -111,6 +112,11 @@ export class HostUiPackageManagementTools {
       this.#manage(),
       this.#publishState(),
     ]);
+  }
+
+  /** Safe child-authoring subset: install and test candidates without Desktop binding or state authority. */
+  authorTools(): readonly MakaTool[] {
+    return Object.freeze(this.tools().filter((tool) => AUTHOR_UI_TOOL_NAMES.has(tool.name)));
   }
 
   #inspect(): MakaTool {

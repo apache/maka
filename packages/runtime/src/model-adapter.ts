@@ -858,10 +858,7 @@ function translateChunk(
         type: 'tool-call',
         toolCallId: chunk.toolCallId,
         toolName: chunk.toolName,
-        input:
-          chunk.providerExecuted === true
-            ? parseProviderExecutedToolInput(chunk.input ?? chunk.args)
-            : (chunk.input ?? chunk.args),
+        input: parseWireToolInput(chunk.input ?? chunk.args),
         ...(chunk.providerExecuted !== undefined
           ? { providerExecuted: chunk.providerExecuted }
           : {}),
@@ -878,13 +875,16 @@ function translateChunk(
   }
 }
 
-function parseProviderExecutedToolInput(input: unknown): unknown {
-  if (typeof input !== 'string') return input;
-  try {
-    return JSON.parse(input);
-  } catch {
-    return input;
+function parseWireToolInput(input: unknown): unknown {
+  let parsed = input;
+  for (let depth = 0; depth < 8 && typeof parsed === 'string'; depth += 1) {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return parsed;
+    }
   }
+  return parsed;
 }
 
 export function lowerModelTools(tools: ModelToolSet): Record<string, unknown> {

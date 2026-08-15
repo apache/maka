@@ -5,6 +5,7 @@ export const SUBAGENT_PROFILES = [
   'web_research',
   'implementation',
   'tool_author',
+  'ui_author',
 ] as const;
 export type SubagentProfile = (typeof SUBAGENT_PROFILES)[number];
 

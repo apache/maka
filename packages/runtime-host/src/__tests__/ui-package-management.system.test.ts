@@ -21,6 +21,20 @@ import {
 } from '../server/ui-package-management-tools.js';
 import { UiPackageStore } from '../server/ui-package-store.js';
 
+test('UI author surface exposes only inspect, define, and test', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-ui-author-tools-'));
+  const fixture = await createFixture(root);
+  try {
+    const authorTools = new Map(fixture.management.authorTools().map((tool) => [tool.name, tool]));
+    assert.deepEqual([...authorTools.keys()], ['inspect_ui', 'define_ui', 'test_ui']);
+    assert.equal(authorTools.has('manage_ui'), false);
+    assert.equal(authorTools.has('publish_ui_state'), false);
+  } finally {
+    await fixture.runtime.close().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('agent-authored client-only UI survives update, rollback boundary, and Host restart', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-ui-package-'));
   try {
@@ -392,8 +406,9 @@ async function createFixture(root: string) {
     uiStore,
   );
   await controller.recover();
-  const tools = new HostUiPackageManagementTools(root, controller, runtime, uiStore).tools();
-  return { runtime, controller, tools };
+  const management = new HostUiPackageManagementTools(root, controller, runtime, uiStore);
+  const tools = management.tools();
+  return { runtime, controller, tools, management };
 }
 
 async function call(tools: readonly MakaTool[], name: string, input: unknown): Promise<unknown> {

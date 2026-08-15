@@ -2581,7 +2581,7 @@ export class AiSdkBackend implements AgentBackend {
                     : {}),
                   input:
                     requestedTool !== undefined
-                      ? toolCall.input
+                      ? decodeToolCallInput(toolCall.input, requestedTool.parameters)
                       : {
                           tool: toolCall.toolName,
                           error: 'returned tool is unavailable',
@@ -4680,12 +4680,62 @@ function describeUnrepairableToolCall(input: {
 }
 
 function parseToolCallInput(raw: unknown): unknown {
-  if (typeof raw !== 'string') return raw;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return undefined;
+  const decoded = decodeToolCallInput(raw);
+  return typeof decoded === 'string' ? undefined : decoded;
+}
+
+function decodeToolCallInput(raw: unknown, parameters?: unknown): unknown {
+  let parsed = raw;
+  for (let depth = 0; depth < 8 && typeof parsed === 'string'; depth += 1) {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return parsed;
+    }
   }
+  if (toolParametersAccept(parameters, parsed)) return parsed;
+  const nestedDecoded = decodeNestedJsonContainers(parsed, 0);
+  if (toolParametersAccept(parameters, nestedDecoded)) return nestedDecoded;
+  return parsed;
+}
+
+function toolParametersAccept(parameters: unknown, input: unknown): boolean {
+  if (
+    !parameters ||
+    typeof parameters !== 'object' ||
+    !('safeParse' in parameters) ||
+    typeof parameters.safeParse !== 'function'
+  ) {
+    return false;
+  }
+  try {
+    return parameters.safeParse(input).success === true;
+  } catch {
+    return false;
+  }
+}
+
+function decodeNestedJsonContainers(input: unknown, depth: number): unknown {
+  if (depth >= 8) return input;
+  if (typeof input === 'string') {
+    const trimmed = input.trimStart();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return input;
+    try {
+      return decodeNestedJsonContainers(JSON.parse(input), depth + 1);
+    } catch {
+      return input;
+    }
+  }
+  if (Array.isArray(input)) {
+    return input.map((value) => decodeNestedJsonContainers(value, depth + 1));
+  }
+  if (!input || typeof input !== 'object') return input;
+  return Object.fromEntries(
+    Object.entries(input).map(([key, value]) => [
+      key,
+      decodeNestedJsonContainers(value, depth + 1),
+    ]),
+  );
 }
 
 function buildInvalidMakaTool(): MakaTool<{ tool?: string; error?: string }, never> {

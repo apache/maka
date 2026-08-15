@@ -273,6 +273,81 @@ describe('ModelAdapter stream and error normalization', () => {
     ]);
   });
 
+  test('decodes one JSON layer from a double-encoded Maka-owned tool call', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'tool-call',
+        toolCallId: 'tool-double-encoded',
+        toolName: 'define_tool',
+        input: JSON.stringify({ id: 'dev.maka.example', version: '1.0.0' }),
+        providerExecuted: false,
+      } as unknown as Chunk),
+      [
+        {
+          kind: 'tool-call',
+          toolCall: {
+            type: 'tool-call',
+            toolCallId: 'tool-double-encoded',
+            toolName: 'define_tool',
+            input: { id: 'dev.maka.example', version: '1.0.0' },
+            providerExecuted: false,
+          },
+        },
+      ],
+    );
+  });
+
+  test('bounds decoding when a provider adds several JSON string layers', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+
+    const input = { id: 'dev.maka.example', version: '1.0.0' };
+    let wireInput: unknown = input;
+    for (let depth = 0; depth < 5; depth += 1) wireInput = JSON.stringify(wireInput);
+    const [translated] = adapter.translateChunk({
+      type: 'tool-call',
+      toolCallId: 'tool-provider-double-encoded',
+      toolName: 'define_tool',
+      input: wireInput,
+      providerExecuted: false,
+    } as unknown as Chunk);
+
+    assert.deepEqual(
+      translated?.kind === 'tool-call' ? translated.toolCall.input : undefined,
+      input,
+    );
+  });
+
+  test('preserves a non-JSON string tool input for normal validation', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'tool-call',
+        toolCallId: 'tool-malformed',
+        toolName: 'Read',
+        input: '{not-json',
+        providerExecuted: false,
+      } as unknown as Chunk),
+      [
+        {
+          kind: 'tool-call',
+          toolCall: {
+            type: 'tool-call',
+            toolCallId: 'tool-malformed',
+            toolName: 'Read',
+            input: '{not-json',
+            providerExecuted: false,
+          },
+        },
+      ],
+    );
+  });
+
   test('normalizes provider-executed search results and text citation metadata', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];

@@ -1548,6 +1548,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
       'web_research',
       'implementation',
       'tool_author',
+      'ui_author',
     ]);
     // A child now carries the archive decoder alongside its allowlist (#2026).
     // Its own placeholders name `ArchiveRead`, so the ceiling that governs
@@ -1555,8 +1556,8 @@ test('production Host executes a durable runnable child with an exact tool ceili
     // can read back a result the runtime itself pruned.
     assert.deepEqual(toolNames(requests[2]?.body), ['ArchiveRead', 'Glob', 'Grep', 'Read']);
     assert.ok(toolNames(requests[3]?.body).includes('agent_spawn'));
-    assert.deepEqual(toolNames(requests[4]?.body), ['ArchiveRead', 'WebSearch']);
-    assert.deepEqual(toolNames(requests[5]?.body), ['ArchiveRead', 'WebSearch']);
+    assert.deepEqual(toolNames(requests[4]?.body), ['ArchiveRead', 'WebFetch', 'WebSearch']);
+    assert.deepEqual(toolNames(requests[5]?.body), ['ArchiveRead', 'WebFetch', 'WebSearch']);
     assert.ok(toolNames(requests[6]?.body).includes('agent_spawn'));
 
     const sessions = await execution.sessionStore.listForRecovery();
@@ -1947,8 +1948,10 @@ test('production Host publishes and retires an implementation child patch', asyn
     assert.ok(toolNames(requests[1]?.body).includes('agent_spawn'));
     assert.deepEqual(toolParameterEnum(requests[1]?.body, 'agent_spawn', 'profile'), [
       'local_read',
+      'web_research',
       'implementation',
       'tool_author',
+      'ui_author',
     ]);
     const childToolNames = [
       'ArchiveRead',
@@ -3598,7 +3601,7 @@ async function handleProviderRequest(
     return;
   }
   if (flow.kind === 'child_agent' && streamRequestIndex === 5) {
-    assert.deepEqual(toolNames(body), ['ArchiveRead', 'WebSearch']);
+    assert.deepEqual(toolNames(body), ['ArchiveRead', 'WebFetch', 'WebSearch']);
     respondProviderToolCall(response, streamRequestIndex, 'WebSearch', {
       query: 'latest hosted web result',
       limit: 1,
@@ -3606,7 +3609,7 @@ async function handleProviderRequest(
     return;
   }
   if (flow.kind === 'child_agent' && streamRequestIndex === 6) {
-    assert.deepEqual(toolNames(body), ['ArchiveRead', 'WebSearch']);
+    assert.deepEqual(toolNames(body), ['ArchiveRead', 'WebFetch', 'WebSearch']);
     respondProviderText(response, WEB_RESEARCH_CHILD_RESULT_TEXT);
     return;
   }
