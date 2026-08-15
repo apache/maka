@@ -2,8 +2,9 @@
  * PR-BOT-DISCORD-OPERATIONAL-0 (external bot research: Discord Gateway):
  * full Discord bot lifecycle — gateway WebSocket, identify, heartbeat,
  * MESSAGE_CREATE dispatch, REST send, reply threading, typing
- * indicator, reconnect with backoff. Mirrors the SimpleBotBridge
- * surface so the registry can swap it in without other code changes.
+ * indicator, reconnect with backoff. Exposes the same bridge surface
+ * as the other platforms so the registry can swap it in without other
+ * code changes.
  *
  * Out of scope: voice, slash commands, sharding (Maka bots target
  * small servers; one shard is plenty under the Discord

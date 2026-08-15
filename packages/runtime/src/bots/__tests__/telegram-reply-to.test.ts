@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { __TEST__ } from '../simple-bridge.js';
+import { __TEST__ } from '../telegram-bridge.js';
 
 const { buildTelegramSendBody, normalizeTelegramReplyToMessageId } = __TEST__;
 
