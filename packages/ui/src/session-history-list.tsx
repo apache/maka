@@ -25,6 +25,7 @@ import {
   Trash2,
 } from './icons.js';
 import { RelativeTime } from './relative-time.js';
+import { formatAbsoluteTimestamp } from './chat-display-helpers.js';
 import { Badge } from '@astryxdesign/core/Badge';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
 import {
@@ -34,6 +35,7 @@ import {
 import { VStack } from '@astryxdesign/core/Stack';
 import { StatusDot, type StatusDotVariant } from '@astryxdesign/core/StatusDot';
 import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
+import { dotForStatus } from './status-vocabulary.js';
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -96,14 +98,13 @@ export function SessionHistoryList(props: {
     }
   }
 
-  // Outer SideNav is the sole navigation landmark; this is scroll content only.
+  // Outer SideNav is the sole navigation landmark and it already carries this
+  // panel's name; naming this element too put "任务列表" inside "任务列表",
+  // which is one ambiguous match for anything selecting by that name and no
+  // extra information for anyone hearing it. It is scroll content and a key
+  // handler, nothing an assistive tech user needs to be told about separately.
   return (
-    <div
-      className="maka-session-list"
-      role="group"
-      aria-label={copy.listAriaLabel}
-      onKeyDown={handleListKeyDown}
-    >
+    <div className="maka-session-list" onKeyDown={handleListKeyDown}>
       <SessionListGroups
         groups={
           props.groups
@@ -361,7 +362,28 @@ const SessionNavRow = memo(function SessionNavRow(props: {
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
-  const signal = resolveSessionRowSignal(props.session, props.streaming, props.active, locale);
+  const signals = sessionRowSignals(
+    props.session,
+    { streaming: props.streaming, stale: props.stale, active: props.active },
+    locale,
+  );
+  const signal = signals[0];
+  // What the row communicates without text and the dot does NOT already say,
+  // inside the button so it lands in the accessible name. `signals[0]` is
+  // skipped because `StatusDot` carries it; the rest of the list, the worktree
+  // attribute, and the timestamp reached assistive tech nowhere else — the
+  // timestamp renders `aria-hidden` and swaps out for the ⋯ menu, and worktree
+  // is an attribute of the row rather than a signal, so it never competes for
+  // the dot.
+  const rowDescription = [
+    ...signals.slice(1).map((entry) => entry.tooltip ?? entry.label),
+    props.worktree ? copy.worktreeAriaLabel : undefined,
+    props.session.lastMessageAt
+      ? formatAbsoluteTimestamp(props.session.lastMessageAt, locale)
+      : undefined,
+  ]
+    .filter((entry): entry is string => Boolean(entry))
+    .join(' · ');
 
   return (
     <div
@@ -369,11 +391,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       data-maka-contract="session-row"
       data-session-id={props.session.id}
       data-stale={props.stale ? 'true' : undefined}
-      // Where the task runs, not what it is doing: an attribute of the row, not
-      // a signal competing for the row's two slots. It used to be an icon in the
-      // trailing cluster, and the timestamp that now lives there used to be
-      // here.
-      title={props.worktree ? copy.worktreeAriaLabel : undefined}
+      data-worktree={props.worktree ? 'true' : undefined}
     >
       <SideNavItem
         label={props.session.name}
@@ -427,6 +445,9 @@ const SessionNavRow = memo(function SessionNavRow(props: {
                 />
               ) : null}
             </span>
+            {rowDescription ? (
+              <span className="maka-visually-hidden">{rowDescription}</span>
+            ) : null}
           </span>
         }
       />
@@ -673,39 +694,50 @@ function SessionItemActions(props: {
   );
 }
 
-/**
- * The row's one signal, resolved from the highest-priority thing true about the
- * session: running › waiting for you › blocked › unread. `null` means the row
- * draws nothing — idle, archived, and aborted are not states worth a dot.
- *
- * "Running" is read from `runningTurnIds`, the runtime's projection of the runs
- * it is actually holding. The row used to read `streaming` first and then fall
- * back to the persisted `status`, and neither is the authority: `session.ts`
- * spells out that a stored `status` "can be left behind entirely by a crash",
- * and `streaming` only knows about turns THIS renderer sent, so a task running
- * under a bot channel or a second window read as idle. `streaming` stays, below
- * `runningTurnIds`, for the one thing it is the authority on: the gap between
- * this renderer sending a turn and the host reporting it back.
- *
- * Unread is last because it is the weakest claim on attention — a session that
- * is running or holding a question already says something more specific about
- * the same unread text.
- */
-function resolveSessionRowSignal(
-  session: SessionSummary,
-  streaming: boolean,
-  active: boolean,
-  locale: UiLocale,
-): { variant: StatusDotVariant; label: string; isPulsing?: boolean; tooltip?: string } | null {
-  const copy = getConversationCopy(locale).sessions;
+interface SessionRowSignal {
+  variant: StatusDotVariant;
+  label: string;
+  isPulsing?: boolean;
+  tooltip?: string;
+}
 
-  if (session.runningTurnIds?.length || streaming) {
-    return {
+/**
+ * Everything true about the session that is worth saying, in priority order.
+ *
+ * The row draws ONE dot — `signals[0]` — but it says all of them. Keeping the
+ * list is what lets the two visible slots stay two while the row still reaches
+ * a screen reader with the same facts a sighted user gets from the dot's
+ * colour, the row's dimming, and the tooltip. Collapsing to a single signal
+ * inside this function is what previously made the trailing `Badge` the only
+ * carrier of "stale", so removing the Badge removed the fact.
+ *
+ * It also stops signals from eating each other. `aborted` used to resolve to no
+ * dot at all, which dropped the row into the unread branch: an aborted task
+ * with unread text drew the same accent dot as one that is running. Now it
+ * draws its own neutral dot and unread is still in the list behind it.
+ *
+ * `streaming` is the only live-run source the rail actually has. It knows only
+ * about turns THIS renderer sent, which is a real limit — a task running under
+ * a bot channel or a second window reads as idle here. The fix for that is a
+ * live-run projection from Runtime Host, which is not in this change; there is
+ * no `runningTurnIds` on a `SessionSummary` that reaches Desktop, so reading it
+ * would be reading a field nothing populates.
+ */
+function sessionRowSignals(
+  session: SessionSummary,
+  options: { streaming: boolean; stale: boolean; active: boolean },
+  locale: UiLocale,
+): SessionRowSignal[] {
+  const copy = getConversationCopy(locale).sessions;
+  const signals: SessionRowSignal[] = [];
+
+  if (options.streaming) {
+    signals.push({
       variant: 'accent',
       label: copy.respondingAriaLabel,
       isPulsing: true,
       tooltip: copy.respondingTitle,
-    };
+    });
   }
 
   const { label, variant } = presentSessionStatus(session.status, locale);
@@ -714,23 +746,40 @@ function resolveSessionRowSignal(
       session.status === 'blocked' && session.blockedReason
         ? describeBlockedReason(session.blockedReason, locale)
         : null;
-    return {
+    signals.push({
       variant,
       label,
-      // A `running` header with no live run reaching us: either the run ended
-      // without its status write landing, or this summary came from a mutation
-      // response, which describes the header alone and omits `runningTurnIds`
-      // (`session.ts`). Still pulsing — the row should not change shape based on
+      // A `running` header with nothing streaming here: the run ended without
+      // its status write landing, or it is running somewhere this renderer
+      // cannot see. Still pulsing — the row should not change shape based on
       // which projection delivered it.
       isPulsing: session.status === 'running',
       tooltip: blockedDetail ? `${label} · ${blockedDetail}` : label,
-    };
+    });
   }
 
-  if (!active && session.hasUnread) {
-    return { variant: 'accent', label: copy.unreadAriaLabel };
+  // Unread ranks under both because it is the weakest claim on attention: a
+  // task that is running or holding a question already says something more
+  // specific about the same unread text.
+  if (!options.active && session.hasUnread) {
+    signals.push({ variant: 'accent', label: copy.unreadAriaLabel });
   }
-  return null;
+
+  // Stale is a renderer-derived fact, not a persisted status, which is why it
+  // is resolved here rather than in `presentSessionStatus`. `attention`, not
+  // `error`: the connection is gone but the task still sends, on the default
+  // connection. It used to be a trailing `Badge`; the row's dimming is the
+  // visual now, and dimming is cancelled on the selected row and says nothing
+  // to assistive tech, so it needs to be in this list either way.
+  if (options.stale) {
+    signals.push({
+      variant: dotForStatus('attention'),
+      label: copy.staleAriaLabel,
+      tooltip: copy.staleTitle,
+    });
+  }
+
+  return signals;
 }
 
 interface SessionGroup {

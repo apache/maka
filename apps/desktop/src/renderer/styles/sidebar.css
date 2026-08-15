@@ -301,13 +301,20 @@
   white-space: nowrap;
 }
 
+/* `opacity`, not `display: none`, so the trigger keeps its place in the tab
+   order and in the accessibility tree — that is what makes the menu reachable
+   without a pointer. `pointer-events: none` goes with it: the button sits
+   absolutely over the trailing slot at `z-index: 1`, so while it is invisible
+   it would otherwise still swallow clicks meant for the row underneath. */
 .maka-session-row > .maka-session-row-action {
   opacity: 0;
+  pointer-events: none;
 }
 
 .maka-session-row:hover > .maka-session-row-action,
 .maka-session-row:focus-within > .maka-session-row-action {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .maka-session-row:hover .maka-session-row-time,
@@ -320,6 +327,7 @@
 @media (hover: none) {
   .maka-session-row > .maka-session-row-action {
     opacity: 1;
+    pointer-events: auto;
   }
 
   .maka-session-row .maka-session-row-time {

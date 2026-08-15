@@ -23,8 +23,6 @@ import type { SessionBlockedReason, SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { describeSessionErrorReason } from './session-error-presentation.js';
-export { presentSessionStatus } from '@maka/ui';
-export { describeBlockedReason } from '@maka/ui';
 
 /**
  * Session-level "blocked" is only worth interrupting the user when
