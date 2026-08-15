@@ -15,7 +15,6 @@ import { ProviderRequestTracker } from '../provider-request-telemetry.js';
 import type { HistoryCompactSummaryInput } from '../ai-sdk-compaction-contract.js';
 import {
   buildLlmHistorySummarizer,
-  replayPlanItemsToModelMessages,
   type AiSdkGenerateTextLike,
 } from '../history-compact-summarizer.js';
 import { buildHistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
@@ -260,69 +259,5 @@ describe('buildLlmHistorySummarizer', () => {
     expect(serialized).toContain('PRIOR_SUMMARY');
     expect(serialized).toContain('NEWLY_EVICTED_RAW');
     expect(serialized.includes('ALREADY_SUMMARIZED_RAW')).toBe(false);
-  });
-});
-
-describe('replayPlanItemsToModelMessages tool-call grouping', () => {
-  // #3030: strict OpenAI-compatible providers 400 when parallel tool calls of
-  // one step are split across multiple assistant messages. The primary
-  // materializer merges a step's tool calls into one provider message; the
-  // summarizer's projection must honor the same invariant.
-  function callItem(toolCallId: string) {
-    return {
-      kind: 'tool_call' as const,
-      toolCallId,
-      toolName: 'Bash',
-      input: { command: 'true' },
-      eventId: `evt-${toolCallId}`,
-      ts: 1,
-    };
-  }
-  function resultItem(toolCallId: string) {
-    return {
-      kind: 'tool_result' as const,
-      toolCallId,
-      toolName: 'Bash',
-      output: { stdout: '' },
-      isError: false,
-      eventId: `evt-r-${toolCallId}`,
-      ts: 2,
-    };
-  }
-
-  test('merges consecutive tool calls into one assistant message', () => {
-    const messages = replayPlanItemsToModelMessages([
-      callItem('call-1'),
-      callItem('call-2'),
-      resultItem('call-1'),
-      resultItem('call-2'),
-    ]);
-    assert.equal(messages.length, 3);
-    const [assistant, tool1, tool2] = messages;
-    assert.equal(assistant?.role, 'assistant');
-    const parts = Array.isArray(assistant?.content) ? assistant.content : [];
-    assert.deepEqual(
-      parts.map((p) => p.type),
-      ['tool-call', 'tool-call'],
-    );
-    assert.deepEqual(
-      parts.map((p) => (p.type === 'tool-call' ? p.toolCallId : undefined)),
-      ['call-1', 'call-2'],
-    );
-    assert.equal(tool1?.role, 'tool');
-    assert.equal(tool2?.role, 'tool');
-  });
-
-  test('does not merge tool calls separated by other content', () => {
-    const messages = replayPlanItemsToModelMessages([
-      callItem('call-1'),
-      resultItem('call-1'),
-      callItem('call-2'),
-      resultItem('call-2'),
-    ]);
-    assert.deepEqual(
-      messages.map((m) => m.role),
-      ['assistant', 'tool', 'assistant', 'tool'],
-    );
   });
 });

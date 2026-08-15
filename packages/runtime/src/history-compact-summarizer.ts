@@ -149,27 +149,17 @@ export function replayPlanItemsToModelMessages(items: ReplayPlanItems): ModelMes
         out.push({ role: 'assistant', content: [textPart] });
       }
     } else if (item.kind === 'tool_call') {
-      // Merge consecutive tool calls into ONE assistant message, mirroring the
-      // primary materializer's step merge (model-history.ts): strict
-      // OpenAI-compatible providers 400 when an assistant message's tool_calls
-      // are interrupted by another assistant message before their tool
-      // results arrive (#3030).
-      const toolCallPart = {
-        type: 'tool-call' as const,
-        toolCallId: item.toolCallId,
-        toolName: item.toolName,
-        input: item.input,
-      };
-      const previous = out[out.length - 1];
-      if (
-        previous?.role === 'assistant' &&
-        Array.isArray(previous.content) &&
-        previous.content.every((part) => part.type === 'tool-call')
-      ) {
-        previous.content.push(toolCallPart);
-      } else {
-        out.push({ role: 'assistant', content: [toolCallPart] });
-      }
+      out.push({
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: item.toolCallId,
+            toolName: item.toolName,
+            input: item.input,
+          },
+        ],
+      });
     } else if (item.kind === 'tool_result') {
       out.push({
         role: 'tool',
