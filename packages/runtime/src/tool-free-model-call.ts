@@ -1,4 +1,3 @@
-import type { LanguageModelV4CallOptions } from '@ai-sdk/provider';
 import type { ModelMessage } from './model-protocol.js';
 import { lowerModelTools, normalizeAiSdkUsage, type AiSdkUsageLike } from './model-adapter.js';
 import { rawFinishReasonString, type NormalizedUsage } from './model-protocol.js';
@@ -13,7 +12,6 @@ export type ToolFreeModelCallInput = ToolFreeModelCallContent & {
   /** Optional original Agent system prefix for cache-compatible auxiliary calls. */
   readonly system?: string;
   readonly providerOptions?: unknown;
-  readonly reasoning?: LanguageModelV4CallOptions['reasoning'];
   readonly abortSignal?: AbortSignal;
   readonly maxOutputTokens: number;
   readonly maxRetries?: number;
@@ -32,7 +30,6 @@ export interface ProviderPrefixModelCallInput {
   readonly tools: ModelToolSet;
   readonly activeTools: readonly string[];
   readonly providerOptions?: unknown;
-  readonly reasoning?: LanguageModelV4CallOptions['reasoning'];
   readonly abortSignal?: AbortSignal;
   readonly maxOutputTokens?: number;
   /** Anthropic omits Tool schemas when AI SDK receives `none`; omit there and fail closed below. */
@@ -79,7 +76,6 @@ export async function generateProviderPrefixModelCall(
     ...(input.toolChoicePolicy === 'none' ? { toolChoice: 'none' } : {}),
     ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
     ...(input.providerOptions === undefined ? {} : { providerOptions: input.providerOptions }),
-    ...(input.reasoning === undefined ? {} : { reasoning: input.reasoning }),
     ...(input.maxOutputTokens === undefined ? {} : { maxOutputTokens: input.maxOutputTokens }),
     maxRetries: 0,
   });
@@ -112,7 +108,6 @@ export async function generateToolFreeModelCall(
     ...(input.prompt === undefined ? { messages: input.messages } : { prompt: input.prompt }),
     ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
     ...(input.providerOptions === undefined ? {} : { providerOptions: input.providerOptions }),
-    ...(input.reasoning === undefined ? {} : { reasoning: input.reasoning }),
     maxOutputTokens: input.maxOutputTokens,
     ...(input.maxRetries === undefined ? {} : { maxRetries: input.maxRetries }),
   });

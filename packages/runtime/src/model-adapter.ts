@@ -6,7 +6,6 @@ import {
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
-import type { LanguageModelV4CallOptions } from '@ai-sdk/provider';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
 import { rawFinishReasonString } from './model-protocol.js';
@@ -96,8 +95,6 @@ export interface ModelAdapterInput {
   modelId: string;
   modelFactory: ModelFactory;
   providerOptions?: Record<string, unknown>;
-  /** Resolved top-level reasoning option for adapters that consume it outside providerOptions. */
-  reasoning?: LanguageModelV4CallOptions['reasoning'];
   newId: () => string;
   now: () => number;
   /** Test seam; production adapters own one state instance for their lifetime. */
@@ -182,9 +179,11 @@ export class ModelAdapter {
     return {
       toolCalls: true,
       toolResults: true,
-      // @ai-sdk/open-responses@2.0.27 drops provider-executed results while
-      // retaining their calls during replay. Fail closed until the released
-      // codec can preserve the complete hosted-tool item sequence.
+      // Verified against @ai-sdk/open-responses@2.0.28: replay now preserves
+      // item order and IDs, but a provider-executed result embedded in the
+      // assistant message (Maka's provider-tool chronology) is still dropped,
+      // leaving a dangling function_call on the wire. Fail closed until the
+      // upstream extension seam (vercel/ai#18899) can round-trip the pair.
       providerExecutedTools: this.runtime.responsesAdapter !== 'open-responses',
       signedThinking: this.runtime.reasoningReplay.kind === 'anthropic-signed',
       // openai-compatible transports replay stored reasoning unconditionally:
@@ -298,7 +297,6 @@ export class ModelAdapter {
       ...(input.system ? { instructions: input.system } : {}),
       ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
       providerOptions,
-      ...(this.input.reasoning !== undefined ? { reasoning: this.input.reasoning } : {}),
       ...(responsesLane ? { headers: { [OPENAI_RESPONSES_LANE_HEADER]: responsesLane } } : {}),
       maxRetries: 0,
       // Preserve the final request's Maka-owned message projection without

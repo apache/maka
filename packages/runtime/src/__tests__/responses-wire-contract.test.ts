@@ -5,7 +5,7 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { modelMetadataIdsForProvider } from '@maka/core/model-metadata';
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { thinkingVariantsForModel } from '@maka/core/model-thinking';
-import { buildModelCallSettings, buildProviderOptions, getAIModel } from '../model-factory.js';
+import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { resolveModelRuntime } from '../model-runtime.js';
 import { lowerModelTools } from '../model-adapter.js';
 import { openAiCodexCompactionMessages } from '../openai-codex-history-compactor.js';
@@ -341,14 +341,16 @@ describe('responses wire request body', () => {
     for (const level of ['high', 'max'] as const) {
       await model.doGenerate({
         prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-        ...buildModelCallSettings(connection, 'deepseek-v4-flash', level),
+        providerOptions: buildProviderOptions(connection, 'deepseek-v4-flash', level),
       });
     }
 
     assert.equal(bodies[0]?.store, undefined);
     assert.equal(bodies[0]?.include, undefined);
     assert.equal((bodies[0]?.reasoning as { effort?: string } | undefined)?.effort, 'high');
-    assert.equal((bodies[1]?.reasoning as { effort?: string } | undefined)?.effort, 'xhigh');
+    // The provider-native reasoningEffort passes `max` through verbatim; the
+    // old top-level enum downgrade (`xhigh`) would land on DeepSeek as high.
+    assert.equal((bodies[1]?.reasoning as { effort?: string } | undefined)?.effort, 'max');
     assert.equal(headers?.get('authorization'), 'Bearer test-key');
   });
 

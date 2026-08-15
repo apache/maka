@@ -230,7 +230,9 @@ describe('open responses plaintext reasoning', () => {
         type: 'tool-call',
         toolCallId: 'call_1',
         toolName: 'Read',
-        input: '{"path":"package.json"}',
+        input: '{\"path\":\"package.json\"}',
+        // 2.0.28 preserves the provider item identity used by ordered replay.
+        providerMetadata: { deepseek: { itemId: 'fc_1' } },
       },
     );
     assert.equal(parts.find((part) => part.type === 'finish')?.finishReason.unified, 'tool-calls');

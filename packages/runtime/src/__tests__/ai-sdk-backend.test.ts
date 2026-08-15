@@ -12708,7 +12708,7 @@ describe('AiSdkBackend thinking persistence', () => {
     );
   });
 
-  test('maps DeepSeek max reasoning to the upstream Open Responses xhigh level', async () => {
+  test('passes DeepSeek max reasoning through as the provider-native effort', async () => {
     let requestBody: Record<string, unknown> | undefined;
     const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
       requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -12751,7 +12751,7 @@ describe('AiSdkBackend thinking persistence', () => {
 
     await drain(backend.send({ turnId: 'turn-current', text: 'think', context: [] }));
 
-    assert.deepEqual(requestBody?.reasoning, { effort: 'xhigh' });
+    assert.deepEqual(requestBody?.reasoning, { effort: 'max' });
     assert.equal(requestBody?.include, undefined);
   });
 

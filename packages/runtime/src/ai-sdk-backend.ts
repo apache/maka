@@ -138,7 +138,7 @@ import {
   type ModelStreamResult,
   type RepairableAiSdkToolCall,
 } from './model-adapter.js';
-import { buildModelCallSettings } from './model-factory.js';
+import { buildProviderOptions } from './model-factory.js';
 import { persistedOpenAiResponsesStepMessages } from './openai-responses-continuation.js';
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
 import {
@@ -1084,7 +1084,7 @@ export class AiSdkBackend implements AgentBackend {
     this.now = input.now ?? (() => Date.now());
     this.maxSteps = input.maxSteps;
     this.providerRetrySleep = input.providerRetrySleep ?? sleepForProviderRetry;
-    const modelCallSettings = buildModelCallSettings(
+    const modelCallProviderOptions = buildProviderOptions(
       input.connection,
       input.modelId,
       input.header.thinkingLevel,
@@ -1095,8 +1095,11 @@ export class AiSdkBackend implements AgentBackend {
       apiKey: input.apiKey,
       modelId: input.modelId,
       modelFactory: input.modelFactory,
-      providerOptions: input.providerOptions ?? modelCallSettings.providerOptions,
-      reasoning: modelCallSettings.reasoning,
+      // `input.providerOptions` is an override escape hatch: when set it owns
+      // the whole provider-options namespace (including reasoning effort), and
+      // the computed defaults are dropped entirely. Keep providerOptions the
+      // single seam — do not re-add a parallel reasoning channel here.
+      providerOptions: input.providerOptions ?? modelCallProviderOptions,
       newId: this.newId,
       now: this.now,
       ...(input.openAiResponsesTransportState

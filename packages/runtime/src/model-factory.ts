@@ -8,7 +8,6 @@ import {
   isJSONArray,
   type JSONArray,
   type LanguageModelV4,
-  type LanguageModelV4CallOptions,
   type LanguageModelV4StreamPart,
   type SharedV4ProviderMetadata,
   type SharedV4ProviderOptions,
@@ -503,58 +502,34 @@ export function buildProviderOptions(
   }
 }
 
-export interface ModelCallSettings {
-  readonly providerOptions: SharedV4ProviderOptions;
-  readonly reasoning?: LanguageModelV4CallOptions['reasoning'];
-}
-
-/** Resolve every reasoning-related AI SDK call option through one provider/model seam. */
-export function buildModelCallSettings(
-  connection: RuntimeExecutionConnection,
-  modelId: string,
-  thinkingLevel?: ThinkingLevel,
-): ModelCallSettings {
-  const providerOptions = buildProviderOptions(connection, modelId, thinkingLevel);
-  const runtime = resolveModelRuntime(connection, modelId);
-  const level = resolveThinkingLevel(connection, modelId, thinkingLevel);
-  const reasoning =
-    runtime.responsesAdapter === 'open-responses' ? openResponsesReasoning(level) : undefined;
-  return {
-    providerOptions,
-    ...(reasoning !== undefined ? { reasoning } : {}),
-  };
-}
-
-function openResponsesReasoning(
-  level: ThinkingLevel | undefined,
-): LanguageModelV4CallOptions['reasoning'] {
-  if (!level) return undefined;
-  if (level === 'off') return 'none';
-  // The cross-provider AI SDK enum has no vendor-specific `max`. `xhigh`
-  // keeps reasoning enabled but DeepSeek maps it to high, not max; the PR
-  // description records that temporary upstream limitation.
-  if (level === 'max') return 'xhigh';
-  return level;
-}
-
 function buildFamilyWire(
   connection: RuntimeExecutionConnection,
   modelId: string,
   level: ThinkingLevel | undefined,
   thinkingOptions: ThinkingOptions | undefined,
 ): SharedV4ProviderOptions {
-  const { adapter, wire, reasoningReplay } = resolveModelRuntime(connection, modelId);
+  const { adapter, wire, responsesAdapter, reasoningReplay } = resolveModelRuntime(
+    connection,
+    modelId,
+  );
   const reasoningEffort = level ? (level === 'off' ? 'none' : level) : undefined;
-  // A Responses wire still has two distinct replay contracts. OpenAI's native
-  // dialect uses encrypted content and therefore reads `openai` options;
-  // `store: false` asks the SDK to include that replay token. Open Responses
-  // carries plaintext reasoning items; ModelAdapter passes the Session's
-  // selected effort through the AI SDK's top-level `reasoning` option.
+  // Provider selection and reasoning continuation are independent. The OpenAI
+  // provider reads its provider-options namespace; the Open Responses provider
+  // consumes a provider-native reasoningEffort through the same namespace,
+  // keyed by the provider name getAIModel passes to createOpenResponses.
   if (wire === 'openai-responses') {
     // Connection-aware: a relay model's declared variants count too.
     const reasons = thinkingVariantsForConnection(connection, modelId).length > 0;
-    if (reasoningReplay.kind === 'open-responses-plaintext') {
-      return {};
+    if (responsesAdapter === 'open-responses') {
+      // @ai-sdk/open-responses@2.0.28 passes a provider-native reasoningEffort
+      // through verbatim, ahead of the cross-provider top-level `reasoning`
+      // enum that cannot express DeepSeek's `max` (whose documented mapping
+      // sends `xhigh` to high, not max). The SDK resolves providerOptions
+      // under the raw provider `name` — no camelCase alias, unlike
+      // openai-compatible — so key by the same name getAIModel passes.
+      return reasoningEffort
+        ? { [openAiCompatibleProviderName(adapter, connection)]: { reasoningEffort } }
+        : {};
     }
     return {
       openai: {

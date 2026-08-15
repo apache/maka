@@ -3,7 +3,7 @@ import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { thinkingVariantsForModel, type ThinkingLevel } from '@maka/core/model-thinking';
 
-import { buildModelCallSettings, buildProviderOptions, getAIModel } from '../model-factory.js';
+import { buildProviderOptions, getAIModel } from '../model-factory.js';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
   return {
@@ -203,23 +203,20 @@ describe('buildProviderOptions: thinking level', () => {
       [...thinkingVariantsForModel('deepseek', 'deepseek-v4-flash')],
       ['high', 'max'],
     );
-    // DeepSeek V4 uses the generic Open Responses adapter. Its effort is a
-    // top-level AI SDK option, not providerOptions owned by Maka.
-    assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'high'), {});
-    assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'max'), {});
-    assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'off'), {});
-    assert.deepEqual(buildModelCallSettings(conn('deepseek'), 'deepseek-v4-flash', 'high'), {
-      providerOptions: {},
-      reasoning: 'high',
+    // DeepSeek V4 uses the generic Open Responses adapter, which passes a
+    // provider-native reasoningEffort through verbatim: `max` stays `max`
+    // (DeepSeek's documented mapping sends `xhigh` to high, not max).
+    assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'high'), {
+      deepseek: { reasoningEffort: 'high' },
     });
-    assert.deepEqual(buildModelCallSettings(conn('deepseek'), 'deepseek-v4-flash', 'max'), {
-      providerOptions: {},
-      reasoning: 'xhigh',
+    assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'max'), {
+      deepseek: { reasoningEffort: 'max' },
     });
     for (const unsupported of ['off', 'low', 'medium', 'minimal'] as const) {
-      assert.deepEqual(buildModelCallSettings(conn('deepseek'), 'deepseek-v4-flash', unsupported), {
-        providerOptions: {},
-      });
+      assert.deepEqual(
+        buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', unsupported),
+        {},
+      );
     }
     assert.deepEqual([...thinkingVariantsForModel('zai-coding-plan', 'glm-5.1')], []);
     assert.deepEqual([...thinkingVariantsForModel('zai-coding-plan', 'glm-4.5-air')], []);
@@ -503,7 +500,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       { 'zai-coding-plan': { reasoningEffort: 'max' } },
     );
   });
-  test('deepseek uses provider options only for the chat dialect', () => {
+  test('deepseek wires provider-native effort on both chat and Responses dialects', () => {
     const chatConnection: LlmConnection = {
       ...conn('deepseek', 'deepseek'),
       models: [{ id: 'deepseek-v4-pro', apiProtocol: 'openai-chat' }],
@@ -511,9 +508,13 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     assert.deepEqual(buildProviderOptions(chatConnection, 'deepseek-v4-pro', 'high'), {
       deepseek: { reasoningEffort: 'high' },
     });
+    // The Responses wire keys the same effort under the raw provider name the
+    // Open Responses SDK resolves (no camelCase alias on that package).
     assert.deepEqual(
       buildProviderOptions(conn('deepseek', 'deepseek'), 'deepseek-v4-flash', 'high'),
-      {},
+      {
+        deepseek: { reasoningEffort: 'high' },
+      },
     );
   });
 
