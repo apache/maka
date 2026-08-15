@@ -4,7 +4,7 @@
 // "post-dispatch unknown outcomes"; the worker-side dispatch flag is exercised
 // separately in filesystem-worker-client.test.ts.
 import assert from 'node:assert/strict';
-import { mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
@@ -194,51 +194,76 @@ describe('filesystem mutation unknown-outcome classification', () => {
 describe('filesystem mutation T0 identity capture (queue-window closure)', () => {
   // This is the red-line test for issue #2600 concern #1. The identity must be
   // captured at lock acquisition (T0), BEFORE waiting for the write lock — not
-  // re-derived inside client.execute after the lock is held (T1). If it were
-  // captured at T1, a path replaced during the lock wait would sample the
-  // replacement's inode, making the CAS self-fulfilling and the window open.
-  test('the worker receives the T0 identity (before replacement), not T1 (after)', async () => {
-    const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-t0-identity-')));
+  // re-derived after the lock is granted (T1). To prove that, the test must
+  // exercise a REAL lock wait: a first mutation blocks inside the worker while
+  // holding the path's lock, a second mutation queues behind it, and the path
+  // is replaced while the second one waits. A regression that captures the
+  // identity at T1 (after the lock is granted) then samples the replacement's
+  // inode and this test fails; a T0 capture still sees the original inode.
+  test('a queued mutation receives the pre-replacement identity captured at lock acquisition', async () => {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-t0-lockwait-')));
     cleanup.push(cwd);
     const target = join(cwd, 'file.txt');
     const replacement = join(cwd, 'replacement.txt');
     await writeFile(target, 'original', 'utf8');
     await writeFile(replacement, 'replacement-body', 'utf8');
 
-    // Capture the original inode for later comparison.
-    const { stat } = await import('node:fs/promises');
-    const originalMeta = await stat(target, { bigint: true });
-    const originalIno = String(originalMeta.ino);
+    const original = await stat(target, { bigint: true });
 
-    let capturedIdentity: { dev: string; ino: string } | undefined;
-    // A worker that records the identity it receives, then replaces the path
-    // (simulating a replacement that happened during the lock wait), and returns
-    // a synthetic result. The point is to observe WHAT identity the worker got.
-    const recordingWorker: {
+    // The first mutation blocks inside the worker, holding the write lock.
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let calls = 0;
+    let queuedIdentity: { dev: string; ino: string } | undefined;
+    const gatedWorker: {
       execute: (input: FilesystemWorkerExecuteInput) => Promise<FilesystemWorkerResult>;
     } = {
       async execute(input) {
-        capturedIdentity = input.expectedIdentity;
-        // Simulate the replacement having happened during the lock wait.
-        await rename(replacement, target);
-        return { kind: 'write', ok: true, path: target, bytes: 3 };
+        calls += 1;
+        if (calls === 1) {
+          await firstGate; // hold the path's lock until the swap has happened
+          return { kind: 'write', ok: true, path: target, bytes: 5 };
+        }
+        // The queued (second) call: record the identity it was handed.
+        queuedIdentity = input.expectedIdentity;
+        return { kind: 'write', ok: true, path: target, bytes: 6 };
       },
     };
-    const fs = executorWith(recordingWorker);
+    const fs = executorWith(gatedWorker);
 
-    await fs.execute({
-      operation: { kind: 'write', path: target, content: 'new' },
+    // First mutation: acquires the lock and blocks inside the worker.
+    const first = fs.execute({
+      operation: { kind: 'write', path: target, content: 'first' },
       cwd,
     });
+    await sleep(50); // let the first call reach the worker and hold the lock
 
-    // The worker must have received the T0 identity (original inode), proving
-    // the capture happened before the replacement. If it were T1, the identity
-    // would be the replacement's inode.
-    assert.ok(capturedIdentity, 'worker should have received an identity');
+    // Second mutation: captures its identity (T0) and queues on the lock.
+    const second = fs.execute({
+      operation: { kind: 'write', path: target, content: 'second' },
+      cwd,
+    });
+    await sleep(50); // let the second call finish its T0 capture and queue
+
+    // Replace the path WHILE the second mutation is still waiting for the lock.
+    await rename(replacement, target);
+
+    // Release the first mutation; the second acquires the lock and dispatches
+    // with whatever identity its capture step sampled.
+    releaseFirst();
+    await Promise.all([first, second]);
+
+    assert.ok(queuedIdentity, 'the queued mutation should have dispatched to the worker');
     assert.equal(
-      capturedIdentity.ino,
-      originalIno,
-      'identity must be the T0 (pre-replacement) inode, not T1',
+      queuedIdentity.ino,
+      String(original.ino),
+      'identity must be the inode captured at lock acquisition (before the replacement); a T1 capture would sample the replacement',
     );
   });
 });
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

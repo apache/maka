@@ -150,29 +150,24 @@ describe('filesystem worker target identity CAS', () => {
     assert.equal(await readFile(target, 'utf8'), 'replacement\nold\n');
   });
 
-  test('skips the identity check for a missing target (create)', async () => {
+  test('creates a missing target without requiring an identity', async () => {
     const cwd = await temporaryDirectory('maka-identity-missing-');
     const target = join(cwd, 'brand-new.txt');
 
-    // Missing target has no identity; the create proceeds and lands.
+    // A missing target carries no identity (there is no inode to pin); the
+    // create must succeed on it. Assert success and the created content so a
+    // regression that wrongly demands an identity for missing write targets
+    // (e.g. an over-broad mandatory-identity check) fails loudly here.
     const response = await executeFilesystemWorkerRequest(
       requestFor(
-        {
-          kind: 'apply_patch',
-          cwd,
-          path: target,
-          action: 'create',
-          diff: '*** Begin Patch\n*** End Patch',
-        },
+        { kind: 'apply_patch', cwd, path: target, action: 'create', diff: '+created\n' },
         { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'missing' },
       ),
     );
 
-    // Whether it succeeds or fails on the diff, it must not be path_changed
-    // for identity reasons (there was no identity to compare).
-    if (!response.ok) {
-      assert.notEqual(response.error?.code, 'path_changed');
-    }
+    assert.equal(response.ok, true);
+    const { readFile } = await import('node:fs/promises');
+    assert.equal(await readFile(target, 'utf8'), 'created');
   });
 
   test('reports path_changed when the target is replaced before the write (pre-write CAS)', async () => {
