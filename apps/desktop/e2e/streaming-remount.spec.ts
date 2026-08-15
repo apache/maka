@@ -94,7 +94,9 @@ test('keeps a completed reply after an interrupted turn and conversation remount
   const originalSessionId = await sidebar.locator('[data-session-id]').first()
     .getAttribute('data-session-id');
   expect(originalSessionId).toBeTruthy();
+  await composer.fill('draft before remounting the completed conversation');
   await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
+  await expect(composer).toHaveText('');
   await composer.fill('temporary conversation');
   await composer.press('Enter');
   await expect(page.getByRole('log')).toContainText('Fake backend received: temporary conversation');

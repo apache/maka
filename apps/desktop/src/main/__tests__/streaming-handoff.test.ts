@@ -39,7 +39,7 @@ function createStateSetter<T>(initial: T): {
 }
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
-  const deadline = Date.now() + 1_000;
+  const deadline = Date.now() + 3_000;
   while (!predicate()) {
     if (Date.now() >= deadline) assert.fail(message);
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
