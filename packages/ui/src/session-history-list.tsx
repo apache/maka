@@ -80,7 +80,6 @@ export function SessionHistoryList(props: {
   rowActions?: SessionRowActions;
 }) {
   const locale = useUiLocale();
-  const copy = getConversationCopy(locale).sessions;
 
   function handleListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key !== 'Delete' && event.key !== 'Backspace') return;
@@ -731,9 +730,13 @@ function sessionRowSignals(
   const copy = getConversationCopy(locale).sessions;
   const signals: SessionRowSignal[] = [];
 
+  // `active`, through the same vocabulary as everything else here: streaming is
+  // the system working on it right now, which is what that semantic names.
+  // Writing `accent` directly would resolve to the identical colour and reopen
+  // the drift this change closed — half the row's dots deciding for themselves.
   if (options.streaming) {
     signals.push({
-      variant: 'accent',
+      variant: dotForStatus('active'),
       label: copy.respondingAriaLabel,
       isPulsing: true,
       tooltip: copy.respondingTitle,
@@ -760,9 +763,11 @@ function sessionRowSignals(
 
   // Unread ranks under both because it is the weakest claim on attention: a
   // task that is running or holding a question already says something more
-  // specific about the same unread text.
+  // specific about the same unread text. `active` and not `attention`: unread
+  // text is "something happened here", not a question waiting on the user —
+  // that distinction is the whole point of the two semantics.
   if (!options.active && session.hasUnread) {
-    signals.push({ variant: 'accent', label: copy.unreadAriaLabel });
+    signals.push({ variant: dotForStatus('active'), label: copy.unreadAriaLabel });
   }
 
   // Stale is a renderer-derived fact, not a persisted status, which is why it
