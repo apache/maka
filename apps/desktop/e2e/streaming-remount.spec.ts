@@ -72,17 +72,42 @@ test('remounting a live surface leaves accumulated output settled', async ({
     .toBe(true);
 });
 
-test('keeps a completed reply after an interrupted turn and surface remount', async ({
+test('keeps a completed reply after an interrupted turn and conversation remount', async ({
   window: page,
 }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  expect(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(false);
   const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('temporary conversation');
+  await composer.press('Enter');
+  await expect(page.getByRole('log')).toContainText('Fake backend received: temporary conversation');
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+    timeout: 20_000,
+  });
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await expect(page.locator('[data-agents-page]')).toHaveAttribute(
+    'data-sidebar-state',
+    'expanded',
+  );
+  const temporarySessionId = await sidebar
+    .locator('[data-session-id]:has([aria-current="page"])')
+    .getAttribute('data-session-id');
+  expect(temporarySessionId).toBeTruthy();
+  await composer.fill('draft before starting the interrupted conversation');
+  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
+  await expect(composer).toHaveText('');
+
   await composer.fill(FAKE_HOLD_OPEN_PROMPT);
   await composer.press('Enter');
   await expect(page.locator('.maka-bubble-streaming')).toContainText(
     'Fake backend waiting for the test to stop the Turn.',
   );
-  const originalSessionId = await page.evaluate(async () => (await window.maka.sessions.list())[0]?.id);
+  const originalSessionId = await sidebar
+    .locator('[data-session-id]:has([aria-current="page"])')
+    .getAttribute('data-session-id');
   expect(originalSessionId).toBeTruthy();
+  expect(originalSessionId).not.toBe(temporarySessionId);
   await page.getByRole('button', { name: '停止' }).click();
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
     timeout: 20_000,
@@ -94,10 +119,6 @@ test('keeps a completed reply after an interrupted turn and surface remount', as
     ), originalSessionId!),
     { timeout: 20_000 },
   ).toBe(0);
-  await page.reload();
-  await expect(page.getByRole('log')).toContainText(
-    'Fake backend waiting for the test to stop the Turn.',
-  );
   await composer.fill(FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT);
   await expect(page.getByRole('button', { name: '发送' })).toBeEnabled({
     timeout: 20_000,
@@ -117,12 +138,25 @@ test('keeps a completed reply after an interrupted turn and surface remount', as
   await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, {
     timeout: 20_000,
   });
+  await expect(page.locator('.maka-bubble-streaming')).toHaveCount(0, {
+    timeout: 20_000,
+  });
 
-  await page.reload();
+  const temporarySessionRow = sidebar.locator(`[data-session-id="${temporarySessionId}"]`);
+  await temporarySessionRow.click();
+  await expect(temporarySessionRow.locator('[aria-current="page"]')).toHaveCount(1, {
+    timeout: 20_000,
+  });
+  await expect(page.getByRole('log')).toContainText('Fake backend received: temporary conversation');
+  const originalSessionRow = sidebar.locator(`[data-session-id="${originalSessionId}"]`);
+  await originalSessionRow.click();
+  await expect(originalSessionRow.locator('[aria-current="page"]')).toHaveCount(1, {
+    timeout: 20_000,
+  });
   await expect(page.getByRole('log')).toContainText(completedReply);
 });
 
-test('returning to a live conversation restores output accumulated while away', async ({
+test('returning to a live conversation settles output accumulated while away', async ({
   window: page,
 }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
@@ -176,9 +210,40 @@ test('returning to a live conversation restores output accumulated while away', 
     }),
     { sessionId: originalSessionId!, steering: backgroundSteering },
   );
+  await page.evaluate(() => {
+    const observed = {
+      texts: [] as string[],
+      maxActiveAnimations: 0,
+    };
+    (window as typeof window & { __makaBackgroundRestoreObserved?: typeof observed })
+      .__makaBackgroundRestoreObserved = observed;
+    new MutationObserver(() => {
+      const bubble = document.querySelector<HTMLElement>('.maka-bubble-streaming');
+      if (!bubble) return;
+      observed.texts.push(bubble.textContent ?? '');
+      observed.maxActiveAnimations = Math.max(
+        observed.maxActiveAnimations,
+        bubble
+          .getAnimations({ subtree: true })
+          .filter((animation) => animation.playState !== 'finished').length,
+      );
+    }).observe(document.body, { childList: true, characterData: true, subtree: true });
+  });
   await sidebar.locator(`[data-session-id="${originalSessionId}"]`).click();
   await liveBubble.waitFor({ state: 'attached' });
   await expect(liveBubble).toContainText(backgroundSteering);
 
   expect((await liveBubble.textContent())?.split(accumulatedOutput)).toHaveLength(2);
+  const backgroundRestoreObserved = await page.evaluate(() => (
+    window as typeof window & {
+      __makaBackgroundRestoreObserved?: {
+        texts: string[];
+        maxActiveAnimations: number;
+      };
+    }
+  ).__makaBackgroundRestoreObserved);
+  expect(backgroundRestoreObserved?.texts.some((text) =>
+    text.includes('background output') && !text.includes(backgroundSteering)
+  )).toBe(false);
+  expect(backgroundRestoreObserved?.maxActiveAnimations).toBe(0);
 });
