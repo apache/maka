@@ -10,6 +10,13 @@
  * inbound. No need to expose a public HTTP port — Maka can run as a
  * desktop app without a tunnel.
  *
+ * DingTalk's Stream protocol is NOT Discord/QQ-shaped (no opcodes,
+ * heartbeat, identify/resume — frames carry headers/messageId/topic
+ * and every delivery must be acked), so this class extends
+ * WsBridgeBase directly: only the WS transport lifecycle (connect,
+ * close policy, reconnect with backoff, stop) is shared with the
+ * gateway bridges.
+ *
  * Storage semantics (matches the credential-test PR):
  *   - `appId` = appKey (the self-built app's identifier)
  *   - `appSecret` = appsecret
@@ -17,18 +24,14 @@
  * from `appKey` (DingTalk's chatbot SDK uses appKey as robotCode).
  */
 
-import { WebSocket } from 'undici';
-import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
-import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import { proxiedFetch } from './proxied-fetch.js';
-import type { BotPlatform, BotSendOptions, BotStatus, SendCapable } from './types.js';
+import type { BotSendOptions, SendCapable } from './types.js';
+import { WsBridgeBase, type WsCloseDecision } from './ws-bridge-base.js';
 
 const DINGTALK_API = 'https://api.dingtalk.com';
 const DINGTALK_OAPI = 'https://oapi.dingtalk.com';
 
 const TOKEN_REFRESH_SKEW_MS = 5 * 60 * 1_000; // refresh 5 min before expiry
-const RECONNECT_DELAY_MIN_MS = 1_000;
-const RECONNECT_DELAY_MAX_MS = 30_000;
 const SEND_RETRY_DELAY_MIN_MS = 1_000;
 const SEND_RETRY_DELAY_MAX_MS = 30_000;
 
@@ -69,14 +72,6 @@ export function decideDingTalkClose(
 ): DingTalkCloseDecision {
   if (explicitlyStopped) return { kind: 'stopped' };
   return { kind: 'reconnect' };
-}
-
-/**
- * Pure helper: exponential backoff for stream reconnect.
- */
-function dingTalkReconnectBackoffMs(attempts: number): number {
-  const exp = Math.min(2 ** attempts, RECONNECT_DELAY_MAX_MS / RECONNECT_DELAY_MIN_MS);
-  return Math.min(RECONNECT_DELAY_MIN_MS * exp, RECONNECT_DELAY_MAX_MS);
 }
 
 /**
@@ -243,48 +238,118 @@ interface CachedToken {
   expiresAt: number;
 }
 
-export class DingTalkBotBridge extends BaseBotAdapter implements SendCapable {
-  private ws: WebSocket | null = null;
+export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
   private token: CachedToken | null = null;
-  private explicitlyStopped = false;
-  private reconnectAttempts = 0;
-  private reconnectTimer: NodeJS.Timeout | null = null;
 
-  constructor(platform: BotPlatform, settings: BotChannelSettings) {
-    super(platform, settings);
+  protected override readonly closeReasonPrefix = 'stream';
+
+  protected override checkCredentials(): string | null {
+    return this.settings.appId?.trim() && this.settings.appSecret?.trim() ? null : 'no-credentials';
   }
 
-  async start(): Promise<void> {
-    if (this.running) return;
-    if (!this.settings.enabled) {
-      this.reason = 'disabled';
-      this.readiness = 'scaffolded';
-      return;
-    }
-    if (!this.settings.appId?.trim() || !this.settings.appSecret?.trim()) {
-      this.reason = 'no-credentials';
-      this.readiness = 'scaffolded';
-      return;
-    }
-    this.explicitlyStopped = false;
-    await this.startStream();
+  protected override decideClose(code: number, explicitlyStopped: boolean): WsCloseDecision {
+    const decision = decideDingTalkClose(code, explicitlyStopped);
+    return decision.kind === 'stopped' ? decision : { kind: 'reconnect', resumable: true };
   }
 
-  async stop(): Promise<void> {
-    this.explicitlyStopped = true;
-    this.running = false;
-    this.clearReconnect();
-    if (this.ws) {
-      try {
-        this.ws.close(1000);
-      } catch {
-        /* swallow */
-      }
-      this.ws = null;
-    }
-    this.reason = 'stopped';
-    this.readiness = botReadinessFromSettings(this.settings);
+  protected override onWsOpen(): void {
+    super.onWsOpen();
+    // DingTalk's Stream has no READY dispatch — connections/open
+    // accepting the subscription IS the operational signal.
+    this.readiness = 'operational';
+    this.reason = undefined;
+    this.reconnectAttempts = 0;
     this.emitStatusChange();
+  }
+
+  protected override async openConnection(): Promise<void> {
+    const token = await this.refreshTokenIfNeeded();
+    if (!token) {
+      this.readiness = 'configured';
+      this.emitStatusChange();
+      this.scheduleReconnect();
+      return;
+    }
+    try {
+      const response = await proxiedFetch(`${DINGTALK_API}/v1.0/gateway/connections/open`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-acs-dingtalk-access-token': token,
+        },
+        body: JSON.stringify({
+          clientId: this.settings.appId?.trim(),
+          clientSecret: this.settings.appSecret?.trim(),
+          subscriptions: [
+            { type: 'EVENT', topic: '*' },
+            { type: 'CALLBACK', topic: DINGTALK_TOPIC_BOT_MESSAGES },
+          ],
+          ua: 'Maka/0.1',
+          localIp: '127.0.0.1',
+        }),
+        timeoutMs: 10_000,
+      });
+      const json = (await response
+        .json()
+        .catch(() => null)) as DingTalkConnectionOpenResponse | null;
+      if (
+        !response.ok ||
+        !json ||
+        typeof json.endpoint !== 'string' ||
+        typeof json.ticket !== 'string'
+      ) {
+        this.reason = `connections-open-${response.status}`;
+        this.readiness = 'configured';
+        this.emitStatusChange();
+        this.scheduleReconnect();
+        return;
+      }
+      this.connect(`${json.endpoint}?ticket=${encodeURIComponent(json.ticket)}`);
+    } catch (error) {
+      this.reason = error instanceof Error ? error.message : String(error);
+      this.readiness = 'configured';
+      this.emitStatusChange();
+      this.scheduleReconnect();
+    }
+  }
+
+  protected override handleWsMessage(raw: string): void {
+    let frame: DingTalkStreamFrame;
+    try {
+      frame = JSON.parse(raw) as DingTalkStreamFrame;
+    } catch {
+      return;
+    }
+    const messageId = frame.headers?.messageId;
+    if (!messageId) return;
+    if (frame.type === 'CALLBACK' && frame.headers?.topic === DINGTALK_TOPIC_BOT_MESSAGES) {
+      let payload: DingTalkBotMessagePayload | null = null;
+      try {
+        payload =
+          typeof frame.data === 'string'
+            ? (JSON.parse(frame.data) as DingTalkBotMessagePayload)
+            : null;
+      } catch {
+        payload = null;
+      }
+      if (payload) {
+        const event = dingTalkPayloadToEvent(payload, Date.now());
+        if (event) {
+          this.lastEventAt = event.receivedAt;
+          this.emitIncomingMessage(event);
+          this.emitStatusChange();
+        }
+      }
+      this.sendAck(messageId);
+      return;
+    }
+    // System / unrelated event types — still ack so the gateway does
+    // not redeliver, but do not emit a message event.
+    this.sendAck(messageId);
+  }
+
+  private sendAck(messageId: string): void {
+    this.sendWs(buildDingTalkAckFrame(messageId));
   }
 
   /**
@@ -325,10 +390,6 @@ export class DingTalkBotBridge extends BaseBotAdapter implements SendCapable {
     this.lastEventAt = Date.now();
     this.emitStatusChange();
     return classification.messageId;
-  }
-
-  protected override connectionKind(): BotStatus['connection'] {
-    return 'gateway';
   }
 
   private async performSend(
@@ -389,163 +450,6 @@ export class DingTalkBotBridge extends BaseBotAdapter implements SendCapable {
       this.reason = error instanceof Error ? error.message : String(error);
       return null;
     }
-  }
-
-  private async startStream(): Promise<void> {
-    const token = await this.refreshTokenIfNeeded();
-    if (!token) {
-      this.readiness = 'configured';
-      this.emitStatusChange();
-      this.scheduleReconnect();
-      return;
-    }
-    try {
-      const response = await proxiedFetch(`${DINGTALK_API}/v1.0/gateway/connections/open`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-acs-dingtalk-access-token': token,
-        },
-        body: JSON.stringify({
-          clientId: this.settings.appId?.trim(),
-          clientSecret: this.settings.appSecret?.trim(),
-          subscriptions: [
-            { type: 'EVENT', topic: '*' },
-            { type: 'CALLBACK', topic: DINGTALK_TOPIC_BOT_MESSAGES },
-          ],
-          ua: 'Maka/0.1',
-          localIp: '127.0.0.1',
-        }),
-        timeoutMs: 10_000,
-      });
-      const json = (await response
-        .json()
-        .catch(() => null)) as DingTalkConnectionOpenResponse | null;
-      if (
-        !response.ok ||
-        !json ||
-        typeof json.endpoint !== 'string' ||
-        typeof json.ticket !== 'string'
-      ) {
-        this.reason = `connections-open-${response.status}`;
-        this.readiness = 'configured';
-        this.emitStatusChange();
-        this.scheduleReconnect();
-        return;
-      }
-      this.connect(`${json.endpoint}?ticket=${encodeURIComponent(json.ticket)}`);
-    } catch (error) {
-      this.reason = error instanceof Error ? error.message : String(error);
-      this.readiness = 'configured';
-      this.emitStatusChange();
-      this.scheduleReconnect();
-    }
-  }
-
-  private connect(url: string): void {
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(url);
-    } catch (error) {
-      this.reason = error instanceof Error ? error.message : String(error);
-      this.readiness = 'configured';
-      this.emitStatusChange();
-      this.scheduleReconnect();
-      return;
-    }
-    this.ws = ws;
-    ws.addEventListener('open', () => {
-      this.running = true;
-      this.startedAt = Date.now();
-      this.readiness = 'operational';
-      this.reason = undefined;
-      this.reconnectAttempts = 0;
-      this.emitStatusChange();
-    });
-    ws.addEventListener('message', (event: { data: unknown }) => {
-      const data = event.data;
-      this.handlePayload(typeof data === 'string' ? data : String(data));
-    });
-    ws.addEventListener('close', (event: { code: number; reason: string }) => {
-      this.handleClose(event.code, event.reason);
-    });
-    ws.addEventListener('error', () => {
-      // The close event fires immediately after; no separate handling.
-    });
-  }
-
-  private handlePayload(raw: string): void {
-    let frame: DingTalkStreamFrame;
-    try {
-      frame = JSON.parse(raw) as DingTalkStreamFrame;
-    } catch {
-      return;
-    }
-    const messageId = frame.headers?.messageId;
-    if (!messageId) return;
-    if (frame.type === 'CALLBACK' && frame.headers?.topic === DINGTALK_TOPIC_BOT_MESSAGES) {
-      let payload: DingTalkBotMessagePayload | null = null;
-      try {
-        payload =
-          typeof frame.data === 'string'
-            ? (JSON.parse(frame.data) as DingTalkBotMessagePayload)
-            : null;
-      } catch {
-        payload = null;
-      }
-      if (payload) {
-        const event = dingTalkPayloadToEvent(payload, Date.now());
-        if (event) {
-          this.lastEventAt = event.receivedAt;
-          this.emitIncomingMessage(event);
-          this.emitStatusChange();
-        }
-      }
-      this.sendAck(messageId);
-      return;
-    }
-    // System / unrelated event types — still ack so the gateway does
-    // not redeliver, but do not emit a message event.
-    this.sendAck(messageId);
-  }
-
-  private sendAck(messageId: string): void {
-    if (!this.ws || this.ws.readyState !== 1) return;
-    try {
-      this.ws.send(JSON.stringify(buildDingTalkAckFrame(messageId)));
-    } catch {
-      // Swallow — close handler will fire if the socket died.
-    }
-  }
-
-  private clearReconnect(): void {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-  }
-
-  private handleClose(code: number, reason: string): void {
-    this.ws = null;
-    this.running = false;
-    const decision = decideDingTalkClose(code, this.explicitlyStopped);
-    if (decision.kind === 'stopped') return;
-    this.readiness = 'degraded';
-    this.reason = reason || `stream-closed-${code}`;
-    this.emitStatusChange();
-    this.scheduleReconnect();
-  }
-
-  private scheduleReconnect(): void {
-    if (this.explicitlyStopped) return;
-    this.clearReconnect();
-    const delay = dingTalkReconnectBackoffMs(this.reconnectAttempts);
-    this.reconnectAttempts += 1;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      void this.startStream();
-    }, delay);
-    this.reconnectTimer.unref?.();
   }
 }
 
