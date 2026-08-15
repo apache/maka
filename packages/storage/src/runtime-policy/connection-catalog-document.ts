@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   decodeCanonicalConnectionCatalogEntry,
+  decodeConnectionSlug,
   decodeConnectionTarget,
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
@@ -97,25 +98,33 @@ export class ConnectionCatalogDocumentOwner {
     // preview. Keep the raw file recoverable on read, but omit retired entries
     // from the active catalog; the next catalog mutation writes the canonical
     // supported set and completes the migration.
-    const retiredConnectionIds = new Set<string>();
+    const retiredConnections: Array<{
+      readonly connectionId: ConnectionCatalogEntry['connectionId'];
+      readonly slug: ConnectionCatalogEntry['slug'];
+    }> = [];
     const maintainedConnections = raw.connections.filter((item) => {
       if (!isRetiredGeminiCliConnection(item)) return true;
-      if (typeof item.connectionId === 'string') retiredConnectionIds.add(item.connectionId);
+      retiredConnections.push({
+        connectionId: decodePersistedDomain(() => decodeRuntimePolicyEntityId(item.connectionId)),
+        slug: decodePersistedDomain(() => decodeConnectionSlug(item.slug)),
+      });
       return false;
     });
     const connections = maintainedConnections.map((item) =>
       decodePersistedDomain(() => decodeCanonicalConnectionCatalogEntry(item)),
     );
+    const catalogIdentities = [...retiredConnections, ...connections];
     unique(
-      connections.map((item) => item.slug),
+      catalogIdentities.map((item) => item.slug),
       `${FILE} connection slugs`,
       'invalid_document',
     );
     unique(
-      connections.map((item) => item.connectionId),
+      catalogIdentities.map((item) => item.connectionId),
       `${FILE} connection ids`,
       'invalid_document',
     );
+    const retiredConnectionIds = new Set(retiredConnections.map((item) => item.connectionId));
     const decodedDefaultTarget =
       raw.defaultTarget === null
         ? null
@@ -687,9 +696,11 @@ function connectionStale(expected: ConnectionVersionBasis, actual: ConnectionVer
   return deepFreeze({ kind: 'connection_stale' as const, expected, actual });
 }
 
-function isRetiredGeminiCliConnection(
-  value: unknown,
-): value is { readonly connectionId?: unknown; readonly providerType: 'gemini-cli' } {
+function isRetiredGeminiCliConnection(value: unknown): value is {
+  readonly connectionId?: unknown;
+  readonly providerType: 'gemini-cli';
+  readonly slug?: unknown;
+} {
   return (
     typeof value === 'object' &&
     value !== null &&

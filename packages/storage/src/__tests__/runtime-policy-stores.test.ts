@@ -663,6 +663,57 @@ describe('runtime policy stores', () => {
         })),
         [{ connectionId: googleConnectionId, providerType: 'google' }],
       );
+      const persisted = JSON.parse(
+        await readFile(join(root, 'connection-catalog.json'), 'utf8'),
+      ) as {
+        connections: Array<{ providerType: string }>;
+      };
+      assert.deepEqual(
+        persisted.connections.map(({ providerType }) => providerType),
+        ['gemini-cli', 'google'],
+      );
+    });
+  });
+
+  test('rejects a retired Gemini CLI record that collides with a maintained connection identity', async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const duplicateConnectionId = '11111111-1111-4111-8111-111111111111';
+      await writeFile(
+        join(root, 'connection-catalog.json'),
+        `${JSON.stringify({
+          schemaVersion: 1,
+          revision: 2,
+          defaultTarget: null,
+          connections: [
+            {
+              connectionId: duplicateConnectionId,
+              revision: 1,
+              slug: 'gemini-account',
+              name: 'Gemini account',
+              providerType: 'gemini-cli',
+              enabled: true,
+              enabledModelIds: ['gemini-2.5-pro'],
+              models: [],
+            },
+            {
+              connectionId: duplicateConnectionId,
+              revision: 1,
+              slug: 'google-api',
+              name: 'Google API',
+              providerType: 'google',
+              enabled: true,
+              enabledModelIds: ['gemini-2.5-pro'],
+              models: [],
+            },
+          ],
+        })}\n`,
+        'utf8',
+      );
+
+      await assert.rejects(
+        () => stores.connectionCatalog.getSnapshot(),
+        isStoreError('invalid_document'),
+      );
     });
   });
 
