@@ -1,21 +1,17 @@
 /**
- * Renderer-side presentation helpers for SessionStatus, SessionBlockedReason,
- * and failed-turn recovery.
+ * Renderer-side presentation rules that only Desktop has: which blocked reasons
+ * are worth acting on, and what to offer after a turn fails.
  *
- * Separated from the React component layer so the mapping can be unit-tested
+ * Separated from the React component layer so the rules can be unit-tested
  * without a DOM, mirroring the `session-health-notice.ts` pattern.
  *
- * One contract enforced here: **generalized blocked-reason copy** (@kenji
- * review). UI labels never expose the raw `SessionBlockedReason` enum string;
- * `describeBlockedReason` is the canonical translation, and a new blocked reason
- * must extend the core enum AND that matrix together or the `unknown` fallback
- * applies.
- *
- * The status → dot mapping itself lives in `@maka/ui`; it is re-exported below
- * rather than restated. A second contract used to be documented here — a tone
- * matrix "consumed by both the SessionStatusIcon and the chat-header status
- * badge" — describing two consumers that do not exist and a tone layer that has
- * since been removed (#2984).
+ * Turning a `SessionStatus` into a label and a dot, and a `SessionBlockedReason`
+ * into copy, is NOT here — both live in `@maka/ui`'s file of the same name,
+ * which is also where the contract that a UI label never shows a raw enum
+ * identifier is stated and enforced. This file used to re-export those and
+ * document a tone matrix "consumed by both the SessionStatusIcon and the
+ * chat-header status badge", naming two consumers that do not exist; the tone
+ * layer and the re-exports are gone (#2984).
  */
 
 import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core/sandbox-boundary';
@@ -60,7 +56,8 @@ export function normalizeSessionSummaryForDisplay(session: SessionSummary): Sess
 
 /**
  * Generalized Chinese phrasing for a failed turn's `errorClass`
- * Mirrors `describeBlockedReason()`; UI must never display the raw enum identifier.
+ * Mirrors `describeBlockedReason()` in `@maka/ui`, under the same rule: a UI
+ * label must never display the raw enum identifier.
  *
  * Recognized classes are written by the runtime via `classifyError()`,
  * `classifyHttpStatus()`, and `event.reason` / `event.code`. The set is

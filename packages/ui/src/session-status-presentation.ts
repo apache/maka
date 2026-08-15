@@ -59,6 +59,13 @@ export function presentSessionStatus(
   };
 }
 
+/**
+ * The canonical translation of a blocked reason, and the contract that a UI
+ * label never exposes the raw `SessionBlockedReason` identifier (@kenji review).
+ * A new reason must extend the core enum AND the copy matrix together, or it
+ * reads as `unknown` — which is the intended failure, not a silent leak of the
+ * enum string into the interface.
+ */
 export function describeBlockedReason(
   reason: SessionBlockedReason | undefined,
   locale: UiLocale = 'zh',
