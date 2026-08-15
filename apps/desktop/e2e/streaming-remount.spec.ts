@@ -72,6 +72,15 @@ test('keeps a completed reply after an interrupted turn and conversation remount
   await expect(page.locator('.maka-bubble-streaming')).toContainText(
     'Fake backend waiting for the test to stop the Turn.',
   );
+  const sidebar = page.getByRole('navigation', { name: '对话列表' });
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await expect(page.locator('[data-agents-page]')).toHaveAttribute(
+    'data-sidebar-state',
+    'expanded',
+  );
+  const originalSessionId = await sidebar.locator('[data-session-id]').first()
+    .getAttribute('data-session-id');
+  expect(originalSessionId).toBeTruthy();
   await page.getByRole('button', { name: '停止' }).click();
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
     timeout: 20_000,
@@ -96,11 +105,6 @@ test('keeps a completed reply after an interrupted turn and conversation remount
     timeout: 20_000,
   });
 
-  const sidebar = page.getByRole('navigation', { name: '对话列表' });
-  await page.getByRole('button', { name: '展开侧边栏' }).click();
-  const originalSessionId = await sidebar.locator('[data-session-id]').first()
-    .getAttribute('data-session-id');
-  expect(originalSessionId).toBeTruthy();
   await composer.fill('draft before remounting the completed conversation');
   await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
   await expect(composer).toHaveText('');
