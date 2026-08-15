@@ -22,9 +22,16 @@ test('remounting a live surface leaves accumulated output settled', async ({
   await sidebar.getByRole('button', { name: '扩展' }).click();
   await expect(page.locator('[data-module="skills"]')).toBeVisible();
   await expect(liveBubble).toHaveCount(0);
-  // Back through the rail's 任务 row. The rail is collapsed here, so the task
-  // rows are not rendered and this section row is the only way back (#2984).
-  await sidebar.getByRole('button', { name: '任务', exact: true }).click();
+  // Back the way the product actually offers: the rail is collapsed here, so
+  // the task rows are not rendered and there is no 任务 row to press (#2984).
+  // Widening it is the titlebar's job, and the task left behind is still
+  // `activeId`, so it comes back marked and one click away.
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  const currentTaskRow = sidebar.locator(
+    '[data-maka-contract="session-row"] [aria-current="page"]',
+  );
+  await expect(currentTaskRow).toHaveCount(1);
+  await currentTaskRow.click();
   await expect(liveBubble).toHaveCount(1);
   await expect(liveBubble).toContainText(accumulatedOutput);
 

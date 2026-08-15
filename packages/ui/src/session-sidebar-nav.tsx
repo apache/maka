@@ -1,13 +1,5 @@
 import type { ScheduledTask } from '@maka/core/scheduled-task';
-import {
-  AlertCircle,
-  Blocks,
-  Download,
-  MessageSquare,
-  Settings,
-  SquarePen,
-  Timer,
-} from './icons.js';
+import { AlertCircle, Blocks, Download, Settings, SquarePen, Timer } from './icons.js';
 import type { NavModuleMemory, NavSelection } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
@@ -25,7 +17,6 @@ export function SessionSidebarNav(props: {
 }) {
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
-  const sessionsActive = props.selection.section === 'sessions';
   const extensionsActive = props.selection.section === 'extensions';
   const automationsActive = props.selection.section === 'automations';
   const moduleMemory = props.moduleMemory ?? { extensions: 'skills', automations: 'scheduled-tasks' };
@@ -53,19 +44,16 @@ export function SessionSidebarNav(props: {
         onClick={props.onNew}
         endContent={<kbd className="maka-nav-kbd" aria-hidden="true">⌘ N</kbd>}
       />
-      {/* The way back to the list. Selecting a task row does it too, but only
-          while the rail is expanded — collapsed, the list is not rendered, so
-          without this row 扩展 and 定时任务 are one-way doors and the only exit
-          is 新任务, which answers "show me my tasks" by creating another one.
-          MessageSquare is the glyph the command palette already draws for a
-          session (command-palette-commands.ts). */}
-      <SideNavItem
-        label={copy.tasks}
-        icon={MessageSquare}
-        size="md"
-        isSelected={sessionsActive}
-        onClick={() => props.onSelect({ section: 'sessions' })}
-      />
+      {/* No 任务 row. Expanded, the list below IS that row's destination, and a
+          control that selects what is already on screen under it is the same
+          redundancy as the 会话 list heading this change deleted one row down.
+          Collapsed, the list is not rendered — but the rail cannot switch tasks
+          there either, so returning from 扩展 already means widening the rail,
+          which the titlebar's 展开侧边栏 toggle does unconditionally
+          (app-shell-chrome-actions.tsx) and which lands on a list where the
+          task you left is still `activeId` and still marked. Adding a row to
+          save that one click would be paying a permanent slot for a state the
+          user is leaving anyway. */}
       <SideNavItem
         label={copy.extensions}
         icon={Blocks}

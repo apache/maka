@@ -7,10 +7,16 @@
  * selected it, so the branch that filtered on it could not run. What was left
  * was a one-value filter: a control whose answer is always the same answer.
  *
- * The rail's 任务 row survives that deletion. It carried the dead filter, but
- * its job was to select this section — it is how you get back here from
- * 扩展 or 定时任务, and collapsed at 48px it is the ONLY way, because the list
- * itself is not rendered there.
+ * The rail's 任务 row went with it, and nothing replaced it. Selecting this
+ * section is what clicking a task row already does, so expanded the row sat
+ * directly above the list that is its own destination. Collapsed the list is
+ * not rendered — but the rail cannot switch tasks there at all, so coming back
+ * from 扩展 means widening the rail either way. `activeId` is untouched by a
+ * section change, so the task you left is still marked when it does.
+ *
+ * `sessions` therefore has no control of its own on the rail. It is where you
+ * are unless you went somewhere, which is why the other two sections light up
+ * and this one has nothing to light.
  */
 export type ExtensionModule = 'skills' | 'mcp';
 export type AutomationModule = 'scheduled-tasks' | 'daily-review';
