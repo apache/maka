@@ -38,6 +38,14 @@ function createStateSetter<T>(initial: T): {
   };
 }
 
+async function waitFor(predicate: () => boolean, message: string): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) assert.fail(message);
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 function renderLiveTurn(liveTurn: LiveTurnProjection): string {
   return renderWithLocale(createElement(ChatView, {
     activeSession: {
@@ -194,7 +202,10 @@ describe('single live-turn handoff', () => {
     assert.equal(terminal?.steps[0]?.tools[0]?.toolUseId, 'tool-1');
     assert.equal(terminal?.steps[0]?.text?.text, '答案');
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 180));
+    await waitFor(
+      () => liveTurns.get()['session-1'] === undefined,
+      'Timed out waiting for the durable transcript handoff',
+    );
     assert.equal(liveTurns.get()['session-1'], undefined);
     assert.equal(
       refreshes.filter((call) => call.required === 'assistant-1').length,
