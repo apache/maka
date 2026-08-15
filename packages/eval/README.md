@@ -130,7 +130,10 @@ download and verifier phases retain their native network policy. Build the pinne
 `maka-eval-egress-proxy:12.2.3` image from `harbor/egress-proxy/Dockerfile` before running the
 cohort. `MAKA_EVAL_EGRESS_NAMESPACE_TEST=1 python3 harbor/test_cell_egress_namespace.py` brings up
 the overlay and the checked-in policy and asserts that contract in a real cell namespace; it needs
-a Docker daemon and outbound network, and skips otherwise. This URL policy is a blocklist for known
+a Docker daemon and outbound network, and skips otherwise.
+`MAKA_EVAL_EGRESS_PROXY_TEST=1 python3 harbor/test_egress_filter_live.py` starts the
+pinned mitmproxy image and asserts raw CONNECT and HTTP 101 upgrades relay no
+bytes, write `raw_tunnel`, and leave HTTPS and WebSocket working. This URL policy is a blocklist for known
 benchmark and public-solution contamination surfaces, not a complete defense against a deliberately
 invented lookup channel. It classifies HTTP(S) requests and `CONNECT` hosts against the blocklist, and
 kills tunnels that fall back to raw TCP. Collected Maka runtime files
