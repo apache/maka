@@ -18,11 +18,13 @@ test('remounting a live surface leaves accumulated output settled', async ({
   const liveBubble = page.locator('.maka-bubble-streaming');
   await expect(liveBubble).toContainText(accumulatedOutput);
 
-  const sidebar = page.getByRole('navigation', { name: '对话列表' });
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
   await sidebar.getByRole('button', { name: '扩展' }).click();
   await expect(page.locator('[data-module="skills"]')).toBeVisible();
   await expect(liveBubble).toHaveCount(0);
-  await sidebar.getByRole('button', { name: '会话', exact: true }).click();
+  // Back through the task's own row: the rail's 「会话」 row was a section
+  // selector for the only section the list has, so it is gone (#2984).
+  await sidebar.locator('[data-session-id]').first().click();
   await expect(liveBubble).toHaveCount(1);
   await expect(liveBubble).toContainText(accumulatedOutput);
 
@@ -75,7 +77,7 @@ test('returning to a live conversation settles output accumulated while away', a
   const liveBubble = page.locator('.maka-bubble-streaming');
   await expect(liveBubble).toContainText(accumulatedOutput);
 
-  const sidebar = page.getByRole('navigation', { name: '对话列表' });
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await expect(page.locator('[data-agents-page]')).toHaveAttribute(
     'data-sidebar-state',

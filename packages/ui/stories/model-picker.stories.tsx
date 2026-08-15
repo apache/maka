@@ -123,7 +123,7 @@ export const ExistingConversation: Story = {
       ? 'Switching may rebuild the provider prompt cache, making the next request slower or more expensive.'
       : '切换模型可能需要重建服务商提示缓存，使下一次请求更慢或成本更高。';
     const trigger = within(canvasElement).getByRole('button', {
-      name: /切换当前会话模型|Switch model for this conversation/,
+      name: /切换当前任务模型|Switch model for this task/,
     });
     const announcement = canvasElement.querySelector<HTMLElement>('.maka-model-switch-announcement');
     await expect(announcement).toHaveAttribute('role', 'status');
@@ -133,7 +133,7 @@ export const ExistingConversation: Story = {
 
     await userEvent.hover(trigger);
     await within(document.body).findByText(
-      english ? 'Switch model for this conversation' : '切换当前会话模型',
+      english ? 'Switch model for this task' : '切换当前任务模型',
     );
     await userEvent.unhover(trigger);
 
@@ -188,7 +188,7 @@ export const EmptyConversation: Story = {
   ),
   play: async ({ canvasElement }) => {
     const trigger = within(canvasElement).getByRole('button', {
-      name: /切换当前会话模型|Switch model for this conversation/,
+      name: /切换当前任务模型|Switch model for this task/,
     });
     const announcement = canvasElement.querySelector<HTMLElement>('.maka-model-switch-announcement');
     await expect(announcement).toHaveAttribute('role', 'status');

@@ -5043,7 +5043,7 @@ describe('SessionManager permission mode updates', () => {
     expect(afterFirstRuns.find((run) => run.turnId === 'turn-1')?.status).toBe('completed');
     expect(afterFirstRuns.find((run) => run.turnId === 'turn-2')?.status).toBe('running');
 
-    await expectRejects(manager.setPermissionMode(session.id, 'execute'), /当前对话正在运行/);
+    await expectRejects(manager.setPermissionMode(session.id, 'execute'), /当前任务正在运行/);
 
     secondGate.release();
     await second.next();
@@ -11894,7 +11894,7 @@ describe('SessionManager permission mode updates', () => {
     expect((await store.readHeader(session.id)).status).toBe('waiting_for_user');
     const [run] = await runStore.listSessionRuns(session.id);
     expect(run?.status).toBe('waiting_for_user');
-    await expectRejects(manager.setPermissionMode(session.id, 'bypass'), /当前对话正在运行/);
+    await expectRejects(manager.setPermissionMode(session.id, 'bypass'), /当前任务正在运行/);
     expect((await store.readHeader(session.id)).permissionMode).toBe('ask');
 
     await manager.respondToSandboxBoundary(session.id, {

@@ -132,7 +132,7 @@ function messageForReason(
       return `模型 "${model}" 不能用于聊天。请到 设置 · 模型 选择支持聊天的模型。`;
     }
     case 'fake_backend':
-      return '当前会话来自旧的本地模拟连接，不能直接发送。请到 设置 · 模型 添加真实模型后新建会话。';
+      return '当前任务来自旧的本地模拟连接，不能直接发送。请到 设置 · 模型 添加真实模型后新建会话。';
     case 'missing_default_connection':
     case 'connection_missing':
       // These reasons are handled before we reach isConnectionReady,
@@ -147,7 +147,7 @@ export async function assertSessionCanSend(
 ): Promise<void> {
   if (header.backend === 'fake') {
     throw chatConfigurationError(
-      '当前会话来自旧的本地模拟连接，不能直接发送。请到 设置 · 模型 添加真实模型后新建会话。',
+      '当前任务来自旧的本地模拟连接，不能直接发送。请到 设置 · 模型 添加真实模型后新建会话。',
       'fake_backend',
     );
   }

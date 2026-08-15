@@ -42,7 +42,7 @@ describe('bot incoming new-session cwd', () => {
     } as unknown as BotIncomingMessage);
 
     assert.deepEqual(createInput, {
-      name: 'Telegram 对话',
+      name: 'Telegram 任务',
       labels: ['bot', 'telegram'],
     });
   });

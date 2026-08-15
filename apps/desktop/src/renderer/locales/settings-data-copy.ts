@@ -38,7 +38,7 @@ const SETTINGS_DATA_COPY = {
     exported: '已导出配置', exportedDetail: (items) => `包含：${items.join('、')}`, exportFailed: '导出失败', noCategories: '未选择任何类别', tryAgain: '请稍后重试',
     imported: '已导入配置', importFailed: '导入失败', invalidFile: '文件无效或版本不受支持。',
     rows: {
-      workspace: '工作区路径', workspaceDetail: '会话、设置、凭据和技能文件都存在这个目录下。', loadValueFailed: '载入失败', loading: '正在加载…',
+      workspace: '工作区路径', workspaceDetail: '任务、设置、凭据和技能文件都存在这个目录下。', loadValueFailed: '载入失败', loading: '正在加载…',
       history: '输入历史', historyDetail: '上箭头 / 下箭头调出的已发送提示词记录，保存在本机、重启后仍在。清空后无法恢复。',
     },
     actionsAria: '工作区数据操作', opening: '打开中…', openWorkspace: '打开工作区文件夹', copying: '复制中…', copyPath: '复制路径', clearing: '清空中…', clearHistory: '清空输入历史',
@@ -65,7 +65,7 @@ const SETTINGS_DATA_COPY = {
     exported: 'Configuration exported', exportedDetail: (items) => `Included: ${items.join(', ')}`, exportFailed: 'Export failed', noCategories: 'No categories selected', tryAgain: 'Try again later',
     imported: 'Configuration imported', importFailed: 'Import failed', invalidFile: 'The file is invalid or its version is unsupported.',
     rows: {
-      workspace: 'Workspace path', workspaceDetail: 'Sessions, settings, credentials, and skill files are stored in this directory.', loadValueFailed: 'Failed to load', loading: 'Loading…',
+      workspace: 'Workspace path', workspaceDetail: 'Tasks, settings, credentials, and skill files are stored in this directory.', loadValueFailed: 'Failed to load', loading: 'Loading…',
       history: 'Input history', historyDetail: 'Previously sent prompts recalled with the Up and Down arrows are kept on this machine and persist across restarts. Clearing them cannot be undone.',
     },
     actionsAria: 'Workspace data actions', opening: 'Opening…', openWorkspace: 'Open workspace folder', copying: 'Copying…', copyPath: 'Copy path', clearing: 'Clearing…', clearHistory: 'Clear input history',

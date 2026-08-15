@@ -61,7 +61,7 @@ const zhCopy = {
     credentials: '连接', dangerZone: '删除连接', deleteRowHelp: '此操作不可撤销。',
     credentialsHelp: '密钥只保存在本机。',
     credentialsHelpAccount: '登录令牌只保存在本机。',
-    modelManagementHelp: '这些模型会出现在对话的模型选择器里。',
+    modelManagementHelp: '这些模型会出现在任务的模型选择器里。',
     ...zhCapabilitiesCopy,
     capabilitiesHelp: '声明每个已启用模型的思考档位、视觉与上下文窗口；保存后生效。',
     // Row affordances (settings-sidebar 的 InfoRow / ExpandableRow 语言)：一行
@@ -89,7 +89,7 @@ const zhCopy = {
         ? '这会退出本机账号、删除 OAuth 凭据和模型连接；刷新后不会自动重新创建。'
         : '这会删除模型连接及其本机凭据；如需再次使用，需要重新添加。',
       isDefault
-        ? '它当前是默认连接；删除后默认模型会变成未设置，已有对话可能需要重新选择模型。'
+        ? '它当前是默认连接；删除后默认模型会变成未设置，已有任务可能需要重新选择模型。'
         : '',
     ].filter(Boolean).join(' '),
     connectionSuccess: (name: string) => `连接成功 · ${name}`, connectionFailed: (name: string) => `连接失败 · ${name}`,
@@ -118,7 +118,7 @@ const zhCopy = {
     tabs: { all: '全部', recommended: '推荐', accounts: '账号', plans: '模型计划', api: 'API', aggregators: '聚合服务', local: '本地' },
     loadFailed: '载入模型连接失败', loadingAria: '正在加载模型供应商', connections: '模型连接',
     retry: '点击重试。', empty: '还没有模型连接',
-    emptyHelp: '从下方选择一种连接方式开始。', default: '默认', setDefault: '设为默认', setDefaultTitle: '让新对话默认使用这个连接', setDefaultPending: '设置中…', setDefaultFailed: '设为默认失败', addHelp: '选择账号登录、模型计划、API、聚合服务或本地运行时。',
+    emptyHelp: '从下方选择一种连接方式开始。', default: '默认', setDefault: '设为默认', setDefaultTitle: '让新任务默认使用这个连接', setDefaultPending: '设置中…', setDefaultFailed: '设为默认失败', addHelp: '选择账号登录、模型计划、API、聚合服务或本地运行时。',
     categoriesAria: '模型供应商分类', searchPlaceholder: '搜索服务商', searchAria: '搜索模型服务商', noMatch: '没有匹配的服务商', clearSearch: '清除搜索',
     createSubtitle: '完成必要配置后，连接会出现在模型页上方。', connection: '模型连接',
     count: (value: number) => `· ${value}`, connectTitle: (name: string) => `连接 ${name}`,

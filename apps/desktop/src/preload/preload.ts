@@ -421,7 +421,7 @@ function executeWebSearchQuery(input: {
     return Promise.resolve({
       ok: false,
       reason: 'unsupported_provider',
-      message: '原生联网搜索由对话中的主模型请求执行，不支持从设置页单独调用。',
+      message: '原生联网搜索由任务中的主模型请求执行，不支持从设置页单独调用。',
     });
   }
   const query = normalizeWebSearchQuery(input.query);
@@ -448,7 +448,7 @@ function executeWebSearchTest(input: {
     return Promise.resolve({
       ok: false,
       reason: 'unsupported_provider',
-      message: '原生联网搜索由对话中的主模型请求执行，不需要单独测试搜索凭据。',
+      message: '原生联网搜索由任务中的主模型请求执行，不需要单独测试搜索凭据。',
     });
   }
   const apiKey = webSearchCredentialOverride(input.apiKey);

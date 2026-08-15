@@ -93,7 +93,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
   zh: {
     runtimeHost: {
       title: 'Runtime Host',
-      description: '选择运行会话、自动化和后台工作的 Host。Local 使用这台设备。',
+      description: '选择运行任务、自动化和后台工作的 Host。Local 使用这台设备。',
       selected: 'Host',
       selectedHelp: '切换会立即生效；连接失败时继续使用当前 Host',
       remoteTitle: '远程 Host',
@@ -147,11 +147,11 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     // Says all three layers of the rule in one sentence, because a help line
     // that only mentions the default would leave the user guessing what
     // happens before they set one.
-    sectionHelp: '新对话默认打开此项目；未设置时沿用上次使用的项目。任何对话都能在输入框旁临时切换。',
+    sectionHelp: '新任务默认打开此项目；未设置时沿用上次使用的项目。任何任务都能在输入框旁临时切换。',
     addProject: '添加项目',
     defaultBadge: '默认',
     setDefault: '设为默认',
-    setDefaultTitle: '新对话默认打开这个项目',
+    setDefaultTitle: '新任务默认打开这个项目',
     setDefaultDisabledTitle: '目录不可用，无法设为默认',
     setDefaultFailed: '设置默认项目失败',
     rename: '重命名',
@@ -167,20 +167,20 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     remove: '从 Maka 移除',
     removeConfirmTitle: '从 Maka 移除这个项目？',
     // The one thing a user actually fears here, stated first and plainly.
-    removeConfirmBody: '仅从 Maka 的项目列表移除，磁盘上的文件不受影响。该项目下已有的对话会移到"未归属"分组，不会被删除。',
+    removeConfirmBody: '仅从 Maka 的项目列表移除，磁盘上的文件不受影响。该项目下已有的任务会移到"未归属"分组，不会被删除。',
     removeConfirm: '移除',
     removeCancel: '取消',
     actionFailed: '操作失败',
     unavailable: '目录不可用',
-    defaultUnavailable: '原来的默认项目已不可用，新对话暂时沿用上次使用的项目。',
+    defaultUnavailable: '原来的默认项目已不可用，新任务暂时沿用上次使用的项目。',
     emptyTitle: '还没有项目',
-    emptyBody: '添加一个项目目录后，新对话就能默认从它打开，侧边栏也会按项目归类对话。',
+    emptyBody: '添加一个项目目录后，新任务就能默认从它打开，侧边栏也会按项目归类任务。',
     moreActions: (projectName: string) => `更多操作：${projectName}`,
   },
   en: {
     runtimeHost: {
       title: 'Runtime Host',
-      description: 'Choose the Host that runs sessions, automations, and background work. Local uses this device.',
+      description: 'Choose the Host that runs tasks, automations, and background work. Local uses this device.',
       selected: 'Host',
       selectedHelp: 'Switches immediately; if connection fails, Desktop keeps using the current Host',
       remoteTitle: 'Remote Hosts',
@@ -233,11 +233,11 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     },
     section: 'Workspace',
     sectionHelp:
-      'New conversations open in the default project; without one, they reuse the project you last used. Any conversation can switch next to the input box.',
+      'New tasks open in the default project; without one, they reuse the project you last used. Any task can switch next to the input box.',
     addProject: 'Add project',
     defaultBadge: 'Default',
     setDefault: 'Set as default',
-    setDefaultTitle: 'Open new conversations in this project',
+    setDefaultTitle: 'Open new tasks in this project',
     setDefaultDisabledTitle: 'The folder is unavailable, so this cannot be the default',
     setDefaultFailed: 'Could not set the default project',
     rename: 'Rename',
@@ -251,16 +251,16 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     remove: 'Remove from Maka',
     removeConfirmTitle: 'Remove this project from Maka?',
     removeConfirmBody:
-      'This only removes it from Maka’s project list; the files on disk are untouched. Conversations under this project move to “Ungrouped” and are not deleted.',
+      'This only removes it from Maka’s project list; the files on disk are untouched. Tasks under this project move to “Ungrouped” and are not deleted.',
     removeConfirm: 'Remove',
     removeCancel: 'Cancel',
     actionFailed: 'Action failed',
     unavailable: 'Folder unavailable',
     defaultUnavailable:
-      'The default project is no longer available, so new conversations reuse the project you last used.',
+      'The default project is no longer available, so new tasks reuse the project you last used.',
     emptyTitle: 'No projects yet',
     emptyBody:
-      'Add a project folder and new conversations can start in it, with the sidebar grouping conversations by project.',
+      'Add a project folder and new tasks can start in it, with the sidebar grouping tasks by project.',
     moreActions: (projectName: string) => `More actions for ${projectName}`,
   },
 } satisfies UiCatalog<SettingsProjectsCopy>;

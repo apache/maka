@@ -127,7 +127,7 @@ function StoryFrame(props: {
       activeRow?.querySelector<HTMLButtonElement>(':scope > button')?.focus({ preventScroll: true });
       if (openActiveRowMenu) {
         menuTimeout = window.setTimeout(() => {
-          activeRow?.querySelector<HTMLButtonElement>('[aria-label="对话操作"]')?.click();
+          activeRow?.querySelector<HTMLButtonElement>('[aria-label="任务操作"]')?.click();
         }, 0);
       }
     }, 0);

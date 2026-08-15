@@ -1676,7 +1676,7 @@ export class SessionManager {
     }
 
     if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前对话正在运行，等结束后再切换权限模式。');
+      throw new Error('当前任务正在运行，等结束后再切换权限模式。');
     }
     if (previous.status === 'waiting_for_user') {
       throw new Error('当前有工具调用正在等待确认，处理后再切换权限模式。');
@@ -1709,7 +1709,7 @@ export class SessionManager {
     kind: 'managed' | 'bypass',
   ): Promise<ExecutionBoundary> {
     if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前对话正在运行，等结束后再切换沙箱边界。');
+      throw new Error('当前任务正在运行，等结束后再切换沙箱边界。');
     }
     const header = await this.deps.store.readHeader(sessionId);
     if (header.status === 'waiting_for_user') {
@@ -1898,7 +1898,7 @@ export class SessionManager {
       throw new PlanConflictError('Linked child Sessions cannot enter Plan mode');
     }
     if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前对话正在运行，等结束后再切换协作模式。');
+      throw new Error('当前任务正在运行，等结束后再切换协作模式。');
     }
     if (previous.status === 'waiting_for_user') {
       throw new Error('当前有工具调用正在等待确认，处理后再切换协作模式。');

@@ -1702,7 +1702,7 @@ function renderWelcomeBlock(width: number): string[] {
   // `/`. The active model and connection live in the statusline, so the
   // welcome does not repeat them.
   const hints: [string, string][] = [
-    ['/session', '切换或恢复会话'],
+    ['/session', '切换或恢复任务'],
     ['/model', '切换模型'],
     ['/setup', '配置模型提供商'],
   ];

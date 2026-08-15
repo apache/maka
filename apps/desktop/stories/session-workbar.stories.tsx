@@ -613,7 +613,7 @@ export const ToolPicker: Story = {
   render: () => <Workbar sourceSession={TOOL_PICKER_SOURCE_SESSION} />,
 };
 
-// Real path: 会话工作栏 → 变更, showing the live branch comparison from the
+// Real path: 任务工作栏 → 变更, showing the live branch comparison from the
 // session cwd. The panel is Git-backed; no message or tool-result fixture is
 // involved in this story.
 export const Changes: Story = {
@@ -621,7 +621,7 @@ export const Changes: Story = {
   render: () => <Workbar tab="review" />,
 };
 
-// Real path: sidebar → a session → 展开会话工作栏, landing on the tab the app
+// Real path: sidebar → a session → 展开任务工作栏, landing on the tab the app
 // restored. Tasks is the default: an in-progress root, a child claimed and
 // blocked by a subagent, and the finished ones folded into 最近结束.
 export const Tasks: Story = {
@@ -629,19 +629,19 @@ export const Tasks: Story = {
   render: () => <Workbar tab="tasks" />,
 };
 
-// Real path: 会话工作栏 → 任务 on a session whose agent never wrote a task.
+// Real path: 任务工作栏 → 任务 on a session whose agent never wrote a task.
 export const TasksEmpty: Story = {
   decorators: [bridge({ tasks: [] })],
   render: () => <Workbar tab="tasks" />,
 };
 
-// Real path: 会话工作栏 → 任务 when `tasks.list` rejects; 重试 re-runs the read.
+// Real path: 任务工作栏 → 任务 when `tasks.list` rejects; 重试 re-runs the read.
 export const TasksLoadFailed: Story = {
   decorators: [bridge({ tasksFail: true })],
   render: () => <Workbar tab="tasks" />,
 };
 
-// Real path: 会话工作栏 → 文件, on a session whose agent wrote artifacts. The
+// Real path: 任务工作栏 → 文件, on a session whose agent wrote artifacts. The
 // count in the tab is the pane's own filtered total, reported upward.
 // The pane's empty state renders the same EmptyState as TraceEmpty below, so it
 // is not a second story.
@@ -650,7 +650,7 @@ export const Files: Story = {
   render: () => <Workbar tab="files" />,
 };
 
-// Real path: 会话工作栏 → 追踪, on a session that has run turns — the overview
+// Real path: 任务工作栏 → 追踪, on a session that has run turns — the overview
 // reads a context budget, token/cache figures and the session's facts off a
 // retried model call and a post-compaction call, while a turn that failed on a
 // denied tool sits in the raw record under the coverage notice the projection
@@ -660,7 +660,7 @@ export const Trace: Story = {
   render: () => <Workbar tab="inspector" />,
 };
 
-// Real path: 会话工作栏 → 追踪 on a long session whose latest call sits near the
+// Real path: 任务工作栏 → 追踪 on a long session whose latest call sits near the
 // top of its window — the tier the context bands and their legend switch to
 // before a compaction, and the state a reader is most likely to open the tab
 // for. Same session as Trace, sized differently, so the two read side by side.
@@ -669,7 +669,7 @@ export const TraceContextNearLimit: Story = {
   render: () => <Workbar tab="inspector" />,
 };
 
-// Real path: 会话工作栏 → 追踪 on a session recorded before tool schemas carried
+// Real path: 任务工作栏 → 追踪 on a session recorded before tool schemas carried
 // a name — the shape of every ledger written prior to #2323. The composition
 // block still has to show those bytes, as unnamed tools rather than as a
 // missing category, which is what gating the tool list on the NAMED rows alone
@@ -679,7 +679,7 @@ export const TraceUnnamedTools: Story = {
   render: () => <Workbar tab="inspector" />,
 };
 
-// Real path: 会话工作栏 → 追踪 when the durable metering record names the latest
+// Real path: 任务工作栏 → 追踪 when the durable metering record names the latest
 // request but its best-effort capture never landed — the composition block has
 // to SAY so, since an absent section reads as "nothing to explain" and a zero
 // reads as an empty prompt.
@@ -688,21 +688,21 @@ export const TraceCompositionUnrecorded: Story = {
   render: () => <Workbar tab="inspector" />,
 };
 
-// Real path: 会话工作栏 → 追踪 on a session that has not run a turn yet — the
+// Real path: 任务工作栏 → 追踪 on a session that has not run a turn yet — the
 // state the task-ledger e2e fixture opens on.
 export const TraceEmpty: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="inspector" />,
 };
 
-// Real path: 会话工作栏 → 追踪 when `inspector.trace` reports a failed read (an
+// Real path: 任务工作栏 → 追踪 when `inspector.trace` reports a failed read (an
 // unreadable or partially written run ledger); retry lives on the banner.
 export const TraceReadFailed: Story = {
   decorators: [bridge({ traceFail: true })],
   render: () => <Workbar tab="inspector" />,
 };
 
-// Real path: 会话工作栏 → 追踪 on a workspace whose path overflows the panel
+// Real path: 任务工作栏 → 追踪 on a workspace whose path overflows the panel
 // — the record-file row keeps its label and copy button, and the path alone
 // truncates. (The default stories above already show the row with a short
 // path; this variant pins the truncation contract.)
