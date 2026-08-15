@@ -2,8 +2,10 @@
 
 import { readFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveMakaWorkspaceRoot } from './workspace-root.js';
+import { formatMakaResumeHint } from './cli-invocation.js';
+import { resolveMakaDataRoots } from './workspace-root.js';
 import { parseRuntimeHostCommand, type RuntimeHostCliCommand } from './runtime-host-cli.js';
 
 export type MakaCliCommand =
@@ -22,10 +24,26 @@ export type MakaCliCommand =
   | { kind: 'version'; text: string }
   | { kind: 'error'; message: string; exitCode: number };
 
-export function parseMakaCliArgs(argv: string[], version: string): MakaCliCommand {
+export interface MakaCliLaunchOptions {
+  readonly dataProfileName: string;
+  readonly cliCommand: string;
+  readonly capabilityProviderIdentityScope: 'legacy-home' | 'client-data-root';
+}
+
+const RELEASE_MAKA_CLI_LAUNCH_OPTIONS = {
+  dataProfileName: 'Maka',
+  cliCommand: 'maka',
+  capabilityProviderIdentityScope: 'legacy-home',
+} satisfies MakaCliLaunchOptions;
+
+export function parseMakaCliArgs(
+  argv: string[],
+  version: string,
+  cliCommand = RELEASE_MAKA_CLI_LAUNCH_OPTIONS.cliCommand,
+): MakaCliCommand {
   if (argv.length === 0) return { kind: 'tui' };
   const [first] = argv;
-  if (first === '--help' || first === '-h') return { kind: 'help', text: helpText() };
+  if (first === '--help' || first === '-h') return { kind: 'help', text: helpText(cliCommand) };
   if (first === '--version' || first === '-v') return { kind: 'version', text: version };
   if (first?.startsWith('--')) return parseTuiArgs(argv);
   if (first === 'run' || first === '-p') return { kind: 'run', args: argv.slice(1) };
@@ -71,32 +89,32 @@ export function handleMakaCliProcessExit(
   if (error) writeFatal(`${formatMakaCliFatalError(error)}\n`);
 }
 
-function helpText(): string {
+function helpText(cliCommand: string): string {
   return [
-    'Usage: maka',
+    `Usage: ${cliCommand}`,
     '',
     'Launches the Maka terminal UI in the current working directory.',
     '',
     'Commands:',
-    '  maka              Start the TUI',
-    '  maka-agent        Start the TUI',
-    '  maka run ...      Run one non-interactive model turn',
-    '  maka activate ... Run one Cloud Session activation and emit JSONL',
-    '  maka -p ...       Alias for maka run',
-    '  maka eval ...     Run one declarative multi-arm experiment',
-    '  maka runtime-host serve [options]  Run a Runtime Host service',
-    '  maka runtime-host access issue --principal <id> --grant <operation>',
-    '  maka runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>',
-    '  maka runtime-host access issue --kind capability-provider --principal <id>',
-    '  maka runtime-host access revoke --credential <id>',
-    '  maka runtime-host project list [--root <path>]',
-    '  maka runtime-host project add <path> [--root <path>]',
-    '  maka runtime-host profile list',
-    '  maka runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]',
-    '  maka runtime-host profile set --id <id> --name <name> --ssh-destination <user@host> --ssh-remote-port <port> --expected-root <root-id> [--ssh-port <port>] [--credential-env <name>]',
-    '  maka runtime-host profile set --id <id> --name <name> --plaintext-url <ws-url> --acknowledge-plaintext --expected-root <root-id> [--credential-env <name>]',
-    '  maka runtime-host profile remove --id <id>',
-    '  maka runtime-host capability-provider serve --url <ws-url> --mcp-config <path> --expected-root <root-id>',
+    `  ${cliCommand}              Start the TUI`,
+    ...(cliCommand === 'maka' ? ['  maka-agent        Start the TUI'] : []),
+    `  ${cliCommand} run ...      Run one non-interactive model turn`,
+    `  ${cliCommand} activate ... Run one Cloud Session activation and emit JSONL`,
+    `  ${cliCommand} -p ...       Alias for ${cliCommand} run`,
+    `  ${cliCommand} eval ...     Run one declarative multi-arm experiment`,
+    `  ${cliCommand} runtime-host serve [options]  Run a Runtime Host service`,
+    `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
+    `  ${cliCommand} runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>`,
+    `  ${cliCommand} runtime-host access issue --kind capability-provider --principal <id>`,
+    `  ${cliCommand} runtime-host access revoke --credential <id>`,
+    `  ${cliCommand} runtime-host project list [--root <path>]`,
+    `  ${cliCommand} runtime-host project add <path> [--root <path>]`,
+    `  ${cliCommand} runtime-host profile list`,
+    `  ${cliCommand} runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]`,
+    `  ${cliCommand} runtime-host profile set --id <id> --name <name> --ssh-destination <user@host> --ssh-remote-port <port> --expected-root <root-id> [--ssh-port <port>] [--credential-env <name>]`,
+    `  ${cliCommand} runtime-host profile set --id <id> --name <name> --plaintext-url <ws-url> --acknowledge-plaintext --expected-root <root-id> [--credential-env <name>]`,
+    `  ${cliCommand} runtime-host profile remove --id <id>`,
+    `  ${cliCommand} runtime-host capability-provider serve --url <ws-url> --mcp-config <path> --expected-root <root-id>`,
     '',
     'Options:',
     '  -h, --help        Show help',
@@ -136,18 +154,29 @@ function helpText(): string {
   ].join('\n');
 }
 
-export function formatResumeHint(sessionId: string | null): string | null {
-  if (!sessionId) return null;
-  return `Resume this session with:\n  maka --resume ${sessionId}`;
+export function formatResumeHint(
+  sessionId: string | null,
+  cliCommand: string = RELEASE_MAKA_CLI_LAUNCH_OPTIONS.cliCommand,
+): string | null {
+  return formatMakaResumeHint(cliCommand, sessionId);
 }
 
-export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promise<number> {
+export async function runMakaCli(
+  argv: string[] = process.argv.slice(2),
+  options: MakaCliLaunchOptions = RELEASE_MAKA_CLI_LAUNCH_OPTIONS,
+): Promise<number> {
   const version = await readPackageVersion();
-  const command = parseMakaCliArgs(argv, version);
+  const command = parseMakaCliArgs(argv, version, options.cliCommand);
+  const dataRoots = resolveMakaDataRoots({ profileName: options.dataProfileName });
   switch (command.kind) {
     case 'run': {
       const { runRuntimeHostTextCli } = await import('./runtime-host-run-command.js');
-      return runRuntimeHostTextCli(command.args);
+      return runRuntimeHostTextCli(
+        command.args,
+        { workspaceRoot: () => dataRoots.workspaceRoot },
+        {},
+        { clientDataRoot: dataRoots.clientDataRoot, cliCommand: options.cliCommand },
+      );
     }
     case 'activate': {
       const { runMakaActivationCli } = await import('./activation-command.js');
@@ -160,7 +189,7 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
     case 'runtime-host-serve': {
       const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
       return runRuntimeHostServiceCli({
-        rootPath: command.rootPath ?? resolveMakaWorkspaceRoot(),
+        rootPath: command.rootPath ?? dataRoots.workspaceRoot,
         json: command.json,
         ...(command.websocket ? { websocket: command.websocket } : {}),
       });
@@ -168,7 +197,7 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
     case 'runtime-host-access-issue': {
       const { runRuntimeHostAccessIssueCli } = await import('./runtime-host-access-command.js');
       return runRuntimeHostAccessIssueCli({
-        rootPath: command.rootPath ?? resolveMakaWorkspaceRoot(),
+        rootPath: command.rootPath ?? dataRoots.workspaceRoot,
         principalKind: command.principalKind,
         principalId: command.principalId,
         operationGrants: command.operationGrants,
@@ -180,14 +209,14 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
     case 'runtime-host-access-revoke': {
       const { runRuntimeHostAccessRevokeCli } = await import('./runtime-host-access-command.js');
       return runRuntimeHostAccessRevokeCli({
-        rootPath: command.rootPath ?? resolveMakaWorkspaceRoot(),
+        rootPath: command.rootPath ?? dataRoots.workspaceRoot,
         credentialId: command.credentialId,
       });
     }
     case 'runtime-host-project-list':
     case 'runtime-host-project-add': {
       const { runRuntimeHostProjectCli } = await import('./runtime-host-project-command.js');
-      const rootPath = command.rootPath ?? resolveMakaWorkspaceRoot();
+      const rootPath = command.rootPath ?? dataRoots.workspaceRoot;
       return command.kind === 'runtime-host-project-list'
         ? runRuntimeHostProjectCli({ kind: 'list', rootPath })
         : runRuntimeHostProjectCli({ kind: 'add', rootPath, path: command.path });
@@ -200,6 +229,14 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
         url: command.url,
         mcpConfigPath: command.mcpConfigPath,
         expectedRootId: command.expectedRootId,
+        ...(options.capabilityProviderIdentityScope === 'client-data-root'
+          ? {
+              defaultClientIdentityRoot: join(
+                dataRoots.clientDataRoot,
+                'runtime-host-capability-providers',
+              ),
+            }
+          : {}),
         ...(command.credentialEnv ? { credentialEnv: command.credentialEnv } : {}),
         ...(command.clientIdentityPath ? { clientIdentityPath: command.clientIdentityPath } : {}),
       });
@@ -208,20 +245,25 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
     case 'runtime-host-profile-set':
     case 'runtime-host-profile-remove': {
       const { runRuntimeHostProfileCommand } = await import('./runtime-host-profile-command.js');
+      const profileOptions = { clientDataRoot: dataRoots.clientDataRoot };
       if (command.kind === 'runtime-host-profile-list') {
-        return runRuntimeHostProfileCommand({ kind: 'list' });
+        return runRuntimeHostProfileCommand({ kind: 'list' }, {}, profileOptions);
       }
       if (command.kind === 'runtime-host-profile-remove') {
-        return runRuntimeHostProfileCommand({ kind: 'remove', id: command.id });
+        return runRuntimeHostProfileCommand({ kind: 'remove', id: command.id }, {}, profileOptions);
       }
-      return runRuntimeHostProfileCommand({
-        kind: 'set',
-        id: command.id,
-        name: command.name,
-        transport: command.transport,
-        expectedRootId: command.expectedRootId,
-        ...(command.credentialEnv ? { credentialEnv: command.credentialEnv } : {}),
-      });
+      return runRuntimeHostProfileCommand(
+        {
+          kind: 'set',
+          id: command.id,
+          name: command.name,
+          transport: command.transport,
+          expectedRootId: command.expectedRootId,
+          ...(command.credentialEnv ? { credentialEnv: command.credentialEnv } : {}),
+        },
+        {},
+        profileOptions,
+      );
     }
     case 'help':
       process.stdout.write(`${command.text}\n`);
@@ -230,13 +272,14 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
       process.stdout.write(`${command.text}\n`);
       return 0;
     case 'error':
-      process.stderr.write(`${command.message}\n\n${helpText()}\n`);
+      process.stderr.write(`${command.message}\n\n${helpText(options.cliCommand)}\n`);
       return command.exitCode;
     case 'tui': {
-      const workspaceRoot = resolveMakaWorkspaceRoot();
       const { runRuntimeHostTui } = await import('./runtime-host-tui-command.js');
       return runRuntimeHostTui({
-        workspaceRoot,
+        cliCommand: options.cliCommand,
+        clientDataRoot: dataRoots.clientDataRoot,
+        workspaceRoot: dataRoots.workspaceRoot,
         cwd: process.cwd(),
         onProcessExit: handleMakaCliProcessExit,
         ...(command.resumeSessionId ? { resumeSessionId: command.resumeSessionId } : {}),
@@ -296,8 +339,8 @@ async function readPackageVersion(): Promise<string> {
   return typeof parsed.version === 'string' ? parsed.version : '0.0.0';
 }
 
-if (isMainModule()) {
-  runMakaCli().then(
+export function launchMakaCli(options: MakaCliLaunchOptions): void {
+  runMakaCli(process.argv.slice(2), options).then(
     (code) => {
       beginMakaCliExit(code);
     },
@@ -306,6 +349,8 @@ if (isMainModule()) {
     },
   );
 }
+
+if (isMainModule()) launchMakaCli(RELEASE_MAKA_CLI_LAUNCH_OPTIONS);
 
 // ShellRun escalates SIGTERM to SIGKILL after two seconds. Keep the CLI alive
 // long enough for that cleanup to finish before the final process fallback.

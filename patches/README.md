@@ -8,7 +8,17 @@ Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
 around at the call site.
 
-## `@ai-sdk/provider-utils@5.0.21`
+## `node-pty@1.2.0-beta.14`
+
+On Unix, `CustomWriteStream` submits raw file-descriptor writes through libuv.
+Those writes can survive PTY exit and target an unrelated file after descriptor
+reuse. The patch keeps writes synchronous on node-pty's non-blocking PTY master,
+checks an `fstat` fingerprint before retries, yields between attempts, and cancels
+the queue at the native exit fence. See #2978.
+
+Delete when node-pty ships an equivalent Unix write-lifecycle fix.
+
+## `@ai-sdk/provider-utils@5.0.27`
 
 Streaming tool-call association for gateways that reuse or omit `index` / `id`
 (Ollama-style, Anthropic→OpenAI translators). See #1967 / #1976 and
@@ -18,10 +28,19 @@ Delete when that guard passes against an unpatched package.
 
 ## `@astryxdesign/core@0.3.0`
 
-Three published component seams drop host-owned state or semantics:
+Four published component seams drop host-owned state or semantics:
 
 - `ChatLayout` needs a conversation identity that resets scroll/unread state
   without remounting its composer slot and discarding the live draft.
+- `ChatLayout` owns auto-follow and publishes no way to say "this scroll is
+  deliberate navigation, release it". Its scroll-direction unlock cannot infer
+  that: it discards any scroll event carrying a changed `scrollHeight` as a
+  resize artefact, and a host that mounts a turn before scrolling to it
+  produces exactly that. Without the seam the prompt rail's jump into an
+  unmounted turn is dragged straight back to the bottom (#2923), and no call
+  site can fix it — re-aiming frame by frame wins the mount and then loses to
+  the follow spring that outlives it. `unlockAutoFollow` on
+  `ChatLayoutContextValue` publishes the hook's existing `unlock`.
 - `ChatToolCalls` needs a stable row slot for product styling and E2E geometry.
 - `List` must forward its published `aria-label` to the rendered list element.
 

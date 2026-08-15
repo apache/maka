@@ -38,6 +38,7 @@ function trace(sessionId: string): SessionTrace {
 
 interface TraceHarness {
   reads: string[];
+  contextReads: string[];
   emit: (event: SessionEvent) => void;
   subscriptions: number;
   unsubscribes: number;
@@ -47,6 +48,7 @@ function installMakaBridge(): TraceHarness {
   const handlers = new Set<(event: SessionEvent) => void>();
   const harness: TraceHarness = {
     reads: [],
+    contextReads: [],
     emit: (event) => {
       for (const handler of [...handlers]) handler(event);
     },
@@ -60,6 +62,13 @@ function installMakaBridge(): TraceHarness {
         trace: async (sessionId: string): Promise<Result<SessionTrace>> => {
           harness.reads.push(sessionId);
           return { ok: true, data: trace(sessionId) };
+        },
+        // The hook reads the context snapshot on the same signal (#2323). It
+        // is counted separately: the assertions below are about how often the
+        // TRACE is re-read, and an enrichment read must not move them.
+        context: async (sessionId: string) => {
+          harness.contextReads.push(sessionId);
+          return { ok: true as const, data: { status: 'unavailable' as const, reason: 'no_completed_request' as const } };
         },
       },
       sessions: {

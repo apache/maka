@@ -12,7 +12,7 @@ import {
   createRuntimeHostBotSessionAdapter,
   type RuntimeHostBotSessionAdapterDeps,
 } from '../runtime-host-bot-session-adapter.js';
-import type { DesktopRuntimeHostSession } from '../runtime-host-client.js';
+import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
 
 type BotClient = RuntimeHostBotSessionAdapterDeps['client'];
 
@@ -113,8 +113,9 @@ test('reconciles an uncertain Host Session create with its stable Session identi
 test('subscribes before Turn start and settles a fast Host reply without losing text', async () => {
   const events = new AsyncFrameQueue();
   const changes: unknown[] = [];
+  const replySnapshots: string[] = [];
   let closeCount = 0;
-  const handle: DesktopRuntimeHostSession = {
+  const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(null),
     activeAssistantStreams: [],
     transcript: Promise.resolve([]),
@@ -123,7 +124,7 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
       closeCount += 1;
       events.end();
     },
-  };
+  });
   const client = botClient({
     openSession: async () => handle,
     startTurn: async (input) => {
@@ -131,9 +132,10 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
       events.push(projectionFrame(1, runningTurn(input.sessionId, input.turnId)));
       events.push(deltaFrame(2, input.sessionId, input.turnId, 0, 'Hello'));
       events.push(deltaFrame(3, input.sessionId, input.turnId, 3, 'lo world'));
-      events.push(deltaFrame(4, input.sessionId, input.turnId, 0, 'Corrected reply', true));
+      events.push(deltaFrame(4, input.sessionId, input.turnId, 0, 'Hello world'));
+      events.push(deltaFrame(5, input.sessionId, input.turnId, 0, 'Corrected reply', true));
       events.push(
-        projectionFrame(5, {
+        projectionFrame(6, {
           ...runningTurn(input.sessionId, input.turnId),
           status: 'completed',
           terminalEventId: 'terminal-1',
@@ -153,9 +155,11 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
     sessionId: 'bot-session-1',
     turnId: 'turn-1',
     text: 'hello',
+    onReplySnapshot: (text) => replySnapshots.push(text),
   });
 
   assert.deepEqual(result, { kind: 'completed', text: 'Corrected reply' });
+  assert.deepEqual(replySnapshots, ['Hello', 'Hello world', 'Corrected reply']);
   assert.equal(closeCount, 1);
   assert.deepEqual(changes, [
     {
@@ -168,9 +172,10 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
 
 test('accepts an empty reset delta as the authoritative Bot reply', async () => {
   const events = new AsyncFrameQueue();
+  const replySnapshots: string[] = [];
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
         activeAssistantStreams: [],
         transcript: Promise.resolve([]),
@@ -201,8 +206,52 @@ test('accepts an empty reset delta as the authoritative Bot reply', async () => 
       sessionId: 'bot-session-1',
       turnId: 'turn-1',
       text: 'hello',
+      onReplySnapshot: (text) => replySnapshots.push(text),
     }),
     { kind: 'completed', text: '' },
+  );
+  assert.deepEqual(replySnapshots, ['Provisional reply', '']);
+});
+
+test('reply snapshot observers cannot interrupt the authoritative Host Turn', async () => {
+  const events = new AsyncFrameQueue();
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      openSession: async () => runtimeHostSessionFixture({
+        snapshot: continuitySnapshot(null),
+        activeAssistantStreams: [],
+        transcript: Promise.resolve([]),
+        events,
+        async close() {
+          events.end();
+        },
+      }),
+      startTurn: async (input) => {
+        events.push(deltaFrame(1, input.sessionId, input.turnId, 0, 'Reply'));
+        events.push(
+          projectionFrame(2, {
+            ...runningTurn(input.sessionId, input.turnId),
+            status: 'completed',
+            terminalEventId: 'terminal-1',
+          }),
+        );
+        return startedTurn(runningTurn(input.sessionId, input.turnId));
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+
+  assert.deepEqual(
+    await adapter.runTurn({
+      sessionId: 'bot-session-1',
+      turnId: 'turn-1',
+      text: 'hello',
+      onReplySnapshot() {
+        throw new Error('delivery failed');
+      },
+    }),
+    { kind: 'completed', text: 'Reply' },
   );
 });
 
@@ -211,7 +260,7 @@ test('returns blocked Skill feedback without waiting for a Turn that was not cre
   let closeCount = 0;
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
         activeAssistantStreams: [],
         transcript: Promise.resolve([]),
@@ -265,7 +314,7 @@ async function runProjectedTurn(rootTurn: TurnSnapshot) {
   const events = new AsyncFrameQueue();
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
         activeAssistantStreams: [],
         transcript: Promise.resolve([]),

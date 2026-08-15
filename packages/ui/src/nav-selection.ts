@@ -1,4 +1,8 @@
-export type SessionFilter = 'chats' | 'flagged' | 'archived';
+/**
+ * Archived tasks are not a rail filter. Cleaning them up is management, and it
+ * lives in Settings › 活动 › 已归档任务; the rail lists what you are working on.
+ */
+export type SessionFilter = 'chats' | 'flagged';
 export type ExtensionModule = 'skills' | 'mcp';
 export type AutomationModule = 'scheduled-tasks' | 'daily-review';
 

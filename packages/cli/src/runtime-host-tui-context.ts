@@ -45,6 +45,7 @@ export interface RuntimeHostTuiContext {
 }
 
 export interface CreateRuntimeHostTuiContextInput {
+  readonly clientDataRoot: string;
   readonly rootPath: string;
   readonly cwd: string;
   readonly resumeSessionId?: string;
@@ -56,6 +57,7 @@ export async function createRuntimeHostTuiContext(
   input: CreateRuntimeHostTuiContextInput,
 ): Promise<RuntimeHostTuiContext> {
   const connected = await connectRuntimeHostCli({
+    clientDataRoot: input.clientDataRoot,
     rootPath: input.rootPath,
     surface: 'tui',
     ...(input.hostProfileId ? { profileId: input.hostProfileId } : {}),

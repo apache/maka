@@ -18,7 +18,7 @@
     "test": "npm run clean && npm run build && npm run test:dist"
   },
   "dependencies": {
-    "@ai-sdk/code-mode": "1.0.15",
-    "ai": "7.0.58"
+    "@ai-sdk/code-mode": "1.0.23",
+    "ai": "7.0.66"
   }
 }

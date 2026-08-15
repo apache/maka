@@ -12,6 +12,10 @@ import type { E2eFixture } from './e2e-fixture.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
 import { isThemePreference, toNativeThemeSource } from './theme-source.js';
 import { createWindowRevealGate } from './window-reveal.js';
+import {
+  parseDesktopSessionResourceKey,
+  type DesktopHostRef,
+} from '../preload/runtime-host-identity.js';
 
 type SettingsReader = {
   get(): Promise<AppSettings>;
@@ -62,6 +66,7 @@ interface MainWindowControllerDeps {
   // main.ts computes this from the same isE2e gate that also guards userData
   // and the fake backend, so main-window.ts owns no env policy of its own.
   startHidden: boolean;
+  getActiveRuntimeHostRef?: () => DesktopHostRef | undefined;
   onClose?: () => void;
 }
 
@@ -157,10 +162,26 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         create: (sessionId) => {
           if (!mainWindow) throw new Error('Embedded browser used before the window is ready.');
           return new BrowserViewController(mainWindow, sessionId, (sid, state) => {
-            safeSendToRenderer('browser:state', { sessionId: sid, state });
+            const ref = parseDesktopSessionResourceKey(sid);
+            safeSendToRenderer(
+              'browser:state',
+              { hostId: ref.hostId, targetEpoch: ref.targetEpoch },
+              { sessionId: ref.sessionId, state },
+            );
           });
         },
-        onLiveChange: (sessionIds) => safeSendToRenderer('browser:live', { sessionIds }),
+        onLiveChange: (sessionIds) => {
+          const activeHost = deps.getActiveRuntimeHostRef?.();
+          if (!activeHost) return;
+          const activeSessionIds = sessionIds.flatMap((sessionId) => {
+            const ref = parseDesktopSessionResourceKey(sessionId);
+            return ref.hostId === activeHost.hostId &&
+              ref.targetEpoch === activeHost.targetEpoch
+              ? [ref.sessionId]
+              : [];
+          });
+          safeSendToRenderer('browser:live', activeHost, { sessionIds: activeSessionIds });
+        },
       });
     }
     return browserViews;

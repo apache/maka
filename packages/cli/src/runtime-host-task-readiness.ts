@@ -50,10 +50,11 @@ export function isRuntimeHostCliTaskBlocked(snapshot: TaskSubmissionReadinessSna
 
 export function formatRuntimeHostCliTaskBlockers(
   snapshot: TaskSubmissionReadinessSnapshot,
+  cliCommand = 'maka',
 ): string {
   return snapshot.blockers
     .filter((blocker) => blocker.state !== 'unknown')
-    .map((blocker) => `${blocker.blockerCode ?? blocker.id}: ${repairHint(blocker)}`)
+    .map((blocker) => `${blocker.blockerCode ?? blocker.id}: ${repairHint(blocker, cliCommand)}`)
     .join('\n');
 }
 
@@ -126,14 +127,14 @@ async function inspectWorkspace(
   }
 }
 
-function repairHint(blocker: TaskSubmissionReadinessDimension): string {
+function repairHint(blocker: TaskSubmissionReadinessDimension, cliCommand: string): string {
   const target = blocker.repairTarget;
   if (!target) return 'retry the command';
   switch (target.kind) {
     case 'provider_catalog':
-      return 'run `maka` to configure a model provider';
+      return `run \`${cliCommand}\` to configure a model provider`;
     case 'connection':
-      return `repair connection "${target.connectionSlug}" in \`maka\``;
+      return `repair connection "${target.connectionSlug}" in \`${cliCommand}\``;
     case 'models':
       return 'choose an available connection with `--connection`';
     case 'runtime_restart':

@@ -546,6 +546,7 @@ test('two Clients share one execution after the starting Client disconnects', as
     assert.equal(started.turnId, turnId);
     const secondSubscription = await second.openSessionSubscription({
       sessionId: fixture.sessionId,
+      transcript: { kind: 'tail', maxBytes: 16 * 1024 },
     });
     const transcript = await secondSubscription.loadTranscript(decodeStoredMessage);
     assert.ok(
@@ -866,7 +867,10 @@ test('a disconnected Client leaves a durable Interaction that another Client can
     await first.close();
 
     const second = await connectClient(fixture.root, 'tui');
-    const subscription = await second.openSessionSubscription({ sessionId: fixture.sessionId });
+    const subscription = await second.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
     const probe = new SubscriptionProbe(subscription);
     const pending = await waitForPendingInteraction(subscription, probe, started.runId);
     assert.equal(pending.sessionId, fixture.sessionId);
@@ -960,7 +964,10 @@ test('two UDS Clients settle one hosted sandbox boundary and resume its exact Ru
     const starter = await connectClient(fixture.root, 'desktop');
     const first = await connectClient(fixture.root, 'tui');
     const second = await connectClient(fixture.root, 'run');
-    const subscription = await first.openSessionSubscription({ sessionId: fixture.sessionId });
+    const subscription = await first.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
     const probe = new SubscriptionProbe(subscription);
     const turnId = randomUUID();
     const started = requireStartedTurn(

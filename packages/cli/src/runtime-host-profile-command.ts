@@ -26,11 +26,16 @@ export interface RuntimeHostProfileCommandDeps {
   readonly write: (value: string) => void;
 }
 
+export interface RuntimeHostProfileCommandOptions {
+  readonly clientDataRoot: string;
+}
+
 export async function runRuntimeHostProfileCommand(
   command: RuntimeHostProfileCommand,
   overrides: Partial<RuntimeHostProfileCommandDeps> = {},
+  options: RuntimeHostProfileCommandOptions = { clientDataRoot: resolveMakaClientDataRoot() },
 ): Promise<number> {
-  const deps = { ...defaultDeps(), ...overrides };
+  const deps = { ...defaultDeps(options.clientDataRoot), ...overrides };
   if (command.kind === 'list') {
     const document = await deps.catalog.read();
     deps.write(`${JSON.stringify([LOCAL_RUNTIME_HOST_PROFILE, ...document.profiles], null, 2)}\n`);
@@ -59,10 +64,9 @@ export async function runRuntimeHostProfileCommand(
   return 0;
 }
 
-function defaultDeps(): RuntimeHostProfileCommandDeps {
-  const root = resolveMakaClientDataRoot();
+function defaultDeps(clientDataRoot: string): RuntimeHostProfileCommandDeps {
   return {
-    catalog: createClientRuntimeHostProfileCatalog(root),
+    catalog: createClientRuntimeHostProfileCatalog(clientDataRoot),
     env: process.env,
     write: (value) => process.stdout.write(value),
   };

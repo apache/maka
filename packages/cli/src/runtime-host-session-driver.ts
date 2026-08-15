@@ -27,13 +27,14 @@ import {
 } from '@maka/runtime-host/adapter';
 import type { DirectRequestOperationKey, RuntimeHostConnection } from '@maka/runtime-host/client';
 import { readRuntimeHostResources, readRuntimeHostSessions } from '@maka/runtime-host/client';
-import type {
+import {
   InteractionPendingSnapshot,
   OperationInput,
   OperationOutput,
   SessionCatalogItem,
   SessionCatalogProjection,
   SessionUpdateResult,
+  SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   WorkspaceTarget,
 } from '@maka/runtime-host/protocol';
 import {
@@ -121,6 +122,11 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   #model: string;
   #llmConnectionSlug: string;
   #thinkingLevel: ThinkingLevel | undefined;
+  // Construction-time default a fresh Session is created with. Per-session
+  // elevations (the picker, a resumed Session's boundary) update
+  // `#permissionMode` only; `startNewSession` falls back to this so Full
+  // access never leaks into a fresh Session (#3020).
+  readonly #defaultPermissionMode: PermissionMode;
   #permissionMode: PermissionMode;
   #activeBoundaryDisplayMode: PermissionMode | undefined;
   #orchestrationMode: OrchestrationMode;
@@ -163,7 +169,8 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     };
     this.#model = input.model;
     this.#llmConnectionSlug = input.llmConnectionSlug;
-    this.#permissionMode = input.permissionMode ?? 'ask';
+    this.#defaultPermissionMode = input.permissionMode ?? 'ask';
+    this.#permissionMode = this.#defaultPermissionMode;
     this.#orchestrationMode = input.orchestrationMode ?? 'default';
   }
 
@@ -503,17 +510,15 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   async listRewindTargets(): Promise<RewindTarget[]> {
     if (!this.#sessionId) return [];
     const messages = await loadCurrentMessages(this.#connection, this.#sessionId);
-    const prompts = new Map<string, string>();
-    const order: string[] = [];
+    const seenTurnIds = new Set<string>();
+    const targets: RewindTarget[] = [];
     for (const message of messages) {
-      if (message.type !== 'user' || prompts.has(message.turnId)) continue;
-      prompts.set(message.turnId, userFacingText(message));
-      order.push(message.turnId);
+      if (message.type !== 'user' || seenTurnIds.has(message.turnId)) continue;
+      seenTurnIds.add(message.turnId);
+      if (message.origin) continue;
+      targets.push({ turnId: message.turnId, label: firstLine(userFacingText(message)) });
     }
-    return order.reverse().map((turnId) => ({
-      turnId,
-      label: firstLine(prompts.get(turnId) ?? ''),
-    }));
+    return targets.reverse();
   }
 
   async rewindToTurn(turnId: string): Promise<MakaSessionRewindResult> {
@@ -524,6 +529,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         message.type === 'user' && message.turnId === turnId,
     );
     if (!promptMessage) throw new Error(`Cannot rewind to turn ${turnId}: no user prompt.`);
+    if (promptMessage.origin) {
+      throw new Error(`Cannot rewind to turn ${turnId}: Host-triggered prompts are read-only.`);
+    }
     const targetSessionId = this.#newId();
     for (let attempt = 0; attempt < MAX_CATALOG_ATTEMPTS; attempt += 1) {
       const current = await getRuntimeHostSession(this.#connection, sourceSessionId);
@@ -548,6 +556,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#sessionGeneration += 1;
     this.#channelGeneration += 1;
     this.#sessionId = null;
+    // A fresh Session starts at the construction-time default. Leaving a
+    // previous Session's elevation in `#permissionMode` would both misreport
+    // the mode and create the next Session with it (#3020). Full access stays
+    // an explicit per-session opt-in; `setPermissionMode` can still raise the
+    // mode before the first prompt creates the Session.
+    this.#permissionMode = this.#defaultPermissionMode;
     this.#activeBoundaryDisplayMode = undefined;
     void this.#replaceChannel(undefined);
   }
@@ -611,13 +625,31 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     const diagnostics = await this.#request('context.diagnostics.query', {
       sessionId: this.#sessionId,
     });
-    return diagnostics.status === 'unavailable'
-      ? diagnostics
-      : {
-          ...diagnostics,
-          segments: diagnostics.segments.map((segment) => ({ ...segment })),
-          ...(diagnostics.compaction ? { compaction: { ...diagnostics.compaction } } : {}),
-        };
+    if (diagnostics.status === 'unavailable') return diagnostics;
+    // The protocol frame is readonly; the CLI's own type is not. Copied field
+    // by field rather than spread so a future protocol field cannot arrive
+    // here unnoticed.
+    const { composition, compaction, ...rest } = diagnostics;
+    return {
+      ...rest,
+      ...(composition
+        ? {
+            composition: {
+              segments: composition.segments.map((segment) => ({ ...segment })),
+              ...(composition.tools
+                ? { tools: composition.tools.map((tool) => ({ ...tool })) }
+                : {}),
+              ...(composition.remainingTools
+                ? { remainingTools: { ...composition.remainingTools } }
+                : {}),
+              ...(composition.unlabelledToolBytes !== undefined
+                ? { unlabelledToolBytes: composition.unlabelledToolBytes }
+                : {}),
+            },
+          }
+        : {}),
+      ...(compaction ? { compaction: { ...compaction } } : {}),
+    };
   }
 
   getOrchestrationMode(): OrchestrationMode {
@@ -1044,7 +1076,10 @@ async function loadCurrentMessages(
   connection: RuntimeHostSessionDriverConnection,
   sessionId: string,
 ): Promise<StoredMessage[]> {
-  const subscription = await connection.openSessionSubscription({ sessionId });
+  const subscription = await connection.openSessionSubscription({
+    sessionId,
+    transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
+  });
   const draining = (async () => {
     for await (const _frame of subscription) {
       // The transcript is pinned to the subscription snapshot. Drain newer

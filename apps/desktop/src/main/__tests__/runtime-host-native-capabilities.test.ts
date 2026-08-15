@@ -187,27 +187,30 @@ test('validates before admission and invokes the exact offered tool with Host co
         context: Pick<MakaToolContext, 'sessionId' | 'turnId' | 'cwd' | 'toolCallId'>;
       }
     | undefined;
-  const provider = createDesktopNativeCapabilityProvider({
-    browserTools: [
-      tool('browser_navigate', z.object({ url: z.string().url() }), async (args, context) => {
-        assert.equal(admitted, true);
-        invoked = true;
-        received = {
-          args,
-          context: {
-            sessionId: context.sessionId,
-            turnId: context.turnId,
-            cwd: context.cwd,
-            toolCallId: context.toolCallId,
-          },
-        };
-        return 'Loaded';
-      }),
-    ],
-    releaseBrowserSession() {},
-    computerUseTools: computerTools(),
-    releaseComputerUseSession() {},
-  });
+  const provider = createDesktopNativeCapabilityProvider(
+    {
+      browserTools: [
+        tool('browser_navigate', z.object({ url: z.string().url() }), async (args, context) => {
+          assert.equal(admitted, true);
+          invoked = true;
+          received = {
+            args,
+            context: {
+              sessionId: context.sessionId,
+              turnId: context.turnId,
+              cwd: context.cwd,
+              toolCallId: context.toolCallId,
+            },
+          };
+          return 'Loaded';
+        }),
+      ],
+      releaseBrowserSession() {},
+      computerUseTools: computerTools(),
+      releaseComputerUseSession() {},
+    },
+    { nativeSessionId: (sessionId) => `host-a:${sessionId}` },
+  );
 
   await assert.rejects(
     () => call(provider, capabilityFrame({ arguments: { url: 'not a url' } }), () => undefined),
@@ -223,7 +226,7 @@ test('validates before admission and invokes the exact offered tool with Host co
   assert.deepEqual(received, {
     args: { url: 'https://example.com' },
     context: {
-      sessionId: 'session-1',
+      sessionId: 'host-a:session-1',
       turnId: 'turn-1',
       cwd: '/workspace',
       toolCallId: 'tool-call-1',
@@ -234,17 +237,22 @@ test('validates before admission and invokes the exact offered tool with Host co
 test('watches Computer Use turns without widening Browser lifecycle', async () => {
   const usedSessions: string[] = [];
   const computerUseTurns: Array<[string, string]> = [];
+  let computerUseSessionId: string | undefined;
   const provider = createDesktopNativeCapabilityProvider(
     {
       browserTools: [tool('browser_snapshot', z.object({}), async () => 'snapshot')],
       releaseBrowserSession() {},
-      computerUseTools: computerTools(async () => ({ text: 'observed' })),
+      computerUseTools: computerTools(async (_args, context) => {
+        computerUseSessionId = context.sessionId;
+        return { text: 'observed' };
+      }),
       releaseComputerUseSession() {},
     },
     {
       onSessionUsed: (sessionId) => usedSessions.push(sessionId),
       onComputerUseTurnUsed: (sessionId, turnId) =>
         computerUseTurns.push([sessionId, turnId]),
+      nativeSessionId: (sessionId) => `host-a:${sessionId}`,
     },
   );
 
@@ -261,6 +269,7 @@ test('watches Computer Use turns without widening Browser lifecycle', async () =
   );
   assert.deepEqual(usedSessions, ['session-1', 'session-2']);
   assert.deepEqual(computerUseTurns, [['session-2', 'turn-2']]);
+  assert.equal(computerUseSessionId, 'host-a:session-2');
 });
 
 test('projects Computer Use screenshots and releases all native resources for a Session', async () => {

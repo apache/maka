@@ -308,6 +308,7 @@ export class AgentGraphSupervisorWakeCoordinator {
   async runWithSessionWakesSuppressed<T>(
     rootSessionId: string,
     operation: () => Promise<T>,
+    reason = 'agent_graph_stopped',
   ): Promise<T> {
     this.#beginSessionWakeSuppression(rootSessionId);
     try {
@@ -315,7 +316,7 @@ export class AgentGraphSupervisorWakeCoordinator {
     } finally {
       try {
         await this.#waitForSessionIdle(rootSessionId);
-        await this.#supersedeSession(rootSessionId, 'agent_graph_stopped');
+        await this.#supersedeSession(rootSessionId, reason);
       } finally {
         this.#endSessionWakeSuppression(rootSessionId);
       }
@@ -426,12 +427,15 @@ export class AgentGraphSupervisorWakeCoordinator {
       return;
     }
     const snapshot = await this.#input.readSnapshot(wake.rootSessionId);
-    if (
-      this.#closed ||
-      snapshot.closed ||
-      snapshot.graphId !== wake.graphId ||
-      snapshot.scheduleRevision === 0
-    ) {
+    if (snapshot.graphId !== wake.graphId) {
+      await this.#input.wakeStore.supersedeAgentGraphSupervisorWakes({
+        rootSessionIds: [wake.rootSessionId],
+        graphIds: [wake.graphId],
+        reason: 'agent_graph_epoch_advanced',
+      });
+      return;
+    }
+    if (this.#closed || snapshot.closed || snapshot.scheduleRevision === 0) {
       return;
     }
     abortSignal.throwIfAborted();

@@ -40,7 +40,7 @@ import type {
 } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
-import type { SessionChangedEvent, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
+import type { SessionChangedEvent, SessionSummary, TurnRecord } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type { ExternalSessionSummary } from '@maka/core/external-session';
@@ -77,6 +77,10 @@ import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
 import type { Task, TaskLedgerChangedEvent } from '@maka/core/task-ledger';
 import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka/core/deep-research-run';
+import type {
+  DesktopTranscriptBatch,
+  DesktopTranscriptHandle,
+} from './transcript-contract.js';
 import type { PetPackManifestV1 } from '@maka/core/pet';
 import type {
   OperationInput,
@@ -87,6 +91,7 @@ import type {
   RendererRuntimeHostQueryOperation,
 } from './runtime-host-renderer-operations.js';
 import type { SessionTrace } from '@maka/core/session-trace';
+import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type {
@@ -115,7 +120,6 @@ import type {
   RemoteRuntimeHostProfile,
   RuntimeHostProfile,
 } from '@maka/runtime-host/client';
-
 export interface OnboardingSnapshot {
   state: OnboardingState;
   milestones: OnboardingMilestone[];
@@ -429,7 +433,6 @@ export interface MakaBridge {
     >;
     stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
     steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome>;
-    readMessages(sessionId: string): Promise<StoredMessage[]>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]>;
     subscribeActiveInteractions(
@@ -439,6 +442,7 @@ export interface MakaBridge {
       }) => void,
     ): () => void;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
+    listTurnLandmarks(sessionId: string): Promise<OperationOutput<'session.turn_landmarks.query'>>;
     compact(sessionId: string): Promise<void>;
     resumeLatest(sessionId: string): Promise<
       | { disposition: 'started'; runId: string; turnId: string }
@@ -492,13 +496,19 @@ export interface MakaBridge {
     cleanupSessionCopy(sessionId: string): Promise<void>;
     abandonSessionCopy(sessionId: string): Promise<void>;
   };
+  transcripts: {
+    open(
+      sessionId: string,
+      handler: (batch: DesktopTranscriptBatch) => void,
+      registerCancellation?: (cancel: () => void) => void,
+    ): Promise<DesktopTranscriptHandle>;
+  };
   externalSessions: {
     listSources(): Promise<{ adapterIds: string[] }>;
-    list(input: {
-      adapterId: string;
-      includeArchived?: boolean;
-      cursor?: string;
-    }): Promise<{ sessions: ExternalSessionSummary[]; nextCursor: string | null }>;
+    list(input: { adapterId: string; includeArchived?: boolean; cursor?: string }): Promise<{
+      sessions: ExternalSessionSummary[];
+      nextCursor: string | null;
+    }>;
     import(input: {
       adapterId: string;
       sourceSessionId: string;
@@ -678,7 +688,15 @@ export interface MakaBridge {
   };
   attachments: {
     pickFiles(): Promise<
-      | { ok: true; files: { approvalId: string; name: string; mimeType?: string; size: number }[] }
+      | {
+          ok: true;
+          files: {
+            approvalId: string;
+            name: string;
+            mimeType?: string;
+            size: number;
+          }[];
+        }
       | { ok: false; reason: 'cancelled' }
     >;
     previewApproval(approvalId: string): Promise<
@@ -804,6 +822,8 @@ export interface MakaBridge {
   inspector: {
     /** Read-only per-session causal trace (#1625). */
     trace(sessionId: string): Promise<Result<SessionTrace>>;
+    /** What the session's context is made of right now (#2323). */
+    context(sessionId: string): Promise<Result<ContextDiagnosticsResult>>;
   };
   webSearch: {
     query(input: {
@@ -859,7 +879,11 @@ export interface MakaBridge {
           ok: true;
           includedData: ConfigCategory[];
           result: {
-            connections?: { created: number; overwritten: number; skipped: number };
+            connections?: {
+              created: number;
+              overwritten: number;
+              skipped: number;
+            };
             settings?: { applied: boolean };
             credentials?: { applied: number; skipped: number };
             memory?: { applied: boolean };

@@ -82,7 +82,6 @@ const baseComposer: ComposerProps = {
   onStop: noop,
   modelLabel: 'Claude Sonnet 4.5',
   activeSession: session(),
-  activeConnectionLabel: 'Anthropic',
   activeModel: 'claude-sonnet-4-5',
   activeModelLabel: 'Claude Sonnet 4.5',
   modelChoices,

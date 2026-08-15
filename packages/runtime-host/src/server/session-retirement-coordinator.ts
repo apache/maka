@@ -11,7 +11,6 @@ import {
   type ExecutionSessionWriter,
   type SessionHeaderSnapshot,
 } from '@maka/storage/execution-stores';
-import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { type SessionManager } from '@maka/runtime/session-manager';
 import type { InteractiveTaskLedgerWriter } from '@maka/storage/task-ledger-authority';
 import {
@@ -66,6 +65,7 @@ type RetirementSessionEffects = {
 };
 type RetirementGraph = {
   hasLiveSessionState(sessionId: string): Promise<boolean>;
+  listGraphIds(sessionId: string): Promise<readonly string[]>;
 };
 type RetirementGraphWake = {
   hasLiveSessionState(sessionId: string): boolean;
@@ -378,7 +378,11 @@ export class HostSessionRetirementCoordinator {
         sessionRevisionFamilyId(header) === familyId,
     );
     const graphRoots = new Map(
-      roots.map((header) => [header.id, agentGraphIdForRootSession(header.id)]),
+      await Promise.all(
+        roots.map(
+          async (header) => [header.id, await this.#graph.listGraphIds(header.id)] as const,
+        ),
+      ),
     );
     const members = headers
       .filter((header) => {
@@ -387,7 +391,7 @@ export class HostSessionRetirementCoordinator {
         const parent = header.subagentParent;
         return (
           parent?.graph !== undefined &&
-          parent.graph.graphId === graphRoots.get(parent.parentSessionId)
+          graphRoots.get(parent.parentSessionId)?.includes(parent.graph.graphId) === true
         );
       })
       .map((header) => header.id);

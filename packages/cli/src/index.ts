@@ -37,7 +37,13 @@ export {
   type MakaRunSessionSelectionInput,
 } from './run-session-selection.js';
 export {
+  deriveMakaDataRoots,
+  resolveMakaClientDataRoot,
+  resolveMakaDataRoots,
   resolveMakaWorkspaceRoot,
+  type DeriveMakaDataRootsInput,
+  type MakaDataRoots,
+  type ResolveMakaClientDataRootInput,
   type ResolveMakaWorkspaceRootInput,
 } from './workspace-root.js';
 export {

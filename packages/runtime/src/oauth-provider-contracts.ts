@@ -45,7 +45,12 @@ export const OAUTH_PROVIDER_CONTRACTS = {
     authorizationEndpoint: 'https://claude.com/cai/oauth/authorize',
     tokenEndpoint: 'https://platform.claude.com/v1/oauth/token',
     redirectUri: 'https://platform.claude.com/oauth/code/callback',
-    scope: 'user:sessions:claude_code user:mcp_servers user:file_upload',
+    // `user:inference` is what authorizes Messages API calls; without it the
+    // granted token is session-scoped only and every inference request fails
+    // with `permission_error: OAuth token does not meet scope requirement
+    // any_of(..., user:inference, ...)`. The consent screen renders it as
+    // "Contribute to your Claude subscription usage".
+    scope: 'user:inference user:sessions:claude_code user:mcp_servers user:file_upload',
     tokenUserAgent: 'claude-cli/2.1.153 (external, cli)',
     presentation: 'paste-code',
     experimentalEnvironmentVariable: 'MAKA_CLAUDE_SUBSCRIPTION_EXPERIMENTAL',

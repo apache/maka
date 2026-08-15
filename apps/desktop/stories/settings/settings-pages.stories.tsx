@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { userEvent } from 'storybook/test';
-import { ToastProvider } from '@maka/ui';
+import { ToastProvider, useToast } from '@maka/ui';
 import type {
   AppSettings,
   SettingsSection,
@@ -18,6 +18,8 @@ import type {
   PermissionSnapshot,
 } from '@maka/core/capabilities';
 import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
+import type { SessionSummary } from '@maka/core/session';
+import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
 import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState } from '@maka/core/local-memory';
 import { buildHealthSnapshot } from '@maka/core/health';
@@ -26,6 +28,8 @@ import { DEFAULT_DAILY_REVIEW_CONFIG } from '@maka/core/daily-review';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
 import type { ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
+import type { ProjectRecord } from '@maka/core/project';
+import type { ArchivedTasksBridge } from '../../src/renderer/settings/tasks-settings-page';
 import { withScopedMakaBridge } from '../maka-bridge';
 const STORY_PLATFORM = 'darwin' as const;
 
@@ -662,6 +666,126 @@ const makaBridge = {
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
 
+// 已归档任务 renders the shell's catalog, so its fixture is sessions +
+// projects rather than a settings patch. The set is chosen to exercise the
+// projection itself: a revision family that must fold to one row, a linked
+// subagent whose parent is present (hidden) and one whose parent is gone
+// (listed), a task in no project, and an active task the page must drop.
+function archivedTask(
+  id: string,
+  name: string,
+  ageDays: number,
+  overrides: Partial<SessionSummary> = {},
+): SessionSummary {
+  return {
+    id,
+    name,
+    isFlagged: false,
+    isArchived: true,
+    labels: [],
+    hasUnread: false,
+    status: 'done',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'zai-live',
+    connectionLocked: true,
+    model: 'glm-4.7',
+    permissionMode: 'ask',
+    lastMessageAt: NOW - ageDays * 24 * 60 * 60 * 1000,
+    ...overrides,
+  };
+}
+
+function storyLinkedTo(parentSessionId: string): Partial<SessionSummary> {
+  return {
+    subagentParent: {
+      kind: 'subagent',
+      parentSessionId,
+      spawnedBy: { parentRunId: 'run-1', parentTurnId: 'turn-1', toolCallId: 'call-1' },
+      lifecycle: 'foreground',
+    },
+  };
+}
+
+const archivedTaskSessions: SessionSummary[] = [
+  archivedTask('task-spawn', 'Single agent_spawn with local_read for runtime/src inspection', 6, {
+    projectId: 'proj-maka',
+  }),
+  // Folds together with `task-spawn` into one row.
+  archivedTask('task-spawn-v2', 'Single agent_spawn, second attempt', 5, {
+    projectId: 'proj-maka',
+    revisionRootSessionId: 'task-spawn',
+    revisionParentSessionId: 'task-spawn',
+  }),
+  // Hidden: its parent is on the list, so it is part of that task.
+  archivedTask('task-child', 'Inspect the runtime source directory', 6, {
+    projectId: 'proj-maka',
+    ...storyLinkedTo('task-spawn'),
+  }),
+  // Listed: its parent is gone, so nothing else can reach it.
+  archivedTask('task-orphan', 'Leftover subagent run', 9, {
+    projectId: 'proj-maka',
+    ...storyLinkedTo('deleted-parent'),
+  }),
+  archivedTask('task-sort', '修复归档任务在导轨里的排序', 14, { projectId: 'proj-astryx' }),
+  archivedTask('task-unfiled', 'Analyze entire project', 32),
+  archivedTask('task-active', 'An active task the page must not list', 0, { isArchived: false }),
+];
+
+const archivedTaskProjects: ProjectRecord[] = [
+  { id: 'proj-maka', name: 'maka-agent', locations: [], available: true },
+  { id: 'proj-astryx', name: 'astryx-design', locations: [], available: true },
+];
+
+/**
+ * Story-local stand-in for the shell's catalog. Restoring, deleting and
+ * clearing really remove rows, because a story whose buttons resolve to
+ * nothing shows a list that cannot answer the question it is there to answer.
+ */
+function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedTasksBridge {
+  const toast = useToast();
+  const [sessions, setSessions] = useState<SessionSummary[]>([...seed]);
+  const confirmDelete = (sessionId: string) =>
+    toast.confirm({
+      title: `彻底删除「${sessions.find((session) => session.id === sessionId)?.name ?? ''}」？`,
+      description: '任务及其全部消息会被永久删除，无法撤销。',
+      confirmLabel: '永久删除',
+      cancelLabel: '取消',
+      destructive: true,
+    });
+  // Both writes go out with `revisionFamily: true`, so a row takes its whole
+  // edit-and-resend family with it. Dropping only the id on screen would leave
+  // an older revision behind and show a list the real app never produces.
+  const drop = (ids: readonly string[]) => {
+    setSessions((current) => {
+      const doomed = new Set(ids.flatMap((id) => revisionFamilySessionIds(current, id)));
+      return current.filter((session) => !doomed.has(session.id));
+    });
+  };
+  return {
+    sessions,
+    projects: archivedTaskProjects,
+    onRestore: (sessionId) =>
+      setSessions((current) => {
+        const family = new Set(revisionFamilySessionIds(current, sessionId));
+        return current.map((session) =>
+          family.has(session.id) ? { ...session, isArchived: false } : session,
+        );
+      }),
+    // Mirrors the shell's own row action, which always confirms first — a
+    // story where a row vanishes on one click would be showing an interaction
+    // the app does not have.
+    onDelete: (sessionId) => {
+      void confirmDelete(sessionId).then((ok) => {
+        if (ok) drop([sessionId]);
+      });
+    },
+    onPurge: async (sessionIds) => {
+      drop(sessionIds);
+      return { removed: sessionIds.length, remaining: [], verified: true, firstError: undefined };
+    },
+  };
+}
+
 // #1364: list-page variants — empty vs populated vs long-content, per the
 // tracking issue's expected deliverables.
 
@@ -847,11 +971,29 @@ function makeBotAttentionBridge(settings: AppSettings) {
 
 const withBotAttentionBridge = withScopedMakaBridge(makeBotAttentionBridge(botAttentionSettings));
 
-function SettingsStory(props: {
+type SettingsStoryProps = {
   section: SettingsSection;
   connections?: LlmConnection[];
   defaultSlug?: string | null;
-}) {
+  /** Seeds 已归档任务. Empty for every story that is not about that page. */
+  archivedTaskSessions?: readonly SessionSummary[];
+};
+
+/**
+ * The provider has to sit above the body: 已归档任务's story bridge confirms
+ * through the same toast surface the shell's row action uses, and a hook cannot
+ * reach a provider its own component renders.
+ */
+function SettingsStory(props: SettingsStoryProps) {
+  return (
+    <ToastProvider>
+      <SettingsStoryFrame {...props} />
+    </ToastProvider>
+  );
+}
+
+function SettingsStoryFrame(props: SettingsStoryProps) {
+  const archivedTasks = useArchivedTasksStoryBridge(props.archivedTaskSessions ?? []);
   const initialFocusRef = useRef<HTMLButtonElement>(null);
   const [uiLocaleUpdateGate] = useState(createUiLocaleUpdateGate);
   // Fidelity: the theme and palette pickers are the 外观 page's whole content,
@@ -862,7 +1004,7 @@ function SettingsStory(props: {
   const [themePalette, setThemePalette] = useState<ThemePalette>('default');
 
   return (
-    <ToastProvider>
+    <>
       {/* `100dvh`, not `100%`: `SettingsSurface` is a `Layout height="fill"`,
           which needs a bounded ancestor to hand its content pane a scroll
           box. Under Storybook's fullscreen body a percentage height resolves
@@ -893,9 +1035,10 @@ function SettingsStory(props: {
           initialFocusRef={initialFocusRef}
           onOpenDailyReview={noop}
           onOpenSession={noop}
+          archivedTasks={archivedTasks}
         />
       </div>
-    </ToastProvider>
+    </>
   );
 }
 
@@ -1089,4 +1232,12 @@ export const HealthCenter: Story = {
 export const About: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="about" />,
+};
+
+// Real path: 设置 → 已归档任务, after archiving tasks from the rail's row menu.
+export const ArchivedTasks: Story = {
+  decorators: [withSettingsBridge],
+  render: () => (
+    <SettingsStory section="archived-tasks" archivedTaskSessions={archivedTaskSessions} />
+  ),
 };

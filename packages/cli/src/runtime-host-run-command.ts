@@ -37,11 +37,16 @@ import {
   isRuntimeHostCliTaskBlocked,
   readRuntimeHostCliTaskReadiness,
 } from './runtime-host-task-readiness.js';
+import { resolveMakaClientDataRoot } from './workspace-root.js';
 
 const GRAPH_POLL_INTERVAL_MS = 25;
 
 export interface RuntimeHostRunCommandDeps {
-  connect(rootPath: string, hostProfileId?: string): Promise<RuntimeHostCliConnectionContext>;
+  connect(
+    rootPath: string,
+    hostProfileId: string | undefined,
+    clientDataRoot: string,
+  ): Promise<RuntimeHostCliConnectionContext>;
   createContext(
     connection: RuntimeHostConnection,
     catalog: RuntimeHostCliConnectionContext['catalog'],
@@ -49,6 +54,11 @@ export interface RuntimeHostRunCommandDeps {
     profile: RuntimeHostProfile,
   ): MakaRunContext | Promise<MakaRunContext>;
   run: typeof runMakaTextCliCore;
+}
+
+export interface RuntimeHostTextCliOptions {
+  readonly cliCommand: string;
+  readonly clientDataRoot: string;
 }
 
 export interface RuntimeHostRunContextDeps {
@@ -61,6 +71,10 @@ export async function runRuntimeHostTextCli(
   argv: readonly string[],
   overrides: Partial<MakaRunEnvironmentDeps> = {},
   commandOverrides: Partial<RuntimeHostRunCommandDeps> = {},
+  options: RuntimeHostTextCliOptions = {
+    cliCommand: 'maka',
+    clientDataRoot: resolveMakaClientDataRoot(),
+  },
 ): Promise<number> {
   const commandDeps = { ...defaultRuntimeHostRunCommandDeps(), ...commandOverrides };
   let connected: RuntimeHostCliConnectionContext | undefined;
@@ -68,7 +82,7 @@ export async function runRuntimeHostTextCli(
     rootPath: string,
     hostProfileId?: string,
   ): Promise<RuntimeHostCliConnectionContext> => {
-    connected ??= await commandDeps.connect(rootPath, hostProfileId);
+    connected ??= await commandDeps.connect(rootPath, hostProfileId, options.clientDataRoot);
     return connected;
   };
   try {
@@ -86,6 +100,7 @@ export async function runRuntimeHostTextCli(
             context.catalog,
             context.profile,
             input,
+            options.cliCommand,
           );
           return commandDeps.createContext(
             context.connection,
@@ -95,7 +110,7 @@ export async function runRuntimeHostTextCli(
           );
         },
       },
-      overrides,
+      { ...overrides, cliCommand: () => options.cliCommand },
     );
   } finally {
     await connected?.close().catch(() => undefined);
@@ -104,11 +119,12 @@ export async function runRuntimeHostTextCli(
 
 function defaultRuntimeHostRunCommandDeps(): RuntimeHostRunCommandDeps {
   return {
-    connect: (rootPath, hostProfileId) =>
+    connect: (rootPath, hostProfileId, clientDataRoot) =>
       connectRuntimeHostCli({
         rootPath,
         surface: 'run',
         ...(hostProfileId ? { profileId: hostProfileId } : {}),
+        clientDataRoot,
       }),
     createContext: (connection, catalog, input) =>
       createRuntimeHostRunContext(connection, catalog, input),
@@ -170,6 +186,7 @@ async function prepareRuntimeHostRunInput(
   catalog: RuntimeHostCliConnectionContext['catalog'],
   profile: RuntimeHostProfile,
   input: Parameters<MakaRunDeps['createContext']>[0],
+  cliCommand: string,
 ): Promise<Parameters<MakaRunDeps['createContext']>[0]> {
   let projectId = input.projectId;
   if (profile.kind === 'remote' && !input.resumeSessionId) {
@@ -194,7 +211,9 @@ async function prepareRuntimeHostRunInput(
     ...(preparedInput.requestedModel ? { model: preparedInput.requestedModel } : {}),
   });
   if (isRuntimeHostCliTaskBlocked(snapshot)) {
-    throw new Error(`Task is not ready:\n${formatRuntimeHostCliTaskBlockers(snapshot)}`);
+    throw new Error(
+      `Task is not ready:\n${formatRuntimeHostCliTaskBlockers(snapshot, cliCommand)}`,
+    );
   }
   return preparedInput;
 }

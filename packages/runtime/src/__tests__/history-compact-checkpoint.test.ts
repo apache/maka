@@ -9,7 +9,10 @@ import {
   matchHistoryCompactCheckpointPrefix,
   validateHistoryCompactCheckpointShape,
 } from '../history-compact-checkpoint.js';
-import { loadLatestHistoryCompactCheckpointFromRunLedger } from '../history-compact-ledger.js';
+import {
+  loadHistoryCompactCheckpointsFromRunLedger,
+  loadLatestHistoryCompactCheckpointFromRunLedger,
+} from '../history-compact-ledger.js';
 import { estimateRuntimeEventsTokens } from '../context-budget.js';
 import { applyRuntimeEventHistoryCompact } from '../history-compact.js';
 
@@ -182,6 +185,73 @@ describe('history compact checkpoint', () => {
     const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
 
     assert.equal(loaded?.checkpointId, latest.checkpointId);
+    assert.deepEqual(
+      (await loadHistoryCompactCheckpointsFromRunLedger(store, 'session-1')).map(
+        (checkpoint) => checkpoint.checkpointId,
+      ),
+      [first.checkpointId, latest.checkpointId],
+    );
+  });
+
+  test('binds an automatic Memory boundary into checkpoint identity while legacy remains valid', () => {
+    const source = [textEvent(0)];
+    const legacy = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: source,
+      summary: 'same summary',
+    });
+    const automatic = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: source,
+      summary: 'same summary',
+      memoryExtractionBoundary: {
+        runId: 'run-1',
+        turnId: 'turn-1',
+        runtimeEventId: 'event-boundary',
+      },
+    });
+    const denied = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: source,
+      summary: 'same summary',
+      memoryExtractionBoundary: {
+        runId: 'run-1',
+        turnId: 'turn-1',
+        runtimeEventId: 'event-boundary',
+        disposition: 'policy_denied',
+      },
+    });
+
+    assert.notEqual(automatic.checkpointId, legacy.checkpointId);
+    assert.notEqual(denied.checkpointId, automatic.checkpointId);
+    assert.equal(validateHistoryCompactCheckpointShape(legacy, 'session-1'), true);
+    assert.equal(validateHistoryCompactCheckpointShape(automatic, 'session-1'), true);
+    assert.equal(
+      validateHistoryCompactCheckpointShape(
+        {
+          ...automatic,
+          memoryExtractionBoundary: {
+            ...automatic.memoryExtractionBoundary!,
+            runtimeEventId: '',
+          },
+        },
+        'session-1',
+      ),
+      false,
+    );
+    assert.equal(
+      validateHistoryCompactCheckpointShape(
+        {
+          ...denied,
+          memoryExtractionBoundary: {
+            ...denied.memoryExtractionBoundary!,
+            disposition: 'invalid' as never,
+          },
+        },
+        'session-1',
+      ),
+      false,
+    );
   });
 
   test('loads the furthest checkpoint when a later run records stale coverage', async () => {

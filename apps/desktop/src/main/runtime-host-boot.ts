@@ -28,7 +28,7 @@ import {
   createMcpConfigStore,
 } from "@maka/storage";
 import { resolveStorageRoot } from "@maka/storage/root-authority";
-import { registerAppIpc } from "./app-ipc-main.js";
+import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import { createAppUpdateService } from "./app-update-service.js";
 import { createAttachmentApprovalRegistry } from "./attachment-approval.js";
@@ -141,6 +141,11 @@ import {
 import { resolveDesktopStorageRoot } from "./storage-root-startup.js";
 import { startupStep, whileAwaitingPerson } from "./startup-step.js";
 import { registerWorkspaceSearchIpc } from "./workspace-search-ipc-main.js";
+import {
+  parseDesktopSessionResourceKey,
+  requireDesktopHostRef,
+  type DesktopHostRef,
+} from "../preload/runtime-host-identity.js";
 
 await resolveShellEnv();
 
@@ -191,7 +196,14 @@ let lastRuntimeHostTarget = startupRuntimeHost;
 let runtimeHostReadiness: RuntimeHostDesktopTargetState["readiness"] =
   "connecting";
 let lastPublishedRuntimeHostTargetEpoch: string | undefined;
+let lastPublishedRuntimeHostScope: DesktopHostRef | undefined;
 let owner: RuntimeHostDesktopOwner | undefined;
+function activeRuntimeHostRef(): DesktopHostRef | undefined {
+  const current = owner?.current();
+  return current?.hostId
+    ? { hostId: current.hostId, targetEpoch: current.epoch }
+    : undefined;
+}
 const currentRuntimeHost = (): ResolvedRuntimeHostProfile | undefined =>
   owner ? owner.current()?.target : startupRuntimeHost;
 const runtimeHostGeneration = app.isPackaged ? app.getVersion() : randomUUID();
@@ -257,6 +269,7 @@ const mainWindowController = createMainWindowController({
   e2eFixture,
   settingsStore,
   startHidden,
+  getActiveRuntimeHostRef: activeRuntimeHostRef,
   onClose: () => onMainWindowClose(),
 });
 const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
@@ -337,6 +350,7 @@ let runtimePolicyTarget:
   | {
       readonly client: DesktopRuntimeHostClient;
       readonly policy: DesktopRuntimeHostTargetPolicy;
+      readonly scope: DesktopHostRef;
       readonly projectCatalog: ReturnType<typeof createRuntimeHostProjectCatalog>;
       readonly projectManagement: ProjectManagementService;
       readonly isActive: () => boolean;
@@ -373,7 +387,7 @@ const botRegistry = new BotRegistry({
       .catch((error) => console.error("[runtime-host] bot message failed:", error));
   },
   onStatusChange: (status) => {
-    mainWindowController.send("settings:bots:statusChanged", status);
+    sendActiveRuntimeHostEvent("settings:bots:statusChanged", status);
   },
 });
 const clientSettingsEffects = createClientSettingsEffects({
@@ -385,7 +399,7 @@ const clientSettingsEffects = createClientSettingsEffects({
     ? async () => undefined
     : (settings) => botRegistry.applySettings(settings),
   emitExternalChanged: () =>
-    mainWindowController.send("settings:externalChanged", { ts: Date.now() }),
+    sendActiveRuntimeHostEvent("settings:externalChanged", { ts: Date.now() }),
 });
 const clientSettingsTools = buildClientSettingsTools({
   read: () => settingsStore.get(),
@@ -438,7 +452,7 @@ const updateService = createAppUpdateService({
   },
 });
 mcpManager.onChange(() => {
-  mainWindowController.send("mcp:changed", mcpManager.statuses());
+  sendActiveRuntimeHostEvent("mcp:changed", mcpManager.statuses());
   void mcpCapabilityPublisher.refreshIfChanged().catch((error) =>
     console.error("[runtime-host] MCP capability refresh failed:", error),
   );
@@ -446,7 +460,10 @@ mcpManager.onChange(() => {
 
 registerPersistentClientIpc();
 registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController, settingsStore });
-registerBrowserIpc({ mainWindowController });
+const browserIpc = registerBrowserIpc({
+  mainWindowController,
+  getActiveHostRef: activeRuntimeHostRef,
+});
 registerNotificationsIpc({
   ipcMain,
   settingsStore,
@@ -532,7 +549,7 @@ owner = await startRuntimeHostDesktopOwner(
             if (method === "notify_local") {
               const taskId = requireScheduledTaskEffectString(input.taskId, "taskId");
               const title = requireScheduledTaskEffectString(input.title, "title");
-              mainWindowController.send("scheduled-tasks:fired", { id: taskId, title });
+              sendActiveRuntimeHostEvent("scheduled-tasks:fired", { id: taskId, title });
               return { ok: true };
             }
             if (method === "notify_bot") {
@@ -577,8 +594,6 @@ owner = await startRuntimeHostDesktopOwner(
       );
     },
     emitSessionsChanged,
-    emitModeChanged: (sessionId) =>
-      emitSessionsChanged("mode-change", sessionId),
     completeComputerUseTurn,
     createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
       createSessionCopyCleanupAuthority({
@@ -587,8 +602,7 @@ owner = await startRuntimeHostDesktopOwner(
         resumeSessionCopy,
         processId: sessionCopyOwnerProcessId,
       }),
-    sendToRenderer: (channel, payload) =>
-      mainWindowController.send(channel, payload),
+    renderer: mainWindowController,
     onError: (error) =>
       console.error("[runtime-host] projection refresh failed:", error),
     registerClientIpc: registerHostClientIpc,
@@ -596,20 +610,38 @@ owner = await startRuntimeHostDesktopOwner(
   },
   {
     upgradePrompts: runtimeHostUpgradePrompts,
-    onTargetStateChanged: ({ epoch, target, readiness }) => {
-      runtimeHostReadiness = readiness;
-      const targetChanged = lastPublishedRuntimeHostTargetEpoch !== epoch;
-      lastPublishedRuntimeHostTargetEpoch = epoch;
-      lastRuntimeHostTarget = target;
+    onTargetStateChanged: (state) => {
+      runtimeHostReadiness = state.readiness;
+      const targetChanged = lastPublishedRuntimeHostTargetEpoch !== state.epoch;
+      if (targetChanged && lastPublishedRuntimeHostScope) {
+        void browserIpc.retireTarget(lastPublishedRuntimeHostScope).catch((error) =>
+          console.error("[runtime-host] Browser target retirement failed:", error),
+        );
+      }
+      lastPublishedRuntimeHostTargetEpoch = state.epoch;
+      lastRuntimeHostTarget = state.target;
+      const nextScope =
+        state.readiness === "ready"
+          ? { hostId: state.candidate.client.hostId, targetEpoch: state.epoch }
+          : "hostId" in state && state.hostId
+            ? { hostId: state.hostId, targetEpoch: state.epoch }
+            : undefined;
+      if (nextScope || targetChanged) lastPublishedRuntimeHostScope = nextScope;
       mainWindowController.send("runtime-host-profiles:changed", {
-        epoch,
-        profileId: target.profile.id,
+        epoch: state.epoch,
+        profileId: state.target.profile.id,
+        ...(state.readiness === "ready"
+          ? { hostId: state.candidate.client.hostId }
+          : "hostId" in state && state.hostId
+            ? { hostId: state.hostId }
+            : {}),
         targetChanged,
-        readiness,
+        readiness: state.readiness,
       });
-      if (readiness === "ready") {
-        mainWindowController.send("projects:changed");
-        emitConnectionListChanged();
+      if (state.readiness === "ready") {
+        const scope = { hostId: state.candidate.client.hostId, targetEpoch: state.epoch };
+        mainWindowController.send("projects:changed", scope);
+        emitConnectionListChanged(scope);
       }
     },
     onFatalError: (error) => {
@@ -676,8 +708,9 @@ async function handleRemoteRuntimeHostFailure(error: unknown): Promise<never> {
 }
 
 const stopComputerUseSession = (sessionId: string): void => {
+  const ref = parseDesktopSessionResourceKey(sessionId);
   void owner
-    ?.stopSession(sessionId)
+    ?.stopSession(ref)
     .catch((error) => console.error("[runtime-host] stop failed:", error));
 };
 native.computerUsePip.setStopHandler(stopComputerUseSession);
@@ -699,20 +732,21 @@ function registerHostClientIpc(
   scopedIpc: ReconnectableReadIpcMain,
   controls: DesktopRuntimeHostCandidateControls,
   target: DesktopRuntimeHostTargetPolicy,
+  scope: DesktopHostRef,
   isTargetActive: () => boolean,
 ): () => Promise<void> {
   const sendToRenderer = (channel: string, ...args: unknown[]): void => {
-    if (isTargetActive()) mainWindowController.send(channel, ...args);
+    if (isTargetActive()) mainWindowController.send(channel, scope, ...args);
   };
   const emitTargetConnectionListChanged = (): void => {
-    if (isTargetActive()) emitConnectionListChanged();
+    if (isTargetActive()) emitConnectionListChanged(scope);
   };
   const emitTargetSessionsChanged = (
     reason: SessionChangedReason,
     sessionId?: string,
     extra?: Pick<SessionChangedEvent, "connectionSlug" | "modelId" | "turnId">,
   ): void => {
-    if (isTargetActive()) emitSessionsChanged(reason, sessionId, extra);
+    if (isTargetActive()) emitSessionsChanged(scope, reason, sessionId, extra);
   };
   const targetProjectRoot = createProjectRootController({
     rootId: target.rootId,
@@ -750,6 +784,7 @@ function registerHostClientIpc(
   const targetContext = {
     client,
     policy: target,
+    scope,
     projectCatalog: targetProjectCatalog,
     projectManagement: targetProjectManagement,
     isActive: isTargetActive,
@@ -815,7 +850,6 @@ function registerHostClientIpc(
     sendToRenderer,
     showItemInFolder: (path) => shell.showItemInFolder(path),
   });
-  registerMarkdownSaveIpc({ ipcMain: scopedIpc, mainWindowController });
   registerRuntimeHostOAuthIpc({
     ipcMain: scopedIpc,
     client,
@@ -925,7 +959,6 @@ function registerHostClientIpc(
     });
   registerAppIpc(
     {
-      mainWindowController,
       projectRoot: targetProjectRoot,
       getSessionProjectRoot: (sessionId) =>
         resolveProjectRootForContext(sessionId),
@@ -934,7 +967,6 @@ function registerHostClientIpc(
       buildInfo,
       e2eFixture,
       projectManagement: targetProjectManagement,
-      updateService,
       allowLocalProjectPaths: target.kind === "local",
     },
     scopedIpc,
@@ -1037,7 +1069,53 @@ function requireScheduledTaskEffectString(value: unknown, label: string): string
 }
 
 function registerPersistentClientIpc(): void {
+  registerAppClientIpc({
+    mainWindowController,
+    e2eFixture,
+    updateService,
+  });
+  registerMarkdownSaveIpc({ ipcMain, mainWindowController });
   registerDesktopRuntimeHostProfileIpc(ipcMain, runtimeHostProfileService);
+  ipcMain.handle("sessions:unobserve", async (_event, observerId: unknown) => {
+    if (typeof observerId !== "string" || observerId.length === 0 || observerId.length > 256) {
+      throw new Error("Invalid Session observer identity");
+    }
+    await owner?.unobserveSession(observerId);
+  });
+  ipcMain.handle('sessions:transcript:close', async (event, consumerId: unknown) => {
+    if (typeof consumerId !== 'string' || consumerId.length === 0 || consumerId.length > 256) {
+      throw new Error('Invalid transcript consumer identity');
+    }
+    await owner?.closeTranscript(consumerId, event.sender.id);
+  });
+  ipcMain.handle(
+    'sessions:transcript:ack',
+    (event, scope: unknown, consumerId: unknown, generation: unknown, deliverySequence: unknown) => {
+      const active = activeRuntimeHostRef();
+      if (!active) throw new Error('Desktop Runtime Host identity is unavailable');
+      requireDesktopHostRef(scope, active);
+      if (typeof consumerId !== 'string' || consumerId.length === 0 || consumerId.length > 256) {
+        throw new Error('Invalid transcript consumer identity');
+      }
+      if (typeof generation !== 'string' || generation.length === 0 || generation.length > 256) {
+        throw new Error('Invalid transcript generation');
+      }
+      if (!Number.isSafeInteger(deliverySequence) || Number(deliverySequence) < 0) {
+        throw new Error('Invalid transcript delivery');
+      }
+      owner?.acknowledgeTranscript(
+        consumerId,
+        generation,
+        Number(deliverySequence),
+        event.sender.id,
+      );
+    },
+  );
+  ipcMain.handle("runtime-host:activeIdentity", () => {
+    const scope = activeRuntimeHostRef();
+    if (!scope) throw new Error("Desktop Runtime Host identity is unavailable");
+    return scope;
+  });
   registerDesktopDiagnosticsIpc({
     ipcMain,
     environment: () => ({
@@ -1056,17 +1134,7 @@ function registerPersistentClientIpc(): void {
       processUptimeSeconds: process.uptime(),
     }),
     mainLogs: () => mainProcessLogBuffer.snapshot(),
-    getRuntimeHostDiagnostics: async () => {
-      return requireActiveRuntimePolicyTarget().client.queryHostDiagnostics();
-    },
-    getRuntimeHostTurnTrace: async (sessionId, turnId) => {
-      const result = await requireActiveRuntimePolicyTarget().client.request('execution.inspect.query', {
-        kind: "turn_trace",
-        sessionId,
-        turnId,
-      });
-      return result.kind === "turn_trace" ? result.turn : undefined;
-    },
+    resolveRuntimeHost: resolveRuntimeHostDiagnostics,
     writeClipboard: (report) => clipboard.writeText(report),
   });
   ipcMain.handle("attachments:pickFiles", async (event) => {
@@ -1105,22 +1173,47 @@ function requireRuntimePolicyTarget(target: DesktopRuntimeHostTargetPolicy) {
   return current;
 }
 
-function requireActiveRuntimePolicyTarget() {
+function resolveRuntimeHostDiagnostics(scope: DesktopHostRef) {
+  const active = activeRuntimeHostRef();
+  if (
+    !active ||
+    active.hostId !== scope.hostId ||
+    active.targetEpoch !== scope.targetEpoch
+  ) {
+    throw new Error("Desktop Runtime Host request belongs to a different target");
+  }
   const current = runtimePolicyTarget;
-  if (!current?.isActive()) throw new Error("Runtime Host is unavailable");
-  return current;
+  if (!current?.isActive()) return undefined;
+  const client = current.client;
+  return {
+    getDiagnostics: () => client.queryHostDiagnostics(),
+    getTurnTrace: async (sessionId: string, turnId: string) => {
+      const result = await client.request('execution.inspect.query', {
+        kind: "turn_trace",
+        sessionId,
+        turnId,
+      });
+      return result.kind === "turn_trace" ? result.turn : undefined;
+    },
+  };
 }
 
-function emitConnectionListChanged(): void {
+function sendActiveRuntimeHostEvent(channel: string, ...args: unknown[]): void {
+  const scope = activeRuntimeHostRef();
+  if (scope) mainWindowController.send(channel, scope, ...args);
+}
+
+function emitConnectionListChanged(scope: DesktopHostRef): void {
   const event: ConnectionEvent = {
     type: "connection_list_changed",
     id: randomUUID(),
     ts: Date.now(),
   };
-  mainWindowController.send("connections:event", event);
+  mainWindowController.send("connections:event", scope, event);
 }
 
 function emitSessionsChanged(
+  scope: DesktopHostRef,
   reason: SessionChangedReason,
   sessionId?: string,
   extra?: Pick<SessionChangedEvent, "connectionSlug" | "modelId" | "turnId">,
@@ -1134,7 +1227,7 @@ function emitSessionsChanged(
     ...(extra?.modelId ? { modelId: extra.modelId } : {}),
     ...(extra?.turnId ? { turnId: extra.turnId } : {}),
   };
-  mainWindowController.send("sessions:changed", event);
+  mainWindowController.send("sessions:changed", scope, event);
 }
 
 function wireLifecycle(): void {
@@ -1203,6 +1296,7 @@ function resolveDesktopE2eFixture(): ReturnType<typeof resolveE2eFixture> {
       process.env.MAKA_E2E_FIXTURE_LOCALE,
       process.env.MAKA_E2E_FIXTURE_TIMEZONE,
       process.env.MAKA_E2E_FIXTURE_PLATFORM,
+      process.env.MAKA_E2E_FIXTURE_SCROLL_MOTION,
     );
   } catch (error) {
     if (!process.env.MAKA_E2E_FIXTURE) throw error;

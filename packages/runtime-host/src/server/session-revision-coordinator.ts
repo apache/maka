@@ -76,7 +76,7 @@ export interface HostSessionRevisionCoordinatorOptions {
   readonly continuity: SessionContinuityCoordinator;
   readonly graph: Pick<
     import('@maka/runtime/stream-graph-coordinator').AgentGraphCoordinator,
-    'readSessionState'
+    'readGraphState' | 'readSessionState'
   >;
   readonly isSessionActive: (sessionId: string) => boolean;
   readonly requestDrain: () => void;

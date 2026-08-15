@@ -19,7 +19,9 @@ import {
 } from '@maka/storage/execution-stores';
 import {
   SESSION_CATALOG_RESULT_MAX_BYTES,
+  SESSION_TURN_QUERY_RESULT_MAX_BYTES,
   type SessionConfigurationUpdateInput,
+  type SessionTurnContribution,
 } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostProjectMembershipGate } from '../server/project-membership-gate.js';
@@ -59,6 +61,64 @@ test('projects only bounded execution boundary presentation facts', async () => 
     ok: true,
     result: { kind: 'managed', access: 'read_only', revision: 0 },
   });
+});
+
+test('reduces turn pages to their encoded wire budget without skipping contributions', async () => {
+  const contributions: SessionTurnContribution[] = Array.from({ length: 128 }, (_, index) => ({
+    turnId: `turn-${index}`,
+    firstSequence: index,
+    latestState: null,
+    userPromptPreview: '\0'.repeat(256),
+    hasAssistantMessage: false,
+    hasAssistantOutput: false,
+    hasToolResult: false,
+    hasFailedToolResult: false,
+    hasAbortNote: false,
+  }));
+  const requestedLimits: number[] = [];
+  const fixture = createFixture({
+    stores: {
+      readTurnContributionsSnapshot: async (_sessionId, _watermark, position, limit) => {
+        requestedLimits.push(limit);
+        const end = Math.min(position + limit, contributions.length);
+        return {
+          throughSequence: contributions.length - 1,
+          contributions: contributions.slice(position, end),
+          nextPosition: end < contributions.length ? end : null,
+        };
+      },
+    },
+  });
+
+  const seen: string[] = [];
+  let position = 0;
+  do {
+    const outcome = await fixture.coordinator.handlers['session.turns.query'](
+      {
+        sessionId: fixture.sessionId,
+        throughSequence: null,
+        position,
+        maxContributions: 128,
+      },
+      context,
+    );
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) assert.fail('Turn query failed');
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(outcome.result), 'utf8') <=
+        SESSION_TURN_QUERY_RESULT_MAX_BYTES,
+    );
+    seen.push(...outcome.result.contributions.map((contribution) => contribution.turnId));
+    if (outcome.result.nextPosition === null) break;
+    assert.ok(outcome.result.nextPosition > position);
+    position = outcome.result.nextPosition;
+  } while (true);
+
+  assert.deepEqual(
+    seen,
+    contributions.map((contribution) => contribution.turnId),
+  );
+  assert.ok(requestedLimits.some((limit) => limit < 128));
 });
 
 test('metadata replacement preserves execution-semantic labels and ignores injected ones', async () => {
@@ -836,6 +896,12 @@ function createFixture(
     readCatalogRecord: async () => catalogRecord(header, revision),
     readExecutionBoundary: async () => createGenesisExecutionBoundary('ask'),
     readHeaderRecordSnapshot: async () => headerSnapshot(header, revision),
+    readTurnContributionsSnapshot: async () => ({
+      throughSequence: null,
+      contributions: [],
+      nextPosition: null,
+    }),
+    readTurnLandmarksSnapshot: async () => ({ throughSequence: null, landmarks: [] }),
     updateHeaderVersioned: async (_sessionId, patch, expectedRevision) => {
       if (expectedRevision !== revision) {
         throw new SessionMetadataVersionConflictError(sessionId, expectedRevision, revision);

@@ -47,6 +47,7 @@ import { getSettingsNavigationCopy } from '../locales/settings-navigation-copy.j
 import { SettingRow } from './settings-rows';
 import { SettingsPage } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
+import { TasksSettingsPage, type ArchivedTasksBridge } from './tasks-settings-page';
 import { UsageSettingsPage } from './usage-settings-page';
 import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
@@ -75,6 +76,7 @@ export function SettingsSurface(props: {
   onOpenDailyReview?(): void;
   onOpenKeyboardHelp?(): void;
   onOpenSession?(sessionId: string): void;
+  archivedTasks: ArchivedTasksBridge;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
@@ -364,6 +366,7 @@ export function SettingsSurface(props: {
                       onOpenDailyReview={props.onOpenDailyReview}
                       onOpenKeyboardHelp={props.onOpenKeyboardHelp}
                       onOpenSession={props.onOpenSession}
+                      archivedTasks={props.archivedTasks}
                       openProviderCatalog={providerCatalogRequested}
                       initialConnectionSlug={props.initialConnectionSlug}
                       initialCreateProviderType={createProviderRequest}
@@ -397,6 +400,7 @@ function SettingsPageBody(props: {
   onOpenDailyReview?(): void;
   onOpenKeyboardHelp?(): void;
   onOpenSession?(sessionId: string): void;
+  archivedTasks: ArchivedTasksBridge;
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -475,6 +479,8 @@ function SettingsPageBody(props: {
           onThemePaletteChange={props.onThemePaletteChange}
         />
       );
+    case 'archived-tasks':
+      return <TasksSettingsPage {...props.archivedTasks} />;
     case 'data':
       return <DataSettingsPage />;
     case 'permissions':

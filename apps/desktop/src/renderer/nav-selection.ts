@@ -25,7 +25,10 @@ function defaultNavigationState(): NavigationState {
 }
 
 function isSessionFilter(value: unknown): value is SessionFilter {
-  return value === 'chats' || value === 'flagged' || value === 'archived';
+  // A stored `archived` — written while the rail still had that filter row —
+  // fails here, and `parseSelection` falls back to the default `chats`. That is
+  // the migration: the destination it named no longer exists.
+  return value === 'chats' || value === 'flagged';
 }
 
 function isExtensionModule(value: unknown): value is ExtensionModule {

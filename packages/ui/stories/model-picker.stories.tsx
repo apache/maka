@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { userEvent, within } from 'storybook/test';
+import { expect, userEvent, within } from 'storybook/test';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import { NewChatModelPicker, ThinkingLevelSelector } from '../src/chat-model-switcher.js';
+import type { SessionSummary } from '@maka/core/session';
+import { ChatModelSwitcher, NewChatModelPicker, ThinkingLevelSelector } from '../src/chat-model-switcher.js';
 import {
   modelChoiceValue,
   type ChatModelChoice,
@@ -78,6 +79,127 @@ function ModelPickerFrame(props: { initialValue?: string }) {
 // Real path: chat → composer footer model control.
 export const Default: Story = {
   render: () => <ModelPickerFrame />,
+};
+
+// Real path: an existing conversation -> composer footer model control. The
+// cache notice belongs inside this picker's open decision surface; the resting
+// trigger and the new-chat picker below stay quiet.
+export const ExistingConversation: Story = {
+  render: function ExistingConversationRender() {
+    const [value, setValue] = useState('anthropic-team:claude-sonnet-4');
+    const [connectionSlug, model] = value.split(':', 2);
+    const activeSession = {
+      id: 'storybook-model-switch',
+      name: 'Model switch warning',
+      isFlagged: false,
+      isArchived: false,
+      labels: [],
+      hasUnread: false,
+      status: 'active',
+      backend: 'ai-sdk',
+      llmConnectionSlug: connectionSlug,
+      connectionLocked: true,
+      model,
+      permissionMode: 'ask',
+    } satisfies SessionSummary;
+    return (
+      <div style={{ width: 460, maxWidth: '100%' }}>
+        <ChatModelSwitcher
+          activeSession={activeSession}
+          activeModelLabel={selectedLabel(value)}
+          currentProviderType="anthropic"
+          choices={CHOICES}
+          hasConversationHistory
+          renderProviderMark={providerMark}
+          onChange={({ llmConnectionSlug, model: nextModel }) =>
+            setValue(modelChoiceValue(llmConnectionSlug, nextModel))}
+        />
+      </div>
+    );
+  },
+  play: async ({ canvasElement, globals }) => {
+    const english = globals.locale === 'en';
+    const warning = english
+      ? 'Switching may rebuild the provider prompt cache, making the next request slower or more expensive.'
+      : '切换模型可能需要重建服务商提示缓存，使下一次请求更慢或成本更高。';
+    const trigger = within(canvasElement).getByRole('button', {
+      name: /切换当前会话模型|Switch model for this conversation/,
+    });
+    const announcement = canvasElement.querySelector<HTMLElement>('.maka-model-switch-announcement');
+    await expect(announcement).toHaveAttribute('role', 'status');
+    await expect(trigger).not.toHaveAttribute('aria-description');
+    await expect(announcement).toBeEmptyDOMElement();
+    await expect(document.body.querySelector('.maka-model-switch-notice')).not.toBeInTheDocument();
+
+    await userEvent.hover(trigger);
+    await within(document.body).findByText(
+      english ? 'Switch model for this conversation' : '切换当前会话模型',
+    );
+    await userEvent.unhover(trigger);
+
+    await userEvent.click(trigger);
+    const notice = document.body.querySelector('.maka-model-switch-notice');
+    await expect(notice).toBeInTheDocument();
+    await expect(notice).toHaveAttribute('aria-hidden', 'true');
+    await expect(notice).toHaveTextContent(warning);
+    await expect(announcement).toHaveTextContent(warning);
+    await expect(announcement).toHaveAttribute('aria-live', 'polite');
+    await expect(announcement).toHaveAttribute('aria-atomic', 'true');
+    const menu = within(document.body).getByRole('menu');
+    await expect(menu).not.toContainElement(announcement);
+
+    await userEvent.keyboard('{Escape}');
+    await expect(announcement).toBeEmptyDOMElement();
+    await expect(document.body.querySelector('.maka-model-switch-notice')).not.toBeInTheDocument();
+
+    await userEvent.keyboard('{ArrowDown}');
+    await expect(announcement).toHaveTextContent(warning);
+    await expect(document.body.querySelector('.maka-model-switch-notice')).toBeInTheDocument();
+  },
+};
+
+// Real path: an existing but still-empty Session. There is no conversation
+// prefix to abandon yet, so this stays as quiet as the new-chat picker.
+export const EmptyConversation: Story = {
+  render: () => (
+    <div style={{ width: 460, maxWidth: '100%' }}>
+      <ChatModelSwitcher
+        activeSession={{
+          id: 'storybook-empty-model-switch',
+          name: 'Empty conversation',
+          isFlagged: false,
+          isArchived: false,
+          labels: [],
+          hasUnread: false,
+          status: 'active',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'anthropic-team',
+          connectionLocked: false,
+          model: 'claude-sonnet-4',
+          permissionMode: 'ask',
+        }}
+        activeModelLabel="Claude Sonnet 4"
+        currentProviderType="anthropic"
+        choices={CHOICES}
+        renderProviderMark={providerMark}
+        onChange={() => undefined}
+      />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const trigger = within(canvasElement).getByRole('button', {
+      name: /切换当前会话模型|Switch model for this conversation/,
+    });
+    const announcement = canvasElement.querySelector<HTMLElement>('.maka-model-switch-announcement');
+    await expect(announcement).toHaveAttribute('role', 'status');
+    await expect(trigger).not.toHaveAttribute('aria-description');
+    await expect(announcement).toBeEmptyDOMElement();
+    await expect(document.body.querySelector('.maka-model-switch-notice')).not.toBeInTheDocument();
+
+    await userEvent.click(trigger);
+    await expect(announcement).toBeEmptyDOMElement();
+    await expect(document.body.querySelector('.maka-model-switch-notice')).not.toBeInTheDocument();
+  },
 };
 
 // Real path: Settings → 通用 before any provider exposes a model choice.

@@ -119,7 +119,7 @@ async def run_trial(framework: str, expected_version: str, config_file: Path) ->
                 namespace.mkdir(parents=True, exist_ok=True, mode=0o700)
                 config.task.download_dir = namespace
                 config.task.overwrite = ready is None
-                trial = await trial_type.create(config)
+                trial = await create_harbor_trial(trial_type, config)
                 target = Path(trial.task.task_dir)
                 if ready is not None and target.resolve() != ready:
                     raise RuntimeError("Harbor task cache target changed for one identity")
@@ -132,18 +132,67 @@ async def run_trial(framework: str, expected_version: str, config_file: Path) ->
         config_file.unlink(missing_ok=True)
 
 
+def apply_subject_egress_policy(task: object) -> None:
+    required = os.environ.get("MAKA_EVAL_EGRESS_REQUIRED") == "1"
+    allowed_host = os.environ.get("MAKA_EVAL_EGRESS_ALLOWED_HOST")
+    if not required:
+        return
+    if not allowed_host:
+        raise RuntimeError("required Eval egress proxy host is unavailable")
+    agent = task.config.agent
+    agent.network_mode = "allowlist"
+    agent.allowed_hosts = [allowed_host]
+
+
+async def create_harbor_trial(trial_type: type, config: object) -> object:
+    trial_type._resolve_agent_skills(config)
+    task, task_download_result = await trial_type._load_task(config)
+    apply_subject_egress_policy(task)
+    if task.has_steps:
+        from harbor.trial.multi_step import MultiStepTrial
+
+        return MultiStepTrial(
+            config,
+            _task=task,
+            _task_download_result=task_download_result,
+        )
+    from harbor.trial.single_step import SingleStepTrial
+
+    return SingleStepTrial(
+        config,
+        _task=task,
+        _task_download_result=task_download_result,
+    )
+
+
 async def main() -> None:
     framework, expected_version, config_path = sys.argv[1:]
     task = asyncio.current_task()
     assert task is not None
     loop = asyncio.get_running_loop()
+    teardown_requested = False
+
+    def request_teardown() -> None:
+        nonlocal teardown_requested
+        if teardown_requested:
+            return
+        teardown_requested = True
+        try:
+            from relay_agent import request_host_teardown
+            request_host_teardown()
+        finally:
+            task.cancel()
+
     for host_signal in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(host_signal, task.cancel)
+        loop.add_signal_handler(host_signal, request_teardown)
     try:
         try:
             await run_trial(framework, expected_version, Path(config_path))
         except FrameworkVersionMismatch:
             raise SystemExit(FRAMEWORK_VERSION_MISMATCH_EXIT_CODE) from None
+        except asyncio.CancelledError:
+            if not teardown_requested:
+                raise
     finally:
         for host_signal in (signal.SIGINT, signal.SIGTERM):
             loop.remove_signal_handler(host_signal)

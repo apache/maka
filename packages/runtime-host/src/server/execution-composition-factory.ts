@@ -17,7 +17,7 @@ export interface ExecutionRuntimeHostCompositionSourceOptions {
 
 export interface ExecutionRuntimeHostCompositionDependencies {
   readonly createComposition?: (
-    context: RuntimeHostCompositionContext<'interactive'>,
+    context: RuntimeHostCompositionContext,
     options: Parameters<typeof createExecutionRuntimeHostComposition>[1],
   ) => Promise<ExecutionRuntimeHostComposition>;
 }
@@ -25,7 +25,7 @@ export interface ExecutionRuntimeHostCompositionDependencies {
 export async function createExecutionRuntimeHostCompositionSource(
   options: ExecutionRuntimeHostCompositionSourceOptions,
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
-): Promise<RuntimeHostCompositionSource<'interactive'>> {
+): Promise<RuntimeHostCompositionSource> {
   if (options.managedWorkspaceGitRuntime && options.bundledGitResourcesRoot) {
     throw new Error('Managed workspace Git runtime must have exactly one authority');
   }

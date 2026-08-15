@@ -6,6 +6,7 @@ import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { useUiLocale } from '@maka/ui';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy';
 import { SettingsSurface } from './settings-surface';
+import type { ArchivedTasksBridge } from './tasks-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 
 export { SETTINGS_NAV } from './settings-nav';
@@ -53,6 +54,8 @@ export function SettingsModal(props: {
    * source conversation. Settings owns the table, shell owns navigation.
    */
   onOpenSession?(sessionId: string): void;
+  /** The shell's session catalog, for 已归档任务. See ArchivedTasksBridge. */
+  archivedTasks: ArchivedTasksBridge;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
@@ -107,6 +110,7 @@ export function SettingsModal(props: {
         onOpenDailyReview={props.onOpenDailyReview}
         onOpenKeyboardHelp={props.onOpenKeyboardHelp}
         onOpenSession={props.onOpenSession}
+        archivedTasks={props.archivedTasks}
       />
     </div>
   );

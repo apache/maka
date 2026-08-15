@@ -1,12 +1,18 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
-import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { chmod, lstat, mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
-import { delimiter, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { decodeJsonObject, type ExperimentCell, type JsonObject } from './experiment.js';
+import {
+  MAKA_RUNTIME_ARTIFACT_PATH,
+  MAKA_SUBJECT_STDERR_PATH,
+  MAKA_SUBJECT_STDOUT_PATH,
+} from './maka-artifacts.js';
 import {
   type ExecutorAttemptOutcome,
   type ExperimentExecutor,
@@ -17,10 +23,28 @@ import {
 import type { EvalResult } from './result.js';
 
 type Framework = 'harbor' | 'pier';
+type RelayTransportStage = 'ready' | 'execute' | 'receive' | 'decision';
+
+interface RelayTransportFailure {
+  readonly stage: RelayTransportStage;
+  readonly category:
+    | 'broken-pipe'
+    | 'connection-reset'
+    | 'peer-closed'
+    | 'protocol-error'
+    | 'transport-error';
+  readonly delivery: 'not-delivered' | 'unknown';
+}
+
+interface RelayTransport {
+  readonly socket: Socket;
+  stage: RelayTransportStage;
+  failure?: RelayTransportFailure;
+}
 
 interface RelayState {
   readonly child: ChildProcess;
-  readonly socket: Socket;
+  readonly transport: RelayTransport;
   readonly closeRelay: () => Promise<void>;
   readonly lines: AsyncIterator<string>;
   readonly token: string;
@@ -28,9 +52,15 @@ interface RelayState {
   readonly trialPath: string;
   readonly taskInput: string;
   readonly credentials: Readonly<Record<string, string>>;
-  readonly containerCwd: string;
+  readonly cwd: string;
+  readonly executionEnvironment: Readonly<Record<string, string>>;
   used: boolean;
+  diagnostic?: SubjectProcessDiagnostic;
 }
+
+type SubjectProcessDiagnostic = NonNullable<
+  Awaited<ReturnType<SubjectExecutionContext['execute']>>['diagnostic']
+>;
 
 export function createHarborExecutor(config: JsonObject, specPath: string): ExperimentExecutor {
   return createHarnessExecutor('harbor', config, specPath);
@@ -87,69 +117,120 @@ async function runHarnessAttempt(
   let decision = false;
   let value: EvalResult | undefined;
   let hasValue = false;
-  let clean = true;
+  let hostCancellationObserved = false;
+  let verificationConfirmedBeforeCancellation = false;
+  let finalizationEvidence: TrialWaitEvidence | undefined;
   let cleanupAction: 'abort' | 'terminate-unused' | undefined;
-  const decide = (kind: 'verify' | 'abort') => {
-    if (decision) return;
+  let cleanupEvidence: TrialWaitEvidence | undefined;
+  let cleanup: Promise<TrialWaitEvidence> | undefined;
+  const terminate = () => {
+    cleanupAction ??= state.used ? 'abort' : 'terminate-unused';
+    cleanup ??= (async () => {
+      const evidence = await waitForTrial(state.child, {
+        phase: state.used ? 'abort' : 'unused',
+        deadlineMs: state.used ? RELAY_SETTLEMENT_DEADLINE_MS : TERM_SETTLEMENT_DEADLINE_MS,
+      });
+      if (evidence.outcome === 'unsettled') await state.closeRelay();
+      return evidence;
+    })();
+    return cleanup;
+  };
+  const onAbort = () => {
+    hostCancellationObserved = true;
+    void terminate();
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+  const decide = () => {
+    if (decision) return true;
+    if (
+      !sendRelayMessage(state.transport, 'decision', { token: state.token, kind: 'verify' }, true)
+    ) {
+      void terminate();
+      return false;
+    }
     decision = true;
-    state.socket.write(`${JSON.stringify({ token: state.token, kind })}\n`);
-    state.socket.end();
+    return true;
   };
   try {
     value = await operation({
-      context: relayContext(state, cell, signal),
+      context: relayContext(state, signal),
       verify: async () => {
-        decide('verify');
-        clean = await waitForTrial(state.child, signal);
-        if (!clean) throw new Error('Trial did not finalize cleanly');
-        return readVerification(state, cell);
+        if (!decide()) {
+          cleanupEvidence = await terminate();
+          finalizationEvidence = cleanupEvidence;
+          throw new Error('relay verify decision was not delivered');
+        }
+        const completed = cleanup
+          ? await cleanup
+          : await waitForTrial(state.child, { phase: 'completion' });
+        finalizationEvidence = completed;
+        if (!finalizationConfirmed(completed)) throw new Error('Trial did not finalize cleanly');
+        const verification = await readVerification(state, cell, Boolean(options.egressProxy));
+        verificationConfirmedBeforeCancellation = !hostCancellationObserved;
+        return verification;
       },
     });
     hasValue = true;
   } finally {
-    if (!decision) {
-      if (state.used) {
-        cleanupAction = 'abort';
-        decide('abort');
-      } else {
-        cleanupAction = 'terminate-unused';
-        state.child.kill('SIGTERM');
-      }
-      clean = await waitForTrial(state.child);
+    signal?.removeEventListener('abort', onAbort);
+    if (!decision || cleanup) {
+      cleanupEvidence = await terminate();
+      finalizationEvidence = cleanupEvidence;
     }
     await state.closeRelay();
   }
-  if (hasValue && cleanupAction) {
+  if (
+    hasValue &&
+    (state.transport.failure || cleanupAction || state.diagnostic?.category !== 'none')
+  ) {
     value = {
       ...value!,
       artifacts: [
         ...value!.artifacts,
-        {
-          kind: 'executor-cleanup',
-          action: cleanupAction,
-          outcome: clean ? 'completed' : 'unsettled',
-        },
+        ...(state.transport.failure
+          ? [{ kind: 'executor-relay', ...state.transport.failure }]
+          : []),
+        ...(cleanupAction
+          ? [
+              {
+                kind: 'executor-cleanup',
+                action: cleanupAction,
+                phase: cleanupEvidence!.phase,
+                deadlineMs: cleanupEvidence!.deadlineMs,
+                escalation: cleanupEvidence!.escalation,
+                outcome: cleanupEvidence!.outcome,
+              },
+            ]
+          : []),
+        ...(state.diagnostic && state.diagnostic.category !== 'none'
+          ? [{ kind: 'executor-relay-result', ...state.diagnostic }]
+          : []),
       ],
     };
   }
-  if (!clean) {
-    return hasValue ? { kind: 'indeterminate', value } : { kind: 'indeterminate' };
+  if (hostCancellationObserved && !verificationConfirmedBeforeCancellation) {
+    return hasValue
+      ? { kind: 'indeterminate', cause: 'host-cancelled', value }
+      : { kind: 'indeterminate', cause: 'host-cancelled' };
+  }
+  if (!finalizationEvidence || !finalizationConfirmed(finalizationEvidence)) {
+    return hasValue
+      ? { kind: 'indeterminate', cause: 'cleanup-unconfirmed', value }
+      : { kind: 'indeterminate', cause: 'cleanup-unconfirmed' };
   }
   if (!hasValue) throw new Error('executor operation did not settle');
   return { kind: 'settled', value };
 }
 
-function relayContext(
-  state: RelayState,
-  cell: ExperimentCell,
-  signal?: AbortSignal,
-): SubjectExecutionContext {
+function relayContext(state: RelayState, signal?: AbortSignal): SubjectExecutionContext {
   return {
-    cwd: state.containerCwd,
+    cwd: state.cwd,
     taskInput: state.taskInput,
     metadata: { trialName: state.trialName },
     ...(signal ? { signal } : {}),
     execute: async (input) => {
+      signal?.throwIfAborted();
       if (state.used) throw new Error('Trial already executed its subject');
       state.used = true;
       const credentials = Object.fromEntries(
@@ -159,47 +240,94 @@ function relayContext(
           return [target, value];
         }),
       );
-      state.socket.write(
-        `${JSON.stringify({
+      const resultToken = randomBytes(16).toString('hex');
+      if (
+        !sendRelayMessage(state.transport, 'execute', {
           token: state.token,
           kind: 'execute',
           command: input.command,
           args: input.args,
-          cwd: state.containerCwd,
-          environment: input.environment ?? {},
+          environment: mergeExecutionEnvironment(
+            state.executionEnvironment,
+            input.environment ?? {},
+          ),
           credentials,
+          resultToken,
           captureStdout: input.captureStdout ?? true,
-          ...(input.cancel ? { cancel: input.cancel } : {}),
-        })}\n`,
-      );
-      const cancel = () => {
-        state.socket.write(`${JSON.stringify({ token: state.token, kind: 'cancel' })}\n`);
-      };
-      signal?.addEventListener('abort', cancel, { once: true });
-      if (signal?.aborted) cancel();
-      try {
-        const executed = await readLine(state.lines);
-        if (
-          executed.token !== state.token ||
-          executed.kind !== 'executed' ||
-          (executed.termination !== 'exited' &&
-            executed.termination !== 'framework_timeout' &&
-            executed.termination !== 'cancelled') ||
-          typeof executed.exitCode !== 'number' ||
-          typeof executed.stdout !== 'string'
-        ) {
-          throw new Error('relay returned an invalid execution result');
-        }
-        return {
-          termination: executed.termination,
-          exitCode: executed.exitCode,
-          stdout: executed.stdout,
-        };
-      } finally {
-        signal?.removeEventListener('abort', cancel);
+        })
+      ) {
+        throw new Error('relay transport is unavailable');
       }
+      state.transport.stage = 'receive';
+      let executed: Record<string, unknown>;
+      try {
+        executed = await readLine(state.lines);
+      } catch {
+        state.transport.failure ??= {
+          stage: 'receive',
+          category: 'protocol-error',
+          delivery: 'unknown',
+        };
+        throw new Error('relay execution result was unavailable');
+      }
+      if (
+        executed.token !== state.token ||
+        executed.kind !== 'executed' ||
+        (executed.termination !== 'exited' && executed.termination !== 'framework_timeout') ||
+        typeof executed.exitCode !== 'number' ||
+        typeof executed.stdout !== 'string' ||
+        !validProcessDiagnostic(executed.diagnostic)
+      ) {
+        state.transport.failure ??= {
+          stage: 'receive',
+          category: 'protocol-error',
+          delivery: 'unknown',
+        };
+        throw new Error('relay returned an invalid execution result');
+      }
+      state.diagnostic = executed.diagnostic;
+      return {
+        termination: executed.termination,
+        exitCode: executed.exitCode,
+        stdout: executed.stdout,
+        diagnostic: executed.diagnostic,
+      };
     },
   };
+}
+
+function validProcessDiagnostic(value: unknown): value is {
+  category:
+    | 'none'
+    | 'unstructured-output'
+    | 'result-frame-missing'
+    | 'result-frame-invalid'
+    | 'result-frame-ambiguous'
+    | 'result-frame-oversize'
+    | 'execution-scope-unavailable';
+  bytes?: number;
+  sha256?: string;
+} {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const diagnostic = value as Record<string, unknown>;
+  const fields = Object.keys(diagnostic);
+  return (
+    (diagnostic.category === 'none' && fields.length === 1) ||
+    ([
+      'unstructured-output',
+      'result-frame-missing',
+      'result-frame-invalid',
+      'result-frame-ambiguous',
+      'result-frame-oversize',
+      'execution-scope-unavailable',
+    ].includes(String(diagnostic.category)) &&
+      fields.length === 3 &&
+      typeof diagnostic.bytes === 'number' &&
+      Number.isSafeInteger(diagnostic.bytes) &&
+      diagnostic.bytes >= 0 &&
+      typeof diagnostic.sha256 === 'string' &&
+      /^[0-9a-f]{64}$/u.test(diagnostic.sha256))
+  );
 }
 
 async function startTrial(
@@ -223,18 +351,23 @@ async function startTrial(
   const trialPath = join(trialsRoot, trialName);
   const task = decodeTask(framework, options, cell);
   const timeoutMultiplier = positive(cell.budget.timeoutMultiplier, 'budget.timeoutMultiplier');
-  const environmentConfig = { ...options.environment, mounts: resolveMounts(options.mounts) };
+  const environmentConfig = resolveEnvironmentConfig(options);
+  const networkPolicyPath = resolveNetworkPolicyPath(options);
   const relayPath = resolve(dirname(fileURLToPath(import.meta.url)), '../harbor');
+  const executionEnvironment = egressExecutionEnvironment(options.egressProxy);
   const environment = preparationEnvironment(
     framework,
     relayPath,
     [...subjectCredentialNames, ...cell.subject.credentials],
     options.preparationEnvironment,
+    options.egressProxy?.allowedHost,
+    networkPolicyPath,
   );
   const server = createServer();
   const connections = new Set<Socket>();
   server.on('connection', (socket) => {
     connections.add(socket);
+    socket.on('error', () => undefined);
     socket.once('close', () => connections.delete(socket));
   });
   let child: ChildProcess | undefined;
@@ -261,9 +394,25 @@ async function startTrial(
         timeout_multiplier: timeoutMultiplier,
         agent: {
           import_path: 'relay_agent:RelayAgent',
-          kwargs: { relay_host: '127.0.0.1', relay_port: address.port, relay_token: token },
+          kwargs: {
+            relay_host: '127.0.0.1',
+            relay_port: address.port,
+            relay_token: token,
+            teardown_timeout_ms: PYTHON_TEARDOWN_DEADLINE_MS,
+          },
         },
         environment: environmentConfig,
+        ...(options.egressProxy
+          ? {
+              artifacts: [
+                {
+                  source: '/opt/maka-egress-state/hits.jsonl',
+                  destination: EGRESS_AUDIT_DESTINATION,
+                  service: 'maka-eval-mitmproxy',
+                },
+              ],
+            }
+          : {}),
       })}\n`,
       { flag: 'wx', mode: 0o600 },
     );
@@ -294,18 +443,26 @@ async function startTrial(
     }
     const relayClosed = stopServer();
     stage = 'ready-decode';
+    const transport = createRelayTransport(socket);
+    transport.stage = 'receive';
     const lines = createInterface({ input: socket, crlfDelay: Number.POSITIVE_INFINITY })[
       Symbol.asyncIterator
     ]();
     const ready = await abortable(Promise.race([readLine(lines), exitedBeforeReady]), signal);
-    if (ready.token !== token || ready.kind !== 'ready' || typeof ready.instruction !== 'string') {
+    if (
+      ready.token !== token ||
+      ready.kind !== 'ready' ||
+      typeof ready.instruction !== 'string' ||
+      typeof ready.cwd !== 'string' ||
+      !ready.cwd.startsWith('/')
+    ) {
       throw new Error('relay returned an invalid ready message');
     }
     return {
       kind: 'ready',
       state: {
         child,
-        socket,
+        transport,
         closeRelay: async () => {
           for (const connection of connections) connection.destroy();
           await relayClosed;
@@ -316,14 +473,18 @@ async function startTrial(
         trialPath,
         taskInput: ready.instruction,
         credentials,
-        containerCwd: options.containerCwd,
+        cwd: ready.cwd,
+        executionEnvironment,
         used: false,
       },
     };
   } catch (error) {
     const relayClosed = stopServer(true);
     if (child?.pid !== undefined) {
-      await waitForTrial(child, signal, true);
+      await waitForTrial(child, {
+        phase: 'unused',
+        deadlineMs: TERM_SETTLEMENT_DEADLINE_MS,
+      });
     }
     await relayClosed;
     await unlink(configPath).catch(() => undefined);
@@ -346,6 +507,65 @@ async function startTrial(
       { kind: 'executor-preparation', framework, trialName, path: diagnosticPath },
     ]);
   }
+}
+
+function createRelayTransport(socket: Socket): RelayTransport {
+  const transport: RelayTransport = { socket, stage: 'ready' };
+  socket.on('error', (error: NodeJS.ErrnoException) => {
+    transport.failure ??= {
+      stage: transport.stage,
+      category: relayTransportCategory(error.code),
+      delivery: 'unknown',
+    };
+  });
+  return transport;
+}
+
+function sendRelayMessage(
+  transport: RelayTransport,
+  stage: RelayTransportStage,
+  value: Record<string, unknown>,
+  end = false,
+): boolean {
+  transport.stage = stage;
+  const socket = transport.socket;
+  if (socket.destroyed || !socket.writable || socket.writableEnded || transport.failure) {
+    transport.failure = {
+      stage,
+      category: transport.failure?.category ?? 'peer-closed',
+      delivery: 'not-delivered',
+    };
+    return false;
+  }
+  try {
+    const payload = `${JSON.stringify(value)}\n`;
+    if (end) socket.end(payload);
+    else {
+      socket.write(payload, (error) => {
+        if (!error) return;
+        transport.failure = {
+          stage,
+          category: relayTransportCategory((error as NodeJS.ErrnoException).code),
+          delivery: 'unknown',
+        };
+      });
+    }
+    return true;
+  } catch (error) {
+    transport.failure = {
+      stage,
+      category: relayTransportCategory((error as NodeJS.ErrnoException).code),
+      delivery: 'not-delivered',
+    };
+    return false;
+  }
+}
+
+function relayTransportCategory(code: string | undefined): RelayTransportFailure['category'] {
+  if (code === 'EPIPE') return 'broken-pipe';
+  if (code === 'ECONNRESET') return 'connection-reset';
+  if (code === 'ERR_STREAM_WRITE_AFTER_END') return 'peer-closed';
+  return 'transport-error';
 }
 
 function notStarted(
@@ -372,6 +592,8 @@ function preparationEnvironment(
   relayPath: string,
   subjectCredentialNames: readonly string[],
   declared: readonly string[],
+  egressAllowedHost?: string,
+  networkPolicyPath?: string,
 ): NodeJS.ProcessEnv {
   const allowed = new Set([
     'HOME',
@@ -399,6 +621,44 @@ function preparationEnvironment(
     ...inherited,
     MAKA_EVAL_FRAMEWORK: framework,
     PYTHONPATH: [relayPath, inherited.PYTHONPATH].filter(Boolean).join(delimiter),
+    ...(egressAllowedHost
+      ? {
+          MAKA_EVAL_EGRESS_REQUIRED: '1',
+          MAKA_EVAL_EGRESS_ALLOWED_HOST: egressAllowedHost,
+        }
+      : {}),
+    ...(networkPolicyPath ? { MAKA_EVAL_NETWORK_POLICY_PATH: networkPolicyPath } : {}),
+  };
+}
+
+function mergeExecutionEnvironment(
+  required: Readonly<Record<string, string>>,
+  subject: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const overlap = Object.keys(required).filter((name) => Object.hasOwn(subject, name));
+  if (overlap.length > 0) {
+    throw new Error(`subject environment overrides Eval egress policy: ${overlap.join(', ')}`);
+  }
+  return { ...subject, ...required };
+}
+
+function egressExecutionEnvironment(
+  options: HarnessOptions['egressProxy'],
+): Readonly<Record<string, string>> {
+  if (!options) return {};
+  const noProxy = '127.0.0.1,localhost';
+  return {
+    HTTP_PROXY: options.proxyUrl,
+    HTTPS_PROXY: options.proxyUrl,
+    http_proxy: options.proxyUrl,
+    https_proxy: options.proxyUrl,
+    NO_PROXY: noProxy,
+    no_proxy: noProxy,
+    SSL_CERT_FILE: options.containerCaPath,
+    REQUESTS_CA_BUNDLE: options.containerCaPath,
+    CURL_CA_BUNDLE: options.containerCaPath,
+    GIT_SSL_CAINFO: options.containerCaPath,
+    NODE_EXTRA_CA_CERTS: options.containerCaPath,
   };
 }
 
@@ -414,9 +674,76 @@ async function closeServer(server: Server): Promise<void> {
   });
 }
 
+export const EGRESS_AUDIT_DESTINATION = 'egress-hits.jsonl';
+export const EGRESS_AUDIT_ARTIFACT_PATH = `artifacts/${EGRESS_AUDIT_DESTINATION}`;
+
+export function collectEgressAuditArtifact(
+  audit: Buffer | undefined,
+  expected: boolean,
+): {
+  readonly missing: boolean;
+  readonly failureReason: string | null;
+  readonly artifacts: readonly JsonObject[];
+} {
+  if (!expected) return { missing: false, failureReason: null, artifacts: [] };
+  if (audit === undefined) {
+    return {
+      missing: true,
+      failureReason: 'egress audit log missing',
+      artifacts: [{ kind: 'egress-audit-missing', path: EGRESS_AUDIT_ARTIFACT_PATH }],
+    };
+  }
+  const forensics = inspectEgressAudit(audit);
+  return {
+    missing: false,
+    failureReason: null,
+    artifacts: [
+      {
+        kind: 'egress-audit',
+        path: EGRESS_AUDIT_ARTIFACT_PATH,
+        bytes: audit.byteLength,
+        sha256: `sha256:${createHash('sha256').update(audit).digest('hex')}`,
+        truncated: forensics.truncated,
+        policyErrorCount: forensics.policyErrorCount,
+        malformedLineCount: forensics.malformedLineCount,
+      },
+    ],
+  };
+}
+
+function inspectEgressAudit(audit: Buffer): {
+  readonly truncated: boolean;
+  readonly policyErrorCount: number;
+  readonly malformedLineCount: number;
+} {
+  let truncated = false;
+  let policyErrorCount = 0;
+  let malformedLineCount = 0;
+  for (const line of audit.toString('utf8').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(trimmed);
+    } catch {
+      malformedLineCount += 1;
+      continue;
+    }
+    if (!record || typeof record !== 'object' || Array.isArray(record)) {
+      malformedLineCount += 1;
+      continue;
+    }
+    const ruleId = (record as { ruleId?: unknown }).ruleId;
+    if (ruleId === 'audit_truncated') truncated = true;
+    if (ruleId === 'policy_error') policyErrorCount += 1;
+  }
+  return { truncated, policyErrorCount, malformedLineCount };
+}
+
 async function readVerification(
   state: RelayState,
   cell: ExperimentCell,
+  expectEgressAudit: boolean,
 ): Promise<ExecutorVerification> {
   const result = JSON.parse(await readFile(join(state.trialPath, 'result.json'), 'utf8')) as {
     exception_info?: { exception_type?: unknown } | null;
@@ -429,12 +756,84 @@ async function readVerification(
   if (result.exception_info && !subjectException) {
     throw new Error('Trial failed outside subject execution');
   }
+  const egressAuditPath = join(state.trialPath, EGRESS_AUDIT_ARTIFACT_PATH);
+  let egressAudit: Buffer | undefined;
+  try {
+    egressAudit = await readFile(egressAuditPath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (expectEgressAudit && code !== 'ENOENT') {
+      return {
+        status: 'infra_failed',
+        score,
+        failureReason: `failed to read egress audit log ${egressAuditPath}${code ? ` (${code})` : ''}`,
+        artifacts: [
+          { kind: 'trial', framework: cell.executor.kind, trialName: state.trialName },
+          ...(await collectedArtifactInventory(state.trialPath)),
+          { kind: 'egress-audit-unreadable', path: EGRESS_AUDIT_ARTIFACT_PATH },
+        ],
+      };
+    }
+  }
+  const audit = collectEgressAuditArtifact(egressAudit, expectEgressAudit);
   return {
-    status: score === null ? 'infra_failed' : subjectException ? 'subject_failed' : 'completed',
+    status: audit.failureReason
+      ? 'infra_failed'
+      : score === null
+        ? 'infra_failed'
+        : subjectException
+          ? 'subject_failed'
+          : 'completed',
     score,
-    failureReason: score === null ? 'verifier produced no reward' : null,
-    artifacts: [{ kind: 'trial', framework: cell.executor.kind, trialName: state.trialName }],
+    failureReason: audit.failureReason ?? (score === null ? 'verifier produced no reward' : null),
+    artifacts: [
+      { kind: 'trial', framework: cell.executor.kind, trialName: state.trialName },
+      ...(await collectedArtifactInventory(state.trialPath)),
+      ...audit.artifacts,
+    ],
   };
+}
+
+async function collectedArtifactInventory(trialPath: string): Promise<JsonObject[]> {
+  const root = join(trialPath, 'artifacts', 'logs', 'artifacts');
+  const files: JsonObject[] = [];
+  const targets = [
+    join(root, basename(MAKA_RUNTIME_ARTIFACT_PATH)),
+    join(root, basename(MAKA_SUBJECT_STDOUT_PATH)),
+    join(root, basename(MAKA_SUBJECT_STDERR_PATH)),
+  ];
+  for (const target of targets) {
+    await walkCollectedArtifacts(trialPath, target, files).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+  }
+  return files.sort((left, right) => String(left.path).localeCompare(String(right.path)));
+}
+
+async function walkCollectedArtifacts(
+  trialPath: string,
+  current: string,
+  files: JsonObject[],
+): Promise<void> {
+  const metadata = await lstat(current);
+  if (metadata.isSymbolicLink()) return;
+  if (metadata.isFile()) {
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(current)) hash.update(chunk as Buffer);
+    files.push({
+      kind: 'collected-artifact',
+      path: relative(trialPath, current).split(sep).join('/'),
+      bytes: metadata.size,
+      sha256: `sha256:${hash.digest('hex')}`,
+    });
+    return;
+  }
+  if (!metadata.isDirectory()) return;
+  for (const entry of await readdir(current, { withFileTypes: true })) {
+    const path = join(current, entry.name);
+    if (entry.isSymbolicLink()) continue;
+    await walkCollectedArtifacts(trialPath, path, files);
+  }
 }
 
 interface HarnessOptions {
@@ -442,9 +841,16 @@ interface HarnessOptions {
   readonly pythonPathEnv: string;
   readonly trialsRootEnv: string;
   readonly tasksRootEnv?: string;
-  readonly containerCwd: string;
   readonly environment: JsonObject;
   readonly preparationEnvironment: readonly string[];
+  readonly egressProxy?: {
+    readonly composeSourceEnv: string;
+    readonly composeRelativePath: string;
+    readonly networkPolicyRelativePath: string;
+    readonly proxyUrl: string;
+    readonly allowedHost: string;
+    readonly containerCaPath: string;
+  };
   readonly mounts: readonly {
     readonly sourceEnv: string;
     readonly target: string;
@@ -460,11 +866,19 @@ function decodeOptions(value: JsonObject, framework: Framework): HarnessOptions 
     'frameworkVersion',
     'pythonPathEnv',
     'trialsRootEnv',
-    'containerCwd',
     'environment',
     'preparationEnvironment',
     'mounts',
   ];
+  // Only the Harbor branch of run_trial.py applies the namespace policy, so a
+  // pier spec declaring egressProxy would set the proxy up and inject its
+  // environment while enforcement silently did not exist.
+  if (framework === 'pier' && Object.hasOwn(value, 'egressProxy')) {
+    throw new Error(
+      'executor.config.egressProxy is Harbor-only: pier does not apply the subject namespace policy',
+    );
+  }
+  if (Object.hasOwn(value, 'egressProxy')) fields.push('egressProxy');
   if (framework === 'pier') fields.push('tasksRootEnv');
   const options = exact(value, fields, 'executor.config');
   const preparationEnvironment = array(
@@ -481,18 +895,55 @@ function decodeOptions(value: JsonObject, framework: Framework): HarnessOptions 
     frameworkVersion: text(options.frameworkVersion, 'frameworkVersion'),
     pythonPathEnv: machinePathEnv(options.pythonPathEnv, 'pythonPathEnv'),
     trialsRootEnv: machinePathEnv(options.trialsRootEnv, 'trialsRootEnv'),
-    containerCwd: absolute(options.containerCwd, 'containerCwd'),
     environment: decodeJsonObject(options.environment, 'environment'),
     preparationEnvironment,
+    ...(Object.hasOwn(options, 'egressProxy')
+      ? { egressProxy: decodeEgressProxy(options.egressProxy) }
+      : {}),
     mounts: array(options.mounts, 'mounts').map((mount, index) => decodeMount(mount, index)),
     ...(framework === 'pier'
       ? { tasksRootEnv: machinePathEnv(options.tasksRootEnv, 'tasksRootEnv') }
       : {}),
   };
-  for (const name of [decoded.pythonPathEnv, decoded.trialsRootEnv, decoded.tasksRootEnv]) {
+  for (const name of [
+    decoded.pythonPathEnv,
+    decoded.trialsRootEnv,
+    decoded.tasksRootEnv,
+    decoded.egressProxy?.composeSourceEnv,
+  ]) {
     if (name && !process.env[name]) throw new Error(`machine path ${name} is unavailable`);
   }
   return decoded;
+}
+
+function decodeEgressProxy(value: unknown): NonNullable<HarnessOptions['egressProxy']> {
+  const proxy = exact(
+    value,
+    [
+      'composeSourceEnv',
+      'composeRelativePath',
+      'networkPolicyRelativePath',
+      'proxyUrl',
+      'allowedHost',
+      'containerCaPath',
+    ],
+    'egressProxy',
+  );
+  const proxyUrl = text(proxy.proxyUrl, 'egressProxy.proxyUrl');
+  if (!URL.canParse(proxyUrl) || new URL(proxyUrl).protocol !== 'http:') {
+    throw new Error('egressProxy.proxyUrl must be an HTTP proxy URL');
+  }
+  return {
+    composeSourceEnv: machinePathEnv(proxy.composeSourceEnv, 'egressProxy.composeSourceEnv'),
+    composeRelativePath: relativePath(proxy.composeRelativePath, 'egressProxy.composeRelativePath'),
+    networkPolicyRelativePath: relativePath(
+      proxy.networkPolicyRelativePath,
+      'egressProxy.networkPolicyRelativePath',
+    ),
+    proxyUrl,
+    allowedHost: hostName(proxy.allowedHost, 'egressProxy.allowedHost'),
+    containerCaPath: absolute(proxy.containerCaPath, 'egressProxy.containerCaPath'),
+  };
 }
 
 function decodeMount(value: unknown, index: number) {
@@ -514,6 +965,27 @@ function resolveMounts(mounts: HarnessOptions['mounts']) {
     target: mount.target,
     read_only: true,
   }));
+}
+
+function resolveEnvironmentConfig(options: HarnessOptions): JsonObject {
+  const base = { ...options.environment, mounts: resolveMounts(options.mounts) };
+  if (!options.egressProxy) return base;
+  const source = resolve(process.env[options.egressProxy.composeSourceEnv]!);
+  const composePath = resolve(source, options.egressProxy.composeRelativePath);
+  if (relative(source, composePath).startsWith(`..${sep}`)) {
+    throw new Error('egress proxy compose path escapes its source root');
+  }
+  return { ...base, extra_docker_compose: [composePath] };
+}
+
+function resolveNetworkPolicyPath(options: HarnessOptions): string | undefined {
+  if (!options.egressProxy) return undefined;
+  const source = resolve(process.env[options.egressProxy.composeSourceEnv]!);
+  const policyPath = resolve(source, options.egressProxy.networkPolicyRelativePath);
+  if (relative(source, policyPath).startsWith(`..${sep}`)) {
+    throw new Error('egress network policy path escapes its source root');
+  }
+  return policyPath;
 }
 
 function decodeTask(framework: Framework, options: HarnessOptions, cell: ExperimentCell) {
@@ -585,36 +1057,88 @@ async function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promis
   });
 }
 
-async function waitForTrial(
-  child: ChildProcess,
-  signal?: AbortSignal,
-  terminate = false,
-): Promise<boolean> {
+type TrialWait =
+  | { readonly phase: 'completion' }
+  | { readonly phase: 'abort'; readonly deadlineMs: number }
+  | { readonly phase: 'unused'; readonly deadlineMs: number };
+
+type TrialWaitEvidence =
+  | {
+      readonly phase: 'completion';
+      readonly deadlineMs: null;
+      readonly escalation: 'none';
+      readonly outcome: 'completed' | 'failed';
+    }
+  | {
+      readonly phase: 'abort' | 'unused';
+      readonly deadlineMs: number;
+      readonly escalation: 'term';
+      readonly outcome: 'confirmed' | 'terminated';
+    }
+  | {
+      readonly phase: 'abort' | 'unused';
+      readonly deadlineMs: number;
+      readonly escalation: 'kill';
+      readonly outcome: 'killed';
+    }
+  | {
+      readonly phase: 'abort' | 'unused';
+      readonly deadlineMs: number;
+      readonly escalation: 'detached';
+      readonly outcome: 'unsettled';
+    };
+
+const RELAY_SETTLEMENT_DEADLINE_MS = 120_000;
+const PYTHON_TEARDOWN_DEADLINE_MS = 110_000;
+const TERM_SETTLEMENT_DEADLINE_MS = 20_000;
+const KILL_SETTLEMENT_DEADLINE_MS = 5_000;
+
+async function waitForTrial(child: ChildProcess, wait: TrialWait): Promise<TrialWaitEvidence> {
   const exit =
     child.exitCode !== null || child.signalCode !== null
       ? Promise.resolve({ code: child.exitCode, signal: child.signalCode })
       : once(child, 'exit').then(([code, childSignal]) => ({ code, signal: childSignal }));
-  let terminating = terminate;
-  const cancel = () => {
-    terminating = true;
-    child.kill('SIGTERM');
-  };
-  signal?.addEventListener('abort', cancel, { once: true });
-  if (terminate || signal?.aborted) cancel();
-  try {
-    const first = await within(exit, 20_000);
-    if (first) return first.code === 0 && first.signal === null;
-    if (!terminating) {
-      child.kill('SIGTERM');
-      const second = await within(exit, 20_000);
-      if (second) return second.code === 0 && second.signal === null;
-    }
-    child.kill('SIGKILL');
-    if (!(await within(exit, 5_000))) child.unref();
-    return false;
-  } finally {
-    signal?.removeEventListener('abort', cancel);
+  if (wait.phase === 'completion') {
+    const completed = await exit;
+    return {
+      phase: wait.phase,
+      deadlineMs: null,
+      escalation: 'none',
+      outcome: completed.code === 0 && completed.signal === null ? 'completed' : 'failed',
+    };
   }
+
+  child.kill('SIGTERM');
+  const terminated = await within(exit, wait.deadlineMs);
+  if (terminated) {
+    return {
+      phase: wait.phase,
+      deadlineMs: wait.deadlineMs,
+      escalation: 'term',
+      outcome: terminated.code === 0 && terminated.signal === null ? 'confirmed' : 'terminated',
+    };
+  }
+  child.kill('SIGKILL');
+  const killed = await within(exit, KILL_SETTLEMENT_DEADLINE_MS);
+  if (killed) {
+    return {
+      phase: wait.phase,
+      deadlineMs: wait.deadlineMs,
+      escalation: 'kill',
+      outcome: 'killed',
+    };
+  }
+  child.unref();
+  return {
+    phase: wait.phase,
+    deadlineMs: wait.deadlineMs,
+    escalation: 'detached',
+    outcome: 'unsettled',
+  };
+}
+
+function finalizationConfirmed(evidence: TrialWaitEvidence): boolean {
+  return evidence.outcome === 'completed' || evidence.outcome === 'confirmed';
 }
 
 async function within<T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined> {
@@ -658,6 +1182,22 @@ function machinePathEnv(value: unknown, where: string): string {
   const name = text(value, where);
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) throw new Error(`${where} is invalid`);
   return name;
+}
+
+function relativePath(value: unknown, where: string): string {
+  const path = text(value, where);
+  if (path.startsWith('/') || path === '..' || path.startsWith(`..${sep}`)) {
+    throw new Error(`${where} must stay within its source root`);
+  }
+  return path;
+}
+
+function hostName(value: unknown, where: string): string {
+  const host = text(value, where).toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/u.test(host)) {
+    throw new Error(`${where} must be a hostname`);
+  }
+  return host;
 }
 
 function absolute(value: unknown, where: string): string {

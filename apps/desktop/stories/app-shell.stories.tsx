@@ -195,7 +195,6 @@ const baseComposerProps: ComposerProps = {
   onStop: noop,
   modelLabel: 'Claude Sonnet 4.5',
   activeSession,
-  activeConnectionLabel: 'Anthropic',
   activeModel: 'claude-sonnet-4-5',
   activeModelLabel: 'Claude Sonnet 4.5',
   modelChoices,
@@ -418,6 +417,9 @@ function ComposedShell(props: {
                   <Composer
                     {...baseComposerProps}
                     activeSession={active}
+                    modelSwitchHasHistory={messages.some(
+                      (message) => message.type === 'user' || message.type === 'assistant',
+                    )}
                     streaming={sessionStreaming ?? false}
                     {...props.composer}
                   />

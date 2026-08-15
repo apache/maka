@@ -215,6 +215,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
 
       const subscription = await tui.openSessionSubscription({
         sessionId: created.id,
+        transcript: { kind: 'none' },
       });
       const iterator = subscription[Symbol.asyncIterator]();
       assert.equal(subscription.snapshot.session.metadataRevision, created.revision);
@@ -502,6 +503,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       await subscription.close();
       const retirementSubscription = await tui.openSessionSubscription({
         sessionId: created.id,
+        transcript: { kind: 'none' },
       });
       const retirementIterator = retirementSubscription[Symbol.asyncIterator]();
       const beforeArchive = await querySession(desktop, created.id);

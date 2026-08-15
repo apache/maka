@@ -1,5 +1,5 @@
 import type { ActiveInteractionRequestEvent, SessionEvent } from '@maka/core/events';
-import type { StoredMessage } from '@maka/core/session';
+import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import type {
   InteractionPendingSnapshot,
   SessionContinuitySnapshot,
@@ -18,6 +18,32 @@ interface AssistantAccumulator {
   text: string;
   complete: boolean;
   replacing: boolean;
+}
+
+export interface RuntimeHostSessionProjectionSeed {
+  readonly durableInFlightMessageIds: readonly string[];
+  readonly activeAssistantMessages: readonly Extract<StoredMessage, { type: 'assistant' }>[];
+}
+
+export function createRuntimeHostSessionProjectionSeed(
+  transcript: readonly StoredMessage[],
+  snapshot: SessionContinuitySnapshot,
+): RuntimeHostSessionProjectionSeed {
+  const inFlightMessageIds = new Set(
+    rootQueueInFlight(snapshot.queue).map((entry) => entry.messageId),
+  );
+  return {
+    durableInFlightMessageIds: transcript
+      .filter((message) => inFlightMessageIds.has(message.id))
+      .map((message) => message.id),
+    activeAssistantMessages:
+      snapshot.rootTurn === null
+        ? []
+        : transcript.filter(
+            (message): message is Extract<StoredMessage, { type: 'assistant' }> =>
+              message.type === 'assistant' && message.turnId === snapshot.rootTurn?.turnId,
+          ),
+  };
 }
 
 export type RuntimeHostTerminalTurn = Extract<
@@ -41,17 +67,17 @@ export class RuntimeHostSessionProjector {
 
   constructor(
     snapshot: SessionContinuitySnapshot,
-    transcript: readonly StoredMessage[],
+    seed: RuntimeHostSessionProjectionSeed,
     now: () => number = Date.now,
     activeAssistantStreams: readonly SessionAssistantStreamIdentity[] = [],
   ) {
     this.#snapshot = structuredClone(snapshot);
     this.#now = now;
-    this.#transcriptIds = new Set(transcript.map((message) => message.id));
+    this.#transcriptIds = new Set(seed.durableInFlightMessageIds);
     const root = snapshot.rootTurn;
     if (!root) return;
-    for (const message of transcript) {
-      if (message.type !== 'assistant' || message.turnId !== root.turnId) continue;
+    for (const message of seed.activeAssistantMessages) {
+      if (message.turnId !== root.turnId) continue;
       if (message.thinking?.text) {
         this.#accumulators.set(accumulatorKey('thinking', message.id), {
           kind: 'thinking',
@@ -130,6 +156,15 @@ export class RuntimeHostSessionProjector {
     return events;
   }
 
+  noteTranscriptMessageIds(messageIds: readonly string[]): void {
+    const inFlight = new Set(
+      rootQueueInFlight(this.#snapshot.queue).map((entry) => entry.messageId),
+    );
+    for (const messageId of messageIds) {
+      if (inFlight.has(messageId)) this.#transcriptIds.add(messageId);
+    }
+  }
+
   seedTerminal(turn: RuntimeHostTerminalTurn): SessionEvent[] {
     return this.#terminalEvents(turn, true);
   }
@@ -199,6 +234,46 @@ export class RuntimeHostSessionProjector {
     return events;
   }
 
+  seedRecordedTerminal(turn: TurnRecord): SessionEvent[] {
+    if (turn.statusSource !== 'recorded' || turn.status === 'running') return [];
+    const ts = this.#now();
+    const id = `host-recorded-terminal:${turn.turnId}:${turn.status}`;
+    if (turn.status === 'completed') {
+      return [
+        {
+          type: 'complete',
+          id,
+          turnId: turn.turnId,
+          ts,
+          stopReason: 'end_turn',
+        },
+      ];
+    }
+    if (turn.status === 'failed') {
+      const reason = turn.errorClass ?? 'runtime_error';
+      return [
+        {
+          type: 'error',
+          id,
+          turnId: turn.turnId,
+          ts,
+          recoverable: false,
+          reason,
+          message: `Turn failed: ${reason}`,
+        },
+      ];
+    }
+    return [
+      {
+        type: 'abort',
+        id,
+        turnId: turn.turnId,
+        ts,
+        reason: abortReason(turn.abortSource ?? ''),
+      },
+    ];
+  }
+
   accept(frame: SubscriptionFrame): RuntimeHostProjectionUpdate {
     const events: SessionEvent[] = [];
     if (frame.kind === 'subscription.session_delta') {
@@ -247,6 +322,10 @@ export class RuntimeHostSessionProjector {
     const previousSnapshot = this.#snapshot;
     const next = frame.snapshot;
     this.#snapshot = structuredClone(next);
+    const nextInFlight = new Set(rootQueueInFlight(next.queue).map((entry) => entry.messageId));
+    for (const messageId of this.#transcriptIds) {
+      if (!nextInFlight.has(messageId)) this.#transcriptIds.delete(messageId);
+    }
     const resolvedInteractions = removedPendingInteractions(previousSnapshot, next);
     for (const interaction of newlyPendingInteractions(previousSnapshot, next)) {
       events.push(...projectRuntimeHostInteractionRequest(interaction, this.#now()));
@@ -274,7 +353,13 @@ export class RuntimeHostSessionProjector {
         ? root
         : undefined;
     if (terminalTurn) events.push(...this.#terminalEvents(terminalTurn));
-    return { events, previousSnapshot, startedTurn, terminalTurn, resolvedInteractions };
+    return {
+      events,
+      previousSnapshot,
+      startedTurn,
+      terminalTurn,
+      resolvedInteractions,
+    };
   }
 
   #terminalEvents(root: RuntimeHostTerminalTurn, includeSettled = false): SessionEvent[] {

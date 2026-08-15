@@ -174,6 +174,13 @@ export function isTurnStatus(value: unknown): value is TurnStatus {
 // Header (JSONL line 1)
 // ============================================================================
 
+export const SESSION_TOOL_PROFILES = ['headless-coding-v1'] as const;
+export type SessionToolProfile = (typeof SESSION_TOOL_PROFILES)[number];
+
+export function isSessionToolProfile(value: unknown): value is SessionToolProfile {
+  return typeof value === 'string' && (SESSION_TOOL_PROFILES as readonly string[]).includes(value);
+}
+
 export interface SessionHeader {
   // Identity
   id: string;
@@ -233,6 +240,8 @@ export interface SessionHeader {
   connectionLocked: boolean;
   /** Sticky session default model id, captured when the session is created. */
   model: string;
+  /** Immutable versioned prompt/tool contract for non-product execution surfaces. */
+  toolProfile?: SessionToolProfile;
   /** Per-model reasoning-depth variant; `undefined` = model default. Cleared on model switch. */
   thinkingLevel?: import('./model-thinking.js').ThinkingLevel;
   permissionMode: PermissionMode;
@@ -660,6 +669,7 @@ export interface UserMessage extends MessageContent {
    * hand-type. Mirrors TurnOrigin in runtime-inputs. */
   origin?:
     | { kind: 'scheduled_task'; scheduledTaskId: string }
+    | { kind: 'legacy_automation'; automationId: string }
     | { kind: 'goal'; goalId: string }
     | { kind: 'agent_graph'; graphId: string; wakeId: string; attemptId: string };
 }
@@ -804,6 +814,8 @@ export interface TurnStateMessage {
 
 export interface TurnRecord {
   turnId: string;
+  firstSequence?: number;
+  userPromptPreview?: string;
   status: TurnStatus;
   /**
    * Whether `status` came from a `turn_state` message or was reconstructed by
@@ -936,10 +948,15 @@ const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
 );
 type MessageOrigin = NonNullable<UserMessage['origin']>;
 type ScheduledTaskOrigin = Extract<MessageOrigin, { kind: 'scheduled_task' }>;
+type LegacyAutomationOrigin = Extract<MessageOrigin, { kind: 'legacy_automation' }>;
 type GoalOrigin = Extract<MessageOrigin, { kind: 'goal' }>;
 type AgentGraphOrigin = Extract<MessageOrigin, { kind: 'agent_graph' }>;
 const SCHEDULED_TASK_ORIGIN_SHAPE = defineObjectShape<ScheduledTaskOrigin>()(
   ['kind', 'scheduledTaskId'],
+  [],
+);
+const LEGACY_AUTOMATION_ORIGIN_SHAPE = defineObjectShape<LegacyAutomationOrigin>()(
+  ['kind', 'automationId'],
   [],
 );
 const GOAL_ORIGIN_SHAPE = defineObjectShape<GoalOrigin>()(['kind', 'goalId'], []);
@@ -968,9 +985,10 @@ export function decodeStoredMessage(value: unknown): StoredMessage {
       if (
         hasExactShape(message, USER_MESSAGE_SHAPE) &&
         hasMessageEnvelope(message, true) &&
-        (message.origin === undefined || isMessageOrigin(message.origin))
+        (message.origin === undefined || decodeMessageOrigin(message.origin) !== undefined)
       ) {
         const { displayText, attachments, quotes, inlineReferences, origin, ...envelope } = message;
+        const decodedOrigin = origin === undefined ? undefined : decodeMessageOrigin(origin);
         try {
           return {
             ...envelope,
@@ -981,7 +999,7 @@ export function decodeStoredMessage(value: unknown): StoredMessage {
               quotes,
               inlineReferences,
             }),
-            ...(origin !== undefined ? { origin } : {}),
+            ...(decodedOrigin !== undefined ? { origin: decodedOrigin } : {}),
           } as unknown as UserMessage;
         } catch {
           break;
@@ -1154,8 +1172,18 @@ function isScheduledTaskOrigin(value: unknown): value is ScheduledTaskOrigin {
   );
 }
 
-function isMessageOrigin(value: unknown): value is MessageOrigin {
-  return isScheduledTaskOrigin(value) || isGoalOrigin(value) || isAgentGraphOrigin(value);
+function decodeMessageOrigin(value: unknown): MessageOrigin | undefined {
+  if (isScheduledTaskOrigin(value) || isGoalOrigin(value) || isAgentGraphOrigin(value))
+    return value;
+  if (
+    isRecord(value) &&
+    hasExactShape(value, LEGACY_AUTOMATION_ORIGIN_SHAPE) &&
+    (value.kind === 'automation' || value.kind === 'legacy_automation') &&
+    typeof value.automationId === 'string'
+  ) {
+    return { kind: 'legacy_automation', automationId: value.automationId };
+  }
+  return undefined;
 }
 
 function isOptionalFiniteDuration(value: unknown): boolean {
@@ -1175,6 +1203,29 @@ function isToolActivityIdentity(value: Record<string, unknown>): boolean {
 
 export const STEP_LIMIT_NOTICE_TEXT =
   'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.';
+
+/**
+ * View-boundary facts for explaining a model selection without adding a
+ * second persisted model authority. Assistant rows already record the actual
+ * model used by each completed step, so the latest such row is the only
+ * durable model fact the switcher needs.
+ */
+export function deriveModelSwitchTranscript(messages: readonly StoredMessage[]): {
+  hasConversation: boolean;
+  lastUsedModel?: string;
+} {
+  let lastUsedModel: string | undefined;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.type !== 'assistant') continue;
+    lastUsedModel = message.modelId;
+    break;
+  }
+  return {
+    hasConversation: messages.length > 0,
+    ...(lastUsedModel ? { lastUsedModel } : {}),
+  };
+}
 
 export function deriveTurnRecords(messages: readonly StoredMessage[]): TurnRecord[] {
   const order: string[] = [];

@@ -39,6 +39,15 @@ export interface AppShellSessionEventHandlers {
   settleAssistantStreaming(sessionId: string, messageId?: string): Promise<void>;
 }
 
+export interface AppShellSessionDisplayBatch {
+  readonly pendingEvents: Map<string, SessionEvent[]>;
+  framePending: boolean;
+}
+
+export function createAppShellSessionDisplayBatch(): AppShellSessionDisplayBatch {
+  return { pendingEvents: new Map(), framePending: false };
+}
+
 export function createAppShellSessionEventHandlers(options: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
@@ -53,6 +62,8 @@ export function createAppShellSessionEventHandlers(options: {
   showModelSetupToast: (description: string, reason?: string) => void;
   toastApi: ToastApi;
   notifyRunEnded?: (payload: { kind: 'completed' | 'errored'; sessionId: string; body?: string }) => void;
+  scheduleFrame?: (callback: () => void) => void;
+  displayBatch?: AppShellSessionDisplayBatch;
 }): AppShellSessionEventHandlers {
   const {
     uiLocale,
@@ -68,16 +79,69 @@ export function createAppShellSessionEventHandlers(options: {
     toastApi,
     notifyRunEnded,
   } = options;
+  const scheduleFrame = options.scheduleFrame ?? (
+    typeof requestAnimationFrame === 'function'
+      ? (callback: () => void) => {
+          let pending = true;
+          const run = () => {
+            if (!pending) return;
+            pending = false;
+            callback();
+          };
+          requestAnimationFrame(run);
+          window.setTimeout(run, 100);
+        }
+      : undefined
+  );
+  const displayBatch = options.displayBatch ?? createAppShellSessionDisplayBatch();
 
-  function updateLiveTurn(sessionId: string, event: SessionEvent): void {
-    setLiveTurnBySession((current) => {
-      const nextProjection = applyLiveTurnEvent(current[sessionId], event, uiLocale);
-      if (nextProjection === current[sessionId]) return current;
-      const next = { ...current };
-      if (nextProjection) next[sessionId] = nextProjection;
+  function applyProjectionEvents(
+    projection: LiveTurnProjection | undefined,
+    events: readonly SessionEvent[],
+  ): LiveTurnProjection | undefined {
+    let next = projection;
+    for (const event of events) next = applyLiveTurnEvent(next, event, uiLocale);
+    return next;
+  }
+
+  function replaceLiveTurns(
+    current: Record<string, LiveTurnProjection>,
+    batches: ReadonlyMap<string, readonly SessionEvent[]>,
+  ): Record<string, LiveTurnProjection> {
+    let next = current;
+    for (const [sessionId, events] of batches) {
+      const projection = applyProjectionEvents(current[sessionId], events);
+      if (projection === current[sessionId]) continue;
+      if (next === current) next = { ...current };
+      if (projection) next[sessionId] = projection;
       else delete next[sessionId];
-      return next;
+    }
+    return next;
+  }
+
+  function takePendingDisplayEvents(sessionId: string): SessionEvent[] {
+    const events = displayBatch.pendingEvents.get(sessionId) ?? [];
+    displayBatch.pendingEvents.delete(sessionId);
+    return events;
+  }
+
+  function scheduleDisplayEvent(sessionId: string, event: SessionEvent): void {
+    const events = displayBatch.pendingEvents.get(sessionId);
+    if (events) events.push(event);
+    else displayBatch.pendingEvents.set(sessionId, [event]);
+    if (displayBatch.framePending || !scheduleFrame) return;
+    displayBatch.framePending = true;
+    scheduleFrame(() => {
+      displayBatch.framePending = false;
+      if (displayBatch.pendingEvents.size === 0) return;
+      const batches = new Map(displayBatch.pendingEvents);
+      displayBatch.pendingEvents.clear();
+      setLiveTurnBySession((current) => replaceLiveTurns(current, batches));
     });
+  }
+
+  function updateLiveTurn(sessionId: string, events: readonly SessionEvent[]): void {
+    setLiveTurnBySession((current) => replaceLiveTurns(current, new Map([[sessionId, events]])));
   }
 
   function settleLiveStep(sessionId: string, stepId: string): void {
@@ -104,11 +168,12 @@ export function createAppShellSessionEventHandlers(options: {
   }
 
   function reconcilePersistedMessages(sessionId: string, messages: readonly StoredMessage[]): void {
+    const pending = takePendingDisplayEvents(sessionId);
     setLiveTurnBySession((current) => {
-      const projection = current[sessionId];
+      const projection = applyProjectionEvents(current[sessionId], pending);
       if (!projection) return current;
       const reconciled = reconcileTerminalLiveTurn(projection, messages);
-      if (reconciled === projection) return current;
+      if (reconciled === current[sessionId]) return current;
       const next = { ...current };
       if (reconciled) next[sessionId] = reconciled;
       else delete next[sessionId];
@@ -122,8 +187,17 @@ export function createAppShellSessionEventHandlers(options: {
   }
 
   function handleEvent(sessionId: string, event: SessionEvent): void {
-    const before = liveTurnBySessionRef.current[sessionId];
-    updateLiveTurn(sessionId, event);
+    if (
+      scheduleFrame
+      && activeIdRef.current === sessionId
+      && (event.type === 'text_delta' || event.type === 'thinking_delta')
+    ) {
+      scheduleDisplayEvent(sessionId, event);
+      return;
+    }
+    const pending = takePendingDisplayEvents(sessionId);
+    const before = applyProjectionEvents(liveTurnBySessionRef.current[sessionId], pending);
+    updateLiveTurn(sessionId, [...pending, event]);
 
     switch (event.type) {
       case 'text_complete':

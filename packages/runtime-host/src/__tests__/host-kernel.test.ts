@@ -54,6 +54,9 @@ import {
   type InteractiveRuntimeHostCandidateResult,
   type RuntimeHostComposition,
   type RuntimeHostCompositionContext,
+  type RuntimeHostCompositionFactory,
+  type RuntimeHostCompositionSource,
+  type RuntimeHostKernelOptions,
 } from '../server/index.js';
 import { createUnavailableDomainOperationHandlers } from '../server/operation-dispatcher.js';
 import { HostConfigurationChangeService } from '../server/configuration-change-service.js';
@@ -66,6 +69,7 @@ import {
   STORAGE_ROOT_MARKER_FILE,
   StorageRootAuthorityError,
   tryAcquireInteractiveRootOwner,
+  type InteractiveRootOwner,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
 import { bindStateRootComposition } from '@maka/storage/state-root-composition';
@@ -84,6 +88,28 @@ const KERNEL_COMPOSITION = defineInteractiveRuntimeHostComposition(async () => (
 }));
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
+
+type IsExact<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
+    ? (<Value>() => Value extends Right ? 1 : 2) extends <Value>() => Value extends Left ? 1 : 2
+      ? true
+      : false
+    : false;
+type AssertTrue<Value extends true> = Value;
+
+export type RuntimeHostInteractiveRootTypeContract = [
+  AssertTrue<IsExact<RuntimeHostCompositionContext['owner'], InteractiveRootOwner>>,
+  AssertTrue<IsExact<RuntimeHostKernelOptions['owner'], InteractiveRootOwner>>,
+];
+
+// @ts-expect-error Runtime Host composition contexts are concretely interactive.
+export type GenericRuntimeHostCompositionContext = RuntimeHostCompositionContext<'interactive'>;
+// @ts-expect-error Runtime Host composition factories are concretely interactive.
+export type GenericRuntimeHostCompositionFactory = RuntimeHostCompositionFactory<'interactive'>;
+// @ts-expect-error Runtime Host composition sources are concretely interactive.
+export type GenericRuntimeHostCompositionSource = RuntimeHostCompositionSource<'interactive'>;
+// @ts-expect-error Runtime Host kernel options are concretely interactive.
+export type GenericRuntimeHostKernelOptions = RuntimeHostKernelOptions<'interactive'>;
 
 describe('non-serving Runtime Host kernel', () => {
   test('reports a recovery failure when the election produces no ready Host', async () => {
@@ -113,9 +139,71 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('accepts a ready successor after an earlier Candidate fails', async () => {
+  test('reports an operational migration blocker as a permanent election failure', async () => {
     await withHostPaths(async (paths) => {
       let launches = 0;
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          surface: 'desktop',
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 1_000,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: () => {
+            launches += 1;
+            return {
+              spawned: Promise.resolve({
+                pid: process.pid,
+                startupFailure: Promise.resolve({
+                  reason: 'operational_state_migration_blocked' as const,
+                }),
+              }),
+            };
+          },
+        },
+      );
+
+      assert.deepEqual(result, { kind: 'failed', reason: 'operational_state_migration_blocked' });
+      assert.equal(launches, 1);
+    });
+  });
+
+  test('treats a rejected Candidate report as unavailable election evidence', async () => {
+    await withHostPaths(async (paths) => {
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          surface: 'desktop',
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 100,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: () => ({
+            spawned: Promise.resolve({
+              pid: process.pid,
+              startupFailure: Promise.reject(new Error('report failed')),
+            }),
+          }),
+        },
+      );
+
+      assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
+    });
+  });
+
+  test('accepts a ready successor launched before a migration blocker is observed', async () => {
+    await withHostPaths(async (paths) => {
+      let launches = 0;
+      let reportBlocker:
+        | ((failure: { reason: 'operational_state_migration_blocked' }) => void)
+        | undefined;
       const result = await connectOrSpawnRuntimeHostWithDependencies(
         {
           rootPath: paths.root,
@@ -129,9 +217,19 @@ describe('non-serving Runtime Host kernel', () => {
           random: () => 0.5,
           launchCandidate: (input) => {
             launches += 1;
+            if (launches === 1) {
+              return {
+                spawned: Promise.resolve({
+                  pid: process.pid,
+                  startupFailure: new Promise((resolve) => {
+                    reportBlocker = resolve;
+                  }),
+                }),
+              };
+            }
+            reportBlocker?.({ reason: 'operational_state_migration_blocked' });
             return launchTestRuntimeHostCandidate(paths, {
               ...input,
-              ...(launches === 1 ? { env: { MAKA_TEST_STARTUP_ERROR_CODE: 'EACCES' } } : {}),
             });
           },
         },

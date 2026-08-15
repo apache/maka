@@ -114,9 +114,7 @@ export interface ConversationCopy {
     switching: string;
     model: string;
     switchAriaLabel: string;
-    switchSession: string;
-    pinnedSession: (connection: string, model: string) => string;
-    switchTitle: (sessionTitle: string) => string;
+    switchWarning: string;
     newChatAriaLabel: (label: string) => string;
     newChatTitle: (label: string) => string;
     configureAriaLabel: (label: string) => string;
@@ -206,6 +204,8 @@ export interface ConversationCopy {
     derivativesAriaLabel: string;
     scheduledTaskTriggered: string;
     scheduledTaskTitle: (id: string) => string;
+    legacyAutomationTriggered: string;
+    legacyAutomationTitle: (id: string) => string;
     goalContinued: string;
     goalTitle: (id: string) => string;
     agentGraphTriggered: string;
@@ -361,9 +361,8 @@ const CONVERSATION_COPY = {
       // Short single-token labels — trigger + popout size to content.
       // Canonical ladder: 默认 / 关 / 低 / 中 / 高 / 超高 (minimal/max when offered).
       level: { off: '关', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' },
-      switching: '切换中', model: '模型', switchAriaLabel: '切换当前会话模型', switchSession: '切换当前会话使用的模型',
-      pinnedSession: (connection, model) => `本会话固定模型：${connection} · ${model}`,
-      switchTitle: (title) => `${title}。设置里的默认模型只影响新建会话；这里会更新当前会话。`,
+      switching: '切换中', model: '模型', switchAriaLabel: '切换当前会话模型',
+      switchWarning: '切换模型可能需要重建服务商提示缓存，使下一次请求更慢或成本更高。',
       newChatAriaLabel: (label) => `选择新对话模型，当前 ${label}`, newChatTitle: (label) => `新对话使用的模型：${label}`,
       configureAriaLabel: (label) => `配置模型连接，当前 ${label}`, configureTitle: '配置模型连接',
     },
@@ -394,7 +393,7 @@ const CONVERSATION_COPY = {
     },
     messages: {
       you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盘算…', '正在钻研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓捣…', '正在酝酿…', '正在攻坚…', '正在权衡…', '正在拾掇…'], providerRetryScheduled: (seconds, attempt, maxAttempts) => `${seconds} 秒后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, safeResumePending: '正在验证…', safeResume: '安全恢复', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '通过显式技能发送的历史消息暂不支持编辑并重发',
-      userAriaLabel: '你发送的消息', systemAriaLabel: '系统消息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: '本轮回答操作', sourceAriaLabel: '本轮回答的来源', derivativesAriaLabel: '本轮回答的衍生', scheduledTaskTriggered: '定时任务触发', scheduledTaskTitle: (id) => `由定时任务触发 · ${id}`, goalContinued: 'Goal 自动继续', goalTitle: (id) => `由 Goal 继续执行 · ${id}`, agentGraphTriggered: 'Agent Graph 自动继续', agentGraphTitle: (graphId) => `由 Agent Graph 调度器触发 · ${graphId}`,
+      userAriaLabel: '你发送的消息', systemAriaLabel: '系统消息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: '本轮回答操作', sourceAriaLabel: '本轮回答的来源', derivativesAriaLabel: '本轮回答的衍生', scheduledTaskTriggered: '定时任务触发', scheduledTaskTitle: (id) => `由定时任务触发 · ${id}`, legacyAutomationTriggered: '旧版自动化（仅历史）', legacyAutomationTitle: (id) => `由旧版自动化触发 · ${id} · 仅保留历史，不会再次执行`, goalContinued: 'Goal 自动继续', goalTitle: (id) => `由 Goal 继续执行 · ${id}`, agentGraphTriggered: 'Agent Graph 自动继续', agentGraphTitle: (graphId) => `由 Agent Graph 调度器触发 · ${graphId}`,
       thinkingTruncatedTitle: '部分 reasoning 已截断；显示的是最近的内容', outputTruncatedTitle: '助手输出已超过单次回合上限，超出部分未渲染。如需完整内容请重新生成或查看持久化的会话日志。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', quoteExpandAriaLabel: '展开引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '(已中断)', abortedByStop: '(已中断 · 由停止按钮触发)',
     },
     chat: {
@@ -500,9 +499,8 @@ const CONVERSATION_COPY = {
     model: {
       thinkingLevel: 'Thinking level', thinkingUnsupported: 'This model does not support thinking-level changes', changeThinkingLevel: 'Change the current model thinking level', defaultLevel: 'Model default',
       level: { off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum' },
-      switching: 'Switching', model: 'Model', switchAriaLabel: 'Switch model for this conversation', switchSession: 'Switch the model used by this conversation',
-      pinnedSession: (connection, model) => `Model fixed for this conversation: ${connection} · ${model}`,
-      switchTitle: (title) => `${title}. The default model in Settings affects only new conversations; this updates the current conversation.`,
+      switching: 'Switching', model: 'Model', switchAriaLabel: 'Switch model for this conversation',
+      switchWarning: 'Switching may rebuild the provider prompt cache, making the next request slower or more expensive.',
       newChatAriaLabel: (label) => `Choose a model for the new conversation, currently ${label}`, newChatTitle: (label) => `Model for the new conversation: ${label}`,
       configureAriaLabel: (label) => `Configure model connections, currently ${label}`, configureTitle: 'Configure model connections',
     },
@@ -533,7 +531,7 @@ const CONVERSATION_COPY = {
     },
     messages: {
       you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', workingPhrases: ['Pondering…', 'Tinkering…', 'Untangling…', 'Digging in…', 'Mulling…', 'Chewing on it…', 'Wrangling…', 'Piecing it together…'], providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${seconds}s (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, safeResumePending: 'Checking…', safeResume: 'Safe recovery', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages sent with an explicit skill',
-      userAriaLabel: 'Your message', systemAriaLabel: 'System message', assistantAriaLabel: "Maka's response", answerActionsAriaLabel: 'Response actions', sourceAriaLabel: 'Source of this response', derivativesAriaLabel: 'Responses derived from this one', scheduledTaskTriggered: 'Triggered by scheduled task', scheduledTaskTitle: (id) => `Triggered by scheduled task · ${id}`, goalContinued: 'Continued by Goal', goalTitle: (id) => `Continued by Goal · ${id}`, agentGraphTriggered: 'Continued by Agent Graph', agentGraphTitle: (graphId) => `Triggered by the Agent Graph scheduler · ${graphId}`,
+      userAriaLabel: 'Your message', systemAriaLabel: 'System message', assistantAriaLabel: "Maka's response", answerActionsAriaLabel: 'Response actions', sourceAriaLabel: 'Source of this response', derivativesAriaLabel: 'Responses derived from this one', scheduledTaskTriggered: 'Triggered by scheduled task', scheduledTaskTitle: (id) => `Triggered by scheduled task · ${id}`, legacyAutomationTriggered: 'Legacy Automation (history only)', legacyAutomationTitle: (id) => `Triggered by legacy Automation · ${id} · Historical only; it will not run again`, goalContinued: 'Continued by Goal', goalTitle: (id) => `Continued by Goal · ${id}`, agentGraphTriggered: 'Continued by Agent Graph', agentGraphTitle: (graphId) => `Triggered by the Agent Graph scheduler · ${graphId}`,
       thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted session log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, quoteLabel: 'Quote', quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', removeQuoteAriaLabel: 'Remove quote', aborted: '(Interrupted)', abortedByStop: '(Interrupted · Stop button)',
     },
     chat: {

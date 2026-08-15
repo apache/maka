@@ -157,7 +157,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     rename: '重命名',
     renameLabel: '项目名称',
     renameFailed: '重命名失败',
-    openFolder: '在访达中打开',
+    openFolder: '打开项目文件夹',
     // Says which of the two things went wrong, because the fix differs: a
     // missing folder is the user's to restore, a refusal to open is not.
     openFolderFailed: '打不开这个目录，它可能已被移动或删除',
@@ -243,7 +243,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     rename: 'Rename',
     renameLabel: 'Project name',
     renameFailed: 'Could not rename the project',
-    openFolder: 'Reveal in Finder',
+    openFolder: 'Open project folder',
     openFolderFailed: 'Could not open this folder — it may have been moved or deleted',
     save: 'Save',
     cancel: 'Cancel',

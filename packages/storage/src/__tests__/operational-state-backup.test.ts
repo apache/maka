@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { createSqliteArtifactStore } from '../artifact-store.js';
 import { createProjectCatalog } from '../project-catalog.js';
@@ -41,13 +43,14 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
       name: 'Backup',
       labels: [],
     });
-    await sessions.appendMessage(session.id, {
+    const message = {
       type: 'user',
       id: 'message-1',
       turnId: 'turn-1',
       ts: 1,
-      text: 'durable',
-    });
+      text: 'durable'.repeat(12_000),
+    } as const;
+    await sessions.appendMessage(session.id, message);
     await sessions.close?.();
     const artifacts = createSqliteArtifactStore(stateRoot);
     const artifact = await artifacts.create({
@@ -69,7 +72,7 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
     const restored = createSessionStore(restoreRoot);
     const restoredCatalog = createProjectCatalog(restoreRoot);
     try {
-      assert.equal((await restored.readMessages(session.id))[0]?.id, 'message-1');
+      assert.deepEqual(await restored.readMessages(session.id), [message]);
       assert.equal(
         await readFile(join(restoreRoot, 'artifacts', artifact.relativePath), 'utf8'),
         'artifact',
@@ -127,6 +130,36 @@ test('rejects a backup whose SQLite Artifact metadata has no matching payload', 
         error.code === 'corrupt_backup' &&
         /artifact payload/i.test(error.message),
     );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('rejects a backup whose native Runtime version contradicts its registry', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-operational-backup-version-'));
+  const stateRoot = join(base, 'state');
+  const backupRoot = join(base, 'backup');
+  try {
+    const sessions = createSessionStore(stateRoot);
+    await sessions.close?.();
+    await createOperationalStateBackup({ stateRoot, destinationRoot: backupRoot, now: () => 10 });
+
+    const databasePath = join(backupRoot, 'runtime.sqlite');
+    const database = new DatabaseSync(databasePath);
+    database.exec('PRAGMA user_version = 999');
+    database.close();
+    const bytes = await readFile(databasePath);
+    const manifestPath = join(backupRoot, 'operational-backup.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+      files: Array<{ path: string; size: number; sha256: string }>;
+    };
+    const entry = manifest.files.find((file) => file.path === 'runtime.sqlite');
+    assert.ok(entry);
+    entry.size = bytes.byteLength;
+    entry.sha256 = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+
+    await assert.rejects(validateOperationalStateBackup(backupRoot), /newer than supported/);
   } finally {
     await rm(base, { recursive: true, force: true });
   }

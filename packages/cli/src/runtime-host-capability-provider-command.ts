@@ -42,6 +42,7 @@ export interface RuntimeHostCapabilityProviderCliOptions {
   readonly expectedRootId: string;
   readonly credentialEnv?: string;
   readonly clientIdentityPath?: string;
+  readonly defaultClientIdentityRoot?: string;
 }
 
 export async function runRuntimeHostCapabilityProviderCli(
@@ -49,7 +50,8 @@ export async function runRuntimeHostCapabilityProviderCli(
 ): Promise<number> {
   const configPath = resolve(options.mcpConfigPath);
   const identityPath = resolve(
-    options.clientIdentityPath ?? defaultProviderClientIdentityPath(options.url, configPath),
+    options.clientIdentityPath ??
+      defaultProviderClientIdentityPath(options.url, configPath, options.defaultClientIdentityRoot),
   );
   const credentialEnv = options.credentialEnv ?? DEFAULT_CREDENTIAL_ENV;
   const credential = process.env[credentialEnv];
@@ -121,12 +123,18 @@ export async function runRuntimeHostCapabilityProviderCli(
   }
 }
 
-function defaultProviderClientIdentityPath(url: string, configPath: string): string {
+function defaultProviderClientIdentityPath(
+  url: string,
+  configPath: string,
+  defaultClientIdentityRoot?: string,
+): string {
   const identity = createHash('sha256')
     .update(`runtime-host-capability-provider\0${url}\0${configPath}`)
     .digest('hex')
     .slice(0, 24);
-  return join(homedir(), '.maka', 'runtime-host-capability-providers', `${identity}.json`);
+  const identityRoot =
+    defaultClientIdentityRoot ?? join(homedir(), '.maka', 'runtime-host-capability-providers');
+  return join(identityRoot, `${identity}.json`);
 }
 
 async function connectRemoteCapabilityProvider(input: {

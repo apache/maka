@@ -76,6 +76,7 @@ export class RuntimeHostConnectionSession {
   readonly #options: RuntimeHostConnectionSessionOptions;
   readonly #writer: BoundedSerialOutboundWriter;
   readonly #requests = new Map<string, Promise<void>>();
+  #transcriptPageTail: Promise<void> = Promise.resolve();
   #inFlightStatusRequests = 0;
   #continuityService: SessionContinuityService | undefined;
   #continuity: SessionContinuityConnection | undefined;
@@ -174,7 +175,11 @@ export class RuntimeHostConnectionSession {
 
   #dispatch(frame: RequestFrame): void {
     if (frame.operation === 'host.status') this.#inFlightStatusRequests += 1;
-    const task = this.#handleRequest(frame)
+    const handling =
+      frame.operation === 'session.transcript.page'
+        ? this.#transcriptPageTail.then(() => this.#handleRequest(frame))
+        : this.#handleRequest(frame);
+    const task = handling
       .catch(() => this.#teardown())
       .finally(() => {
         if (this.#requests.get(frame.requestId) === task) {
@@ -183,9 +188,13 @@ export class RuntimeHostConnectionSession {
         }
       });
     this.#requests.set(frame.requestId, task);
+    if (frame.operation === 'session.transcript.page') {
+      this.#transcriptPageTail = task.catch(() => undefined);
+    }
   }
 
   async #handleRequest(frame: RequestFrame): Promise<void> {
+    if (this.#closed) return;
     if (!authorizeRuntimeHostOperation(this.#options.connection.authority, frame)) {
       if (this.#closed) return;
       await this.#writer.enqueue(
@@ -212,7 +221,7 @@ export class RuntimeHostConnectionSession {
       const continuity =
         frame.operation === 'subscription.open' ||
         frame.operation === 'subscription.close' ||
-        frame.operation === 'session.transcript.query'
+        frame.operation === 'session.transcript.page'
           ? this.#ensureContinuity()
           : undefined;
       const response = await dispatchOperation(frame, this.#options.resolveHandlers(), {

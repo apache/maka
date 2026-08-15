@@ -685,7 +685,19 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
         const subscription = new ClientSessionSubscription(
           result,
           () => this.#closeSessionSubscription(result.subscriptionId),
-          (query) => this.request('session.transcript.query', query, timeoutMs),
+          (query) => this.request('session.transcript.page', query, timeoutMs),
+          async () => {
+            try {
+              await this.request(
+                'session.transcript.overlay.release',
+                { subscriptionId: result.subscriptionId },
+                timeoutMs,
+              );
+            } catch (error) {
+              this.#fail(asError(error));
+              throw error;
+            }
+          },
         );
         this.#subscriptions.set(result.subscriptionId, subscription);
         return subscription;
@@ -761,6 +773,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
             case 'subscription.session_projection':
             case 'subscription.session_delta':
             case 'subscription.session_event':
+            case 'subscription.transcript_advanced':
             case 'subscription.session_domain_changed':
             case 'subscription.runtime_resource_pty_data':
             case 'subscription.agent_graph_changed':

@@ -57,7 +57,6 @@
    type lives on `.maka-quote-chip-text`, which is why the derived scan needed
    two arms rather than three to see it at all. */
 .maka-quote-chip-collapsed { height: var(--h-control-sm); max-width: 240px; align-items: center; padding-block: 2px; border-radius: var(--radius-pill); }
-.maka-composer-running-actions { display: inline-flex; align-items: center; gap: var(--space-1); }
 .maka-quote-chip-removable { padding-right: 2px; }
 .maka-quote-chip-readonly { padding-right: 8px; }
 .maka-quote-chip-icon { width: var(--icon-meta); height: var(--icon-meta); flex: 0 0 auto; color: var(--muted-foreground); }

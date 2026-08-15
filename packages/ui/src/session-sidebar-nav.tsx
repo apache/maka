@@ -1,7 +1,6 @@
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import {
   AlertCircle,
-  Archive,
   Blocks,
   Download,
   MessageSquare,
@@ -66,13 +65,6 @@ export function SessionSidebarNav(props: {
         size="md"
         isSelected={activeSessionFilter === 'chats'}
         onClick={() => props.onSelect({ section: 'sessions', filter: 'chats' })}
-      />
-      <SideNavItem
-        label={copy.archivedConversations}
-        icon={Archive}
-        size="md"
-        isSelected={activeSessionFilter === 'archived'}
-        onClick={() => props.onSelect({ section: 'sessions', filter: 'archived' })}
       />
       <SideNavItem
         label={copy.extensions}

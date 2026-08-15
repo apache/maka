@@ -94,8 +94,8 @@ Architecture is documented in [ARCHITECTURE.md](./ARCHITECTURE.md).
 npm run dev          # desktop app with HMR
 npm run dev:full     # full build, then launch the desktop app
 
-npm --workspace maka-agent exec -- maka          # TUI
-npm --workspace maka-agent exec -- maka run "…"  # one non-interactive turn
+npm run cli:dev                                  # TUI with the Maka Dev profile
+npm run cli:dev -- run "…"                       # one non-interactive turn
 ```
 
 Evaluation commands and contracts live in [`packages/eval`](./packages/eval).

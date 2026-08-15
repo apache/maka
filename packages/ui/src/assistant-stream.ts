@@ -160,13 +160,6 @@ export function applyAssistantDelta(
   // L3: append.
   const appended = previousText + delta;
 
-  // L4: cross-delta redaction (@kenji review @msg 3c01e901 Blocker 1).
-  // Streaming splits tokens; a secret like `Authorization: Bearer
-  // sk-XXX...` can arrive as `"Authorization: Bearer sk-"` (delta N)
-  // + `"abcdef..."` (delta N+1). Per-delta redaction (L1) cannot see
-  // the whole token; only re-scanning the freshly-appended
-  // candidate catches it. `redactSecrets` is idempotent on
-  // already-masked text, so running it twice is correct.
   const safeAppended = redactSecrets(appended);
   const crossDeltaRedactionHappened = safeAppended !== appended;
 

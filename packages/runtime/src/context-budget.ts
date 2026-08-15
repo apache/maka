@@ -165,6 +165,16 @@ export interface BudgetedRuntimeContext {
   events: RuntimeEvent[];
   diagnostic: ContextBudgetDiagnostic;
   historyCompactBlocks?: HistoryCompactBlock[];
+  /**
+   * The checkpoint this projection was actually replayed through — present only
+   * when it passed the prefix match and the replay fit, i.e. when these events
+   * really are `[block, tail]` rather than the raw prefix.
+   *
+   * A loaded checkpoint that failed either gate is a checkpoint the caller
+   * holds and the projection ignored; the two must not be confused by anyone
+   * reporting what a prompt was built from (#2323).
+   */
+  historyCompactCheckpoint?: HistoryCompactCheckpoint;
 }
 
 export interface PromptSegmentInput {
@@ -301,6 +311,7 @@ export function applyRuntimeEventContextBudget(
     events: keptEvents,
     diagnostic,
     ...(compacted.blocks.length > 0 ? { historyCompactBlocks: compacted.blocks } : {}),
+    ...(compacted.checkpoint ? { historyCompactCheckpoint: compacted.checkpoint } : {}),
   };
 }
 

@@ -28,6 +28,22 @@ export interface ScrollMotionPolicyInputs {
   e2eFixtureAttr: boolean;
   /** `window.matchMedia('(prefers-reduced-motion: reduce)').matches` */
   prefersReducedMotion: boolean;
+  /**
+   * `document.documentElement.dataset.makaScrollMotion`, set by a fixture that
+   * asks for a specific behavior.
+   *
+   * Collapsing motion for every capture is right for a screenshot and wrong
+   * for a test about scrolling: a scroll that finishes in one frame cannot
+   * collide with anything, so the fixture suite had no way to exercise the
+   * production smooth path at all (`prompt-rail.spec.ts` needs it — Astryx's
+   * auto-follow lock only contends with a scroll still in flight). This lets
+   * one fixture opt back in without loosening the default for the rest.
+   *
+   * Deliberately below the reduced-motion triggers: a fixture may ask for
+   * motion the capture would otherwise skip, but nothing may override a
+   * stated preference for less of it.
+   */
+  scrollMotionAttr?: ScrollMotionBehavior | undefined;
 }
 
 /**
@@ -38,7 +54,13 @@ export interface ScrollMotionPolicyInputs {
  * flags from whatever environment they're in.
  */
 export function resolveScrollMotionBehavior(inputs: ScrollMotionPolicyInputs): ScrollMotionBehavior {
-  if (inputs.reducedMotionAttr || inputs.e2eFixtureAttr || inputs.prefersReducedMotion) {
+  if (inputs.reducedMotionAttr || inputs.prefersReducedMotion) {
+    return 'auto';
+  }
+  if (inputs.scrollMotionAttr) {
+    return inputs.scrollMotionAttr;
+  }
+  if (inputs.e2eFixtureAttr) {
     return 'auto';
   }
   return 'smooth';
@@ -54,9 +76,11 @@ export function readScrollMotionBehavior(): ScrollMotionBehavior {
   const prefersReducedMotion =
     typeof window.matchMedia === 'function' &&
     window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const requested = root.dataset.makaScrollMotion;
   return resolveScrollMotionBehavior({
     reducedMotionAttr: root.dataset.makaReducedMotion === 'true',
     e2eFixtureAttr: root.dataset.makaE2eFixture === 'true',
     prefersReducedMotion,
+    scrollMotionAttr: requested === 'smooth' || requested === 'auto' ? requested : undefined,
   });
 }

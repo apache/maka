@@ -295,6 +295,7 @@ type ShellCopy = {
     permissionFailedTitle: string;
     permissionFallback: string;
     modelSwitchedTitle: string;
+    modelSwitchedDescription(from: string, to: string): string;
     modelFailedTitle: string;
     modelFallback: string;
     thinkingUpdatedTitle: string;
@@ -636,6 +637,7 @@ const ZH_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   models: '模型',
   subagents: '子 Agent',
   usage: '使用统计',
+  'archived-tasks': '已归档任务',
   memory: '记忆',
   'daily-review': '每日回顾',
   'bot-chat': '远程接入',
@@ -653,6 +655,7 @@ const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   models: 'Models',
   subagents: 'Subagents',
   usage: 'Usage',
+  'archived-tasks': 'Archived tasks',
   memory: 'Memory',
   'daily-review': 'Daily Review',
   'bot-chat': 'Remote Access',
@@ -897,6 +900,7 @@ const SHELL_COPY_BY_LOCALE = {
       permissionFailedTitle: '切换权限模式失败',
       permissionFallback: '权限模式暂时无法切换，请稍后重试。',
       modelSwitchedTitle: '已切换当前会话模型',
+      modelSwitchedDescription: (from, to) => `${from} → ${to}`,
       modelFailedTitle: '切换模型失败',
       modelFallback: '模型暂时无法切换，请稍后重试。',
       thinkingUpdatedTitle: '已更新思考级别',
@@ -1368,6 +1372,7 @@ const SHELL_COPY_BY_LOCALE = {
       permissionFailedTitle: 'Could not change permission mode',
       permissionFallback: 'The permission mode could not be changed. Try again later.',
       modelSwitchedTitle: 'Conversation model changed',
+      modelSwitchedDescription: (from, to) => `${from} → ${to}`,
       modelFailedTitle: 'Could not change model',
       modelFallback: 'The model could not be changed. Try again later.',
       thinkingUpdatedTitle: 'Thinking level updated',

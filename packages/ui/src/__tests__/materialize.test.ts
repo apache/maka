@@ -96,6 +96,32 @@ describe("steering timeline", () => {
     assert.deepEqual(timelineText(deduplicated), ["text:before", "user:inserted instruction"]);
   });
 
+  test("keeps the current answer ahead of a durable steering event that arrives first", () => {
+    const persisted = materializeTurns([
+      originalUser,
+      {
+        type: "user",
+        id: "steer-1",
+        turnId: "t1",
+        ts: 2,
+        text: "inserted instruction",
+        steeringEventId: "event-steer",
+      },
+    ]);
+    const live = applyLiveTurnEvent(armLiveTurn("t1"), {
+      type: "text_delta",
+      id: "event-before",
+      messageId: "before-steer",
+      turnId: "t1",
+      ts: 1,
+      text: "before",
+    });
+
+    const [overlaid] = overlayLiveTurn(persisted, live);
+
+    assert.deepEqual(timelineText(overlaid), ["text:before", "user:inserted instruction"]);
+  });
+
   test("keeps a persisted tool before live steering during handoff", () => {
     const persisted = materializeTurns([
       originalUser,

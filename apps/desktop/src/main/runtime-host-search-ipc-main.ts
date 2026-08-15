@@ -26,7 +26,7 @@ export function registerRuntimeHostSearchIpc(
         readWithFallback(async () => {
           const session = await deps.client.openSession(sessionId);
           try {
-            return await session.transcript;
+            return await session.loadTranscript();
           } finally {
             await session.close();
           }

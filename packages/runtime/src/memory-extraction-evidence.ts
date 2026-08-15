@@ -25,6 +25,8 @@ export const MAX_MEMORY_EVIDENCE_JSON_CHARS = 12_000;
 const MAX_EVIDENCE_TEXT_CHARS = 4_000;
 const MIN_EVIDENCE_TEXT_CHARS = 64;
 const MAX_LOCALIZED_TURNS = 7;
+const MAX_LOCALIZED_CONTEXT_CHARS = 12_000;
+const MAX_LOCALIZED_EVENT_CHARS = 2_000;
 
 /**
  * Plan one complete trigger range. Tool and Runtime-control Events deliberately
@@ -236,14 +238,16 @@ export function searchSameSessionMemoryHistory(
   entries: readonly MemoryExtractionEventEntry[],
   throughOrdinal: number,
   search: { readonly terms: readonly string[]; readonly roles?: readonly string[] },
+  afterOrdinal = 0,
 ): readonly MemoryExtractionEventEntry[] {
   const eligible = entries.filter(
     ({ ordinal, event }) =>
+      ordinal > afterOrdinal &&
       ordinal <= throughOrdinal &&
       !event.partial &&
       event.content?.kind === 'text' &&
-      event.role === 'user' &&
-      event.author === 'user',
+      ((event.role === 'user' && event.author === 'user') ||
+        (event.role === 'model' && event.author === 'agent')),
   );
   const turns: Array<{ key: string; entries: MemoryExtractionEventEntry[] }> = [];
   for (const entry of eligible) {
@@ -284,6 +288,28 @@ export function searchSameSessionMemoryHistory(
     .flatMap((index) => turns[index]!.entries);
 }
 
+/** Bounded User/Assistant text used only to interpret elliptical user evidence. */
+export function renderMemoryLocalizationContext(
+  entries: readonly MemoryExtractionEventEntry[],
+): string {
+  let remaining = MAX_LOCALIZED_CONTEXT_CHARS;
+  const rendered: string[] = [];
+  for (const { event } of entries) {
+    if (remaining <= 0 || event.partial || event.content?.kind !== 'text') continue;
+    const role = historyRole(event);
+    const text = sliceCodePoints(
+      normalizeEvidenceText(event.content.text),
+      MAX_LOCALIZED_EVENT_CHARS,
+    );
+    if (!text) continue;
+    const line = `[${role} event:${event.id}] ${text}`;
+    const bounded = sliceCodePoints(line, remaining);
+    rendered.push(bounded);
+    remaining -= Array.from(bounded).length;
+  }
+  return rendered.join('\n');
+}
+
 export function isMemoryToolName(name: string): boolean {
   return name === 'memory_remember' || name === 'memory_extract';
 }
@@ -313,8 +339,8 @@ function minuteTimestamp(value: number): number {
   return Math.floor(value / 60_000) * 60_000;
 }
 
-function historyRole(_event: RuntimeEvent): 'user' {
-  return 'user';
+function historyRole(event: RuntimeEvent): 'user' | 'assistant' {
+  return event.role === 'model' ? 'assistant' : 'user';
 }
 
 function sliceCodePoints(value: string, maximum: number): string {

@@ -84,6 +84,7 @@ export interface MakaRunDeps {
   createContext(input: MakaRunContextInput): Promise<MakaRunContext>;
   listSessions(workspaceRoot: string, hostProfileId?: string): Promise<SessionSummary[]>;
   workspaceRoot(): string;
+  cliCommand(): string;
   processCwd(): string;
   stdinIsTTY(): boolean;
   readStdin(): Promise<string>;
@@ -213,11 +214,11 @@ export async function runMakaTextCliCore(
   const deps: MakaRunDeps = { ...defaultMakaRunEnvironmentDeps(), ...adapter, ...overrides };
   const parsed = parseMakaRunArgs(argv);
   if (parsed.kind === 'help') {
-    deps.writeStdout(`${makaRunHelpText()}\n`);
+    deps.writeStdout(`${makaRunHelpText(deps.cliCommand())}\n`);
     return 0;
   }
   if (parsed.kind === 'error') {
-    deps.writeStderr(`maka run: ${parsed.message}\n\n${makaRunHelpText()}\n`);
+    deps.writeStderr(`maka run: ${parsed.message}\n\n${makaRunHelpText(deps.cliCommand())}\n`);
     return 2;
   }
 
@@ -458,10 +459,10 @@ async function canonicalDirectory(input: string): Promise<string> {
   return canonical;
 }
 
-function makaRunHelpText(): string {
+function makaRunHelpText(cliCommand: string): string {
   return [
-    'Usage: maka run [PROMPT] [options]',
-    '       maka -p [PROMPT] [options]',
+    `Usage: ${cliCommand} run [PROMPT] [options]`,
+    `       ${cliCommand} -p [PROMPT] [options]`,
     '',
     'Input:',
     '  -                         Read the complete prompt from stdin',
@@ -487,6 +488,7 @@ function makaRunHelpText(): string {
 function defaultMakaRunEnvironmentDeps(): MakaRunEnvironmentDeps {
   return {
     workspaceRoot: () => resolveMakaWorkspaceRoot(),
+    cliCommand: () => 'maka',
     processCwd: () => process.cwd(),
     stdinIsTTY: () => process.stdin.isTTY === true,
     readStdin: readProcessStdin,

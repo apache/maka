@@ -37,6 +37,11 @@ import {
   ShellRunHydration,
   type ShellRunUpdatesBySession,
 } from './shell-run-update-state.js';
+import {
+  createDesktopTranscriptRangeController,
+  DesktopTranscriptRangeStore,
+  type DesktopTranscriptRangeController,
+} from './desktop-transcript-range-store.js';
 
 type RefBox<T> = { current: T };
 const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
@@ -419,19 +424,22 @@ export function useActiveSessionEvents(options: {
   setMessageLoadErrorBySession: (updater: (current: Record<string, string>) => Record<string, string>) => void;
   setMessageLoadPending: (pending: boolean) => void;
   setMessages: (messages: StoredMessage[]) => void;
+  transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
   setSessionEventHealthBySession: SessionEventHealthUpdater;
   toastApi: Pick<ToastApi, 'error'>;
 }) {
   const activeId = options.activeId;
-  const applyReadMessages = useEffectEvent((sessionId: string, next: StoredMessage[], isDisposed: () => boolean) => {
+  const applyTranscript = useEffectEvent((
+    sessionId: string,
+    store: DesktopTranscriptRangeStore,
+    isDisposed: () => boolean,
+  ) => {
     if (!isDisposed() && options.activeIdRef.current === sessionId) {
+      const snapshot = store.snapshot();
+      const next = [...snapshot.messages];
       options.markSessionReadLocally(sessionId, next);
-      // Ignore an empty read: it can race a just-sent message's save and wipe
-      // the optimistic copy shown to the user. length is enough only because
-      // sends are serialized (one optimistic per session); parallel sends
-      // would need a merge instead.
-      if (next.length > 0) options.setMessages(next);
-      options.setMessageLoadPending(false);
+      options.setMessages(next);
+      if (snapshot.ready) options.setMessageLoadPending(false);
     }
   });
   const applyReadError = useEffectEvent((sessionId: string, error: unknown, isDisposed: () => boolean) => {
@@ -478,6 +486,7 @@ export function useActiveSessionEvents(options: {
   useLayoutEffect(() => {
     if (!activeId) return;
     let disposed = false;
+    const transcript = new DesktopTranscriptRangeStore();
     const subscribedAt = Date.now();
     options.setMessageLoadErrorBySession((current) => {
       if (!current[activeId]) return current;
@@ -492,14 +501,29 @@ export function useActiveSessionEvents(options: {
         now: subscribedAt,
       }),
     }));
-    void window.maka.sessions
-      .readMessages(activeId)
-      .then((next) => {
-        applyReadMessages(activeId, next, () => disposed);
-      })
-      .catch((error) => {
-        applyReadError(activeId, error, () => disposed);
-      });
+    const openTranscript = (signal: AbortSignal) =>
+      window.maka.transcripts.open(
+        activeId,
+        (batch) => {
+          if (disposed) return;
+          try {
+            if (transcript.accept(batch)) {
+              applyTranscript(activeId, transcript, () => disposed);
+            }
+          } catch (error) {
+            applyReadError(activeId, error, () => disposed);
+          }
+        },
+        (cancel) => {
+          if (signal.aborted) cancel();
+          else signal.addEventListener('abort', cancel, { once: true });
+        },
+      );
+    const controller = createDesktopTranscriptRangeController(transcript, openTranscript);
+    void controller.ready().catch((error) => {
+      applyReadError(activeId, error, () => disposed);
+    });
+    options.transcriptRangeRef.current = controller;
     const unsubscribe = window.maka.sessions.subscribeEvents(
       activeId,
       (event) => {
@@ -509,6 +533,10 @@ export function useActiveSessionEvents(options: {
     );
     return () => {
       disposed = true;
+      if (options.transcriptRangeRef.current?.store === transcript) {
+        options.transcriptRangeRef.current = undefined;
+      }
+      void controller.close();
       unsubscribe();
       markSessionEventStreamClosed(activeId);
     };

@@ -888,6 +888,7 @@ async function withHarness(
       },
       graph: {
         hasLiveSessionState: async (sessionId) => blockers.graph.has(sessionId),
+        listGraphIds: async (sessionId) => [agentGraphIdForRootSession(sessionId)],
       },
       graphWake: {
         hasLiveSessionState: (sessionId) => blockers.graphWake.has(sessionId),

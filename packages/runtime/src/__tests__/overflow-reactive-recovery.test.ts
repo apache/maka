@@ -8,10 +8,19 @@ import type { SessionHeader } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { z } from 'zod';
+import type { ModelCallCommit } from '@maka/core/agent-run';
+import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
+import {
+  LATEST_CONTEXT_PROJECTION_TYPE,
+  readLatestContextSnapshot,
+} from '../latest-context-snapshot.js';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
 import type { InvocationContext } from '../invocation-context.js';
-import type { HistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
+import {
+  buildHistoryCompactCheckpoint,
+  type HistoryCompactCheckpoint,
+} from '../history-compact-checkpoint.js';
 import {
   createTestAiSdkBackend,
   testToolResultArchive,
@@ -109,6 +118,18 @@ interface ReactiveFixtureOptions {
   providerRetrySleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
   /** Override the stream idle watchdog for retry-wait coordination tests. */
   streamIdleTimeoutMs?: number;
+  /**
+   * Wire the canonical metering sink, so the fixture collects the commits a
+   * settled request produces. Off by default: it is the accounting path, and
+   * the recovery tests around it assert provider behaviour, not billing.
+   */
+  canonicalAccounting?: boolean;
+  /**
+   * A durable checkpoint the session already holds, served through the loader
+   * seam exactly as the kernel serves one written by an earlier turn. Read at
+   * send time, so a test can build it from the fixture's own prior events.
+   */
+  loadCheckpoint?: () => HistoryCompactCheckpoint | undefined;
 }
 
 interface ReactiveLlmCall {
@@ -129,6 +150,8 @@ interface ReactiveFixture {
   priorEvents: RuntimeEvent[];
   events: SessionEvent[];
   llmCalls: ReactiveLlmCall[];
+  /** Canonical settlements, whole, when `canonicalAccounting` is on. */
+  commits: ModelCallCommit<ModelCallAttempt>[];
   retryDelays: number[];
   /** JSON of each summarizer call's folded runtime events (coverage evidence). */
   summarizedSources: string[];
@@ -139,6 +162,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
   const contextWindow = options.contextWindow ?? 200_000;
   const reserveTokens = options.reserveTokens ?? 1_000;
   const recorded: HistoryCompactCheckpoint[] = [];
+  const commits: ModelCallCommit<ModelCallAttempt>[] = [];
   const toolExecutions: string[] = [];
   const events: SessionEvent[] = [];
   const llmCalls: ReactiveLlmCall[] = [];
@@ -456,6 +480,16 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       : {}),
     ...durableReader,
     ...compactionSeams,
+    ...(options.canonicalAccounting
+      ? {
+          recordModelCallAttempt: (commit: ModelCallCommit<ModelCallAttempt>) => {
+            commits.push(commit);
+          },
+        }
+      : {}),
+    ...(options.loadCheckpoint
+      ? { loadHistoryCompactCheckpoint: async () => options.loadCheckpoint!() }
+      : {}),
     // The send-level record is gone (#1679); its diagnostics moved to the run
     // trace, which is what these assertions observe now.
     recordRunTrace: (event) => {
@@ -489,6 +523,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     priorEvents,
     events,
     llmCalls,
+    commits,
     retryDelays,
     summarizedSources,
     persist,
@@ -523,6 +558,17 @@ async function runTurn(
     fixture.persist(event);
     fixture.events.push(event);
   }
+}
+
+/** The compaction each sealed row reports, in settlement order. */
+function boundariesOf(commits: readonly ModelCallCommit<ModelCallAttempt>[]) {
+  return commits.map(
+    (commit) =>
+      readLatestContextSnapshot({
+        type: LATEST_CONTEXT_PROJECTION_TYPE,
+        data: commit.latestContext?.snapshot,
+      })?.compaction,
+  );
 }
 
 function complete(
@@ -869,6 +915,139 @@ describe('reactive overflow recovery in the streaming backend', () => {
       assert.equal(prompt.includes('PRIOR_FACT'), false);
     }
     assert.equal(successorPrompt.includes(RAW_SPAN_ONE), true);
+  });
+
+  test('the resend seals the fold recovery made for it, and the request before it seals none', async () => {
+    // Recovery is the other place the boundary moves between two dispatches of
+    // one send, and the harder one: the fold happens after a request was
+    // already built, dispatched and rejected. The rejected request settles no
+    // sealed row (it never completed), and the resend must report the fold it
+    // was rebuilt from rather than the state the send started in (#2323).
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'done'],
+      bigPriors: true,
+      canonicalAccounting: true,
+    });
+    await runTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(fixture.recorded.length, 1);
+    const checkpoint = fixture.recorded[0]!;
+    assert.equal(checkpoint.phase, 'mid_turn');
+
+    const sealed = fixture.commits.filter((commit) => commit.latestContext !== undefined);
+    assert.equal(sealed.length, 2, 'the rejected request seals nothing; the other two do');
+    for (const commit of sealed) {
+      const attempt = decodeModelCallAttempt(commit.attempt);
+      assert.equal(attempt.callKind, 'main');
+      assert.equal(attempt.status, 'completed');
+    }
+    assert.deepEqual(boundariesOf(sealed), [
+      undefined,
+      {
+        kind: 'history',
+        phase: 'mid_turn',
+        eventCount: checkpoint.coverage.eventCount,
+        turnCount: checkpoint.coverage.turnCount,
+        estimatedTokens: checkpoint.estimatedTokens,
+      },
+    ]);
+  });
+
+  test('a checkpoint carried in from an earlier turn is the boundary of a send that folds nothing', async () => {
+    // The ordinary case, and the only one where the boundary comes from the
+    // pre-turn projection rather than from mid-turn state: nothing compacts
+    // during this send, so what the prompt stands on is what the session
+    // carried into it.
+    let carried: HistoryCompactCheckpoint | undefined;
+    const fixture = buildReactiveFixture({
+      script: ['done'],
+      midTurnEnabled: false,
+      canonicalAccounting: true,
+      // Large enough that folding them is a real saving: the replay refuses a
+      // checkpoint that would not shrink the history it replaces.
+      bigPriors: true,
+      loadCheckpoint: () => carried,
+    });
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: fixture.priorEvents,
+      summary: 'EARLIER_TURN_SUMMARY',
+    });
+    carried = checkpoint;
+    await runTurn(fixture);
+
+    const prompt = JSON.stringify(fixture.model.doStreamCalls[0]?.prompt);
+    assert.equal(prompt.includes('EARLIER_TURN_SUMMARY'), true, 'the fold is in the prompt');
+    assert.equal(prompt.includes('PRIOR_FACT'), false, 'and the raw prefix it replaced is not');
+    assert.deepEqual(boundariesOf(fixture.commits), [
+      {
+        kind: 'history',
+        phase: 'pre_turn',
+        eventCount: checkpoint.coverage.eventCount,
+        turnCount: checkpoint.coverage.turnCount,
+        estimatedTokens: checkpoint.estimatedTokens,
+      },
+    ]);
+  });
+
+  test('a loaded checkpoint the projection refused is not reported as the boundary', async () => {
+    // The difference between the checkpoint a session HOLDS and the one a
+    // prompt was BUILT from. This one covers an event the ledger does not
+    // have, so the prefix match fails and the replay keeps the raw prior
+    // history — reporting it would describe a fold the request never had.
+    const foreign = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [
+        runtimeTextEvent('never-happened', 'turn-x', 'user', 'AN EVENT THIS LEDGER NEVER HELD'),
+      ],
+      summary: 'SUMMARY_OF_ANOTHER_HISTORY',
+    });
+    const fixture = buildReactiveFixture({
+      script: ['done'],
+      midTurnEnabled: false,
+      canonicalAccounting: true,
+      // Same priors as the accepted case above, so the refusal can only be the
+      // coverage miss and not a fold that failed to pay for itself.
+      bigPriors: true,
+      loadCheckpoint: () => foreign,
+    });
+    await runTurn(fixture);
+
+    const prompt = JSON.stringify(fixture.model.doStreamCalls[0]?.prompt);
+    assert.equal(prompt.includes('SUMMARY_OF_ANOTHER_HISTORY'), false, 'the fold was refused');
+    assert.equal(prompt.includes('PRIOR_FACT'), true, 'so the raw history is what was sent');
+    assert.deepEqual(boundariesOf(fixture.commits), [undefined]);
+  });
+
+  test('a step-0 recovery fold is sealed as pre_turn by the request it rebuilt', async () => {
+    // The same seam with the other phase, and the only path that reaches a
+    // pre-turn boundary without a prior turn having written one: nothing had
+    // completed when the provider rejected, so recovery folds prior history
+    // alone and both later requests were built under that one boundary.
+    const fixture = buildReactiveFixture({
+      script: ['overflow', 'tool', 'done'],
+      bigPriors: true,
+      canonicalAccounting: true,
+    });
+    await runTurn(fixture);
+
+    assert.equal(fixture.recorded.length, 1);
+    const checkpoint = fixture.recorded[0]!;
+    assert.equal(checkpoint.phase, undefined, 'a step-0 fold carries no mid_turn phase');
+
+    const preTurn = {
+      kind: 'history',
+      phase: 'pre_turn',
+      eventCount: checkpoint.coverage.eventCount,
+      turnCount: checkpoint.coverage.turnCount,
+      estimatedTokens: checkpoint.estimatedTokens,
+    };
+    assert.deepEqual(
+      boundariesOf(fixture.commits.filter((commit) => commit.latestContext !== undefined)),
+      [preTurn, preTurn],
+      'the retry and its successor were both built under the recovery fold',
+    );
   });
 
   test('does not retry an overflow after an after-step stop is requested', async () => {

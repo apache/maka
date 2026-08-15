@@ -15,62 +15,7 @@ import {
   type RuntimeHostSessionExecutionIpcDeps,
 } from "../runtime-host-session-execution-ipc-main.js";
 import { RuntimeHostSessionObserver } from "../runtime-host-session-observer.js";
-
-test("advances the Host read marker through the last visible message", async () => {
-  const readMarkers: unknown[] = [];
-  const observer = observerWithTranscript([
-    {
-      type: "user",
-      id: "user-1",
-      turnId: "turn-1",
-      ts: 1,
-      text: "Hello",
-    },
-    {
-      type: "assistant",
-      id: "assistant-1",
-      turnId: "turn-1",
-      ts: 2,
-      text: "Hi",
-      modelId: "test-model",
-    },
-    {
-      type: "system_note",
-      id: "internal-tail",
-      turnId: "turn-1",
-      ts: 3,
-      kind: "session_resume",
-    },
-  ]);
-  const ipc = ipcHarness();
-  registerExecutionIpc(
-    {
-      client: executionClient({
-        setSessionReadMarker: async (sessionId, readThroughMessageId) => {
-          readMarkers.push({ sessionId, readThroughMessageId });
-          return session();
-        },
-      }),
-      observer,
-      attachmentApprovals: createAttachmentApprovalRegistry(),
-      emitSessionsChanged() {},
-      stat: async () => ({ size: 0 }),
-      resizeImage: async (bytes) => bytes,
-      beforeStop() {},
-    },
-    ipc,
-  );
-
-  assert.equal(
-    ((await ipc.invoke("sessions:readMessages", "session-1")) as unknown[])
-      .length,
-    3,
-  );
-  assert.deepEqual(readMarkers, [
-    { sessionId: "session-1", readThroughMessageId: "assistant-1" },
-  ]);
-  await observer.close();
-});
+import { runtimeHostSessionFixture } from "./runtime-host-session-test-fixture.js";
 
 test("keeps synthetic E2E interactions visible through Host hydration and retires their answer", async () => {
   const observer = observerWithSnapshot();
@@ -158,7 +103,11 @@ test("retries committed Branch and Revision copies with the renderer-owned ident
           });
           let copy = committed.get(input.targetSessionId);
           if (!copy) {
-            copy = { ...session(), id: input.targetSessionId, name: input.targetSessionId };
+            copy = {
+              ...session(),
+              id: input.targetSessionId,
+              name: input.targetSessionId,
+            };
             committed.set(input.targetSessionId, copy);
           }
           if (lostResponses.delete(input.targetSessionId)) {
@@ -630,6 +579,8 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     getSession: unavailable,
     ingestAttachment: unavailable,
     interruptTurn: unavailable,
+    listSessionTurnLandmarks: unavailable,
+    listSessionTurns: unavailable,
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
     regenerateTurn: unavailable,
@@ -667,7 +618,7 @@ function observerWithTranscript(
   });
   return new RuntimeHostSessionObserver({
     client: {
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: {
           schemaVersion: 3,
           session: {
@@ -714,7 +665,7 @@ type IpcHandler = Parameters<Pick<IpcMain, "handle">["handle"]>[1];
 
 function ipcHarness() {
   const handlers = new Map<string, IpcHandler>();
-  const sender = Object.assign(new EventEmitter(), { id: 9 });
+  const sender = Object.assign(new EventEmitter(), { id: 9, send() {} });
   return {
     handle(channel: string, handler: IpcHandler) {
       assert.equal(

@@ -112,16 +112,16 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
   );
   if (!cleanupColumns.has('record_json')) {
     db.exec('ALTER TABLE workflow_quote_companion_cleanup ADD COLUMN record_json TEXT');
-    db.prepare(`
-      UPDATE workflow_quote_companion_cleanup
-      SET record_json = json_object(
-        'version', 1,
-        'sessionId', session_id,
-        'trackedAt', tracked_at,
-        'phase', 'cleanup',
-        'cancelRequested', json('true')
-      )
-      WHERE record_json IS NULL
-    `).run();
   }
+  db.prepare(`
+    UPDATE workflow_quote_companion_cleanup
+    SET record_json = json_object(
+      'version', 1,
+      'sessionId', session_id,
+      'trackedAt', tracked_at,
+      'phase', 'cleanup',
+      'cancelRequested', json('true')
+    )
+    WHERE record_json IS NULL
+  `).run();
 }

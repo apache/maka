@@ -6,7 +6,6 @@ import {
   useState,
   type KeyboardEvent,
   type ReactNode,
-  type Ref,
 } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import type { ProjectRecord } from '@maka/core/project';
@@ -45,6 +44,7 @@ import { getConversationCopy } from './conversation-copy.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
 
 type SessionRowActionId = 'flag' | 'archive' | 'rename' | 'delete';
+type ProjectRowActionId = 'new' | 'relink' | 'rename' | 'archive' | 'restore';
 type SessionHistoryGroupVariant = 'conversation' | 'project';
 
 export interface SessionRowActions {
@@ -369,18 +369,28 @@ function ProjectNavRow(props: {
   // Collapsible only when there is a real session subtree. An empty VStack is
   // still truthy children for Astryx (!!children) and fabricates a disclosure.
   const hasSessions = props.sessions.length > 0;
+  const hasActions = props.project !== undefined && props.projectActions !== undefined;
   return (
     <div data-project-id={props.groupKey} className="maka-project-row">
+      {props.project && props.projectActions ? (
+        <ProjectItemActions
+          key="actions"
+          project={props.project}
+          actions={props.projectActions}
+          onStartRename={props.onStartRename}
+          position={hasSessions ? 'before-disclosure' : 'trailing'}
+        />
+      ) : null}
       <SideNavItem
+        key="navigation"
         label={props.label}
         icon={FolderOpen}
         collapsible={hasSessions ? { defaultIsCollapsed: false } : undefined}
         endContent={
-          <ProjectItemEndContent
+          <ProjectItemMeta
             project={props.project}
             sessionCount={props.sessions.length}
-            actions={props.projectActions}
-            onStartRename={props.onStartRename}
+            reserveAction={hasActions}
           />
         }
       >
@@ -390,25 +400,6 @@ function ProjectNavRow(props: {
         ) : undefined}
       </SideNavItem>
     </div>
-  );
-}
-
-/** Keeps trailing controls from activating the parent SideNavItem button. */
-function EndContentHitTarget(props: {
-  children: ReactNode;
-  className?: string;
-  ref?: Ref<HTMLSpanElement>;
-}) {
-  return (
-    <span
-      ref={props.ref}
-      className={props.className}
-      onClick={(event) => event.stopPropagation()}
-      onPointerDown={(event) => event.stopPropagation()}
-      onKeyDown={(event) => event.stopPropagation()}
-    >
-      {props.children}
-    </span>
   );
 }
 
@@ -475,18 +466,37 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   );
 });
 
-function ProjectItemEndContent(props: {
+function ProjectItemMeta(props: {
   project?: ProjectRecord;
   sessionCount: number;
-  actions?: ProjectRowActions;
-  onStartRename(opener: HTMLElement | null): void;
+  reserveAction: boolean;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
-  const endRef = useRef<HTMLSpanElement>(null);
+  return (
+    <span className="maka-session-row-end maka-project-item-end">
+      {props.project && !props.project.available && (
+        <AlertTriangle size={ICON_SIZE.meta} aria-label={copy.projectUnavailable} />
+      )}
+      <Badge variant="neutral" label={props.sessionCount} />
+      {props.reserveAction ? (
+        <span className="maka-session-row-trailing" aria-hidden="true" />
+      ) : null}
+    </span>
+  );
+}
+
+function ProjectItemActions(props: {
+  project: ProjectRecord;
+  actions: ProjectRowActions;
+  onStartRename(opener: HTMLElement | null): void;
+  position: 'before-disclosure' | 'trailing';
+}) {
+  const copy = getConversationCopy(useUiLocale()).sessions;
+  const trailingRef = useRef<HTMLSpanElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<ProjectRowActionId | null>(null);
   const mountedRef = useMountedRef();
-  const pendingActionRef = useRef<string | null>(null);
+  const pendingActionRef = useRef<ProjectRowActionId | null>(null);
   const pendingMenuIntentRef = useRef<(() => void) | null>(null);
   const project = props.project;
   const actions = props.actions;
@@ -498,7 +508,7 @@ function ProjectItemEndContent(props: {
     [],
   );
 
-  function runProjectAction(actionId: string, action: () => void | Promise<void>) {
+  function runProjectAction(actionId: ProjectRowActionId, action: () => void | Promise<void>) {
     if (pendingActionRef.current) return;
     pendingActionRef.current = actionId;
     setPendingAction(actionId);
@@ -514,77 +524,69 @@ function ProjectItemEndContent(props: {
     })();
   }
 
-  // Projects keep a permanent MoreMenu (SideNavEndContent pattern). Hover-only
-  // would fire on nested session rows if wired to the project wrapper.
-  const menuItems = project && actions
-    ? project.archivedAt !== undefined
-      ? [
-          {
-            label: copy.projectRestore,
-            icon: ArchiveRestore,
-            onClick: () => runProjectAction('restore', () => actions.onRestore(project.id)),
-          },
-        ]
-      : [
-          ...(project.available
+  // Projects keep a permanent MoreMenu. It is a sibling of SideNavItem so the
+  // row's collapse button and the menu remain separate interactive controls.
+  const menuItems = project.archivedAt !== undefined
+    ? [
+        {
+          label: copy.projectRestore,
+          icon: ArchiveRestore,
+          onClick: () => runProjectAction('restore', () => actions.onRestore(project.id)),
+        },
+      ]
+    : [
+        ...(project.available
+          ? [
+              {
+                label: copy.projectNewTask,
+                icon: SquarePen,
+                onClick: () => runProjectAction('new', () => actions.onNew(project.id)),
+              },
+            ]
+          : actions.onRelink
             ? [
-                {
-                  label: copy.projectNewTask,
-                  icon: SquarePen,
-                  onClick: () => runProjectAction('new', () => actions.onNew(project.id)),
-                },
-              ]
-            : actions.onRelink
-              ? [
-                {
-                  label: copy.projectRelink,
-                  icon: Plug,
-                  onClick: () => runProjectAction('relink', () => actions.onRelink!(project.id)),
-                },
-              ]
-              : []),
-          {
-            label: copy.projectRename,
-            icon: Pencil,
-            onClick: () => {
-              // Read now, while the trigger is still the thing the user is on:
-              // by the time the intent runs the menu has closed and focus is
-              // mid-handover.
-              const opener = endRef.current?.querySelector<HTMLElement>('button') ?? null;
-              pendingMenuIntentRef.current = () => props.onStartRename(opener);
-            },
+              {
+                label: copy.projectRelink,
+                icon: Plug,
+                onClick: () => runProjectAction('relink', () => actions.onRelink!(project.id)),
+              },
+            ]
+            : []),
+        {
+          label: copy.projectRename,
+          icon: Pencil,
+          onClick: () => {
+            // Read now, while the trigger is still the thing the user is on:
+            // by the time the intent runs the menu has closed and focus is
+            // mid-handover.
+            const opener = trailingRef.current?.querySelector<HTMLElement>('button') ?? null;
+            pendingMenuIntentRef.current = () => props.onStartRename(opener);
           },
-          {
-            label: copy.projectArchive,
-            icon: Archive,
-            onClick: () => runProjectAction('archive', () => actions.onArchive(project.id)),
-          },
-        ]
-    : [];
+        },
+        {
+          label: copy.projectArchive,
+          icon: Archive,
+          onClick: () => runProjectAction('archive', () => actions.onArchive(project.id)),
+        },
+      ];
 
   return (
-    <EndContentHitTarget className="maka-session-row-end maka-project-item-end" ref={endRef}>
-      {project && !project.available && (
-        <AlertTriangle size={ICON_SIZE.meta} aria-label={copy.projectUnavailable} />
-      )}
-      <Badge variant="neutral" label={props.sessionCount} />
-      {menuItems.length > 0 && (
-        <MoreMenu
-          size="sm"
-          label={copy.projectActionsAriaLabel(project?.name ?? '')}
-          isDisabled={pendingAction !== null}
-          isMenuOpen={menuOpen}
-          onOpenChange={(open) => {
-            setMenuOpen(open);
-            if (open) return;
-            const intent = pendingMenuIntentRef.current;
-            pendingMenuIntentRef.current = null;
-            if (intent) window.requestAnimationFrame(intent);
-          }}
-          items={menuItems}
-        />
-      )}
-    </EndContentHitTarget>
+    <span className="maka-session-row-action" data-position={props.position} ref={trailingRef}>
+      <MoreMenu
+        size="sm"
+        label={copy.projectActionsAriaLabel(project.name)}
+        isDisabled={pendingAction !== null}
+        isMenuOpen={menuOpen}
+        onOpenChange={(open) => {
+          setMenuOpen(open);
+          if (open) return;
+          const intent = pendingMenuIntentRef.current;
+          pendingMenuIntentRef.current = null;
+          if (intent) window.requestAnimationFrame(intent);
+        }}
+        items={menuItems}
+      />
+    </span>
   );
 }
 

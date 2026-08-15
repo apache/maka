@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { RunSealedError } from '@maka/core/runtime-event-store';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   buildImmutableRuntimePrefix,
@@ -38,6 +39,55 @@ describe('SqliteRuntimeStore', () => {
       } finally {
         reopened.close();
       }
+    });
+  });
+
+  it('refuses every post-terminal append as the typed sealed-run boundary', async () => {
+    await withStore(async (store) => {
+      const opening = functionCallEvent({
+        id: 'sealed-run-opening',
+        content: { kind: 'text', text: 'hello' },
+      });
+      await store.appendRuntimeEvent(opening.sessionId, opening.runId, opening);
+      const terminal: RuntimeEvent = {
+        id: 'sealed-run-terminal',
+        invocationId: 'invocation-1',
+        runId: opening.runId,
+        sessionId: opening.sessionId,
+        turnId: 'turn-1',
+        ts: 2,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'aborted',
+        actions: { endInvocation: true, stateDelta: { abortSource: 'user_stop' } },
+      };
+      await store.appendRuntimeEvent(terminal.sessionId, terminal.runId, terminal);
+
+      // A plain straggler and a tool-bearing one refuse identically: the
+      // seal is checked before tool-ledger semantics (#2311), so a late
+      // function_call cannot surface as a producer bug or as corruption.
+      await assert.rejects(
+        store.appendRuntimeEvent(opening.sessionId, opening.runId, {
+          ...opening,
+          id: 'late-plain-straggler',
+          ts: 3,
+        }),
+        (error: unknown) => error instanceof RunSealedError,
+      );
+      await assert.rejects(
+        store.appendRuntimeEvent(
+          opening.sessionId,
+          opening.runId,
+          functionCallEvent({
+            id: 'late-tool-straggler',
+            ts: 4,
+          }),
+        ),
+        (error: unknown) => error instanceof RunSealedError,
+      );
+      // Exact-id retry of an already-stored event keeps its dedup answer.
+      await store.appendRuntimeEvent(terminal.sessionId, terminal.runId, terminal);
     });
   });
 
@@ -547,10 +597,149 @@ describe('SqliteRuntimeStore', () => {
       }
 
       const visible = await store.readRuntimeEvents('session-1', 'run-1');
+      const scanned: RuntimeEvent[] = [];
+      const scan = await store.scanRuntimeEvents(
+        'session-1',
+        'run-1',
+        {
+          maxBatchBytes: 1024,
+          maxRecordBytes: 1024,
+          maxImmutableRecords: 10,
+          maxImmutableBytes: 1024,
+          maxPartialRecords: 10,
+          maxPartialBytes: 1024,
+        },
+        (events) => scanned.push(...events),
+      );
+      assert.equal(scan.status, 'complete');
       assert.equal(visible.length, 1);
+      assert.deepEqual(scanned, visible);
       assert.deepEqual(visible[0]?.content, { kind: 'text', text: 'hello!' });
       assert.deepEqual(await store.readImmutableRuntimeEvents('session-1', 'run-1'), []);
       assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 0);
+    });
+  });
+
+  it('rejects an oversized scan record before visiting its decoded body', async () => {
+    await withStore(async (store) => {
+      await store.appendRuntimeEvent(
+        'session-1',
+        'run-1',
+        functionCallEvent({
+          id: 'large-event',
+          content: { kind: 'text', text: 'x'.repeat(4096) },
+        }),
+      );
+      let visits = 0;
+      const result = await store.scanRuntimeEvents(
+        'session-1',
+        'run-1',
+        {
+          maxBatchBytes: 128,
+          maxRecordBytes: 128,
+          maxImmutableRecords: 10,
+          maxImmutableBytes: 1024,
+          maxPartialRecords: 10,
+          maxPartialBytes: 1024,
+        },
+        () => {
+          visits += 1;
+        },
+      );
+      assert.equal(result.status, 'limit_exceeded');
+      assert.equal(visits, 0);
+    });
+  });
+
+  it('rejects an immutable ledger that exceeds its cumulative scan budget before decoding it', async () => {
+    await withStore(async (store) => {
+      for (const index of [1, 2]) {
+        const event: RuntimeEvent = {
+          id: `event-${index}`,
+          invocationId: 'invocation-1',
+          runId: 'run-1',
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          ts: index,
+          partial: false,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: `message-${index}` },
+        };
+        await store.appendRuntimeEvent('session-1', 'run-1', event);
+      }
+      let visits = 0;
+      const result = await store.scanRuntimeEvents(
+        'session-1',
+        'run-1',
+        {
+          maxBatchBytes: 16 * 1024,
+          maxRecordBytes: 16 * 1024,
+          maxImmutableRecords: 1,
+          maxImmutableBytes: 16 * 1024,
+          maxPartialRecords: 10,
+          maxPartialBytes: 16 * 1024,
+        },
+        () => {
+          visits += 1;
+        },
+      );
+
+      assert.equal(result.status, 'limit_exceeded');
+      assert.equal(visits, 0);
+    });
+  });
+
+  it('streams fragmented legacy partial segments without retaining their row set', async () => {
+    await withStore(async (store, dbPath) => {
+      await store.appendRuntimeEvent(
+        'session-1',
+        'run-1',
+        functionCallEvent({
+          id: 'partial-segment-seed',
+          partial: true,
+          content: { kind: 'text', text: '' },
+          refs: { providerEventId: 'message-1' },
+        }),
+      );
+      const inspect = new DatabaseSync(dbPath);
+      try {
+        const { stream_key: streamKey } = inspect
+          .prepare('SELECT stream_key FROM runtime_partial_snapshots')
+          .get() as { stream_key: string };
+        const insert = inspect.prepare(`
+          INSERT INTO runtime_partial_segments(stream_key, segment_seq, text_content, updated_at)
+          VALUES (?, ?, 'x', ?)
+        `);
+        inspect.exec('BEGIN IMMEDIATE');
+        for (let sequence = 1; sequence <= 9_000; sequence += 1) {
+          insert.run(streamKey, sequence, sequence);
+        }
+        inspect.exec('COMMIT');
+      } finally {
+        inspect.close();
+      }
+      const scanned: RuntimeEvent[] = [];
+      const result = await store.scanRuntimeEvents(
+        'session-1',
+        'run-1',
+        {
+          maxBatchBytes: 1024,
+          maxRecordBytes: 16 * 1024,
+          maxImmutableRecords: 10,
+          maxImmutableBytes: 16 * 1024,
+          maxPartialRecords: 10,
+          maxPartialBytes: 16 * 1024,
+        },
+        (events) => scanned.push(...events),
+      );
+      assert.equal(result.status, 'complete');
+      assert.equal(scanned.length, 1);
+      assert.equal(scanned[0]?.content?.kind, 'text');
+      assert.equal(
+        scanned[0]?.content?.kind === 'text' ? scanned[0].content.text : undefined,
+        'x'.repeat(9_000),
+      );
     });
   });
 
@@ -1336,11 +1525,58 @@ describe('SqliteRuntimeStore', () => {
             `)
             .all()
             .map((row) => ({ ...row })),
-          [
-            { segment_seq: 1, text_content: 'a' },
-            { segment_seq: 2, text_content: 'bc' },
-          ],
+          [{ segment_seq: 1, text_content: 'abc' }],
         );
+      } finally {
+        inspect.close();
+      }
+    });
+  });
+
+  it('coalesces partial text into fixed-size tail segments', async () => {
+    await withStore(async (store, dbPath) => {
+      const chunks = ['x'.repeat(40 * 1024), 'y'.repeat(40 * 1024), 'z'];
+      for (const [index, text] of chunks.entries()) {
+        await store.appendRuntimeEvent(
+          'session-1',
+          'run-1',
+          functionCallEvent({
+            id: `partial-${index}`,
+            ts: index + 1,
+            partial: true,
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'text', text },
+            refs: { providerEventId: 'message-1' },
+          }),
+        );
+      }
+
+      const events = await store.readRuntimeEvents('session-1', 'run-1');
+      assert.equal(events[0]?.content?.kind, 'text');
+      assert.equal(
+        events[0]?.content?.kind === 'text' ? events[0].content.text : undefined,
+        chunks.join(''),
+      );
+
+      const inspect = new DatabaseSync(dbPath);
+      try {
+        const snapshot = inspect
+          .prepare('SELECT text_content FROM runtime_partial_snapshots')
+          .get() as { text_content?: unknown };
+        const segments = inspect
+          .prepare(`
+            SELECT segment_seq, length(CAST(text_content AS BLOB)) AS stored_bytes
+            FROM runtime_partial_segments
+            ORDER BY segment_seq ASC
+          `)
+          .all()
+          .map((row) => ({ ...row }));
+        assert.equal(snapshot.text_content, '');
+        assert.deepEqual(segments, [
+          { segment_seq: 1, stored_bytes: 40 * 1024 },
+          { segment_seq: 2, stored_bytes: 40 * 1024 + 1 },
+        ]);
       } finally {
         inspect.close();
       }

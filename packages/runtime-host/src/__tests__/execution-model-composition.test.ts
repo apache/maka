@@ -37,7 +37,9 @@ import { type ScannedSkill } from '@maka/runtime/skills';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
 import { SESSION_RECAP_INSTRUCTION } from '@maka/runtime/session-recap';
+import { hostedExecutionToolNames } from '../server/hosted-execution-tool-profile.js';
 import { createToolResultArchiveCapability } from '@maka/runtime/tool-result-archive-capability';
+import { loadHistoryCompactCheckpointsFromRunLedger } from '@maka/runtime/history-compact-ledger';
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
 import { createSqliteRuntimeStore } from '@maka/storage';
@@ -76,6 +78,7 @@ import { HostClientCapabilityCoordinator } from '../server/client-capability-coo
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
+import { HostResidencyRegistry } from '../server/host-residency-registry.js';
 import {
   HostOAuthExecutionAuthority,
   OAuthExecutionCredentialError,
@@ -94,6 +97,10 @@ const MAX_IMPLEMENTATION_CHILD_PTY_READS = 5;
 const MIN_IMPLEMENTATION_CHILD_REQUESTS = 6;
 const MAX_IMPLEMENTATION_CHILD_REQUESTS =
   MIN_IMPLEMENTATION_CHILD_REQUESTS + MAX_IMPLEMENTATION_CHILD_PTY_READS - 1;
+const HEADLESS_CODING_V1_PROMPT_HASH =
+  'sha256:0e3389e330b8b8f0db1c7a8b8e2126325fe4c672d6eff279afcd3f9412e52271';
+const HEADLESS_CODING_V1_TOOLS_HASH =
+  'sha256:ea1f293096e5e209ae49346f46b0e8ff9b54ae17452a5a23149ad7233afaeafc';
 const execFileAsync = promisify(execFile);
 
 test('backend creation aborts a stalled canonical connection read', async () => {
@@ -661,6 +668,159 @@ test('production backend preserves coordinator Client Capability semantics acros
   }
 });
 
+test('hosted execution freezes the headless coding provider wire contract', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-hosted-profile-wire-'));
+  const root = join(base, 'interactive');
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  const residencies = new HostResidencyRegistry();
+  const context: ConnectionContext = {
+    hostEpoch: 'hosted-profile-wire-epoch',
+    connectionId: 'hosted-profile-wire-client',
+    surface: 'run',
+    principal: 'runtime_host',
+    acquireResidency: () => residencies.acquire('hosted-profile-wire-operation'),
+  };
+  let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+  try {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'profile-deepseek',
+        name: 'Profile DeepSeek',
+        providerType: 'deepseek',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: ['deepseek-v4-flash'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const configured = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(configured.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, 'deepseek-v4-flash');
+
+    composition = await createExecutionRuntimeHostComposition(
+      {
+        owner,
+        hostEpoch: context.hostEpoch,
+        acquireResidency: (label) => residencies.acquire(label),
+        retainUntilProcessExit: () => undefined,
+        requestDrain: () => composition?.beginDrain(),
+        waitForResidencies: () => residencies.waitForEmpty(),
+        waitForResidenciesExcept: (label) => residencies.waitForEmptyExcept(label),
+      },
+      { bootstrapRuntimePolicy: false },
+    );
+    await composition.recover();
+    const executionId = '00000000-0000-4000-8000-000000000777';
+    const outcome = await composition.handlers['hosted.execution.start'](
+      {
+        executionId,
+        session: {
+          workspace: { kind: 'host_path', path: root },
+          modelTarget: {
+            kind: 'explicit',
+            connectionSlug: 'profile-deepseek',
+            model: 'deepseek-v4-flash',
+          },
+          permissionMode: 'bypass',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          toolProfile: 'headless-coding-v1',
+        },
+        content: { text: 'Complete the benchmark task.' },
+        maxSteps: 100_000,
+      },
+      context,
+    );
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    assert.equal(outcome.result.kind, 'settled');
+
+    const request = provider.requests.find(
+      (candidate) => candidate.url === '/v1/responses' && Array.isArray(candidate.body.tools),
+    );
+    assert.ok(request);
+    const instructions = responsesDeveloperPrompt(request?.body);
+    const tools = request?.body.tools;
+    assert.equal(typeof instructions, 'string', JSON.stringify(request?.body));
+    assert.ok(Array.isArray(tools));
+    assert.equal(stableHash(instructions), HEADLESS_CODING_V1_PROMPT_HASH);
+    assert.equal(stableHash(tools), HEADLESS_CODING_V1_TOOLS_HASH);
+    assert.deepEqual(responsesToolNames(request?.body), [
+      'ArchiveRead',
+      'Bash',
+      'Glob',
+      'Grep',
+      'Read',
+      'apply_patch',
+    ]);
+    const bash = (tools as Array<Record<string, unknown>>).find((tool) => tool.name === 'Bash');
+    assert.ok(bash);
+    assert.doesNotMatch(JSON.stringify(bash), /run_in_background|pty/u);
+
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    assert.equal(
+      (await stores.sessionStore.readHeaderSnapshot(executionId)).toolProfile,
+      'headless-coding-v1',
+    );
+    const secondTurnId = '00000000-0000-4000-8000-000000000778';
+    const secondStarted = await startTurn(
+      composition,
+      executionId,
+      secondTurnId,
+      'Continue the benchmark task.',
+      context,
+    );
+    const secondTerminal = await waitForTerminal(
+      composition,
+      executionId,
+      secondTurnId,
+      secondStarted,
+      context,
+    );
+    assert.equal(secondTerminal.status, 'completed');
+    const profiledRequests = provider.requests.filter(
+      (candidate) => candidate.url === '/v1/responses' && Array.isArray(candidate.body.tools),
+    );
+    assert.equal(profiledRequests.length, 2);
+    for (const profiled of profiledRequests) {
+      assert.equal(
+        stableHash(responsesDeveloperPrompt(profiled.body)),
+        HEADLESS_CODING_V1_PROMPT_HASH,
+      );
+      assert.equal(stableHash(profiled.body.tools), HEADLESS_CODING_V1_TOOLS_HASH);
+    }
+  } finally {
+    try {
+      await composition?.close();
+    } finally {
+      try {
+        await owner.close();
+      } finally {
+        await provider.close();
+        await rm(base, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
 test('production Host executes a canonical ai-sdk Session against a real provider wire', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-real-model-'));
   const root = join(base, 'interactive');
@@ -828,6 +988,15 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       );
       assert.equal(terminal.status, 'completed');
     }
+    const hostedCheckpoints = await loadHistoryCompactCheckpointsFromRunLedger(
+      execution.agentRunStore,
+      session.id,
+    );
+    const hostedMemoryBoundary = hostedCheckpoints.find(
+      (checkpoint) => checkpoint.memoryExtractionBoundary,
+    )?.memoryExtractionBoundary;
+    assert.equal(hostedMemoryBoundary?.disposition, 'eligible');
+    await waitForAutomaticMemoryRequestsToSettle(provider.requests);
 
     const mainRequests = provider.requests.filter((request) => request.body.stream === true);
     const compactRequests = provider.requests.filter(
@@ -835,8 +1004,19 @@ test('production Host executes a canonical ai-sdk Session against a real provide
         request.body.stream !== true &&
         /context summarization assistant/.test(JSON.stringify(request.body)),
     );
+    const memoryRequests = provider.requests.filter((request) =>
+      /Perform the first stage of long-term-memory extraction/.test(JSON.stringify(request.body)),
+    );
     assert.equal(mainRequests.length, 5);
     assert.ok(compactRequests.length >= 1);
+    assert.ok(memoryRequests.length >= 1);
+    assert.ok(memoryRequests.every((memoryRequest) => toolNames(memoryRequest.body).length === 0));
+    assert.ok(
+      memoryRequests.every(
+        (memoryRequest) =>
+          !JSON.stringify(memoryRequest.body).includes('HOSTED_WORKSPACE_SENTINEL'),
+      ),
+    );
     const request = mainRequests[0];
     assert.equal(request?.authorization, `Bearer ${API_KEY}`);
     assert.equal(request?.url, '/v1/chat/completions');
@@ -2365,6 +2545,55 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
   );
 });
 
+test('the headless coding profile freezes the Eval prompt and tool ceiling', async () => {
+  const composition = createInteractiveRunComposer({
+    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
+    skills: {
+      readCanonicalModelInventory: async () => {
+        throw new Error('Profiled prompt must not read the product Skill catalog');
+      },
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {
+      readPromptProjection: async () => {
+        throw new Error('Profiled prompt must not read product Memory');
+      },
+    } as unknown as HostMemoryCoordinator,
+    taskLedger: {} as TaskLedgerStore,
+    builtinTools: {},
+    boundToolNames: hostedExecutionToolNames('headless-coding-v1'),
+    toolProfile: 'headless-coding-v1',
+    parentAgentTools: buildParentAgentTools(),
+    scheduledTaskTool: {
+      name: 'ScheduledTask',
+      description: 'Must stay outside the Eval ceiling.',
+      parameters: {},
+      impl: async () => 'scheduled',
+    },
+  });
+
+  assert.deepEqual(
+    composition.tools.map(({ name }) => name),
+    ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'apply_patch'],
+  );
+  assert.deepEqual(composition.toolAvailability.groups, []);
+  assert.equal(
+    (
+      await composition.resolveSystemPrompt({
+        sessionId: 'profiled-session',
+        turnId: 'profiled-turn',
+        cwd: '/workspace',
+        workspaceRoot: '/workspace',
+      })
+    ).text,
+    [
+      'Complete the task by acting with the available tools, not by narrating.',
+      'Prefer Read, Glob, and Grep for inspection, Edit and Write for file changes, and Bash for shell commands and tests.',
+      'Verify the result when practical.',
+      'Stop when the task is complete.',
+    ].join('\n'),
+  );
+});
+
 function skillFixture(id: string, description: string, content: string): ScannedSkill {
   return {
     ref: `project:agents:${id}`,
@@ -2469,7 +2698,45 @@ async function waitForProviderEvidence(
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error('Hosted provider request evidence was not persisted');
+  const runs = await execution.agentRunStore.listSessionRuns(sessionId);
+  const events = (
+    await Promise.all(runs.map((run) => execution.agentRunStore.readEvents(sessionId, run.runId)))
+  ).flat();
+  throw new Error(
+    `Hosted provider request evidence was not persisted: ${JSON.stringify({
+      expectedRequests,
+      captures: events.filter((event) => event.type === 'provider_request_captured').length,
+      attempts: events.filter((event) => event.type === 'provider_request_attempt_recorded').length,
+    })}`,
+  );
+}
+
+async function waitForAutomaticMemoryRequestsToSettle(
+  requests: readonly ProviderRequest[],
+): Promise<void> {
+  let stablePolls = 0;
+  let previousCount = -1;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const memoryCount = requests.filter((request) =>
+      /Perform the first stage of long-term-memory extraction/.test(JSON.stringify(request.body)),
+    ).length;
+    if (memoryCount > 0 && requests.length === previousCount) stablePolls += 1;
+    else stablePolls = 0;
+    if (stablePolls >= 5) return;
+    previousCount = requests.length;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    `Hosted automatic Memory extraction request did not settle: ${JSON.stringify(
+      requests.map((request) => ({
+        stream: request.body.stream,
+        summary: /context summarization assistant/.test(JSON.stringify(request.body)),
+        memory: /Perform the first stage of long-term-memory extraction/.test(
+          JSON.stringify(request.body),
+        ),
+      })),
+    )}`,
+  );
 }
 
 function isTerminal(snapshot: TurnSnapshot): boolean {
@@ -2771,6 +3038,26 @@ function toolNames(body: Record<string, unknown> | undefined): string[] {
     .sort();
 }
 
+function responsesToolNames(body: Record<string, unknown> | undefined): string[] {
+  const tools = Array.isArray(body?.tools) ? body.tools : [];
+  return tools
+    .flatMap((tool) => {
+      if (!tool || typeof tool !== 'object') return [];
+      const name = (tool as { name?: unknown }).name;
+      return typeof name === 'string' ? [name] : [];
+    })
+    .sort();
+}
+
+function responsesDeveloperPrompt(body: Record<string, unknown> | undefined): string | undefined {
+  const input = Array.isArray(body?.input) ? body.input : [];
+  const developer = input.find(
+    (message): message is Record<string, unknown> =>
+      Boolean(message) && typeof message === 'object' && message.role === 'developer',
+  );
+  return typeof developer?.content === 'string' ? developer.content : undefined;
+}
+
 function providerRequestTrace(requests: readonly ProviderRequest[]): readonly unknown[] {
   return requests.map((request) => {
     return {
@@ -2921,7 +3208,14 @@ async function handleProviderRequest(
     customHeader: request.headers['x-maka-test'] as string | undefined,
     body,
   });
+  if (request.url === '/v1/responses') {
+    respondProviderResponsesText(response, RESPONSE_TEXT);
+    return;
+  }
   if (body.stream !== true) {
+    const isMemoryExtraction = /Perform the first stage of long-term-memory extraction/.test(
+      JSON.stringify(body),
+    );
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(
       JSON.stringify({
@@ -2932,7 +3226,18 @@ async function handleProviderRequest(
         choices: [
           {
             index: 0,
-            message: { role: 'assistant', content: SUMMARY_TEXT },
+            message: {
+              role: 'assistant',
+              content: isMemoryExtraction
+                ? JSON.stringify({
+                    status: 'complete',
+                    coverageStatus: 'processed',
+                    requestedStatus: 'not_applicable',
+                    requestedItems: [],
+                    incidentalItems: [],
+                  })
+                : SUMMARY_TEXT,
+            },
             finish_reason: 'stop',
           },
         ],
@@ -3091,6 +3396,67 @@ async function handleProviderRequest(
     return;
   }
   respondProviderText(response, RESPONSE_TEXT);
+}
+
+function respondProviderResponsesText(response: ServerResponse, text: string): void {
+  const responseId = 'resp-hosted-profile';
+  const messageId = 'msg-hosted-profile';
+  const events = [
+    {
+      type: 'response.created',
+      response: {
+        id: responseId,
+        object: 'response',
+        created_at: 1,
+        model: 'deepseek-v4-flash',
+        status: 'in_progress',
+        output: [],
+      },
+    },
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: {
+        type: 'message',
+        id: messageId,
+        status: 'in_progress',
+        role: 'assistant',
+        content: [],
+      },
+    },
+    {
+      type: 'response.output_text.delta',
+      content_index: 0,
+      delta: text,
+      item_id: messageId,
+      output_index: 0,
+    },
+    {
+      type: 'response.output_item.done',
+      output_index: 0,
+      item: {
+        type: 'message',
+        id: messageId,
+        status: 'completed',
+        role: 'assistant',
+        content: [{ type: 'output_text', text, annotations: [] }],
+      },
+    },
+    {
+      type: 'response.completed',
+      response: {
+        id: responseId,
+        object: 'response',
+        created_at: 1,
+        model: 'deepseek-v4-flash',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 11, output_tokens: 5, total_tokens: 16 },
+      },
+    },
+  ];
+  response.writeHead(200, { 'content-type': 'text/event-stream' });
+  response.end(`${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\n`);
 }
 
 function respondProviderText(response: ServerResponse, text: string): void {

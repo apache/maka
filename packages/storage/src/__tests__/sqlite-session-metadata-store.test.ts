@@ -41,27 +41,21 @@ describe('SqliteSessionMetadataStore', () => {
       setup.close();
 
       const database = new DatabaseSync(path);
+      const incompatible = JSON.stringify({
+        type: 'user',
+        id: 'message-legacy',
+        turnId: 'turn-legacy',
+        ts: 5,
+        text: 'private message text',
+        origin: { kind: 'future_trigger', triggerId: 'future-trigger' },
+      });
       database
         .prepare(`
           INSERT INTO session_messages(
             session_id, sequence, message_id, message_type, message_ts, record_json
           ) VALUES (?, ?, ?, ?, ?, ?)
         `)
-        .run(
-          'session-1',
-          104,
-          'message-legacy',
-          'user',
-          5,
-          JSON.stringify({
-            type: 'user',
-            id: 'message-legacy',
-            turnId: 'turn-legacy',
-            ts: 5,
-            text: 'private message text',
-            origin: { kind: 'automation', automationId: 'legacy-automation' },
-          }),
-        );
+        .run('session-1', 104, 'message-legacy', 'user', 5, incompatible);
       database.close();
 
       const store = createSqliteSessionMetadataStore(path);
@@ -2190,6 +2184,7 @@ function fullHeader(overrides: Partial<SessionHeader> = {}): SessionHeader {
     llmConnectionSlug: 'openai',
     connectionLocked: true,
     model: 'gpt-5',
+    toolProfile: 'headless-coding-v1',
     thinkingLevel: 'high',
     permissionMode: 'ask',
     collaborationMode: 'agent',

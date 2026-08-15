@@ -31,6 +31,7 @@ import {
   AgentGraphClientOperationError,
   AgentGraphCoordinator,
   agentGraphIdForRootSession,
+  agentGraphIdForRootSessionEpoch,
   type AgentGraphCoordinatorInput,
 } from '../stream-graph-coordinator.js';
 import { encodeAgentGraphTerminalCursor } from '../stream-graph-read-model.js';
@@ -486,6 +487,202 @@ describe('host-managed agent graph coordinator', () => {
     assert.match(graphId, /^agent_graph_[a-f0-9]{32}$/);
     assert.equal(graphId, agentGraphIdForRootSession('root-session'));
     assert.notEqual(graphId, agentGraphIdForRootSession('other-root'));
+  });
+
+  test('reports asynchronous epoch lookup failures from a fire-and-forget wake', async () => {
+    const controlStore = createSqliteSessionMetadataStore(':memory:');
+    const failure = new Error('epoch authority unavailable');
+    const errors: unknown[] = [];
+    const coordinator = new AgentGraphCoordinator({
+      sessionStore: {
+        listForRecovery: async () => [],
+        readHeader: async () => {
+          throw new Error('wake must fail before reading the Session');
+        },
+      },
+      runStore: { listSessionRuns: async () => [] },
+      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      controlStore,
+      epochStore: {
+        resolveCurrentAgentGraphEpoch: async () => {
+          throw failure;
+        },
+        advanceAgentGraphEpoch: async () => {
+          throw new Error('unexpected epoch advance');
+        },
+        listAgentGraphEpochs: async () => [],
+      },
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('unexpected operator provision');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('unexpected operator dispatch');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+      onError: (_rootSessionId, error) => {
+        errors.push(error);
+      },
+    });
+    try {
+      assert.equal(coordinator.wake('root-session'), undefined);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(errors, [failure]);
+    } finally {
+      await coordinator.close();
+      controlStore.close();
+    }
+  });
+
+  test('advances only a finished and quiescent graph to a deterministic next epoch', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-graph-epoch-cutover-'));
+    const controlStore = createSqliteSessionMetadataStore(
+      join(root, OPERATIONAL_STATE_DATABASE_NAME),
+    );
+    const rootSessionId = 'root-session';
+    const graphId = agentGraphIdForRootSession(rootSessionId);
+    const coordinator = new AgentGraphCoordinator({
+      sessionStore: {
+        listForRecovery: async () => [],
+        readHeader: async (sessionId: string) =>
+          ({
+            id: sessionId,
+            status: 'active',
+            isArchived: false,
+            orchestrationMode: 'graph',
+          }) as never,
+      },
+      runStore: { listSessionRuns: async () => [] },
+      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      controlStore,
+      epochStore: controlStore,
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('epoch cutover cannot provision operators');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('epoch cutover cannot dispatch operators');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+    });
+    let suppressions = 0;
+    const withWakesSuppressed = async (operation: () => Promise<void>) => {
+      suppressions += 1;
+      await operation();
+    };
+    try {
+      assert.equal(
+        (await coordinator.beginNextGraphEpoch(rootSessionId, withWakesSuppressed)).graphId,
+        graphId,
+      );
+      assert.equal(suppressions, 0);
+
+      await controlStore.commitAgentGraphScheduleUpdate(
+        compileAgentGraphScheduleUpdate({
+          graphId,
+          input: {
+            operation: 'finish',
+            finish: { result_ids: ['result-1'], reason: 'No work remains.' },
+          },
+          context: toolContext(rootSessionId, 'run-root', 'turn-root', 'tool-finish'),
+        }),
+      );
+      const next = await coordinator.beginNextGraphEpoch(rootSessionId, withWakesSuppressed);
+      assert.equal(next.epoch, 2);
+      assert.equal(next.graphId, agentGraphIdForRootSessionEpoch(rootSessionId, 2));
+      assert.equal(suppressions, 1);
+
+      const retry = await coordinator.beginNextGraphEpoch(rootSessionId, withWakesSuppressed);
+      assert.equal(retry.graphId, next.graphId);
+      assert.equal(suppressions, 1);
+      assert.deepEqual(
+        (await controlStore.listAgentGraphEpochs(rootSessionId)).map(({ epoch, graphId }) => ({
+          epoch,
+          graphId,
+        })),
+        [
+          { epoch: 1, graphId },
+          { epoch: 2, graphId: next.graphId },
+        ],
+      );
+    } finally {
+      await coordinator.close();
+      controlStore.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('concurrent cutovers converge on epoch 2 without skipping an epoch', async () => {
+    const controlStore = createSqliteSessionMetadataStore(':memory:');
+    const rootSessionId = 'root-session';
+    const graphId = agentGraphIdForRootSession(rootSessionId);
+    const coordinatorInput = {
+      sessionStore: {
+        listForRecovery: async () => [],
+        readHeader: async (sessionId: string) =>
+          ({
+            id: sessionId,
+            status: 'active',
+            isArchived: false,
+            orchestrationMode: 'graph',
+          }) as never,
+      },
+      runStore: { listSessionRuns: async () => [] },
+      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      controlStore,
+      epochStore: controlStore,
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('epoch cutover cannot provision operators');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('epoch cutover cannot dispatch operators');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+    } satisfies AgentGraphCoordinatorInput;
+    const first = new AgentGraphCoordinator(coordinatorInput);
+    const second = new AgentGraphCoordinator(coordinatorInput);
+    await controlStore.commitAgentGraphScheduleUpdate(
+      compileAgentGraphScheduleUpdate({
+        graphId,
+        input: {
+          operation: 'finish',
+          finish: { result_ids: ['result-1'], reason: 'No work remains.' },
+        },
+        context: toolContext(rootSessionId, 'run-root', 'turn-root', 'tool-finish'),
+      }),
+    );
+    const gate = deferredGate();
+    let entrants = 0;
+    const withWakesSuppressed = async (operation: () => Promise<void>) => {
+      entrants += 1;
+      if (entrants === 2) gate.release();
+      await gate.ready;
+      await operation();
+    };
+    try {
+      const [left, right] = await Promise.all([
+        first.beginNextGraphEpoch(rootSessionId, withWakesSuppressed),
+        second.beginNextGraphEpoch(rootSessionId, withWakesSuppressed),
+      ]);
+      assert.equal(left.epoch, 2);
+      assert.equal(right.epoch, 2);
+      assert.deepEqual(
+        (await controlStore.listAgentGraphEpochs(rootSessionId)).map(({ epoch }) => epoch),
+        [1, 2],
+      );
+    } finally {
+      gate.release();
+      await first.close();
+      await second.close();
+      controlStore.close();
+    }
   });
 
   test('persists work-keyed reconciliation failures across coordinator recovery', async () => {
@@ -1238,6 +1435,14 @@ function localReadTools(): MakaTool[] {
     categoryHint: 'read',
     impl: async () => ({ ok: true }),
   }));
+}
+
+function deferredGate(): { readonly ready: Promise<void>; release(): void } {
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { ready, release };
 }
 
 function toolContext(

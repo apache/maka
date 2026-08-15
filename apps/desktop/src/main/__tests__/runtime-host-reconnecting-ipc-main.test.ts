@@ -201,7 +201,7 @@ test("read adapters project ordinary failures without hiding reconnectable failu
   }
 
   const failure = new RuntimeHostOperationError(
-    "session.transcript.query",
+    "session.transcript.page",
     "host_draining",
     "Runtime Host is draining",
   );

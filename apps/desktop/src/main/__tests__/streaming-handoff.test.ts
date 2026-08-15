@@ -11,7 +11,10 @@ import {
   type LiveTurnProjection,
   type InteractionQueues,
 } from '@maka/ui';
-import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-session-events.js';
+import {
+  createAppShellSessionDisplayBatch,
+  createAppShellSessionEventHandlers,
+} from '../../renderer/app-shell-session-events.js';
 
 function renderWithLocale(child: ReactNode): string {
   return renderToStaticMarkup(
@@ -66,23 +69,21 @@ describe('single live-turn handoff', () => {
       phase: 'streamed',
       steps: [{
         stepId: 'assistant-1',
-        thinking: { text: '先检查', truncated: false, complete: true },
+        thinking: { text: '先检查', truncated: false, complete: false },
         text: { text: '最终答案', truncated: false, complete: true },
         tools: [{
           toolUseId: 'tool-1',
           toolName: 'Bash',
           stepId: 'assistant-1',
-          status: 'completed',
+          status: 'running',
           args: {},
           result: { kind: 'text', text: 'ok' },
         }],
       }],
     });
 
-    // The render-layer fold keeps answer text as the grouping boundary, but
-    // adds no second Processing disclosure around the native reasoning and
-    // tool-call disclosures. Order is product-facing; vendor class names are not.
-    assert.equal((markup.match(/data-processing="block"/g) ?? []).length, 0);
+    // Thinking and tools own their disclosures; do not wrap them in another.
+    assert.equal((markup.match(/maka-processing-block/g) ?? []).length, 0);
     assert.ok(markup.indexOf('深度思考') >= 0);
     assert.ok(markup.indexOf('深度思考') < markup.indexOf('最终答案'));
     assert.ok(markup.indexOf('最终答案') < markup.indexOf('Bash'));
@@ -196,6 +197,105 @@ describe('single live-turn handoff', () => {
     await handlers.settleAssistantStreaming('session-1', 'assistant-1');
     assert.equal(liveTurns.get()['session-1'], undefined);
     assert.ok(refreshes.some((call) => call.required === 'assistant-1'));
+  });
+
+  it('publishes visible deltas at most once per animation frame', () => {
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
+      'session-1': armLiveTurn('turn-1'),
+    });
+    const liveTurnBySessionRef = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const frames: Array<() => void> = [];
+    let publications = 0;
+    const handlers = createAppShellSessionEventHandlers({
+      uiLocale: 'zh',
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef,
+      refreshMessages: async () => true,
+      refreshSessions: async () => [],
+      setLiveTurnBySession: (updater) => {
+        publications += 1;
+        liveTurns.set(updater);
+        liveTurnBySessionRef.current = liveTurns.get();
+      },
+      setInteractionBySession: interactions.set,
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+      scheduleFrame: (callback) => { frames.push(callback); },
+    });
+
+    for (let index = 0; index < 100; index += 1) {
+      handlers.handleEvent('session-1', {
+        type: 'text_delta',
+        id: `event-${index}`,
+        turnId: 'turn-1',
+        messageId: 'assistant-1',
+        ts: index,
+        text: 'x',
+      });
+    }
+    assert.equal(publications, 0);
+    assert.equal(frames.length, 1);
+    frames.shift()?.();
+    assert.equal(publications, 1);
+    assert.equal(liveTurns.get()['session-1']?.steps[0]?.text?.text, 'x'.repeat(100));
+
+    handlers.handleEvent('session-1', {
+      type: 'text_delta', id: 'event-100', turnId: 'turn-1', messageId: 'assistant-1', ts: 100, text: 'y',
+    });
+    handlers.handleEvent('session-1', {
+      type: 'text_complete', id: 'event-101', turnId: 'turn-1', messageId: 'assistant-1', ts: 101, text: 'done',
+    });
+    assert.equal(publications, 2);
+    assert.equal(liveTurns.get()['session-1']?.steps[0]?.text?.text, 'done');
+    frames.shift()?.();
+    assert.equal(publications, 2);
+  });
+
+  it('shares pending display events across handler replacement', () => {
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
+      'session-1': armLiveTurn('turn-1'),
+    });
+    const liveTurnBySessionRef = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const frames: Array<() => void> = [];
+    const displayBatch = createAppShellSessionDisplayBatch();
+    let publications = 0;
+    const deps = {
+      uiLocale: 'zh' as const,
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef,
+      refreshMessages: async () => true,
+      refreshSessions: async () => [],
+      setLiveTurnBySession: (updater: (current: Record<string, LiveTurnProjection>) => Record<string, LiveTurnProjection>) => {
+        publications += 1;
+        liveTurns.set(updater);
+        liveTurnBySessionRef.current = liveTurns.get();
+      },
+      setInteractionBySession: interactions.set,
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+      scheduleFrame: (callback: () => void) => { frames.push(callback); },
+      displayBatch,
+    };
+    const beforeRender = createAppShellSessionEventHandlers(deps);
+    beforeRender.handleEvent('session-1', {
+      type: 'text_delta', id: 'delta', turnId: 'turn-1', messageId: 'assistant-1', ts: 1,
+      text: 'partial',
+    });
+
+    const afterRender = createAppShellSessionEventHandlers(deps);
+    afterRender.handleEvent('session-1', {
+      type: 'text_complete', id: 'complete', turnId: 'turn-1', messageId: 'assistant-1', ts: 2,
+      text: 'done',
+    });
+    assert.equal(liveTurns.get()['session-1']?.steps[0]?.text?.text, 'done');
+    assert.equal(liveTurns.get()['session-1']?.steps[0]?.text?.complete, true);
+
+    frames.shift()?.();
+    assert.equal(publications, 1);
+    assert.equal(liveTurns.get()['session-1']?.steps[0]?.text?.text, 'done');
+    assert.equal(liveTurns.get()['session-1']?.steps[0]?.text?.complete, true);
   });
 
   it('queues a sandbox boundary request without ending the live turn', () => {

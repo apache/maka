@@ -1,10 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { arch as osArch, release as osRelease } from 'node:os';
 import {
-  assertStateRootOwner,
-  authenticateStateRootOwner,
-  type StateRootOwner,
-  type StorageRootKind,
+  assertInteractiveRootOwner,
+  authenticateInteractiveRootOwner,
+  type InteractiveRootOwner,
 } from '@maka/storage/root-authority';
 import { bindStateRootComposition } from '@maka/storage/state-root-composition';
 import { removeHostRegistration, writeHostRegistration } from '../control/registration.js';
@@ -84,8 +83,8 @@ export class RuntimeHostProcessTerminationRequiredError extends Error {
   }
 }
 
-export interface RuntimeHostCompositionContext<K extends StorageRootKind = 'interactive'> {
-  owner: StateRootOwner<K>;
+export interface RuntimeHostCompositionContext {
+  owner: InteractiveRootOwner;
   hostEpoch: string;
   acquireResidency(label: string): RuntimeHostResidency;
   /** Irreversible fail-stop latch; normal residency still uses acquireResidency(). */
@@ -110,39 +109,36 @@ export interface RuntimeHostComposition {
   close(): Promise<void>;
 }
 
-export type RuntimeHostCompositionFactory<K extends StorageRootKind = 'interactive'> = (
-  context: RuntimeHostCompositionContext<K>,
+export type RuntimeHostCompositionFactory = (
+  context: RuntimeHostCompositionContext,
 ) => Promise<RuntimeHostComposition>;
 
-interface RuntimeHostKernelCommonOptions<K extends StorageRootKind> {
-  owner: StateRootOwner<K>;
+interface RuntimeHostKernelCommonOptions {
+  owner: InteractiveRootOwner;
   handshakeTimeoutMs?: number;
   shutdownGraceMs?: number;
-  composition: RuntimeHostCompositionSource<K>;
+  composition: RuntimeHostCompositionSource;
   listenerSetFactory?: RuntimeHostListenerSetFactory;
   accessAuthority?: RuntimeHostAccessAuthority;
 }
 
 export type RuntimeHostLifecycleMode = 'ephemeral' | 'service';
 
-export type RuntimeHostKernelOptions<K extends StorageRootKind = 'interactive'> =
-  RuntimeHostKernelCommonOptions<K> &
-    (
-      | {
-          lifecycleMode?: 'ephemeral';
-          initialConnectionTimeoutMs?: number;
-          idleGraceMs?: number;
-          generation?: string;
-        }
-      | {
-          lifecycleMode: 'service';
-          initialConnectionTimeoutMs?: never;
-          idleGraceMs?: never;
-          generation?: never;
-        }
-    );
-
-type RuntimeHostKernelInternalOptions = RuntimeHostKernelOptions<StorageRootKind>;
+export type RuntimeHostKernelOptions = RuntimeHostKernelCommonOptions &
+  (
+    | {
+        lifecycleMode?: 'ephemeral';
+        initialConnectionTimeoutMs?: number;
+        idleGraceMs?: number;
+        generation?: string;
+      }
+    | {
+        lifecycleMode: 'service';
+        initialConnectionTimeoutMs?: never;
+        idleGraceMs?: never;
+        generation?: never;
+      }
+  );
 
 type RuntimeHostLifecycle =
   | {
@@ -155,7 +151,7 @@ type RuntimeHostLifecycle =
 export class RuntimeHostKernel {
   readonly hostEpoch = randomUUID();
   readonly closed: Promise<void>;
-  readonly #options: RuntimeHostKernelInternalOptions;
+  readonly #options: RuntimeHostKernelOptions;
   readonly #createdAt = new Date().toISOString();
   readonly #handshakingTransports = new Set<RuntimeHostMessageTransport>();
   readonly #acceptedTransports = new Set<RuntimeHostMessageTransport>();
@@ -188,7 +184,7 @@ export class RuntimeHostKernel {
   #rejectClosed!: (error: unknown) => void;
   readonly #unsubscribeAccessRevocations: (() => void) | undefined;
 
-  private constructor(options: RuntimeHostKernelInternalOptions) {
+  private constructor(options: RuntimeHostKernelOptions) {
     this.#lifecycle = normalizeLifecycle(options);
     if (options.generation !== undefined) requireHostGeneration(options.generation);
     assertDuration(
@@ -212,13 +208,11 @@ export class RuntimeHostKernel {
     });
   }
 
-  static async start<K extends StorageRootKind>(
-    options: RuntimeHostKernelOptions<K>,
-  ): Promise<RuntimeHostKernel> {
-    const owner = authenticateStateRootOwner(options.owner, options.owner.capability.kind);
+  static async start(options: RuntimeHostKernelOptions): Promise<RuntimeHostKernel> {
+    const owner = authenticateInteractiveRootOwner(options.owner);
     let host: RuntimeHostKernel | undefined;
     try {
-      host = new RuntimeHostKernel(eraseRootKind(options, owner));
+      host = new RuntimeHostKernel(options);
       await host.#start();
       return host;
     } catch (error) {
@@ -285,7 +279,7 @@ export class RuntimeHostKernel {
   }
 
   async #start(): Promise<void> {
-    await assertStateRootOwner(this.#options.owner, this.#options.owner.capability.kind);
+    await assertInteractiveRootOwner(this.#options.owner);
     await bindStateRootComposition(this.#options.owner.lease, this.compositionDescriptor.id);
     this.#listeners = await (this.#options.listenerSetFactory ?? startLocalRuntimeHostListenerSet)({
       rootId: this.#options.owner.capability.rootId,
@@ -530,7 +524,7 @@ export class RuntimeHostKernel {
   async #hasLiveOwnerOrDrain(): Promise<boolean> {
     if (this.#isDraining()) return false;
     try {
-      await assertStateRootOwner(this.#options.owner, this.#options.owner.capability.kind);
+      await assertInteractiveRootOwner(this.#options.owner);
     } catch {
       void this.#commitShutdown().catch(() => undefined);
       return false;
@@ -888,9 +882,7 @@ function assertDuration(value: number, label: string, minimum: 0 | 1): void {
   }
 }
 
-function normalizeLifecycle<K extends StorageRootKind>(
-  options: RuntimeHostKernelOptions<K>,
-): RuntimeHostLifecycle {
+function normalizeLifecycle(options: RuntimeHostKernelOptions): RuntimeHostLifecycle {
   const lifecycleMode: unknown = options.lifecycleMode;
   if (lifecycleMode === 'service') {
     if (
@@ -909,19 +901,4 @@ function normalizeLifecycle<K extends StorageRootKind>(
   assertDuration(initialConnectionTimeoutMs, 'initialConnectionTimeoutMs', 0);
   assertDuration(idleGraceMs, 'idleGraceMs', 0);
   return { kind: 'ephemeral', initialConnectionTimeoutMs, idleGraceMs };
-}
-
-function eraseRootKind<K extends StorageRootKind>(
-  options: RuntimeHostKernelOptions<K>,
-  owner: StateRootOwner<K>,
-): RuntimeHostKernelInternalOptions {
-  return {
-    ...options,
-    owner,
-    composition: {
-      descriptor: options.composition.descriptor,
-      create: (context: RuntimeHostCompositionContext<StorageRootKind>) =>
-        options.composition.create({ ...context, owner }),
-    },
-  };
 }

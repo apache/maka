@@ -15,22 +15,23 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 
 | Classification | Count |
 |---|---:|
-| windows-backend-gap | 18 |
-| portable-candidate | 0 |
+| windows-backend-gap | 20 |
+| portable-candidate | 3 |
 | platform-contract | 35 |
 
-Total Windows-excluded declarations: **53**
+Total Windows-excluded declarations: **58**
 
 ## Inventory
 
 | Classification | Test | Skip expression |
 |---|---|---|
-| platform-contract | `apps/desktop/scripts/dev-app-runtime.test.mjs` the real probe survives a hostile bundle path | `process.platform !== 'darwin'` |
 | platform-contract | `apps/desktop/src/main/__tests__/project-context-root.test.ts` rejects a session cwd without read and traversal access | `process.platform === 'win32' ? 'POSIX permissions are required to make the session cwd inaccessible' : process.getuid?.() === 0` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` imports the login PATH without importing application control variables | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` keeps the inherited PATH and does not log shell stderr when capture fails | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` kills login-shell descendants when capture times out | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` bounds shell output instead of buffering until the global timeout | `process.platform === 'win32'` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/connection-effect-coordinator.test.ts` leaves canonical onboarding state unchanged when the durable intent cannot be published | `process.platform === 'win32'` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/connection-effect-coordinator.test.ts` recovers a durable onboarding intent instead of rolling back a partial publication | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/control-endpoint.test.ts` runtime host control endpoint | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/execution-inspect-uds.test.ts` a live Host serves Interactive inspection over its real endpoint while retaining exclusive ownership | `process.platform === 'win32' ? 'Windows execution Host startup lifecycle' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` an automatic failed liveness check is connection-fatal and Client close stays local | `process.platform === 'win32'` |
@@ -39,6 +40,7 @@ Total Windows-excluded declarations: **53**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` reports one shutdown failure through close and closed while releasing ownership | `process.platform === 'win32'` |
 | platform-contract | `packages/runtime-host/src/__tests__/host-kernel.test.ts` publishes private POSIX endpoint and registration permissions | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/memory-two-client-uds.test.ts` two UDS clients share one recoverable Memory authority across Host death | `process.platform === 'win32' ? 'POSIX process death gate' : false` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/project-catalog-two-client-uds.test.ts` two UDS clients converge on one Host-owned Project Catalog | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-policy-coordinator.test.ts` invalidates when a real published mutation loses its commit reply | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-resource-process.test.ts` real Host Runtime Resource process lifecycle | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-resource-two-client-uds.test.ts` a Host-owned PTY survives Desktop disconnect and transfers control to TUI | `process.platform === 'win32' ? 'POSIX UDS and shell integration' : false` |
@@ -49,6 +51,7 @@ Total Windows-excluded declarations: **53**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` fails the connection for a canonical response with mismatched ${mismatch.name} | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` rejects local invalid input without poisoning transport and correlates a private canonical copy | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-two-client-uds.test.ts` two clients share usage projection and one revision-CAS pricing authority | `process.platform === 'win32'` |
+| portable-candidate | `packages/runtime/src/__tests__/filesystem-apply-patch.test.ts` deletes a self-referential symlink entry without following it | `process.platform === 'win32'` |
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-process-runner.test.ts` filesystem worker rejects boundedly when a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-smoke.test.ts` macOS filesystem worker smoke | `process.platform !== 'darwin'` |
 | platform-contract | `packages/runtime/src/__tests__/shell-exec.test.ts` bounds output drain after the root exits while a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
@@ -60,10 +63,13 @@ Total Windows-excluded declarations: **53**
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` settles after root exit when a detached descendant retains inherited stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps the first committed lifecycle cause across Stop and timeout races | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps SIGTERM final output and escalates an ignored SIGTERM without leaking slots | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
+| portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` accepts a POSIX package bin symlink whose target remains inside the dependency root | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` isolates published POSIX content from a producer-retained writable handle | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` rejects an authority database whose file identity changes after registration | `process.platform === 'win32' ? 'Windows cannot rename an open SQLite database to replace its file identity' : false` |
 | platform-contract | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` does not return an accepted baseline when runtime.sqlite is replaced after the initial root check | `process.platform === 'win32' ? 'Windows cannot rename an open SQLite database during the verification race' : false` |
 | platform-contract | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` rejects a source tree containing a non-UTF-8 Git path | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/managed-workspace-owner.test.ts` rejects execution when runtime.sqlite detaches from its canonical path after verification | `process.platform === 'win32' ? 'Open SQLite files cannot be renamed reliably on Windows' : false` |
+| platform-contract | `packages/storage/src/__tests__/operational-state-store.test.ts` does not classify a SQLite write failure as a migration blocker | `process.platform === 'win32' ? 'POSIX permissions are required to make the SQLite database read-only' : false` |
 | platform-contract | `packages/storage/src/__tests__/pet-pack-store.test.ts` detects sprite sheets redirected outside the installed pack | `process.platform === 'win32' ? 'Windows file-symlink permissions are not guaranteed in CI' : false` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` preserves unexpected marker I/O failures at the public authority boundary | `process.platform === 'win32' ? 'POSIX permissions are required to make the marker unreadable' : typeof process.getuid === 'function' && process.getuid() === 0` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` rejects FIFO marker paths without blocking root resolution | `process.platform === 'win32'` |
