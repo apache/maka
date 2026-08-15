@@ -38,6 +38,8 @@ reviews:
     - Do not classify the PR as a fast-path candidate or present the assessment as authorization. State that the person performing the merge reviews the final diff and a maintainer makes the final determination.
 
   pre_merge_checks:
+    docstrings:
+      mode: "off"
     description:
       mode: "warning"
     custom_checks:
