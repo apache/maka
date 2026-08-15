@@ -3376,9 +3376,11 @@ function AppShellContent({
         paletteOpen={paletteOpen}
         closePalette={closePalette}
         commandOptions={commandOptions}
-        /* 导入任务 hands back a task that is not in the catalog yet — nothing
-           behind `externalSessions.import` notifies the shell — so the shell
-           seeds it, then leaves Settings and opens it. */
+        /* Seeding is for the navigation, not for correctness: the import IPC
+           already emits `sessions:changed`, so the task reaches the rail on its
+           own even if the user closes Settings mid-import. Seeding it here just
+           means `openSessionInChat` has something to open without waiting for
+           the refresh to land. */
         onExternalSessionImported={(session) => {
           upsertSessionSummary(session);
           closeSettings();

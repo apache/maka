@@ -337,7 +337,12 @@ export function ImportTasksSettingsPage(props: {
                         size="sm"
                         isLoading={importingId === session.id}
                         isDisabled={importingId !== null || uncertainIds.has(session.id)}
-                        clickAction={() => void importConversation(session.id)}
+                        // Returned, not discarded: Astryx's Button awaits a
+                        // promise-returning `clickAction` and drops repeat
+                        // clicks until it settles. `void`-ing it gave that
+                        // guarantee nothing to await, leaving double-submit to
+                        // the `importingId` state alone -- one render behind.
+                        clickAction={() => importConversation(session.id)}
                         label={importingId === session.id ? copy.importing : copy.import}
                         // Every row's button reads 导入; only the accessible
                         // name can say which conversation it imports.
