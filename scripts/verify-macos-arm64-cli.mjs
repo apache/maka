@@ -1,9 +1,19 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises';
+import {
+  access,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import {
@@ -200,7 +210,8 @@ async function assertNoTestArtifacts(archiveRoot) {
     const pathFromLibexec = relative(libexecRoot, path);
     return (
       pathFromLibexec.split(sep).includes('__tests__') ||
-      /\.(?:test|spec)\.(?:[cm]?js|d\.ts|[cm]?js\.map)$/.test(path)
+      /\.(?:test|spec)\.(?:[cm]?js|d\.ts|[cm]?js\.map)$/.test(path) ||
+      /^test_.*\.py$/u.test(basename(path))
     );
   });
   if (forbidden.length > 0) {
@@ -226,6 +237,139 @@ async function assertWorkspaceClosure(archiveRoot, metadata) {
     }
   }
   await assertNoDanglingSymlinks(join(archiveRoot, 'libexec'));
+}
+
+async function smokePackagedEval(archiveRoot, sourceCommit, environment, run) {
+  // Exercise the staged runner and relay offline against the narrow Harbor API
+  // they consume, so release verification stays deterministic and provider-free.
+  const smokeRoot = await mkdtemp(join(environment.TMPDIR, 'eval-smoke-'));
+  try {
+    const python = await run(
+      'python3',
+      [
+        '-c',
+        'import json, sys; print(json.dumps({"executable": sys.executable, "version": list(sys.version_info[:3])}))',
+      ],
+      { env: process.env },
+    );
+    const pythonIdentity = JSON.parse(python.stdout);
+    if (
+      !isAbsolute(pythonIdentity.executable) ||
+      !Array.isArray(pythonIdentity.version) ||
+      pythonIdentity.version[0] !== 3 ||
+      pythonIdentity.version[1] < 10
+    ) {
+      throw new Error('Packaged eval smoke requires Python 3.10 or newer.');
+    }
+
+    const fixtureRoot = join(smokeRoot, 'python');
+    const trialsRoot = join(smokeRoot, 'trials');
+    const taskCache = join(smokeRoot, 'task-cache');
+    const markerPath = join(smokeRoot, 'marker.json');
+    const specPath = join(smokeRoot, 'experiment.json');
+    const outputPath = join(smokeRoot, 'output');
+    await mkdir(fixtureRoot, { recursive: true });
+    await copyFile(
+      join(repoRoot, 'scripts', 'release-eval-smoke-sitecustomize.py'),
+      join(fixtureRoot, 'sitecustomize.py'),
+    );
+
+    const spec = {
+      schemaVersion: 'maka.eval.v1',
+      id: 'release-artifact-smoke',
+      benchmark: {
+        id: 'release-smoke',
+        version: sourceCommit,
+        config: { repository: 'https://github.com/maka-agent/maka-agent.git' },
+      },
+      executor: {
+        kind: 'harbor',
+        config: {
+          frameworkVersion: '0.20.0',
+          pythonPathEnv: 'MAKA_CLI_EVAL_SMOKE_PYTHON',
+          trialsRootEnv: 'MAKA_CLI_EVAL_SMOKE_TRIALS',
+          environment: {},
+          preparationEnvironment: [
+            'PYTHONPATH',
+            'MAKA_CLI_EVAL_SMOKE_CACHE',
+            'MAKA_CLI_EVAL_SMOKE_MARKER',
+          ],
+          mounts: [],
+        },
+      },
+      execution: { maxConcurrentTaskGroups: 1 },
+      subjects: [
+        {
+          id: 'external',
+          kind: 'external',
+          credentials: [],
+          config: { command: '/usr/bin/true', args: [], result: 'exit-code' },
+        },
+      ],
+      tasks: [
+        {
+          id: 'smoke',
+          input: 'release smoke',
+          config: { harbor: { path: 'tasks/release-smoke' } },
+        },
+      ],
+      repetitions: 1,
+      budget: { timeoutMultiplier: 1 },
+      verifier: { reward: 'reward' },
+    };
+    await writeFile(specPath, `${JSON.stringify(spec)}\n`, 'utf8');
+    const smokeEnvironment = {
+      ...environment,
+      MAKA_CLI_EVAL_SMOKE_CACHE: taskCache,
+      MAKA_CLI_EVAL_SMOKE_MARKER: markerPath,
+      MAKA_CLI_EVAL_SMOKE_PYTHON: pythonIdentity.executable,
+      MAKA_CLI_EVAL_SMOKE_TRIALS: trialsRoot,
+      PYTHONPATH: fixtureRoot,
+    };
+    const makaPath = join(archiveRoot, 'bin', 'maka');
+    const result = await run(makaPath, ['eval', 'run', specPath, '--out', outputPath], {
+      cwd: smokeRoot,
+      env: smokeEnvironment,
+      timeout: 30_000,
+    });
+    const summary = JSON.parse(result.stdout);
+    if (summary.experimentId !== spec.id || summary.cells !== 1 || summary.incomplete !== 0) {
+      throw new Error('Packaged eval smoke did not complete its one deterministic cell.');
+    }
+
+    const cellId = 'smoke::1::external';
+    const attemptPath = join(
+      outputPath,
+      'attempts',
+      createHash('sha256').update(cellId).digest('hex'),
+      '000001.json',
+    );
+    const attempt = JSON.parse(await readFile(attemptPath, 'utf8'));
+    if (
+      attempt.cellId !== cellId ||
+      attempt.result?.status !== 'completed' ||
+      attempt.result.score !== 1
+    ) {
+      throw new Error('Packaged eval smoke did not record a completed, verified attempt.');
+    }
+
+    const marker = JSON.parse(await readFile(markerPath, 'utf8'));
+    const expectedRunTrial = await import('node:fs/promises').then(({ realpath }) =>
+      realpath(join(archiveRoot, 'libexec', 'packages', 'eval', 'harbor', 'run_trial.py')),
+    );
+    const expectedRelayAgent = await import('node:fs/promises').then(({ realpath }) =>
+      realpath(join(archiveRoot, 'libexec', 'packages', 'eval', 'harbor', 'relay_agent.py')),
+    );
+    if (
+      marker.runTrial !== expectedRunTrial ||
+      marker.relayAgent !== expectedRelayAgent ||
+      marker.relayName !== 'maka-eval-relay'
+    ) {
+      throw new Error('Packaged eval smoke did not execute the staged Harbor runtime assets.');
+    }
+  } finally {
+    await rm(smokeRoot, { recursive: true, force: true });
+  }
 }
 
 function streamingChunk(delta, finishReason = null) {
@@ -554,6 +698,7 @@ export async function verifyMacosArm64Cli(
     if (!evalHelpResult.stdout.includes('maka eval run <spec.json>')) {
       throw new Error('Packaged eval command did not load its public CLI contract.');
     }
+    await smokePackagedEval(archiveRoot, identity.sourceCommit, environment, run);
     await smokeTui(archiveRoot, environment);
 
     return {
@@ -562,6 +707,7 @@ export async function verifyMacosArm64Cli(
       machOBinaryCount: machOBinaries.length,
       sha256,
       signingTeamIdentifier,
+      evalSmokeVerified: true,
       streamingPatchVerified: true,
       version,
     };

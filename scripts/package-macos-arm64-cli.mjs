@@ -203,23 +203,66 @@ export async function pruneTestArtifacts(directory) {
   }
 }
 
+export function workspaceReleaseFiles(manifest) {
+  const declared = Object.hasOwn(manifest, 'releaseFiles') ? manifest.releaseFiles : ['dist'];
+  if (!Array.isArray(declared) || declared.length === 0) {
+    throw new Error(`${manifest.name ?? 'Workspace package'} releaseFiles must be non-empty.`);
+  }
+  const releaseFiles = declared.map((path) => {
+    if (typeof path !== 'string' || path.length === 0) {
+      throw new Error(`${manifest.name ?? 'Workspace package'} releaseFiles must be paths.`);
+    }
+    if (
+      isAbsolute(path) ||
+      path.includes('\\') ||
+      /[*?[\]{}]/u.test(path) ||
+      path.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')
+    ) {
+      throw new Error(`${manifest.name ?? 'Workspace package'} has unsafe release file ${path}.`);
+    }
+    return path;
+  });
+  if (new Set(releaseFiles).size !== releaseFiles.length) {
+    throw new Error(`${manifest.name ?? 'Workspace package'} releaseFiles contain duplicates.`);
+  }
+  for (const [index, path] of releaseFiles.entries()) {
+    const overlap = releaseFiles
+      .slice(index + 1)
+      .find((candidate) => path.startsWith(`${candidate}/`) || candidate.startsWith(`${path}/`));
+    if (overlap) {
+      throw new Error(
+        `${manifest.name ?? 'Workspace package'} releaseFiles overlap at ${path} and ${overlap}.`,
+      );
+    }
+  }
+  if (!releaseFiles.includes('dist')) {
+    throw new Error(`${manifest.name ?? 'Workspace package'} releaseFiles must include dist.`);
+  }
+  return releaseFiles;
+}
+
 async function sha256File(path) {
   const hash = createHash('sha256');
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest('hex');
 }
 
-async function stageWorkspacePackages(installRoot, workspacePackages) {
+export async function stageWorkspacePackages(installRoot, workspacePackages) {
   await Promise.all([
     copyFile(join(repoRoot, 'package.json'), join(installRoot, 'package.json')),
     copyFile(join(repoRoot, 'package-lock.json'), join(installRoot, 'package-lock.json')),
-    ...workspacePackages.map(async ({ directory, workspacePath }) => {
+    ...workspacePackages.map(async ({ directory, manifest, workspacePath }) => {
       const targetDirectory = join(installRoot, workspacePath);
       await mkdir(targetDirectory, { recursive: true });
-      await Promise.all([
-        copyFile(join(directory, 'package.json'), join(targetDirectory, 'package.json')),
-        cp(join(directory, 'dist'), join(targetDirectory, 'dist'), { recursive: true }),
-      ]);
+      await copyFile(join(directory, 'package.json'), join(targetDirectory, 'package.json'));
+      await Promise.all(
+        workspaceReleaseFiles(manifest).map(async (releaseFile) => {
+          const source = join(directory, ...releaseFile.split('/'));
+          const target = join(targetDirectory, ...releaseFile.split('/'));
+          await mkdir(dirname(target), { recursive: true });
+          await cp(source, target, { recursive: true });
+        }),
+      );
       await pruneTestArtifacts(join(targetDirectory, 'dist'));
     }),
   ]);

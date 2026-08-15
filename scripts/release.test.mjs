@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -15,6 +26,9 @@ import {
   isMacosArm64MachO,
   listApplicableDependencyPatchNames,
   macosArm64CliWrapper,
+  resolveCliWorkspacePackages,
+  stageWorkspacePackages,
+  workspaceReleaseFiles,
 } from './package-macos-arm64-cli.mjs';
 import { releaseToolchainFromManifest, resolveReleaseIdentity } from './release-identity.mjs';
 import {
@@ -120,6 +134,98 @@ test('workspace closure follows manifests and rejects missing local packages', (
     () => collectWorkspaceDependencyClosure('maka-agent', manifests),
     /not in workspaces/,
   );
+});
+
+test('workspace release declarations reject ambiguous or unsafe paths', () => {
+  const releaseFiles = (declared) =>
+    workspaceReleaseFiles({ name: '@maka/example', releaseFiles: declared });
+  assert.throws(() => releaseFiles(null), /must be non-empty/);
+  assert.throws(() => releaseFiles(['harbor/run_trial.py']), /must include dist/);
+  assert.throws(() => releaseFiles(['dist', '../secret']), /unsafe release file/);
+  assert.throws(() => releaseFiles(['dist', '/tmp/secret']), /unsafe release file/);
+  assert.throws(() => releaseFiles(['dist', 'harbor/*.py']), /unsafe release file/);
+  assert.throws(() => releaseFiles(['dist', 'harbor\\run_trial.py']), /unsafe release file/);
+  assert.throws(() => releaseFiles(['dist', 'dist']), /contain duplicates/);
+  assert.throws(() => releaseFiles(['dist', 'dist/cli.js']), /overlap/);
+});
+
+async function listRelativeFiles(directory, root = directory) {
+  const files = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...(await listRelativeFiles(path, root)));
+    else if (entry.isFile()) files.push(path.slice(root.length + 1).replaceAll('\\', '/'));
+  }
+  return files.sort();
+}
+
+function isPrunedDistFile(path) {
+  const segments = path.split('/');
+  return (
+    segments.includes('__tests__') ||
+    /\.(?:test|spec)\.(?:[cm]?js|d\.ts|[cm]?js\.map)$/u.test(segments.at(-1))
+  );
+}
+
+async function assertStagedFile(source, staged, label) {
+  const [sourceStat, stagedStat, sourceContent, stagedContent] = await Promise.all([
+    stat(source),
+    stat(staged),
+    readFile(source),
+    readFile(staged),
+  ]);
+  assert.equal(stagedStat.isFile(), true, label);
+  assert.equal(stagedStat.mode & 0o111, sourceStat.mode & 0o111, label);
+  assert.deepEqual(stagedContent, sourceContent, label);
+}
+
+test('workspace release declarations are copied exactly into CLI staging', async () => {
+  const installRoot = await mkdtemp(join(tmpdir(), 'maka-release-workspaces-'));
+  try {
+    const workspacePackages = await resolveCliWorkspacePackages();
+    await stageWorkspacePackages(installRoot, workspacePackages);
+
+    for (const { directory, manifest, workspacePath } of workspacePackages) {
+      for (const releaseFile of workspaceReleaseFiles(manifest)) {
+        const source = join(directory, ...releaseFile.split('/'));
+        const staged = join(installRoot, workspacePath, ...releaseFile.split('/'));
+        const sourceStat = await stat(source);
+        if (sourceStat.isFile()) {
+          await assertStagedFile(source, staged, `${manifest.name}:${releaseFile}`);
+          continue;
+        }
+        assert.equal(sourceStat.isDirectory(), true, `${manifest.name}:${releaseFile}`);
+        const sourceFiles = (await listRelativeFiles(source)).filter(
+          (path) => releaseFile !== 'dist' || !isPrunedDistFile(path),
+        );
+        const stagedFiles = await listRelativeFiles(staged);
+        assert.deepEqual(stagedFiles, sourceFiles, `${manifest.name}:${releaseFile}`);
+        for (const path of sourceFiles) {
+          await assertStagedFile(
+            join(source, ...path.split('/')),
+            join(staged, ...path.split('/')),
+            `${manifest.name}:${releaseFile}/${path}`,
+          );
+        }
+      }
+    }
+
+    const evalPackage = workspacePackages.find(({ name }) => name === '@maka/eval');
+    assert.ok(evalPackage, '@maka/eval must declare its release files');
+    assert.equal(Object.hasOwn(evalPackage.manifest, 'releaseFiles'), true);
+    const expectedHarborFiles = workspaceReleaseFiles(evalPackage.manifest)
+      .filter((path) => path.startsWith('harbor/'))
+      .map((path) => path.slice('harbor/'.length))
+      .sort();
+    const stagedHarbor = join(installRoot, evalPackage.workspacePath, 'harbor');
+    assert.deepEqual(await listRelativeFiles(stagedHarbor), expectedHarborFiles);
+    assert.equal(
+      expectedHarborFiles.some((path) => /^test_.*\.py$/u.test(path)),
+      false,
+    );
+  } finally {
+    await rm(installRoot, { recursive: true, force: true });
+  }
 });
 
 test('the only launcher remains relocatable through an external symlink', async () => {
