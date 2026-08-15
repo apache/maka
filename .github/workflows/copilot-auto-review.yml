@@ -29,6 +29,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          if gh api \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers" \
+            --jq '.users[].login' | \
+            grep -Fxq 'copilot-pull-request-reviewer[bot]'; then
+            exit 0
+          fi
+
           gh api \
             --method POST \
             "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers" \
