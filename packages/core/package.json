@@ -40,6 +40,7 @@
     "./session-event-health": "./dist/session-event-health.js",
     "./permission": "./dist/permission.js",
     "./permission-profile": "./dist/permission-profile.js",
+    "./windows-path": "./dist/windows-path.js",
     "./sandbox-boundary": "./dist/sandbox-boundary.js",
     "./permission-profile-compiler": "./dist/permission-profile-compiler.js",
     "./user-question": "./dist/user-question.js",

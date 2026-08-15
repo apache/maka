@@ -2,11 +2,8 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { glob as nodeGlob } from 'node:fs/promises';
 import { dirname, isAbsolute, parse, resolve } from 'node:path';
-import {
-  isPathInside,
-  realpathAllowMissing,
-  resolveCanonicalDirectoryEntryTarget,
-} from '../path-containment.js';
+import { isPathInside } from '../path-containment.js';
+import { sandboxPathApi } from './sandbox-paths.js';
 import { sandboxBoundaryExpansionAllowsPath } from '@maka/core/sandbox-boundary';
 import {
   ApplyPatchRejectedError,
@@ -28,6 +25,11 @@ import {
   type FilesystemWorkerTarget,
 } from './protocol.js';
 import { isLikelySandboxDenial } from '../sandbox/detect.js';
+
+// Canonicalisation must match the sandbox the worker runs in: realpath-based
+// on POSIX, lexical + reparse-rejecting inside the Windows AppContainer where
+// realpath is denied. See sandbox-paths.ts.
+const { realpath, realpathAllowMissing, resolveCanonicalDirectoryEntryTarget } = sandboxPathApi();
 
 const DEFAULT_GLOB_LIMIT = 200;
 const MAX_GREP_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -280,6 +282,15 @@ export async function executeFilesystemOperation(
         'read',
         operationBoundary,
       );
+      // The Windows AppContainer cannot create grandchild processes (the
+      // desktop object is not granted to the container SID), so grep runs
+      // in-process there instead of spawning ripgrep.
+      if (process.platform === 'win32' && !dependencies.runGrep) {
+        return {
+          kind: 'grep',
+          matches: (await runInProcessGrep(path, operation)).slice(0, operation.limit),
+        };
+      }
       if (!dependencies.grepExecutable)
         throw operationError('grep_unavailable', 'Grep is unavailable in this runtime.');
       const args = ['-n', '--no-heading', `--max-count=${operation.maxCountPerFile}`];
@@ -311,6 +322,63 @@ export async function executeFilesystemOperation(
       };
     }
   }
+}
+
+/**
+ * In-process grep for sandboxes that cannot spawn ripgrep. Output mirrors
+ * `rg -n --no-heading`: `path:line:text` with absolute paths. Unlike ripgrep
+ * it does not honor .gitignore, so it may return a superset of matches.
+ */
+async function runInProcessGrep(
+  path: string,
+  operation: Extract<FilesystemWorkerOperation, { kind: 'grep' }>,
+): Promise<string[]> {
+  let expression: RegExp;
+  try {
+    expression = new RegExp(operation.pattern);
+  } catch {
+    throw operationError('invalid_request', 'Grep pattern is not a valid regular expression.');
+  }
+  const deadline = Date.now() + operation.timeoutMs;
+  const matches: string[] = [];
+  const files: string[] = [];
+  const metadata = await fs.stat(path);
+  if (metadata.isFile()) {
+    files.push(path);
+  } else {
+    for await (const entry of nodeGlob(operation.glob ?? '**/*', {
+      cwd: path,
+      withFileTypes: true,
+    })) {
+      if (!entry.isFile()) continue;
+      files.push(resolve(entry.parentPath, entry.name));
+      if (files.length >= 10_000) break;
+    }
+  }
+  for (const file of files) {
+    if (Date.now() > deadline) {
+      throw operationError('filesystem_error', 'Grep timed out while searching files.');
+    }
+    let content: string;
+    try {
+      content = await fs.readFile(file, 'utf8');
+    } catch {
+      continue;
+    }
+    // Match ripgrep's binary skip: NUL in the content marks a binary file.
+    if (content.includes('\0')) continue;
+    let count = 0;
+    const lines = content.split('\n');
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index] ?? '';
+      if (!expression.test(line)) continue;
+      matches.push(`${file}:${index + 1}:${line}`);
+      count += 1;
+      if (count >= operation.maxCountPerFile || matches.length >= operation.limit) break;
+    }
+    if (matches.length >= operation.limit) break;
+  }
+  return matches;
 }
 
 class FilesystemOperationError extends Error {
@@ -383,7 +451,7 @@ async function resolveWritableAllowed(
 ): Promise<string> {
   const { root, candidate } = await resolveCandidate(cwd, inputPath, label, 'write', permission);
   try {
-    const target = await fs.realpath(candidate);
+    const target = await realpath(candidate);
     assertAllowed(root, target, label, 'write', permission);
     return target;
   } catch (error) {
@@ -395,7 +463,7 @@ async function resolveWritableAllowed(
   // so the worker enforces its own boundary instead of trusting the caller to
   // have canonicalised the path for it.
   const followed = await realpathAllowMissing(candidate);
-  const parent = await fs.realpath(dirname(followed));
+  const parent = await realpath(dirname(followed));
   assertAllowed(root, followed, label, 'write', permission);
   if (!isPathInside(root, parent) && !exactWriteCoversParent(permission, followed, parent)) {
     throw operationError(
@@ -425,7 +493,7 @@ async function resolveExistingAllowed(
   permission: FilesystemWorkerRequest['operationBoundary'],
 ): Promise<string> {
   const { root, candidate } = await resolveCandidate(cwd, inputPath, label, access, permission);
-  const target = await fs.realpath(candidate);
+  const target = await realpath(candidate);
   assertAllowed(root, target, label, access, permission);
   return target;
 }
@@ -437,7 +505,7 @@ async function resolveCandidate(
   access: 'read' | 'write',
   permission: FilesystemWorkerRequest['operationBoundary'],
 ): Promise<{ root: string; candidate: string }> {
-  const root = await fs.realpath(cwd);
+  const root = await realpath(cwd);
   const candidate = resolve(root, inputPath);
   if (
     !isPathInside(root, candidate) &&

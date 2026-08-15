@@ -1,6 +1,7 @@
 import { win32 } from 'node:path';
 
 import type { FileSystemSandboxEntry, PermissionProfile } from '@maka/core/permission-profile';
+import { canonicalWindowsPath as coreCanonicalWindowsPath } from '@maka/core/windows-path';
 
 import type { SandboxCommand, SandboxPathContext } from './types.js';
 
@@ -57,6 +58,16 @@ export function compileWindowsSandboxPolicy(command: SandboxCommand): WindowsSan
     addUnique(writeRoots, canonical);
   }
 
+  // The worker anchors every containment check on lstat(cwd), which the
+  // AppContainer denies unless granted. An exact (non-recursive) read grant
+  // exposes only the directory's own metadata and entry names, not its
+  // contents — added only when no broader grant already covers cwd.
+  const canonicalCwd = canonicalWindowsPath(command.cwd);
+  if (!readRoots.some((root) => root.toLowerCase() === canonicalCwd.toLowerCase())) {
+    readRoots.push(canonicalCwd);
+    exactReadRoots.push(canonicalCwd);
+  }
+
   return {
     readRoots,
     writeRoots,
@@ -88,13 +99,7 @@ function rootsForEntry(
 }
 
 function canonicalWindowsPath(path: string): string {
-  if (!win32.isAbsolute(path) || path.includes('/')) {
-    throw new Error(`Windows sandbox path must be absolute and use backslashes: ${path}`);
-  }
-  const canonical = win32.resolve(path);
-  if (canonical.toLowerCase() !== path.toLowerCase()) {
-    throw new Error(`Windows sandbox path must be lexically canonical: ${path}`);
-  }
+  const canonical = coreCanonicalWindowsPath(path);
   if (win32.parse(canonical).root.toLowerCase() === canonical.toLowerCase()) {
     throw new Error(`Windows sandbox volume roots are not supported: ${path}`);
   }

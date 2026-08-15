@@ -9,10 +9,22 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, win32 } from 'node:path';
+import { join } from 'node:path';
+
+import { isCanonicalWindowsPath } from '@maka/core/windows-path';
 
 import type { SandboxBackend, SandboxTransformRequest, SandboxTransformResult } from './types.js';
 import { compileWindowsSandboxPolicy } from './windows-profile.js';
+
+/**
+ * Default broker-side child deadline. The runtime's own worker timeout
+ * (FILESYSTEM_WORKER_DEFAULT_TIMEOUT_MS, 120s) always fires first so error
+ * classification stays `timeout`; the broker deadline is the backstop that
+ * guarantees Job teardown if the runtime process dies mid-request.
+ */
+export const DEFAULT_WINDOWS_BROKER_TIMEOUT_MS = 130_000;
+const MIN_WINDOWS_BROKER_TIMEOUT_MS = 1_000;
+const MAX_WINDOWS_BROKER_TIMEOUT_MS = 600_000;
 
 export interface WindowsBrokerManifest {
   readonly version: 1;
@@ -32,6 +44,8 @@ export interface WindowsBrokerManifest {
     readonly exactWriteRoots: readonly string[];
     readonly network: 'restricted' | 'enabled';
     readonly environment: Readonly<Record<string, string>>;
+    /** Serialized last so manifests without it keep their historical digest. */
+    readonly timeoutMs: number;
   };
 }
 
@@ -41,6 +55,8 @@ export interface WindowsSandboxBackendOptions {
   readonly nonce?: () => string;
   readonly requestId?: () => string;
   readonly isAvailable?: () => boolean;
+  /** Broker child deadline in ms; defaults to DEFAULT_WINDOWS_BROKER_TIMEOUT_MS. */
+  readonly timeoutMs?: number;
 }
 
 export function createWindowsBrokerManifestWriter(
@@ -144,6 +160,7 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
         exactWriteRoots: policy.exactWriteRoots,
         network: policy.network,
         environment: sortEnvironment(policy.environment),
+        timeoutMs: this.options.timeoutMs ?? DEFAULT_WINDOWS_BROKER_TIMEOUT_MS,
       };
       manifestPath = this.options.writeManifest({
         version: 1,
@@ -185,6 +202,14 @@ function validateConfiguration(options: WindowsSandboxBackendOptions): string | 
   if (!isCanonicalWindowsPath(options.clientPath)) {
     return 'Windows broker client path must be canonical and absolute.';
   }
+  if (
+    options.timeoutMs !== undefined &&
+    (!Number.isInteger(options.timeoutMs) ||
+      options.timeoutMs < MIN_WINDOWS_BROKER_TIMEOUT_MS ||
+      options.timeoutMs > MAX_WINDOWS_BROKER_TIMEOUT_MS)
+  ) {
+    return `Windows broker timeout must be an integer between ${MIN_WINDOWS_BROKER_TIMEOUT_MS} and ${MAX_WINDOWS_BROKER_TIMEOUT_MS} ms.`;
+  }
   return undefined;
 }
 
@@ -199,14 +224,6 @@ function sortEnvironment(
     Object.entries(environment).sort(([left], [right]) =>
       left < right ? -1 : left > right ? 1 : 0,
     ),
-  );
-}
-
-function isCanonicalWindowsPath(path: string): boolean {
-  return (
-    win32.isAbsolute(path) &&
-    !path.includes('/') &&
-    win32.resolve(path).toLowerCase() === path.toLowerCase()
   );
 }
 

@@ -74,9 +74,12 @@ test('compiles an exact file grant as a non-recursive broker root', () => {
     String.raw`C:\runtime`,
     String.raw`C:\Program Files\nodejs`,
     String.raw`C:\runtime\state`,
+    // cwd metadata anchor: added exactly (non-recursively) when no broader
+    // grant already covers it, so the worker can lstat its own cwd.
+    String.raw`C:\work\repo`,
   ]);
   assert.deepEqual(policy.writeRoots, [String.raw`C:\runtime\state`]);
-  assert.deepEqual(policy.exactReadRoots, [String.raw`C:\file.txt`]);
+  assert.deepEqual(policy.exactReadRoots, [String.raw`C:\file.txt`, String.raw`C:\work\repo`]);
   assert.deepEqual(policy.exactWriteRoots, []);
 });
 

@@ -36,6 +36,7 @@ test('writes broker manifests to exclusive per-process temporary files', async (
         exactWriteRoots: [],
         network: 'restricted',
         environment: {},
+        timeoutMs: 130_000,
       },
     };
     const first = writeManifest(manifest);
@@ -93,6 +94,8 @@ test('transforms a Windows managed profile into a broker-client invocation', () 
     exactWriteRoots: [],
     network: 'restricted' as const,
     environment: { SystemRoot: String.raw`C:\Windows` },
+    // Serialized last so pre-timeout manifests keep their historical digest.
+    timeoutMs: 130_000,
   };
   assert.deepEqual(written, {
     version: 1,
@@ -103,6 +106,38 @@ test('transforms a Windows managed profile into a broker-client invocation', () 
     launch,
   });
   assert.equal(result.exec.sandboxType, 'windows');
+});
+
+test('honors a configured broker timeout and rejects out-of-range values', () => {
+  let written: WindowsBrokerManifest | undefined;
+  const backend = new WindowsBrokerSandboxBackend({
+    clientPath: String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`,
+    timeoutMs: 45_000,
+    writeManifest: (manifest) => {
+      written = manifest;
+      return String.raw`C:\Users\user\AppData\Local\Temp\request.json`;
+    },
+  });
+  const input = {
+    platform: 'win32' as const,
+    command: {
+      program: String.raw`C:\Windows\System32\cmd.exe`,
+      args: [],
+      cwd: String.raw`C:\work\repo`,
+      profile: createWorkspaceWritePermissionProfile(),
+      pathContext: { workspaceRoots: [String.raw`C:\work\repo`] },
+    },
+  };
+  assert.equal(backend.transform(input).ok, true);
+  assert.equal(written?.launch.timeoutMs, 45_000);
+
+  const outOfRange = new WindowsBrokerSandboxBackend({
+    clientPath: String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`,
+    timeoutMs: 999,
+    writeManifest: () => String.raw`C:\Users\user\AppData\Local\Temp\request.json`,
+  }).transform(input);
+  assert.equal(outOfRange.ok, false);
+  if (!outOfRange.ok) assert.equal(outOfRange.reason, 'invalid_request');
 });
 
 test('fails closed when broker client is unavailable or policy cannot be compiled', () => {

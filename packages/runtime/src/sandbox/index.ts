@@ -84,9 +84,12 @@ export { compileWindowsSandboxPolicy } from './windows-profile.js';
 export type { WindowsSandboxPolicy } from './windows-profile.js';
 export {
   createWindowsBrokerManifestWriter,
+  DEFAULT_WINDOWS_BROKER_TIMEOUT_MS,
   WindowsBrokerSandboxBackend,
 } from './windows-sandbox.js';
 export type {
   WindowsBrokerManifest,
   WindowsSandboxBackendOptions,
 } from './windows-sandbox.js';
+export { classifyWindowsBrokerFailure } from './windows-broker-errors.js';
+export type { WindowsBrokerErrorClassification } from './windows-broker-errors.js';

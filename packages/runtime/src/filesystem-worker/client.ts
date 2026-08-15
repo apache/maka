@@ -13,6 +13,7 @@ import { type PermissionMode } from '@maka/core/permission';
 import { normalizeSandboxBoundaryPath } from '../sandbox-boundary-path.js';
 import { resolveCanonicalDirectoryEntryTarget } from '../path-containment.js';
 import { pinExistingLinuxProfilePath } from '../sandbox/linux-profile-path.js';
+import { classifyWindowsBrokerFailure } from '../sandbox/windows-broker-errors.js';
 import type { SandboxManager } from '../sandbox/sandbox-manager.js';
 import type { SandboxPlatform } from '../sandbox/types.js';
 import type { FilesystemWorkerLaunchSpecProvider } from './launch-spec.js';
@@ -395,6 +396,20 @@ export class FilesystemWorkerClient {
     if (processResult.aborted) throw clientError('aborted', 'launch', requestId);
     if (processResult.responseOverflow) throw clientError('response_overflow', 'launch', requestId);
     if (processResult.exitCode !== 0) {
+      const brokerFailure =
+        transformed.sandboxType === 'windows'
+          ? classifyWindowsBrokerFailure(processResult.stderrTail)
+          : undefined;
+      if (brokerFailure) {
+        throw clientError(
+          brokerFailure.reason,
+          'launch',
+          requestId,
+          processResult.stderrTail || undefined,
+          brokerFailure.recoverable,
+          { backend: 'windows' },
+        );
+      }
       throw clientError(
         'worker_crashed',
         'launch',
@@ -443,7 +458,13 @@ export function filesystemWorkerRuntimeWritableRoots(input: {
   entryMode?: boolean;
   writableAncestor?: string;
 }): readonly string[] | undefined {
-  if (input.platform !== 'linux' || input.access !== 'write') return undefined;
+  // Linux mounts and Windows ACL grants can only target existing paths, so a
+  // write whose target does not exist yet is enforced through its existing
+  // writable ancestor. macOS seatbelt policies may reference missing paths
+  // directly and need no ancestor root.
+  if ((input.platform !== 'linux' && input.platform !== 'win32') || input.access !== 'write') {
+    return undefined;
+  }
   if (input.entryMode) return input.writableAncestor ? [input.writableAncestor] : undefined;
   return input.targetType === 'missing' ? [dirname(input.enforcementPath)] : undefined;
 }
