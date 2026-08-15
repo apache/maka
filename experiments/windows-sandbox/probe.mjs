@@ -67,12 +67,20 @@ async function observeDescendant() {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';
+  let spawnError;
   child.stdout.on('data', (chunk) => (stdout += chunk));
-  const code = await new Promise((done) => child.once('exit', done));
+  const code = await new Promise((done) => {
+    child.once('error', (error) => {
+      spawnError = error.code ?? 'unknown';
+      done(null);
+    });
+    child.once('exit', done);
+  });
   observations.push({
     operation: 'descendant_launch',
     expected: 'managed',
-    actual: code === 0 && stdout === 'child-ok' ? 'managed' : 'failed',
+    actual: !spawnError && code === 0 && stdout === 'child-ok' ? 'managed' : 'failed',
+    ...(spawnError ? { code: spawnError } : {}),
     pid: child.pid,
   });
 }

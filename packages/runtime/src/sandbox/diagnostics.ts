@@ -219,7 +219,7 @@ async function probeCommandCapability(
         pathContext: {
           workspaceRoots: input.workspaceRoots,
           tmpdir: await canonicalPath(tmpdir()),
-          slashTmp: await canonicalPath('/tmp'),
+          ...(input.platform === 'win32' ? {} : { slashTmp: await canonicalPath('/tmp') }),
         },
       },
     });

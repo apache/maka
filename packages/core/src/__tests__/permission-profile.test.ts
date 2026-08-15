@@ -79,6 +79,10 @@ describe('PermissionProfile factories', () => {
       ]),
     ).toBe(true);
     expect(isProtectedMetadataPath('C:\\workspace\\.gitignore', ['C:\\workspace'])).toBe(false);
+    expect(pathWithinRoot('C:\\workspace\\..\\secret', 'C:\\workspace')).toBe(false);
+    expect(pathWithinRoot('/workspace/../secret', '/workspace')).toBe(false);
+    expect(pathWithinRoot('C:\\workspace\\file:stream', 'C:\\workspace')).toBe(false);
+    expect(pathWithinRoot('\\\\server\\share\\file', '\\\\server\\share')).toBe(false);
   });
 
   test('danger-full-access profile is managed unrestricted access with network enabled', () => {

@@ -352,6 +352,12 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
             }
         }
     };
+    if result.is_err() {
+        unsafe {
+            TerminateProcess(process.hProcess, 1);
+            WaitForSingleObject(process.hProcess, 5_000);
+        }
+    }
     unsafe {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
@@ -448,6 +454,12 @@ unsafe fn create_child_atomic(
             Err("atomic launch did not establish the required token and Job boundary".to_owned())
         }
     })();
+    if result.is_err() {
+        unsafe {
+            TerminateProcess(process.hProcess, 1);
+            WaitForSingleObject(process.hProcess, 5_000);
+        }
+    }
     unsafe {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);

@@ -2,6 +2,13 @@
 export function isNormalizedAbsolutePath(path: string): boolean {
   if (!path || path.includes('\0')) return false;
   if (isWindowsDrivePath(path)) {
+    if (
+      path.includes(':', 2) ||
+      path.startsWith('\\\\') ||
+      path.startsWith('\\\\?\\') ||
+      path.startsWith('\\\\.\\')
+    )
+      return false;
     if (path.includes('/') || (path.length > 3 && path.endsWith('\\'))) return false;
     if (path.length === 3) return true;
     return !path
@@ -19,7 +26,13 @@ export function isNormalizedAbsolutePath(path: string): boolean {
 export function pathWithinRoot(path: string, root: string): boolean {
   const normalizedPath = comparablePath(path);
   const normalizedRoot = comparablePath(root);
-  if (!normalizedPath || !normalizedRoot || isWindowsDrivePath(path) !== isWindowsDrivePath(root)) {
+  if (
+    !normalizedPath ||
+    !normalizedRoot ||
+    !isNormalizedAbsolutePath(normalizedPath) ||
+    !isNormalizedAbsolutePath(normalizedRoot) ||
+    isWindowsDrivePath(path) !== isWindowsDrivePath(root)
+  ) {
     return false;
   }
   if (normalizedRoot === '/') return normalizedPath.startsWith('/');
