@@ -3,7 +3,12 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { z } from 'zod';
-import type { ExtensionUiStateValue, OperationKey, OperationOutcome } from '../protocol/index.js';
+import {
+  EXTENSION_UI_OFFICIAL_SLOTS,
+  type ExtensionUiStateValue,
+  type OperationKey,
+  type OperationOutcome,
+} from '../protocol/index.js';
 import type { ConnectionContext } from './operation-dispatcher.js';
 import type { HostExtensionController } from './extension-controller.js';
 import type { HostExtensionRuntime } from './extension-runtime.js';
@@ -12,16 +17,34 @@ import { UiPackageStore } from './ui-package-store.js';
 
 export const DESKTOP_UI_EXTENSION_SCOPE = 'desktop-ui';
 const AUTHOR_UI_TOOL_NAMES = new Set(['inspect_ui', 'define_ui', 'test_ui']);
-const SURFACES = ['app.root', 'app.overlay'] as const;
-const contribution = z.object({
-  id: z.string().min(1).max(128),
-  surface: z.enum(SURFACES),
-  priority: z.number().int().min(-10_000).max(10_000),
-  document: z
-    .string()
-    .min(1)
-    .max(1024 * 1024),
-});
+const SURFACES = ['app.root', 'app.overlay', 'app.slot'] as const;
+const contribution = z
+  .object({
+    id: z.string().min(1).max(128),
+    surface: z.enum(SURFACES),
+    slot: z.enum(EXTENSION_UI_OFFICIAL_SLOTS).optional(),
+    priority: z.number().int().min(-10_000).max(10_000),
+    document: z
+      .string()
+      .min(1)
+      .max(1024 * 1024),
+  })
+  .superRefine((input, context) => {
+    if (input.surface === 'app.slot' && !input.slot) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['slot'],
+        message: 'slot is required for app.slot',
+      });
+    }
+    if (input.surface !== 'app.slot' && input.slot !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['slot'],
+        message: 'slot is only valid for app.slot',
+      });
+    }
+  });
 const defineInput = z.object({
   id: z.string().min(1).max(128),
   version: z.string().min(1).max(128),
@@ -123,22 +146,36 @@ export class HostUiPackageManagementTools {
     return Object.freeze({
       name: 'inspect_ui',
       description:
-        'Inspect the independent UI extension surface, installed immutable UI revisions, active Desktop bindings, and the current committed client snapshot.',
+        'Inspect the independent UI extension surface, official composition slots, installed immutable UI revisions, active Desktop bindings, and the current committed client snapshot.',
       parameters: z.object({}),
       categoryHint: 'read',
       recoveryMode: 'replay_safe',
-      impl: async () => ({
-        surfaces: SURFACES,
-        catalog: unwrap(
+      impl: async () => {
+        const catalog = unwrap(
           await this.controller.handlers['extension.catalog.query']({}, this.#connection),
-        ),
-        snapshot: unwrap(
+        );
+        const snapshot = unwrap(
           await this.controller.handlers['extension.ui.snapshot'](
             { scopeId: DESKTOP_UI_EXTENSION_SCOPE },
             this.#connection,
           ),
-        ),
-      }),
+        );
+        const dynamicRoot = snapshot.contributions.find(({ surface }) => surface === 'app.root');
+        return {
+          surfaces: SURFACES,
+          slots: dynamicRoot ? Object.freeze([]) : EXTENSION_UI_OFFICIAL_SLOTS,
+          slotCompatibility: dynamicRoot
+            ? {
+                compatible: false,
+                rootExtensionId: dynamicRoot.extensionId,
+                reason:
+                  'The selected custom app.root owns the complete surface and does not expose official composition slots.',
+              }
+            : { compatible: true, rootExtensionId: 'dev.maka.desktop' },
+          catalog,
+          snapshot,
+        };
+      },
     });
   }
 
@@ -146,7 +183,7 @@ export class HostUiPackageManagementTools {
     return Object.freeze({
       name: 'define_ui',
       description:
-        'Validate and install an immutable UI revision. app.root owns the complete product surface; app.overlay is an independent additive layer. There is no fixed embed region. It is inactive until test_ui and manage_ui. Documents run in opaque-origin sandboxed iframes without Electron or Maka preload authority. Set permissions.hostState=true for durable package state. Set permissions.sessionAccess=true only for a complete root that must list/create/send/stop Maka Sessions through the typed window.makaUI.sessions bridge. Add host.source plus declared methods for sandboxed package-private backend handlers callable with window.makaUI.invoke(name, args).',
+        'Validate and install an immutable UI revision. app.root owns the complete product surface, app.overlay is an independent additive layer, and app.slot contributes an independently updateable sandboxed component to one slot returned by inspect_ui. It is inactive until test_ui and manage_ui. Documents run in opaque-origin sandboxed iframes without Electron or Maka preload authority. Set permissions.hostState=true for durable package state. Set permissions.sessionAccess=true only for a complete root that must list/create/send/stop Maka Sessions through the typed window.makaUI.sessions bridge. Add host.source plus declared methods for sandboxed package-private backend handlers callable with window.makaUI.invoke(name, args).',
       parameters: defineInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
@@ -178,6 +215,7 @@ export class HostUiPackageManagementTools {
           const manifestUi = input.ui.map((item, index) => ({
             id: item.id,
             surface: item.surface,
+            ...(item.slot ? { slot: item.slot } : {}),
             priority: item.priority,
             document: `documents/${index + 1}.html`,
           }));
@@ -246,6 +284,7 @@ export class HostUiPackageManagementTools {
             installed.manifest.ui.map(async (item) => ({
               id: item.id,
               surface: item.surface,
+              ...(item.slot ? { slot: item.slot } : {}),
               priority: item.priority,
               document: await this.store.readDocument(installed, item.document),
               network: installed.manifest.permissions.network,
@@ -253,7 +292,8 @@ export class HostUiPackageManagementTools {
               hostMethods: Object.freeze(
                 installed.manifest.host?.methods.map(({ name }) => name) ?? [],
               ),
-              sessionAccess: installed.manifest.permissions.sessionAccess,
+              sessionAccess:
+                installed.manifest.permissions.sessionAccess && item.surface === 'app.root',
             })),
           ),
           healthCheck: () => service.healthCheck(installed),

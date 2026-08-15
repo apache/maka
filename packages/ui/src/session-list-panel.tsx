@@ -16,7 +16,7 @@ import { SessionSidebarFooter, SessionSidebarNav, type SidebarUpdateReminder } f
 import { ICON_SIZE, Clock, FolderOpen } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import type { Ref } from 'react';
+import type { ReactNode, Ref } from 'react';
 
 export type SessionViewMode = 'conversation' | 'project';
 
@@ -54,6 +54,8 @@ export function SessionListPanel(props: {
   onNew(): void;
   onImport?(): void;
   rowActions?: SessionRowActions;
+  /** Product-owned extension seat rendered above the permanent footer. */
+  footerExtension?: ReactNode;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const {
@@ -144,11 +146,14 @@ export function SessionListPanel(props: {
           />
         }
         footer={
-          <SessionSidebarFooter
-            updateReminder={props.updateReminder}
-            onOpenSettings={props.onOpenSettings}
-            onOpenUpdate={props.onOpenUpdate}
-          />
+          <>
+            {props.footerExtension}
+            <SessionSidebarFooter
+              updateReminder={props.updateReminder}
+              onOpenSettings={props.onOpenSettings}
+              onOpenUpdate={props.onOpenUpdate}
+            />
+          </>
         }
       >
         {!collapsed ? (

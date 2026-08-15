@@ -29,6 +29,16 @@ test('UI author surface exposes only inspect, define, and test', async () => {
     assert.deepEqual([...authorTools.keys()], ['inspect_ui', 'define_ui', 'test_ui']);
     assert.equal(authorTools.has('manage_ui'), false);
     assert.equal(authorTools.has('publish_ui_state'), false);
+    const inspected = (await call(fixture.management.tools(), 'inspect_ui', {})) as {
+      slots: string[];
+      surfaces: string[];
+    };
+    assert.deepEqual(inspected.slots, [
+      'sidebar.footer',
+      'conversation.header',
+      'settings.content',
+    ]);
+    assert.deepEqual(inspected.surfaces, ['app.root', 'app.overlay', 'app.slot']);
   } finally {
     await fixture.runtime.close().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
@@ -42,7 +52,16 @@ test('agent-authored client-only UI survives update, rollback boundary, and Host
     const v1 = (await call(fixture.tools, 'define_ui', {
       id: 'dev.maka.ui.demo',
       version: '1',
-      ui: [{ id: 'demo-root', surface: 'app.root', priority: 200, document: '<h1>one</h1>' }],
+      ui: [
+        { id: 'demo-root', surface: 'app.root', priority: 200, document: '<h1>one</h1>' },
+        {
+          id: 'settings-card',
+          surface: 'app.slot',
+          slot: 'settings.content',
+          priority: 10,
+          document: '<section>settings one</section>',
+        },
+      ],
       permissions: { network: false, hostState: true },
       host: {
         source:
@@ -50,19 +69,34 @@ test('agent-authored client-only UI survives update, rollback boundary, and Host
         methods: [{ name: 'add', handler: 'add' }],
       },
     })) as { revision: string; uiContributionIds: string[]; toolNames: string[] };
-    assert.deepEqual(v1.uiContributionIds, ['demo-root']);
+    assert.deepEqual(v1.uiContributionIds, ['demo-root', 'settings-card']);
     assert.deepEqual(v1.toolNames, []);
     const tested = (await call(fixture.tools, 'test_ui', {
       extensionId: 'dev.maka.ui.demo',
       revision: v1.revision,
-    })) as { ok: boolean; contributions: Array<{ document: string; hostMethods: string[] }> };
+    })) as {
+      ok: boolean;
+      contributions: Array<{ document: string; hostMethods: string[]; slot?: string }>;
+    };
     assert.equal(tested.ok, true);
     assert.equal(tested.contributions[0]?.document, '<h1>one</h1>');
+    assert.equal(tested.contributions[1]?.slot, 'settings.content');
     assert.deepEqual(tested.contributions[0]?.hostMethods, ['add']);
     await call(fixture.tools, 'manage_ui', {
       action: 'activate',
       extensionId: 'dev.maka.ui.demo',
       revision: v1.revision,
+    });
+    const customRootInspection = (await call(fixture.tools, 'inspect_ui', {})) as {
+      slots: string[];
+      slotCompatibility: { compatible: boolean; rootExtensionId: string };
+    };
+    assert.deepEqual(customRootInspection.slots, []);
+    assert.deepEqual(customRootInspection.slotCompatibility, {
+      compatible: false,
+      rootExtensionId: 'dev.maka.ui.demo',
+      reason:
+        'The selected custom app.root owns the complete surface and does not expose official composition slots.',
     });
     assert.equal(
       fixture.runtime.inspectUi(DESKTOP_UI_EXTENSION_SCOPE)[0]?.document,
@@ -130,7 +164,16 @@ test('agent-authored client-only UI survives update, rollback boundary, and Host
     const v2 = (await call(fixture.tools, 'define_ui', {
       id: 'dev.maka.ui.demo',
       version: '2',
-      ui: [{ id: 'demo-root', surface: 'app.root', priority: 200, document: '<h1>two</h1>' }],
+      ui: [
+        { id: 'demo-root', surface: 'app.root', priority: 200, document: '<h1>two</h1>' },
+        {
+          id: 'settings-card',
+          surface: 'app.slot',
+          slot: 'settings.content',
+          priority: 10,
+          document: '<section>settings two</section>',
+        },
+      ],
       permissions: { network: false, hostState: true },
       host: {
         source:
@@ -241,6 +284,29 @@ test('UI package Store rejects symlinks and detects installed content corruption
     await writeFile(join(linked, 'maka.ui.json'), '{}');
     await symlink(join(source, 'documents', 'root.html'), join(linked, 'root.html'));
     await assert.rejects(store.install(linked), /may not contain symlinks/);
+
+    const unsupported = join(root, 'unsupported-slot');
+    await mkdir(join(unsupported, 'documents'), { recursive: true });
+    await writeFile(
+      join(unsupported, 'maka.ui.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        id: 'dev.maka.ui.unsupported-slot',
+        version: '1',
+        ui: [
+          {
+            id: 'unknown',
+            surface: 'app.slot',
+            slot: 'unknown.area',
+            priority: 1,
+            document: 'documents/unknown.html',
+          },
+        ],
+        permissions: { network: false },
+      }),
+    );
+    await writeFile(join(unsupported, 'documents', 'unknown.html'), '<main>unknown</main>');
+    await assert.rejects(store.install(unsupported), /slot is invalid/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -73,3 +73,15 @@
   height: 100%;
   z-index: 2147483000;
 }
+
+.maka-ui-extension-slot {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.maka-ui-extension-frame--slot {
+  display: block;
+  width: 100%;
+  min-height: 64px;
+}

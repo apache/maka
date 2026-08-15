@@ -17,6 +17,11 @@ export const EXTENSION_CATALOG_MAX_BINDINGS = 256;
 export const EXTENSION_CATALOG_RESULT_MAX_BYTES = 96 * 1024;
 export const EXTENSION_REVISION_MAX_BYTES = 128;
 export const EXTENSION_ERROR_MAX_BYTES = 4 * 1024;
+export const EXTENSION_UI_OFFICIAL_SLOTS = Object.freeze([
+  'sidebar.footer',
+  'conversation.header',
+  'settings.content',
+] as const);
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -73,7 +78,8 @@ export interface ExtensionUiContributionProjection {
   readonly extensionId: string;
   readonly revision: string;
   readonly id: string;
-  readonly surface: 'app.root' | 'app.overlay';
+  readonly surface: 'app.root' | 'app.overlay' | 'app.slot';
+  readonly slot?: string;
   readonly priority: number;
   readonly document: string;
   readonly documentSha256: string;
@@ -508,10 +514,24 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
     ...(candidate && Object.hasOwn(candidate, 'hostState') ? ['hostState'] : []),
     ...(candidate && Object.hasOwn(candidate, 'hostMethods') ? ['hostMethods'] : []),
     ...(candidate && Object.hasOwn(candidate, 'sessionAccess') ? ['sessionAccess'] : []),
+    ...(candidate && Object.hasOwn(candidate, 'slot') ? ['slot'] : []),
   ];
   const item = requireExactRecord(value, 'extension UI contribution', fields);
-  if (item.surface !== 'app.root' && item.surface !== 'app.overlay') {
+  if (
+    item.surface !== 'app.root' &&
+    item.surface !== 'app.overlay' &&
+    item.surface !== 'app.slot'
+  ) {
     throw invalidProtocolFrame('Invalid extension UI surface');
+  }
+  if (
+    (item.surface === 'app.slot' &&
+      (typeof item.slot !== 'string' ||
+        !/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u.test(item.slot) ||
+        Buffer.byteLength(item.slot, 'utf8') > 128)) ||
+    (item.surface !== 'app.slot' && item.slot !== undefined)
+  ) {
+    throw invalidProtocolFrame('Invalid extension UI slot');
   }
   if (!Number.isSafeInteger(item.priority) || Math.abs(item.priority as number) > 10_000) {
     throw invalidProtocolFrame('Invalid extension UI priority');
@@ -528,6 +548,7 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
     revision: decodeRevision(item.revision),
     id: requireUtf8String(item.id, 'extension UI contribution id', 128),
     surface: item.surface,
+    ...(item.slot === undefined ? {} : { slot: item.slot as string }),
     priority: item.priority as number,
     document: requireUtf8String(item.document, 'extension UI document', 1024 * 1024),
     documentSha256: requireUtf8String(item.documentSha256, 'extension UI document digest', 128),

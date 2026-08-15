@@ -95,6 +95,7 @@ import {
 } from './plan-mode-panel';
 import { McpPage } from './mcp-page';
 import { UiExtensionsPage } from './ui-extensions-page';
+import { UiExtensionSlot } from './ui-extension-host';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type { AppUpdateStatus, OnboardingSnapshot } from '../preload/bridge-contract.js';
 import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../preload/transcript-contract.js';
@@ -2784,6 +2785,7 @@ function AppShellContent({
             onImport={() => setExternalImportOpen(true)}
             rowActions={sessionRowActions}
             projectActions={projectRowActions}
+            footerExtension={<UiExtensionSlot name="sidebar.footer" />}
           />
         }
       >
@@ -3063,6 +3065,7 @@ function AppShellContent({
               >
                 {navSelection.section === 'sessions' ? (
                   <ChatMessageSurface
+                headerExtension={<UiExtensionSlot name="conversation.header" />}
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
                 hasOlderHistory={activeTranscriptRange?.hasOlder === true}

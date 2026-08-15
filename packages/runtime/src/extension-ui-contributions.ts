@@ -6,12 +6,15 @@ import type {
 } from './extension-lifecycle-kernel.js';
 
 export const EXTENSION_UI_DOCUMENT_MAX_BYTES = 1024 * 1024;
-export const EXTENSION_UI_SURFACES = ['app.root', 'app.overlay'] as const;
+export const EXTENSION_UI_SURFACES = ['app.root', 'app.overlay', 'app.slot'] as const;
 export type ExtensionUiSurface = (typeof EXTENSION_UI_SURFACES)[number];
+export const EXTENSION_UI_SLOT_PATTERN = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u;
 
 export interface ExtensionUiContribution {
   readonly id: string;
   readonly surface: ExtensionUiSurface;
+  /** Named composition seat. Required only for app.slot contributions. */
+  readonly slot?: string;
   readonly priority: number;
   readonly document: string;
   /** Sandboxed documents are offline unless this explicit capability is true. */
@@ -29,6 +32,7 @@ export interface ExtensionUiContributionInspection {
   readonly revision: string;
   readonly id: string;
   readonly surface: ExtensionUiSurface;
+  readonly slot?: string;
   readonly priority: number;
   readonly document: string;
   readonly documentSha256: string;
@@ -188,6 +192,20 @@ export function validateExtensionUiContribution(contribution: ExtensionUiContrib
   validateIdentity('UI contribution id', contribution.id);
   if (!EXTENSION_UI_SURFACES.includes(contribution.surface)) {
     throw new ExtensionUiContributionError('invalid_ui', 'UI surface is invalid');
+  }
+  if (contribution.surface === 'app.slot') {
+    if (
+      typeof contribution.slot !== 'string' ||
+      !EXTENSION_UI_SLOT_PATTERN.test(contribution.slot) ||
+      Buffer.byteLength(contribution.slot, 'utf8') > 128
+    ) {
+      throw new ExtensionUiContributionError('invalid_ui', 'UI slot name is invalid');
+    }
+  } else if (contribution.slot !== undefined) {
+    throw new ExtensionUiContributionError(
+      'invalid_ui',
+      'Only an app.slot contribution may declare a slot name',
+    );
   }
   if (!Number.isSafeInteger(contribution.priority) || Math.abs(contribution.priority) > 10_000) {
     throw new ExtensionUiContributionError('invalid_ui', 'UI priority is invalid');

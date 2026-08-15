@@ -12,6 +12,7 @@ The fixed Desktop bootstrap is deliberately thin:
 ```text
 Theme + Runtime Host readiness + UI snapshot loader
   -> official Maka UI snapshot (trusted fallback)
+     -> committed app.slot contributions at named official seats
   -> or one committed app.root Revision
   -> plus committed app.overlay contributions
 ```
@@ -21,6 +22,23 @@ unreplaceable product frame. An `app.root` Revision replaces the whole client
 surface. Maka does not inject navigation, conversation, Composer, responsive
 layout, or a workspace region around it. The selected root owns those product
 decisions. The official snapshot remains only as the fail-open recovery surface.
+
+The official snapshot exposes three typed composition seats in V1:
+
+- `sidebar.footer`
+- `conversation.header`
+- `settings.content`
+
+An `app.slot` contribution names exactly one seat and renders as an independent
+opaque-origin iframe. Slot packages have their own immutable Revision and
+Binding, so adding, updating, stopping, rolling back, or failing one slot does
+not reload the official root or mutate sibling slots. Ordering is deterministic
+by priority and contribution identity.
+
+A custom `app.root` owns its complete document and does not inherit the official
+snapshot's slots in V1. `inspect_ui` reports this compatibility boundary: the
+official slot inventory is returned while the official root is active, and the
+slot list is empty with an explicit reason while a dynamic root is active.
 
 The snapshot digest is the identity of the admitted UI Composition: the exact
 ordered committed Binding/Revision contribution set. The Renderer switches one
@@ -60,7 +78,7 @@ then receives only `window.makaUI.sessions.list/send/stop`; the trusted parent
 validates identities and prompt size, creates Turn ids, and returns a bounded
 Session projection. This does not expose the Maka preload object, Runtime Host
 protocol, paths, credentials, attachments, settings, or arbitrary Session APIs.
-Overlay contributions cannot exercise this capability.
+Overlay and slot contributions cannot exercise this capability.
 
 Packages may also declare an allowlist of Host method names and an ES module
 that implements them. `window.makaUI.invoke(name, args)` crosses the same
@@ -95,6 +113,8 @@ inspect_ui -> define_ui -> test_ui -> manage_ui activate/update/stop/delete
 `test_ui` exercises the actual Extension lifecycle in an isolated preview
 Scope without changing the Desktop Binding. `manage_ui update` uses the same
 current/candidate and last-good recovery path as other Extension revisions.
+`inspect_ui` also returns the currently available official slot names so an
+Agent can select a supported seat before defining an `app.slot` contribution.
 
 An Agent that uses a separate business Tool may call `publish_ui_state` with
 that Tool's structured snapshot or patch. The Host resolves the currently
@@ -119,6 +139,26 @@ and DOM access to the official snapshot remain out of scope. The one-second UI
 Composition refresh is also a temporary
 transport seam; a future catalog-change subscription can replace it without
 changing package or lifecycle semantics.
+
+## Composition V1 acceptance
+
+The implementation is judged by lifecycle and authoring outcomes, not by a
+claim that slots increase the visual ceiling of `app.root`:
+
+- one official root composes with at least five independently bound slots;
+- 1,000 child Revision updates cause zero root Revision changes and preserve
+  every sibling Binding;
+- a failed child candidate preserves the current child, root, and all siblings;
+- adding supported sidebar, conversation, or settings UI requires zero edits to
+  the official root implementation;
+- cold-start p95 may regress by at most 5%; and
+- in a 20-run same-task Agent A/B, the component version targets at least 30%
+  lower median model requests and tokens, at least 80% first-pass `test_ui`, and
+  at least 25% lower median completion time.
+
+The first three guarantees are deterministic system-test gates. Startup and
+Agent-authoring targets require measured benchmark runs and are not inferred
+from unit-test timing.
 
 ## Product entry points
 

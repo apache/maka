@@ -8,6 +8,7 @@ import {
   EXTENSION_UI_SURFACES,
   type ExtensionUiSurface,
 } from '@maka/runtime/extension-ui-contributions';
+import { EXTENSION_UI_OFFICIAL_SLOTS } from '../protocol/extension.js';
 
 const MANIFEST_FILE = 'maka.ui.json';
 const STORE_DIRECTORY = 'ui-packages-v1';
@@ -19,6 +20,7 @@ const REVISION_PATTERN = /^sha256-[a-f0-9]{64}$/u;
 export interface UiPackageManifestContribution {
   readonly id: string;
   readonly surface: ExtensionUiSurface;
+  readonly slot?: string;
   readonly priority: number;
   readonly document: string;
 }
@@ -226,7 +228,14 @@ export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
   }
   const ids = new Set<string>();
   const ui = record.ui.map((value, index): UiPackageManifestContribution => {
-    const item = exactRecord(value, ['id', 'surface', 'priority', 'document']);
+    const candidate = value as Record<string, unknown> | null;
+    const item = exactRecord(value, [
+      'id',
+      'surface',
+      'priority',
+      'document',
+      ...(candidate && Object.hasOwn(candidate, 'slot') ? ['slot'] : []),
+    ]);
     const contributionId = boundedString(item.id, `ui[${index}].id`, 128);
     if (ids.has(contributionId))
       throw invalidPackage(`UI contribution id repeats: ${contributionId}`);
@@ -234,12 +243,23 @@ export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
     if (!EXTENSION_UI_SURFACES.includes(item.surface as ExtensionUiSurface)) {
       throw invalidPackage(`UI contribution surface is invalid: ${String(item.surface)}`);
     }
+    if (
+      (item.surface === 'app.slot' &&
+        (typeof item.slot !== 'string' ||
+          !EXTENSION_UI_OFFICIAL_SLOTS.includes(
+            item.slot as (typeof EXTENSION_UI_OFFICIAL_SLOTS)[number],
+          ))) ||
+      (item.surface !== 'app.slot' && item.slot !== undefined)
+    ) {
+      throw invalidPackage('UI contribution slot is invalid');
+    }
     if (!Number.isSafeInteger(item.priority) || Math.abs(item.priority as number) > 10_000) {
       throw invalidPackage('UI contribution priority is invalid');
     }
     return Object.freeze({
       id: contributionId,
       surface: item.surface as ExtensionUiSurface,
+      ...(item.slot === undefined ? {} : { slot: item.slot as string }),
       priority: item.priority as number,
       document: packagePath(item.document, `ui[${index}].document`),
     });

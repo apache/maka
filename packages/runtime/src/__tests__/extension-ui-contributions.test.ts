@@ -4,6 +4,7 @@ import { ExtensionLifecycleKernel } from '../extension-lifecycle-kernel.js';
 import {
   defineTrustedUiExtensionRevision,
   ExtensionUiContributionRegistry,
+  validateExtensionUiContribution,
 } from '../extension-ui-contributions.js';
 
 describe('Extension UI contributions', () => {
@@ -92,10 +93,113 @@ describe('Extension UI contributions', () => {
       ['current'],
     );
   });
+
+  test('composes five independent slots and isolates 1,000 child updates from the root', async () => {
+    const kernel = new ExtensionLifecycleKernel();
+    const registry = new ExtensionUiContributionRegistry();
+    await kernel.install(
+      defineTrustedUiExtensionRevision({
+        registry,
+        extensionId: 'official-layout',
+        revision: '1',
+        ui: [ui('<main>official root</main>')],
+      }),
+    );
+    await kernel.activate({
+      bindingId: 'official-layout-binding',
+      scopeId: 'desktop-ui',
+      extensionId: 'official-layout',
+      revision: '1',
+    });
+
+    for (let index = 1; index <= 5; index += 1) {
+      for (const revision of ['1', '2']) {
+        await kernel.install(
+          defineTrustedUiExtensionRevision({
+            registry,
+            extensionId: `component-${index}`,
+            revision,
+            ui: [slot(`component-${index}`, 'conversation.header', `<p>${index}:${revision}</p>`)],
+          }),
+        );
+      }
+      await kernel.activate({
+        bindingId: `component-${index}-binding`,
+        scopeId: 'desktop-ui',
+        extensionId: `component-${index}`,
+        revision: '1',
+      });
+    }
+
+    for (let iteration = 0; iteration < 1_000; iteration += 1) {
+      await kernel.update('component-3-binding', iteration % 2 === 0 ? '2' : '1');
+      const composed = registry.inspect('desktop-ui', committed(kernel));
+      assert.equal(composed.length, 6);
+      assert.equal(composed.find(({ surface }) => surface === 'app.root')?.revision, '1');
+      assert.equal(
+        composed
+          .filter(({ extensionId }) => extensionId !== 'component-3')
+          .every(({ revision }) => revision === '1'),
+        true,
+      );
+    }
+
+    await kernel.install(
+      defineTrustedUiExtensionRevision({
+        registry,
+        extensionId: 'component-3',
+        revision: 'broken',
+        ui: [slot('component-3', 'conversation.header', '<p>broken</p>')],
+        healthCheck: () => {
+          throw new Error('candidate failed');
+        },
+      }),
+    );
+    await assert.rejects(kernel.update('component-3-binding', 'broken'), /health_check failed/);
+
+    const final = registry.inspect('desktop-ui', committed(kernel));
+    assert.equal(final.filter(({ surface }) => surface === 'app.root').length, 1);
+    assert.equal(final.filter(({ surface }) => surface === 'app.slot').length, 5);
+    assert.equal(new Set(final.map(({ id }) => id)).size, 6);
+    assert.equal(final.find(({ extensionId }) => extensionId === 'component-3')?.revision, '1');
+    assert.equal(
+      final.every(({ revision }) => revision === '1'),
+      true,
+    );
+  });
+
+  test('requires a canonical slot name only for app.slot contributions', () => {
+    assert.doesNotThrow(() =>
+      validateExtensionUiContribution(slot('status', 'settings.content', '<p>status</p>')),
+    );
+    assert.throws(
+      () =>
+        validateExtensionUiContribution({
+          ...slot('status', 'settings.content', '<p>status</p>'),
+          slot: 'Settings Content',
+        }),
+      /slot name is invalid/,
+    );
+    assert.throws(
+      () => validateExtensionUiContribution({ ...ui('<p>root</p>'), slot: 'settings.content' }),
+      /Only an app.slot contribution/,
+    );
+  });
 });
 
 function ui(document: string) {
   return { id: 'app', surface: 'app.root' as const, priority: 100, document, network: false };
+}
+
+function slot(id: string, name: string, document: string) {
+  return {
+    id,
+    surface: 'app.slot' as const,
+    slot: name,
+    priority: 100,
+    document,
+    network: false,
+  };
 }
 
 function committed(kernel: ExtensionLifecycleKernel) {

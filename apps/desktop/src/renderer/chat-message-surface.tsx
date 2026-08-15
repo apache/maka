@@ -74,6 +74,8 @@ interface ChatMessageSurfaceProps extends Omit<
   historyLoadPending: boolean;
   onLoadEarlierHistory: () => Promise<void> | void;
   onReturnToLatestHistory: () => Promise<void> | void;
+  /** Independently lifecycle-managed UI contributions above the transcript. */
+  headerExtension?: ReactNode;
 }
 
 function captureLiveContent(
@@ -112,6 +114,7 @@ export function ChatMessageSurface({
   historyLoadPending,
   onLoadEarlierHistory,
   onReturnToLatestHistory,
+  headerExtension,
   ...chatViewRest
 }: ChatMessageSurfaceProps) {
   const locale = useUiLocale();
@@ -214,6 +217,7 @@ export function ChatMessageSurface({
 
   return (
     <>
+      {headerExtension}
       <ChatView
         {...chatViewRest}
         liveTurn={liveTurn}

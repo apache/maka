@@ -1,4 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import type {
   ExtensionUiContributionProjection,
   ExtensionUiSnapshotResult,
@@ -8,6 +17,63 @@ import { uiExtensionFrameUrl } from './ui-extension-frame-url.js';
 
 const DESKTOP_UI_SCOPE = 'desktop-ui';
 const REFRESH_MS = 1_000;
+
+interface UiExtensionSlotContextValue {
+  readonly contributions: readonly ExtensionUiContributionProjection[];
+  readonly onSafeMode: () => void;
+}
+
+const UiExtensionSlotContext = createContext<UiExtensionSlotContextValue>({
+  contributions: Object.freeze([]),
+  onSafeMode: () => undefined,
+});
+
+export function UiExtensionSlotProvider({
+  contributions,
+  onSafeMode,
+  children,
+}: UiExtensionSlotContextValue & { readonly children?: ReactNode }) {
+  const value = useMemo(() => ({ contributions, onSafeMode }), [contributions, onSafeMode]);
+  return (
+    <UiExtensionSlotContext.Provider value={value}>{children}</UiExtensionSlotContext.Provider>
+  );
+}
+
+/**
+ * Stable composition seat owned by the official Maka snapshot.
+ *
+ * Each child remains a separate opaque-origin frame and therefore keeps its
+ * own Revision identity, permissions, Host bridge, state, and rollback
+ * boundary. Adding or replacing one child never remounts the root snapshot.
+ */
+export function UiExtensionSlot({
+  name,
+  className,
+}: {
+  name: string;
+  className?: string;
+}) {
+  const context = useContext(UiExtensionSlotContext);
+  const contributions = context.contributions.filter(
+    (item) => item.surface === 'app.slot' && item.slot === name,
+  );
+  if (contributions.length === 0) return null;
+  return (
+    <div
+      className={['maka-ui-extension-slot', className].filter(Boolean).join(' ')}
+      data-ui-slot={name}
+    >
+      {contributions.map((item) => (
+        <SandboxedUiFrame
+          key={`${item.extensionId}:${item.revision}:${item.id}`}
+          contribution={item}
+          layer="slot"
+          onSafeMode={context.onSafeMode}
+        />
+      ))}
+    </div>
+  );
+}
 
 /**
  * The fixed Desktop shell is intentionally tiny. The shipped Maka product UI
@@ -73,13 +139,18 @@ export function UiExtensionHost({
           onSafeMode={() => setSafeMode(true)}
         />
       ) : (
-        <div
-          className="maka-ui-official-snapshot"
-          data-extension-id={selectedRoot.extensionId}
-          data-extension-revision={selectedRoot.revision}
+        <UiExtensionSlotProvider
+          contributions={safeMode ? Object.freeze([]) : selected.slots}
+          onSafeMode={() => setSafeMode(true)}
         >
-          {officialSnapshot()}
-        </div>
+          <div
+            className="maka-ui-official-snapshot"
+            data-extension-id={selectedRoot.extensionId}
+            data-extension-revision={selectedRoot.revision}
+          >
+            {officialSnapshot()}
+          </div>
+        </UiExtensionSlotProvider>
       )}
       {!safeMode && selected.overlays.map((item) => (
         <SandboxedUiFrame
@@ -143,6 +214,7 @@ export function selectUiSnapshots(
         })
       : official,
     overlays: Object.freeze(ordered.filter(({ surface }) => surface === 'app.overlay')),
+    slots: Object.freeze(ordered.filter(({ surface }) => surface === 'app.slot')),
   });
 }
 
@@ -152,7 +224,7 @@ function SandboxedUiFrame({
   onSafeMode,
 }: {
   contribution: ExtensionUiContributionProjection;
-  layer: 'root' | 'overlay';
+  layer: 'root' | 'overlay' | 'slot';
   onSafeMode: () => void;
 }) {
   const frameRef = useRef<HTMLIFrameElement>(null);

@@ -98,6 +98,7 @@ import {
   LOCAL_READ_AGENT_ID,
   LOCAL_READ_AGENT_PROFILE,
   TOOL_AUTHOR_AGENT_ID,
+  UI_AUTHOR_AGENT_ID,
   WEB_RESEARCH_AGENT_DEFINITION,
   WEB_RESEARCH_AGENT_ID,
 } from '../agent-catalog.js';
@@ -11494,6 +11495,7 @@ describe('SessionManager permission mode updates', () => {
       WEB_RESEARCH_AGENT_ID,
       IMPLEMENTATION_AGENT_ID,
       TOOL_AUTHOR_AGENT_ID,
+      UI_AUTHOR_AGENT_ID,
     ]);
     expect(list.definitions[0]?.availability).toEqual({ status: 'available' });
     expect(list.definitions[0]?.contract.defaultWriteBack).toBe('summary');
@@ -11501,7 +11503,7 @@ describe('SessionManager permission mode updates', () => {
     expect(list.definitions[1]?.availability).toEqual({
       status: 'unavailable',
       reason: 'missing_tools',
-      missingTools: ['WebSearch'],
+      missingTools: ['WebSearch', 'WebFetch'],
     });
     expect(list.definitions[2]?.availability).toEqual({
       status: 'unavailable',
@@ -11513,6 +11515,11 @@ describe('SessionManager permission mode updates', () => {
       status: 'unavailable',
       reason: 'missing_tools',
       missingTools: ['inspect_tools', 'define_tool', 'test_tool'],
+    });
+    expect(list.definitions[4]?.availability).toEqual({
+      status: 'unavailable',
+      reason: 'missing_tools',
+      missingTools: ['inspect_ui', 'define_ui', 'test_ui'],
     });
     expect(list.runs.map((agent) => agent.runId)).toEqual(['child-run']);
     expect(list.executions.map((agent) => agent.execution)).toEqual([
