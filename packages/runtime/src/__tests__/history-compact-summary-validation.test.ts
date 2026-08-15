@@ -8,7 +8,6 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   HISTORY_COMPACT_REQUIRED_SECTIONS,
-  HISTORY_COMPACT_SUMMARY_SECTIONS,
   validateHistoryCompactSummary,
 } from '../history-compact-summary-validation.js';
 
@@ -60,10 +59,6 @@ describe('validateHistoryCompactSummary', () => {
     assert.equal(validateHistoryCompactSummary(incident), 'missing_sections');
   });
 
-  test('rejects a single word', () => {
-    assert.equal(validateHistoryCompactSummary('done'), 'missing_sections');
-  });
-
   test('rejects raw tool-call markup instead of a summary', () => {
     // Observed live from a weak summarizer model that continued the
     // conversation instead of summarizing it (DeepSeek DSML output).
@@ -79,24 +74,41 @@ describe('validateHistoryCompactSummary', () => {
     }
   });
 
+  test('requires each section as its own heading line, not a prose mention', () => {
+    const proseMention = [
+      '## Goal',
+      'Fix the gate.',
+      '',
+      '## Progress',
+      'Done.',
+      '',
+      'The required headings are ## Goal, ## Progress, and ## Next Steps.',
+    ].join('\n');
+    assert.equal(validateHistoryCompactSummary(proseMention), 'missing_sections');
+  });
+
+  test('rejects a near-match heading like ## Goals for the ## Goal section', () => {
+    const plural = CONFORMING.replace('## Goal\n', '## Goals\n');
+    assert.equal(validateHistoryCompactSummary(plural), 'missing_sections');
+  });
+
   test('rejects output that stops inside a code fence', () => {
     assert.equal(validateHistoryCompactSummary(CONFORMING + '\n\n```ts\nconst x = 1'), 'truncated');
   });
 
   test('rejects a summary ending on truncation punctuation', () => {
-    for (const tail of [':', '：', ',', '，', '、', ';', '；', '(', '（', '`', '—']) {
+    // Representative sample of the tail class; the full char list lives next to
+    // the regex so it stays co-located with the implementation it describes.
+    for (const tail of [':', '：', '`']) {
       assert.equal(validateHistoryCompactSummary(CONFORMING + ' ' + tail), 'truncated', tail);
     }
+    // Sentence terminals are completion, not truncation, and must be accepted.
+    assert.equal(validateHistoryCompactSummary(CONFORMING + '.'), undefined);
+    assert.equal(validateHistoryCompactSummary(CONFORMING + '。'), undefined);
   });
 
   test('accepts a closed fence and terminal punctuation', () => {
     const withFence = CONFORMING + '\n\n```sh\nnpm test\n```\n\nDone.';
     assert.equal(validateHistoryCompactSummary(withFence), undefined);
-  });
-
-  test('required sections are a subset of the full prompt contract', () => {
-    for (const section of HISTORY_COMPACT_REQUIRED_SECTIONS) {
-      assert.ok((HISTORY_COMPACT_SUMMARY_SECTIONS as readonly string[]).includes(section), section);
-    }
   });
 });

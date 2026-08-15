@@ -33,7 +33,20 @@ export const HISTORY_COMPACT_REQUIRED_SECTIONS = [
   '## Goal',
   '## Progress',
   '## Next Steps',
-] as const;
+] as const satisfies readonly (typeof HISTORY_COMPACT_SUMMARY_SECTIONS)[number][];
+
+/**
+ * Line-anchored heading matchers: a required section must appear as its own
+ * heading line. A substring match would also accept `## Goals` or a prose
+ * mention of `## Goal`, neither of which follows the summarizer contract.
+ */
+const REQUIRED_SECTION_HEADING_PATTERNS = HISTORY_COMPACT_REQUIRED_SECTIONS.map(
+  (section) => new RegExp(`^${escapeRegExp(section)}\\b`, 'm'),
+);
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 /** Terminal punctuation that indicates the output was cut off mid-thought. */
 const TRUNCATED_TAIL_PATTERN = /[:：,，、;；(（`—]\s*$/u;
@@ -48,8 +61,9 @@ export type HistoryCompactSummaryRejection = 'missing_sections' | 'truncated';
 export function validateHistoryCompactSummary(
   summary: string,
 ): HistoryCompactSummaryRejection | undefined {
-  const missing = HISTORY_COMPACT_REQUIRED_SECTIONS.filter((section) => !summary.includes(section));
-  if (missing.length > 0) return 'missing_sections';
+  if (REQUIRED_SECTION_HEADING_PATTERNS.some((pattern) => !pattern.test(summary))) {
+    return 'missing_sections';
+  }
   // An odd number of fences means the output stops inside a code block.
   const fenceCount = (summary.match(/^```/gm) ?? []).length;
   if (fenceCount % 2 === 1) return 'truncated';

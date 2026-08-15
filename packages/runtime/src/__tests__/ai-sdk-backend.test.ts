@@ -5302,6 +5302,97 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
+  test('V2 malformed summary fails open without recording a checkpoint and reports malformed_summary', async () => {
+    const model = completionModel();
+    const storedMessages: StoredMessage[] = [];
+    let recordCalls = 0;
+    const events: SessionEvent[] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        storedMessages.push(message);
+      },
+      connection: connection(),
+      apiKey: '[redacted]',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        maxHistoryEstimatedTokens: 1_500,
+        charsPerToken: 1,
+        historyCompact: {
+          enabled: true,
+          mode: 'read_write',
+          highWaterRatio: 0.01,
+          tailEstimatedTokens: 20,
+          maxSummaryEstimatedTokens: 500,
+        },
+      },
+      summarizeHistoryCompact: async () => '确认服务端语义后，决定：结尾：',
+      recordHistoryCompactCheckpoint: () => {
+        recordCalls += 1;
+      },
+    });
+    for await (const event of backend.send({
+      turnId: 'turn-current',
+      text: 'continue',
+      context: [],
+      runtimeContext: [
+        runtimeTextEvent({
+          id: 'malformed-old-1',
+          turnId: 'malformed-turn-1',
+          role: 'user',
+          author: 'user',
+          text: 'malformed old source one '.repeat(30),
+        }),
+        runtimeTextEvent({
+          id: 'malformed-old-2',
+          turnId: 'malformed-turn-2',
+          role: 'model',
+          author: 'agent',
+          text: 'malformed old source two '.repeat(50),
+        }),
+        runtimeTextEvent({
+          id: 'malformed-recent',
+          turnId: 'malformed-recent-turn',
+          role: 'user',
+          author: 'user',
+          text: 'MALFORMED_RETAINED_TAIL',
+        }),
+      ],
+    })) {
+      events.push(event);
+    }
+
+    const prompt = JSON.stringify(compactPrompt(model));
+    assert.equal(prompt.includes('malformed old source one'), false);
+    assert.equal(prompt.includes('malformed old source two'), false);
+    assert.match(prompt, /MALFORMED_RETAINED_TAIL/);
+    assert.equal(recordCalls, 0);
+    assert.equal(
+      storedMessages.filter(
+        (message) =>
+          message.type === 'system_note' && message.kind === 'context_compaction_failed_open',
+      ).length,
+      1,
+    );
+    const usage = events.find(
+      (event): event is Extract<SessionEvent, { type: 'token_usage' }> =>
+        event.type === 'token_usage',
+    );
+    assert.equal(
+      usage?.contextBudget?.historyCompactWriteSkippedReasonCounts?.malformed_summary,
+      1,
+    );
+    assert.equal(
+      usage?.contextBudget?.compactionDecisions?.[0]?.failOpenReason,
+      'malformed_summary',
+    );
+  });
+
   test('keeps RuntimeEvent replay when a tool result is unmatched (orphan dropped, rest replayed)', async () => {
     // `unmatched_tool_result` is a non-blocking diagnostic: the materializer
     // drops the orphan itself (a standalone tool message is an Anthropic 400),
