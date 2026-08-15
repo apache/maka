@@ -1,47 +1,61 @@
 import type { SessionBlockedReason, SessionStatus } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { StatusDotVariant } from '@astryxdesign/core/StatusDot';
+import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
 import { getConversationCopy } from './conversation-copy.js';
 
 export interface SessionStatusPresentation {
   label: string;
-  /**
-   * Astryx's own dot variant, reached in one step.
-   *
-   * There used to be a `SessionStatusTone` in between — seven names of our own
-   * that the only caller then mapped onto Astryx's five. Two of those names
-   * (`info`, `muted`) had no distinct outcome at the end of the chain, and the
-   * collapse is what let `waiting_for_user` and `blocked` land on the same
-   * `warning`: they were different tones that stopped being different dots.
-   * One table, one hop, and the collision is visible in the source.
-   *
-   * `undefined` means the row draws no dot at all: an idle session and an
-   * archived or aborted one are not states the rail interrupts anyone about.
-   */
   variant?: StatusDotVariant;
 }
 
-const STATUS_VARIANT: Record<SessionStatus, StatusDotVariant | undefined> = {
+/**
+ * What a status MEANS. The colour is not decided here.
+ *
+ * There used to be a `SessionStatusTone` in between — seven names of our own
+ * that the only caller mapped onto Astryx's five. Deleting that layer was
+ * right; replacing it with a private `SessionStatus -> StatusDotVariant` table
+ * was not, because `status-vocabulary.ts` already owns the one place a status
+ * word becomes a colour, and a second table there means the rail and Settings
+ * can disagree about the same fact. They did: a task waiting on a permission
+ * prompt drew `error` here while the permission centre drew `attention` for the
+ * identical condition.
+ *
+ * So the session enum maps to `StatusSemantic` and `dotForStatus` picks the
+ * colour, which also settles what `waiting_for_user` and `blocked` share.
+ * They are both `attention` — both are "waiting on a person", which is what
+ * that semantic is defined as. Giving `blocked` `error` to tell the two apart
+ * was using colour for a distinction colour cannot carry; `error` is reserved
+ * for "broken now". The two are told apart by their label and, for `blocked`,
+ * by `describeBlockedReason` in the tooltip.
+ *
+ * `undefined` means no dot: `active` is the resting state and the rail does not
+ * mark a task for being ordinary. Everything else gets one, including
+ * `archived` and `aborted` — they were `muted` before this change and `muted`
+ * resolved to a real `neutral` dot, so dropping them to `undefined` was a
+ * behaviour change, not a consequence of collapsing the layer. Without a dot
+ * they fell through to the unread branch and an aborted task with unread text
+ * drew the same accent dot as one that is running.
+ */
+const STATUS_SEMANTIC: Record<SessionStatus, StatusSemantic | undefined> = {
   active: undefined,
-  running: 'accent',
-  waiting_for_user: 'warning',
-  // `error`, not `warning`: blocked means the task cannot proceed until someone
-  // fixes a connection, a login, or a permission, while waiting_for_user means
-  // it is holding a question for you. Sharing one colour made the rail unable to
-  // say which of the two a row was in.
-  blocked: 'error',
-  archived: undefined,
-  aborted: undefined,
+  running: 'active',
+  waiting_for_user: 'attention',
+  blocked: 'attention',
+  review: 'attention',
+  done: 'success',
+  archived: 'neutral',
+  aborted: 'neutral',
 };
 
 export function presentSessionStatus(
   status: SessionStatus,
   locale: UiLocale = 'zh',
 ): SessionStatusPresentation {
-  const variant = STATUS_VARIANT[status];
+  const semantic = STATUS_SEMANTIC[status];
   return {
     label: getConversationCopy(locale).sessions.status[status],
-    ...(variant ? { variant } : {}),
+    ...(semantic ? { variant: dotForStatus(semantic) } : {}),
   };
 }
 

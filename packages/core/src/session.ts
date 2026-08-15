@@ -33,16 +33,22 @@ export { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from './explore-ag
  * alongside `isArchived`; consolidating those two onto one authority is its own
  * change (#2984, PR 3) because it rewrites stored rows.
  *
- * `review` and `done` were removed: nothing in the codebase ever wrote them,
- * and no stored record can carry them, so the values had no reader that was not
- * also dead. Everything the runtime writes is here — `running`, `blocked`,
- * `aborted`, `waiting_for_user` — plus `active` as the resting state.
+ * `review` and `done` have no writer in current source, but they stay: this
+ * list is read back out of storage, and narrowing it is a data migration, not a
+ * cleanup. `resolveLegacyStatus` in the JSONL importer (removed in #2656) let
+ * both values through into real SQLite stores verbatim, and `normalizeSession
+ * Header` throws on an unrecognised status for the WHOLE header — so one stored
+ * row carrying `done` fails an entire catalog page, not just its own row.
+ * Removing them needs a schema migration or a tolerant read, which is its own
+ * change with its own review.
  */
 export const SESSION_STATUSES = [
   'active',
   'running',
   'waiting_for_user',
   'blocked',
+  'review',
+  'done',
   'archived',
   'aborted',
 ] as const;
