@@ -19,6 +19,17 @@ const DRAIN_TIMEOUT_MS = 30_000;
 const MAX_DIAGNOSTIC_BYTES = 64 * 1024;
 const MAX_PROTOCOL_BYTES = 2 * 1024 * 1024;
 
+export interface PackageWorkerInvocationContext {
+  readonly sessionId: string;
+  readonly runId?: string;
+  readonly turnId: string;
+  readonly cwd: string;
+  readonly toolCallId: string;
+  readonly operationId?: string;
+  readonly abortSignal: AbortSignal;
+  readonly emitOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
+}
+
 type WorkerRequest =
   | { readonly kind: 'health'; readonly handlers: readonly string[] }
   | {
@@ -83,6 +94,7 @@ export class ToolPackageActivation {
     readonly configuration: Readonly<Record<string, ExtensionConfigurationScalar>> = Object.freeze(
       {},
     ),
+    private readonly environment: Readonly<Record<string, string>> = Object.freeze({}),
   ) {}
 
   tools(): readonly MakaTool[] {
@@ -128,6 +140,15 @@ export class ToolPackageActivation {
   }
 
   invoke(handler: string, args: unknown, context: MakaToolContext): Promise<unknown> {
+    return this.invokeRaw(handler, args, context, INVOCATION_TIMEOUT_MS);
+  }
+
+  invokeRaw(
+    handler: string,
+    args: unknown,
+    context: PackageWorkerInvocationContext,
+    timeoutMs: number,
+  ): Promise<unknown> {
     this.#assertActive();
     const invocation = this.#run(
       {
@@ -146,7 +167,7 @@ export class ToolPackageActivation {
       },
       context.cwd,
       context,
-      INVOCATION_TIMEOUT_MS,
+      timeoutMs,
     );
     this.#invocations.add(invocation);
     void invocation.then(
@@ -179,7 +200,7 @@ export class ToolPackageActivation {
   async #run(
     request: WorkerRequest,
     cwd: string,
-    context: MakaToolContext | undefined,
+    context: PackageWorkerInvocationContext | undefined,
     timeoutMs: number,
   ): Promise<unknown> {
     this.#assertActive();
@@ -189,7 +210,7 @@ export class ToolPackageActivation {
         program: process.execPath,
         args: [WORKER_MAIN, this.packageRevision.entry],
         cwd: canonicalCwd,
-        env: workerEnvironment(),
+        env: workerEnvironment(this.environment),
         profile: workerProfile(this.packageRevision.manifest),
         pathContext: {
           workspaceRoots: [canonicalCwd],
@@ -242,7 +263,7 @@ export class ToolPackageActivation {
 async function exchange(
   child: ChildProcess,
   request: WorkerRequest,
-  context: MakaToolContext | undefined,
+  context: PackageWorkerInvocationContext | undefined,
   timeoutMs: number,
 ): Promise<unknown> {
   const auth = randomBytes(32).toString('hex');
@@ -290,7 +311,7 @@ async function exchange(
       if (!encoded) continue;
       try {
         const frame = decodeFrame(JSON.parse(encoded), auth);
-        if (frame.kind === 'output') context?.emitOutput(frame.stream, frame.chunk);
+        if (frame.kind === 'output') context?.emitOutput?.(frame.stream, frame.chunk);
         else if (terminal) throw new Error('Tool package worker emitted multiple terminal frames');
         else terminal = frame;
       } catch (error) {
@@ -470,7 +491,9 @@ function executionFacts(manifest: ToolPackageManifest): MakaTool['executionFacts
   });
 }
 
-function workerEnvironment(): Readonly<Record<string, string | undefined>> {
+function workerEnvironment(
+  overrides: Readonly<Record<string, string>>,
+): Readonly<Record<string, string | undefined>> {
   return Object.freeze({
     PATH: process.env.PATH,
     LANG: process.env.LANG ?? 'C.UTF-8',
@@ -478,6 +501,7 @@ function workerEnvironment(): Readonly<Record<string, string | undefined>> {
     TMPDIR: tmpdir(),
     NODE_NO_WARNINGS: '1',
     ELECTRON_RUN_AS_NODE: process.versions.electron ? '1' : undefined,
+    ...overrides,
   });
 }
 

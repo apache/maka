@@ -12,6 +12,12 @@ import type {
   HostUiExtensionRevisionInput,
 } from './extension-runtime.js';
 import { ToolPackageActivation } from './tool-package-worker.js';
+import { HookPackageActivation } from './hook-package-activation.js';
+import {
+  type InstalledHookPackage,
+  HookPackageStore,
+  HookPackageStoreError,
+} from './hook-package-store.js';
 import {
   type InstalledToolPackage,
   ToolPackageStore,
@@ -88,6 +94,7 @@ export class StaticTrustedToolExtensionLoader implements HostTrustedToolExtensio
             revision: definition.revision,
             toolNames: Object.freeze(definition.tools.map(({ name }) => name).sort(compareString)),
             uiContributionIds: Object.freeze([]),
+            hookContributionIds: Object.freeze([]),
           }),
         )
         .sort(
@@ -165,6 +172,7 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
     private readonly statics: StaticTrustedToolExtensionLoader,
     private readonly packages: ToolPackageStore,
     private readonly uiPackages?: UiPackageStore,
+    private readonly hookPackages?: HookPackageStore,
   ) {}
 
   setConfigurationResolver(
@@ -183,6 +191,14 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
     if (this.uiPackages) {
       for (const installed of await this.uiPackages.list()) {
         const projection = projectUiPackage(installed);
+        const key = revisionKey(projection.extensionId, projection.revision);
+        const current = installedByRevision.get(key);
+        installedByRevision.set(key, current ? mergeProjection(current, projection) : projection);
+      }
+    }
+    if (this.hookPackages) {
+      for (const installed of await this.hookPackages.list()) {
+        const projection = projectHookPackage(installed);
         const key = revisionKey(projection.extensionId, projection.revision);
         const current = installedByRevision.get(key);
         installedByRevision.set(key, current ? mergeProjection(current, projection) : projection);
@@ -211,19 +227,18 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
     }
     const tool = await this.#loadTool(extensionId, revision);
     const ui = await this.#loadUi(extensionId, revision);
-    const root = tool?.root ?? ui?.root;
-    const metadata = root ? await loadAndValidateMetadata(root, tool, ui) : undefined;
-    if (tool && ui && this.uiPackages) {
-      return combinedPackageRevisionInput(
+    const hook = await this.#loadHook(extensionId, revision);
+    const root = tool?.root ?? ui?.root ?? hook?.root;
+    const metadata = root ? await loadAndValidateMetadata(root, tool, ui, hook) : undefined;
+    if (root) {
+      return combinedPackageRevisionInput({
         tool,
-        this.uiPackages,
-        ui,
+        ui: ui && this.uiPackages ? { installed: ui, store: this.uiPackages } : undefined,
+        hook,
         metadata,
-        this.#configurationFor,
-      );
+        configurationFor: this.#configurationFor,
+      });
     }
-    if (tool) return packageRevisionInput(tool, metadata, this.#configurationFor);
-    if (ui && this.uiPackages) return uiPackageRevisionInput(this.uiPackages, ui, metadata);
     throw new HostExtensionLoaderError(
       'not_found',
       `Extension revision is not available: ${extensionId}@${revision}`,
@@ -239,8 +254,10 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
     });
     let installedTool: InstalledToolPackage | undefined;
     let installedUi: InstalledUiPackage | undefined;
+    let installedHook: InstalledHookPackage | undefined;
     let toolsBefore = new Set<string>();
     let uiBefore = new Set<string>();
+    let hooksBefore = new Set<string>();
     try {
       toolsBefore = new Set(
         (await this.packages.list()).map((item) => revisionKey(item.extensionId, item.revision)),
@@ -252,20 +269,31 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
             )
           : [],
       );
+      hooksBefore = new Set(
+        this.hookPackages
+          ? (await this.hookPackages.list()).map((item) =>
+              revisionKey(item.extensionId, item.revision),
+            )
+          : [],
+      );
       const packageRoot = materialized.root;
       const hasUi = Boolean(this.uiPackages && (await exists(join(packageRoot, 'maka.ui.json'))));
       const hasTool = await exists(join(packageRoot, 'maka.tool.json'));
-      if (!hasUi && !hasTool) {
+      const hasHook = Boolean(
+        this.hookPackages && (await exists(join(packageRoot, 'maka.hook.json'))),
+      );
+      if (!hasUi && !hasTool && !hasHook) {
         throw new HostExtensionLoaderError(
           'invalid_definition',
-          'Extension package must contain maka.ui.json, maka.tool.json, or both',
+          'Extension package must contain maka.ui.json, maka.tool.json, maka.hook.json, or a combination',
         );
       }
       installedTool = hasTool ? await this.packages.install(packageRoot) : undefined;
       installedUi = hasUi ? await this.uiPackages!.install(packageRoot) : undefined;
-      const installed = installedTool ?? installedUi!;
+      installedHook = hasHook ? await this.hookPackages!.install(packageRoot) : undefined;
+      const installed = installedTool ?? installedUi ?? installedHook!;
       try {
-        await loadAndValidateMetadata(installed.root, installedTool, installedUi);
+        await loadAndValidateMetadata(installed.root, installedTool, installedUi, installedHook);
       } catch (error) {
         if (installedTool) {
           await this.packages
@@ -277,23 +305,38 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
             () => undefined,
           );
         }
+        if (installedHook) {
+          await this.hookPackages!.uninstall(
+            installedHook.extensionId,
+            installedHook.revision,
+          ).catch(() => undefined);
+        }
         throw error;
       }
       if (
-        installedTool &&
-        installedUi &&
-        (installedTool.extensionId !== installedUi.extensionId ||
-          installedTool.revision !== installedUi.revision)
+        [installedTool, installedUi, installedHook]
+          .filter((item): item is NonNullable<typeof item> => Boolean(item))
+          .some(
+            (item) =>
+              item.extensionId !== installed.extensionId || item.revision !== installed.revision,
+          )
       ) {
-        await this.packages
-          .uninstall(installedTool.extensionId, installedTool.revision)
-          .catch(() => undefined);
-        await this.uiPackages!.uninstall(installedUi.extensionId, installedUi.revision).catch(
-          () => undefined,
-        );
+        if (installedTool)
+          await this.packages
+            .uninstall(installedTool.extensionId, installedTool.revision)
+            .catch(() => undefined);
+        if (installedUi)
+          await this.uiPackages!.uninstall(installedUi.extensionId, installedUi.revision).catch(
+            () => undefined,
+          );
+        if (installedHook)
+          await this.hookPackages!.uninstall(
+            installedHook.extensionId,
+            installedHook.revision,
+          ).catch(() => undefined);
         throw new HostExtensionLoaderError(
           'invalid_definition',
-          'Tool and UI manifests in one package must declare the same id and content Revision',
+          'Tool, UI, and Hook manifests in one package must declare the same id and content Revision',
         );
       }
       const staticConflict = (await this.statics.list()).some(
@@ -309,6 +352,10 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
           await this.uiPackages!.uninstall(installed.extensionId, installed.revision).catch(
             () => undefined,
           );
+        if (installedHook)
+          await this.hookPackages!.uninstall(installed.extensionId, installed.revision).catch(
+            () => undefined,
+          );
         throw new HostExtensionLoaderError(
           'invalid_definition',
           `Installed package conflicts with a static revision: ${installed.extensionId}@${installed.revision}`,
@@ -316,9 +363,11 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
       }
       const toolProjection = installedTool ? projectPackage(installedTool) : undefined;
       const uiProjection = installedUi ? projectUiPackage(installedUi) : undefined;
-      return toolProjection && uiProjection
-        ? mergeProjection(toolProjection, uiProjection)
-        : (toolProjection ?? uiProjection!);
+      const hookProjection = installedHook ? projectHookPackage(installedHook) : undefined;
+      const projections = [toolProjection, uiProjection, hookProjection].filter(
+        (item): item is TrustedExtensionRevisionProjection => Boolean(item),
+      );
+      return projections.reduce(mergeProjection);
     } catch (error) {
       if (
         installedTool &&
@@ -326,6 +375,15 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
       ) {
         await this.packages
           .uninstall(installedTool.extensionId, installedTool.revision)
+          .catch(() => undefined);
+      }
+      if (
+        installedHook &&
+        this.hookPackages &&
+        !hooksBefore.has(revisionKey(installedHook.extensionId, installedHook.revision))
+      ) {
+        await this.hookPackages
+          .uninstall(installedHook.extensionId, installedHook.revision)
           .catch(() => undefined);
       }
       if (
@@ -345,7 +403,10 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
 
   async contracts(): Promise<readonly ExtensionPackageContractProjection[]> {
     const contracts = [...(await this.statics.contracts())];
-    const installed = new Map<string, { tool?: InstalledToolPackage; ui?: InstalledUiPackage }>();
+    const installed = new Map<
+      string,
+      { tool?: InstalledToolPackage; ui?: InstalledUiPackage; hook?: InstalledHookPackage }
+    >();
     for (const tool of await this.packages.list()) {
       installed.set(revisionKey(tool.extensionId, tool.revision), { tool });
     }
@@ -355,11 +416,17 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
         installed.set(key, { ...installed.get(key), ui });
       }
     }
-    for (const { tool, ui } of installed.values()) {
-      const root = tool?.root ?? ui?.root;
+    if (this.hookPackages) {
+      for (const hook of await this.hookPackages.list()) {
+        const key = revisionKey(hook.extensionId, hook.revision);
+        installed.set(key, { ...installed.get(key), hook });
+      }
+    }
+    for (const { tool, ui, hook } of installed.values()) {
+      const root = tool?.root ?? ui?.root ?? hook?.root;
       if (!root) continue;
-      const metadata = await loadAndValidateMetadata(root, tool, ui);
-      contracts.push(projectContract(tool, ui, metadata));
+      const metadata = await loadAndValidateMetadata(root, tool, ui, hook);
+      contracts.push(projectContract(tool, ui, hook, metadata));
     }
     return Object.freeze(
       contracts.sort(
@@ -373,7 +440,8 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
   async exportPackage(extensionId: string, revision: string, targetPath: string): Promise<void> {
     const tool = await this.#loadTool(extensionId, revision);
     const ui = await this.#loadUi(extensionId, revision);
-    const installed = tool ?? ui;
+    const hook = await this.#loadHook(extensionId, revision);
+    const installed = tool ?? ui ?? hook;
     if (!installed) {
       throw new HostExtensionLoaderError(
         'not_found',
@@ -398,21 +466,35 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
     try {
       const tool = await this.#loadTool(extensionId, revision);
       const ui = await this.#loadUi(extensionId, revision);
-      if (!tool && !ui)
+      const hook = await this.#loadHook(extensionId, revision);
+      if (!tool && !ui && !hook)
         throw new HostExtensionLoaderError(
           'not_found',
           `Extension revision is not installed: ${extensionId}@${revision}`,
         );
-      if (tool && ui && this.uiPackages) {
-        await this.uiPackages.uninstall(extensionId, revision);
+      const restoreSource = tool?.root ?? ui?.root ?? hook!.root;
+      const removed: Array<() => Promise<void>> = [];
+      if (hook && this.hookPackages) {
+        await this.hookPackages.uninstall(extensionId, revision);
+        removed.push(() => this.hookPackages!.install(restoreSource).then(() => undefined));
+      }
+      if (ui && this.uiPackages) {
+        try {
+          await this.uiPackages.uninstall(extensionId, revision);
+          removed.push(() => this.uiPackages!.install(restoreSource).then(() => undefined));
+        } catch (error) {
+          await Promise.allSettled(removed.map((restore) => restore()));
+          throw error;
+        }
+      }
+      if (tool) {
         try {
           await this.packages.uninstall(extensionId, revision);
         } catch (error) {
-          await this.uiPackages.install(tool.root).catch(() => undefined);
+          await Promise.allSettled(removed.map((restore) => restore()));
           throw error;
         }
-      } else if (tool) await this.packages.uninstall(extensionId, revision);
-      else if (ui && this.uiPackages) await this.uiPackages.uninstall(extensionId, revision);
+      }
     } catch (error) {
       throw translatePackageError(error);
     }
@@ -439,33 +521,19 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
       throw translatePackageError(error);
     }
   }
-}
 
-function packageRevisionInput(
-  installed: InstalledToolPackage,
-  metadata: ExtensionPackageManifest | undefined,
-  configurationFor: (bindingId: string) => Readonly<Record<string, ExtensionConfigurationScalar>>,
-): HostPreparedToolExtensionRevisionInput {
-  return Object.freeze({
-    extensionId: installed.extensionId,
-    revision: installed.revision,
-    ...(metadata?.dependencies.length
-      ? {
-          dependencies: Object.freeze(
-            metadata.dependencies.map(({ id: extensionId }) => Object.freeze({ extensionId })),
-          ),
-        }
-      : {}),
-    toolNames: Object.freeze(installed.manifest.tools.map(({ name }) => name)),
-    prepare: async (context: Parameters<HostPreparedToolExtensionRevisionInput['prepare']>[0]) => {
-      const activation = new ToolPackageActivation(installed, configurationFor(context.bindingId));
-      return {
-        tools: activation.tools(),
-        healthCheck: () => activation.healthCheck(),
-        dispose: () => activation.dispose(),
-      };
-    },
-  });
+  async #loadHook(
+    extensionId: string,
+    revision: string,
+  ): Promise<InstalledHookPackage | undefined> {
+    if (!this.hookPackages) return undefined;
+    try {
+      return await this.hookPackages.load(extensionId, revision);
+    } catch (error) {
+      if (error instanceof HookPackageStoreError && error.code === 'not_found') return undefined;
+      throw translatePackageError(error);
+    }
+  }
 }
 
 function projectPackage(installed: InstalledToolPackage): TrustedExtensionRevisionProjection {
@@ -474,6 +542,7 @@ function projectPackage(installed: InstalledToolPackage): TrustedExtensionRevisi
     revision: installed.revision,
     toolNames: Object.freeze(installed.manifest.tools.map(({ name }) => name).sort(compareString)),
     uiContributionIds: Object.freeze([]),
+    hookContributionIds: Object.freeze([]),
   });
 }
 
@@ -524,28 +593,79 @@ function projectUiPackage(installed: InstalledUiPackage): TrustedExtensionRevisi
     revision: installed.revision,
     toolNames: Object.freeze([]),
     uiContributionIds: Object.freeze(installed.manifest.ui.map(({ id }) => id).sort(compareString)),
+    hookContributionIds: Object.freeze([]),
   });
 }
 
-async function combinedPackageRevisionInput(
-  tool: InstalledToolPackage,
-  uiStore: UiPackageStore,
-  ui: InstalledUiPackage,
-  metadata: ExtensionPackageManifest | undefined,
-  configurationFor: (bindingId: string) => Readonly<Record<string, ExtensionConfigurationScalar>>,
-): Promise<HostPreparedToolExtensionRevisionInput> {
-  const toolInput = packageRevisionInput(tool, metadata, configurationFor);
-  const uiInput = await uiPackageRevisionInput(uiStore, ui, metadata);
+function projectHookPackage(installed: InstalledHookPackage): TrustedExtensionRevisionProjection {
   return Object.freeze({
-    ...toolInput,
-    ui: uiInput.ui,
+    extensionId: installed.extensionId,
+    revision: installed.revision,
+    toolNames: Object.freeze([]),
+    uiContributionIds: Object.freeze([]),
+    hookContributionIds: Object.freeze(
+      installed.manifest.hooks.map(({ event, id }) => `${event}:${id}`).sort(compareString),
+    ),
+  });
+}
+
+async function combinedPackageRevisionInput(input: {
+  readonly tool?: InstalledToolPackage;
+  readonly ui?: { readonly installed: InstalledUiPackage; readonly store: UiPackageStore };
+  readonly hook?: InstalledHookPackage;
+  readonly metadata?: ExtensionPackageManifest;
+  readonly configurationFor: (
+    bindingId: string,
+  ) => Readonly<Record<string, ExtensionConfigurationScalar>>;
+}): Promise<HostPreparedToolExtensionRevisionInput> {
+  const installed = input.tool ?? input.ui?.installed ?? input.hook;
+  if (!installed) throw new HostExtensionLoaderError('not_found', 'Extension package is missing');
+  const uiInput = input.ui
+    ? await uiPackageRevisionInput(input.ui.store, input.ui.installed, input.metadata)
+    : undefined;
+  const configurationFor = input.configurationFor;
+  return Object.freeze({
+    extensionId: installed.extensionId,
+    revision: installed.revision,
+    ...(input.metadata?.dependencies.length
+      ? {
+          dependencies: Object.freeze(
+            input.metadata.dependencies.map(({ id: extensionId }) =>
+              Object.freeze({ extensionId }),
+            ),
+          ),
+        }
+      : {}),
+    toolNames: Object.freeze(input.tool?.manifest.tools.map(({ name }) => name) ?? []),
+    ...(uiInput ? { ui: uiInput.ui } : {}),
+    ...(input.hook
+      ? {
+          hookContributionIds: Object.freeze(
+            input.hook.manifest.hooks.map(({ event, id }) => `${event}:${id}`),
+          ),
+        }
+      : {}),
     prepare: async (context: Parameters<HostPreparedToolExtensionRevisionInput['prepare']>[0]) => {
-      const prepared = await toolInput.prepare(context);
+      const configuration = configurationFor(context.bindingId);
+      const toolActivation = input.tool
+        ? new ToolPackageActivation(input.tool, configuration)
+        : undefined;
+      const hookActivation = input.hook
+        ? new HookPackageActivation(input.hook, configuration)
+        : undefined;
       return {
-        ...prepared,
+        tools: toolActivation?.tools() ?? Object.freeze([]),
+        ...(hookActivation ? { hooks: hookActivation.contributions() } : {}),
         healthCheck: async () => {
-          await prepared.healthCheck?.();
-          await uiInput.healthCheck?.();
+          await toolActivation?.healthCheck();
+          await uiInput?.healthCheck?.();
+          await hookActivation?.healthCheck();
+        },
+        dispose: async () => {
+          await Promise.allSettled([
+            ...(toolActivation ? [toolActivation.dispose()] : []),
+            ...(hookActivation ? [hookActivation.dispose()] : []),
+          ]);
         },
       };
     },
@@ -565,6 +685,9 @@ function mergeProjection(
     uiContributionIds: Object.freeze(
       [...new Set([...left.uiContributionIds, ...right.uiContributionIds])].sort(compareString),
     ),
+    hookContributionIds: Object.freeze(
+      [...new Set([...left.hookContributionIds, ...right.hookContributionIds])].sort(compareString),
+    ),
   });
 }
 
@@ -572,10 +695,11 @@ async function loadAndValidateMetadata(
   root: string,
   tool: InstalledToolPackage | undefined,
   ui: InstalledUiPackage | undefined,
+  hook: InstalledHookPackage | undefined,
 ): Promise<ExtensionPackageManifest | undefined> {
   const metadata = await loadExtensionPackageManifest(root);
   if (!metadata) return undefined;
-  const manifests = [tool?.manifest, ui?.manifest].filter(
+  const manifests = [tool?.manifest, ui?.manifest, hook?.manifest].filter(
     (manifest): manifest is NonNullable<typeof manifest> => Boolean(manifest),
   );
   if (
@@ -594,11 +718,13 @@ async function loadAndValidateMetadata(
 function projectContract(
   tool: InstalledToolPackage | undefined,
   ui: InstalledUiPackage | undefined,
+  hook: InstalledHookPackage | undefined,
   metadata: ExtensionPackageManifest | undefined,
 ): ExtensionPackageContractProjection {
-  const installed = tool ?? ui;
+  const installed = tool ?? ui ?? hook;
   if (!installed) throw new HostExtensionLoaderError('not_found', 'Extension package is missing');
-  const version = metadata?.version ?? tool?.manifest.version ?? ui!.manifest.version;
+  const version =
+    metadata?.version ?? tool?.manifest.version ?? ui?.manifest.version ?? hook!.manifest.version;
   return Object.freeze({
     extensionId: installed.extensionId,
     revision: installed.revision,
@@ -627,6 +753,14 @@ function projectContract(
           ...(item.slots.length ? { slots: item.slots } : {}),
         }),
       ) ?? []),
+      ...(hook?.manifest.hooks.map((item) =>
+        Object.freeze({
+          kind: 'hook' as const,
+          id: item.id,
+          event: item.event,
+          mode: item.mode,
+        }),
+      ) ?? []),
     ]),
   });
 }
@@ -645,6 +779,17 @@ function translatePackageError(error: unknown): HostExtensionLoaderError {
     );
   }
   if (error instanceof UiPackageStoreError) {
+    return new HostExtensionLoaderError(
+      error.code === 'not_found'
+        ? 'not_found'
+        : error.code === 'invalid_package' || error.code === 'already_installed'
+          ? 'invalid_definition'
+          : 'load_failed',
+      error.message,
+      { cause: error },
+    );
+  }
+  if (error instanceof HookPackageStoreError) {
     return new HostExtensionLoaderError(
       error.code === 'not_found'
         ? 'not_found'

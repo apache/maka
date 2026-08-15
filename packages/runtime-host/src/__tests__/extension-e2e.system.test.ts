@@ -64,9 +64,27 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
 
     assert.deepEqual(await client.request('extension.catalog.query', {}), {
       revisions: [
-        { extensionId: 'weather', revision: '1', toolNames: ['Weather'], uiContributionIds: [] },
-        { extensionId: 'weather', revision: '2', toolNames: ['Weather'], uiContributionIds: [] },
-        { extensionId: 'weather', revision: '3', toolNames: ['Weather'], uiContributionIds: [] },
+        {
+          extensionId: 'weather',
+          revision: '1',
+          toolNames: ['Weather'],
+          uiContributionIds: [],
+          hookContributionIds: [],
+        },
+        {
+          extensionId: 'weather',
+          revision: '2',
+          toolNames: ['Weather'],
+          uiContributionIds: [],
+          hookContributionIds: [],
+        },
+        {
+          extensionId: 'weather',
+          revision: '3',
+          toolNames: ['Weather'],
+          uiContributionIds: [],
+          hookContributionIds: [],
+        },
       ],
       bindings: [],
     });

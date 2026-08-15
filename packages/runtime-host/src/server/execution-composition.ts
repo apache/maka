@@ -124,6 +124,8 @@ import { HostExtensionUiStateStore } from './extension-ui-state-store.js';
 import { ToolPackageStore } from './tool-package-store.js';
 import { HostToolPackageManagementTools } from './tool-package-management-tools.js';
 import { UiPackageStore } from './ui-package-store.js';
+import { HookPackageStore } from './hook-package-store.js';
+import { HostHookPackageManagementTools } from './hook-package-management-tools.js';
 import { HostUiPackageManagementTools } from './ui-package-management-tools.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
@@ -222,10 +224,12 @@ export async function createExecutionRuntimeHostComposition(
   const extensions = new HostExtensionRuntime();
   const toolPackageStore = new ToolPackageStore(context.owner.controlDirectory);
   const uiPackageStore = new UiPackageStore(context.owner.controlDirectory);
+  const hookPackageStore = new HookPackageStore(context.owner.controlDirectory);
   const extensionLoader = new InstalledToolPackageExtensionLoader(
     new StaticTrustedToolExtensionLoader(options.trustedToolExtensions),
     toolPackageStore,
     uiPackageStore,
+    hookPackageStore,
   );
   const extensionController = new HostExtensionController(
     extensions,
@@ -247,7 +251,17 @@ export async function createExecutionRuntimeHostComposition(
     extensions,
     uiPackageStore,
   );
-  extensions.registerHostTools([...toolPackageManagement.tools(), ...uiPackageManagement.tools()]);
+  const hookPackageManagement = new HostHookPackageManagementTools(
+    context.owner.controlDirectory,
+    extensionController,
+    extensions,
+    hookPackageStore,
+  );
+  extensions.registerHostTools([
+    ...toolPackageManagement.tools(),
+    ...uiPackageManagement.tools(),
+    ...hookPackageManagement.tools(),
+  ]);
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let taskLedgerStore:
     | Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>
@@ -326,6 +340,7 @@ export async function createExecutionRuntimeHostComposition(
     const hooks = createHostHookComposition({
       stateRoot: context.owner.capability.canonicalPath,
       runtimeEvents: stores.runtimeEventStore,
+      extensions,
     });
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
     const runtimePolicyActivation = new RuntimePolicyActivationGate();

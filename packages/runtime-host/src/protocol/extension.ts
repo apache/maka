@@ -47,6 +47,7 @@ export interface TrustedExtensionRevisionProjection {
   readonly revision: string;
   readonly toolNames: readonly string[];
   readonly uiContributionIds: readonly string[];
+  readonly hookContributionIds: readonly string[];
 }
 
 export type ExtensionBindingStatus = 'disabled' | 'active' | 'waiting' | 'failed';
@@ -86,13 +87,15 @@ export interface ExtensionContractConfigurationProperty {
 }
 
 export interface ExtensionContractContribution {
-  readonly kind: 'tool' | 'ui';
+  readonly kind: 'tool' | 'ui' | 'hook';
   readonly id: string;
   readonly name?: string;
   readonly description?: string;
   readonly surface?: 'app.root' | 'app.overlay' | 'app.slot';
   readonly slot?: string;
   readonly slots?: readonly string[];
+  readonly event?: 'UserPromptSubmit' | 'RunStart' | 'PreToolUse' | 'PostToolUse' | 'RunEnd';
+  readonly mode?: 'observe' | 'gate' | 'transform';
 }
 
 export interface ExtensionPackageContractProjection {
@@ -652,17 +655,22 @@ export function decodeExtensionPackageExportResult(value: unknown): ExtensionPac
 }
 
 function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProjection {
+  const source = requireRecord(value, 'trusted extension revision');
   const revision = requireExactRecord(value, 'trusted extension revision', [
     'extensionId',
     'revision',
     'toolNames',
     'uiContributionIds',
+    ...(Object.hasOwn(source, 'hookContributionIds') ? ['hookContributionIds'] : []),
   ]);
+  const hookContributionIds = revision.hookContributionIds ?? [];
   if (
     !Array.isArray(revision.toolNames) ||
     revision.toolNames.length > 128 ||
     !Array.isArray(revision.uiContributionIds) ||
-    revision.uiContributionIds.length > 64
+    revision.uiContributionIds.length > 64 ||
+    !Array.isArray(hookContributionIds) ||
+    hookContributionIds.length > 64
   ) {
     throw invalidProtocolFrame('Invalid trusted extension contribution names');
   }
@@ -674,6 +682,9 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
     ),
     uiContributionIds: revision.uiContributionIds.map((id) =>
       requireUtf8String(id, 'extension UI contribution id', 128),
+    ),
+    hookContributionIds: hookContributionIds.map((id) =>
+      requireUtf8String(id, 'extension Hook contribution id', 256),
     ),
   };
 }
@@ -806,10 +817,38 @@ function decodeContractContribution(value: unknown): ExtensionContractContributi
     ...(Object.hasOwn(source, 'surface') ? ['surface'] : []),
     ...(Object.hasOwn(source, 'slot') ? ['slot'] : []),
     ...(Object.hasOwn(source, 'slots') ? ['slots'] : []),
+    ...(Object.hasOwn(source, 'event') ? ['event'] : []),
+    ...(Object.hasOwn(source, 'mode') ? ['mode'] : []),
   ];
   const contribution = requireExactRecord(source, 'Extension contract contribution', fields);
-  if (contribution.kind !== 'tool' && contribution.kind !== 'ui') {
+  if (contribution.kind !== 'tool' && contribution.kind !== 'ui' && contribution.kind !== 'hook') {
     throw invalidProtocolFrame('Invalid Extension contract contribution kind');
+  }
+  if (
+    contribution.event !== undefined &&
+    contribution.event !== 'UserPromptSubmit' &&
+    contribution.event !== 'RunStart' &&
+    contribution.event !== 'PreToolUse' &&
+    contribution.event !== 'PostToolUse' &&
+    contribution.event !== 'RunEnd'
+  ) {
+    throw invalidProtocolFrame('Invalid Extension contract Hook event');
+  }
+  if (
+    contribution.mode !== undefined &&
+    contribution.mode !== 'observe' &&
+    contribution.mode !== 'gate' &&
+    contribution.mode !== 'transform'
+  ) {
+    throw invalidProtocolFrame('Invalid Extension contract Hook mode');
+  }
+  if (
+    (contribution.kind === 'hook' &&
+      (contribution.event === undefined || contribution.mode === undefined)) ||
+    (contribution.kind !== 'hook' &&
+      (contribution.event !== undefined || contribution.mode !== undefined))
+  ) {
+    throw invalidProtocolFrame('Invalid Extension contract Hook fields');
   }
   if (
     contribution.surface !== undefined &&
@@ -850,6 +889,8 @@ function decodeContractContribution(value: unknown): ExtensionContractContributi
             requireUtf8String(slot, 'Extension UI child slot', 128),
           ),
         }),
+    ...(contribution.event === undefined ? {} : { event: contribution.event }),
+    ...(contribution.mode === undefined ? {} : { mode: contribution.mode }),
   };
 }
 

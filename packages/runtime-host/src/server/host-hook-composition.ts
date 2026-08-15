@@ -14,7 +14,13 @@ import {
   createPreToolUseHookDispatcher,
   type HookExecutionLimiter,
   type PreToolUseHookDispatcher,
+  type ExtensionHookDispatchRuntimeContext,
+  type ExtensionHookDispatchResult,
 } from '@maka/runtime/hooks/engine';
+import type {
+  ExtensionHookContributionInspection,
+  ExtensionHookEventName,
+} from '@maka/runtime/extension-hook-contributions';
 import {
   createHookConfigStore,
   createHookTrustStore,
@@ -22,6 +28,7 @@ import {
   type HookConfigStore,
   type HookTrustStore,
 } from '@maka/storage';
+import type { HostExtensionRuntime } from './extension-runtime.js';
 
 interface HookRuntimeEventWriter {
   appendRuntimeEvent(sessionId: string, runId: string, event: RuntimeEvent): Promise<void>;
@@ -34,6 +41,7 @@ export interface HostHookComposition {
 export function createHostHookComposition(input: {
   stateRoot: string;
   runtimeEvents: HookRuntimeEventWriter;
+  extensions?: HostExtensionRuntime;
 }): HostHookComposition {
   const userConfig = createHookConfigStore(input.stateRoot);
   const trust = createHookTrustStore(input.stateRoot);
@@ -46,6 +54,7 @@ export function createHostHookComposition(input: {
         trust,
         executionLimiter,
         runtimeEvents: input.runtimeEvents,
+        extensions: input.extensions,
       });
     },
   };
@@ -57,12 +66,243 @@ function createSessionHookDispatcher(input: {
   trust: HookTrustStore;
   executionLimiter: HookExecutionLimiter;
   runtimeEvents: HookRuntimeEventWriter;
+  extensions?: HostExtensionRuntime;
 }): PreToolUseHookDispatcher {
-  return createPreToolUseHookDispatcher({
+  const commandDispatcher = createPreToolUseHookDispatcher({
     loadSnapshot: () => loadSnapshot(input),
     executionLimiter: input.executionLimiter,
     recordAudit: (hookInput, audit, context) =>
       recordAudit(input.runtimeEvents, hookInput, audit, context.invocationId),
+  });
+  const extensionSnapshots = new Map<string, readonly ExtensionHookContributionInspection[]>();
+  const snapshotFor = (turnId: string): readonly ExtensionHookContributionInspection[] => {
+    let snapshot = extensionSnapshots.get(turnId);
+    if (!snapshot) {
+      snapshot = Object.freeze([...(input.extensions?.inspectHooks(input.header.id) ?? [])]);
+      extensionSnapshots.set(turnId, snapshot);
+    }
+    return snapshot;
+  };
+  const runExtensionHook = (
+    event: ExtensionHookEventName,
+    payload: unknown,
+    abortSignal: AbortSignal,
+    context: ExtensionHookDispatchRuntimeContext,
+  ) =>
+    dispatchExtensionHooks({
+      event,
+      payload,
+      abortSignal,
+      context,
+      hooks: snapshotFor(context.turnId),
+      runtimeEvents: input.runtimeEvents,
+      executionLimiter: input.executionLimiter,
+    });
+  return {
+    prepareTurn(turnId) {
+      commandDispatcher.prepareTurn(turnId);
+      snapshotFor(turnId);
+    },
+    releaseTurn(turnId) {
+      commandDispatcher.releaseTurn(turnId);
+      extensionSnapshots.delete(turnId);
+    },
+    async runPreToolUse(hookInput, abortSignal, context) {
+      const commandResult = await commandDispatcher.runPreToolUse(hookInput, abortSignal, context);
+      if (commandResult.denied) return commandResult;
+      const extensionResult = await runExtensionHook(
+        'PreToolUse',
+        {
+          toolUseId: hookInput.tool_use_id,
+          toolName: hookInput.tool_name,
+          toolInput: hookInput.tool_input,
+        },
+        abortSignal,
+        {
+          ...context,
+          sessionId: hookInput.session_id,
+          runId: hookInput.run_id,
+          turnId: hookInput.turn_id,
+          cwd: hookInput.cwd,
+          permissionMode: hookInput.permission_mode,
+          origin: hookInput.origin,
+        },
+      );
+      return {
+        denied: extensionResult.denied,
+        ...(extensionResult.reason ? { reason: extensionResult.reason } : {}),
+        audits: [...commandResult.audits, ...extensionResult.audits],
+        auditWriteFailures: [
+          ...commandResult.auditWriteFailures,
+          ...extensionResult.auditWriteFailures,
+        ],
+      };
+    },
+    runExtensionHook,
+  };
+}
+
+async function dispatchExtensionHooks(input: {
+  event: ExtensionHookEventName;
+  payload: unknown;
+  abortSignal: AbortSignal;
+  context: ExtensionHookDispatchRuntimeContext;
+  hooks: readonly ExtensionHookContributionInspection[];
+  runtimeEvents: HookRuntimeEventWriter;
+  executionLimiter: HookExecutionLimiter;
+}): Promise<ExtensionHookDispatchResult> {
+  let payload = structuredClone(input.payload);
+  let denied = false;
+  let reason: string | undefined;
+  const audits: HookCompletedAudit[] = [];
+  const auditWriteFailures: string[] = [];
+  const candidates = input.hooks.filter(
+    (hook) =>
+      hook.event === input.event &&
+      matcherMatches(hook.matcher, matcherSubject(input.event, payload)),
+  );
+  for (const hook of candidates) {
+    if (input.abortSignal.aborted) {
+      throw input.abortSignal.reason ?? new DOMException('Aborted', 'AbortError');
+    }
+    const startedAt = Date.now();
+    let status: HookCompletedAudit['status'] = 'allowed';
+    let message: string | undefined;
+    try {
+      const result = await input.executionLimiter.run(() =>
+        hook.invoke(payload, {
+          sessionId: input.context.sessionId,
+          runId: input.context.runId,
+          turnId: input.context.turnId,
+          cwd: input.context.cwd,
+          permissionMode: input.context.permissionMode,
+          origin: input.context.origin,
+          configuration: Object.freeze({}),
+          signal: input.abortSignal,
+        }),
+      );
+      if (hook.mode === 'gate' && result?.decision === 'deny') {
+        denied = true;
+        status = 'denied';
+        reason = result.reason ?? `Hook ${hook.id} denied ${input.event}.`;
+        message = reason;
+      } else if (hook.mode === 'transform' && result && Object.hasOwn(result, 'payload')) {
+        payload = mergeTransformPayload(payload, result.payload);
+      }
+    } catch (error) {
+      if (input.abortSignal.aborted) throw error;
+      status = 'failed';
+      message = boundedMessage(error);
+    }
+    const audit: HookCompletedAudit = {
+      eventName: input.event,
+      handlerId: `${hook.extensionId}:${hook.id}`,
+      definitionHash: extensionDefinitionHash(hook),
+      source: 'extension',
+      toolUseId: toolIdentity(payload, input.context.turnId),
+      toolName: toolName(payload, input.event),
+      status,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      ...(message ? { message } : {}),
+    };
+    audits.push(audit);
+    try {
+      await recordExtensionAudit(input.runtimeEvents, input.context, audit);
+    } catch (error) {
+      auditWriteFailures.push(boundedMessage(error));
+    }
+    if (denied) break;
+  }
+  return {
+    denied,
+    ...(reason ? { reason } : {}),
+    payload,
+    audits: Object.freeze(audits),
+    auditWriteFailures: Object.freeze(auditWriteFailures),
+  };
+}
+
+function mergeTransformPayload(current: unknown, replacement: unknown): unknown {
+  if (
+    current &&
+    replacement &&
+    typeof current === 'object' &&
+    typeof replacement === 'object' &&
+    !Array.isArray(current) &&
+    !Array.isArray(replacement)
+  ) {
+    return structuredClone({
+      ...(current as Record<string, unknown>),
+      ...(replacement as Record<string, unknown>),
+    });
+  }
+  return structuredClone(replacement);
+}
+
+function matcherSubject(event: ExtensionHookEventName, payload: unknown): string {
+  if (event !== 'PreToolUse' && event !== 'PostToolUse') return event;
+  return toolName(payload, event);
+}
+
+function matcherMatches(matcher: string | undefined, subject: string): boolean {
+  if (!matcher) return true;
+  return matcher
+    .split('|')
+    .some((token) =>
+      token === '*'
+        ? true
+        : token.endsWith('*')
+          ? subject.startsWith(token.slice(0, -1))
+          : token === subject,
+    );
+}
+
+function toolIdentity(payload: unknown, fallback: string): string {
+  if (payload && typeof payload === 'object' && 'toolUseId' in payload) {
+    const value = (payload as { toolUseId?: unknown }).toolUseId;
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return fallback;
+}
+
+function toolName(payload: unknown, fallback: string): string {
+  if (payload && typeof payload === 'object' && 'toolName' in payload) {
+    const value = (payload as { toolName?: unknown }).toolName;
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return fallback;
+}
+
+function extensionDefinitionHash(hook: ExtensionHookContributionInspection): `sha256:${string}` {
+  return `sha256:${createHash('sha256')
+    .update(JSON.stringify([hook.extensionId, hook.revision, hook.event, hook.id, hook.handler]))
+    .digest('hex')}`;
+}
+
+function boundedMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.slice(0, 4_000);
+}
+
+async function recordExtensionAudit(
+  runtimeEvents: HookRuntimeEventWriter,
+  context: ExtensionHookDispatchRuntimeContext,
+  audit: HookCompletedAudit,
+): Promise<void> {
+  await runtimeEvents.appendRuntimeEvent(context.sessionId, context.runId, {
+    id: randomUUID(),
+    invocationId: context.invocationId,
+    runId: context.runId,
+    sessionId: context.sessionId,
+    turnId: context.turnId,
+    ts: Date.now(),
+    partial: false,
+    role: 'system',
+    author: 'host',
+    origin: context.origin,
+    modelVisibility: 'hidden',
+    actions: { hookCompleted: audit },
+    refs: { toolCallId: audit.toolUseId },
   });
 }
 

@@ -2,8 +2,14 @@ export const HOOK_CONFIG_VERSION = 1 as const;
 export const HOOK_TRUST_VERSION = 1 as const;
 export const PRE_TOOL_USE_HOOK_EVENT = 'PreToolUse' as const;
 
-export type HookEventName = typeof PRE_TOOL_USE_HOOK_EVENT;
+export type HookEventName =
+  | 'UserPromptSubmit'
+  | 'RunStart'
+  | typeof PRE_TOOL_USE_HOOK_EVENT
+  | 'PostToolUse'
+  | 'RunEnd';
 export type HookSource = 'user' | 'project';
+export type HookAuditSource = HookSource | 'extension';
 
 export interface HookCommandConfig {
   id: string;
@@ -73,7 +79,7 @@ export interface HookCompletedAudit {
   eventName: HookEventName;
   handlerId: string;
   definitionHash: `sha256:${string}`;
-  source: HookSource;
+  source: HookAuditSource;
   toolUseId: string;
   toolName: string;
   status: HookExecutionStatus;

@@ -81,6 +81,88 @@ import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-contin
 import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
 import { getAIModel } from '../model-factory.js';
 
+describe('AiSdkBackend Extension Hook lifecycle', () => {
+  test('transforms the provider prompt and observes a completed Run', async () => {
+    const model = completionModel();
+    const calls: Array<{ event: string; payload: unknown }> = [];
+    const preToolUseHooks: NonNullable<AiSdkBackendInput['preToolUseHooks']> = {
+      prepareTurn() {},
+      releaseTurn() {},
+      async runPreToolUse() {
+        return { denied: false, audits: [], auditWriteFailures: [] };
+      },
+      async runExtensionHook(event, payload) {
+        calls.push({ event, payload: structuredClone(payload) });
+        return {
+          denied: false,
+          payload: event === 'UserPromptSubmit' ? { text: 'hooked prompt' } : payload,
+          audits: [],
+          auditWriteFailures: [],
+        };
+      },
+    };
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      preToolUseHooks,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(backend.send({ turnId: 'turn-1', text: 'original prompt', context: [] }));
+
+    assert.deepEqual(
+      calls.map(({ event }) => event),
+      ['UserPromptSubmit', 'RunStart', 'RunEnd'],
+    );
+    assert.equal(JSON.stringify(compactPrompt(model)).includes('hooked prompt'), true);
+    assert.deepEqual(calls.at(-1)?.payload, { outcome: 'completed' });
+  });
+
+  test('reports an abandoned provider stream as an aborted Run', async () => {
+    const outcomes: unknown[] = [];
+    const preToolUseHooks: NonNullable<AiSdkBackendInput['preToolUseHooks']> = {
+      prepareTurn() {},
+      releaseTurn() {},
+      async runPreToolUse() {
+        return { denied: false, audits: [], auditWriteFailures: [] };
+      },
+      async runExtensionHook(event, payload) {
+        if (event === 'RunEnd') outcomes.push(structuredClone(payload));
+        return { denied: false, payload, audits: [], auditWriteFailures: [] };
+      },
+    };
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => textCompletionModel('partial'),
+      tools: [],
+      preToolUseHooks,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const iterator = backend
+      .send({ turnId: 'turn-1', text: 'original prompt', context: [] })
+      [Symbol.asyncIterator]();
+
+    const first = await iterator.next();
+    assert.equal(first.done, false);
+    await iterator.return?.();
+
+    assert.deepEqual(outcomes, [{ outcome: 'aborted' }]);
+  });
+});
+
 describe('AiSdkBackend ApplyPatch routing', () => {
   test('advertises apply_patch only to supported native OpenAI models', async () => {
     for (const [providerType, modelId, expected] of [

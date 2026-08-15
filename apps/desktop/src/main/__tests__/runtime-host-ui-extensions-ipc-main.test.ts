@@ -7,11 +7,12 @@ import type { IpcHandler } from '../ipc-reconnect-policy.js';
 import type { DesktopRuntimeHostClient } from '../runtime-host-client.js';
 import { registerRuntimeHostUiExtensionsIpc } from '../runtime-host-ui-extensions-ipc-main.js';
 
-test('user import previews, confirms, installs, and enables one UI package', async () => {
+test('user import previews, confirms, installs, and enables one UI and Hook package', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-ui-import-'));
   try {
     await mkdir(join(root, 'documents'));
     await mkdir(join(root, 'host'));
+    await mkdir(join(root, 'dist'));
     await writeFile(join(root, 'maka.ui.json'), JSON.stringify({
       schemaVersion: 1,
       id: 'dev.maka.user.ui',
@@ -22,13 +23,35 @@ test('user import previews, confirms, installs, and enables one UI package', asy
     }));
     await writeFile(join(root, 'documents', 'root.html'), '<main>hello</main>');
     await writeFile(join(root, 'host', 'service.mjs'), 'export default { hello: () => "world" };');
+    await writeFile(
+      join(root, 'maka.hook.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        id: 'dev.maka.user.ui',
+        version: '1',
+        entry: 'dist/index.mjs',
+        hooks: [
+          {
+            id: 'policy',
+            event: 'PreToolUse',
+            mode: 'gate',
+            handler: 'policy',
+          },
+        ],
+        permissions: { workspace: 'none', network: false },
+      }),
+    );
+    await writeFile(
+      join(root, 'dist', 'index.mjs'),
+      'export default { policy: () => ({ decision: "allow" }) };',
+    );
     const handlers = new Map<string, IpcHandler>();
     const requests: Array<{ operation: string; input: unknown }> = [];
     const client = {
       request: async (operation: string, input: unknown) => {
         requests.push({ operation, input });
         if (operation === 'extension.package.install') {
-          return { extensionId: 'dev.maka.user.ui', revision: 'sha256-demo', toolNames: [], uiContributionIds: ['root'] };
+          return { extensionId: 'dev.maka.user.ui', revision: 'sha256-demo', toolNames: [], uiContributionIds: ['root'], hookContributionIds: ['PreToolUse:policy'] };
         }
         if (operation === 'extension.catalog.query') return { revisions: [], bindings: [] };
         if (operation === 'extension.catalog.mutate') return { binding: null };
@@ -51,16 +74,19 @@ test('user import previews, confirms, installs, and enables one UI package', asy
     assert.ok(handler);
     assert.deepEqual(await handler({} as never), { ok: true, extensionId: 'dev.maka.user.ui', revision: 'sha256-demo' });
     assert.equal(requests[0]?.operation, 'extension.package.install');
-    assert.deepEqual(requests.at(-1), {
+    const mutations = requests.filter(({ operation }) => operation === 'extension.catalog.mutate');
+    assert.equal(mutations.length, 2);
+    assert.deepEqual(mutations[0], {
       operation: 'extension.catalog.mutate',
       input: {
         kind: 'enable',
-        bindingId: requests.at(-1) && (requests.at(-1)!.input as { bindingId: string }).bindingId,
+        bindingId: mutations[0] && (mutations[0].input as { bindingId: string }).bindingId,
         scopeId: 'desktop-ui',
         extensionId: 'dev.maka.user.ui',
         revision: 'sha256-demo',
       },
     });
+    assert.equal((mutations[1]?.input as { scopeId?: string } | undefined)?.scopeId, 'profile');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

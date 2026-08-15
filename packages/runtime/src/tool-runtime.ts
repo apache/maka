@@ -1369,6 +1369,48 @@ export class ToolRuntime {
     // once for every exit (return or throw). The pre-impl guards record their own
     // failures above, since they early-return before this point.
     let attemptFailed = true;
+    const applyPostToolUseHooks = async (result: unknown): Promise<unknown> => {
+      if (!this.input.preToolUseHooks?.runExtensionHook || ctx.abortSignal.aborted) return result;
+      try {
+        const postHook = await this.input.preToolUseHooks.runExtensionHook(
+          'PostToolUse',
+          {
+            toolUseId,
+            toolName: tool.name,
+            toolInput: structuredClone(executionArgs),
+            result: structuredClone(result),
+          },
+          ctx.abortSignal,
+          {
+            invocationId: invocationId ?? runId ?? turnId,
+            sessionId: this.input.sessionId,
+            runId: runId ?? turnId,
+            turnId,
+            cwd: this.input.header.cwd,
+            permissionMode: this.input.header.permissionMode,
+            origin: ctx.origin,
+          },
+        );
+        if (postHook.auditWriteFailures.length > 0) {
+          trace?.emit('tool', 'tool_failed', 'PostToolUse Hook audit write failed', {
+            toolUseId,
+            toolName: tool.name,
+            failureCount: postHook.auditWriteFailures.length,
+            errorClass: 'HookAuditFailure',
+          });
+        }
+        return transformedToolResult(postHook.payload, result);
+      } catch (error) {
+        if (ctx.abortSignal.aborted) throw error;
+        trace?.emit('tool', 'tool_failed', 'PostToolUse Hook dispatcher failed open', {
+          toolUseId,
+          toolName: tool.name,
+          status: 'warning',
+          errorClass: 'HookDispatcherFailure',
+        });
+        return result;
+      }
+    };
     try {
       // Pause the stream idle watchdog for the whole tool execution. In the
       // ai-sdk step loop a tool runs *between* model requests — the tool-call
@@ -1381,9 +1423,8 @@ export class ToolRuntime {
       const pauseTarget = this.input.getPermissionPauseTarget();
       pauseTarget?.pause();
       try {
-        const runId = this.input.runId;
         const executionBoundary = clientCapabilityBoundary ?? (await this.readExecutionBoundary());
-        const result = await tool.impl(structuredClone(executionArgs) as never, {
+        let result = await tool.impl(structuredClone(executionArgs) as never, {
           sessionId: this.input.sessionId,
           turnId,
           ...(runId ? { runId } : {}),
@@ -1444,6 +1485,7 @@ export class ToolRuntime {
               queue,
             ),
         });
+        result = await applyPostToolUseHooks(result);
         if (
           ctx.maxResultBytes !== undefined &&
           serializedByteLength(result, ctx.maxResultBytes) > ctx.maxResultBytes
@@ -1580,6 +1622,9 @@ export class ToolRuntime {
         err,
       );
       if (terminalFailure) {
+        const transformedFailure = coerceResultContent(
+          await applyPostToolUseHooks(terminalFailure.content),
+        );
         if (terminalFailure.sandboxDenied) {
           const denialKey = sandboxDenialKey(tool.name, this.input.header.cwd, executionArgs);
           this.recentSandboxDenials.add(denialKey);
@@ -1596,7 +1641,7 @@ export class ToolRuntime {
         }
         const durationMs = Math.max(0, this.input.now() - startedAt);
         const durableOutcome = await durableAttempt?.commitOutcome(
-          terminalFailure.content,
+          transformedFailure,
           true,
           durationMs,
         );
@@ -1607,7 +1652,7 @@ export class ToolRuntime {
           ts: this.input.now(),
           toolUseId,
           isError: true,
-          content: terminalFailure.content,
+          content: transformedFailure,
           durationMs,
           ...activityIdentity,
         };
@@ -1620,7 +1665,7 @@ export class ToolRuntime {
           toolUseId,
           ...(durableOutcome ? { operationId: durableOutcome.operationId } : {}),
           isError: true,
-          content: terminalFailure.content,
+          content: transformedFailure,
           durationMs,
           ...activityIdentity,
         } satisfies ToolResultEvent);
@@ -1638,9 +1683,9 @@ export class ToolRuntime {
             tool.categoryHint === 'computer_use'
               ? summarizePersistedArgs(persistedArgs)
               : summarizeArgs(tool.name, executionArgs),
-          resultSummary: summarizeToolResultForTelemetry(terminalFailure.content),
+          resultSummary: summarizeToolResultForTelemetry(transformedFailure),
           bytesIn: byteLength(persistedArgs),
-          bytesOut: byteLength(terminalFailure.content),
+          bytesOut: byteLength(transformedFailure),
           startedAt,
         });
         trace?.emit('tool', 'tool_failed', 'Tool execution failed', {
@@ -1653,7 +1698,7 @@ export class ToolRuntime {
         });
         return this.errorReturn(terminalFailure.message);
       }
-      const msg =
+      let msg =
         err instanceof ToolResultLimitError
           ? err.message
           : tool.categoryHint === 'computer_use'
@@ -1661,6 +1706,14 @@ export class ToolRuntime {
             : uncertainOutcome
               ? `outcome_unknown: ${formatSyntheticToolErrorText(err)}`
               : formatSyntheticToolErrorText(err);
+      const transformedError = await applyPostToolUseHooks({ error: msg });
+      if (
+        transformedError &&
+        typeof transformedError === 'object' &&
+        typeof (transformedError as { error?: unknown }).error === 'string'
+      ) {
+        msg = (transformedError as { error: string }).error;
+      }
       await this.writeSyntheticToolResult(
         toolUseId,
         turnId,
@@ -3113,6 +3166,13 @@ function isAmbiguousComputerFailure(raw: unknown): boolean {
 
 function durableAttemptKey(turnId: string, toolUseId: string): string {
   return JSON.stringify([turnId, toolUseId]);
+}
+
+function transformedToolResult(payload: unknown, fallback: unknown): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return fallback;
+  return Object.hasOwn(payload, 'result')
+    ? structuredClone((payload as { result: unknown }).result)
+    : fallback;
 }
 
 function providerToolErrorMessage(output: unknown): string | undefined {

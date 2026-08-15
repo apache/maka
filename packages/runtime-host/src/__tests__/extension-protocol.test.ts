@@ -48,11 +48,29 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
           },
           contributions: [
             { kind: 'ui', id: 'root', surface: 'app.root', slots: ['weather.details'] },
+            { kind: 'hook', id: 'policy', event: 'PreToolUse', mode: 'gate' },
           ],
         },
       ],
     }).packages[0]?.contributions[0]?.slots,
     ['weather.details'],
+  );
+  assert.equal(
+    decodeExtensionContractQueryResult({
+      packages: [
+        {
+          extensionId: 'dev.maka.policy',
+          revision: 'sha256-demo',
+          version: '1.0.0',
+          displayName: 'Policy',
+          description: '',
+          dependencies: [],
+          configuration: { properties: {}, required: [] },
+          contributions: [{ kind: 'hook', id: 'policy', event: 'PreToolUse', mode: 'gate' }],
+        },
+      ],
+    }).packages[0]?.contributions[0]?.event,
+    'PreToolUse',
   );
   assert.deepEqual(
     decodeExtensionConfigurationMutateInput({
@@ -159,6 +177,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
           revision: '2',
           toolNames: ['Weather'],
           uiContributionIds: [],
+          hookContributionIds: [],
         },
       ],
       bindings: [
@@ -181,6 +200,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
           revision: '2',
           toolNames: ['Weather'],
           uiContributionIds: [],
+          hookContributionIds: [],
         },
       ],
       bindings: [

@@ -402,6 +402,14 @@ function providerToolResultContent(
   return { kind: 'web_search', provider: 'model', query, rows };
 }
 
+function transformedPromptText(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return fallback;
+  const text = (payload as { text?: unknown }).text;
+  return typeof text === 'string' && Buffer.byteLength(text, 'utf8') <= 1024 * 1024
+    ? text
+    : fallback;
+}
+
 function providerWebSearchQuery(input: unknown): string {
   let value = input;
   if (typeof input === 'string') {
@@ -1345,9 +1353,59 @@ export class AiSdkBackend implements AgentBackend {
     // Run, an unreadable attachment). A leaked scope would be permanent: nothing
     // overwrites a Set entry, and stop()/dispose() only iterate it.
     const scope = this.openTurnScope(input);
+    let preparedInput = input;
+    // Default to aborted so an abandoned async iterator cannot be reported as
+    // a completed Run. Normal exhaustion is the only path that promotes it.
+    let outcome: 'completed' | 'failed' | 'aborted' = 'aborted';
     try {
-      yield* this.sendWithinScope(scope, input);
+      const hookContext = {
+        invocationId: input.invocationId ?? input.runId ?? input.turnId,
+        sessionId: this.input.sessionId,
+        runId: input.runId ?? input.turnId,
+        turnId: input.turnId,
+        cwd: this.input.header.cwd,
+        permissionMode: this.input.header.permissionMode,
+        origin: 'provider' as const,
+      };
+      const promptResult = await this.input.preToolUseHooks?.runExtensionHook?.(
+        'UserPromptSubmit',
+        { text: input.text },
+        scope.abortController.signal,
+        hookContext,
+      );
+      const transformedText = transformedPromptText(promptResult?.payload, input.text);
+      if (transformedText !== input.text) preparedInput = { ...input, text: transformedText };
+      await this.input.preToolUseHooks?.runExtensionHook?.(
+        'RunStart',
+        { modelId: this.input.modelId, text: transformedText },
+        scope.abortController.signal,
+        hookContext,
+      );
+      yield* this.sendWithinScope(scope, preparedInput);
+      outcome = 'completed';
+    } catch (error) {
+      outcome = scope.abortController.signal.aborted ? 'aborted' : 'failed';
+      throw error;
     } finally {
+      const hookContext = {
+        invocationId: input.invocationId ?? input.runId ?? input.turnId,
+        sessionId: this.input.sessionId,
+        runId: input.runId ?? input.turnId,
+        turnId: input.turnId,
+        cwd: this.input.header.cwd,
+        permissionMode: this.input.header.permissionMode,
+        origin: 'provider' as const,
+      };
+      try {
+        await this.input.preToolUseHooks?.runExtensionHook?.(
+          'RunEnd',
+          { outcome },
+          new AbortController().signal,
+          hookContext,
+        );
+      } catch {
+        // Observe-only Extension Hooks are fail-open and cannot replace turn settlement.
+      }
       await this.cleanupAfterTurn(scope);
     }
   }

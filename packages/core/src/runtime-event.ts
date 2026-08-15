@@ -23,7 +23,7 @@ import {
 import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from './interaction.js';
 import type { PermissionRequestPayload, PermissionResponse } from './permission.js';
 import type { TurnOrigin } from './runtime-inputs.js';
-import type { HookExecutionStatus, HookSource } from './hooks.js';
+import type { HookAuditSource, HookEventName, HookExecutionStatus } from './hooks.js';
 import type { UserQuestionRequest } from './user-question.js';
 import {
   defineObjectShape,
@@ -243,10 +243,10 @@ export interface RuntimeEventProtocolMarker {
 }
 
 export interface RuntimeEventHookCompleted {
-  eventName: 'PreToolUse';
+  eventName: HookEventName;
   handlerId: string;
   definitionHash: `sha256:${string}`;
-  source: HookSource;
+  source: HookAuditSource;
   toolUseId: string;
   toolName: string;
   status: HookExecutionStatus;
@@ -799,12 +799,16 @@ function isRuntimeHookCompleted(value: unknown): value is RuntimeEventHookComple
   return (
     isRecord(value) &&
     hasExactShape(value, RUNTIME_HOOK_COMPLETED_SHAPE) &&
-    value.eventName === 'PreToolUse' &&
+    (value.eventName === 'UserPromptSubmit' ||
+      value.eventName === 'RunStart' ||
+      value.eventName === 'PreToolUse' ||
+      value.eventName === 'PostToolUse' ||
+      value.eventName === 'RunEnd') &&
     typeof value.handlerId === 'string' &&
     value.handlerId.length > 0 &&
     typeof value.definitionHash === 'string' &&
     /^sha256:[0-9a-f]{64}$/u.test(value.definitionHash) &&
-    (value.source === 'user' || value.source === 'project') &&
+    (value.source === 'user' || value.source === 'project' || value.source === 'extension') &&
     typeof value.toolUseId === 'string' &&
     value.toolUseId.length > 0 &&
     typeof value.toolName === 'string' &&

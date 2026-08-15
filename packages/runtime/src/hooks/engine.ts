@@ -9,6 +9,7 @@ import {
   type HookCommandRunner,
 } from './command-runner.js';
 import { hookMatcherMatches } from './matcher.js';
+import type { ExtensionHookEventName } from '../extension-hook-contributions.js';
 
 const DEFAULT_CONCURRENCY = 8;
 const MAX_DENIAL_REASON_CHARS = 4_000;
@@ -29,10 +30,34 @@ export interface PreToolUseHookDispatcher {
     abortSignal: AbortSignal,
     context: HookDispatchRuntimeContext,
   ): Promise<HookDispatchResult>;
+  /** Host-composed Extension Hook lane; absent for command-only dispatchers. */
+  runExtensionHook?(
+    event: ExtensionHookEventName,
+    payload: unknown,
+    abortSignal: AbortSignal,
+    context: ExtensionHookDispatchRuntimeContext,
+  ): Promise<ExtensionHookDispatchResult>;
 }
 
 export interface HookDispatchRuntimeContext {
   invocationId: string;
+}
+
+export interface ExtensionHookDispatchRuntimeContext extends HookDispatchRuntimeContext {
+  sessionId: string;
+  runId: string;
+  turnId: string;
+  cwd: string;
+  permissionMode: string;
+  origin: 'provider' | 'code_mode';
+}
+
+export interface ExtensionHookDispatchResult {
+  readonly denied: boolean;
+  readonly reason?: string;
+  readonly payload: unknown;
+  readonly audits: readonly HookCompletedAudit[];
+  readonly auditWriteFailures: readonly string[];
 }
 
 export interface PreToolUseHookDispatcherInput {

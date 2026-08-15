@@ -24,6 +24,12 @@ import {
   type ExtensionUiContribution,
   type ExtensionUiContributionInspection,
 } from '@maka/runtime/extension-ui-contributions';
+import {
+  contributeExtensionHook,
+  ExtensionHookContributionRegistry,
+  type ExtensionHookContribution,
+  type ExtensionHookContributionInspection,
+} from '@maka/runtime/extension-hook-contributions';
 import { createHash } from 'node:crypto';
 
 export type HostTrustedToolExtensionRevisionInput = Omit<
@@ -38,8 +44,11 @@ export interface HostPreparedToolExtensionRevisionInput {
   readonly dependencies?: readonly ExtensionDependencyDefinition[];
   /** Optional client contribution carried by the exact same immutable package Revision. */
   readonly ui?: readonly ExtensionUiContribution[];
+  /** Runtime Hook contribution identities carried by the exact same immutable package Revision. */
+  readonly hookContributionIds?: readonly string[];
   readonly prepare: (context: ExtensionPreparationContext) => Promise<{
     readonly tools: readonly MakaTool[];
+    readonly hooks?: readonly ExtensionHookContribution[];
     readonly healthCheck?: () => void | Promise<void>;
     readonly dispose?: () => void | Promise<void>;
   }>;
@@ -87,6 +96,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
   readonly #lifecycle = new ExtensionLifecycleKernel();
   readonly #tools: ExtensionToolContributionRegistry;
   readonly #ui = new ExtensionUiContributionRegistry();
+  readonly #hooks = new ExtensionHookContributionRegistry();
   readonly #scopeIds = new Set<string>();
   #hostTools: readonly MakaTool[] = Object.freeze([]);
   #draining = false;
@@ -124,6 +134,9 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
           Object.freeze({ id: `${input.extensionId}.tool-${index + 1}`, kind: 'tool' }),
         ),
         ...(input.ui ?? []).map(({ id }) => Object.freeze({ id, kind: 'ui' })),
+        ...(input.hookContributionIds ?? []).map((_, index) =>
+          Object.freeze({ id: `${input.extensionId}.hook-${index + 1}`, kind: 'hook' }),
+        ),
       ]),
       prepare: async (context: ExtensionPreparationContext) => {
         const prepared = await input.prepare(context);
@@ -134,6 +147,8 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
               contributeExtensionTool(activation, this.#tools, tool);
             for (const contribution of input.ui ?? [])
               contributeExtensionUi(activation, this.#ui, contribution);
+            for (const contribution of prepared.hooks ?? [])
+              contributeExtensionHook(activation, this.#hooks, contribution);
           },
           ...(prepared.dispose ? { dispose: prepared.dispose } : {}),
         };
@@ -217,6 +232,17 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
           : [],
       );
     return this.#ui.inspect(scopeId, committed);
+  }
+
+  inspectHooks(scopeId: string): readonly ExtensionHookContributionInspection[] {
+    if (scopeId === PROFILE_EXTENSION_SCOPE) return this.#hooks.inspect([scopeId]);
+    const resolved = new Map<string, ExtensionHookContributionInspection>();
+    for (const hook of this.#hooks.inspect([PROFILE_EXTENSION_SCOPE, scopeId])) {
+      const key = `${hook.event}\0${hook.extensionId}\0${hook.id}`;
+      const current = resolved.get(key);
+      if (!current || hook.scopeId === scopeId) resolved.set(key, hook);
+    }
+    return Object.freeze([...resolved.values()].sort(compareHookContribution));
   }
 
   installedRevisions(): readonly {
@@ -310,4 +336,17 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
 
 function compareString(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function compareHookContribution(
+  left: ExtensionHookContributionInspection,
+  right: ExtensionHookContributionInspection,
+): number {
+  return (
+    compareString(left.event, right.event) ||
+    right.priority - left.priority ||
+    compareString(left.extensionId, right.extensionId) ||
+    compareString(left.revision, right.revision) ||
+    compareString(left.id, right.id)
+  );
 }

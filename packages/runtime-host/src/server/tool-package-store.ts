@@ -81,7 +81,7 @@ export class ToolPackageStoreError extends Error {
   }
 }
 
-interface PackageFile {
+export interface PackageFile {
   readonly path: string;
   readonly content: Buffer;
 }
@@ -327,7 +327,7 @@ export function decodeToolPackageManifest(value: unknown): ToolPackageManifest {
   });
 }
 
-async function readSourcePackage(sourcePath: string): Promise<readonly PackageFile[]> {
+export async function readSourcePackage(sourcePath: string): Promise<readonly PackageFile[]> {
   if (typeof sourcePath !== 'string' || sourcePath.length === 0 || !isAbsolute(sourcePath)) {
     throw invalidPackage('Tool package sourcePath must be absolute');
   }
@@ -386,7 +386,7 @@ async function collectFiles(root: string, directory: string, paths: string[]): P
   }
 }
 
-async function writeStoredFile(root: string, file: PackageFile): Promise<void> {
+export async function writeStoredFile(root: string, file: PackageFile): Promise<void> {
   const target = join(root, ...file.path.split('/'));
   await mkdir(dirname(target), { recursive: true, mode: 0o700 });
   const handle = await open(target, 'wx', 0o600);
@@ -398,7 +398,7 @@ async function writeStoredFile(root: string, file: PackageFile): Promise<void> {
   }
 }
 
-async function syncTree(root: string, files: readonly PackageFile[]): Promise<void> {
+export async function syncTree(root: string, files: readonly PackageFile[]): Promise<void> {
   const directories = new Set<string>([root]);
   for (const file of files) {
     let directory = dirname(join(root, ...file.path.split('/')));
@@ -413,7 +413,7 @@ async function syncTree(root: string, files: readonly PackageFile[]): Promise<vo
   }
 }
 
-async function syncDirectory(path: string): Promise<void> {
+export async function syncDirectory(path: string): Promise<void> {
   const handle = await open(path, 'r');
   try {
     await handle.sync();
@@ -422,7 +422,7 @@ async function syncDirectory(path: string): Promise<void> {
   }
 }
 
-function packageRevision(files: readonly PackageFile[]): string {
+export function packageRevision(files: readonly PackageFile[]): string {
   const hash = createHash('sha256');
   for (const file of files) {
     const path = Buffer.from(file.path, 'utf8');
@@ -435,7 +435,7 @@ function packageRevision(files: readonly PackageFile[]): string {
   return `sha256-${hash.digest('hex')}`;
 }
 
-function packagePath(value: unknown, label: string): string {
+export function packagePath(value: unknown, label: string): string {
   const path = boundedString(value, label, 512);
   if (
     path.includes('\\') ||
@@ -464,7 +464,7 @@ function requireRevision(value: string): void {
   if (!REVISION_PATTERN.test(value)) throw invalidPackage('Tool package revision is invalid');
 }
 
-function boundedString(value: unknown, label: string, maxBytes: number): string {
+export function boundedString(value: unknown, label: string, maxBytes: number): string {
   if (
     typeof value !== 'string' ||
     value.length === 0 ||
@@ -512,7 +512,7 @@ function jsonSchema(value: unknown, label: string): Readonly<Record<string, unkn
   }
 }
 
-function exactRecord(value: unknown, keys: readonly string[]): Record<string, unknown> {
+export function exactRecord(value: unknown, keys: readonly string[]): Record<string, unknown> {
   const record = optionalExactRecord(value, keys);
   if (keys.some((key) => !Object.hasOwn(record, key))) {
     throw invalidPackage('Tool package record fields are invalid');
@@ -520,7 +520,10 @@ function exactRecord(value: unknown, keys: readonly string[]): Record<string, un
   return record;
 }
 
-function optionalExactRecord(value: unknown, keys: readonly string[]): Record<string, unknown> {
+export function optionalExactRecord(
+  value: unknown,
+  keys: readonly string[],
+): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw invalidPackage('Tool package record is invalid');
   }
@@ -531,7 +534,7 @@ function optionalExactRecord(value: unknown, keys: readonly string[]): Record<st
   return record;
 }
 
-function parseJson(encoded: Buffer): unknown {
+export function parseJson(encoded: Buffer): unknown {
   try {
     return JSON.parse(encoded.toString('utf8'));
   } catch (error) {
@@ -552,10 +555,10 @@ function persistenceFailure(message: string, cause?: unknown): ToolPackageStoreE
   return new ToolPackageStoreError('persistence_failed', `${message}${detail}`, { cause });
 }
 
-function compareDirent(left: Dirent, right: Dirent): number {
+export function compareDirent(left: Dirent, right: Dirent): number {
   return compareString(left.name, right.name);
 }
 
-function compareString(left: string, right: string): number {
+export function compareString(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }

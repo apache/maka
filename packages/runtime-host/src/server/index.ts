@@ -62,6 +62,16 @@ export {
   type UiPackageManifestContribution,
 } from './ui-package-store.js';
 export {
+  HookPackageStore,
+  HookPackageStoreError,
+  decodeHookPackageManifest,
+  type InstalledHookPackage,
+  type HookPackageManifest,
+  type HookPackageManifestHook,
+} from './hook-package-store.js';
+export { HookPackageActivation } from './hook-package-activation.js';
+export { HostHookPackageManagementTools } from './hook-package-management-tools.js';
+export {
   compareExtensionVersions,
   decodeExtensionPackageManifest,
   loadExtensionPackageManifest,
