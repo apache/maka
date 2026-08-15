@@ -52,7 +52,7 @@ pub fn with_acl_grants<T>(
     let ledger_path = ledger_root.join(ledger_name);
     write_ledger(&ledger_path, &ledger)?;
 
-    let grant_result = grant_roots(request, app_container_sid);
+    let grant_result = grant_roots(request, app_container_sid, &ledger.roots);
     let launch_result = match grant_result {
         Ok(()) => launch(),
         Err(error) => Err(error),
@@ -146,20 +146,19 @@ fn recover_stale(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn grant_roots(request: &LaunchRequest, sid: &str) -> Result<(), String> {
+fn grant_roots(request: &LaunchRequest, sid: &str, ledger_roots: &[LedgerRoot]) -> Result<(), String> {
     for root in &request.read_roots {
-        grant(root, sid, "RX")?;
+        let recursive = ledger_roots.iter().find(|entry| entry.path.eq_ignore_ascii_case(root)).map(|entry| entry.recursive).unwrap_or(false);
+        grant(root, sid, "RX", recursive)?;
     }
     for root in &request.write_roots {
-        grant(root, sid, "M")?;
+        let recursive = ledger_roots.iter().find(|entry| entry.path.eq_ignore_ascii_case(root)).map(|entry| entry.recursive).unwrap_or(false);
+        grant(root, sid, "M", recursive)?;
     }
     Ok(())
 }
 
-fn grant(path: &str, sid: &str, access: &str) -> Result<(), String> {
-    let recursive = fs::metadata(path)
-        .map(|value| value.is_dir())
-        .unwrap_or(false);
+fn grant(path: &str, sid: &str, access: &str, recursive: bool) -> Result<(), String> {
     let permission = if recursive {
         format!("*{sid}:(OI)(CI){access}")
     } else {
