@@ -620,10 +620,7 @@ function validateFilesystem(
       );
     }
     if (!isNormalizedAbsolutePath(candidate.path)) {
-      return invalid(
-        'invalid_path',
-        'Sandbox boundary path must be a normalized absolute path.',
-      );
+      return invalid('invalid_path', 'Sandbox boundary path must be a normalized absolute path.');
     }
     if (candidate.path.length > MAX_SANDBOX_BOUNDARY_PATH_CHARS) {
       return invalid('path_too_long', 'Sandbox boundary path exceeds the length limit.');
