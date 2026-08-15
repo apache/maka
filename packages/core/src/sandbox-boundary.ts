@@ -1,5 +1,11 @@
 import type { PermissionMode } from './permission.js';
 import {
+  isNormalizedAbsolutePath,
+  pathWithinRoot,
+  samePath,
+  trimTrailingPathSeparators,
+} from './absolute-path.js';
+import {
   FILE_SYSTEM_ACCESS_MODES,
   FILE_SYSTEM_PATH_MATCHES,
   FILE_SYSTEM_SPECIAL_PATHS,
@@ -616,7 +622,7 @@ function validateFilesystem(
     if (!isNormalizedAbsolutePath(candidate.path)) {
       return invalid(
         'invalid_path',
-        'Sandbox boundary path must be a normalized absolute POSIX path.',
+        'Sandbox boundary path must be a normalized absolute path.',
       );
     }
     if (candidate.path.length > MAX_SANDBOX_BOUNDARY_PATH_CHARS) {
@@ -745,28 +751,8 @@ function compareEntries(
   );
 }
 
-function isNormalizedAbsolutePath(path: string): boolean {
-  if (!path.startsWith('/') || path.includes('\0') || path.includes('\\')) return false;
-  if (path.length > 1 && path.endsWith('/')) return false;
-  return !path
-    .split('/')
-    .some((segment, index) => index > 0 && (segment === '' || segment === '.' || segment === '..'));
-}
-
-function pathWithinRoot(path: string, root: string): boolean {
-  const normalizedPath = trimTrailingSlashes(path);
-  const normalizedRoot = trimTrailingSlashes(root);
-  if (normalizedRoot === '/') return normalizedPath.startsWith('/');
-  return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
-}
-
-function samePath(a: string, b: string): boolean {
-  return trimTrailingSlashes(a) === trimTrailingSlashes(b);
-}
-
 function trimTrailingSlashes(value: string): string {
-  if (value === '/') return value;
-  return value.replace(/\/+$/g, '');
+  return trimTrailingPathSeparators(value);
 }
 
 function serializedByteLength(value: unknown): number {

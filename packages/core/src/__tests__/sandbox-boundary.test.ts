@@ -98,6 +98,55 @@ describe('SandboxBoundaryExpansion', () => {
     });
   });
 
+  test('accepts normalized Windows drive paths and compares them case-insensitively', () => {
+    const result = validateSandboxBoundaryExpansion({
+      filesystem: {
+        entries: [
+          { path: 'D:\\Outside\\Tree\\file.txt', access: 'read', scope: 'exact' },
+          { path: 'd:\\outside\\tree', access: 'read', scope: 'subtree' },
+        ],
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      expansion: {
+        filesystem: {
+          entries: [{ path: 'd:\\outside\\tree', access: 'read', scope: 'subtree' }],
+        },
+      },
+    });
+
+    const widened = applySandboxBoundaryExpansion(createReadOnlyPermissionProfile(), {
+      filesystem: {
+        entries: [{ path: 'D:\\Outside\\Tree', access: 'read', scope: 'subtree' }],
+      },
+    });
+    expect(canReadPath(widened, 'd:\\outside\\tree\\file.txt')).toBe(true);
+    expect(canReadPath(widened, 'D:\\Outside\\Sibling\\file.txt')).toBe(false);
+
+    expect(
+      validateSandboxBoundaryExpansion({
+        filesystem: { entries: [{ path: 'C:\\', access: 'read', scope: 'subtree' }] },
+      }).ok,
+    ).toBe(true);
+  });
+
+  test('rejects non-normalized Windows boundary paths', () => {
+    for (const path of [
+      'D:\\outside\\..\\secret.txt',
+      'D:/outside/secret.txt',
+      '\\\\server\\share\\secret.txt',
+      'D:\\outside\\',
+    ]) {
+      expect(
+        validateSandboxBoundaryExpansion({
+          filesystem: { entries: [{ path, access: 'read', scope: 'exact' }] },
+        }).ok,
+      ).toBe(false);
+    }
+  });
+
   test('rejects empty, relative, deny, policy-shaped, and legacy expansions', () => {
     for (const expansion of [
       {},

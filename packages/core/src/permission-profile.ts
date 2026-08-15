@@ -316,19 +316,9 @@ function relativeSegments(path: string, root: string): string[] | undefined {
   return relative.split('/').filter(Boolean);
 }
 
-function pathWithinRoot(path: string, root: string): boolean {
-  const normalizedPath = trimTrailingSlashes(path);
-  const normalizedRoot = trimTrailingSlashes(root);
-  if (!normalizedPath || !normalizedRoot) return false;
-  if (normalizedRoot === '/') return normalizedPath.startsWith('/');
-  return normalizedPath === normalizedRoot || normalizedPath.startsWith(normalizedRoot + '/');
-}
-
-function samePath(path: string, expected: string): boolean {
-  return trimTrailingSlashes(path) === trimTrailingSlashes(expected);
-}
 function trimTrailingSlashes(value: string): string {
   if (!value) return '';
-  const trimmed = value.replace(/\/+$/, '');
+  const trimmed = trimTrailingPathSeparators(value);
   return trimmed || '/';
 }
+import { pathWithinRoot, samePath, trimTrailingPathSeparators } from './absolute-path.js';
