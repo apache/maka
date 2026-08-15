@@ -8,14 +8,6 @@ type ShellControlsCopy = {
     mainLabel: string;
     newTask: string;
     importSession: string;
-    /**
-     * Accessible name of the session-group header's new-task trigger
-     * (session-history-list.tsx). Deliberately NOT `newTask`: that copy is
-     * the rail's top-level SideNavItem's name, and two controls sharing one
-     * accessible name collide for `getByRole('button', { name })` and screen
-     * readers alike. The two entries share the handler, not the name.
-     */
-    groupNewTask: string;
     automations: string;
     extensions: string;
     settings: string;
@@ -50,7 +42,6 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       mainLabel: '主导航',
       newTask: '新任务',
       importSession: '导入会话',
-      groupNewTask: '新建任务',
       automations: '定时任务',
       extensions: '扩展',
       settings: '设置',
@@ -83,7 +74,6 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       mainLabel: 'Main navigation',
       newTask: 'New task',
       importSession: 'Import conversation',
-      groupNewTask: 'New task in group',
       automations: 'Scheduled tasks',
       extensions: 'Extensions',
       settings: 'Settings',

@@ -21,15 +21,12 @@ import {
   Pin,
   PinOff,
   Plug,
-  Plus,
   SquarePen,
   Trash2,
 } from './icons.js';
 import { RelativeTime } from './relative-time.js';
 import { Badge } from '@astryxdesign/core/Badge';
-import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
-import { IconButton } from '@astryxdesign/core/IconButton';
 import {
   SideNavItem,
   SideNavSection,
@@ -40,7 +37,6 @@ import { describeBlockedReason, presentSessionStatus } from './session-status-pr
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import { getShellControlsCopy } from './shell-controls-copy.js';
 
 type SessionRowActionId = 'flag' | 'archive' | 'rename' | 'delete';
 type ProjectRowActionId = 'new' | 'relink' | 'rename' | 'archive' | 'restore';
@@ -78,22 +74,11 @@ export function SessionHistoryList(props: {
   worktreeSessionIds?: ReadonlySet<string>;
   projectActions?: ProjectRowActions;
   groupVariant?: SessionHistoryGroupVariant;
-  /** Optional section chrome (title + end actions) wrapping the history. */
-  heading?: string;
-  headingEnd?: ReactNode;
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
-  /**
-   * Creates a new task from a group header's trailing trigger (time grouping
-   * only). Same handler as the rail's top-level 新任务 row: a session created
-   * here lands where any new session lands; the trigger is a proximity entry,
-   * not a different creation path. Absent = no trigger.
-   */
-  onNewTask?(): void;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
-  const sessionListTitle = props.heading ?? copy.title;
 
   function handleListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key !== 'Delete' && event.key !== 'Backspace') return;
@@ -111,48 +96,38 @@ export function SessionHistoryList(props: {
     }
   }
 
-  const body = (
-    <SessionListGroups
-      groups={
-        props.groups
-          ? props.groups.map((g) => ({
-              key: g.id,
-              label: g.label,
-              sessions: g.sessions,
-              project: g.project,
-            }))
-          : groupSessionsForHistory(props.sessions, locale).map((g) => ({
-              key: g.id,
-              label: g.label,
-              sessions: g.sessions,
-            }))
-      }
-      groupVariant={props.groupVariant ?? 'conversation'}
-      activeId={props.activeId}
-      streamingSessionIds={props.streamingSessionIds}
-      staleSessionIds={props.staleSessionIds}
-      worktreeSessionIds={props.worktreeSessionIds}
-      onSelectSession={props.onSelectSession}
-      rowActions={props.rowActions}
-      projectActions={props.projectActions}
-      onNewTask={props.onNewTask}
-    />
-  );
-
   // Outer SideNav is the sole navigation landmark; this is scroll content only.
   return (
-    <div className="maka-session-list" role="group" aria-label={sessionListTitle} onKeyDown={handleListKeyDown}>
-      {props.heading ? (
-        <SideNavSection
-          title={props.heading}
-          endContent={props.headingEnd}
-          className="maka-session-heading-section"
-        >
-          {body}
-        </SideNavSection>
-      ) : (
-        body
-      )}
+    <div
+      className="maka-session-list"
+      role="group"
+      aria-label={copy.listAriaLabel}
+      onKeyDown={handleListKeyDown}
+    >
+      <SessionListGroups
+        groups={
+          props.groups
+            ? props.groups.map((g) => ({
+                key: g.id,
+                label: g.label,
+                sessions: g.sessions,
+                project: g.project,
+              }))
+            : groupSessionsForHistory(props.sessions, locale).map((g) => ({
+                key: g.id,
+                label: g.label,
+                sessions: g.sessions,
+              }))
+        }
+        groupVariant={props.groupVariant ?? 'conversation'}
+        activeId={props.activeId}
+        streamingSessionIds={props.streamingSessionIds}
+        staleSessionIds={props.staleSessionIds}
+        worktreeSessionIds={props.worktreeSessionIds}
+        onSelectSession={props.onSelectSession}
+        rowActions={props.rowActions}
+        projectActions={props.projectActions}
+      />
     </div>
   );
 }
@@ -172,10 +147,8 @@ function SessionListGroups(props: {
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
   projectActions?: ProjectRowActions;
-  onNewTask?(): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
-  const newTaskCopy = getShellControlsCopy(useUiLocale()).navigation.groupNewTask;
   const [renameTarget, setRenameTarget] = useState<SessionRenameTarget | null>(null);
   /**
    * The control the rename was started from, so focus can go back to it.
@@ -308,27 +281,6 @@ function SessionListGroups(props: {
     );
   }
 
-  // Group-header new-task trigger (time grouping). Same HANDLER as the
-  // rail's top-level 新任务 SideNavItem, but a different NAME
-  // (navigation.groupNewTask): reusing copy.newTask would give two controls
-  // the same accessible name, a strict-mode collision for
-  // getByRole('button', { name: '新任务' }) and an ambiguity for screen
-  // readers. IconButton + Tooltip is the icon-only pattern
-  // SessionSidebarFooter already uses; the compact 24px box and column
-  // alignment belong to sidebar.css.
-  const newTaskAction = props.onNewTask ? (
-    <Tooltip content={newTaskCopy}>
-      <IconButton
-        className="maka-group-new-task-button"
-        variant="ghost"
-        size="sm"
-        label={newTaskCopy}
-        icon={<Plus size={ICON_SIZE.control} aria-hidden="true" />}
-        onClick={() => void props.onNewTask?.()}
-      />
-    </Tooltip>
-  ) : undefined;
-
   return (
     <>
       {renameDialog}
@@ -342,12 +294,7 @@ function SessionListGroups(props: {
           );
         }
         return (
-          <SideNavSection
-            key={group.key}
-            title={group.label}
-            endContent={newTaskAction}
-            className="maka-session-group"
-          >
+          <SideNavSection key={group.key} title={group.label} className="maka-session-group">
             {items}
           </SideNavSection>
         );
