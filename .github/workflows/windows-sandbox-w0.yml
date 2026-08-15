@@ -68,7 +68,15 @@ jobs:
 
       - name: Install workspace dependencies
         run: npm ci
-      - name: Build core and runtime workspaces
-        run: npm run build --workspace @maka/core --workspace @maka/runtime
+      # The runtime's tsc build resolves types from its workspace dependencies'
+      # dist output, so each dependency builds first in topological order.
+      - name: Build core workspace
+        run: npm run build --workspace @maka/core
+      - name: Build storage workspace
+        run: npm run build --workspace @maka/storage
+      - name: Build code-mode workspace
+        run: npm run build --workspace @maka/code-mode
+      - name: Build runtime workspace
+        run: npm run build --workspace @maka/runtime
       - name: Run real filesystem-worker operations through the broker
         run: node --test packages/runtime/dist/__tests__/filesystem-worker-windows-smoke.test.js

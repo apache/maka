@@ -122,7 +122,9 @@ export async function verifyWindowsSandboxWorkerE2E(sandboxExecutablePath) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const executable = process.argv[2];
   if (!executable) {
-    throw new Error('Usage: node scripts/verify-windows-sandbox-e2e.mjs <maka-windows-sandbox.exe>');
+    throw new Error(
+      'Usage: node scripts/verify-windows-sandbox-e2e.mjs <maka-windows-sandbox.exe>',
+    );
   }
   await verifyWindowsSandboxWorkerE2E(executable);
   console.log('Packaged Windows filesystem-worker E2E verified.');
