@@ -15,7 +15,6 @@ apps/desktop/src/renderer/chat-workbar.tsx
 apps/desktop/src/renderer/command-palette.tsx
 apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
-apps/desktop/src/renderer/external-session-import-dialog.tsx
 apps/desktop/src/renderer/keyboard-help.tsx
 apps/desktop/src/renderer/live-turn-reconciler.tsx
 apps/desktop/src/renderer/maka-tokens.css
@@ -43,6 +42,7 @@ apps/desktop/src/renderer/settings/daily-review-settings-page.tsx
 apps/desktop/src/renderer/settings/data-settings-page.tsx
 apps/desktop/src/renderer/settings/general-settings-page.tsx
 apps/desktop/src/renderer/settings/health-center-page.tsx
+apps/desktop/src/renderer/settings/import-tasks-settings-page.tsx
 apps/desktop/src/renderer/settings/memory-entry-list.tsx
 apps/desktop/src/renderer/settings/memory-settings-page.tsx
 apps/desktop/src/renderer/settings/memory-settings-sections.tsx
@@ -68,6 +68,7 @@ apps/desktop/src/renderer/settings/settings-section.tsx
 apps/desktop/src/renderer/settings/settings-skeleton.tsx
 apps/desktop/src/renderer/settings/settings-surface.tsx
 apps/desktop/src/renderer/settings/subagent-settings-page.tsx
+apps/desktop/src/renderer/settings/tasks-settings-page.tsx
 apps/desktop/src/renderer/settings/usage-settings-page.tsx
 apps/desktop/src/renderer/settings/web-search-settings-page.tsx
 apps/desktop/src/renderer/side-chat-close-confirmation.tsx
@@ -84,7 +85,6 @@ apps/desktop/src/renderer/styles/custom-pet-companion.css
 apps/desktop/src/renderer/styles/daily-review.css
 apps/desktop/src/renderer/styles/deep-research.css
 apps/desktop/src/renderer/styles/error.css
-apps/desktop/src/renderer/styles/external-session-import.css
 apps/desktop/src/renderer/styles/help.css
 apps/desktop/src/renderer/styles/hero.css
 apps/desktop/src/renderer/styles/interaction-prompts.css
@@ -150,9 +150,6 @@ packages/ui/src/model-picker.tsx
 packages/ui/src/module-hub-selector.tsx
 packages/ui/src/module-pages.tsx
 packages/ui/src/permission-mode-menu.tsx
-packages/ui/src/scheduled-task-form-dialog.tsx
-packages/ui/src/scheduled-task-inspector.tsx
-packages/ui/src/scheduled-task-panel.tsx
 packages/ui/src/primitives/chat.tsx
 packages/ui/src/primitives/module-page.tsx
 packages/ui/src/primitives/page-header.tsx
@@ -161,6 +158,9 @@ packages/ui/src/prompt-anchor-rail.tsx
 packages/ui/src/quote-ref-chip.tsx
 packages/ui/src/relative-time.tsx
 packages/ui/src/sandbox-boundary-prompt.tsx
+packages/ui/src/scheduled-task-form-dialog.tsx
+packages/ui/src/scheduled-task-inspector.tsx
+packages/ui/src/scheduled-task-panel.tsx
 packages/ui/src/search-modal.tsx
 packages/ui/src/session-context-layer.tsx
 packages/ui/src/session-history-list.tsx

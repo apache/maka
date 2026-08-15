@@ -14,7 +14,7 @@ const root = join(fileURLToPath(new URL('..', import.meta.url)));
 const BUTTON_GUARD_FILES = [
   'packages/ui/src/composer.tsx',
   'apps/desktop/src/renderer/session-inspector-panel.tsx',
-  'apps/desktop/src/renderer/external-session-import-dialog.tsx',
+  'apps/desktop/src/renderer/settings/import-tasks-settings-page.tsx',
   'apps/desktop/src/renderer/plan-mode-panel.tsx',
   'apps/desktop/src/renderer/session-workbar.tsx',
 ];
@@ -94,8 +94,7 @@ try {
 const REQUIRED_IMPORTS = [
   ['packages/ui/src/composer.tsx', /Button as UiButton|from '@astryxdesign\/core'/],
   ['apps/desktop/src/renderer/session-inspector-panel.tsx', /ToggleButton/],
-  ['apps/desktop/src/renderer/external-session-import-dialog.tsx', /SegmentedControl/],
-  ['apps/desktop/src/renderer/external-session-import-dialog.tsx', /Item/],
+  ['apps/desktop/src/renderer/settings/import-tasks-settings-page.tsx', /ListItem/],
   ['apps/desktop/src/renderer/plan-mode-panel.tsx', /Collapsible/],
 ];
 for (const [rel, re] of REQUIRED_IMPORTS) {
@@ -105,59 +104,14 @@ for (const [rel, re] of REQUIRED_IMPORTS) {
   }
 }
 
-const importTsx = readFileSync(
-  join(root, 'apps/desktop/src/renderer/external-session-import-dialog.tsx'),
-  'utf8',
-);
-// Parent-role paths (listitem/option/menuitem) put onClick on the root and
-// suppress Item's native button — easy to ship a -1-only tabIndex trap.
-if (/role=["']listitem["']/.test(importTsx)) {
-  failures.push('external-session-import-dialog.tsx: Item role=listitem drops keyboard button');
-}
-if (/role=["']option["']/.test(importTsx) || /role=["']listbox["']/.test(importTsx)) {
-  failures.push(
-    'external-session-import-dialog.tsx: avoid listbox/option parent-role path; leave Item without role so it supplies a focusable button',
-  );
-}
-// Every session Item must use onClick (button path) and must not pin tabIndex=-1.
-const sessionItemBlocks = [
-  ...importTsx.matchAll(/className="maka-external-session-import-row"[\s\S]{0,400}?\/>/g),
-];
-if (sessionItemBlocks.length === 0) {
-  failures.push('external-session-import-dialog.tsx: missing session Item rows');
-}
-for (const block of sessionItemBlocks) {
-  const body = block[0];
-  if (!/onClick=/.test(body)) {
-    failures.push(
-      'external-session-import-dialog.tsx: session Item missing onClick (no button path)',
-    );
-  }
-  if (/tabIndex=\{-1\}|tabIndex=\{selectedId/.test(body)) {
-    failures.push(
-      'external-session-import-dialog.tsx: session Item must not use selected-only tabIndex (null selectedId traps keyboard)',
-    );
-  }
-}
-
-const importCss = readFileSync(
-  join(root, 'apps/desktop/src/renderer/styles/external-session-import.css'),
-  'utf8',
-);
-if (
-  /\.maka-external-session-import-row\[aria-pressed/.test(importCss) &&
-  !/\.maka-external-session-import-row\[aria-selected/.test(importCss)
-) {
-  failures.push(
-    'external-session-import.css: selected rows must target aria-selected/aria-current, not aria-pressed',
-  );
-}
-if (
-  !/\.maka-external-session-import-row\[aria-selected/.test(importCss) &&
-  !/\.maka-external-session-import-row\[aria-current/.test(importCss)
-) {
-  failures.push('external-session-import.css: missing selected-state selector for Item');
-}
+// The import dialog's Item-row guards are gone with the dialog (#2984). They
+// checked that a SELECTED row stayed keyboard-reachable: no listitem/option
+// parent role stealing Item's native button, no `tabIndex={selectedId ...}`
+// trapping focus when nothing is selected, and a selected-state selector on
+// aria-selected rather than aria-pressed. 设置 › 活动 › 导入任务 has no
+// selection at all — 导入 sits on each row the way 恢复 does on the archived
+// page — so there is no selected row to keep reachable. Guarding the new page
+// for the same smells would assert a shape it does not have.
 
 const invText = readFileSync(join(root, 'docs/astryx-alignment-inventory.md'), 'utf8');
 if (/module shell toolbar|module-page-bar.*42|Module shell toolbar CSS/.test(invText)) {

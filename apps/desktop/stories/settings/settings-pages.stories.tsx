@@ -32,6 +32,16 @@ import type { ConnectionsBridge } from '../../src/renderer/settings/providers-pa
 import type { ProjectRecord } from '@maka/core/project';
 import type { ArchivedTasksBridge } from '../../src/renderer/settings/tasks-settings-page';
 import { withScopedMakaBridge } from '../maka-bridge';
+import { getDailyReviewSettingsCopy } from '../../src/renderer/locales/settings-daily-review-copy';
+
+/**
+ * Read from the copy table, not typed out again. This selector matched a
+ * literal '跟随对话默认' that the 任务 rename retired, so it silently found
+ * nothing — and `scripts/storybook-visual-smoke.mjs` disables every `play`
+ * function, so CI could not tell us. A story that drives the UI by its visible
+ * text has to source that text where the UI does.
+ */
+const DAILY_REVIEW_DEFAULT_MODEL_LABEL = getDailyReviewSettingsCopy('zh').defaultModel;
 const STORY_PLATFORM = 'darwin' as const;
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -1101,7 +1111,7 @@ async function waitForStoryCondition(predicate: () => boolean, errorMessage: str
 async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise<HTMLButtonElement> {
   const selector = await waitForStoryButton(
     canvasElement,
-    (candidate) => candidate.textContent?.includes('跟随对话默认') === true,
+    (candidate) => candidate.textContent?.includes(DAILY_REVIEW_DEFAULT_MODEL_LABEL) === true,
   );
   await userEvent.click(selector);
   await waitForStoryCondition(
