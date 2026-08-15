@@ -18,23 +18,26 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::protocol::LaunchRequest;
 
-const LEDGER_VERSION: u8 = 1;
+pub(crate) const LEDGER_VERSION: u8 = 1;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Ledger {
-    version: u8,
-    request_id: String,
-    app_container_sid: String,
-    roots: Vec<LedgerRoot>,
+pub(crate) struct Ledger {
+    pub(crate) version: u8,
+    pub(crate) request_id: String,
+    pub(crate) app_container_sid: String,
+    pub(crate) roots: Vec<LedgerRoot>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LedgerRoot {
-    path: String,
-    recursive: bool,
-    backup_path: String,
+pub(crate) struct LedgerRoot {
+    pub(crate) path: String,
+    pub(crate) recursive: bool,
+    /// Absent in ledgers written before ACL backups existed; recovery then
+    /// falls back to removing this ledger's AppContainer SID grants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) backup_path: Option<String>,
 }
 
 pub fn with_acl_grants<T>(
@@ -87,7 +90,7 @@ pub fn with_acl_grants<T>(
     let _lock = LedgerLock { path: lock_path };
     recover_stale(&ledger_root)?;
 
-    let roots = collect_roots(request, &ledger_root, &request.request_id)?;
+    let roots = collect_roots(request)?;
     let ledger = Ledger {
         version: LEDGER_VERSION,
         request_id: request.request_id.clone(),
@@ -112,7 +115,7 @@ pub fn with_acl_grants<T>(
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Err(restore)) => Err(restore),
-        (Err(error), Err(restore)) => Err(format!("{error}; ACL restore also failed: {restore}")),
+        (Err(error), Err(restore)) => Err(format!("{error}; ACL cleanup also failed: {restore}")),
     }
 }
 
@@ -148,11 +151,7 @@ fn lock_owner_is_stale(path: &Path) -> Result<bool, String> {
     Ok(exit_code != STILL_ACTIVE as u32)
 }
 
-fn collect_roots(
-    request: &LaunchRequest,
-    ledger_root: &Path,
-    request_id: &str,
-) -> Result<Vec<LedgerRoot>, String> {
+fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, String> {
     let mut roots = Vec::new();
     for path in request.read_roots.iter().chain(&request.write_roots) {
         if roots
@@ -162,15 +161,10 @@ fn collect_roots(
             continue;
         }
         let metadata = reject_reparse_tree(Path::new(path))?;
-        let backup_path = ledger_root.join(format!(
-            "{:x}.acl",
-            Sha256::digest(format!("{request_id}:{}", path).as_bytes())
-        ));
-        save_acl(path, &backup_path, metadata.is_dir())?;
         roots.push(LedgerRoot {
             path: path.clone(),
             recursive: metadata.is_dir(),
-            backup_path: backup_path.to_string_lossy().into_owned(),
+            backup_path: None,
         });
     }
     Ok(roots)
@@ -196,7 +190,7 @@ fn reject_reparse_tree(path: &Path) -> Result<fs::Metadata, String> {
     Ok(metadata)
 }
 
-fn write_ledger(path: &Path, ledger: &Ledger) -> Result<(), String> {
+pub(crate) fn write_ledger(path: &Path, ledger: &Ledger) -> Result<(), String> {
     let bytes = serde_json::to_vec(ledger).map_err(|error| error.to_string())?;
     let mut file = OpenOptions::new()
         .write(true)
@@ -208,7 +202,7 @@ fn write_ledger(path: &Path, ledger: &Ledger) -> Result<(), String> {
         .map_err(|error| format!("persist ACL ledger failed: {error}"))
 }
 
-fn recover_stale(root: &Path) -> Result<(), String> {
+pub(crate) fn recover_stale(root: &Path) -> Result<(), String> {
     for entry in fs::read_dir(root).map_err(|error| format!("read ACL ledgers failed: {error}"))? {
         let path = entry
             .map_err(|error| format!("read ACL ledger entry failed: {error}"))?
@@ -218,13 +212,19 @@ fn recover_stale(root: &Path) -> Result<(), String> {
         }
         let source = fs::read(&path)
             .map_err(|error| format!("read stale ACL ledger {} failed: {error}", path.display()))?;
-        let ledger: Ledger = serde_json::from_slice(&source)
-            .map_err(|error| format!("invalid stale ACL ledger {}: {error}", path.display()))?;
+        let ledger: Ledger = match serde_json::from_slice(&source) {
+            Ok(ledger) => ledger,
+            Err(error) => {
+                quarantine_ledger(&path, &format!("invalid stale ACL ledger: {error}"))?;
+                continue;
+            }
+        };
         if ledger.version != LEDGER_VERSION {
-            return Err(format!(
-                "unsupported ACL ledger version in {}",
-                path.display()
-            ));
+            quarantine_ledger(
+                &path,
+                &format!("unsupported ACL ledger version {}", ledger.version),
+            )?;
+            continue;
         }
         remove_grants(&ledger)?;
         fs::remove_file(&path).map_err(|error| {
@@ -279,38 +279,52 @@ fn grant(path: &str, sid: &str, access: &str, recursive: bool) -> Result<(), Str
     run_icacls(&args, "grant")
 }
 
+/// Undo the grants recorded by a ledger by removing exactly this
+/// AppContainer SID's ACEs. The broker's only ACL mutation is adding grants
+/// for its own per-app SID, so targeted removal restores the prior state while
+/// preserving every pre-existing ACE. `icacls /save`+`/restore` is not usable
+/// here: `/restore` requires SeRestorePrivilege (fails in the non-elevated
+/// desktop process) and saved entries are relative to the saved path's parent.
 fn remove_grants(ledger: &Ledger) -> Result<(), String> {
     for root in &ledger.roots {
+        // Backups written by older broker builds are obsolete; drop them.
+        if let Some(backup) = root.backup_path.as_deref() {
+            let _ = fs::remove_file(backup);
+        }
         if !Path::new(&root.path).exists() {
             continue;
         }
-        restore_acl(&root.path, Path::new(&root.backup_path))?;
-        let _ = fs::remove_file(&root.backup_path);
+        remove_sid_grants(&root.path, &ledger.app_container_sid, root.recursive)?;
     }
     Ok(())
 }
 
-fn save_acl(path: &str, backup: &Path, recursive: bool) -> Result<(), String> {
-    let mut args = vec![
-        path,
-        "/save",
-        backup
-            .to_str()
-            .ok_or_else(|| "invalid ACL backup path".to_owned())?,
-        "/L",
-        "/Q",
-    ];
+fn remove_sid_grants(path: &str, sid: &str, recursive: bool) -> Result<(), String> {
+    let principal = format!("*{sid}");
+    let mut args = vec![path, "/remove", &principal, "/L", "/Q"];
     if recursive {
         args.push("/T");
     }
-    run_icacls(&args, "save")
+    run_icacls(&args, "remove")
 }
 
-fn restore_acl(path: &str, backup: &Path) -> Result<(), String> {
-    let backup = backup
-        .to_str()
-        .ok_or_else(|| "invalid ACL backup path".to_owned())?;
-    run_icacls(&[path, "/restore", backup, "/L", "/Q"], "restore")
+/// Preserve an unreadable ledger for inspection instead of letting one corrupt
+/// file permanently block every future sandbox launch. The rename keeps the
+/// evidence (`*.json.quarantined` no longer matches the recovery scan) and the
+/// warning keeps the failure loud on stderr.
+fn quarantine_ledger(path: &Path, reason: &str) -> Result<(), String> {
+    let mut quarantined = path.as_os_str().to_owned();
+    quarantined.push(".quarantined");
+    let quarantined = PathBuf::from(quarantined);
+    let _ = fs::remove_file(&quarantined);
+    fs::rename(path, &quarantined)
+        .map_err(|error| format!("quarantine ACL ledger {} failed: {error}", path.display()))?;
+    eprintln!(
+        "maka-windows-sandbox: {reason}; quarantined {} to {}",
+        path.display(),
+        quarantined.display()
+    );
+    Ok(())
 }
 
 fn run_icacls(args: &[&str], operation: &str) -> Result<(), String> {

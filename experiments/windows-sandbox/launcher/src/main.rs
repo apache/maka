@@ -2,6 +2,8 @@
 compile_error!("maka-windows-sandbox is Windows-only");
 
 mod acl_ledger;
+#[cfg(test)]
+mod acl_ledger_tests;
 mod broker_authorization;
 #[cfg(test)]
 mod broker_authorization_tests;
