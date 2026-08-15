@@ -121,7 +121,12 @@ function StoryFrame(props: {
   focusActiveRow?: boolean;
   openActiveRowMenu?: boolean;
 }) {
-  const { children, width = 240, height = 680, focusActiveRow = false, openActiveRowMenu = false } = props;
+  // 260 is `SessionListPanel`'s own default width. The frame used to default to
+  // 240 and clip the rail by 20px in every story that did not pass a width —
+  // which lands squarely on the trailing slot, so the stories could not show
+  // whether the timestamp fits. Stories that want a narrow rail pass the width
+  // to both, as `panelProps` explains.
+  const { children, width = 260, height = 680, focusActiveRow = false, openActiveRowMenu = false } = props;
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -178,6 +183,22 @@ const statusSessions = [
     status: 'blocked',
     blockedReason: 'auth',
     lastMessageAt: NOW - 20 * 60 * 1000,
+  }),
+  // `review` and `done` have no writer in current source, but stored rows can
+  // still carry them (see SESSION_STATUSES) and the rail has to draw them. They
+  // are also the two colours this change decided on purpose — attention and
+  // success — so the story that shows every status has to show them.
+  makeSession({
+    id: 'status-review',
+    name: '待审核的文件 diff',
+    status: 'review',
+    lastMessageAt: NOW - 37 * 60 * 1000,
+  }),
+  makeSession({
+    id: 'status-done',
+    name: '已完成的 smoke run',
+    status: 'done',
+    lastMessageAt: NOW - 2 * 60 * 60 * 1000,
   }),
   makeSession({
     id: 'status-archived',
