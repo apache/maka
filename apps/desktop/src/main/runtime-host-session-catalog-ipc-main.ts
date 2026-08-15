@@ -202,11 +202,18 @@ export function registerRuntimeHostSessionCatalogIpc(
 }
 
 /**
- * Reads the archived premise off options `requestsRevisionFamily` has already
- * checked the shape of.
+ * Reads the archived premise off the remove options.
+ *
+ * This guards a permanent deletion, so it refuses anything it cannot read
+ * rather than falling through to "no premise stated" — which would be the
+ * destructive answer. It repeats the shape check its sibling does instead of
+ * relying on the caller running that one first.
  */
 function requiresArchivedSession(options: unknown): boolean {
-  if (options === undefined || options === null) return false;
+  if (options === undefined) return false;
+  if (!options || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error('Invalid session family action options');
+  }
   const value = (options as { requireArchived?: unknown }).requireArchived;
   if (value === undefined) return false;
   if (typeof value !== 'boolean') throw new Error('Invalid requireArchived option');

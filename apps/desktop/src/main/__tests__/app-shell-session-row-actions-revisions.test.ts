@@ -34,7 +34,7 @@ function installWindow(calls: string[]): () => void {
           archive: async (id: string, options?: { revisionFamily?: boolean }) => { calls.push(`archive:${id}:${options?.revisionFamily === true}`); },
           unarchive: async (id: string, options?: { revisionFamily?: boolean }) => { calls.push(`unarchive:${id}:${options?.revisionFamily === true}`); },
           rename: async (id: string, name: string, options?: { revisionFamily?: boolean }) => { calls.push(`rename:${id}:${name}:${options?.revisionFamily === true}`); },
-          remove: async (id: string, options?: { revisionFamily?: boolean }) => { calls.push(`remove:${id}:${options?.revisionFamily === true}`); },
+          remove: async (id: string, options?: { revisionFamily?: boolean; requireArchived?: boolean }) => { calls.push(`remove:${id}:${options?.revisionFamily === true}:${options?.requireArchived === true}`); return 'removed' as const; },
         },
       },
     },
@@ -88,7 +88,9 @@ describe('revision-family session row actions', () => {
       'flag:version:true:true',
       'rename:branch:Independent branch:true',
       'archive:version:true',
-      'remove:root:true',
+      // `root` is not archived, so the delete states no archived premise —
+      // requiring one would refuse every delete from the rail.
+      'remove:root:true:false',
     ]);
     assert.deepEqual(selections, [undefined, undefined]);
     assert.deepEqual(cleared, ['root', 'version', 'root', 'version']);

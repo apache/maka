@@ -90,8 +90,8 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
     // Frozen at the click. A confirm names a number to a person, and a set
     // re-read afterwards can be larger than the one they agreed to — another
     // client archiving a task while the dialog is up would add it. Shrinking is
-    // safe and happens at the other end: `onPurge` skips anything no longer
-    // archived, so a task restored meanwhile is left alone.
+    // safe and happens at the other end: `onPurge` keeps anything restored
+    // meanwhile and says so.
     const ids = purgeTargets.map((session) => session.id);
     const confirmed = await toast.confirm({
       title: isSearching
@@ -106,23 +106,23 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
     setPurging(true);
     try {
       const outcome = await props.onPurge(ids);
-      if (!outcome.verified) {
-        toast.error(copy.purgeFailedTitle, copy.purgeUnverified);
-      } else if (outcome.remaining.length > 0) {
+      // The person agreed to a number, so a sweep that lands on a smaller one
+      // owes them the whole account rather than whichever single fact a branch
+      // picked. Kept tasks and failures are independent — reporting one and
+      // dropping the other is how a count quietly stops adding up.
+      const kept =
+        outcome.restored.length > 0 ? copy.purgeKeptRestored(outcome.restored.length) : undefined;
+      if (!outcome.verified || outcome.remaining.length > 0) {
         // A reason beats a count: a task refuses to retire while its turn is
         // still running, and "N still there" gives the reader nothing to do.
-        toast.error(
-          copy.purgeFailedTitle,
-          outcome.firstError
+        const reason = !outcome.verified
+          ? copy.purgeUnverified
+          : outcome.firstError
             ? settingsActionErrorMessage(outcome.firstError, locale)
-            : copy.purgeFailedBody(outcome.remaining.length),
-        );
-      } else if (outcome.restored.length > 0) {
-        // Naming them beats a count that quietly does not add up: the person
-        // agreed to a number, and a smaller one went.
-        toast.success(copy.purgedWithRestoredToast(outcome.removed, outcome.restored.length));
+            : copy.purgeFailedBody(outcome.remaining.length);
+        toast.error(copy.purgeFailedTitle, kept ? `${reason} ${kept}` : reason);
       } else {
-        toast.success(copy.purgedToast(outcome.removed));
+        toast.success(copy.purgedToast(outcome.removed), kept);
       }
     } finally {
       if (mountedRef.current) setPurging(false);

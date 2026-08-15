@@ -854,10 +854,13 @@ export class DesktopRuntimeHostClient {
    * deletion nobody asked for any more.
    *
    * `requireArchived` states the premise the caller decided on. Re-asserting it
-   * against each fresh read is enough to hold it through the commit: unarchiving
-   * bumps `metadataVersion`, and the Host checks that version in the same
-   * transaction as the `DELETE`, so a remove that commits at the revision just
-   * read is a remove of the record that was read as archived.
+   * against each fresh read is enough to hold it through the commit, because
+   * the Host serializes the two writes that could disagree: `session.remove`
+   * and `session.lifecycle.set` both enter `#withStableFamily`, which queues
+   * per Session id through the admission gate, and the remove compares the
+   * revision on the way in. So a restore either lands before that comparison —
+   * bumping `metadataVersion` and rejecting the remove — or waits until the
+   * retirement has finished. It cannot land between the check and the delete.
    */
   async removeSession(
     sessionId: string,
