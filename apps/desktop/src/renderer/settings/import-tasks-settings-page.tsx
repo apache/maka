@@ -266,6 +266,13 @@ export function ImportTasksSettingsPage(props: {
               layout="fill"
               size="sm"
               onChange={setAdapterId}
+              // Frozen during an import for the same reason the filter below
+              // is: either one replaces the catalog, which would take away the
+              // row the in-flight import belongs to while every other row is
+              // still disabled. `importingId` is a bare source id, and those
+              // are unique only within one source — the second adapter would
+              // otherwise be able to show 正在导入… on an unrelated row.
+              isDisabled={catalogLoading || importingId !== null}
             >
               {adapterIds.map((id) => (
                 <SegmentedControlItem key={id} value={id} label={sourceLabel(id, copy.codex)} />
