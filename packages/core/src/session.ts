@@ -28,13 +28,21 @@ import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 
 export { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from './explore-agent.js';
 
+/**
+ * `archived` is still here and still written by `SessionStore.archive()`
+ * alongside `isArchived`; consolidating those two onto one authority is its own
+ * change (#2984, PR 3) because it rewrites stored rows.
+ *
+ * `review` and `done` were removed: nothing in the codebase ever wrote them,
+ * and no stored record can carry them, so the values had no reader that was not
+ * also dead. Everything the runtime writes is here — `running`, `blocked`,
+ * `aborted`, `waiting_for_user` — plus `active` as the resting state.
+ */
 export const SESSION_STATUSES = [
   'active',
   'running',
   'waiting_for_user',
   'blocked',
-  'review',
-  'done',
   'archived',
   'aborted',
 ] as const;

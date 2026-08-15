@@ -234,7 +234,7 @@ export function buildCommandList(args: {
       ...staticCopy('nav:sessions'),
       Icon: MessageSquare,
       keywords: [...copy.staticKeywords['nav:sessions']],
-      run: () => select({ section: 'sessions', filter: 'chats' }),
+      run: () => select({ section: 'sessions' }),
     });
     cmds.push({
       id: 'nav:automations',

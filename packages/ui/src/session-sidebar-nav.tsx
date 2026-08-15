@@ -3,7 +3,6 @@ import {
   AlertCircle,
   Blocks,
   Download,
-  MessageSquare,
   Settings,
   SquarePen,
   Timer,
@@ -29,8 +28,6 @@ export function SessionSidebarNav(props: {
   const copy = getShellControlsCopy(locale).navigation;
   const extensionsActive = props.selection.section === 'extensions';
   const automationsActive = props.selection.section === 'automations';
-  const activeSessionFilter =
-    props.selection.section === 'sessions' ? props.selection.filter : undefined;
   const moduleMemory = props.moduleMemory ?? { extensions: 'skills', automations: 'scheduled-tasks' };
   const activeScheduledTaskCount = (props.scheduledTasks ?? []).filter(
     (task) => task.status === 'active',
@@ -59,13 +56,6 @@ export function SessionSidebarNav(props: {
       {props.onImport && (
         <SideNavItem label={copy.importSession} icon={Upload} size="md" onClick={props.onImport} />
       )}
-      <SideNavItem
-        label={copy.conversations}
-        icon={MessageSquare}
-        size="md"
-        isSelected={activeSessionFilter === 'chats'}
-        onClick={() => props.onSelect({ section: 'sessions', filter: 'chats' })}
-      />
       <SideNavItem
         label={copy.extensions}
         icon={Blocks}

@@ -3,7 +3,6 @@ export type {
   ExtensionModule,
   NavModuleMemory,
   NavSelection,
-  SessionFilter,
 } from './nav-selection.js';
 export { CapabilityAuditStrip } from './capability-audit-strip.js';
 export { ModuleHubSelector } from './module-hub-selector.js';

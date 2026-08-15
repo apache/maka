@@ -684,7 +684,7 @@ function archivedTask(
     isArchived: true,
     labels: [],
     hasUnread: false,
-    status: 'done',
+    status: 'archived',
     backend: 'ai-sdk',
     llmConnectionSlug: 'zai-live',
     connectionLocked: true,

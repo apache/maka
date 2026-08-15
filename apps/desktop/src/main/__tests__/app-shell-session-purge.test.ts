@@ -11,7 +11,7 @@ function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
     isArchived: true,
     labels: [],
     hasUnread: false,
-    status: 'done',
+    status: 'archived',
     backend: 'fake',
     llmConnectionSlug: 'test',
     connectionLocked: true,

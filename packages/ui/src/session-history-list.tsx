@@ -600,20 +600,16 @@ const SessionItemMeta = memo(function SessionItemMeta(props: {
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
-  const statusDot = resolveSessionStatusDot(props.session, props.streaming, props.active, locale);
+  const rowSignal = resolveSessionRowSignal(props.session, props.streaming, props.active, locale);
 
-  // Signal (status/unread) and action (MoreMenu) are orthogonal — same as
-  // project rows (badge + menu). No hover XOR state machine.
-  const signal = statusDot ? (
+  const signal = rowSignal ? (
     <StatusDot
-      variant={statusDot.variant}
-      label={statusDot.label}
-      isPulsing={statusDot.isPulsing}
-      tooltip={statusDot.tooltip}
+      variant={rowSignal.variant}
+      label={rowSignal.label}
+      isPulsing={rowSignal.isPulsing}
+      tooltip={rowSignal.tooltip}
       data-session-status={props.session.status}
     />
-  ) : shouldShowSessionUnreadDot(props.session, props.streaming, props.active) ? (
-    <StatusDot variant="accent" label={copy.unreadAriaLabel} data-session-status="unread" />
   ) : null;
 
   return (
@@ -762,14 +758,33 @@ function SessionItemActions(props: {
   );
 }
 
-function resolveSessionStatusDot(
+/**
+ * The row's one signal, resolved from the highest-priority thing true about the
+ * session: running › waiting for you › blocked › unread. `null` means the row
+ * draws nothing — idle, archived, and aborted are not states worth a dot.
+ *
+ * "Running" is read from `runningTurnIds`, the runtime's projection of the runs
+ * it is actually holding. The row used to read `streaming` first and then fall
+ * back to the persisted `status`, and neither is the authority: `session.ts`
+ * spells out that a stored `status` "can be left behind entirely by a crash",
+ * and `streaming` only knows about turns THIS renderer sent, so a task running
+ * under a bot channel or a second window read as idle. `streaming` stays, below
+ * `runningTurnIds`, for the one thing it is the authority on: the gap between
+ * this renderer sending a turn and the host reporting it back.
+ *
+ * Unread is last because it is the weakest claim on attention — a session that
+ * is running or holding a question already says something more specific about
+ * the same unread text.
+ */
+function resolveSessionRowSignal(
   session: SessionSummary,
   streaming: boolean,
   active: boolean,
   locale: UiLocale,
 ): { variant: StatusDotVariant; label: string; isPulsing?: boolean; tooltip?: string } | null {
-  if (streaming) {
-    const copy = getConversationCopy(locale).sessions;
+  const copy = getConversationCopy(locale).sessions;
+
+  if (session.runningTurnIds?.length || streaming) {
     return {
       variant: 'accent',
       label: copy.respondingAriaLabel,
@@ -778,63 +793,30 @@ function resolveSessionStatusDot(
     };
   }
 
-  const status = session.status;
-  if (status === 'active' && !active) {
-    // Idle rows keep a quiet neutral dot (shell-side-nav pattern).
-    return null;
+  const { label, variant } = presentSessionStatus(session.status, locale);
+  if (variant) {
+    const blockedDetail =
+      session.status === 'blocked' && session.blockedReason
+        ? describeBlockedReason(session.blockedReason, locale)
+        : null;
+    return {
+      variant,
+      label,
+      // A `running` header with no live run reaching us: either the run ended
+      // without its status write landing, or this summary came from a mutation
+      // response, which describes the header alone and omits `runningTurnIds`
+      // (`session.ts`). Still pulsing — the row should not change shape based on
+      // which projection delivered it.
+      isPulsing: session.status === 'running',
+      tooltip: blockedDetail ? `${label} · ${blockedDetail}` : label,
+    };
   }
-  if (status === 'active') return null;
 
-  const { label, tone } = presentSessionStatus(status, locale);
-  const blockedDetail =
-    status === 'blocked' && session.blockedReason
-      ? describeBlockedReason(session.blockedReason, locale)
-      : null;
-  return {
-    variant: toneToStatusDotVariant(tone),
-    label,
-    isPulsing: status === 'running',
-    tooltip: blockedDetail ? `${label} · ${blockedDetail}` : label,
-  };
-}
-
-function toneToStatusDotVariant(
-  tone: ReturnType<typeof presentSessionStatus>['tone'],
-): StatusDotVariant {
-  switch (tone) {
-    case 'accent':
-      return 'accent';
-    case 'warning':
-      return 'warning';
-    case 'destructive':
-      return 'error';
-    case 'success':
-      return 'success';
-    case 'info':
-      return 'accent';
-    case 'muted':
-    case 'neutral':
-    default:
-      return 'neutral';
+  if (!active && session.hasUnread) {
+    return { variant: 'accent', label: copy.unreadAriaLabel };
   }
+  return null;
 }
-
-function shouldShowSessionUnreadDot(
-  session: SessionSummary,
-  streaming: boolean,
-  active: boolean,
-): boolean {
-  if (active) return false;
-  if (!session.hasUnread) return false;
-  if (streaming) return false;
-  return !SIDEBAR_UNREAD_SUPPRESSED_STATUSES.has(session.status);
-}
-
-const SIDEBAR_UNREAD_SUPPRESSED_STATUSES = new Set<string>([
-  'running',
-  'waiting_for_user',
-  'blocked',
-]);
 
 interface SessionGroup {
   id: 'pinned' | 'unpinned';

@@ -75,7 +75,7 @@ function panelProps(input: {
   worktreeSessionIds?: SessionListPanelProps['worktreeSessionIds'];
 }): SessionListPanelProps {
   return {
-    selection: input.selection ?? { section: 'sessions', filter: 'chats' },
+    selection: input.selection ?? { section: 'sessions' },
     sessions: input.sessions,
     ...(input.activeId ? { activeId: input.activeId } : {}),
     ...(input.streamingSessionIds ? { streamingSessionIds: input.streamingSessionIds } : {}),
@@ -175,18 +175,6 @@ const statusSessions = [
     lastMessageAt: NOW - 20 * 60 * 1000,
   }),
   makeSession({
-    id: 'status-review',
-    name: '待审核的文件 diff',
-    status: 'review',
-    lastMessageAt: NOW - 37 * 60 * 1000,
-  }),
-  makeSession({
-    id: 'status-done',
-    name: '已完成的 smoke run',
-    status: 'done',
-    lastMessageAt: NOW - 2 * 60 * 60 * 1000,
-  }),
-  makeSession({
     id: 'status-archived',
     name: '归档的旧实验',
     status: 'archived',
@@ -284,7 +272,6 @@ export const PinnedAndRecentSections: Story = {
             makeSession({
               id: 'recent-a',
               name: '刚结束的 smoke 回归',
-              status: 'done',
               lastMessageAt: NOW - 12 * 60 * 1000,
             }),
             makeSession({

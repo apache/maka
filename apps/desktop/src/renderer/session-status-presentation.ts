@@ -1,35 +1,26 @@
 /**
- * Pure presentation helpers for SessionStatus + SessionBlockedReason
- * used by the sidebar and chat header.
+ * Renderer-side presentation helpers for SessionStatus, SessionBlockedReason,
+ * and failed-turn recovery.
  *
- * Separated from the React component layer so the copy + tone mapping
- * can be unit-tested without a DOM, mirroring `session-health-notice.ts`
- * pattern.
+ * Separated from the React component layer so the mapping can be unit-tested
+ * without a DOM, mirroring the `session-health-notice.ts` pattern.
  *
- * Two contracts enforced here:
+ * One contract enforced here: **generalized blocked-reason copy** (@kenji
+ * review). UI labels never expose the raw `SessionBlockedReason` enum string;
+ * `describeBlockedReason` is the canonical translation, and a new blocked reason
+ * must extend the core enum AND that matrix together or the `unknown` fallback
+ * applies.
  *
- *  1. **Generalized blocked-reason copy** (@kenji review): UI labels
- *     never expose the raw `SessionBlockedReason` enum string. The
- *     mapping below is the canonical translation. New blocked reasons
- *     must extend the core enum AND this matrix together, or the
- *     `unknown` fallback applies.
- *
- *  2. **Status tone matrix**: each SessionStatus has a single visual
- *     tone (`accent / warning / destructive / info / success / muted`)
- *     consumed by both the SessionStatusIcon and the chat-header
- *     status badge. Aligns with the existing session-health-notice tone
- *     vocabulary.
+ * The status → dot mapping itself lives in `@maka/ui`; it is re-exported below
+ * rather than restated. A second contract used to be documented here — a tone
+ * matrix "consumed by both the SessionStatusIcon and the chat-header status
+ * badge" — describing two consumers that do not exist and a tone layer that has
+ * since been removed (#2984).
  */
 
 import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core/sandbox-boundary';
-import type { SessionBlockedReason, SessionStatus, SessionSummary } from '@maka/core/session';
+import type { SessionBlockedReason, SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
-import {
-  describeBlockedReason,
-  presentSessionStatus,
-  type SessionStatusPresentation,
-  type SessionStatusTone,
-} from '@maka/ui';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { describeSessionErrorReason } from './session-error-presentation.js';
 export { presentSessionStatus } from '@maka/ui';

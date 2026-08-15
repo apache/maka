@@ -386,7 +386,7 @@ export function createAppShellChatActions(deps: {
           showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
         }
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
-          setNavSelection({ section: 'sessions', filter: 'chats' });
+          setNavSelection({ section: 'sessions' });
           setActiveId(session.id);
           showOptimisticUserMessage(
             session.id,
