@@ -7,6 +7,7 @@ type ShellControlsCopy = {
   navigation: {
     mainLabel: string;
     newTask: string;
+    tasks: string;
     automations: string;
     extensions: string;
     settings: string;
@@ -40,6 +41,7 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
     navigation: {
       mainLabel: '主导航',
       newTask: '新任务',
+      tasks: '任务',
       automations: '定时任务',
       extensions: '扩展',
       settings: '设置',
@@ -71,6 +73,7 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
     navigation: {
       mainLabel: 'Main navigation',
       newTask: 'New task',
+      tasks: 'Tasks',
       automations: 'Scheduled tasks',
       extensions: 'Extensions',
       settings: 'Settings',

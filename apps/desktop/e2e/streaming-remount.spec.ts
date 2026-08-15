@@ -22,9 +22,9 @@ test('remounting a live surface leaves accumulated output settled', async ({
   await sidebar.getByRole('button', { name: '扩展' }).click();
   await expect(page.locator('[data-module="skills"]')).toBeVisible();
   await expect(liveBubble).toHaveCount(0);
-  // Back through the task's own row: the rail's 「会话」 row was a section
-  // selector for the only section the list has, so it is gone (#2984).
-  await sidebar.locator('[data-session-id]').first().click();
+  // Back through the rail's 任务 row. The rail is collapsed here, so the task
+  // rows are not rendered and this section row is the only way back (#2984).
+  await sidebar.getByRole('button', { name: '任务', exact: true }).click();
   await expect(liveBubble).toHaveCount(1);
   await expect(liveBubble).toContainText(accumulatedOutput);
 

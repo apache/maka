@@ -3,6 +3,7 @@ import {
   AlertCircle,
   Blocks,
   Download,
+  MessageSquare,
   Settings,
   SquarePen,
   Timer,
@@ -24,6 +25,7 @@ export function SessionSidebarNav(props: {
 }) {
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
+  const sessionsActive = props.selection.section === 'sessions';
   const extensionsActive = props.selection.section === 'extensions';
   const automationsActive = props.selection.section === 'automations';
   const moduleMemory = props.moduleMemory ?? { extensions: 'skills', automations: 'scheduled-tasks' };
@@ -37,10 +39,10 @@ export function SessionSidebarNav(props: {
   //
   // SideNavSection, like the footer below, rather than a bare fragment in a
   // product div: the section is what owns the space BETWEEN nav rows
-  // (`items` → --spacing-0-5). Handed to `topContent` as a plain div these three
+  // (`items` → --spacing-0-5). Handed to `topContent` as a plain div these rows
   // were the only group on the rail outside that authority, so they stacked
   // edge to edge — invisible expanded, where the label separates the rows, and
-  // plainly three-icons-as-one-slab at 48px. The header is hidden because the
+  // plainly icons-as-one-slab at 48px. The header is hidden because the
   // rail landmark already names the panel; the title stays for a11y.
   return (
     <SideNavSection title={copy.mainLabel} isHeaderHidden className="maka-session-panel-top">
@@ -50,6 +52,19 @@ export function SessionSidebarNav(props: {
         size="md"
         onClick={props.onNew}
         endContent={<kbd className="maka-nav-kbd" aria-hidden="true">⌘ N</kbd>}
+      />
+      {/* The way back to the list. Selecting a task row does it too, but only
+          while the rail is expanded — collapsed, the list is not rendered, so
+          without this row 扩展 and 定时任务 are one-way doors and the only exit
+          is 新任务, which answers "show me my tasks" by creating another one.
+          MessageSquare is the glyph the command palette already draws for a
+          session (command-palette-commands.ts). */}
+      <SideNavItem
+        label={copy.tasks}
+        icon={MessageSquare}
+        size="md"
+        isSelected={sessionsActive}
+        onClick={() => props.onSelect({ section: 'sessions' })}
       />
       <SideNavItem
         label={copy.extensions}
