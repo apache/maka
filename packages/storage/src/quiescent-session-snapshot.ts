@@ -59,19 +59,24 @@ export interface SessionSnapshotWorkspacePolicy {
 
 const INCLUDE = Object.freeze({ kind: 'include' } as const);
 
-// Keep this list aligned with the workspace measurement/exclusion rules introduced by #1353.
-const SENSITIVE_WORKSPACE_FILE_PATTERNS = [
+// This fail-closed rejection set is deliberately narrower than the workspace
+// measurement rules introduced by #1353. Snapshot rejection is reserved for
+// names that identify known secret material; public certificate encodings and
+// other ambiguous formats are not rejected by extension alone.
+const KNOWN_SECRET_WORKSPACE_FILE_PATTERNS = [
   /^\.env(?:\..*)?$/i,
   /^\.(?:npmrc|netrc|pypirc|terraformrc)$/i,
   /^\.git-credentials(?:\.lock)?$/i,
   /^(?:credentials?|secrets?)(?:\..*)?$/i,
   /(?:^|[-_.])(?:id_(?:rsa|dsa|ecdsa|ed25519)|private[-_.]?key)(?:$|[-_.])/i,
-  /\.(?:key|pem|p12|pfx|der|crt|cer|csr|log)$/i,
+  /\.(?:key|p12|pfx)$/i,
 ] as const;
 
 /**
- * V1 portable-workspace policy. It intentionally classifies names only; the
- * filesystem preparer remains responsible for rejecting symlinks, hard links,
+ * V1 portable-workspace policy. The coordinator pins this exact policy, while
+ * the trusted filesystem preparer is its enforcement point: the coordinator
+ * does not re-traverse or attest the prepared destination. The preparer remains
+ * responsible for applying every decision and rejecting symlinks, hard links,
  * special files, path races, case conflicts, and quota violations.
  */
 export const SESSION_SNAPSHOT_WORKSPACE_POLICY_V1: SessionSnapshotWorkspacePolicy = Object.freeze({
@@ -96,9 +101,6 @@ export const SESSION_SNAPSHOT_WORKSPACE_POLICY_V1: SessionSnapshotWorkspacePolic
     ) {
       return { kind: 'exclude', category: 'cache' };
     }
-    if (entry.kind === 'file' && isKnownSecretPath(lowerSegments, lowerName)) {
-      return { kind: 'reject', category: 'known_secret_file' };
-    }
     if (
       lowerSegments.includes('logs') ||
       lowerSegments.includes('.logs') ||
@@ -108,6 +110,9 @@ export const SESSION_SNAPSHOT_WORKSPACE_POLICY_V1: SessionSnapshotWorkspacePolic
     }
     if (lowerSegments.includes('.maka-runtime') || lowerSegments.includes('.maka-activation')) {
       return { kind: 'exclude', category: 'runtime_scratch' };
+    }
+    if (entry.kind === 'file' && isKnownSecretPath(lowerSegments, lowerName)) {
+      return { kind: 'reject', category: 'known_secret_file' };
     }
     return INCLUDE;
   },
@@ -164,8 +169,11 @@ export interface SessionSnapshotWorkspacePreparation {
 
 export interface SessionSnapshotWorkspacePreparer {
   /**
-   * Creates the exact, previously absent root, applies every supplied policy
-   * decision without downgrading it, and closes every source/destination handle.
+   * Trusted enforcement point for the supplied workspace policy. Creates the
+   * exact, previously absent root, applies every policy decision without
+   * downgrading it, and closes every source/destination handle. The coordinator
+   * validates the returned root and bounded counters, but does not independently
+   * traverse the result to prove that the policy was applied.
    */
   prepareWorkspace(input: {
     readonly makaSessionId: string;
@@ -198,7 +206,12 @@ export interface PreparedSessionBundleHandle {
   readonly snapshot: PreparedSessionBundleSnapshot;
   readonly policyVersion: typeof SESSION_SNAPSHOT_POLICY_VERSION;
   readonly workspace: SessionSnapshotWorkspacePreparation;
-  /** Idempotent after successful cleanup; failures remain retryable. */
+  /**
+   * Idempotent after successful cleanup; failures remain retryable. Path and
+   * identity checks fail closed on replacements observable before deletion, but
+   * do not defend against an adversarial same-principal replacement in the final
+   * path-based filesystem-operation window.
+   */
   release(): Promise<void>;
 }
 
@@ -252,7 +265,12 @@ export class SessionSnapshotError extends Error {
 }
 
 export interface FileQuiescentSessionSnapshotCoordinatorOptions {
-  /** Private control-plane directory outside live state and workspace roots. */
+  /**
+   * Private control-plane directory outside live state and workspace roots.
+   * Code running as the same OS principal and able to mutate this parent is in
+   * the trusted computing boundary; Node's path-based recursive removal cannot
+   * make an adversarial final-check-to-delete race impossible.
+   */
   readonly stagingParent: string;
   readonly quiescence: SessionSnapshotQuiescenceAuthority;
   readonly state: SessionSnapshotStatePreparer;
@@ -635,7 +653,7 @@ function decodeWorkspaceEntry(
 }
 
 function isKnownSecretPath(lowerSegments: readonly string[], lowerName: string): boolean {
-  if (SENSITIVE_WORKSPACE_FILE_PATTERNS.some((pattern) => pattern.test(lowerName))) return true;
+  if (KNOWN_SECRET_WORKSPACE_FILE_PATTERNS.some((pattern) => pattern.test(lowerName))) return true;
   if (
     lowerSegments.includes('.ssh') ||
     lowerName === 'service-account.json' ||

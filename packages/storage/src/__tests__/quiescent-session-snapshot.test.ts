@@ -67,7 +67,7 @@ test('prepares state and workspace under one quiescence boundary, then releases 
     workspace: {
       async prepareWorkspace(input) {
         assert.equal(quiescent, true);
-        assert.equal(input.policy.version, 1);
+        assert.equal(input.policy, SESSION_SNAPSHOT_WORKSPACE_POLICY_V1);
         events.push('workspace');
         await mkdir(input.destinationRoot);
         await writeFile(join(input.destinationRoot, 'main.ts'), liveWorkspace, 'utf8');
@@ -546,7 +546,8 @@ test('V1 workspace policy includes portable inputs, excludes rebuildable data, a
     ],
     ['.turbo/cache.bin', 'file', { kind: 'exclude', category: 'cache' }],
     ['logs/agent.txt', 'file', { kind: 'exclude', category: 'log' }],
-    ['debug.log', 'file', { kind: 'reject', category: 'known_secret_file' }],
+    ['debug.log', 'file', { kind: 'exclude', category: 'log' }],
+    ['secrets.log', 'file', { kind: 'exclude', category: 'log' }],
     ['.maka-runtime/input.json', 'file', { kind: 'exclude', category: 'runtime_scratch' }],
     ['.env.local', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['keys/id_ed25519', 'file', { kind: 'reject', category: 'known_secret_file' }],
@@ -556,7 +557,11 @@ test('V1 workspace policy includes portable inputs, excludes rebuildable data, a
     ['.git-credentials.lock', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['keys/client-private-key.pem', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['certs/client.p12', 'file', { kind: 'reject', category: 'known_secret_file' }],
-    ['certs/client.crt', 'file', { kind: 'reject', category: 'known_secret_file' }],
+    ['certs/client.crt', 'file', { kind: 'include' }],
+    ['certs/client.cer', 'file', { kind: 'include' }],
+    ['certs/client.csr', 'file', { kind: 'include' }],
+    ['certs/client.pem', 'file', { kind: 'include' }],
+    ['certs/client.der', 'file', { kind: 'include' }],
     ['keys/service-account.json', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['.ssh/config', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['.aws/credentials', 'file', { kind: 'reject', category: 'known_secret_file' }],
