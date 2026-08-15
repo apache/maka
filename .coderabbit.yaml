@@ -1,9 +1,7 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 
 language: "en-US"
-tone_instructions: >-
-  Be concise, direct, and evidence-based. Report only concrete, reproducible
-  issues caused by the diff. Explain the impact and cite the relevant code.
+tone_instructions: "Be concise, direct, and evidence-based."
 
 reviews:
   profile: "chill"
@@ -12,19 +10,25 @@ reviews:
   enable_prompt_for_ai_agents: false
   request_changes_workflow: false
 
+  path_instructions:
+    - path: "**/*"
+      instructions: |
+        Review the diff adversarially against the problem it claims to solve.
+        Determine whether it is the smallest coherent solution at the existing source of truth.
+        Flag concrete cases where code can be deleted or simplified.
+        Flag tests that duplicate existing coverage, assert implementation details, or do not protect observable behavior.
+        Do not suggest speculative refactors or alternatives without a concrete correctness or maintenance benefit.
+
   high_level_summary: true
   high_level_summary_in_walkthrough: true
   high_level_summary_instructions: |
     Explain:
     1. What problem the PR solves.
     2. Whether it extends the existing source of truth or creates a parallel path.
-    3. Whether any added complexity is necessary.
-    4. The concrete risks and validation performed.
+    3. Whether it is the smallest coherent solution and any added complexity is necessary.
+    4. What code or tests, if any, can be deleted or simplified without weakening behavior or regression coverage.
+    5. The concrete risks and validation performed.
 
   auto_review:
     enabled: true
     drafts: false
-
-knowledge_base:
-  code_guidelines:
-    enabled: true
