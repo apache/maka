@@ -8,7 +8,7 @@ Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
 around at the call site.
 
-## `@ai-sdk/provider-utils@5.0.21`
+## `@ai-sdk/provider-utils@5.0.27`
 
 Streaming tool-call association for gateways that reuse or omit `index` / `id`
 (Ollama-style, Anthropic→OpenAI translators). See #1967 / #1976 and

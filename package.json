@@ -59,6 +59,7 @@
     "prepare:bundled-git-source": "node scripts/prepare-bundled-git-source.mjs"
   },
   "devDependencies": {
+    "@ai-sdk/provider-utils": "5.0.27",
     "@astryxdesign/cli": "0.4.0",
     "@astryxdesign/core": "0.4.0",
     "@biomejs/biome": "2.5.6",
