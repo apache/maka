@@ -85,6 +85,10 @@ test('keeps a completed reply after an interrupted turn and surface remount', as
     ), originalSessionId!),
     { timeout: 20_000 },
   ).toBe(0);
+  await page.reload();
+  await expect(page.getByRole('log')).toContainText(
+    'Fake backend waiting for the test to stop the Turn.',
+  );
   await composer.fill(FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT);
   await expect(page.getByRole('button', { name: '发送' })).toBeEnabled({
     timeout: 20_000,
@@ -105,10 +109,7 @@ test('keeps a completed reply after an interrupted turn and surface remount', as
     timeout: 20_000,
   });
 
-  const sidebar = page.getByRole('navigation', { name: '对话列表' });
-  await sidebar.getByRole('button', { name: '扩展' }).click();
-  await expect(page.locator('[data-module="skills"]')).toBeVisible();
-  await sidebar.getByRole('button', { name: '会话', exact: true }).click();
+  await page.reload();
   await expect(page.getByRole('log')).toContainText(completedReply);
 });
 
