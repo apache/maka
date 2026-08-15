@@ -331,7 +331,7 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   async grepFiles(input: WorkspaceGrepInput): Promise<WorkspaceGrepResult> {
     const args = ['-n', '--no-heading', `--max-count=${input.maxCountPerFile}`];
     if (input.glob) args.push('--glob', input.glob);
-    args.push(input.pattern, input.path);
+    args.push('--', input.pattern, input.path);
     try {
       const { stdout } = await execFileAsync('rg', args, {
         cwd: input.cwd,

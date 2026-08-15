@@ -1,5 +1,6 @@
 import { describe, test } from 'node:test';
 import { expect } from '../test-helpers.js';
+import { pathWithinRoot } from '../absolute-path.js';
 import {
   canReadPath,
   canWritePath,
@@ -66,6 +67,18 @@ describe('PermissionProfile factories', () => {
       isProtectedMetadataPath('/workspace/project/.gitignore', WORKSPACE_CONTEXT.workspaceRoots),
     ).toBe(false);
     expect(canWritePath(profile, '/workspace/project/.gitignore', WORKSPACE_CONTEXT)).toBe(true);
+  });
+
+  test('matches Windows drive roots and protected metadata by backslash-separated segment', () => {
+    expect(pathWithinRoot('C:\\Windows', 'C:\\')).toBe(true);
+    expect(pathWithinRoot('C:\\workspace2', 'C:\\workspace')).toBe(false);
+    expect(isProtectedMetadataPath('C:\\workspace\\.git\\config', ['C:\\workspace'])).toBe(true);
+    expect(
+      isProtectedMetadataPath('C:\\workspace\\packages\\demo\\.agents\\state.json', [
+        'C:\\workspace',
+      ]),
+    ).toBe(true);
+    expect(isProtectedMetadataPath('C:\\workspace\\.gitignore', ['C:\\workspace'])).toBe(false);
   });
 
   test('danger-full-access profile is managed unrestricted access with network enabled', () => {

@@ -309,11 +309,12 @@ function relativeSegments(path: string, root: string): string[] | undefined {
   const normalizedRoot = trimTrailingSlashes(root);
   if (!pathWithinRoot(normalizedPath, normalizedRoot)) return undefined;
   if (normalizedPath === normalizedRoot) return [];
+  const separator = normalizedRoot.includes('\\') ? '\\' : '/';
   const relative =
     normalizedRoot === '/'
       ? normalizedPath.slice(1)
-      : normalizedPath.slice(normalizedRoot.length + 1);
-  return relative.split('/').filter(Boolean);
+      : normalizedPath.slice(normalizedRoot.length + (normalizedRoot.endsWith(separator) ? 0 : 1));
+  return relative.split(separator).filter(Boolean);
 }
 
 function trimTrailingSlashes(value: string): string {

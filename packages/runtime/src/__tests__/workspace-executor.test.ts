@@ -218,7 +218,7 @@ describe('LocalWorkspaceExecutor file operations', () => {
   test('greps file contents with rg-compatible no-match behavior', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-'));
     await mkdir(join(cwd, 'src'), { recursive: true });
-    await writeFile(join(cwd, 'src', 'main.ts'), 'export const token = 1;\n', 'utf8');
+    await writeFile(join(cwd, 'src', 'main.ts'), 'export const token = 1; // --flag\n', 'utf8');
     const executor = new LocalWorkspaceExecutor();
 
     const hit = await executor.grepFiles({
@@ -237,8 +237,21 @@ describe('LocalWorkspaceExecutor file operations', () => {
       limit: 200,
       timeoutMs: 5_000,
     });
+    const optionLikePattern = await executor.grepFiles({
+      cwd,
+      pattern: '--flag',
+      path: join(cwd, 'src'),
+      maxCountPerFile: 50,
+      limit: 200,
+      timeoutMs: 5_000,
+    });
 
-    expect(hit.matches).toEqual([`${join(cwd, 'src', 'main.ts')}:1:export const token = 1;`]);
+    expect(hit.matches).toEqual([
+      `${join(cwd, 'src', 'main.ts')}:1:export const token = 1; // --flag`,
+    ]);
     expect(miss).toMatchObject({ matches: [] });
+    expect(optionLikePattern.matches).toEqual([
+      `${join(cwd, 'src', 'main.ts')}:1:export const token = 1; // --flag`,
+    ]);
   });
 });
