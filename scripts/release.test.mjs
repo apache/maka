@@ -26,6 +26,7 @@ import {
   inspectNativeArtifacts,
   isMacosArm64MachO,
   listApplicableDependencyPatchNames,
+  listDependencyPatchNames,
   macosArm64CliWrapper,
   resolveCliWorkspacePackages,
   stageWorkspacePackages,
@@ -564,20 +565,17 @@ test('packaged dependency metadata follows manifests actually present on disk', 
 });
 
 test('dependency patches are derived from packages present in the CLI closure', async () => {
-  assert.equal(
-    await dependencyPatchPackageName('@ai-sdk+provider-utils+5.0.25.patch'),
-    '@ai-sdk/provider-utils',
-  );
-  assert.equal(
-    await dependencyPatchPackageName('@astryxdesign+core+0.4.0.patch'),
-    '@astryxdesign/core',
-  );
+  const patchNames = await listDependencyPatchNames();
+  const providerUtilsPatch = patchNames.find((name) => name.startsWith('@ai-sdk+provider-utils+'));
+  const astryxCorePatch = patchNames.find((name) => name.startsWith('@astryxdesign+core+'));
+  assert.ok(providerUtilsPatch);
+  assert.ok(astryxCorePatch);
+  assert.equal(await dependencyPatchPackageName(providerUtilsPatch), '@ai-sdk/provider-utils');
+  assert.equal(await dependencyPatchPackageName(astryxCorePatch), '@astryxdesign/core');
   const root = await mkdtemp(join(tmpdir(), 'maka-release-patches-'));
   try {
     await mkdir(join(root, '@ai-sdk', 'provider-utils'), { recursive: true });
-    assert.deepEqual(await listApplicableDependencyPatchNames(root), [
-      '@ai-sdk+provider-utils+5.0.25.patch',
-    ]);
+    assert.deepEqual(await listApplicableDependencyPatchNames(root), [providerUtilsPatch]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
