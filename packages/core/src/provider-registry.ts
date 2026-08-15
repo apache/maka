@@ -1816,21 +1816,6 @@ const providerRegistry = {
     catalogBadge: 'Account',
     modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.openai.id,
   },
-  'gemini-cli': {
-    label: 'Gemini CLI OAuth',
-    description: 'Google account path is tracked separately from ready API-key providers.',
-    baseUrl: '',
-    authKind: 'oauth_token',
-    backendKind: 'ai-sdk',
-    fallbackModels: ['gemini-2.5-pro', 'gemini-2.5-flash'],
-    status: 'phase3-experimental',
-    protocol: 'google',
-    runtimeAdapter: { kind: 'unavailable' },
-    modelDiscovery: { kind: 'protocol' },
-    category: 'oauth',
-    catalogBadge: 'Account',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['gemini-cli'].id,
-  },
 } satisfies Record<string, ProviderDefaults>;
 
 export type ProviderType = keyof typeof providerRegistry;

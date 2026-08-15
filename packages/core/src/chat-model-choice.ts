@@ -21,7 +21,6 @@ const MODEL_MENU_PROVIDER_LABELS: Partial<Record<ProviderType, string>> = {
   'zai-coding-plan': 'Z.AI',
   MiniMax: 'MiniMax',
   'openai-codex': 'OpenAI OAuth',
-  'gemini-cli': 'Gemini CLI',
 };
 
 export interface ChatModelChoice {

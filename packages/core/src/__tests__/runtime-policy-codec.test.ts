@@ -163,6 +163,38 @@ test('normalizes catalog inputs while canonical entries reject noncanonical endp
   );
 });
 
+test('rejects new connections for the retired Gemini CLI account provider', () => {
+  assert.throws(
+    () =>
+      normalizeCreateCatalogConnectionInput({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'gemini-account',
+          name: 'Gemini account',
+          providerType: 'gemini-cli',
+          enabled: true,
+          enabledModelIds: [],
+        },
+      }),
+    /provider type is not registered/,
+  );
+});
+
+test('keeps ordinary Google API-key connections supported', () => {
+  const input = normalizeCreateCatalogConnectionInput({
+    expectedCatalogRevision: 0,
+    connection: {
+      slug: 'google-api',
+      name: 'Google API',
+      providerType: 'google',
+      enabled: true,
+      enabledModelIds: ['gemini-2.5-pro'],
+    },
+  });
+
+  assert.equal(input.connection.providerType, 'google');
+});
+
 test('relay model profiles round-trip canonical entries and drafts, strictly', () => {
   const table = {
     'relay-reasoner': {

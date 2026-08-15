@@ -93,7 +93,17 @@ export class ConnectionCatalogDocumentOwner {
     ) {
       throw codecError('invalid_document', `${FILE}.connections must be a bounded array`);
     }
-    const connections = raw.connections.map((item) =>
+    // Releases before #3054 could persist the non-executable Gemini account
+    // preview. Keep the raw file recoverable on read, but omit retired entries
+    // from the active catalog; the next catalog mutation writes the canonical
+    // supported set and completes the migration.
+    const retiredConnectionIds = new Set<string>();
+    const maintainedConnections = raw.connections.filter((item) => {
+      if (!isRetiredGeminiCliConnection(item)) return true;
+      if (typeof item.connectionId === 'string') retiredConnectionIds.add(item.connectionId);
+      return false;
+    });
+    const connections = maintainedConnections.map((item) =>
       decodePersistedDomain(() => decodeCanonicalConnectionCatalogEntry(item)),
     );
     unique(
@@ -106,10 +116,14 @@ export class ConnectionCatalogDocumentOwner {
       `${FILE} connection ids`,
       'invalid_document',
     );
-    const defaultTarget =
+    const decodedDefaultTarget =
       raw.defaultTarget === null
         ? null
         : decodePersistedDomain(() => decodeConnectionTarget(raw.defaultTarget));
+    const defaultTarget =
+      decodedDefaultTarget && retiredConnectionIds.has(decodedDefaultTarget.connectionId)
+        ? null
+        : decodedDefaultTarget;
     if (defaultTarget && !isValidTarget(defaultTarget, connections)) {
       throw codecError('invalid_document', `${FILE} contains an invalid default target`);
     }
@@ -671,6 +685,17 @@ function revisionConflict(expectedRevision: number, actualRevision: number) {
 
 function connectionStale(expected: ConnectionVersionBasis, actual: ConnectionVersionBasis | null) {
   return deepFreeze({ kind: 'connection_stale' as const, expected, actual });
+}
+
+function isRetiredGeminiCliConnection(
+  value: unknown,
+): value is { readonly connectionId?: unknown; readonly providerType: 'gemini-cli' } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Reflect.get(value, 'providerType') === 'gemini-cli'
+  );
 }
 
 function committed(document: ConnectionCatalogDocument): ConnectionCatalogMutationResult {

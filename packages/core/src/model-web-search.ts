@@ -73,7 +73,6 @@ function providerHostedWebSearchAdapter(
     case 'anthropic-compatible':
       return { adapter: 'anthropic-messages', implemented: true };
     case 'google':
-    case 'gemini-cli':
       return { adapter: 'google-grounding', implemented: false };
     case 'zai':
     case 'zai-coding-plan':
@@ -116,7 +115,6 @@ function providerDefaultHostedWebSearchCapability(
     case 'openai-responses-compatible':
       return null;
     case 'google':
-    case 'gemini-cli':
       return /^gemini-(?:2\.0|2\.5|3|3\.1|3\.5)(?:[.-]|$)/i.test(modelId) ? capability : null;
     case 'zai':
     case 'zai-coding-plan':

@@ -102,26 +102,6 @@ describe('ProviderAuth contract', () => {
     expect(contract.actionAvailability.fetch_models).toBe('hidden');
   });
 
-  test('unwired OAuth providers stay preview-only and do not expose live actions', () => {
-    const contract = deriveProviderAuthContract({
-      providerType: 'gemini-cli',
-      hasSecret: true,
-      lastTestStatus: 'verified',
-    });
-
-    expect(contract.setupMode).toBe('oauth_preview');
-    expect(contract.state).toBe('preview_only');
-    expect(contract.validationStatus).toBe('not_run');
-    expect(contract.requiresSecret).toBe(true);
-    expect(contract.sendMayUseWithoutSecret).toBe(false);
-    expect(contract.actionAvailability.save_secret).toBe('hidden');
-    expect(contract.actionAvailability.test_credentials).toBe('hidden');
-    expect(contract.actionAvailability.fetch_models).toBe('hidden');
-    expect(contract.actionAvailability.start_oauth).toBe('preview_only');
-    expect(contract.actionAvailability.refresh_oauth).toBe('preview_only');
-    expect(contract.actionAvailability.revoke_auth).toBe('preview_only');
-  });
-
   test('no-auth local providers can send without secret but are still not validated runtime probes', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'ollama',

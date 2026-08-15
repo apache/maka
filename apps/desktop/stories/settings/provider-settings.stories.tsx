@@ -243,10 +243,6 @@ function installSubscriptionFixtures() {
       runtimeState: 'not_logged_in',
     }),
     xaiOAuth: xaiDeviceSubscriptionFixture(),
-    antigravitySubscription: browserSubscriptionFixture({
-      runtimeState: 'storage_failed',
-      errorMessage: '需要 Google client_id 后才能完成登录。',
-    }),
   };
 }
 

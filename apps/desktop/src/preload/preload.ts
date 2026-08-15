@@ -1327,12 +1327,9 @@ const makaBridge = {
       return invokeActiveRuntimeHost('claude-subscription:logout');
     },
   },
-  // PR-MODEL-OAUTH-ALL-0: Codex / Antigravity subscription
-  // bridges. Same shape as `claudeSubscription` (no token-shaped
-  // fields, opaque authRequestId, action-result envelopes). Each
-  // service's state snapshot is provider-specific because the
-  // upstream auth claims differ (Codex carries JWT account_id /
-  // plan; Antigravity is preview-only).
+  // Browser-assisted Codex account bridge. Same shape as
+  // `claudeSubscription`: no token-shaped fields cross preload, the
+  // authorization attempt stays opaque, and actions return envelopes.
   openAiCodex: {
     isExperimentalEnabled(): Promise<boolean> {
       return invokeActiveRuntimeHost('openai-codex:is-experimental-enabled');
@@ -1416,37 +1413,6 @@ const makaBridge = {
     },
     logout(): Promise<SubscriptionActionResult> {
       return invokeActiveRuntimeHost('github-copilot:logout');
-    },
-  },
-  antigravitySubscription: {
-    isExperimentalEnabled(): Promise<boolean> {
-      return invokeActiveRuntimeHost('antigravity-subscription:is-experimental-enabled');
-    },
-    getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
-      return invokeActiveRuntimeHost('antigravity-subscription:get-auth-url');
-    },
-    openAuthUrl(authRequestId: string): Promise<SubscriptionActionResult> {
-      return invokeActiveRuntimeHost('antigravity-subscription:open-auth-url', authRequestId);
-    },
-    completeAuthorization(authRequestId: string): Promise<SubscriptionActionResult> {
-      return invokeActiveRuntimeHost('antigravity-subscription:complete-authorization', authRequestId);
-    },
-    cancelAuthorization(authRequestId?: string): Promise<{ ok: true }> {
-      return invokeActiveRuntimeHost('antigravity-subscription:cancel-authorization', authRequestId);
-    },
-    getAccountState(): Promise<{
-      provider: 'antigravity-subscription';
-      status: 'preview';
-      runtimeState: 'not_logged_in' | 'authorizing' | 'authenticated' | 'refreshing' | 'refresh_failed';
-      errorMessage?: string;
-    }> {
-      return invokeActiveRuntimeHost('antigravity-subscription:get-account-state');
-    },
-    refreshTokens(): Promise<SubscriptionActionResult> {
-      return invokeActiveRuntimeHost('antigravity-subscription:refresh-tokens');
-    },
-    logout(): Promise<SubscriptionActionResult> {
-      return invokeActiveRuntimeHost('antigravity-subscription:logout');
     },
   },
   scheduledTasks: {

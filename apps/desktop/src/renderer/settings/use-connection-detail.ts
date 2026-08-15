@@ -35,7 +35,7 @@ import {
 
 // Maps an OAuth model-connection provider type to the browser-assisted login
 // service that can re-run its authorization from inside the connection dialog. Only
-// the loopback / polling services (Codex, Antigravity) are one-button-drivable
+// the browser-assisted services (Codex and xAI) are one-button-drivable
 // here; Claude's paste-code flow and plain API-key providers return null so the
 // notice falls back to prose instead of rendering a dead button.
 export interface OAuthLoginService {
@@ -54,11 +54,6 @@ export function oauthLoginServiceFor(providerType: ProviderType): OAuthLoginServ
       return {
         bridge: window.maka.xaiOAuth as unknown as OAuthLoginFlowBridge,
         display: { name: 'xAI Grok', shortName: 'SuperGrok / X Premium' },
-      };
-    case 'gemini-cli':
-      return {
-        bridge: window.maka.antigravitySubscription as unknown as OAuthLoginFlowBridge,
-        display: { name: 'Google Antigravity', shortName: 'Antigravity' },
       };
     default:
       return null;
