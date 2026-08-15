@@ -42,12 +42,11 @@
  * stay in step and an upgrade that restructures the header keeps working.
  *
  * Bound on the header, NOT on the section root. SideNavSection wraps the whole
- * list body — every row, badge, and pill — in the same element as its title
+ * list body — every row, badge, and timestamp — in the same element as its title
  * (session-history-list.tsx), and custom properties inherit, so a rebind on the
  * root reaches all of it: measured live, the project session-count Badge went
- * 12px → 14px, and `.maka-list-row-stale-pill` would have taken a 17.14px line
- * box on its 12px font. The header is SideNavSection's first child and holds
- * exactly the title and subtitle.
+ * 12px → 14px. The header is SideNavSection's first child and holds exactly the
+ * title and subtitle.
  *
  * Both halves of the tier move together. Size alone would leave the supporting
  * leading multiplier on a larger font and land the line box at 23.33px, off the
@@ -259,7 +258,8 @@
 }
 
 /* Fixed trailing column so StatusDot ↔ MoreMenu swaps do not reflow the label
- * (hover used to steal ~28px and shove the title left). */
+ * (hover used to steal ~28px and shove the title left). Project rows only; task
+ * rows use .maka-session-row-time below. */
 .maka-session-row-trailing {
   display: inline-flex;
   align-items: center;
@@ -267,6 +267,73 @@
   flex: 0 0 auto;
   width: var(--h-control-sm, 24px);
   min-height: var(--h-control-sm, 24px);
+}
+
+/*
+ * Slot 1: the leading status gutter.
+ *
+ * Astryx's StatusDot is a fixed 8px box (StatusDot.tsx), so only the empty case
+ * needs declaring: a row with no dot must still hold the column, or titles would
+ * start at a different x depending on whether the task has a state. The dot is
+ * present or absent; the gutter is not.
+ */
+.maka-session-row .maka-session-row-signal-empty {
+  display: block;
+  width: 8px;
+  height: 8px;
+  flex: none;
+}
+
+/*
+ * Slot 2: the timestamp at rest, the ⋯ menu on hover or keyboard focus.
+ *
+ * `visibility`, not `display`, and an absolutely positioned menu: the two never
+ * occupy layout at the same time and neither can reflow the title. The menu used
+ * to be mounted visible on every row, which is what made the trailing cluster
+ * five things wide.
+ *
+ * :focus-within covers the keyboard: focus on the row's own button reveals the
+ * menu, and focus moving into the menu keeps it revealed.
+ */
+.maka-session-row-time {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: none;
+  min-width: var(--h-control-sm, 24px);
+  min-height: var(--h-control-sm, 24px);
+}
+
+.maka-session-row-time-label {
+  color: var(--muted-foreground);
+  font: var(--typography-caption);
+  white-space: nowrap;
+}
+
+.maka-session-row > .maka-session-row-action {
+  opacity: 0;
+}
+
+.maka-session-row:hover > .maka-session-row-action,
+.maka-session-row:focus-within > .maka-session-row-action {
+  opacity: 1;
+}
+
+.maka-session-row:hover .maka-session-row-time,
+.maka-session-row:focus-within .maka-session-row-time {
+  visibility: hidden;
+}
+
+/* Nothing here can reveal the menu later, so it takes the slot outright and the
+   timestamp yields. */
+@media (hover: none) {
+  .maka-session-row > .maka-session-row-action {
+    opacity: 1;
+  }
+
+  .maka-session-row .maka-session-row-time {
+    visibility: hidden;
+  }
 }
 
 /* SideNavItem owns each row button and only supports non-interactive
@@ -310,25 +377,6 @@
   > div
   > .astryx-side-nav-item {
   background-color: var(--color-overlay-pressed);
-}
-
-.maka-session-row-trailing-spacer {
-  display: block;
-  width: 8px;
-  height: 8px;
-}
-
-.maka-session-worktree-icon {
-  flex: 0 0 auto;
-  color: var(--muted-foreground);
-}
-
-/* #1879: an Astryx `Badge variant="yellow"` now. Box, radius, padding and
-   caption type all come from the component (20px off `--spacing-5`), so the
-   only thing product CSS still owns is that it must not be squeezed by the
-   row's flex layout. */
-.maka-list-row-stale-pill {
-  flex-shrink: 0;
 }
 
 /* ⌘N hint on the 新任务 row — quiet text, no chip chrome. */

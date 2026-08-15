@@ -11,13 +11,11 @@ import { useMountedRef } from './use-mounted-ref.js';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { formatCompactTimestamp } from '@maka/core/relative-time';
 import {
   ICON_SIZE,
   AlertTriangle,
   Archive,
   ArchiveRestore,
-  FolderGit2,
   FolderOpen,
   Pencil,
   Pin,
@@ -27,6 +25,7 @@ import {
   SquarePen,
   Trash2,
 } from './icons.js';
+import { RelativeTime } from './relative-time.js';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
@@ -414,7 +413,8 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
 }) {
   const locale = useUiLocale();
-  const metaTitle = formatSessionMeta(props.session, locale);
+  const copy = getConversationCopy(locale).sessions;
+  const signal = resolveSessionRowSignal(props.session, props.streaming, props.active, locale);
 
   return (
     <div
@@ -422,12 +422,32 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       data-maka-contract="session-row"
       data-session-id={props.session.id}
       data-stale={props.stale ? 'true' : undefined}
-      title={metaTitle}
+      // Where the task runs, not what it is doing: an attribute of the row, not
+      // a signal competing for the row's two slots. It used to be an icon in the
+      // trailing cluster, and the timestamp that now lives there used to be
+      // here.
+      title={props.worktree ? copy.worktreeAriaLabel : undefined}
     >
       <SideNavItem
         label={props.session.name}
         size="md"
         isSelected={props.active}
+        // Slot 1, the row's leading edge. A fixed gutter every row pays for,
+        // whether or not it has a dot, so state reads as one column down the
+        // rail instead of a mark that drifts with each title's length.
+        icon={
+          signal ? (
+            <StatusDot
+              variant={signal.variant}
+              label={signal.label}
+              isPulsing={signal.isPulsing}
+              tooltip={signal.tooltip}
+              data-session-status={props.session.status}
+            />
+          ) : (
+            <span className="maka-session-row-signal-empty" aria-hidden="true" />
+          )
+        }
         onClick={(event) => {
           if (event.detail > 1 && props.actions) {
             props.onStartRename(
@@ -445,14 +465,22 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           props.onSelectSession(props.session.id);
         }}
         endContent={
-          <SessionItemMeta
-            session={props.session}
-            active={props.active}
-            streaming={props.streaming}
-            stale={props.stale}
-            worktree={props.worktree}
-            reserveAction={props.actions !== undefined}
-          />
+          // Slot 2. The timestamp is what the row shows at rest; the ⋯ menu
+          // below is absolutely positioned over this box and sidebar.css swaps
+          // the two on hover or keyboard focus. The span is rendered even with
+          // no timestamp so the column exists on every row.
+          <span className="maka-session-row-end">
+            <span className="maka-session-row-time">
+              {props.session.lastMessageAt ? (
+                <RelativeTime
+                  ts={props.session.lastMessageAt}
+                  variant="compact"
+                  className="maka-session-row-time-label"
+                  suppressTitle
+                />
+              ) : null}
+            </span>
+          </span>
         }
       />
       {props.actions && (
@@ -589,66 +617,6 @@ function ProjectItemActions(props: {
     </span>
   );
 }
-
-const SessionItemMeta = memo(function SessionItemMeta(props: {
-  session: SessionSummary;
-  active: boolean;
-  streaming: boolean;
-  stale: boolean;
-  worktree: boolean;
-  reserveAction: boolean;
-}) {
-  const locale = useUiLocale();
-  const copy = getConversationCopy(locale).sessions;
-  const rowSignal = resolveSessionRowSignal(props.session, props.streaming, props.active, locale);
-
-  const signal = rowSignal ? (
-    <StatusDot
-      variant={rowSignal.variant}
-      label={rowSignal.label}
-      isPulsing={rowSignal.isPulsing}
-      tooltip={rowSignal.tooltip}
-      data-session-status={props.session.status}
-    />
-  ) : null;
-
-  return (
-    <span className="maka-session-row-end">
-      {props.stale && (
-        <Tooltip content={copy.staleTitle}>
-          {/* `yellow`, not `warning`. Astryx keeps two archives: the semantic
-              names paint a solid saturated fill (maka's `warning` is a flat
-              #ffce2f that does not adapt to dark mode), the colour names paint
-              a tint. This pill sits on every stale row in the rail, where the
-              chrome it replaced was an 18% wash — a solid block on each row
-              reads as an alert the state does not mean. */}
-          <Badge
-            variant="yellow"
-            label={copy.stale}
-            className="maka-list-row-stale-pill"
-            /* The reason belongs in the name, not only in the Tooltip. `title`
-               used to carry it, and a screen reader read it as the accessible
-               description; Astryx's Tooltip points `aria-describedby` at a
-               popover that is `display: none` until hovered, so off the mouse
-               the description computes to empty. */
-            aria-label={`${copy.staleAriaLabel}. ${copy.staleTitle}`}
-          />
-        </Tooltip>
-      )}
-      {props.worktree && (
-        <FolderGit2
-          size={ICON_SIZE.meta}
-          aria-label={copy.worktreeAriaLabel}
-          className="maka-session-worktree-icon"
-        />
-      )}
-      {signal}
-      <span className="maka-session-row-trailing" aria-hidden="true">
-        {!props.reserveAction && !signal && <span className="maka-session-row-trailing-spacer" />}
-      </span>
-    </span>
-  );
-});
 
 function SessionItemActions(props: {
   session: SessionSummary;
@@ -842,9 +810,4 @@ function groupSessionsForHistory(sessions: SessionSummary[], locale: UiLocale): 
     groups.push({ id: 'unpinned', label: copy.recent, sessions: unpinned });
   }
   return groups;
-}
-
-function formatSessionMeta(session: SessionSummary, locale: UiLocale): string {
-  if (!session.lastMessageAt) return getConversationCopy(locale).chat.noMessages;
-  return formatCompactTimestamp(session.lastMessageAt, Date.now(), locale);
 }
