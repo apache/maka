@@ -56,7 +56,6 @@ test('fails closed for unsupported deny rules', () => {
     },
   };
   assert.throws(() => compileWindowsSandboxPolicy(command(deny)), /deny entries/);
-
 });
 
 test('compiles an exact file grant as a non-recursive broker root', () => {

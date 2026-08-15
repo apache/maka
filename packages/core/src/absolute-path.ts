@@ -24,7 +24,9 @@ export function pathWithinRoot(path: string, root: string): boolean {
   }
   if (normalizedRoot === '/') return normalizedPath.startsWith('/');
   const separator = isWindowsDrivePath(root) ? '\\' : '/';
-  return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}${separator}`);
+  return (
+    normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}${separator}`)
+  );
 }
 
 export function samePath(a: string, b: string): boolean {
