@@ -1,4 +1,7 @@
-export type HistoryCompactSummarizerFailureReason = 'output_length' | 'provider_error';
+export type HistoryCompactSummarizerFailureReason =
+  | 'output_length'
+  | 'provider_error'
+  | 'malformed_summary';
 
 export class HistoryCompactSummarizerError extends Error {
   constructor(

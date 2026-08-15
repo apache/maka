@@ -298,7 +298,12 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
   const commits: ModelCallCommit<ModelCallAttempt>[] = [];
   const summarizerModel = new MockLanguageModelV4({
     doGenerate: {
-      content: [{ type: 'text', text: 'MID_TURN_SUMMARY_SENTINEL' }],
+      content: [
+        {
+          type: 'text',
+          text: '## Goal\nMID_TURN_SUMMARY_SENTINEL\n\n## Progress\n### Done\n- folded span summarized\n\n### In Progress\n- none\n\n## Next Steps\n1. continue the turn\n\n## Critical Context\n- (none)',
+        },
+      ],
       finishReason: { unified: 'stop', raw: 'stop' },
       usage: {
         inputTokens: { total: 31, noCache: 31, cacheRead: 0, cacheWrite: 0 },
@@ -422,7 +427,9 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       // The real summarizer is what carries the accounting the backend hands
       // it, so the metered case must go through it rather than a stub.
       if (options.meteredSummarizer) return await meteredSummarize(input);
-      const summary = options.summarize ? await options.summarize() : 'MID_TURN_SUMMARY_SENTINEL';
+      const summary = options.summarize
+        ? await options.summarize()
+        : '## Goal\nMID_TURN_SUMMARY_SENTINEL\n\n## Progress\n### Done\n- folded span summarized\n\n### In Progress\n- none\n\n## Next Steps\n1. continue the turn\n\n## Critical Context\n- (none)';
       return summary;
     },
     ...(options.meteredSummarizer
@@ -797,6 +804,27 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(usageEvent?.contextBudget?.historyCompactWriteFailures, 1);
   });
 
+  test('fails open with malformed_summary diagnostics when the summarizer returns a fragment (#3029)', async () => {
+    // Regression for the incident: a degraded provider returned a section-less
+    // fragment ending mid-sentence, and the pipeline persisted it as the
+    // checkpoint, replacing the folded span. The gate must refuse it.
+    const fixture = buildFixture({
+      summarize: () => '确认服务端语义后，决定走 runControl。现在看 desktop 的 retry 循环结尾：',
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    // No checkpoint is recorded; the turn continues on the raw projection.
+    assert.equal(fixture.recorded.length, 0);
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
+
+    const failedOpen = compactionDecisions(fixture).find(
+      (decision) => decision.phase === 'mid_turn' && decision.decision === 'failedOpen',
+    );
+    assert.equal(failedOpen?.failOpenReason, 'malformed_summary');
+  });
+
   test('exhausts with write_failed in the durable diagnostics when the write fails over the window', async () => {
     // Big priors make folding rescue the over-window estimate, so the plan
     // compacts and the failure happens AT the recorder — over the window that
@@ -1029,7 +1057,12 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     // projection; the hook measures the materialized payload and keeps the raw
     // messages instead. Validation runs before the recorder, so the rejected
     // checkpoint is never persisted (asserted below).
-    const fixture = buildFixture({ summarize: () => 'GIANT_SUMMARY_'.repeat(600) });
+    const fixture = buildFixture({
+      summarize: () =>
+        '## Goal\n' +
+        'GIANT_SUMMARY_'.repeat(600) +
+        '\n\n## Progress\n### Done\n- padded\n\n## Next Steps\n1. continue',
+    });
     await runFixtureTurn(fixture, consumer);
 
     assert.equal(fixture.model.doStreamCalls.length, 3);
@@ -1127,7 +1160,10 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     const fixture = buildFixture({
       contextWindow: 150,
       reserveTokens: 100,
-      summarize: () => 'GIANT_SUMMARY_'.repeat(600),
+      summarize: () =>
+        '## Goal\n' +
+        'GIANT_SUMMARY_'.repeat(600) +
+        '\n\n## Progress\n### Done\n- padded\n\n## Next Steps\n1. continue',
     });
     await runFixtureTurn(fixture, consumer);
 

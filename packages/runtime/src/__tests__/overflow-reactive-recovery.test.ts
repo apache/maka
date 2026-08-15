@@ -410,7 +410,9 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
         }) => {
           counters.summarizerCalls += 1;
           summarizedSources.push(JSON.stringify(input.source.foldedRuntimeEvents));
-          return options.summarize ? await options.summarize() : 'REACTIVE_SUMMARY_SENTINEL';
+          return options.summarize
+            ? await options.summarize()
+            : '## Goal\nREACTIVE_SUMMARY_SENTINEL\n\n## Progress\n### Done\n- folded span summarized\n\n### In Progress\n- none\n\n## Next Steps\n1. continue the turn\n\n## Critical Context\n- (none)';
         },
         recordHistoryCompactCheckpoint: (checkpoint: HistoryCompactCheckpoint) => {
           recorded.push(checkpoint);

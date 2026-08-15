@@ -4,6 +4,7 @@ import {
   HistoryCompactSummarizerError,
   type HistoryCompactSummarizerFailureReason,
 } from './history-compact-error.js';
+import { validateHistoryCompactSummary } from './history-compact-summary-validation.js';
 import {
   buildHistoryCompactCheckpoint,
   historyCompactCheckpointToRuntimeEvent,
@@ -332,6 +333,16 @@ export async function planMidTurnCapacityCompaction(
   }
   if (!summary) {
     return { decision: 'fail_open', reason: 'summarizer_failed' };
+  }
+  // The summary replaces the folded events outright, so a degraded provider
+  // response (section-less fragment, truncated mid-sentence, raw tool markup)
+  // must fail open rather than be persisted as the checkpoint (#3029).
+  if (validateHistoryCompactSummary(summary) !== undefined) {
+    return {
+      decision: 'fail_open',
+      reason: 'summarizer_failed',
+      diagnosticReason: 'malformed_summary',
+    };
   }
 
   const checkpoint = buildHistoryCompactCheckpoint({

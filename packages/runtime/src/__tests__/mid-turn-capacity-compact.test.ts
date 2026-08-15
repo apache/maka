@@ -151,7 +151,8 @@ describe('plan mid-turn capacity compaction', () => {
       reserveTailEvents: 1,
       charsPerToken: 4,
       now: 1_800_000_010_000,
-      summarize: () => 'A faithful mid-turn summary.',
+      summarize: () =>
+        '## Goal\nFold prior work.\n\n## Progress\n### Done\n- Prior turns summarized.\n\n## Next Steps\n1. Continue the turn.',
       ...over,
     };
   }
@@ -242,6 +243,23 @@ describe('plan mid-turn capacity compaction', () => {
     assert.deepEqual(result, { decision: 'fail_open', reason: 'summarizer_failed' });
   });
 
+  test('fails open when the summarizer returns a malformed fragment (#3029)', async () => {
+    // Regression: the incident's actual summary — a section-less fragment
+    // ending mid-sentence — was persisted as the checkpoint, replacing the
+    // folded events. The write gate must reject it instead.
+    const result = await planMidTurnCapacityCompaction(
+      planInput({
+        estimatedNextRequestTokens: 120_000, // over high-water, under window
+        summarize: () => '确认服务端语义后，决定走 runControl。现在看 desktop 的 retry 循环结尾：',
+      }),
+    );
+    assert.deepEqual(result, {
+      decision: 'fail_open',
+      reason: 'summarizer_failed',
+      diagnosticReason: 'malformed_summary',
+    });
+  });
+
   test('preserves a typed summarizer failure as the mid-turn diagnostic reason', async () => {
     const result = await planMidTurnCapacityCompaction(
       planInput({
@@ -328,7 +346,7 @@ describe('plan mid-turn capacity compaction', () => {
         summarize: ({ newlyFoldedRuntimeEvents, previousCheckpoint }) => {
           seenNewlyFolded = newlyFoldedRuntimeEvents.map((event) => event.id);
           assert.equal(previousCheckpoint?.checkpointId, first.checkpoint.checkpointId);
-          return 'rolled-forward summary';
+          return '## Goal\nFold prior work.\n\n## Progress\n### Done\n- Prior turns summarized.\n\n## Next Steps\n1. Continue the turn.';
         },
       }),
     );

@@ -3891,7 +3891,12 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     const modelCalls: ModelCallAttempt[] = [];
     const summarizerModel = new MockLanguageModelV4({
       doGenerate: {
-        content: [{ type: 'text', text: 'MANUAL_COMPACT_SUMMARY' }],
+        content: [
+          {
+            type: 'text',
+            text: '## Goal\nMANUAL_COMPACT_SUMMARY\n\n## Progress\n### Done\n- folded span summarized\n\n### In Progress\n- none\n\n## Next Steps\n1. continue the turn\n\n## Critical Context\n- (none)',
+          },
+        ],
         finishReason: { unified: 'stop', raw: 'stop' },
         usage: {
           inputTokens: { total: 41, noCache: 41, cacheRead: 0, cacheWrite: 0 },

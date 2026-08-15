@@ -41,6 +41,7 @@ import {
   isHistoryCompactContentEvent,
 } from './history-compact.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
+import { validateHistoryCompactSummary } from './history-compact-summary-validation.js';
 import {
   buildHistoryCompactCheckpoint,
   matchHistoryCompactCheckpointPrefix,
@@ -546,6 +547,12 @@ export class AiSdkCompaction {
             }),
           },
         };
+      }
+      // A degraded provider response (section-less fragment, truncated
+      // mid-sentence, raw tool markup) must never replace the folded events;
+      // throw so the enclosing catch fails open with `malformed_summary` (#3029).
+      if (validateHistoryCompactSummary(summary) !== undefined) {
+        throw new HistoryCompactSummarizerError('malformed_summary');
       }
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: this.sessionId,

@@ -1,6 +1,7 @@
 import { rawFinishReasonString, type ModelMessage } from './model-protocol.js';
 import { buildRuntimeEventModelReplayPlan } from './model-history.js';
 import { toolResultOutput } from './tool-result-output.js';
+import { HISTORY_COMPACT_SUMMARY_SECTIONS } from './history-compact-summary-validation.js';
 import type { HistoryCompactSummaryInput } from './ai-sdk-compaction-contract.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
 import type { AiSdkUsageLike } from './model-adapter.js';
@@ -34,30 +35,35 @@ export interface BuildLlmHistorySummarizerOptions {
 // asks for a checkpoint another LLM can continue from. Tool calls and their
 // results are part of the conversation sent to the summarizer, because the
 // folded events are projected with the same policy the model would see them.
+//
+// Section names come from history-compact-summary-validation.ts — the same
+// constant the checkpoint write gates validate against, so the requested
+// contract and the enforced contract cannot drift apart.
+const SECTION_PLACEHOLDERS: Record<(typeof HISTORY_COMPACT_SUMMARY_SECTIONS)[number], string[]> = {
+  '## Goal': ['[What the user is trying to accomplish]'],
+  '## Progress': [
+    '### Done',
+    '- [Completed work and changes]',
+    '### In Progress',
+    '- [Current work]',
+  ],
+  '## Key Decisions': ['- **[Decision]**: [Brief rationale]'],
+  '## Next Steps': ['1. [Ordered list of what should happen next]'],
+  '## Critical Context': [
+    '- [Files, commands/results, errors, anything needed to continue; or "(none)"]',
+  ],
+};
 const SUMMARIZATION_SYSTEM_PROMPT = [
   'You are a context summarization assistant.',
   'Read the conversation between a user and an AI assistant, then produce a structured summary another LLM will use to continue the same task.',
   'Do NOT continue the conversation. Do NOT answer questions in it. ONLY output the structured summary.',
   '',
   'Use this exact format:',
-  '',
-  '## Goal',
-  '[What the user is trying to accomplish]',
-  '',
-  '## Progress',
-  '### Done',
-  '- [Completed work and changes]',
-  '### In Progress',
-  '- [Current work]',
-  '',
-  '## Key Decisions',
-  '- **[Decision]**: [Brief rationale]',
-  '',
-  '## Next Steps',
-  '1. [Ordered list of what should happen next]',
-  '',
-  '## Critical Context',
-  '- [Files, commands/results, errors, anything needed to continue; or "(none)"]',
+  ...HISTORY_COMPACT_SUMMARY_SECTIONS.flatMap((section) => [
+    '',
+    section,
+    ...SECTION_PLACEHOLDERS[section],
+  ]),
   '',
   'Keep each section concise. Preserve exact file paths, function names, commands, and error messages.',
 ].join('\n');
