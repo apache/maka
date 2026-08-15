@@ -166,7 +166,7 @@ describe('single live-turn handoff', () => {
       liveTurnBySessionRef,
       refreshMessages: async (sessionId, options) => {
         refreshes.push({ sessionId, required: options?.requiredAssistantMessageId });
-        return true;
+        return refreshes.length >= 3;
       },
       refreshSessions: async () => [],
       setLiveTurnBySession,
@@ -194,9 +194,12 @@ describe('single live-turn handoff', () => {
     assert.equal(terminal?.steps[0]?.tools[0]?.toolUseId, 'tool-1');
     assert.equal(terminal?.steps[0]?.text?.text, '答案');
 
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 180));
     assert.equal(liveTurns.get()['session-1'], undefined);
-    assert.ok(refreshes.some((call) => call.required === 'assistant-1'));
+    assert.equal(
+      refreshes.filter((call) => call.required === 'assistant-1').length,
+      3,
+    );
   });
 
   it('publishes visible deltas at most once per animation frame', () => {

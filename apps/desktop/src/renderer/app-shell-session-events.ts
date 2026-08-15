@@ -24,6 +24,9 @@ import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 type RefBox<T> = { current: T };
 type StateUpdater<T> = (updater: (current: T) => T) => void;
 
+const TERMINAL_HANDOFF_ATTEMPTS = 3;
+const TERMINAL_HANDOFF_RETRY_DELAY_MS = 120;
+
 type ToastApi = {
   error(
     title: string,
@@ -170,9 +173,25 @@ export function createAppShellSessionEventHandlers(options: {
     if (!projection || !messageId) return;
     const step = projection.steps.find((candidate) => candidate.stepId === messageId);
     if (!step?.text || (requireCompletedLiveText && !step.text.complete)) return;
-    const refreshed = await refreshMessages(sessionId, { requiredAssistantMessageId: messageId }).catch(() => false);
-    if (!refreshed) return;
-    settleLiveStep(sessionId, messageId);
+    const attempts = requireCompletedLiveText ? 1 : TERMINAL_HANDOFF_ATTEMPTS;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const refreshed = await refreshMessages(sessionId, {
+        requiredAssistantMessageId: messageId,
+      }).catch(() => false);
+      if (refreshed) {
+        settleLiveStep(sessionId, messageId);
+        return;
+      }
+      if (
+        attempt + 1 >= attempts ||
+        !liveTurnBySessionRef.current[sessionId]?.steps.some(
+          (candidate) => candidate.stepId === messageId,
+        )
+      ) return;
+      await new Promise<void>((resolve) => {
+        globalThis.setTimeout(resolve, TERMINAL_HANDOFF_RETRY_DELAY_MS);
+      });
+    }
   }
 
   function reconcilePersistedMessages(sessionId: string, messages: readonly StoredMessage[]): void {
