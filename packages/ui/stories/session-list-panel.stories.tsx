@@ -69,6 +69,7 @@ function panelProps(input: {
   activeId?: string;
   streamingSessionIds?: Set<string>;
   staleSessionIds?: Set<string>;
+  width?: number;
   viewMode?: SessionListPanelProps['viewMode'];
   groups?: SessionListPanelProps['groups'];
   projectActions?: SessionListPanelProps['projectActions'];
@@ -77,6 +78,10 @@ function panelProps(input: {
   return {
     selection: input.selection ?? { section: 'sessions' },
     sessions: input.sessions,
+    // The rail's own width, not just the frame's: SideNav keeps its width in
+    // `resizable`, so a narrow frame alone only clips a 260px rail instead of
+    // showing what the narrow one looks like.
+    ...(input.width === undefined ? {} : { width: input.width }),
     ...(input.activeId ? { activeId: input.activeId } : {}),
     ...(input.streamingSessionIds ? { streamingSessionIds: input.streamingSessionIds } : {}),
     ...(input.staleSessionIds ? { staleSessionIds: input.staleSessionIds } : {}),
@@ -209,7 +214,7 @@ const longTitleSessions = [
   }),
 ];
 
-// Real path: a fresh workspace with no conversations yet — the sidebar list before
+// Real path: a fresh workspace with no tasks yet — the rail's list before
 // anything is created.
 export const Empty: Story = {
   render: () => (
@@ -234,12 +239,13 @@ export const ConversationStates: Story = {
   ),
 };
 
-// Real path: a workspace with long conversation titles, with the sidebar dragged to its
-// narrow end.
+// Real path: a workspace with long task titles, with the rail dragged to its
+// narrow end (180px, the panel's own minWidth).
 export const LongTitlesAndNarrow: Story = {
   render: () => (
-    <StoryFrame width={176}>
+    <StoryFrame width={180}>
       <SessionListPanel {...panelProps({
+        width: 180,
         sessions: longTitleSessions,
         activeId: 'long-title-active',
         staleSessionIds: new Set(['long-title-stale']),
