@@ -200,6 +200,34 @@ describe('Runtime Host maka run adapter', () => {
     ]);
   });
 
+  test('returns exit code 1 when an ordinary Host Turn fails', async () => {
+    const fixture = runFixture({ turnEvents: failedEvents('turn-1', 'provider_failure') });
+    const exitCode = await runFixtureCommand(fixture, ['fail once']);
+
+    assert.equal(exitCode, 1);
+  });
+
+  test('returns exit code 0 when the final Graph Turn completes', async () => {
+    const stdout: string[] = [];
+    const fixture = runFixture({ graph: true });
+    const exitCode = await runFixtureCommand(fixture, ['delegate once', '--graph'], (text) =>
+      stdout.push(text),
+    );
+
+    assert.equal(exitCode, 0);
+    assert.equal(stdout.join(''), 'Final graph answer\n');
+  });
+
+  test('returns exit code 1 when the final Graph Turn fails', async () => {
+    const fixture = runFixture({
+      graph: true,
+      finalMessages: failedGraphMessages('provider_failure'),
+    });
+    const exitCode = await runFixtureCommand(fixture, ['delegate once', '--graph']);
+
+    assert.equal(exitCode, 1);
+  });
+
   test('waits for Host-started graph supervisor Turns before returning', async () => {
     const observed: MakaRunOutcome[] = [];
     const fixture = runFixture({ observed, graph: true, graphProjectionRace: true });
@@ -244,6 +272,57 @@ describe('Runtime Host maka run adapter', () => {
 
     assert.equal(observed.at(-1)?.outcomeId, 'turn-2');
     assert.equal(observed.at(-1)?.finalOutput, 'Final graph answer');
+  });
+
+  test('reports a recovered sandbox boundary from live and durable Turns', async () => {
+    const live = await observeFixtureOutcome({ turnEvents: recoveredSandboxEvents('turn-1') });
+    const durable = await observeFixtureOutcome({
+      graph: true,
+      finalMessages: recoveredSandboxMessages(),
+    });
+
+    assert.equal(live.sandboxBoundary, 'recovered');
+    assert.equal(durable.sandboxBoundary, 'recovered');
+  });
+
+  test('classifies live and durable Turn cancellations as aborted', async () => {
+    const live = await observeFixtureOutcome({ turnEvents: abortedEvents('turn-1') });
+    const durable = await observeFixtureOutcome({
+      graph: true,
+      finalMessages: abortedGraphMessages(),
+    });
+
+    assert.equal(live.failure?.class, 'aborted');
+    assert.equal(durable.failure?.class, 'aborted');
+  });
+
+  test('classifies a live step limit like a durable failed Turn', async () => {
+    const live = await observeFixtureOutcome({ turnEvents: stepLimitedEvents('turn-1') });
+    const durable = await observeFixtureOutcome({
+      graph: true,
+      finalMessages: failedGraphMessages('tool_step_cap_reached'),
+    });
+
+    assert.equal(live.status, 'failed');
+    assert.equal(live.failure?.class, 'tool_step_cap_reached');
+    assert.equal(durable.status, 'failed');
+    assert.equal(durable.failure?.class, 'tool_step_cap_reached');
+  });
+
+  test('classifies a user-stop complete event as aborted', async () => {
+    const outcome = await observeFixtureOutcome({ turnEvents: userStoppedEvents('turn-1') });
+
+    assert.equal(outcome.status, 'failed');
+    assert.equal(outcome.failure?.class, 'aborted');
+  });
+
+  test('keeps a live Turn failed when complete follows its error', async () => {
+    const outcome = await observeFixtureOutcome({
+      turnEvents: failedThenCompleteEvents('turn-1'),
+    });
+
+    assert.equal(outcome.status, 'failed');
+    assert.equal(outcome.failure?.class, 'provider_failure');
   });
 
   test('waits for the exact final Graph wake after an earlier wake already settled', async () => {
@@ -736,26 +815,25 @@ function runFixture(input: {
       throw new Error(`Unexpected operation: ${operation}`);
     },
   } as unknown as RuntimeHostConnection;
+  const createContext = (contextInput: MakaRunContextInput) =>
+    createRuntimeHostRunContext(connection, connectionCatalog(), contextInput, {
+      createDriver: () => driver,
+    });
   let create = () =>
-    createRuntimeHostRunContext(
-      connection,
-      connectionCatalog(),
-      {
-        workspaceRoot: '/data',
-        cwd: '/workspace',
-        ...(input.graph ? { enableAgentGraph: true } : {}),
-        ...(input.maxSteps ? { maxSteps: input.maxSteps } : {}),
-        ...(input.sessionCwdOverride ? { sessionCwdOverride: input.sessionCwdOverride } : {}),
-        ...(input.observed
-          ? {
-              runOutcomeObserver: (result: MakaRunOutcome) => {
-                input.observed?.push(result);
-              },
-            }
-          : {}),
-      },
-      { createDriver: () => driver },
-    );
+    createContext({
+      workspaceRoot: '/data',
+      cwd: '/workspace',
+      ...(input.graph ? { enableAgentGraph: true } : {}),
+      ...(input.maxSteps ? { maxSteps: input.maxSteps } : {}),
+      ...(input.sessionCwdOverride ? { sessionCwdOverride: input.sessionCwdOverride } : {}),
+      ...(input.observed
+        ? {
+            runOutcomeObserver: (result: MakaRunOutcome) => {
+              input.observed?.push(result);
+            },
+          }
+        : {}),
+    });
   return {
     get context() {
       const context = create();
@@ -768,12 +846,72 @@ function runFixture(input: {
     exactTurnStops,
     preparedMaxSteps,
     sandboxResponses,
+    createContext,
     publishPendingInteraction(pending: InteractionPendingSnapshot) {
       for (const listener of pendingInteractionListeners) listener(structuredClone(pending));
     },
     get turnStops() {
       return turnStops;
     },
+  };
+}
+
+async function observeFixtureOutcome(
+  input: Parameters<typeof runFixture>[0],
+): Promise<MakaRunOutcome> {
+  const observed: MakaRunOutcome[] = [];
+  const fixture = runFixture({ ...input, observed });
+  const session = await fixture.context.runtime.createSession({
+    cwd: '/workspace',
+    llmConnectionSlug: 'openai-main',
+    model: 'gpt-5',
+    permissionMode: 'ask',
+  });
+  await collect(
+    fixture.context.runtime.sendMessage(session.id, {
+      turnId: 'turn-1',
+      text: 'observe outcome',
+      ...(input.graph
+        ? { turnOrchestration: { mode: 'graph' as const, source: 'host_api' as const } }
+        : {}),
+    }),
+  );
+  if (input.graph) await fixture.context.agentGraph?.waitForCompletion(session.id);
+  const outcome = observed.at(-1);
+  assert.ok(outcome);
+  return outcome;
+}
+
+function runFixtureCommand(
+  fixture: ReturnType<typeof runFixture>,
+  argv: readonly string[],
+  writeStdout: (text: string) => void = () => {},
+): Promise<number> {
+  return runRuntimeHostTextCli(
+    argv,
+    { ...publicCommandEnvironment(), writeStdout },
+    {
+      connect: async () => ({
+        connection: readinessConnection(),
+        catalog: connectionCatalog(),
+        profile: LOCAL_RUNTIME_HOST_PROFILE,
+        close: async () => {},
+      }),
+      createContext: (_connection, _catalog, input) => fixture.createContext(input),
+    },
+  );
+}
+
+function publicCommandEnvironment() {
+  return {
+    workspaceRoot: () => '/runtime-host-data',
+    processCwd: () => process.cwd(),
+    stdinIsTTY: () => true,
+    readStdin: async () => '',
+    writeStdout: () => {},
+    writeStderr: () => {},
+    onSigint: () => () => {},
+    newId: () => 'turn-1',
   };
 }
 
@@ -977,6 +1115,52 @@ function graphMessages(includeTerminal = true): StoredMessage[] {
   return messages;
 }
 
+function recoveredSandboxMessages(): StoredMessage[] {
+  return [
+    ...graphMessages(false),
+    sandboxFailureToolResult('turn-2', 5),
+    successfulToolResult('turn-2', 6),
+    {
+      type: 'turn_state',
+      id: 'state-turn-2',
+      turnId: 'turn-2',
+      ts: 7,
+      status: 'completed',
+      partialOutputRetained: true,
+    },
+  ];
+}
+
+function abortedGraphMessages(): StoredMessage[] {
+  return [
+    ...graphMessages(false),
+    {
+      type: 'turn_state',
+      id: 'state-turn-2',
+      turnId: 'turn-2',
+      ts: 5,
+      status: 'aborted',
+      abortSource: 'user_interrupt',
+      partialOutputRetained: true,
+    },
+  ];
+}
+
+function failedGraphMessages(errorClass: string): StoredMessage[] {
+  return [
+    ...graphMessages(false),
+    {
+      type: 'turn_state',
+      id: 'state-turn-2',
+      turnId: 'turn-2',
+      ts: 5,
+      status: 'failed',
+      errorClass,
+      partialOutputRetained: true,
+    },
+  ];
+}
+
 function multiWakeGraphMessages(includeFinalTerminal: boolean): StoredMessage[] {
   const messages = [
     ...graphMessages(),
@@ -1025,6 +1209,115 @@ async function* eventsFor(turnId: string, text: string): AsyncIterable<SessionEv
     text,
   };
   yield { type: 'complete', id: `${turnId}-complete`, turnId, ts: 2, stopReason: 'end_turn' };
+}
+
+async function* recoveredSandboxEvents(turnId: string): AsyncIterable<SessionEvent> {
+  yield sandboxFailureToolResult(turnId, 1);
+  yield successfulToolResult(turnId, 2);
+  yield* eventsFor(turnId, 'Recovered answer');
+}
+
+async function* abortedEvents(turnId: string): AsyncIterable<SessionEvent> {
+  yield {
+    type: 'abort',
+    id: `${turnId}-abort`,
+    turnId,
+    ts: 1,
+    reason: 'user_stop',
+  };
+}
+
+async function* stepLimitedEvents(turnId: string): AsyncIterable<SessionEvent> {
+  yield {
+    type: 'text_complete',
+    id: `${turnId}-text`,
+    turnId,
+    messageId: `${turnId}-message`,
+    ts: 1,
+    text: 'Partial answer',
+  };
+  yield {
+    type: 'complete',
+    id: `${turnId}-complete`,
+    turnId,
+    ts: 2,
+    stopReason: 'step_limit',
+  };
+}
+
+async function* userStoppedEvents(turnId: string): AsyncIterable<SessionEvent> {
+  yield {
+    type: 'complete',
+    id: `${turnId}-complete`,
+    turnId,
+    ts: 1,
+    stopReason: 'user_stop',
+  };
+}
+
+async function* failedEvents(turnId: string, reason: string): AsyncIterable<SessionEvent> {
+  yield {
+    type: 'error',
+    id: `${turnId}-error`,
+    turnId,
+    ts: 1,
+    recoverable: false,
+    reason,
+    message: 'Turn failed',
+  };
+}
+
+async function* failedThenCompleteEvents(turnId: string): AsyncIterable<SessionEvent> {
+  yield* failedEvents(turnId, 'provider_failure');
+  yield {
+    type: 'complete',
+    id: `${turnId}-complete`,
+    turnId,
+    ts: 2,
+    stopReason: 'end_turn',
+  };
+}
+
+type SharedToolResult = Extract<SessionEvent, { type: 'tool_result' }> &
+  Extract<StoredMessage, { type: 'tool_result' }>;
+
+function sandboxFailureToolResult(turnId: string, ts: number): SharedToolResult {
+  return {
+    type: 'tool_result',
+    id: `${turnId}-sandbox-failure`,
+    turnId,
+    ts,
+    toolUseId: 'tool-1',
+    isError: true,
+    content: sandboxFailureContent(),
+  };
+}
+
+function successfulToolResult(turnId: string, ts: number): SharedToolResult {
+  return {
+    type: 'tool_result',
+    id: `${turnId}-tool-success`,
+    turnId,
+    ts,
+    toolUseId: 'tool-2',
+    isError: false,
+    content: { kind: 'text', text: 'ok' },
+  };
+}
+
+function sandboxFailureContent() {
+  return {
+    kind: 'text' as const,
+    text: 'Write requires an approved sandbox boundary expansion.',
+    sandboxFailure: {
+      reason: 'sandbox_boundary_required' as const,
+      requiredExpansion: {
+        filesystem: {
+          entries: [{ path: '/outside', access: 'write' as const, scope: 'subtree' as const }],
+        },
+      },
+    },
+  };
 }
 
 async function* eventsAfterPendingNotification(

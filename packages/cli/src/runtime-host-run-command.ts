@@ -1,4 +1,4 @@
-import { type SessionEvent } from '@maka/core/events';
+import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core/events';
 import { findProjectByIdentity } from '@maka/core/project';
 import { type StoredMessage } from '@maka/core/session';
 import type { CreateSessionInput, UserMessageInput } from '@maka/core/runtime-inputs';
@@ -408,7 +408,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   }
 
   async *#observeTurn(turn: MakaPreparedSessionTurn): AsyncIterable<SessionEvent> {
-    const accumulator = new TurnOutcomeAccumulator(turn.runId ?? turn.turnId);
+    const classifier = new TurnOutcomeClassifier(turn.runId ?? turn.turnId);
     const events = turn.events[Symbol.asyncIterator]();
     for (;;) {
       const next = await this.#interactions.race(events.next());
@@ -417,11 +417,11 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       if (event.type === 'user_question_request' || event.type === 'sandbox_boundary_request') {
         continue;
       }
-      accumulator.accept(event);
+      classifier.accept(observationFromSessionEvent(event));
       yield event;
     }
     await this.#interactions.settle();
-    await this.#observer?.(accumulator.finish());
+    await this.#observer?.(classifier.outcome('fail'));
   }
 
   async #stopTurn(turn: { sessionId: string; turnId: string; runId: string }): Promise<void> {
@@ -505,11 +505,23 @@ function runtimeHostSessionSummaries(items: readonly SessionCatalogItem[]): Sess
   return items.flatMap((item) => ('kind' in item ? [] : [runtimeHostSessionSummary(item)]));
 }
 
-class TurnOutcomeAccumulator {
+type TurnOutcomeObservation =
+  | { readonly kind: 'output'; readonly text: string }
+  | { readonly kind: 'terminal'; readonly status: 'completed' }
+  | {
+      readonly kind: 'terminal';
+      readonly status: 'failed';
+      readonly failure: NonNullable<MakaRunOutcome['failure']>;
+    }
+  | { readonly kind: 'sandbox_failure' }
+  | { readonly kind: 'tool_success' };
+
+type TerminalOutcomeObservation = Extract<TurnOutcomeObservation, { kind: 'terminal' }>;
+
+class TurnOutcomeClassifier {
   readonly #outcomeId: string;
   #finalOutput: string | undefined;
-  #failure: { class: string; message: string } | undefined;
-  #completed = false;
+  #terminal: TerminalOutcomeObservation | undefined;
   #unresolvedBoundary = false;
   #recoveredBoundary = false;
 
@@ -517,41 +529,47 @@ class TurnOutcomeAccumulator {
     this.#outcomeId = outcomeId;
   }
 
-  accept(event: SessionEvent): void {
-    if (event.type === 'text_complete' && event.text.trim().length > 0) {
-      this.#finalOutput = event.text;
-    } else if (event.type === 'error') {
-      this.#failure = { class: event.reason ?? 'runtime_error', message: event.message };
-    } else if (event.type === 'abort') {
-      this.#failure = { class: 'aborted', message: 'Turn was cancelled' };
-    } else if (event.type === 'complete') {
-      this.#completed = true;
-    }
-    if (event.type !== 'tool_result') return;
-    if (event.isError && event.content.kind === 'text' && event.content.sandboxFailure) {
-      this.#unresolvedBoundary = true;
-      return;
-    }
-    if (!event.isError && this.#unresolvedBoundary) {
-      this.#unresolvedBoundary = false;
-      this.#recoveredBoundary = true;
+  accept(observation: TurnOutcomeObservation | undefined): void {
+    switch (observation?.kind) {
+      case undefined:
+        return;
+      case 'output':
+        this.#finalOutput = observation.text;
+        return;
+      case 'terminal':
+        if (this.#terminal?.status !== 'failed' || observation.status === 'failed') {
+          this.#terminal = observation;
+        }
+        return;
+      case 'sandbox_failure':
+        this.#unresolvedBoundary = true;
+        return;
+      case 'tool_success':
+        if (this.#unresolvedBoundary) {
+          this.#unresolvedBoundary = false;
+          this.#recoveredBoundary = true;
+        }
     }
   }
 
-  finish(): MakaRunOutcome {
-    const completed = this.#completed && !this.#failure;
+  outcome(incomplete: 'fail'): MakaRunOutcome;
+  outcome(incomplete: 'pending'): MakaRunOutcome | undefined;
+  outcome(incomplete: 'fail' | 'pending'): MakaRunOutcome | undefined {
+    const terminal = this.#terminal;
+    if (!terminal && incomplete === 'pending') return undefined;
+    const completed = terminal?.status === 'completed';
+    const failure =
+      terminal?.status === 'failed'
+        ? terminal.failure
+        : {
+            class: 'missing_terminal_event',
+            message: 'Turn ended unexpectedly',
+          };
     return {
       outcomeId: this.#outcomeId,
       status: completed ? 'completed' : 'failed',
       ...(completed && this.#finalOutput !== undefined ? { finalOutput: this.#finalOutput } : {}),
-      ...(!completed
-        ? {
-            failure: this.#failure ?? {
-              class: 'missing_terminal_event',
-              message: 'Turn ended unexpectedly',
-            },
-          }
-        : {}),
+      ...(!completed ? { failure } : {}),
       sandboxBoundary: this.#unresolvedBoundary
         ? 'unresolved'
         : this.#recoveredBoundary
@@ -559,6 +577,73 @@ class TurnOutcomeAccumulator {
           : 'none',
     };
   }
+}
+
+function observationFromSessionEvent(event: SessionEvent): TurnOutcomeObservation | undefined {
+  if (event.type === 'text_complete' && event.text.trim().length > 0) {
+    return { kind: 'output', text: event.text };
+  }
+  if (event.type === 'error') {
+    return {
+      kind: 'terminal',
+      status: 'failed',
+      failure: { class: event.reason ?? event.code ?? 'runtime_error', message: event.message },
+    };
+  }
+  if (event.type === 'abort') {
+    return {
+      kind: 'terminal',
+      status: 'failed',
+      failure: { class: 'aborted', message: 'Turn was cancelled' },
+    };
+  }
+  if (event.type === 'complete') {
+    if (event.stopReason === 'user_stop') {
+      return {
+        kind: 'terminal',
+        status: 'failed',
+        failure: { class: 'aborted', message: 'Turn was cancelled' },
+      };
+    }
+    const failureClass = failureClassFromCompleteStopReason(event.stopReason);
+    return failureClass
+      ? { kind: 'terminal', status: 'failed', failure: { class: failureClass } }
+      : { kind: 'terminal', status: 'completed' };
+  }
+  return event.type === 'tool_result' ? observationFromToolResult(event) : undefined;
+}
+
+function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObservation | undefined {
+  if (message.type === 'assistant' && message.text.trim().length > 0) {
+    return { kind: 'output', text: message.text };
+  }
+  if (message.type === 'turn_state' && message.status === 'completed') {
+    return { kind: 'terminal', status: 'completed' };
+  }
+  if (message.type === 'turn_state' && message.status === 'aborted') {
+    return {
+      kind: 'terminal',
+      status: 'failed',
+      failure: { class: 'aborted', message: 'Turn was cancelled' },
+    };
+  }
+  if (message.type === 'turn_state' && message.status === 'failed') {
+    return {
+      kind: 'terminal',
+      status: 'failed',
+      failure: { class: message.errorClass ?? 'runtime_error' },
+    };
+  }
+  return message.type === 'tool_result' ? observationFromToolResult(message) : undefined;
+}
+
+function observationFromToolResult(
+  result: Pick<Extract<SessionEvent, { type: 'tool_result' }>, 'content' | 'isError'>,
+): TurnOutcomeObservation | undefined {
+  if (result.isError && result.content.kind === 'text' && result.content.sandboxFailure) {
+    return { kind: 'sandbox_failure' };
+  }
+  return result.isError ? undefined : { kind: 'tool_success' };
 }
 
 function graphSupervisorTurnIds(messages: readonly StoredMessage[]): Set<string> {
@@ -587,36 +672,11 @@ function outcomeFromStoredTurn(
   messages: readonly StoredMessage[],
   turnId: string,
 ): MakaRunOutcome | undefined {
-  const turnMessages = messages.filter((message) => message.turnId === turnId);
-  const finalOutput = [...turnMessages]
-    .reverse()
-    .find(
-      (message): message is Extract<StoredMessage, { type: 'assistant' }> =>
-        message.type === 'assistant' && message.text.trim().length > 0,
-    )?.text;
-  const storedTerminal = [...turnMessages]
-    .reverse()
-    .find(
-      (message): message is Extract<StoredMessage, { type: 'turn_state' }> =>
-        message.type === 'turn_state' && message.status !== 'running',
-    );
-  const status = storedTerminal?.status;
-  if (!status) return undefined;
-  const completed = status === 'completed';
-  return {
-    outcomeId: turnId,
-    status: completed ? 'completed' : 'failed',
-    ...(completed && finalOutput !== undefined ? { finalOutput } : {}),
-    ...(!completed
-      ? {
-          failure: {
-            class: storedTerminal?.errorClass ?? storedTerminal?.abortSource ?? status,
-            message: status === 'aborted' ? 'Turn was cancelled' : 'Agent Graph final Turn failed',
-          },
-        }
-      : {}),
-    sandboxBoundary: storedSandboxBoundaryOutcome(turnMessages),
-  };
+  const classifier = new TurnOutcomeClassifier(turnId);
+  for (const message of messages) {
+    if (message.turnId === turnId) classifier.accept(observationFromStoredMessage(message));
+  }
+  return classifier.outcome('pending');
 }
 
 class NonInteractiveInteractionController {
@@ -690,27 +750,6 @@ class NonInteractiveInteractionController {
     this.#failure = error;
     this.#publishFailure(error);
   }
-}
-
-function storedSandboxBoundaryOutcome(
-  messages: readonly StoredMessage[],
-): MakaRunOutcome['sandboxBoundary'] {
-  let unresolved = false;
-  let recovered = false;
-  for (const message of messages) {
-    if (
-      message.type === 'tool_result' &&
-      message.isError &&
-      message.content.kind === 'text' &&
-      message.content.sandboxFailure
-    ) {
-      unresolved = true;
-    } else if (message.type === 'tool_result' && !message.isError && unresolved) {
-      unresolved = false;
-      recovered = true;
-    }
-  }
-  return unresolved ? 'unresolved' : recovered ? 'recovered' : 'none';
 }
 
 function delay(ms: number): Promise<void> {
