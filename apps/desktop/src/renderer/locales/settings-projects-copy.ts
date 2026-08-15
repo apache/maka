@@ -233,7 +233,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     },
     section: 'Workspace',
     sectionHelp:
-      'New tasks open in the default project; without one, they reuse the project you last used. Any task can switch next to the input box.',
+      'New tasks open in the default project; without one, they reuse the project you last used. You can switch any task to a different project next to the input box.',
     addProject: 'Add project',
     defaultBadge: 'Default',
     setDefault: 'Set as default',

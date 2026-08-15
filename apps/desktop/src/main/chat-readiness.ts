@@ -106,6 +106,16 @@ export async function requireReadyConnection(
  * so the copy stays close to its existing semantics (PR110a refactor
  * is behavior-preserving — only the judgment moved to core).
  */
+/**
+ * Two paths reach `fake_backend`: the reason table below, and the header check
+ * in `assertSessionCanSend`, which never gets far enough to look a connection
+ * up. They are the same sentence to the user, so they are the same string here
+ * — the rename that moved 会话 to 任务 had to be applied twice, which is what a
+ * second copy costs.
+ */
+const FAKE_BACKEND_MESSAGE =
+  '当前任务来自旧的本地模拟连接，不能直接发送。请到 设置 · 模型 添加真实模型后新建任务。';
+
 function messageForReason(
   reason: ChatConfigurationReason,
   connection: LlmConnection,
@@ -132,7 +142,7 @@ function messageForReason(
       return `模型 "${model}" 不能用于聊天。请到 设置 · 模型 选择支持聊天的模型。`;
     }
     case 'fake_backend':
-      return '当前任务来自旧的本地模拟连接，不能直接发送。请到 设置 · 模型 添加真实模型后新建任务。';
+      return FAKE_BACKEND_MESSAGE;
     case 'missing_default_connection':
     case 'connection_missing':
       // These reasons are handled before we reach isConnectionReady,
@@ -146,10 +156,7 @@ export async function assertSessionCanSend(
   deps: ReadyConnectionDeps,
 ): Promise<void> {
   if (header.backend === 'fake') {
-    throw chatConfigurationError(
-      '当前任务来自旧的本地模拟连接，不能直接发送。请到 设置 · 模型 添加真实模型后新建任务。',
-      'fake_backend',
-    );
+    throw chatConfigurationError(FAKE_BACKEND_MESSAGE, 'fake_backend');
   }
   await requireReadyConnection(header.llmConnectionSlug, deps, header.model);
 }
