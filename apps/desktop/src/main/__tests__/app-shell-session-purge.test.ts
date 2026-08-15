@@ -35,7 +35,12 @@ type SweepHarness = {
  */
 function installWindow(
   harness: SweepHarness,
-  options: { rejectIds?: readonly string[]; surviving?: readonly SessionSummary[] } = {},
+  options: {
+    rejectIds?: readonly string[];
+    surviving?: readonly SessionSummary[];
+    /** Runs after each accepted removal, to model what another client did meanwhile. */
+    onRemove?: (sessionId: string) => void;
+  } = {},
 ): () => void {
   const target = globalThis as unknown as { window?: unknown };
   const previous = target.window;
@@ -48,6 +53,7 @@ function installWindow(
           remove: async (id: string) => {
             if (options.rejectIds?.includes(id)) throw new Error(`busy:${id}`);
             harness.removed.push(id);
+            options.onRemove?.(id);
           },
           list: async () => {
             harness.listCalls += 1;
@@ -129,6 +135,27 @@ describe('purgeSessions', () => {
     const outcome = await actions.purgeSessions(['kept', 'doomed']).finally(restore);
 
     assert.deepEqual(h.removed, ['doomed']);
+    assert.equal(outcome.removed, 1);
+    assert.deepEqual(outcome.remaining, []);
+  });
+
+  it('leaves a task restored while the sweep was already running', async () => {
+    // The page disables its own controls during a sweep, so the restore comes
+    // from a second window. A set of archived ids snapshotted before the loop
+    // would not see it, and would delete a task that had left the set the
+    // confirm named — the catalog has to be read as each task is reached.
+    const h = harness();
+    const sessions = [summary('first'), summary('second')];
+    const restore = installWindow(h, {
+      onRemove: (id) => {
+        if (id === 'first') sessions[1] = summary('second', { isArchived: false });
+      },
+    });
+    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined } });
+
+    const outcome = await actions.purgeSessions(['first', 'second']).finally(restore);
+
+    assert.deepEqual(h.removed, ['first']);
     assert.equal(outcome.removed, 1);
     assert.deepEqual(outcome.remaining, []);
   });

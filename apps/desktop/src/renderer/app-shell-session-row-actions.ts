@@ -172,14 +172,21 @@ export function createAppShellSessionRowActions(deps: {
    * the one thing single-row delete cannot phrase.
    */
   async function purgeSessions(sessionIds: readonly string[]): Promise<SessionPurgeOutcome> {
-    const archivedIds = new Set(
-      sessionsRef.current.filter((session) => session.isArchived).map((session) => session.id),
-    );
     const unsettled: string[] = [];
     let firstError: unknown;
     let removed = 0;
     for (const sessionId of sessionIds) {
-      if (!archivedIds.has(sessionId)) continue;
+      // Read the catalog as the sweep reaches each task, not once up front. A
+      // sweep is serial, and a task restored from another window while it runs
+      // has left the set the confirm named; a snapshot taken at the start would
+      // delete it anyway.
+      //
+      // This narrows the window, it does not close it: nothing here can stop a
+      // restore that lands between this check and the removal. Two calls cannot
+      // be made atomic by the side that makes them — only the Host, which owns
+      // the lifecycle, can require the task to still be archived as it removes
+      // it (#3050).
+      if (!sessionsRef.current.some((s) => s.id === sessionId && s.isArchived)) continue;
       const key = `${sessionId}:delete`;
       if (
         Array.from(pendingSessionRowActionsRef.current).some((pending) =>
