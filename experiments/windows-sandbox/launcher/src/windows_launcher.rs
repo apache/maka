@@ -677,7 +677,27 @@ fn quote_command(executable: &str, arguments: &[String]) -> Vec<u16> {
 }
 
 fn quote_argument(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\\\""))
+    let mut result = String::with_capacity(value.len() + 2);
+    result.push('"');
+    let mut backslashes = 0usize;
+    for character in value.chars() {
+        match character {
+            '\\' => backslashes += 1,
+            '"' => {
+                result.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+                backslashes = 0;
+                result.push('"');
+            }
+            _ => {
+                result.extend(std::iter::repeat_n('\\', backslashes));
+                backslashes = 0;
+                result.push(character);
+            }
+        }
+    }
+    result.extend(std::iter::repeat_n('\\', backslashes * 2));
+    result.push('"');
+    result
 }
 
 fn environment_block(environment: &std::collections::BTreeMap<String, String>) -> Vec<u16> {

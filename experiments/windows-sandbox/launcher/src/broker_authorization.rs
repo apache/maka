@@ -45,13 +45,14 @@ impl BrokerAuthorizer {
         {
             return Err(BrokerAuthorizationError::ProfileNotApproved);
         }
-        if self.used_nonces.contains(&request.client_nonce) {
+        let nonce = request.client_nonce.to_ascii_lowercase();
+        if self.used_nonces.contains(&nonce) {
             return Err(BrokerAuthorizationError::NonceReplayed);
         }
         if self.used_nonces.len() >= MAX_REMEMBERED_NONCES {
             return Err(BrokerAuthorizationError::NonceCapacityExceeded);
         }
-        self.used_nonces.insert(request.client_nonce.clone());
+        self.used_nonces.insert(nonce);
         Ok(())
     }
 }
