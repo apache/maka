@@ -47,7 +47,7 @@ test('compiles workspace-write roots, runtime roots, network, and environment', 
   });
 });
 
-test('fails closed for unsupported deny and exact-path rules', () => {
+test('fails closed for unsupported deny rules', () => {
   const deny: PermissionProfileManaged = {
     ...createReadOnlyPermissionProfile(),
     fileSystem: {
@@ -57,6 +57,9 @@ test('fails closed for unsupported deny and exact-path rules', () => {
   };
   assert.throws(() => compileWindowsSandboxPolicy(command(deny)), /deny entries/);
 
+});
+
+test('compiles an exact file grant as a non-recursive broker root', () => {
   const exact: PermissionProfileManaged = {
     ...createReadOnlyPermissionProfile(),
     fileSystem: {
@@ -64,7 +67,14 @@ test('fails closed for unsupported deny and exact-path rules', () => {
       entries: [{ kind: 'path', access: 'read', path: String.raw`C:\file.txt`, match: 'exact' }],
     },
   };
-  assert.throws(() => compileWindowsSandboxPolicy(command(exact)), /exact-path entries/);
+  const policy = compileWindowsSandboxPolicy(command(exact));
+  assert.deepEqual(policy.readRoots, [
+    String.raw`C:\file.txt`,
+    String.raw`C:\runtime`,
+    String.raw`C:\Program Files\nodejs`,
+    String.raw`C:\runtime\state`,
+  ]);
+  assert.deepEqual(policy.writeRoots, [String.raw`C:\runtime\state`]);
 });
 
 test('rejects noncanonical paths and case-insensitive duplicate environment names', () => {

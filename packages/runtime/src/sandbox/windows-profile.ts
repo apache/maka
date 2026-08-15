@@ -26,9 +26,6 @@ export function compileWindowsSandboxPolicy(command: SandboxCommand): WindowsSan
     if (entry.access === 'deny') {
       throw new Error('Windows sandbox deny entries are not implemented.');
     }
-    if (entry.kind === 'path' && (entry.match ?? 'subtree') === 'exact') {
-      throw new Error('Windows sandbox exact-path entries are not implemented.');
-    }
     for (const path of rootsForEntry(entry, command.cwd, pathContext)) {
       const canonical = canonicalWindowsPath(path);
       if (unavailable.has(canonical)) {
