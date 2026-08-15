@@ -84,6 +84,9 @@ function canonicalWindowsPath(path: string): string {
   if (canonical.toLowerCase() !== path.toLowerCase()) {
     throw new Error(`Windows sandbox path must be lexically canonical: ${path}`);
   }
+  if (win32.parse(canonical).root.toLowerCase() === canonical.toLowerCase()) {
+    throw new Error(`Windows sandbox volume roots are not supported: ${path}`);
+  }
   return canonical;
 }
 

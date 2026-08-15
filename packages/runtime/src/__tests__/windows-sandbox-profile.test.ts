@@ -82,6 +82,10 @@ test('rejects noncanonical paths and case-insensitive duplicate environment name
   invalidPath.pathContext = { workspaceRoots: ['C:/work/repo'] };
   assert.throws(() => compileWindowsSandboxPolicy(invalidPath), /use backslashes/);
 
+  const volumeRoot = command(createWorkspaceWritePermissionProfile());
+  volumeRoot.pathContext = { workspaceRoots: ['C:\\'] };
+  assert.throws(() => compileWindowsSandboxPolicy(volumeRoot), /volume roots are not supported/);
+
   const duplicateEnvironment = command(createWorkspaceWritePermissionProfile());
   duplicateEnvironment.env = { Path: 'one', PATH: 'two' };
   assert.throws(() => compileWindowsSandboxPolicy(duplicateEnvironment), /Duplicate/);

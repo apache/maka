@@ -787,7 +787,7 @@ function sandboxCommand(
         pathContext: {
           workspaceRoots: effective.workspaceRoots,
           tmpdir: tmpdir(),
-          slashTmp: '/tmp',
+          ...(platform === 'win32' ? {} : { slashTmp: '/tmp' }),
           ...(platform === 'darwin'
             ? {
                 executableRoots: macosRuntimeExecutableRoots(process.execPath),

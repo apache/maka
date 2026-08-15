@@ -49,7 +49,7 @@ export async function preflightDeclaredSandboxBoundary(
     root: ctx.cwd,
     workspaceRoots: [ctx.cwd],
     tmpdir: tmpdir(),
-    slashTmp: '/tmp',
+    ...(process.platform === 'win32' ? {} : { slashTmp: '/tmp' }),
   });
   if (assessment.outcome === 'noop') return normalized;
   if (assessment.outcome === 'conflict') {
