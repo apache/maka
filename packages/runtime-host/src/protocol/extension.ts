@@ -69,6 +69,66 @@ export interface ExtensionCatalogQueryResult {
   readonly bindings: readonly ExtensionBindingProjection[];
 }
 
+export type ExtensionConfigurationScalar = string | number | boolean;
+
+export interface ExtensionContractDependency {
+  readonly id: string;
+  readonly version: string;
+}
+
+export interface ExtensionContractConfigurationProperty {
+  readonly type: 'string' | 'number' | 'boolean';
+  readonly title?: string;
+  readonly description?: string;
+  readonly default?: ExtensionConfigurationScalar;
+  readonly enum?: readonly ExtensionConfigurationScalar[];
+  readonly secret: boolean;
+}
+
+export interface ExtensionContractContribution {
+  readonly kind: 'tool' | 'ui';
+  readonly id: string;
+  readonly name?: string;
+  readonly description?: string;
+  readonly surface?: 'app.root' | 'app.overlay' | 'app.slot';
+  readonly slot?: string;
+  readonly slots?: readonly string[];
+}
+
+export interface ExtensionPackageContractProjection {
+  readonly extensionId: string;
+  readonly revision: string;
+  readonly version: string;
+  readonly displayName: string;
+  readonly description: string;
+  readonly dependencies: readonly ExtensionContractDependency[];
+  readonly configuration: {
+    readonly properties: Readonly<Record<string, ExtensionContractConfigurationProperty>>;
+    readonly required: readonly string[];
+  };
+  readonly contributions: readonly ExtensionContractContribution[];
+}
+
+export interface ExtensionContractQueryInput {}
+
+export interface ExtensionContractQueryResult {
+  readonly packages: readonly ExtensionPackageContractProjection[];
+}
+
+export interface ExtensionConfigurationQueryInput {
+  readonly bindingId: string;
+}
+
+export interface ExtensionConfigurationQueryResult {
+  readonly configuration: Readonly<Record<string, ExtensionConfigurationScalar>>;
+}
+
+export interface ExtensionConfigurationMutateInput extends ExtensionConfigurationQueryInput {
+  readonly configuration: Readonly<Record<string, ExtensionConfigurationScalar>>;
+}
+
+export type ExtensionConfigurationMutateResult = ExtensionConfigurationQueryResult;
+
 export interface ExtensionUiSnapshotInput {
   readonly scopeId: string;
 }
@@ -80,6 +140,7 @@ export interface ExtensionUiContributionProjection {
   readonly id: string;
   readonly surface: 'app.root' | 'app.overlay' | 'app.slot';
   readonly slot?: string;
+  readonly slots?: readonly string[];
   readonly priority: number;
   readonly document: string;
   readonly documentSha256: string;
@@ -165,6 +226,16 @@ export interface ToolPackageUninstallInput {
 
 export interface ToolPackageUninstallResult {}
 
+export interface ExtensionPackageExportInput {
+  readonly extensionId: string;
+  readonly revision: string;
+  readonly targetPath: string;
+}
+
+export interface ExtensionPackageExportResult {
+  readonly targetPath: string;
+}
+
 export const EXTENSION_OPERATION_SPECS = {
   'extension.catalog.query': defineOperation<
     ExtensionCatalogQueryInput,
@@ -187,6 +258,39 @@ export const EXTENSION_OPERATION_SPECS = {
     errors: MUTATION_ERRORS,
     decodeInput: decodeExtensionCatalogMutateInput,
     decodeOutput: decodeExtensionCatalogMutateResult,
+  }),
+  'extension.contract.query': defineOperation<
+    ExtensionContractQueryInput,
+    ExtensionContractQueryResult,
+    (typeof QUERY_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: QUERY_ERRORS,
+    decodeInput: decodeExtensionContractQueryInput,
+    decodeOutput: decodeExtensionContractQueryResult,
+  }),
+  'extension.configuration.query': defineOperation<
+    ExtensionConfigurationQueryInput,
+    ExtensionConfigurationQueryResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeExtensionConfigurationQueryInput,
+    decodeOutput: decodeExtensionConfigurationQueryResult,
+  }),
+  'extension.configuration.mutate': defineOperation<
+    ExtensionConfigurationMutateInput,
+    ExtensionConfigurationMutateResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeExtensionConfigurationMutateInput,
+    decodeOutput: decodeExtensionConfigurationQueryResult,
   }),
   'extension.ui.snapshot': defineOperation<
     ExtensionUiSnapshotInput,
@@ -254,11 +358,66 @@ export const EXTENSION_OPERATION_SPECS = {
     decodeInput: decodeToolPackageUninstallInput,
     decodeOutput: decodeToolPackageUninstallResult,
   }),
+  'extension.package.export': defineHostPathOperation<
+    ExtensionPackageExportInput,
+    ExtensionPackageExportResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeExtensionPackageExportInput,
+    decodeOutput: decodeExtensionPackageExportResult,
+  }),
 } as const;
 
 export function decodeExtensionCatalogQueryInput(value: unknown): ExtensionCatalogQueryInput {
   requireExactRecord(value, 'extension catalog query input', []);
   return {};
+}
+
+export function decodeExtensionContractQueryInput(value: unknown): ExtensionContractQueryInput {
+  requireExactRecord(value, 'extension contract query input', []);
+  return {};
+}
+
+export function decodeExtensionContractQueryResult(value: unknown): ExtensionContractQueryResult {
+  const result = requireExactRecord(value, 'extension contract query result', ['packages']);
+  if (!Array.isArray(result.packages) || result.packages.length > EXTENSION_CATALOG_MAX_REVISIONS) {
+    throw invalidProtocolFrame('Invalid extension contract packages');
+  }
+  const decoded = { packages: result.packages.map(decodePackageContract) };
+  requireEncodedByteLimit(decoded, 'extension contract query result', 512 * 1024);
+  return decoded;
+}
+
+export function decodeExtensionConfigurationQueryInput(
+  value: unknown,
+): ExtensionConfigurationQueryInput {
+  const input = requireExactRecord(value, 'extension configuration query input', ['bindingId']);
+  return { bindingId: requireEntityId(input.bindingId, 'extension bindingId') };
+}
+
+export function decodeExtensionConfigurationQueryResult(
+  value: unknown,
+): ExtensionConfigurationQueryResult {
+  const result = requireExactRecord(value, 'extension configuration query result', [
+    'configuration',
+  ]);
+  return { configuration: decodeConfigurationValues(result.configuration) };
+}
+
+export function decodeExtensionConfigurationMutateInput(
+  value: unknown,
+): ExtensionConfigurationMutateInput {
+  const input = requireExactRecord(value, 'extension configuration mutation input', [
+    'bindingId',
+    'configuration',
+  ]);
+  return {
+    bindingId: requireEntityId(input.bindingId, 'extension bindingId'),
+    configuration: decodeConfigurationValues(input.configuration),
+  };
 }
 
 export function decodeExtensionUiSnapshotInput(value: unknown): ExtensionUiSnapshotInput {
@@ -472,6 +631,26 @@ export function decodeToolPackageUninstallResult(value: unknown): ToolPackageUni
   return {};
 }
 
+export function decodeExtensionPackageExportInput(value: unknown): ExtensionPackageExportInput {
+  const input = requireExactRecord(value, 'Extension package export input', [
+    'extensionId',
+    'revision',
+    'targetPath',
+  ]);
+  return {
+    extensionId: decodeExtensionId(input.extensionId),
+    revision: decodeRevision(input.revision),
+    targetPath: requireUtf8String(input.targetPath, 'Extension package targetPath', 16 * 1024),
+  };
+}
+
+export function decodeExtensionPackageExportResult(value: unknown): ExtensionPackageExportResult {
+  const result = requireExactRecord(value, 'Extension package export result', ['targetPath']);
+  return {
+    targetPath: requireUtf8String(result.targetPath, 'Extension package targetPath', 16 * 1024),
+  };
+}
+
 function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProjection {
   const revision = requireExactRecord(value, 'trusted extension revision', [
     'extensionId',
@@ -499,6 +678,202 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
   };
 }
 
+function decodePackageContract(value: unknown): ExtensionPackageContractProjection {
+  const contract = requireExactRecord(value, 'Extension package contract', [
+    'extensionId',
+    'revision',
+    'version',
+    'displayName',
+    'description',
+    'dependencies',
+    'configuration',
+    'contributions',
+  ]);
+  if (
+    !Array.isArray(contract.dependencies) ||
+    contract.dependencies.length > 64 ||
+    !Array.isArray(contract.contributions) ||
+    contract.contributions.length > 192
+  )
+    throw invalidProtocolFrame('Invalid Extension package contract collections');
+  const configuration = requireExactRecord(
+    contract.configuration,
+    'Extension configuration contract',
+    ['properties', 'required'],
+  );
+  const properties = requireRecord(configuration.properties, 'Extension configuration properties');
+  if (Object.keys(properties).length > 128 || !Array.isArray(configuration.required)) {
+    throw invalidProtocolFrame('Invalid Extension configuration contract');
+  }
+  const decodedProperties: Record<string, ExtensionContractConfigurationProperty> =
+    Object.fromEntries(
+      Object.entries(properties).map(([key, value]) => {
+        const propertySource = requireRecord(value, 'Extension configuration property');
+        const fields = [
+          'type',
+          'secret',
+          ...(Object.hasOwn(propertySource, 'title') ? ['title'] : []),
+          ...(Object.hasOwn(propertySource, 'description') ? ['description'] : []),
+          ...(Object.hasOwn(propertySource, 'default') ? ['default'] : []),
+          ...(Object.hasOwn(propertySource, 'enum') ? ['enum'] : []),
+        ];
+        const property = requireExactRecord(
+          propertySource,
+          'Extension configuration property',
+          fields,
+        );
+        if (
+          property.type !== 'string' &&
+          property.type !== 'number' &&
+          property.type !== 'boolean'
+        ) {
+          throw invalidProtocolFrame('Invalid Extension configuration property type');
+        }
+        const scalar = (candidate: unknown): ExtensionConfigurationScalar => {
+          if (
+            typeof candidate !== property.type ||
+            (typeof candidate === 'number' && !Number.isFinite(candidate))
+          )
+            throw invalidProtocolFrame('Invalid Extension configuration property value');
+          return candidate as ExtensionConfigurationScalar;
+        };
+        return [
+          requireUtf8String(key, 'Extension configuration property key', 128),
+          {
+            type: property.type,
+            ...(property.title === undefined
+              ? {}
+              : { title: requireUtf8String(property.title, 'Extension configuration title', 128) }),
+            ...(property.description === undefined
+              ? {}
+              : {
+                  description: requireUtf8String(
+                    property.description,
+                    'Extension configuration description',
+                    1024,
+                  ),
+                }),
+            ...(property.default === undefined ? {} : { default: scalar(property.default) }),
+            ...(property.enum === undefined
+              ? {}
+              : {
+                  enum:
+                    Array.isArray(property.enum) && property.enum.length <= 64
+                      ? property.enum.map(scalar)
+                      : (() => {
+                          throw invalidProtocolFrame('Invalid Extension configuration enum');
+                        })(),
+                }),
+            secret: decodeBoolean(property.secret, 'Extension configuration secret'),
+          } satisfies ExtensionContractConfigurationProperty,
+        ];
+      }),
+    );
+  const required = configuration.required.map((key) =>
+    requireUtf8String(key, 'Extension required configuration key', 128),
+  );
+  return {
+    extensionId: decodeExtensionId(contract.extensionId),
+    revision: decodeRevision(contract.revision),
+    version: requireUtf8String(contract.version, 'Extension package version', 128),
+    displayName: requireUtf8String(contract.displayName, 'Extension package displayName', 128),
+    description:
+      typeof contract.description === 'string' &&
+      Buffer.byteLength(contract.description, 'utf8') <= 4096
+        ? contract.description
+        : (() => {
+            throw invalidProtocolFrame('Invalid Extension package description');
+          })(),
+    dependencies: contract.dependencies.map((value) => {
+      const dependency = requireExactRecord(value, 'Extension dependency', ['id', 'version']);
+      return {
+        id: decodeExtensionId(dependency.id),
+        version: requireUtf8String(dependency.version, 'Extension dependency version', 128),
+      };
+    }),
+    configuration: { properties: decodedProperties, required },
+    contributions: contract.contributions.map(decodeContractContribution),
+  };
+}
+
+function decodeContractContribution(value: unknown): ExtensionContractContribution {
+  const source = requireRecord(value, 'Extension contract contribution');
+  const fields = [
+    'kind',
+    'id',
+    ...(Object.hasOwn(source, 'name') ? ['name'] : []),
+    ...(Object.hasOwn(source, 'description') ? ['description'] : []),
+    ...(Object.hasOwn(source, 'surface') ? ['surface'] : []),
+    ...(Object.hasOwn(source, 'slot') ? ['slot'] : []),
+    ...(Object.hasOwn(source, 'slots') ? ['slots'] : []),
+  ];
+  const contribution = requireExactRecord(source, 'Extension contract contribution', fields);
+  if (contribution.kind !== 'tool' && contribution.kind !== 'ui') {
+    throw invalidProtocolFrame('Invalid Extension contract contribution kind');
+  }
+  if (
+    contribution.surface !== undefined &&
+    contribution.surface !== 'app.root' &&
+    contribution.surface !== 'app.overlay' &&
+    contribution.surface !== 'app.slot'
+  )
+    throw invalidProtocolFrame('Invalid Extension contract UI surface');
+  if (
+    contribution.slots !== undefined &&
+    (!Array.isArray(contribution.slots) || contribution.slots.length > 32)
+  ) {
+    throw invalidProtocolFrame('Invalid Extension contract child slots');
+  }
+  return {
+    kind: contribution.kind,
+    id: requireUtf8String(contribution.id, 'Extension contribution id', 128),
+    ...(contribution.name === undefined
+      ? {}
+      : { name: requireUtf8String(contribution.name, 'Extension Tool name', 128) }),
+    ...(contribution.description === undefined
+      ? {}
+      : {
+          description: requireUtf8String(
+            contribution.description,
+            'Extension Tool description',
+            4096,
+          ),
+        }),
+    ...(contribution.surface === undefined ? {} : { surface: contribution.surface }),
+    ...(contribution.slot === undefined
+      ? {}
+      : { slot: requireUtf8String(contribution.slot, 'Extension UI slot', 128) }),
+    ...(contribution.slots === undefined
+      ? {}
+      : {
+          slots: contribution.slots.map((slot) =>
+            requireUtf8String(slot, 'Extension UI child slot', 128),
+          ),
+        }),
+  };
+}
+
+function decodeConfigurationValues(
+  value: unknown,
+): Readonly<Record<string, ExtensionConfigurationScalar>> {
+  const source = requireRecord(value, 'Extension configuration values');
+  if (Object.keys(source).length > 128)
+    throw invalidProtocolFrame('Too many Extension configuration values');
+  const result: Record<string, ExtensionConfigurationScalar> = {};
+  for (const [key, configured] of Object.entries(source)) {
+    if (
+      !/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u.test(key) ||
+      (typeof configured !== 'string' &&
+        typeof configured !== 'boolean' &&
+        !(typeof configured === 'number' && Number.isFinite(configured)))
+    )
+      throw invalidProtocolFrame('Invalid Extension configuration value');
+    result[key] = configured;
+  }
+  requireEncodedByteLimit(result, 'Extension configuration values', 64 * 1024);
+  return result;
+}
+
 function decodeUiContributionProjection(value: unknown): ExtensionUiContributionProjection {
   const candidate = value as Record<string, unknown> | null;
   const fields = [
@@ -515,6 +890,7 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
     ...(candidate && Object.hasOwn(candidate, 'hostMethods') ? ['hostMethods'] : []),
     ...(candidate && Object.hasOwn(candidate, 'sessionAccess') ? ['sessionAccess'] : []),
     ...(candidate && Object.hasOwn(candidate, 'slot') ? ['slot'] : []),
+    ...(candidate && Object.hasOwn(candidate, 'slots') ? ['slots'] : []),
   ];
   const item = requireExactRecord(value, 'extension UI contribution', fields);
   if (
@@ -533,6 +909,20 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
   ) {
     throw invalidProtocolFrame('Invalid extension UI slot');
   }
+  if (
+    item.slots !== undefined &&
+    (!Array.isArray(item.slots) ||
+      item.slots.length > 32 ||
+      item.slots.some(
+        (slot) =>
+          typeof slot !== 'string' ||
+          !/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u.test(slot) ||
+          Buffer.byteLength(slot, 'utf8') > 128,
+      ) ||
+      new Set(item.slots).size !== item.slots.length)
+  ) {
+    throw invalidProtocolFrame('Invalid extension UI child slots');
+  }
   if (!Number.isSafeInteger(item.priority) || Math.abs(item.priority as number) > 10_000) {
     throw invalidProtocolFrame('Invalid extension UI priority');
   }
@@ -549,6 +939,7 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
     id: requireUtf8String(item.id, 'extension UI contribution id', 128),
     surface: item.surface,
     ...(item.slot === undefined ? {} : { slot: item.slot as string }),
+    ...(item.slots === undefined ? {} : { slots: item.slots as string[] }),
     priority: item.priority as number,
     document: requireUtf8String(item.document, 'extension UI document', 1024 * 1024),
     documentSha256: requireUtf8String(item.documentSha256, 'extension UI document digest', 128),

@@ -22,7 +22,14 @@ const contribution = z
   .object({
     id: z.string().min(1).max(128),
     surface: z.enum(SURFACES),
-    slot: z.enum(EXTENSION_UI_OFFICIAL_SLOTS).optional(),
+    slot: z
+      .string()
+      .regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u)
+      .optional(),
+    slots: z
+      .array(z.string().regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u))
+      .max(32)
+      .optional(),
     priority: z.number().int().min(-10_000).max(10_000),
     document: z
       .string()
@@ -45,6 +52,33 @@ const contribution = z
       });
     }
   });
+const extensionMetadata = {
+  displayName: z.string().min(1).max(128).optional(),
+  description: z.string().max(4096).optional(),
+  dependencies: z
+    .array(z.object({ id: z.string().min(1).max(128), version: z.string().min(1).max(128) }))
+    .max(64)
+    .optional(),
+  configuration: z
+    .object({
+      properties: z.record(
+        z.string(),
+        z.object({
+          type: z.enum(['string', 'number', 'boolean']),
+          title: z.string().min(1).max(128).optional(),
+          description: z.string().max(1024).optional(),
+          default: z.union([z.string(), z.number(), z.boolean()]).optional(),
+          enum: z
+            .array(z.union([z.string(), z.number(), z.boolean()]))
+            .max(64)
+            .optional(),
+          secret: z.boolean().optional(),
+        }),
+      ),
+      required: z.array(z.string()).max(128).optional(),
+    })
+    .optional(),
+};
 const defineInput = z.object({
   id: z.string().min(1).max(128),
   version: z.string().min(1).max(128),
@@ -71,6 +105,7 @@ const defineInput = z.object({
         .max(64),
     })
     .optional(),
+  ...extensionMetadata,
 });
 const revisionInput = z.object({
   extensionId: z.string().min(1).max(128),
@@ -160,19 +195,23 @@ export class HostUiPackageManagementTools {
             this.#connection,
           ),
         );
+        const contracts = unwrap(
+          await this.controller.handlers['extension.contract.query']({}, this.#connection),
+        );
         const dynamicRoot = snapshot.contributions.find(({ surface }) => surface === 'app.root');
+        const slots = dynamicRoot
+          ? reachableSlots(dynamicRoot, snapshot.contributions)
+          : EXTENSION_UI_OFFICIAL_SLOTS;
         return {
           surfaces: SURFACES,
-          slots: dynamicRoot ? Object.freeze([]) : EXTENSION_UI_OFFICIAL_SLOTS,
-          slotCompatibility: dynamicRoot
-            ? {
-                compatible: false,
-                rootExtensionId: dynamicRoot.extensionId,
-                reason:
-                  'The selected custom app.root owns the complete surface and does not expose official composition slots.',
-              }
-            : { compatible: true, rootExtensionId: 'dev.maka.desktop' },
+          slots,
+          slotCompatibility: {
+            compatible: true,
+            rootExtensionId: dynamicRoot?.extensionId ?? 'dev.maka.desktop',
+            dynamic: Boolean(dynamicRoot),
+          },
           catalog,
+          contracts,
           snapshot,
         };
       },
@@ -216,6 +255,7 @@ export class HostUiPackageManagementTools {
             id: item.id,
             surface: item.surface,
             ...(item.slot ? { slot: item.slot } : {}),
+            ...(item.slots ? { slots: item.slots } : {}),
             priority: item.priority,
             document: `documents/${index + 1}.html`,
           }));
@@ -233,6 +273,23 @@ export class HostUiPackageManagementTools {
                     }
                   : {}),
                 permissions: input.permissions,
+              },
+              null,
+              2,
+            )}\n`,
+            { encoding: 'utf8', mode: 0o600 },
+          );
+          await writeFile(
+            join(draft, 'maka.extension.json'),
+            `${JSON.stringify(
+              {
+                schemaVersion: 1,
+                id: input.id,
+                version: input.version,
+                ...(input.displayName ? { displayName: input.displayName } : {}),
+                ...(input.description !== undefined ? { description: input.description } : {}),
+                ...(input.dependencies ? { dependencies: input.dependencies } : {}),
+                ...(input.configuration ? { configuration: input.configuration } : {}),
               },
               null,
               2,
@@ -285,6 +342,7 @@ export class HostUiPackageManagementTools {
               id: item.id,
               surface: item.surface,
               ...(item.slot ? { slot: item.slot } : {}),
+              slots: item.slots,
               priority: item.priority,
               document: await this.store.readDocument(installed, item.document),
               network: installed.manifest.permissions.network,
@@ -446,6 +504,51 @@ export class HostUiPackageManagementTools {
       },
     });
   }
+}
+
+function reachableSlots(
+  root: {
+    readonly slots?: readonly string[];
+    readonly bindingId: string;
+    readonly revision: string;
+    readonly id: string;
+  },
+  contributions: readonly {
+    readonly surface: string;
+    readonly slot?: string;
+    readonly slots?: readonly string[];
+    readonly bindingId: string;
+    readonly revision: string;
+    readonly id: string;
+    readonly priority: number;
+    readonly extensionId: string;
+  }[],
+): readonly string[] {
+  const available = new Set(root.slots ?? []);
+  const visited = new Set([`${root.bindingId}:${root.revision}:${root.id}`]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const item of contributions) {
+      const key = `${item.bindingId}:${item.revision}:${item.id}`;
+      if (
+        item.surface !== 'app.slot' ||
+        !item.slot ||
+        !available.has(item.slot) ||
+        visited.has(key)
+      ) {
+        continue;
+      }
+      visited.add(key);
+      for (const slot of item.slots ?? []) {
+        if (!available.has(slot)) {
+          available.add(slot);
+          changed = true;
+        }
+      }
+    }
+  }
+  return Object.freeze([...available].sort());
 }
 
 function bindingIdFor(extensionId: string): string {

@@ -10,6 +10,7 @@ import { createDefaultSandboxManager } from '@maka/runtime/sandbox';
 import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { z } from 'zod';
 import type { InstalledToolPackage, ToolPackageManifest } from './tool-package-store.js';
+import type { ExtensionConfigurationScalar } from '../protocol/extension.js';
 
 const WORKER_MAIN = fileURLToPath(new URL('../tool-package-worker-main.js', import.meta.url));
 const HEALTH_TIMEOUT_MS = 10_000;
@@ -31,6 +32,7 @@ type WorkerRequest =
         readonly cwd: string;
         readonly toolCallId: string;
         readonly operationId?: string;
+        readonly configuration: Readonly<Record<string, ExtensionConfigurationScalar>>;
       };
     };
 
@@ -76,7 +78,12 @@ export class ToolPackageActivation {
   readonly #invocations = new Set<Promise<unknown>>();
   #retired = false;
 
-  constructor(readonly packageRevision: InstalledToolPackage) {}
+  constructor(
+    readonly packageRevision: InstalledToolPackage,
+    readonly configuration: Readonly<Record<string, ExtensionConfigurationScalar>> = Object.freeze(
+      {},
+    ),
+  ) {}
 
   tools(): readonly MakaTool[] {
     return Object.freeze(
@@ -134,6 +141,7 @@ export class ToolPackageActivation {
           cwd: context.cwd,
           toolCallId: context.toolCallId,
           ...(context.operationId ? { operationId: context.operationId } : {}),
+          configuration: this.configuration,
         },
       },
       context.cwd,

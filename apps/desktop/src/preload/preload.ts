@@ -506,6 +506,15 @@ const makaBridge = {
     setEnabled(extensionId: string, enabled: boolean) {
       return invokeActiveRuntimeHost('ui-extensions:setEnabled', extensionId, enabled);
     },
+    getConfiguration(bindingId: string) {
+      return invokeActiveRuntimeHost('ui-extensions:getConfiguration', bindingId);
+    },
+    configure(bindingId: string, configuration: Record<string, string | number | boolean>) {
+      return invokeActiveRuntimeHost('ui-extensions:configure', bindingId, configuration);
+    },
+    export(extensionId: string, revision: string) {
+      return invokeActiveRuntimeHost('ui-extensions:export', extensionId, revision);
+    },
     remove(extensionId: string) {
       return invokeActiveRuntimeHost('ui-extensions:remove', extensionId);
     },

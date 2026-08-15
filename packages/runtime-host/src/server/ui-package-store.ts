@@ -8,7 +8,6 @@ import {
   EXTENSION_UI_SURFACES,
   type ExtensionUiSurface,
 } from '@maka/runtime/extension-ui-contributions';
-import { EXTENSION_UI_OFFICIAL_SLOTS } from '../protocol/extension.js';
 
 const MANIFEST_FILE = 'maka.ui.json';
 const STORE_DIRECTORY = 'ui-packages-v1';
@@ -21,6 +20,7 @@ export interface UiPackageManifestContribution {
   readonly id: string;
   readonly surface: ExtensionUiSurface;
   readonly slot?: string;
+  readonly slots: readonly string[];
   readonly priority: number;
   readonly document: string;
 }
@@ -235,6 +235,7 @@ export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
       'priority',
       'document',
       ...(candidate && Object.hasOwn(candidate, 'slot') ? ['slot'] : []),
+      ...(candidate && Object.hasOwn(candidate, 'slots') ? ['slots'] : []),
     ]);
     const contributionId = boundedString(item.id, `ui[${index}].id`, 128);
     if (ids.has(contributionId))
@@ -246,9 +247,7 @@ export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
     if (
       (item.surface === 'app.slot' &&
         (typeof item.slot !== 'string' ||
-          !EXTENSION_UI_OFFICIAL_SLOTS.includes(
-            item.slot as (typeof EXTENSION_UI_OFFICIAL_SLOTS)[number],
-          ))) ||
+          !/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u.test(item.slot))) ||
       (item.surface !== 'app.slot' && item.slot !== undefined)
     ) {
       throw invalidPackage('UI contribution slot is invalid');
@@ -256,10 +255,25 @@ export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
     if (!Number.isSafeInteger(item.priority) || Math.abs(item.priority as number) > 10_000) {
       throw invalidPackage('UI contribution priority is invalid');
     }
+    if (
+      item.slots !== undefined &&
+      (!Array.isArray(item.slots) ||
+        item.slots.length > 32 ||
+        item.slots.some(
+          (slot) =>
+            typeof slot !== 'string' ||
+            !/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u.test(slot) ||
+            Buffer.byteLength(slot, 'utf8') > 128,
+        ) ||
+        new Set(item.slots).size !== item.slots.length)
+    ) {
+      throw invalidPackage('UI contribution child slots are invalid');
+    }
     return Object.freeze({
       id: contributionId,
       surface: item.surface as ExtensionUiSurface,
       ...(item.slot === undefined ? {} : { slot: item.slot as string }),
+      slots: Object.freeze((item.slots as string[] | undefined) ?? []),
       priority: item.priority as number,
       document: packagePath(item.document, `ui[${index}].document`),
     });

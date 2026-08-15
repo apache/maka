@@ -50,6 +50,7 @@
     "sync:model-metadata": "node scripts/sync-model-metadata.mjs",
     "generate:bundled-skills": "node scripts/gen-bundled-skill-catalog.mjs",
     "cost:deepseek-baseline": "node scripts/deepseek-live-cost-baseline.mjs",
+    "benchmark:extension-startup": "node scripts/extension-startup-benchmark.mjs",
     "computer-use": "node scripts/computer-use.mjs",
     "windows:inventory": "node scripts/windows-test-inventory.mjs --check",
     "windows:inventory:write": "node scripts/windows-test-inventory.mjs --write",

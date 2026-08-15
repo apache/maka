@@ -1,10 +1,19 @@
 import type { ExtensionBindingInspection } from '@maka/runtime/extension-lifecycle-kernel';
 import { createHash } from 'node:crypto';
+import { dirname } from 'node:path';
 import {
   type ExtensionBindingProjection,
   type ExtensionCatalogMutateInput,
   type ExtensionCatalogMutateResult,
   type ExtensionCatalogQueryResult,
+  type ExtensionConfigurationMutateInput,
+  type ExtensionConfigurationMutateResult,
+  type ExtensionConfigurationQueryInput,
+  type ExtensionConfigurationQueryResult,
+  type ExtensionContractQueryResult,
+  type ExtensionPackageExportInput,
+  type ExtensionPackageExportResult,
+  type ExtensionPackageContractProjection,
   type ExtensionUiSnapshotInput,
   type ExtensionUiSnapshotResult,
   type ExtensionUiRpcInvokeInput,
@@ -32,6 +41,12 @@ import {
 import { HostExtensionUiStateStore } from './extension-ui-state-store.js';
 import { UiPackageService } from './ui-package-service.js';
 import type { UiPackageStore } from './ui-package-store.js';
+import { HostExtensionConfigurationStore } from './extension-configuration-store.js';
+import {
+  compareExtensionVersions,
+  extensionVersionSatisfies,
+  validateExtensionConfiguration,
+} from './extension-package-manifest.js';
 
 type MutationFailureCode =
   | 'host_draining'
@@ -45,15 +60,20 @@ export class HostExtensionController {
   readonly handlers: ExtensionOperationHandlerMap = {
     'extension.catalog.query': () => this.#query(),
     'extension.catalog.mutate': (input) => this.#mutate(input),
+    'extension.contract.query': () => this.#contractQuery(),
+    'extension.configuration.query': (input) => this.#configurationQuery(input),
+    'extension.configuration.mutate': (input) => this.#configurationMutate(input),
     'extension.ui.snapshot': (input) => this.#uiSnapshot(input),
     'extension.ui.state.query': (input) => this.#uiStateQuery(input),
     'extension.ui.state.mutate': (input) => this.#uiStateMutate(input),
     'extension.ui.rpc.invoke': (input) => this.#uiRpcInvoke(input),
     'extension.package.install': (input) => this.#installPackage(input),
     'extension.package.uninstall': (input) => this.#uninstallPackage(input),
+    'extension.package.export': (input) => this.#exportPackage(input),
   };
 
   readonly #bindings = new Map<string, PersistedExtensionBinding>();
+  readonly #configuration = new Map<string, Readonly<Record<string, string | number | boolean>>>();
   #mutationTail: Promise<void> = Promise.resolve();
   #recovered = false;
   #draining = false;
@@ -66,15 +86,24 @@ export class HostExtensionController {
     private readonly requestDrain: () => void,
     private readonly uiState = new HostExtensionUiStateStore(),
     private readonly uiPackages?: UiPackageStore,
-  ) {}
+    private readonly configurationStore = new HostExtensionConfigurationStore(dirname(store.path)),
+  ) {
+    this.loader.setConfigurationResolver?.(
+      (bindingId) => this.#configuration.get(bindingId) ?? Object.freeze({}),
+    );
+  }
 
   /** Recovery is fail-open for the Host and fail-closed for Extension mutations. */
   async recover(): Promise<void> {
     if (this.#recovered) return;
     try {
+      for (const [bindingId, configuration] of await this.configurationStore.read()) {
+        this.#configuration.set(bindingId, configuration);
+      }
       for (const binding of await this.store.read()) this.#bindings.set(binding.bindingId, binding);
       await this.#recoverEnabledBindings();
       await this.#refreshRuntimeState();
+      await this.#pruneOrphanDependencyBindings();
       await this.#garbageCollectRevisions();
       await this.#persist();
     } catch (error) {
@@ -99,6 +128,102 @@ export class HostExtensionController {
     return { ok: true, result };
   }
 
+  async #contractQuery(): Promise<OperationOutcome<'extension.contract.query'>> {
+    if (this.#persistenceFailure) {
+      return {
+        ok: false,
+        error: { code: 'persistence_failed', message: 'Extension state is unavailable' },
+      };
+    }
+    try {
+      const packages = this.loader.contracts ? await this.loader.contracts() : [];
+      const result: ExtensionContractQueryResult = { packages };
+      return { ok: true, result };
+    } catch (error) {
+      return {
+        ok: false,
+        error: { code: 'internal_failure', message: boundedErrorMessage(error) },
+      };
+    }
+  }
+
+  async #configurationQuery(
+    input: ExtensionConfigurationQueryInput,
+  ): Promise<OperationOutcome<'extension.configuration.query'>> {
+    const binding = this.#bindings.get(input.bindingId);
+    if (!binding) {
+      return { ok: false, error: { code: 'not_found', message: 'Extension binding not found' } };
+    }
+    try {
+      const contract = await this.#requireContract(binding.extensionId, binding.desiredRevision);
+      const configuration = validateExtensionConfiguration(
+        contract.configuration,
+        this.#configuration.get(input.bindingId),
+      );
+      const result: ExtensionConfigurationQueryResult = {
+        configuration: redactSecretConfiguration(contract, configuration),
+      };
+      return { ok: true, result };
+    } catch (error) {
+      return {
+        ok: false,
+        error: { code: 'invalid_request', message: boundedErrorMessage(error) },
+      };
+    }
+  }
+
+  #configurationMutate(
+    input: ExtensionConfigurationMutateInput,
+  ): Promise<OperationOutcome<'extension.configuration.mutate'>> {
+    if (this.#draining) {
+      return Promise.resolve({
+        ok: false,
+        error: { code: 'host_draining', message: 'Runtime Host is draining' },
+      });
+    }
+    return this.#serializeMutation(async () => {
+      const binding = this.#bindings.get(input.bindingId);
+      if (!binding) {
+        return { ok: false, error: { code: 'not_found', message: 'Extension binding not found' } };
+      }
+      let configuration: Readonly<Record<string, string | number | boolean>>;
+      try {
+        const contract = await this.#requireContract(binding.extensionId, binding.desiredRevision);
+        configuration = validateExtensionConfiguration(contract.configuration, input.configuration);
+      } catch (error) {
+        return {
+          ok: false,
+          error: { code: 'invalid_request', message: boundedErrorMessage(error) },
+        };
+      }
+      const previous = this.#configuration.get(input.bindingId);
+      this.#configuration.set(input.bindingId, configuration);
+      try {
+        await this.configurationStore.replace(this.#configuration);
+        if (binding.enabled && this.#tryInspect(binding.bindingId)) {
+          await this.runtime.stop(binding.bindingId);
+          await this.runtime.start(binding.bindingId);
+          await this.#refreshRuntimeState();
+          await this.#persist();
+        }
+        const contract = await this.#requireContract(binding.extensionId, binding.desiredRevision);
+        const result: ExtensionConfigurationMutateResult = {
+          configuration: redactSecretConfiguration(contract, configuration),
+        };
+        return { ok: true, result };
+      } catch (error) {
+        if (previous) this.#configuration.set(input.bindingId, previous);
+        else this.#configuration.delete(input.bindingId);
+        await this.configurationStore.replace(this.#configuration).catch(() => undefined);
+        if (binding.enabled) await this.#convergeBinding(binding.bindingId).catch(() => undefined);
+        return {
+          ok: false,
+          error: { code: 'persistence_failed', message: boundedErrorMessage(error) },
+        };
+      }
+    });
+  }
+
   async #uiSnapshot(
     input: ExtensionUiSnapshotInput,
   ): Promise<OperationOutcome<'extension.ui.snapshot'>> {
@@ -115,6 +240,7 @@ export class HostExtensionController {
           id: item.id,
           surface: item.surface,
           ...(item.slot ? { slot: item.slot } : {}),
+          slots: item.slots,
           priority: item.priority,
           document: item.document,
           documentSha256: item.documentSha256,
@@ -329,6 +455,36 @@ export class HostExtensionController {
     });
   }
 
+  #exportPackage(
+    input: ExtensionPackageExportInput,
+  ): Promise<OperationOutcome<'extension.package.export'>> {
+    if (this.#draining) {
+      return Promise.resolve({
+        ok: false,
+        error: { code: 'host_draining', message: 'Runtime Host is draining' },
+      });
+    }
+    return this.#serializeMutation(async () => {
+      if (!this.loader.exportPackage) {
+        return {
+          ok: false,
+          error: {
+            code: 'operation_unavailable',
+            message: 'Extension package export is unavailable',
+          },
+        };
+      }
+      try {
+        await this.loader.exportPackage(input.extensionId, input.revision, input.targetPath);
+        const result: ExtensionPackageExportResult = { targetPath: input.targetPath };
+        return { ok: true, result };
+      } catch (error) {
+        const failure = packageLoaderFailure(error, 'export');
+        return failure;
+      }
+    });
+  }
+
   #mutate(
     input: ExtensionCatalogMutateInput,
   ): Promise<OperationOutcome<'extension.catalog.mutate'>> {
@@ -379,6 +535,24 @@ export class HostExtensionController {
         `Scope ${input.scopeId} already binds ${input.extensionId} as ${scopeOwner.bindingId}`,
       );
     }
+    const bindingSnapshot = new Map(this.#bindings);
+    const configurationSnapshot = new Map(this.#configuration);
+    let dependencyBindings: readonly string[];
+    try {
+      const contract = await this.#requireContract(input.extensionId, input.revision);
+      dependencyBindings = await this.#stageDependencies(input.scopeId, contract, new Set());
+      this.#configuration.set(
+        input.bindingId,
+        validateExtensionConfiguration(
+          contract.configuration,
+          this.#configuration.get(input.bindingId),
+        ),
+      );
+    } catch (error) {
+      this.#replaceMap(this.#bindings, bindingSnapshot);
+      this.#replaceMap(this.#configuration, configurationSnapshot);
+      return mutationFailure('operation_conflict', boundedErrorMessage(error));
+    }
     this.#bindings.set(
       input.bindingId,
       bindingState({
@@ -393,6 +567,10 @@ export class HostExtensionController {
     );
     const committed = await this.#commitDesiredState();
     if (committed) return committed;
+    for (const dependencyBindingId of dependencyBindings) {
+      const dependency = await this.#convergeMutation(dependencyBindingId);
+      if (!dependency.ok) return dependency;
+    }
     return this.#convergeMutation(input.bindingId);
   }
 
@@ -404,23 +582,55 @@ export class HostExtensionController {
     if (!binding) return mutationFailure('not_found', `Extension binding not found: ${bindingId}`);
     const available = await this.#requireAvailable(binding.extensionId, revision);
     if (available) return available;
+    const bindingSnapshot = new Map(this.#bindings);
+    const configurationSnapshot = new Map(this.#configuration);
+    let dependencyBindings: readonly string[];
+    try {
+      const contract = await this.#requireContract(binding.extensionId, revision);
+      dependencyBindings = await this.#stageDependencies(binding.scopeId, contract, new Set());
+      this.#configuration.set(
+        bindingId,
+        validateExtensionConfiguration(contract.configuration, this.#configuration.get(bindingId)),
+      );
+    } catch (error) {
+      this.#replaceMap(this.#bindings, bindingSnapshot);
+      this.#replaceMap(this.#configuration, configurationSnapshot);
+      return mutationFailure('operation_conflict', boundedErrorMessage(error));
+    }
     this.#bindings.set(
       bindingId,
       bindingState({ ...binding, desiredRevision: revision, enabled: true, error: null }),
     );
     const committed = await this.#commitDesiredState();
     if (committed) return committed;
+    for (const dependencyBindingId of dependencyBindings) {
+      const dependency = await this.#convergeMutation(dependencyBindingId);
+      if (!dependency.ok) return dependency;
+    }
     return this.#convergeMutation(bindingId);
   }
 
   async #disable(bindingId: string): Promise<OperationOutcome<'extension.catalog.mutate'>> {
     const binding = this.#bindings.get(bindingId);
     if (!binding) return mutationFailure('not_found', `Extension binding not found: ${bindingId}`);
+    let dependent: PersistedExtensionBinding | undefined;
+    try {
+      dependent = await this.#requiredBy(binding);
+    } catch (error) {
+      return mutationFailure('operation_conflict', boundedErrorMessage(error));
+    }
+    if (dependent) {
+      return mutationFailure(
+        'operation_conflict',
+        `Extension binding ${bindingId} is required by ${dependent.bindingId}`,
+      );
+    }
     this.#bindings.set(bindingId, bindingState({ ...binding, enabled: false, error: null }));
     const committed = await this.#commitDesiredState();
     if (committed) return committed;
     try {
       if (this.#tryInspect(bindingId)) await this.runtime.stop(bindingId);
+      await this.#pruneOrphanDependencyBindings();
       await this.#refreshRuntimeState();
       const persisted = await this.#commitDesiredState();
       return persisted ?? mutationSuccess(this.#projection(bindingId));
@@ -432,10 +642,24 @@ export class HostExtensionController {
   async #remove(bindingId: string): Promise<OperationOutcome<'extension.catalog.mutate'>> {
     const binding = this.#bindings.get(bindingId);
     if (!binding) return mutationFailure('not_found', `Extension binding not found: ${bindingId}`);
+    let dependent: PersistedExtensionBinding | undefined;
+    try {
+      dependent = await this.#requiredBy(binding);
+    } catch (error) {
+      return mutationFailure('operation_conflict', boundedErrorMessage(error));
+    }
+    if (dependent) {
+      return mutationFailure(
+        'operation_conflict',
+        `Extension binding ${bindingId} is required by ${dependent.bindingId}`,
+      );
+    }
     try {
       if (this.#tryInspect(bindingId)) await this.runtime.removeBinding(bindingId);
       await this.uiState.clear(binding.scopeId, binding.extensionId);
       this.#bindings.delete(bindingId);
+      this.#configuration.delete(bindingId);
+      await this.#pruneOrphanDependencyBindings();
       await this.#garbageCollectRevisions();
       const persisted = await this.#commitDesiredState();
       return persisted ?? mutationSuccess(null);
@@ -450,6 +674,7 @@ export class HostExtensionController {
     try {
       await this.#convergeBinding(bindingId);
       await this.#refreshRuntimeState();
+      await this.#pruneOrphanDependencyBindings();
       await this.#garbageCollectRevisions();
       const persisted = await this.#commitDesiredState();
       return persisted ?? mutationSuccess(this.#projection(bindingId));
@@ -615,6 +840,162 @@ export class HostExtensionController {
     }
   }
 
+  async #requireContract(
+    extensionId: string,
+    revision: string,
+  ): Promise<ExtensionPackageContractProjection> {
+    const contracts = this.loader.contracts ? await this.loader.contracts() : [];
+    const contract = contracts.find(
+      (candidate) => candidate.extensionId === extensionId && candidate.revision === revision,
+    );
+    if (!contract) {
+      throw new Error(`Extension contract is unavailable: ${extensionId}@${revision}`);
+    }
+    return contract;
+  }
+
+  async #stageDependencies(
+    scopeId: string,
+    contract: ExtensionPackageContractProjection,
+    visiting: Set<string>,
+  ): Promise<readonly string[]> {
+    if (visiting.has(contract.extensionId)) {
+      throw new Error(`Extension dependency cycle includes ${contract.extensionId}`);
+    }
+    visiting.add(contract.extensionId);
+    const staged: string[] = [];
+    try {
+      const contracts = this.loader.contracts ? await this.loader.contracts() : [];
+      for (const dependency of contract.dependencies) {
+        const candidates = contracts
+          .filter(
+            (candidate) =>
+              candidate.extensionId === dependency.id &&
+              extensionVersionSatisfies(candidate.version, dependency.version),
+          )
+          .sort((left, right) => compareExtensionVersions(left.version, right.version));
+        const selected = candidates.at(-1);
+        if (!selected) {
+          throw new Error(
+            `Required dependency is not installed: ${dependency.id}@${dependency.version}`,
+          );
+        }
+        const existing = [...this.#bindings.values()].find(
+          (binding) => binding.scopeId === scopeId && binding.extensionId === dependency.id,
+        );
+        const bindingId = existing?.bindingId ?? dependencyBindingId(scopeId, dependency.id);
+        if (existing) {
+          const existingContract = contracts.find(
+            (candidate) =>
+              candidate.extensionId === existing.extensionId &&
+              candidate.revision === existing.desiredRevision,
+          );
+          if (
+            !existingContract ||
+            !extensionVersionSatisfies(existingContract.version, dependency.version)
+          ) {
+            this.#bindings.set(
+              bindingId,
+              bindingState({
+                ...existing,
+                desiredRevision: selected.revision,
+                enabled: true,
+                error: null,
+              }),
+            );
+          } else if (!existing.enabled) {
+            this.#bindings.set(
+              bindingId,
+              bindingState({ ...existing, enabled: true, error: null }),
+            );
+          }
+        } else {
+          this.#bindings.set(
+            bindingId,
+            bindingState({
+              bindingId,
+              scopeId,
+              extensionId: selected.extensionId,
+              desiredRevision: selected.revision,
+              lastGoodRevision: null,
+              enabled: true,
+              error: null,
+            }),
+          );
+        }
+        this.#configuration.set(
+          bindingId,
+          validateExtensionConfiguration(
+            selected.configuration,
+            this.#configuration.get(bindingId),
+          ),
+        );
+        staged.push(...(await this.#stageDependencies(scopeId, selected, visiting)), bindingId);
+      }
+      return Object.freeze([...new Set(staged)]);
+    } finally {
+      visiting.delete(contract.extensionId);
+    }
+  }
+
+  async #requiredBy(
+    target: PersistedExtensionBinding,
+  ): Promise<PersistedExtensionBinding | undefined> {
+    const contracts = this.loader.contracts ? await this.loader.contracts() : [];
+    return [...this.#bindings.values()].find((binding) => {
+      if (!binding.enabled || binding.bindingId === target.bindingId) return false;
+      if (binding.scopeId !== target.scopeId) return false;
+      const contract = contracts.find(
+        (candidate) =>
+          candidate.extensionId === binding.extensionId &&
+          candidate.revision === binding.desiredRevision,
+      );
+      return contract?.dependencies.some((dependency) => dependency.id === target.extensionId);
+    });
+  }
+
+  async #pruneOrphanDependencyBindings(): Promise<void> {
+    const contracts = this.loader.contracts ? await this.loader.contracts() : [];
+    const required = new Set<string>();
+    const visit = (binding: PersistedExtensionBinding, visiting: Set<string>): void => {
+      if (visiting.has(binding.bindingId)) return;
+      visiting.add(binding.bindingId);
+      const contract = contracts.find(
+        (candidate) =>
+          candidate.extensionId === binding.extensionId &&
+          candidate.revision === binding.desiredRevision,
+      );
+      for (const dependency of contract?.dependencies ?? []) {
+        const dependencyBinding = [...this.#bindings.values()].find(
+          (candidate) =>
+            candidate.enabled &&
+            candidate.scopeId === binding.scopeId &&
+            candidate.extensionId === dependency.id,
+        );
+        if (!dependencyBinding) continue;
+        required.add(dependencyBinding.bindingId);
+        visit(dependencyBinding, visiting);
+      }
+      visiting.delete(binding.bindingId);
+    };
+    for (const binding of this.#bindings.values()) {
+      if (binding.enabled && !binding.bindingId.startsWith('dependency_')) {
+        visit(binding, new Set());
+      }
+    }
+    for (const binding of [...this.#bindings.values()]) {
+      if (!binding.bindingId.startsWith('dependency_') || required.has(binding.bindingId)) continue;
+      if (this.#tryInspect(binding.bindingId)) await this.runtime.removeBinding(binding.bindingId);
+      this.#bindings.delete(binding.bindingId);
+      this.#configuration.delete(binding.bindingId);
+    }
+  }
+
+  #replaceMap<K, V>(target: Map<K, V>, source: ReadonlyMap<K, V>): void {
+    target.clear();
+    for (const [key, value] of source) target.set(key, value);
+  }
+
   async #commitDesiredState(): Promise<OperationOutcome<'extension.catalog.mutate'> | undefined> {
     try {
       await this.#persist();
@@ -628,6 +1009,7 @@ export class HostExtensionController {
 
   async #persist(): Promise<void> {
     await this.store.replace([...this.#bindings.values()].sort(compareBinding));
+    await this.configurationStore.replace(this.#configuration);
   }
 
   #bindingProjections(): readonly ExtensionBindingProjection[] {
@@ -766,14 +1148,18 @@ function packageFailure(
     | 'invalid_request'
     | 'persistence_failed',
   message: string,
-): OperationOutcome<'extension.package.install'> & OperationOutcome<'extension.package.uninstall'> {
+): OperationOutcome<'extension.package.install'> &
+  OperationOutcome<'extension.package.uninstall'> &
+  OperationOutcome<'extension.package.export'> {
   return { ok: false, error: { code, message } };
 }
 
 function packageLoaderFailure(
   error: unknown,
-  operation: 'install' | 'uninstall',
-): OperationOutcome<'extension.package.install'> & OperationOutcome<'extension.package.uninstall'> {
+  operation: 'install' | 'uninstall' | 'export',
+): OperationOutcome<'extension.package.install'> &
+  OperationOutcome<'extension.package.uninstall'> &
+  OperationOutcome<'extension.package.export'> {
   if (error instanceof HostExtensionLoaderError) {
     const code =
       error.code === 'not_found'
@@ -801,4 +1187,24 @@ function compareString(left: string, right: string): number {
 
 function revisionKey(extensionId: string, revision: string): string {
   return `${extensionId}\u0000${revision}`;
+}
+
+function dependencyBindingId(scopeId: string, extensionId: string): string {
+  return `dependency_${createHash('sha256')
+    .update(`${scopeId}\u0000${extensionId}`)
+    .digest('hex')
+    .slice(0, 32)}`;
+}
+
+function redactSecretConfiguration(
+  contract: ExtensionPackageContractProjection,
+  configuration: Readonly<Record<string, string | number | boolean>>,
+): Readonly<Record<string, string | number | boolean>> {
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(configuration).filter(
+        ([key]) => contract.configuration.properties[key]?.secret !== true,
+      ),
+    ),
+  );
 }

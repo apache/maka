@@ -14,6 +14,11 @@ import { HostExtensionStateStore } from '../server/extension-state-store.js';
 import { HostToolPackageManagementTools } from '../server/tool-package-management-tools.js';
 import { ToolPackageStore } from '../server/tool-package-store.js';
 
+const emptyInspection = {
+  catalog: { revisions: [], bindings: [] },
+  contracts: { packages: [] },
+};
+
 test('Agent can inspect, define, test, activate, immediately invoke, update safely, stop, and delete a Tool', {
   timeout: 60_000,
 }, async () => {
@@ -33,7 +38,7 @@ test('Agent can inspect, define, test, activate, immediately invoke, update safe
   try {
     await controller.recover();
     const inspect = requireTool(runtime, 'inspect_tools');
-    assert.deepEqual(await inspect.impl({}, context), { revisions: [], bindings: [] });
+    assert.deepEqual(await inspect.impl({}, context), emptyInspection);
 
     const define = requireTool(runtime, 'define_tool');
     assert.match(define.description, /export default \{ HandlerName:/u);
@@ -67,7 +72,7 @@ test('Agent can inspect, define, test, activate, immediately invoke, update safe
         ),
       /must export one default handler object/u,
     );
-    assert.deepEqual(await inspect.impl({}, context), { revisions: [], bindings: [] });
+    assert.deepEqual(await inspect.impl({}, context), emptyInspection);
 
     const v1 = (await define.impl(
       definition(
@@ -153,11 +158,7 @@ test('Agent can inspect, define, test, activate, immediately invoke, update safe
       { action: 'delete', extensionId: 'calculator', revision: v1.revision },
       context,
     );
-    const final = (await inspect.impl({}, context)) as {
-      revisions: unknown[];
-      bindings: unknown[];
-    };
-    assert.deepEqual(final, { revisions: [], bindings: [] });
+    assert.deepEqual(await inspect.impl({}, context), emptyInspection);
   } finally {
     await runtime.close().catch(() => undefined);
     await rm(root, { recursive: true, force: true });

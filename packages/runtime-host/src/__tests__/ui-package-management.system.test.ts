@@ -93,10 +93,9 @@ test('agent-authored client-only UI survives update, rollback boundary, and Host
     };
     assert.deepEqual(customRootInspection.slots, []);
     assert.deepEqual(customRootInspection.slotCompatibility, {
-      compatible: false,
+      compatible: true,
+      dynamic: true,
       rootExtensionId: 'dev.maka.ui.demo',
-      reason:
-        'The selected custom app.root owns the complete surface and does not expose official composition slots.',
     });
     assert.equal(
       fixture.runtime.inspectUi(DESKTOP_UI_EXTENSION_SCOPE)[0]?.document,
@@ -306,7 +305,8 @@ test('UI package Store rejects symlinks and detects installed content corruption
       }),
     );
     await writeFile(join(unsupported, 'documents', 'unknown.html'), '<main>unknown</main>');
-    await assert.rejects(store.install(unsupported), /slot is invalid/);
+    const dynamicSlot = await store.install(unsupported);
+    assert.equal(dynamicSlot.manifest.ui[0]?.slot, 'unknown.area');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

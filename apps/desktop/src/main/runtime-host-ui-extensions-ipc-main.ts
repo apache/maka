@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import type { ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
 import { handleReconnectableRead } from './ipc-reconnect-policy.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { createMainWindowController } from './main-window.js';
 
 const DESKTOP_UI_SCOPE = 'desktop-ui';
+const PROFILE_EXTENSION_SCOPE = 'profile';
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 
 export function registerRuntimeHostUiExtensionsIpc(input: {
@@ -23,110 +24,213 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
     const selected = input.automatedImportSourcePath
       ? { canceled: false, filePaths: [input.automatedImportSourcePath] }
       : await input.mainWindowController.showOpenDialog({
-          title: 'Import UI Extension',
-          properties: ['openDirectory'],
+          title: 'Import Extension',
+          properties: ['openDirectory', 'openFile'],
+          filters: [{ name: 'Maka Extension', extensions: ['maka-extension'] }],
         });
     const sourcePath = selected.filePaths[0];
     if (selected.canceled || !sourcePath) return { ok: false as const, reason: 'cancelled' as const };
-    const manifest = await previewManifest(sourcePath);
+    const manifest = await previewPackage(sourcePath);
     const confirmation = input.automatedImportSourcePath
       ? { response: 0 }
       : await input.mainWindowController.showMessageBox({
           type: 'question',
           title: `Import ${manifest.id}`,
-          message: `Install UI Extension “${manifest.id}” ${manifest.version}?`,
+          message: `Install Extension “${manifest.id}” ${manifest.version}?`,
           detail: [
-            `${manifest.ui.length} UI contribution${manifest.ui.length === 1 ? '' : 's'}`,
+            `${manifest.uiCount} UI contribution${manifest.uiCount === 1 ? '' : 's'}`,
+            `${manifest.toolCount} Tool contribution${manifest.toolCount === 1 ? '' : 's'}`,
             `Host state: ${manifest.permissions.hostState ? 'allowed' : 'not allowed'}`,
             `Session control: ${manifest.permissions.sessionAccess ? 'allowed' : 'not allowed'}`,
             `Host methods: ${manifest.hostMethods.length === 0 ? 'none' : manifest.hostMethods.join(', ')}`,
             `Network: ${manifest.permissions.network ? 'allowed' : 'blocked'}`,
+            `Workspace: ${manifest.permissions.workspace}`,
           ].join('\n'),
-          buttons: ['Import and enable', 'Cancel'],
+          buttons: ['Install and enable', 'Cancel'],
           defaultId: 0,
           cancelId: 1,
         });
     if (confirmation.response !== 0) return { ok: false as const, reason: 'cancelled' as const };
     const installed = await input.client.request('extension.package.install', { sourcePath });
-    if (installed.uiContributionIds.length === 0) throw new Error('Selected directory is not a UI Extension package');
     const catalog = await input.client.request('extension.catalog.query', {});
-    const current = catalog.bindings.find((binding) => binding.scopeId === DESKTOP_UI_SCOPE && binding.extensionId === installed.extensionId);
-    if (current) {
-      await input.client.request('extension.catalog.mutate', { kind: 'update', bindingId: current.bindingId, revision: installed.revision });
-    } else {
-      await input.client.request('extension.catalog.mutate', {
-        kind: 'enable',
-        bindingId: userBindingId(installed.extensionId),
-        scopeId: DESKTOP_UI_SCOPE,
-        extensionId: installed.extensionId,
-        revision: installed.revision,
-      });
+    for (const scopeId of [
+      ...(installed.uiContributionIds.length > 0 ? [DESKTOP_UI_SCOPE] : []),
+      ...(installed.toolNames.length > 0 ? [PROFILE_EXTENSION_SCOPE] : []),
+    ]) {
+      const current = catalog.bindings.find(
+        (binding) => binding.scopeId === scopeId && binding.extensionId === installed.extensionId,
+      );
+      await input.client.request(
+        'extension.catalog.mutate',
+        current
+          ? { kind: 'update', bindingId: current.bindingId, revision: installed.revision }
+          : {
+              kind: 'enable',
+              bindingId: userBindingId(installed.extensionId, scopeId),
+              scopeId,
+              extensionId: installed.extensionId,
+              revision: installed.revision,
+            },
+      );
     }
     return { ok: true as const, extensionId: installed.extensionId, revision: installed.revision };
   });
 
   input.ipcMain.handle('ui-extensions:setEnabled', async (_event, extensionId: string, enabled: boolean) => {
     const catalog = await input.client.request('extension.catalog.query', {});
-    const binding = catalog.bindings.find((item) => item.scopeId === DESKTOP_UI_SCOPE && item.extensionId === extensionId);
-    if (!binding) throw new Error('UI Extension binding is not installed');
-    await input.client.request('extension.catalog.mutate', enabled
-      ? { kind: 'enable', bindingId: binding.bindingId, scopeId: binding.scopeId, extensionId: binding.extensionId, revision: binding.desiredRevision }
-      : { kind: 'disable', bindingId: binding.bindingId });
+    const bindings = catalog.bindings.filter((item) => item.extensionId === extensionId);
+    if (bindings.length === 0) throw new Error('Extension binding is not installed');
+    for (const binding of bindings) {
+      await input.client.request('extension.catalog.mutate', enabled
+        ? { kind: 'enable', bindingId: binding.bindingId, scopeId: binding.scopeId, extensionId: binding.extensionId, revision: binding.desiredRevision }
+        : { kind: 'disable', bindingId: binding.bindingId });
+    }
     return { ok: true as const };
   });
 
   input.ipcMain.handle('ui-extensions:remove', async (_event, extensionId: string) => {
     const catalog = await input.client.request('extension.catalog.query', {});
-    const binding = catalog.bindings.find((item) => item.scopeId === DESKTOP_UI_SCOPE && item.extensionId === extensionId);
-    if (binding) await input.client.request('extension.catalog.mutate', { kind: 'remove', bindingId: binding.bindingId });
-    for (const revision of catalog.revisions.filter((item) => item.extensionId === extensionId && item.uiContributionIds.length > 0)) {
+    for (const binding of catalog.bindings.filter((item) => item.extensionId === extensionId)) {
+      await input.client.request('extension.catalog.mutate', { kind: 'remove', bindingId: binding.bindingId });
+    }
+    for (const revision of catalog.revisions.filter((item) => item.extensionId === extensionId)) {
       await input.client.request('extension.package.uninstall', { extensionId, revision: revision.revision });
     }
     return { ok: true as const };
+  });
+
+  input.ipcMain.handle('ui-extensions:configure', async (_event, bindingId: string, configuration: Record<string, string | number | boolean>) => {
+    const result = await input.client.request('extension.configuration.mutate', { bindingId, configuration });
+    return { ok: true as const, configuration: result.configuration };
+  });
+
+  handleReconnectableRead(input.ipcMain, 'ui-extensions:getConfiguration', async (_event, bindingId: string) =>
+    input.client.request('extension.configuration.query', { bindingId }),
+  );
+
+  input.ipcMain.handle('ui-extensions:export', async (_event, extensionId: string, revision: string) => {
+    if (!input.allowLocalPaths) throw new Error('Extension export is unavailable for a remote Runtime Host');
+    const selected = await input.mainWindowController.showSaveDialog({
+      title: `Export ${extensionId}`,
+      defaultPath: `${extensionId}-${revision.slice(0, 12)}.maka-extension`,
+      filters: [{ name: 'Maka Extension', extensions: ['maka-extension'] }],
+    });
+    if (selected.canceled || !selected.filePath) return { ok: false as const, reason: 'cancelled' as const };
+    await input.client.request('extension.package.export', { extensionId, revision, targetPath: selected.filePath });
+    return { ok: true as const, path: selected.filePath };
   });
 }
 
 async function listUiExtensions(client: DesktopRuntimeHostClient) {
   const catalog = await client.request('extension.catalog.query', {});
+  const contracts = await client.request('extension.contract.query', {}).catch(() => ({ packages: [] }));
   return catalog.revisions
-    .filter((revision) => revision.uiContributionIds.length > 0)
     .map((revision) => {
-      const binding = catalog.bindings.find((item) => item.scopeId === DESKTOP_UI_SCOPE && item.extensionId === revision.extensionId);
+      const bindings = catalog.bindings.filter((item) => item.extensionId === revision.extensionId);
+      const binding = bindings.find((item) => item.lastGoodRevision === revision.revision) ?? bindings[0];
+      const contract = contracts.packages.find((item) => item.extensionId === revision.extensionId && item.revision === revision.revision);
       return {
         extensionId: revision.extensionId,
         revision: revision.revision,
-        contributionIds: revision.uiContributionIds,
-        active: binding?.status === 'active' && binding.lastGoodRevision === revision.revision,
-        enabled: binding?.enabled ?? false,
-        status: binding?.status ?? 'disabled',
-        error: binding?.error ?? null,
+        displayName: contract?.displayName ?? revision.extensionId,
+        version: contract?.version ?? revision.revision,
+        description: contract?.description ?? '',
+        contributionIds: [...revision.toolNames, ...revision.uiContributionIds],
+        toolNames: revision.toolNames,
+        uiContributionIds: revision.uiContributionIds,
+        dependencies: contract?.dependencies ?? [],
+        configuration: contract?.configuration ?? { properties: {}, required: [] },
+        bindings,
+        active: bindings.some((item) => item.status === 'active' && item.lastGoodRevision === revision.revision),
+        enabled: bindings.some((item) => item.enabled),
+        status: bindings.some((item) => item.status === 'failed') ? 'failed' : bindings.some((item) => item.status === 'active') ? 'active' : bindings.some((item) => item.status === 'waiting') ? 'waiting' : 'disabled',
+        error: bindings.find((item) => item.error)?.error ?? null,
       };
     });
 }
 
-async function previewManifest(sourcePath: string): Promise<{ id: string; version: string; ui: unknown[]; hostMethods: string[]; permissions: { network: boolean; hostState: boolean; sessionAccess: boolean } }> {
-  const encoded = await readFile(join(sourcePath, 'maka.ui.json'), 'utf8');
-  if (Buffer.byteLength(encoded, 'utf8') > 256 * 1024) throw new Error('UI Extension manifest is too large');
-  const value = JSON.parse(encoded) as Record<string, unknown>;
-  if (typeof value.id !== 'string' || typeof value.version !== 'string' || !Array.isArray(value.ui)) throw new Error('UI Extension manifest is invalid');
-  const permissions = value.permissions as Record<string, unknown> | undefined;
-  const host = value.host as Record<string, unknown> | undefined;
+async function previewPackage(sourcePath: string): Promise<{ id: string; version: string; uiCount: number; toolCount: number; hostMethods: string[]; permissions: { network: boolean; hostState: boolean; sessionAccess: boolean; workspace: string } }> {
+  if (!(await stat(sourcePath)).isDirectory()) return previewBundle(sourcePath);
+  let uiValue: Record<string, unknown> = {};
+  let toolValue: Record<string, unknown> = {};
+  try { uiValue = JSON.parse(await readFile(join(sourcePath, 'maka.ui.json'), 'utf8')) as Record<string, unknown>; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  try { toolValue = JSON.parse(await readFile(join(sourcePath, 'maka.tool.json'), 'utf8')) as Record<string, unknown>; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  const value = Object.keys(uiValue).length ? uiValue : toolValue;
+  if (typeof value.id !== 'string' || typeof value.version !== 'string') throw new Error('Extension manifest is invalid');
+  const ui = Array.isArray(uiValue.ui) ? uiValue.ui : [];
+  const tools = Array.isArray(toolValue.tools) ? toolValue.tools : [];
+  if (ui.length === 0 && tools.length === 0) throw new Error('Extension package has no contributions');
+  const permissions = uiValue.permissions as Record<string, unknown> | undefined;
+  const toolPermissions = toolValue.permissions as Record<string, unknown> | undefined;
+  const host = uiValue.host as Record<string, unknown> | undefined;
   const methods = Array.isArray(host?.methods) ? host.methods : [];
   const hostMethods = methods.map((item) => (item as Record<string, unknown>)?.name);
   if (hostMethods.some((name) => typeof name !== 'string')) throw new Error('UI Extension Host methods are invalid');
   return {
     id: value.id,
     version: value.version,
-    ui: value.ui,
+    uiCount: ui.length,
+    toolCount: tools.length,
     hostMethods: hostMethods as string[],
     permissions: {
-      network: permissions?.network === true,
+      network: permissions?.network === true || toolPermissions?.network === true,
       hostState: permissions?.hostState === true,
       sessionAccess: permissions?.sessionAccess === true,
+      workspace: typeof toolPermissions?.workspace === 'string' ? toolPermissions.workspace : 'none',
     },
   };
 }
 
-function userBindingId(extensionId: string): string {
-  return `user_ui_${createHash('sha256').update(extensionId).digest('hex').slice(0, 32)}`;
+async function previewBundle(sourcePath: string): ReturnType<typeof previewPackage> {
+  const encoded = await readFile(sourcePath);
+  if (encoded.byteLength > 32 * 1024 * 1024) throw new Error('Extension Bundle is too large');
+  const bundle = JSON.parse(encoded.toString('utf8')) as { files?: unknown };
+  if (!Array.isArray(bundle.files)) throw new Error('Extension Bundle is invalid');
+  const files = new Map<string, string>();
+  for (const value of bundle.files) {
+    const file = value as { path?: unknown; content?: unknown };
+    if (typeof file.path !== 'string' || typeof file.content !== 'string') {
+      throw new Error('Extension Bundle file is invalid');
+    }
+    if (file.path === 'maka.ui.json' || file.path === 'maka.tool.json') {
+      files.set(file.path, Buffer.from(file.content, 'base64').toString('utf8'));
+    }
+  }
+  const uiValue = files.has('maka.ui.json')
+    ? (JSON.parse(files.get('maka.ui.json')!) as Record<string, unknown>)
+    : {};
+  const toolValue = files.has('maka.tool.json')
+    ? (JSON.parse(files.get('maka.tool.json')!) as Record<string, unknown>)
+    : {};
+  const value = Object.keys(uiValue).length ? uiValue : toolValue;
+  if (typeof value.id !== 'string' || typeof value.version !== 'string') {
+    throw new Error(`Extension Bundle is missing manifests: ${basename(sourcePath)}`);
+  }
+  const ui = Array.isArray(uiValue.ui) ? uiValue.ui : [];
+  const tools = Array.isArray(toolValue.tools) ? toolValue.tools : [];
+  const permissions = uiValue.permissions as Record<string, unknown> | undefined;
+  const toolPermissions = toolValue.permissions as Record<string, unknown> | undefined;
+  const host = uiValue.host as Record<string, unknown> | undefined;
+  const methods = Array.isArray(host?.methods) ? host.methods : [];
+  const hostMethods = methods.map((item) => (item as Record<string, unknown>)?.name);
+  if (hostMethods.some((name) => typeof name !== 'string')) {
+    throw new Error('Extension Bundle Host methods are invalid');
+  }
+  return {
+    id: value.id,
+    version: value.version,
+    uiCount: ui.length,
+    toolCount: tools.length,
+    hostMethods: hostMethods as string[],
+    permissions: {
+      network: permissions?.network === true || toolPermissions?.network === true,
+      hostState: permissions?.hostState === true,
+      sessionAccess: permissions?.sessionAccess === true,
+      workspace: typeof toolPermissions?.workspace === 'string' ? toolPermissions.workspace : 'none',
+    },
+  };
+}
+
+function userBindingId(extensionId: string, scopeId: string): string {
+  return `user_extension_${createHash('sha256').update(`${scopeId}\u0000${extensionId}`).digest('hex').slice(0, 32)}`;
 }

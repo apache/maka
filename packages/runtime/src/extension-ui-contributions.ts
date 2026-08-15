@@ -15,6 +15,8 @@ export interface ExtensionUiContribution {
   readonly surface: ExtensionUiSurface;
   /** Named composition seat. Required only for app.slot contributions. */
   readonly slot?: string;
+  /** Child composition seats declared by this contribution. */
+  readonly slots?: readonly string[];
   readonly priority: number;
   readonly document: string;
   /** Sandboxed documents are offline unless this explicit capability is true. */
@@ -33,6 +35,7 @@ export interface ExtensionUiContributionInspection {
   readonly id: string;
   readonly surface: ExtensionUiSurface;
   readonly slot?: string;
+  readonly slots: readonly string[];
   readonly priority: number;
   readonly document: string;
   readonly documentSha256: string;
@@ -89,6 +92,7 @@ export class ExtensionUiContributionRegistry {
     const entry: RegisteredUi = Object.freeze({
       ...context,
       ...contribution,
+      slots: Object.freeze([...(contribution.slots ?? [])]),
       hostState: contribution.hostState === true,
       hostMethods: Object.freeze([...(contribution.hostMethods ?? [])]),
       sessionAccess: contribution.sessionAccess === true,
@@ -206,6 +210,20 @@ export function validateExtensionUiContribution(contribution: ExtensionUiContrib
       'invalid_ui',
       'Only an app.slot contribution may declare a slot name',
     );
+  }
+  if (
+    contribution.slots !== undefined &&
+    (!Array.isArray(contribution.slots) ||
+      contribution.slots.length > 32 ||
+      contribution.slots.some(
+        (slot) =>
+          typeof slot !== 'string' ||
+          !EXTENSION_UI_SLOT_PATTERN.test(slot) ||
+          Buffer.byteLength(slot, 'utf8') > 128,
+      ) ||
+      new Set(contribution.slots).size !== contribution.slots.length)
+  ) {
+    throw new ExtensionUiContributionError('invalid_ui', 'UI child slots are invalid');
   }
   if (!Number.isSafeInteger(contribution.priority) || Math.abs(contribution.priority) > 10_000) {
     throw new ExtensionUiContributionError('invalid_ui', 'UI priority is invalid');

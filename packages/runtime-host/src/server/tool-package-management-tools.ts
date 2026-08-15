@@ -51,6 +51,33 @@ const RECOVERY_MODES = [
 ] as const;
 
 const jsonSchema = z.record(z.string(), z.unknown());
+const extensionMetadata = {
+  displayName: z.string().min(1).max(128).optional(),
+  description: z.string().max(4096).optional(),
+  dependencies: z
+    .array(z.object({ id: z.string().min(1).max(128), version: z.string().min(1).max(128) }))
+    .max(64)
+    .optional(),
+  configuration: z
+    .object({
+      properties: z.record(
+        z.string(),
+        z.object({
+          type: z.enum(['string', 'number', 'boolean']),
+          title: z.string().min(1).max(128).optional(),
+          description: z.string().max(1024).optional(),
+          default: z.union([z.string(), z.number(), z.boolean()]).optional(),
+          enum: z
+            .array(z.union([z.string(), z.number(), z.boolean()]))
+            .max(64)
+            .optional(),
+          secret: z.boolean().optional(),
+        }),
+      ),
+      required: z.array(z.string()).max(128).optional(),
+    })
+    .optional(),
+};
 const toolDeclaration = z.object({
   name: z.string().min(1).max(128),
   description: z.string().min(1).max(4096),
@@ -75,6 +102,7 @@ const defineInput = z.object({
     workspace: z.enum(['none', 'read', 'write']),
     network: z.boolean(),
   }),
+  ...extensionMetadata,
 });
 const revisionInput = z.object({
   extensionId: z.string().min(1).max(128),
@@ -147,8 +175,14 @@ export class HostToolPackageManagementTools {
       parameters: z.object({}),
       categoryHint: 'read',
       recoveryMode: 'replay_safe',
-      impl: async (): Promise<ExtensionCatalogQueryResult> =>
-        unwrap(await this.controller.handlers['extension.catalog.query']({}, this.#connection)),
+      impl: async () => ({
+        catalog: unwrap(
+          await this.controller.handlers['extension.catalog.query']({}, this.#connection),
+        ),
+        contracts: unwrap(
+          await this.controller.handlers['extension.contract.query']({}, this.#connection),
+        ),
+      }),
     });
   }
 
@@ -186,6 +220,23 @@ export class HostToolPackageManagementTools {
                 entry: 'dist/index.mjs',
                 tools: input.tools,
                 permissions: input.permissions,
+              },
+              null,
+              2,
+            )}\n`,
+            { encoding: 'utf8', mode: 0o600 },
+          );
+          await writeFile(
+            join(draft, 'maka.extension.json'),
+            `${JSON.stringify(
+              {
+                schemaVersion: 1,
+                id: input.id,
+                version: input.version,
+                ...(input.displayName ? { displayName: input.displayName } : {}),
+                ...(input.description !== undefined ? { description: input.description } : {}),
+                ...(input.dependencies ? { dependencies: input.dependencies } : {}),
+                ...(input.configuration ? { configuration: input.configuration } : {}),
               },
               null,
               2,

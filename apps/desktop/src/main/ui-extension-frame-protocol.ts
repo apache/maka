@@ -46,6 +46,7 @@ export function createUiExtensionFrameRequestHandler(
         contribution.document,
         contribution.network,
         identity.token,
+        contribution.slots ?? [],
       );
       return new Response(document, {
         status: 200,

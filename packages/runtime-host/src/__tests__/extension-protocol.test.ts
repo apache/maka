@@ -3,6 +3,9 @@ import { test } from 'node:test';
 import {
   decodeExtensionCatalogMutateInput,
   decodeExtensionCatalogQueryResult,
+  decodeExtensionContractQueryResult,
+  decodeExtensionConfigurationMutateInput,
+  decodeExtensionPackageExportInput,
   decodeExtensionUiRpcInvokeInput,
   decodeExtensionUiSnapshotResult,
   decodeToolPackageInstallInput,
@@ -25,6 +28,49 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
       scopeId: 'session:1',
       extensionId: 'dev.maka.weather',
       revision: '2',
+    },
+  );
+  assert.deepEqual(
+    decodeExtensionContractQueryResult({
+      packages: [
+        {
+          extensionId: 'dev.maka.weather',
+          revision: 'sha256-demo',
+          version: '1.2.0',
+          displayName: 'Weather',
+          description: '',
+          dependencies: [{ id: 'dev.maka.http', version: '^1.0.0' }],
+          configuration: {
+            properties: {
+              apiKey: { type: 'string', secret: true },
+            },
+            required: ['apiKey'],
+          },
+          contributions: [
+            { kind: 'ui', id: 'root', surface: 'app.root', slots: ['weather.details'] },
+          ],
+        },
+      ],
+    }).packages[0]?.contributions[0]?.slots,
+    ['weather.details'],
+  );
+  assert.deepEqual(
+    decodeExtensionConfigurationMutateInput({
+      bindingId: 'weather-binding',
+      configuration: { apiKey: 'secret', retries: 3 },
+    }),
+    { bindingId: 'weather-binding', configuration: { apiKey: 'secret', retries: 3 } },
+  );
+  assert.deepEqual(
+    decodeExtensionPackageExportInput({
+      extensionId: 'dev.maka.weather',
+      revision: 'sha256-demo',
+      targetPath: '/tmp/weather.maka-extension',
+    }),
+    {
+      extensionId: 'dev.maka.weather',
+      revision: 'sha256-demo',
+      targetPath: '/tmp/weather.maka-extension',
     },
   );
   assert.deepEqual(
@@ -193,4 +239,6 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
   assert.equal(operationAllowsRemoteOwner('extension.ui.rpc.invoke'), false);
   assert.equal(operationAllowsRemoteOwner('extension.package.install'), false);
   assert.equal(operationAllowsRemoteOwner('extension.package.uninstall'), false);
+  assert.equal(operationAllowsRemoteOwner('extension.package.export'), false);
+  assert.equal(operationAllowsRemoteOwner('extension.configuration.mutate'), false);
 });

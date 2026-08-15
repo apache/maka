@@ -35,14 +35,14 @@ export function UiExtensionsPage({ hubHeader }: { hubHeader: ModuleHubHeader }) 
     all.findIndex((candidate) => candidate.extensionId === entry.extensionId) === index,
   );
   return (
-    <main className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" data-module="ui-extensions" data-maka-contract="module-main" aria-label="UI Extensions">
+    <main className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" data-module="ui-extensions" data-maka-contract="module-main" aria-label="Extensions">
       <ModulePage
         title={hubHeader.title}
-        meta={`${new Set(entries.map((entry) => entry.extensionId)).size} 个 UI 扩展`}
-        actions={<div className="maka-module-main-actions" role="group" aria-label="UI 扩展操作">
+        meta={`${new Set(entries.map((entry) => entry.extensionId)).size} 个插件`}
+        actions={<div className="maka-module-main-actions" role="group" aria-label="插件操作">
           <Button
             variant="primary"
-            label={busy === 'import' ? '正在导入…' : '导入 UI 扩展'}
+            label={busy === 'import' ? '正在导入…' : '安装插件'}
             icon={<FolderOpen size={ICON_SIZE.chrome} aria-hidden="true" />}
             isDisabled={busy !== null}
             onClick={() => void act('import', async () => {
@@ -56,14 +56,14 @@ export function UiExtensionsPage({ hubHeader }: { hubHeader: ModuleHubHeader }) 
       >
         {error ? <div role="alert" className="maka-module-error">{error}</div> : null}
         {latest.length === 0 && busy === null ? (
-          <EmptyState icon={<Monitor size={ICON_SIZE.empty} />} title="还没有 UI 扩展" description="导入包含 maka.ui.json 的本地目录，或让 Agent 动态创建界面。" />
+          <EmptyState icon={<Monitor size={ICON_SIZE.empty} />} title="还没有插件" description="安装插件目录或 .maka-extension Bundle；一个插件可同时提供 Tool 和 UI。" />
         ) : (
-          <List aria-label="已安装 UI 扩展">
+          <List aria-label="已安装插件">
             {latest.map((entry) => (
               <ListItem
                 key={entry.extensionId}
-                label={entry.extensionId}
-                description={`${entry.contributionIds.join(', ')} · ${entry.revision.slice(0, 20)}…${entry.error ? ` · ${entry.error}` : ''}`}
+                label={`${entry.displayName} · ${entry.version}`}
+                description={`${entry.toolNames.length} Tools · ${entry.uiContributionIds.length} UI · ${entry.dependencies.length} 依赖 · ${entry.revision.slice(0, 20)}…${entry.error ? ` · ${entry.error}` : ''}`}
                 startContent={<StatusDot variant={dotForStatus(entry.status === 'active' ? 'success' : entry.status === 'failed' ? 'error' : 'neutral')} label={entry.status} />}
                 endContent={<div className="maka-module-main-actions">
                   <Switch
@@ -71,6 +71,44 @@ export function UiExtensionsPage({ hubHeader }: { hubHeader: ModuleHubHeader }) 
                     value={entry.enabled}
                     isDisabled={busy !== null}
                     onChange={(enabled) => void act(`toggle:${entry.extensionId}`, () => window.maka.uiExtensions.setEnabled(entry.extensionId, enabled))}
+                  />
+                  {Object.keys(entry.configuration.properties).length > 0
+                    ? entry.bindings.map((binding) => (
+                        <Button
+                          key={binding.bindingId}
+                          variant="ghost"
+                          label={`配置${binding.scopeId === 'profile' ? ' Tool' : ' UI'}`}
+                          isDisabled={busy !== null}
+                          onClick={() =>
+                            void act(`configure:${binding.bindingId}`, async () => {
+                              const current = await window.maka.uiExtensions.getConfiguration(
+                                binding.bindingId,
+                              );
+                              const encoded = window.prompt(
+                                `编辑 ${entry.displayName} · ${binding.scopeId} 配置（JSON）`,
+                                JSON.stringify(current.configuration, null, 2),
+                              );
+                              if (encoded === null) return;
+                              const parsed = JSON.parse(encoded) as Record<
+                                string,
+                                string | number | boolean
+                              >;
+                              await window.maka.uiExtensions.configure(
+                                binding.bindingId,
+                                parsed,
+                              );
+                            })
+                          }
+                        />
+                      ))
+                    : null}
+                  <Button
+                    variant="ghost"
+                    label="导出"
+                    isDisabled={busy !== null}
+                    onClick={() => void act(`export:${entry.extensionId}`, () =>
+                      window.maka.uiExtensions.export(entry.extensionId, entry.revision),
+                    )}
                   />
                   <Button variant="ghost" label="删除" icon={<Trash2 size={ICON_SIZE.chrome} aria-hidden="true" />} isDisabled={busy !== null} onClick={() => void act(`remove:${entry.extensionId}`, () => window.maka.uiExtensions.remove(entry.extensionId))} />
                 </div>}

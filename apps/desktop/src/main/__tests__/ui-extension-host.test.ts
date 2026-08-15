@@ -101,7 +101,9 @@ describe('Desktop UI extension shell', () => {
   test('injects the narrow Host SDK only for an admitted frame token', () => {
     const plain = withUiSandboxPolicy('<main>Hello</main>', false);
     assert.doesNotMatch(plain, /makaUI/);
-    const bridged = withUiSandboxPolicy('<main>Hello</main>', false, 'test-token');
+    const bridged = withUiSandboxPolicy('<main>Hello</main>', false, 'test-token', [
+      'workspace.body',
+    ]);
     assert.match(bridged, /maka-ui-bridge\/v1/);
     assert.match(bridged, /maka-ui-bridge-ready\/v1/);
     assert.match(bridged, /maka-ui-host-ready\/v1/);
@@ -116,6 +118,10 @@ describe('Desktop UI extension shell', () => {
     assert.match(bridged, /session_send/);
     assert.match(bridged, /session_stop/);
     assert.match(bridged, /safe_mode/);
+    assert.match(bridged, /maka-ui-slot-layout\/v1/);
+    assert.match(bridged, /data-maka-slot/);
+    assert.match(bridged, /workspace\.body/);
+    assert.match(bridged, /getConfig/);
     assert.match(bridged, /test-token/);
   });
 

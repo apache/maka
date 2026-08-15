@@ -20,6 +20,7 @@ interface WorkerContext {
   readonly cwd: string;
   readonly toolCallId: string;
   readonly operationId?: string;
+  readonly configuration: Readonly<Record<string, string | number | boolean>>;
 }
 
 type WorkerRequest =
@@ -151,7 +152,15 @@ function decodeContext(value: unknown): WorkerContext {
     throw new Error('Tool package worker context is invalid');
   }
   const context = value as Record<string, unknown>;
-  const allowed = ['sessionId', 'runId', 'turnId', 'cwd', 'toolCallId', 'operationId'];
+  const allowed = [
+    'sessionId',
+    'runId',
+    'turnId',
+    'cwd',
+    'toolCallId',
+    'operationId',
+    'configuration',
+  ];
   if (Object.keys(context).some((key) => !allowed.includes(key))) {
     throw new Error('Tool package worker context fields are invalid');
   }
@@ -160,11 +169,30 @@ function decodeContext(value: unknown): WorkerContext {
     turnId: requiredString(context.turnId, 'turnId'),
     cwd: requiredString(context.cwd, 'cwd'),
     toolCallId: requiredString(context.toolCallId, 'toolCallId'),
+    configuration: decodeConfiguration(context.configuration),
     ...(context.runId === undefined ? {} : { runId: requiredString(context.runId, 'runId') }),
     ...(context.operationId === undefined
       ? {}
       : { operationId: requiredString(context.operationId, 'operationId') }),
   };
+  return Object.freeze(result);
+}
+
+function decodeConfiguration(value: unknown): Readonly<Record<string, string | number | boolean>> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Tool package worker configuration is invalid');
+  }
+  const result: Record<string, string | number | boolean> = {};
+  for (const [key, configured] of Object.entries(value as Record<string, unknown>)) {
+    if (
+      !/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u.test(key) ||
+      (typeof configured !== 'string' &&
+        typeof configured !== 'boolean' &&
+        !(typeof configured === 'number' && Number.isFinite(configured)))
+    )
+      throw new Error('Tool package worker configuration value is invalid');
+    result[key] = configured;
+  }
   return Object.freeze(result);
 }
 

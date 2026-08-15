@@ -69,6 +69,8 @@ export function UiExtensionSlot({
           contribution={item}
           layer="slot"
           onSafeMode={context.onSafeMode}
+          contributions={context.contributions}
+          ancestry={new Set([contributionKey(item)])}
         />
       ))}
     </div>
@@ -137,6 +139,8 @@ export function UiExtensionHost({
           contribution={selectedRoot.contribution}
           layer="root"
           onSafeMode={() => setSafeMode(true)}
+          contributions={selected.slots}
+          ancestry={new Set([contributionKey(selectedRoot.contribution)])}
         />
       ) : (
         <UiExtensionSlotProvider
@@ -158,6 +162,8 @@ export function UiExtensionHost({
           contribution={item}
           layer="overlay"
           onSafeMode={() => setSafeMode(true)}
+          contributions={selected.slots}
+          ancestry={new Set([contributionKey(item)])}
         />
       ))}
     </div>
@@ -222,12 +228,17 @@ function SandboxedUiFrame({
   contribution,
   layer,
   onSafeMode,
+  contributions,
+  ancestry,
 }: {
   contribution: ExtensionUiContributionProjection;
   layer: 'root' | 'overlay' | 'slot';
   onSafeMode: () => void;
+  contributions: readonly ExtensionUiContributionProjection[];
+  ancestry: ReadonlySet<string>;
 }) {
   const frameRef = useRef<HTMLIFrameElement>(null);
+  const [slotRects, setSlotRects] = useState<ReadonlyMap<string, UiSlotRect>>(new Map());
   const token = useMemo(
     () => crypto.randomUUID(),
     [contribution.bindingId, contribution.revision, contribution.id],
@@ -237,6 +248,11 @@ function SandboxedUiFrame({
       if (event.source !== frameRef.current?.contentWindow) return;
       if (isBridgeReady(event.data, token)) {
         postBridgeReady(frameRef.current, token);
+        return;
+      }
+      const layout = decodeSlotLayout(event.data, token, contribution.slots ?? []);
+      if (layout) {
+        setSlotRects(layout);
         return;
       }
       const request = decodeBridgeRequest(event.data, token);
@@ -253,6 +269,10 @@ function SandboxedUiFrame({
       };
       const operation = isSessionBridgeRequest(request)
         ? runSessionBridgeRequest(contribution, request)
+        : request.kind === 'config'
+          ? window.maka.runtimeHost.query('extension.configuration.query', {
+              bindingId: contribution.bindingId,
+            })
         : request.kind === 'invoke'
         ? window.maka.runtimeHost.command('extension.ui.rpc.invoke', {
           ...identity,
@@ -279,25 +299,117 @@ function SandboxedUiFrame({
     return () => window.removeEventListener('message', receive);
   }, [contribution, onSafeMode, token]);
   return (
-    <iframe
-      ref={frameRef}
-      className={`maka-ui-extension-frame maka-ui-extension-frame--${layer}`}
-      title={`${contribution.extensionId}: ${contribution.id}`}
-      data-extension-id={contribution.extensionId}
-      data-extension-revision={contribution.revision}
-      data-contribution-id={contribution.id}
-      sandbox="allow-scripts allow-modals"
-      referrerPolicy="no-referrer"
-      src={uiExtensionFrameUrl({
-        scopeId: DESKTOP_UI_SCOPE,
-        bindingId: contribution.bindingId,
-        extensionId: contribution.extensionId,
-        revision: contribution.revision,
-        contributionId: contribution.id,
-        token,
-      })}
-    />
+    <div className={`maka-ui-extension-frame-host maka-ui-extension-frame-host--${layer}`}>
+      <iframe
+        ref={frameRef}
+        className={`maka-ui-extension-frame maka-ui-extension-frame--${layer}`}
+        title={`${contribution.extensionId}: ${contribution.id}`}
+        data-extension-id={contribution.extensionId}
+        data-extension-revision={contribution.revision}
+        data-contribution-id={contribution.id}
+        sandbox="allow-scripts allow-modals"
+        referrerPolicy="no-referrer"
+        src={uiExtensionFrameUrl({
+          scopeId: DESKTOP_UI_SCOPE,
+          bindingId: contribution.bindingId,
+          extensionId: contribution.extensionId,
+          revision: contribution.revision,
+          contributionId: contribution.id,
+          token,
+        })}
+      />
+      {[...slotRects].map(([slot, rect]) => (
+        <div
+          key={slot}
+          className="maka-ui-extension-nested-slot"
+          data-ui-slot={slot}
+          style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height }}
+        >
+          {slotChildren(slot, contributions, ancestry).map((child) => {
+            const key = contributionKey(child);
+            return (
+              <SandboxedUiFrame
+                key={key}
+                contribution={child}
+                layer="slot"
+                onSafeMode={onSafeMode}
+                contributions={contributions}
+                ancestry={new Set([...ancestry, key])}
+              />
+            );
+          })}
+        </div>
+      ))}
+    </div>
   );
+}
+
+interface UiSlotRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+function decodeSlotLayout(
+  value: unknown,
+  token: string,
+  declared: readonly string[],
+): ReadonlyMap<string, UiSlotRect> | null {
+  if (!value || typeof value !== 'object') return null;
+  const message = value as Record<string, unknown>;
+  if (
+    message.channel !== 'maka-ui-slot-layout/v1' ||
+    message.token !== token ||
+    !Array.isArray(message.slots) ||
+    message.slots.length > 32
+  ) return null;
+  const allowed = new Set(declared);
+  const result = new Map<string, UiSlotRect>();
+  for (const value of message.slots) {
+    if (!value || typeof value !== 'object') return null;
+    const rect = value as Record<string, unknown>;
+    if (
+      typeof rect.name !== 'string' ||
+      !allowed.has(rect.name) ||
+      ![rect.x, rect.y, rect.width, rect.height].every(
+        (number) => typeof number === 'number' && Number.isFinite(number),
+      ) ||
+      (rect.width as number) < 0 ||
+      (rect.height as number) < 0
+    ) return null;
+    result.set(rect.name, {
+      x: rect.x as number,
+      y: rect.y as number,
+      width: rect.width as number,
+      height: rect.height as number,
+    });
+  }
+  return result;
+}
+
+function slotChildren(
+  slot: string,
+  contributions: readonly ExtensionUiContributionProjection[],
+  ancestry: ReadonlySet<string>,
+): readonly ExtensionUiContributionProjection[] {
+  return contributions
+    .filter(
+      (item) =>
+        item.surface === 'app.slot' &&
+        item.slot === slot &&
+        !ancestry.has(contributionKey(item)),
+    )
+    .sort(
+      (left, right) =>
+        right.priority - left.priority ||
+        left.extensionId.localeCompare(right.extensionId) ||
+        left.id.localeCompare(right.id),
+    );
+}
+
+function contributionKey(contribution: ExtensionUiContributionProjection): string {
+  return `${contribution.bindingId}:${contribution.revision}:${contribution.id}`;
 }
 
 function postBridgeReady(frame: HTMLIFrameElement | null, token: string): void {
@@ -312,6 +424,7 @@ function isBridgeReady(value: unknown, token: string): boolean {
 
 type UiBridgeRequest =
   | { id: string; kind: 'safe_mode' }
+  | { id: string; kind: 'config' }
   | { id: string; kind: 'get' | 'delete'; key: string }
   | { id: string; kind: 'set'; key: string; value: unknown }
   | { id: string; kind: 'invoke'; method: string; args: unknown }
@@ -325,6 +438,7 @@ function decodeBridgeRequest(value: unknown, token: string): UiBridgeRequest | n
   if (request.channel !== 'maka-ui-bridge/v1' || request.token !== token) return null;
   if (typeof request.id !== 'string' || !/^[0-9]{1,16}$/u.test(request.id)) return null;
   if (request.kind === 'safe_mode') return { id: request.id, kind: request.kind };
+  if (request.kind === 'config') return { id: request.id, kind: request.kind };
   if (request.kind === 'invoke') {
     if (typeof request.method !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,127}$/u.test(request.method)) return null;
     return { id: request.id, kind: request.kind, method: request.method, args: request.args };

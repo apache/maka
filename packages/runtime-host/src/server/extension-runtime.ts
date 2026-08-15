@@ -6,6 +6,7 @@ import {
   type ExtensionCompositionSnapshot,
   type ExtensionPreparationContext,
   type ExtensionRevisionDefinition,
+  type ExtensionDependencyDefinition,
 } from '@maka/runtime/extension-lifecycle-kernel';
 import {
   contributeExtensionTool,
@@ -23,6 +24,7 @@ import {
   type ExtensionUiContribution,
   type ExtensionUiContributionInspection,
 } from '@maka/runtime/extension-ui-contributions';
+import { createHash } from 'node:crypto';
 
 export type HostTrustedToolExtensionRevisionInput = Omit<
   TrustedToolExtensionRevisionInput,
@@ -33,6 +35,7 @@ export interface HostPreparedToolExtensionRevisionInput {
   readonly extensionId: string;
   readonly revision: string;
   readonly toolNames: readonly string[];
+  readonly dependencies?: readonly ExtensionDependencyDefinition[];
   /** Optional client contribution carried by the exact same immutable package Revision. */
   readonly ui?: readonly ExtensionUiContribution[];
   readonly prepare: (context: ExtensionPreparationContext) => Promise<{
@@ -49,6 +52,7 @@ export type HostToolExtensionRevisionInput =
 export interface HostUiExtensionRevisionInput {
   readonly extensionId: string;
   readonly revision: string;
+  readonly dependencies?: readonly ExtensionDependencyDefinition[];
   readonly ui: readonly ExtensionUiContribution[];
   readonly healthCheck?: () => void | Promise<void>;
 }
@@ -69,6 +73,8 @@ export interface HostExtensionToolResolutionOptions {
   /** Preserve an exact caller-owned Tool ceiling without Host or Extension additions. */
   readonly exact?: boolean;
 }
+
+export const PROFILE_EXTENSION_SCOPE = 'profile';
 
 /**
  * Runtime Host-owned Extension authority.
@@ -112,6 +118,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     const definition: ExtensionRevisionDefinition = Object.freeze({
       extensionId: input.extensionId,
       revision: input.revision,
+      ...(input.dependencies ? { dependencies: input.dependencies } : {}),
       contributions: Object.freeze([
         ...input.toolNames.map((_, index) =>
           Object.freeze({ id: `${input.extensionId}.tool-${index + 1}`, kind: 'tool' }),
@@ -220,7 +227,18 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
   }
 
   composition(scopeId: string): ExtensionCompositionSnapshot {
-    return this.#lifecycle.composition(scopeId);
+    const scoped = this.#lifecycle.composition(scopeId);
+    if (scopeId === PROFILE_EXTENSION_SCOPE) return scoped;
+    const profile = this.#lifecycle.composition(PROFILE_EXTENSION_SCOPE);
+    if (profile.entries.length === 0) return scoped;
+    const entries = Object.freeze([...profile.entries, ...scoped.entries]);
+    const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
+    return Object.freeze({
+      schemaVersion: 1,
+      scopeId,
+      digest: `sha256:${digest}`,
+      entries,
+    });
   }
 
   resolveTools(
@@ -230,7 +248,13 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
   ): readonly MakaTool[] {
     if (this.#closed) throw new Error('Runtime Host Extension authority is closed');
     if (options.exact) return Object.freeze([...coreTools]);
-    return this.#tools.compose(scopeId, [...coreTools, ...this.#hostTools]);
+    const profileTools = this.#tools.compose(PROFILE_EXTENSION_SCOPE, [
+      ...coreTools,
+      ...this.#hostTools,
+    ]);
+    return scopeId === PROFILE_EXTENSION_SCOPE
+      ? profileTools
+      : this.#tools.compose(scopeId, profileTools);
   }
 
   registerHostTools(tools: readonly MakaTool[]): void {

@@ -62,6 +62,22 @@ export {
   type UiPackageManifestContribution,
 } from './ui-package-store.js';
 export {
+  compareExtensionVersions,
+  decodeExtensionPackageManifest,
+  loadExtensionPackageManifest,
+  validateExtensionConfiguration,
+  extensionVersionSatisfies,
+  type ExtensionPackageManifest,
+  type ExtensionPackageDependency,
+  type ExtensionConfigurationSchema,
+} from './extension-package-manifest.js';
+export {
+  exportExtensionBundle,
+  materializeExtensionPackage,
+  ExtensionBundleError,
+} from './extension-bundle.js';
+export { HostExtensionConfigurationStore } from './extension-configuration-store.js';
+export {
   RuntimeHostRootAlreadyOwnedError,
   startExecutionRuntimeHostService,
   type ExecutionRuntimeHostServiceDependencies,

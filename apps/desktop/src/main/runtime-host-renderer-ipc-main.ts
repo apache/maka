@@ -81,6 +81,8 @@ function request(
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'extension.ui.state.query':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
+    case 'extension.configuration.query':
+      return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'scheduled-task.mutate':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'scheduled-task.query':

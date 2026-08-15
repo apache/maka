@@ -185,6 +185,51 @@ describe('Extension UI contributions', () => {
       /Only an app.slot contribution/,
     );
   });
+
+  test('projects a dynamic three-level slot tree without coupling child revisions', async () => {
+    const kernel = new ExtensionLifecycleKernel();
+    const registry = new ExtensionUiContributionRegistry();
+    const definitions = [
+      {
+        extensionId: 'layout',
+        revision: '1',
+        ui: [{ ...ui('<main data-maka-slot="layout.body"></main>'), slots: ['layout.body'] }],
+      },
+      {
+        extensionId: 'body',
+        revision: '1',
+        ui: [
+          {
+            ...slot('body', 'layout.body', '<section data-maka-slot="body.footer"></section>'),
+            slots: ['body.footer'],
+          },
+        ],
+      },
+      {
+        extensionId: 'footer',
+        revision: '1',
+        ui: [slot('footer', 'body.footer', '<footer>ready</footer>')],
+      },
+    ] as const;
+    for (const definition of definitions) {
+      await kernel.install(defineTrustedUiExtensionRevision({ registry, ...definition }));
+      await kernel.activate({
+        bindingId: `${definition.extensionId}-binding`,
+        scopeId: 'desktop-ui',
+        extensionId: definition.extensionId,
+        revision: definition.revision,
+      });
+    }
+    const projected = registry.inspect('desktop-ui', committed(kernel));
+    assert.deepEqual(
+      projected.map(({ id, slot, slots }) => ({ id, slot, slots })),
+      [
+        { id: 'app', slot: undefined, slots: ['layout.body'] },
+        { id: 'body', slot: 'layout.body', slots: ['body.footer'] },
+        { id: 'footer', slot: 'body.footer', slots: [] },
+      ],
+    );
+  });
 });
 
 function ui(document: string) {
