@@ -65,7 +65,7 @@ unsafe fn serve_once_with_security(
             1,
             (MAX_BROKER_MESSAGE_BYTES + 4) as u32,
             (MAX_BROKER_MESSAGE_BYTES + 4) as u32,
-            0,
+            5_000,
             &attributes,
         )
     };

@@ -39,6 +39,13 @@ pub fn with_acl_grants<T>(
     let ledger_root = std::env::temp_dir().join("maka-sandbox-acl-ledgers");
     fs::create_dir_all(&ledger_root)
         .map_err(|error| format!("create ACL ledger directory failed: {error}"))?;
+    let lock_path = ledger_root.join(".active.lock");
+    let _lock_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+        .map_err(|error| format!("acquire ACL ledger lock failed: {error}"))?;
+    let _lock = LedgerLock { path: lock_path };
     recover_stale(&ledger_root)?;
 
     let roots = collect_roots(request)?;
@@ -68,6 +75,16 @@ pub fn with_acl_grants<T>(
         (Ok(_), Err(restore)) => Err(restore),
         (Err(error), Err(restore)) => Err(format!("{error}; ACL restore also failed: {restore}")),
     }
+}
+
+impl Drop for LedgerLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+struct LedgerLock {
+    path: PathBuf,
 }
 
 fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, String> {

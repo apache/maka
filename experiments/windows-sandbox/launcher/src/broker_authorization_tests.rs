@@ -63,6 +63,19 @@ mod tests {
     }
 
     #[test]
+    fn rejects_replayed_nonce_with_different_hex_case() {
+        let value = request("0123456789abcdef0123456789abcdef");
+        let mut variant = value.clone();
+        variant.client_nonce = "0123456789ABCDEF0123456789ABCDEF".to_owned();
+        let mut authorizer = BrokerAuthorizer::new([value.profile_digest.clone()]);
+        assert_eq!(authorizer.authorize(&value, 42), Ok(()));
+        assert_eq!(
+            authorizer.authorize(&variant, 42),
+            Err(BrokerAuthorizationError::NonceReplayed)
+        );
+    }
+
+    #[test]
     fn rejects_a_digest_that_is_not_bound_to_the_launch_policy() {
         let mut value = request("0123456789abcdef0123456789abcdef");
         let approved = value.profile_digest.clone();
