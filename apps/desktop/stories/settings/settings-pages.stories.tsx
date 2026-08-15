@@ -663,10 +663,24 @@ const makaBridge = {
   },
   // 导入任务 reads another agent's session directory through Desktop Main. The
   // fixture answers with one source and a short first page so the story shows
-  // the source switch, the archived filter, and 加载更多 together.
+  // the source switch, the archived filter, and 加载更多 together. It honours
+  // `includeArchived` and `cursor` rather than returning one fixed page:
+  // otherwise the archived row shows while its filter is off and 加载更多 hands
+  // back the first page forever, which is a control the story cannot be used to
+  // judge.
   externalSessions: {
     listSources: async () => ({ adapterIds: ['codex'] }),
-    list: async () => ({ sessions: externalConversations, nextCursor: 'page-2' }),
+    list: async (input: { includeArchived?: boolean; cursor?: string }) => {
+      const visible = externalConversations.filter(
+        (conversation) => input.includeArchived || !conversation.archived,
+      );
+      const start = input.cursor === EXTERNAL_SECOND_PAGE ? EXTERNAL_PAGE_SIZE : 0;
+      const end = start + EXTERNAL_PAGE_SIZE;
+      return {
+        sessions: visible.slice(start, end),
+        nextCursor: end < visible.length ? EXTERNAL_SECOND_PAGE : null,
+      };
+    },
     import: async () => ({ ok: false as const }),
   },
   // Appearance mounts CustomPetSettingsSection, which reads and subscribes on
@@ -752,6 +766,14 @@ const archivedTaskSessions: SessionSummary[] = [
 
 // 导入任务's rows come from another agent's directory, not from Maka's store:
 // a source-native id, the cwd it ran in, and whether that agent archived it.
+/**
+ * Two rows a page, so the default view — three unarchived conversations — is
+ * one short page plus 加载更多, and turning the archived filter on changes both
+ * the first page and how many pages there are.
+ */
+const EXTERNAL_PAGE_SIZE = 2;
+const EXTERNAL_SECOND_PAGE = 'page-2';
+
 const externalConversations: ExternalSessionSummary[] = [
   {
     id: 'codex-01930f',
@@ -764,6 +786,12 @@ const externalConversations: ExternalSessionSummary[] = [
     name: '把 provider catalog 的分页改成游标',
     cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
     updatedAt: Date.now() - 3 * 60 * 60 * 1000,
+  },
+  {
+    id: 'codex-01930a',
+    name: 'Reproduce the SQLite lock contention under parallel evals',
+    cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
+    updatedAt: Date.now() - 2 * 24 * 60 * 60 * 1000,
   },
   {
     id: 'codex-01929c',
