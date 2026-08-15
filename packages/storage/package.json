@@ -38,7 +38,9 @@
     "./model-call-ledger": "./dist/model-call-ledger.js",
     "./usage-stores": "./dist/usage-stores.js",
     "./workspace-identity": "./dist/workspace-identity.js",
-    "./write-queue": "./dist/write-queue.js"
+    "./write-queue": "./dist/write-queue.js",
+    "./hook-config-store": "./dist/hook-config-store.js",
+    "./hook-trust-store": "./dist/hook-trust-store.js"
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",

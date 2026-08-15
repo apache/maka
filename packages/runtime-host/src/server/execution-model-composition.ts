@@ -40,6 +40,7 @@ import type { HostMemoryExtractionCoordinator } from './memory-extraction-coordi
 import { readDuringBackendCreation, resolveExecutionTarget } from './execution-model-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 import type { HostRunComposer, HostRunComposerFactory } from './host-run-composer.js';
+import type { HostHookComposition } from './host-hook-composition.js';
 
 export interface HostAiSdkBackendInput {
   readonly context: BackendFactoryContext;
@@ -54,6 +55,7 @@ export interface HostAiSdkBackendInput {
   readonly requestDrain: () => void;
   readonly runtimeCommitSink?: RuntimeCommitSink;
   readonly childAgents?: HostChildAgentBackendCapabilities;
+  readonly hooks?: HostHookComposition;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
 }
 
@@ -344,6 +346,9 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           sessionId: input.context.sessionId,
         }),
         recordToolArtifacts: input.executionArtifacts.recordToolArtifacts,
+        ...(input.hooks
+          ? { preToolUseHooks: input.hooks.dispatcherFor(input.context.header) }
+          : {}),
         toolResultArchive: input.executionArtifacts.toolResultArchive,
         ...(!input.context.tools &&
         !input.context.header.subagentParent &&

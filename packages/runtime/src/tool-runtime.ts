@@ -78,6 +78,7 @@ import {
   type RuntimeInteractionClosureReason,
   type RuntimeUserQuestionClosureReason,
 } from './interaction-authority.js';
+import type { PreToolUseHookDispatcher } from './hooks/engine.js';
 
 export interface ResolvedMakaToolCall {
   tool: MakaTool;
@@ -437,6 +438,8 @@ export interface ToolRuntimeInput {
   getRunTrace?: () => RunTraceLike | null;
   recordToolInvocation?: ToolTelemetryRecorder;
   recordToolArtifacts?: ToolArtifactRecorder;
+  /** Immutable-per-turn user/project policy Hook dispatcher. */
+  preToolUseHooks?: PreToolUseHookDispatcher;
   /** Optional Phase 2 T1/T2 commit boundary for hosts that persist RuntimeEvents. */
   runtimeCommitSink?: RuntimeCommitSink;
 }
@@ -525,6 +528,7 @@ export class ToolRuntime {
     this.turnId = input.turnId;
     this.hostedInteraction = hosted;
     this.readExecutionBoundary = input.readExecutionBoundary;
+    input.preToolUseHooks?.prepareTurn(this.turnId);
   }
 
   async endTurn(reason: 'completed' | 'aborted' = 'completed'): Promise<void> {
@@ -589,6 +593,7 @@ export class ToolRuntime {
     // Bounded, not open-ended: every rejection above has already been
     // dispatched, and running impls observe the turn abort signal.
     await Promise.allSettled([...this.activeToolSettlements]);
+    this.input.preToolUseHooks?.releaseTurn(turnId);
     if (boundarySettlementErrors.length > 0) {
       throw new AggregateError(
         boundarySettlementErrors,
@@ -1257,6 +1262,78 @@ export class ToolRuntime {
       await refuseBeforeDispatch(SUBAGENT_TOOL_LIMIT_MESSAGE);
       this.recordLoopGateOutcome(callSignature, true);
       return this.errorReturn(SUBAGENT_TOOL_LIMIT_MESSAGE);
+    }
+
+    if (this.input.preToolUseHooks) {
+      let hookResult;
+      try {
+        hookResult = await this.input.preToolUseHooks.runPreToolUse(
+          {
+            schema_version: 1,
+            hook_event_name: 'PreToolUse',
+            session_id: this.input.sessionId,
+            turn_id: turnId,
+            run_id: runId ?? turnId,
+            tool_use_id: toolUseId,
+            tool_name: tool.name,
+            tool_input: structuredClone(executionArgs),
+            cwd: this.input.header.cwd,
+            permission_mode: this.input.header.permissionMode,
+            origin: ctx.origin,
+          },
+          ctx.abortSignal,
+          { invocationId: invocationId ?? runId ?? turnId },
+        );
+      } catch (error) {
+        if (ctx.abortSignal.aborted) {
+          this.releaseSubagentSlot(tool);
+          throw ctx.abortSignal.reason ?? new DOMException('Aborted', 'AbortError');
+        }
+        trace?.emit('tool', 'tool_failed', 'PreToolUse Hook dispatcher failed open', {
+          toolUseId,
+          toolName: tool.name,
+          status: 'warning',
+          errorClass: 'HookDispatcherFailure',
+        });
+      }
+      if (ctx.abortSignal.aborted) {
+        this.releaseSubagentSlot(tool);
+        throw ctx.abortSignal.reason ?? new DOMException('Aborted', 'AbortError');
+      }
+      if (hookResult) {
+        for (const audit of hookResult.audits) {
+          if (audit.status === 'failed' || audit.status === 'skipped_untrusted') {
+            trace?.emit('tool', 'tool_failed', 'PreToolUse Hook did not produce a decision', {
+              toolUseId,
+              toolName: tool.name,
+              hookId: audit.handlerId,
+              hookStatus: audit.status,
+              errorClass: 'HookFailure',
+            });
+          }
+        }
+        if (hookResult.auditWriteFailures.length > 0) {
+          trace?.emit('tool', 'tool_failed', 'PreToolUse Hook audit write failed', {
+            toolUseId,
+            toolName: tool.name,
+            failureCount: hookResult.auditWriteFailures.length,
+            errorClass: 'HookAuditFailure',
+          });
+        }
+        if (hookResult.denied) {
+          this.releaseSubagentSlot(tool);
+          const reason = hookResult.reason ?? 'A PreToolUse Hook denied this tool call.';
+          await refuseBeforeDispatch(reason);
+          trace?.emit('tool', 'tool_failed', 'PreToolUse Hook denied tool execution', {
+            toolUseId,
+            toolName: tool.name,
+            status: 'error',
+            errorClass: 'HookDenied',
+          });
+          this.recordLoopGateOutcome(callSignature, true);
+          return this.errorReturn(reason);
+        }
+      }
     }
 
     let durableAttempt: DurableToolAttempt | undefined;

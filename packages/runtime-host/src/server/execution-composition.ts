@@ -99,6 +99,7 @@ import { HostClientCapabilityCoordinator } from './client-capability-coordinator
 import { HostDeepResearchCoordinator } from './deep-research-coordinator.js';
 import { HostDailyReviewCoordinator } from './daily-review-coordinator.js';
 import { createHostAiSdkBackend } from './execution-model-composition.js';
+import { createHostHookComposition } from './host-hook-composition.js';
 import {
   createInteractiveRunComposer,
   createInteractiveRunComposerFactory,
@@ -278,6 +279,10 @@ export async function createExecutionRuntimeHostComposition(
     });
     await stores.messageReceiptStore.beginHostEpoch(context.hostEpoch);
     const backends = new BackendRegistry();
+    const hooks = createHostHookComposition({
+      stateRoot: context.owner.capability.canonicalPath,
+      runtimeEvents: stores.runtimeEventStore,
+    });
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
     const runtimePolicy = new HostRuntimePolicyCoordinator(
@@ -666,6 +671,7 @@ export async function createExecutionRuntimeHostComposition(
               backendContext.sessionId,
             ),
             runtimeCommitSink: stores.runtimeEventStore,
+            hooks,
             requestDrain: context.requestDrain,
           })),
     );
