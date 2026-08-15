@@ -106,6 +106,8 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
       )
     );
 
+    -- The intermediate Phase 0 dev build shipped this index with item_id ASC;
+    -- drop it once so such databases converge on the released definition.
     DROP INDEX IF EXISTS workflow_work_board_items_scope_order;
     CREATE INDEX IF NOT EXISTS workflow_work_board_items_scope_order
       ON workflow_work_board_items(scope_kind, project_id, updated_at DESC, item_id DESC);

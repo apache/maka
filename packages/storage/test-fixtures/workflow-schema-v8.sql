@@ -2,6 +2,12 @@
 -- (packages/storage/src/sqlite-workflow-schema.ts before the Work Board PR).
 -- Applied on top of the v0.1.6 operational-state fixture to build a real
 -- schema-8 database for the 8 -> 9 upgrade test.
+--
+-- Precondition: the v0.1.6 fixture already defines
+-- workflow_quote_companion_cleanup WITHOUT record_json, so the CREATE TABLE
+-- below is a no-op for it and the ALTER TABLE at the end adds the column.
+-- If the table were absent, CREATE TABLE would define record_json and the
+-- ALTER would fail with "duplicate column name".
 
 DROP INDEX IF EXISTS workflow_plan_reminders_order;
 DROP TABLE IF EXISTS workflow_plan_reminders;

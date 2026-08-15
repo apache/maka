@@ -27,7 +27,9 @@ interface WorkBoardItem {
   provenance: WorkBoardProvenance;
   createdAt: number;
   updatedAt: number;
-  archived: false | true;  // active items never carry archivedAt; archived items must
+  // Active items never carry `archivedAt`; archived items always carry it:
+  // { archived: false } | { archived: true; archivedAt: number }
+  archived: boolean;
   archivedAt?: number;
 }
 ```
