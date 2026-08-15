@@ -1067,7 +1067,7 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
     case 'model_change':
       return 'Model changed.';
     case 'context_compacted':
-      return 'Context compacted to keep this session within the model window.';
+      return 'Context compacted to keep this task within the model window.';
     case 'context_compaction_failed_open':
       return 'Context summary failed; the session continued without a new summary.';
     case 'step_limit':
@@ -1741,7 +1741,7 @@ function renderSandboxBoundaryPrompt(
   }
   lines.push(
     fitLine(
-      `${ansi.bold('y')}${ansi.dim('/Enter allow for session')}  ${ansi.bold('n')}${ansi.dim('/Esc deny')}`,
+      `${ansi.bold('y')}${ansi.dim('/Enter allow for this task')}  ${ansi.bold('n')}${ansi.dim('/Esc deny')}`,
       width,
     ),
   );

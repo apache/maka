@@ -28,15 +28,15 @@ const GENERIC_FIX_COPY = '模型连接暂时无法用于发送，请到 设置 �
  */
 const REASON_FIX_COPY: Record<ChatConfigurationReason, string> = {
   missing_default_connection: '等待配置默认模型。请到 设置 · 模型 添加一个可用模型连接后再发送。',
-  connection_missing: '该会话依赖的模型连接已删除，请到 设置 · 模型 重新选择或重建连接。',
+  connection_missing: '该任务依赖的模型连接已删除，请到 设置 · 模型 重新选择或重建连接。',
   connection_disabled: '当前模型连接已禁用。请到 设置 · 模型 启用或选择其他默认模型。',
   missing_api_key: '当前模型连接还没有可用凭据。请到 设置 · 模型 补齐 API key 或重新登录后再发送。',
   missing_model: '当前模型连接还没有可用模型。请到 设置 · 模型 选择默认模型后再发送。',
   empty_model_list: '当前模型连接没有启用模型。请到 设置 · 模型 添加或启用模型后再发送。',
-  model_not_enabled: '当前会话选择的模型未启用。请到 设置 · 模型 重新选择可用模型后再发送。',
+  model_not_enabled: '当前任务选择的模型未启用。请到 设置 · 模型 重新选择可用模型后再发送。',
   model_not_chat_capable:
-    '当前会话选择的模型不能用于聊天。请到 设置 · 模型 重新选择支持聊天的模型后再发送。',
-  fake_backend: '当前会话来自旧的本地模拟连接。请到 设置 · 模型 添加真实模型后新建会话。',
+    '当前任务选择的模型不能用于聊天。请到 设置 · 模型 重新选择支持聊天的模型后再发送。',
+  fake_backend: '当前任务来自旧的本地模拟连接。请到 设置 · 模型 添加真实模型后新建任务。',
 };
 
 /**

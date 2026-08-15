@@ -128,7 +128,7 @@ const DAILY_REVIEW_COPY = {
       title: (date, mode) => `${date} · ${mode}`,
       range: { 1: '1 day', 7: '7 days', 30: '30 days' },
       generated: (trigger, time) => `${trigger} · ${time}`,
-      sessionCount: (count) => `${count} ${count === 1 ? 'conversation' : 'conversations'}`,
+      sessionCount: (count) => `${count} ${count === 1 ? 'task' : 'tasks'}`,
       defaultModel: 'Default task model',
       opening: 'Opening this report…',
       noContent: 'This report has no generated content.',
@@ -139,7 +139,7 @@ const DAILY_REVIEW_COPY = {
       unit: { day: 'day', week: 'week', month: 'month' }, earlier: (unit) => `View previous ${unit}`, later: (unit) => `View next ${unit}`,
     },
     emptyOverview: {
-      todayTitle: "Waiting for today's activity", rangeTitle: (label) => `No activity for ${label.toLowerCase()}`, todayBody: 'No conversations or model requests have started today.', rangeBody: (label) => `No tasks or model requests were made during ${label.toLowerCase()}.`,
+      todayTitle: "Waiting for today's activity", rangeTitle: (label) => `No activity for ${label.toLowerCase()}`, todayBody: 'No tasks or model requests have started today.', rangeBody: (label) => `No tasks or model requests were made during ${label.toLowerCase()}.`,
     },
     export: {
       ariaLabel: 'Review export actions', copyTitle: 'Copy a Markdown summary to share or add to notes', copying: 'Copying…', copy: 'Copy', appendTitle: 'Append to the current composer draft', appending: 'Appending…', append: 'Add to composer', saveTitle: 'Save as a Markdown file', saving: 'Saving…', save: 'Save',

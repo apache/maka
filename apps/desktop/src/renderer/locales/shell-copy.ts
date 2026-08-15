@@ -66,7 +66,7 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
   'theme:light': ['light', 'theme', '浅色', '主题'],
   'theme:dark': ['dark', 'theme', '深色', 'night', '主题'],
   'theme:auto': ['auto', 'system', 'theme', '跟随', '系统', '主题'],
-  'nav:sessions': ['sessions', 'chats', '任务', '任务', 'left'],
+  'nav:sessions': ['sessions', 'chats', '任务', '会话', '对话', 'left'],
   'nav:automations': ['automations', 'plan', 'task', 'schedule', 'cron', '定时任务', '计划', '提醒'],
   'nav:skills': ['skills', '技能'],
   'nav:mcp': ['mcp', 'server', 'tools', '扩展', '工具'],

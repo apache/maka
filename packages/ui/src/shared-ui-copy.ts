@@ -162,7 +162,7 @@ const SHARED_UI_COPY = {
       },
       automations: {
         title: '定时任务',
-        description: '安排定时任务，并回顾本机任务中的工作进展。',
+        description: '安排定时运行，并回顾本机任务的工作进展。',
         selectorLabel: (module) => `定时任务内容：${module}`,
         scheduledTasks: '定时任务',
         dailyReview: '每日回顾',
@@ -251,7 +251,7 @@ const SHARED_UI_COPY = {
       },
       automations: {
         title: 'Scheduled tasks',
-        description: 'Schedule tasks and review progress from local tasks.',
+        description: 'Schedule recurring runs and review progress across local tasks.',
         selectorLabel: (module) => `Scheduled task content: ${module}`,
         scheduledTasks: 'Scheduled tasks',
         dailyReview: 'Daily review',

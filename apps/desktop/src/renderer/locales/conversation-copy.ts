@@ -537,10 +537,10 @@ const COPY = {
         confirm: '关闭侧边对话',
       },
       errors: {
-        forkSetupFailed: '无法创建追问任务，请稍后重试。',
+        forkSetupFailed: '无法创建侧边对话，请稍后重试。',
         sendRejected: '追问未能开始，请稍后重试。',
         sendFailed: '追问失败，请稍后重试。',
-        settlementFailed: '任务已结束，但消息加载失败。请重试或重新打开侧边对话。',
+        settlementFailed: '运行已结束，但消息加载失败。请重试或重新打开侧边对话。',
         respondFailed: '响应失败，请稍后重试。',
       },
     },
@@ -643,7 +643,7 @@ const COPY = {
     terminalPanel: {
       ariaLabel: 'Task terminal',
       empty: 'No terminal runs in this task yet',
-      emptyHelp: "The session's terminal appears here once it starts.",
+      emptyHelp: "This task's terminal appears here once it starts.",
       loadFailed: 'Could not read terminal runs',
       retry: 'Retry',
       refresh: 'Refresh terminal',
@@ -736,7 +736,7 @@ const COPY = {
         confirm: 'Close side chat',
       },
       errors: {
-        forkSetupFailed: 'Could not create the companion task. Please try again.',
+        forkSetupFailed: 'Could not open the side chat. Please try again.',
         sendRejected: 'The companion could not start. Please try again.',
         sendFailed: 'The companion request failed. Please try again.',
         settlementFailed: 'The run ended, but its messages could not be loaded. Retry or reopen the side chat.',

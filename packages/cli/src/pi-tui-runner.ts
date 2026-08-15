@@ -1880,7 +1880,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text: `读取外部会话失败：${detail}`,
+        text: `读取外部对话失败：${detail}`,
       });
     } else {
       for (const summary of foreignScan.summaries) {
