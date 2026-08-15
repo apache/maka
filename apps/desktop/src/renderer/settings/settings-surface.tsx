@@ -480,7 +480,7 @@ function SettingsPageBody(props: {
         />
       );
     case 'archived-tasks':
-      return <TasksSettingsPage {...props.archivedTasks} onOpenSession={props.onOpenSession} />;
+      return <TasksSettingsPage {...props.archivedTasks} />;
     case 'data':
       return <DataSettingsPage />;
     case 'permissions':

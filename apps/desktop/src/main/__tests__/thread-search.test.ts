@@ -132,7 +132,7 @@ describe('runThreadSearch', () => {
     assert.equal(hits.at(-1)?.truncated, true);
   });
 
-  it('redacts snippets and excludes fake-backend sessions', async () => {
+  it('redacts snippets and excludes fake-backend and archived sessions', async () => {
     const hits = expectResults(
       await runThreadSearch(
         { source: 'thread', query: 'hello', limit: 5 },
@@ -140,6 +140,13 @@ describe('runThreadSearch', () => {
           fake: {
             session: session({ id: 'fake', backend: 'fake' }),
             messages: [userMessage('hello from fixture')],
+          },
+          // Archiving a task takes it out of the working set. It has no rail
+          // row to land on, so a hit inside it can only be opened from a
+          // surface that no longer exists; Settings manages it instead.
+          archived: {
+            session: session({ id: 'archived', isArchived: true }),
+            messages: [userMessage('hello from an archived task')],
           },
           real: {
             session: session({ id: 'real' }),

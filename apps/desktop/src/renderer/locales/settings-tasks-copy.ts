@@ -22,7 +22,6 @@ export type SettingsTasksCopy = {
   noMatchTitle: string;
   noMatchBody: string;
   moreActions(name: string): string;
-  open: string;
   restore: string;
   restoreTask(name: string): string;
   delete: string;
@@ -48,7 +47,6 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     noMatchTitle: '没有匹配的任务',
     noMatchBody: '换个关键词试试。',
     moreActions: (name: string) => `「${name}」的更多操作`,
-    open: '打开',
     restore: '恢复',
     restoreTask: (name: string) => `恢复「${name}」`,
     delete: '彻底删除',
@@ -76,7 +74,6 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     noMatchTitle: 'No matching tasks',
     noMatchBody: 'Try a different search.',
     moreActions: (name: string) => `More actions for ${name}`,
-    open: 'Open',
     restore: 'Restore',
     restoreTask: (name: string) => `Restore ${name}`,
     delete: 'Delete',

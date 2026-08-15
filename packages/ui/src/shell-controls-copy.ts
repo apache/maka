@@ -9,7 +9,6 @@ type ShellControlsCopy = {
     newTask: string;
     importSession: string;
     conversations: string;
-    archivedConversations: string;
     /**
      * Accessible name of the session-group header's new-task trigger
      * (session-history-list.tsx). Deliberately NOT `newTask`: that copy is
@@ -53,7 +52,6 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       newTask: '新任务',
       importSession: '导入会话',
       conversations: '会话',
-      archivedConversations: '已归档',
       groupNewTask: '新建任务',
       automations: '定时任务',
       extensions: '扩展',
@@ -88,7 +86,6 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       newTask: 'New task',
       importSession: 'Import conversation',
       conversations: 'Conversations',
-      archivedConversations: 'Archived',
       groupNewTask: 'New task in group',
       automations: 'Scheduled tasks',
       extensions: 'Extensions',

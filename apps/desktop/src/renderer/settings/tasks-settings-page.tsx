@@ -49,9 +49,7 @@ export interface ArchivedTasksBridge {
  * changed. What is genuinely new here is finding a task by name or project, and
  * clearing a set of them in one pass.
  */
-export function TasksSettingsPage(
-  props: ArchivedTasksBridge & { onOpenSession?(sessionId: string): void },
-) {
+export function TasksSettingsPage(props: ArchivedTasksBridge) {
   const locale = useUiLocale();
   const copy = getSettingsTasksCopy(locale);
   const toast = useToast();
@@ -191,16 +189,15 @@ export function TasksSettingsPage(
                         // name can say which task it restores.
                         aria-label={copy.restoreTask(session.name)}
                       />
+                      {/* No 打开 here. An archived task has no rail row to
+                          land on, and giving it one would make "the open task
+                          is always visible in the rail" an invariant the rail
+                          does not otherwise hold. Restore first. */}
                       <MoreMenu
                         label={copy.moreActions(session.name)}
                         size="sm"
                         isDisabled={purging}
-                        items={[
-                          ...(props.onOpenSession
-                            ? [{ label: copy.open, onClick: () => props.onOpenSession?.(session.id) }]
-                            : []),
-                          { label: copy.delete, onClick: () => props.onDelete(session.id) },
-                        ]}
+                        items={[{ label: copy.delete, onClick: () => props.onDelete(session.id) }]}
                       />
                     </>
                   }

@@ -246,29 +246,6 @@ export const ConversationStates: Story = {
   ),
 };
 
-// Real path: after choosing Archived in the rail, an archived conversation
-// remains discoverable so its existing row-menu restore action is reachable.
-export const ArchivedConversations: Story = {
-  render: () => (
-    <StoryFrame>
-      <SessionListPanel
-        {...panelProps({
-          selection: { section: 'sessions', filter: 'archived' },
-          sessions: [
-            makeSession({
-              id: 'archived-release-notes',
-              name: '旧版本发布记录',
-              status: 'archived',
-              lastMessageAt: NOW - 8 * 24 * 60 * 60 * 1000,
-            }),
-          ],
-          activeId: 'archived-release-notes',
-        })}
-      />
-    </StoryFrame>
-  ),
-};
-
 // Real path: a workspace with long conversation titles, with the sidebar dragged to its
 // narrow end.
 export const LongTitlesAndNarrow: Story = {

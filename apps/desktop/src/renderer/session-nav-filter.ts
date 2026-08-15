@@ -9,8 +9,6 @@ export function sessionMatchesNavSelection(
   switch (filter) {
     case 'flagged':
       return session.isFlagged && !session.isArchived;
-    case 'archived':
-      return session.isArchived;
     case 'chats':
       return !session.isArchived;
   }

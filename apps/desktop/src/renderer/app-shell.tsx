@@ -1089,14 +1089,7 @@ function AppShellContent({
   }
 
   function openSessionInChat(sessionId: string, turnId?: string, sequence?: number): void {
-    // Land on a filter that lists this session's rail row. Search, the command
-    // palette and Settings can all target an archived session, and `chats`
-    // excludes those — it would open with no row to select. The row is not
-    // always the session itself: a linked child has none of its own and appears
-    // under its root, so the root's archived state is what decides the filter.
-    const rail = deriveSessionRail(sessionsRef.current, sessionId, () => true);
-    const row = rail.sessions.find((session) => session.id === rail.activeRowId);
-    setNavSelection({ section: 'sessions', filter: row?.isArchived ? 'archived' : 'chats' });
+    setNavSelection({ section: 'sessions', filter: 'chats' });
     setActiveId(sessionId);
     if (turnId) {
       setSearchScrollTarget({ sessionId, turnId, sequence, nonce: Date.now() });
