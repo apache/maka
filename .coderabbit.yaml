@@ -9,6 +9,8 @@ reviews:
   in_progress_fortune: false
   enable_prompt_for_ai_agents: false
   request_changes_workflow: false
+  suggested_reviewers: true
+  auto_assign_reviewers: false
 
   path_instructions:
     - path: "{**/*,**/.*,**/.*/**}"
@@ -28,6 +30,36 @@ reviews:
     3. Whether it is the smallest coherent solution and any added complexity is necessary.
     4. What code or tests, if any, can be deleted or simplified without weakening behavior or regression coverage.
     5. The concrete risks and validation performed.
+
+    End with a section named "Preliminary review path":
+    - Classify the PR as "Independent human review required", "Fast-path candidate", or "Insufficient information".
+    - Require independent human review when the PR materially affects user-visible behavior, public contracts, security, licensing, releases, or governance.
+    - Treat a PR as a fast-path candidate only when it appears low impact, easy to reverse, outside those protected areas, and the PR description contains a concrete fast-path rationale.
+    - Treat the final status of required checks as unverified unless direct evidence is available.
+    - Never present the assessment as authorization. State that a maintainer makes the final determination.
+
+  pre_merge_checks:
+    description:
+      mode: "warning"
+    custom_checks:
+      - name: "AI use disclosure"
+        mode: "warning"
+        instructions: |
+          Evaluate only the repository's AI-use disclosure policy.
+
+          Inspect the entire current PR description and the complete commit messages for every commit introduced by the PR. Do not treat text found only in changed files, quoted examples, diffs, or CodeRabbit-generated output as disclosure.
+
+          A valid trailer is a standalone commit-message line in the form `Generated-by: <actual tool name>`. The literal placeholder `<tool>`, an empty value, or prose that merely discusses the trailer is invalid.
+
+          Pass only when exactly one of these cases applies:
+          1. The PR description explicitly selects "No generative tool made a substantive contribution", and no contradictory disclosure or Generated-by trailer is present.
+          2. The PR description explicitly selects "Generative tooling made a substantive contribution" and names the tool and its scope. When that scope says AI authored material contribution content, the affected PR commits must also contain a valid Generated-by trailer consistent with the disclosure. A trailer is not required when the disclosed substantive use did not author material contribution content.
+
+          Fail with a warning when neither or both declarations are selected, the declaration conflicts with a commit trailer, substantive use is disclosed without a named tool and scope, a trailer names a tool that the PR description does not disclose, or no valid trailer is present when disclosed AI use authored material contribution content.
+
+          Never infer AI use from writing style, code style, commit structure, or perceived authorship. When no disclosure exists, use conditional language: "If generative tooling made a substantive contribution..."
+
+          On failure, explain the smallest corrective action. Remind the author that a human contributor remains responsible for correctness, provenance, licensing, and applicable ICLA representations; material AI output requires checking the tool's terms and possible third-party sources; the trailer must survive squash or amend; and AI review does not count as independent human review.
 
   auto_review:
     enabled: true
