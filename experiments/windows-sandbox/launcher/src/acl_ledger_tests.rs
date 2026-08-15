@@ -237,6 +237,33 @@ mod tests {
     }
 
     #[test]
+    fn unrecoverable_ledger_is_quarantined_instead_of_blocking_recovery() {
+        let fixture = Fixture::new("unrecoverable");
+        let ledger_path = fixture.ledger_path("stuck.json");
+        // An invalid SID makes icacls /remove fail exactly like a root whose
+        // grants cannot be removed; recovery must quarantine and move on.
+        write_ledger(
+            &ledger_path,
+            &Ledger {
+                version: LEDGER_VERSION,
+                request_id: "stuck".to_owned(),
+                app_container_sid: "not-a-sid".to_owned(),
+                roots: vec![LedgerRoot {
+                    path: fixture.target_str(),
+                    recursive: true,
+                    backup_path: None,
+                }],
+            },
+        )
+        .expect("write stuck ledger");
+
+        recover_stale(&fixture.ledger_dir).expect("recovery continues past stuck ledger");
+
+        assert!(!ledger_path.exists());
+        assert!(fixture.ledger_path("stuck.json.quarantined").exists());
+    }
+
+    #[test]
     fn new_ledgers_serialize_without_backup_path() {
         let value = serde_json::to_value(ledger(vec![LedgerRoot {
             path: "C:\\workspace".to_owned(),

@@ -52,7 +52,10 @@ pub fn with_acl_grants<T>(
     fs::create_dir_all(&ledger_root)
         .map_err(|error| format!("create ACL ledger directory failed: {error}"))?;
     let lock_path = ledger_root.join(".active.lock");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // Concurrent launches serialize on this lock while each runs recursive
+    // icacls grants and removals, so the deadline covers a burst of launches,
+    // not a single one.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut lock_file = loop {
         match OpenOptions::new()
             .write(true)
@@ -160,7 +163,31 @@ fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, String> {
         {
             continue;
         }
-        let metadata = reject_reparse_tree(Path::new(path))?;
+        // A root that does not exist yet (e.g. the exact target of a write
+        // that will create the file) has nothing to grant; access to it is
+        // governed by its existing ancestor's grants. Skipping keeps the
+        // default-deny posture rather than failing the launch.
+        let metadata = match fs::symlink_metadata(Path::new(path)) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!("inspect ACL root {path} failed: {error}"));
+            }
+        };
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(format!("ACL root contains a reparse point: {path}"));
+        }
+        // Only a recursive grant extends into the tree, so only a recursive
+        // grant requires the tree to be reparse-free. Exact roots (e.g. the
+        // cwd metadata anchor) may legitimately contain junctions deeper in
+        // the workspace that the sandbox never grants.
+        let recursive_read = contains_path(&request.read_roots, path)
+            && !contains_path(&request.exact_read_roots, path);
+        let recursive_write = contains_path(&request.write_roots, path)
+            && !contains_path(&request.exact_write_roots, path);
+        if metadata.is_dir() && (recursive_read || recursive_write) {
+            reject_reparse_tree(Path::new(path))?;
+        }
         roots.push(LedgerRoot {
             path: path.clone(),
             recursive: metadata.is_dir(),
@@ -168,6 +195,10 @@ fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, String> {
         });
     }
     Ok(roots)
+}
+
+fn contains_path(paths: &[String], path: &str) -> bool {
+    paths.iter().any(|entry| entry.eq_ignore_ascii_case(path))
 }
 
 fn reject_reparse_tree(path: &Path) -> Result<fs::Metadata, String> {
@@ -226,7 +257,15 @@ pub(crate) fn recover_stale(root: &Path) -> Result<(), String> {
             )?;
             continue;
         }
-        remove_grants(&ledger)?;
+        // A root the user could grant but cannot un-grant (e.g. an ACL-locked
+        // file deep in the tree) must not brick every future launch: keep the
+        // ledger as quarantined evidence and keep the failure loud instead of
+        // failing recovery forever. The leftover grants are bounded to the
+        // broker's own AppContainer SID.
+        if let Err(error) = remove_grants(&ledger) {
+            quarantine_ledger(&path, &format!("stale ACL ledger recovery failed: {error}"))?;
+            continue;
+        }
         fs::remove_file(&path).map_err(|error| {
             format!("remove stale ACL ledger {} failed: {error}", path.display())
         })?;
@@ -240,11 +279,15 @@ fn grant_roots(
     ledger_roots: &[LedgerRoot],
 ) -> Result<(), String> {
     for root in &request.read_roots {
-        let recursive = ledger_roots
+        // Roots absent from the ledger were skipped by collect_roots (they do
+        // not exist); there is nothing to grant on them.
+        let Some(entry) = ledger_roots
             .iter()
             .find(|entry| entry.path.eq_ignore_ascii_case(root))
-            .map(|entry| entry.recursive)
-            .unwrap_or(false)
+        else {
+            continue;
+        };
+        let recursive = entry.recursive
             && !request
                 .exact_read_roots
                 .iter()
@@ -252,11 +295,13 @@ fn grant_roots(
         grant(root, sid, "RX", recursive)?;
     }
     for root in &request.write_roots {
-        let recursive = ledger_roots
+        let Some(entry) = ledger_roots
             .iter()
             .find(|entry| entry.path.eq_ignore_ascii_case(root))
-            .map(|entry| entry.recursive)
-            .unwrap_or(false)
+        else {
+            continue;
+        };
+        let recursive = entry.recursive
             && !request
                 .exact_write_roots
                 .iter()

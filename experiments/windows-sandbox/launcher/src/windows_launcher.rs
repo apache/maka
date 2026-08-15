@@ -4,15 +4,25 @@ use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, GENERIC_READ, GENERIC_WRITE, HANDLE,
+    INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::{
     CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, DuplicateTokenEx, FreeSid, GetTokenInformation,
-    IsTokenRestricted, LUA_TOKEN, SECURITY_CAPABILITIES, SecurityImpersonation, TOKEN_ALL_ACCESS,
-    TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER, TokenIsAppContainer, TokenPrimary, TokenUser,
+    IsTokenRestricted, LUA_TOKEN, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES,
+    SecurityImpersonation, TOKEN_ALL_ACCESS, TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER,
+    TokenIsAppContainer, TokenPrimary, TokenUser,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+};
+use windows_sys::Win32::System::Console::{
+    GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::JobObjects::{
     CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -23,13 +33,14 @@ use windows_sys::Win32::System::Threading::{
     CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, CreateProcessW,
     CreateProcessWithTokenW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
     GetCurrentProcess, GetExitCodeProcess, GetProcessId, InitializeProcThreadAttributeList,
-    OpenProcessToken, PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-    PROCESS_INFORMATION, ResumeThread, STARTUPINFOEXW, STARTUPINFOW, TerminateProcess,
+    OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, ResumeThread,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW, TerminateProcess,
     UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use crate::acl_ledger::with_acl_grants;
-use crate::protocol::{LaunchRequest, NetworkMode};
+use crate::protocol::{DEFAULT_LAUNCH_TIMEOUT_MS, LaunchRequest, NetworkMode};
 
 pub fn self_probe() -> Result<u8, String> {
     unsafe {
@@ -449,7 +460,7 @@ unsafe fn create_child_atomic(
         let child_in_job = unsafe { child_process_is_in_job(process.hProcess) }?;
         if child_restricted && child_in_job {
             println!("{{\"restrictedToken\":true,\"inJob\":true,\"atomicJob\":true}}");
-            unsafe { wait_for_child(process.hProcess) }
+            unsafe { wait_for_child(process.hProcess, request.timeout_ms) }
         } else {
             Err("atomic launch did not establish the required token and Job boundary".to_owned())
         }
@@ -467,6 +478,12 @@ unsafe fn create_child_atomic(
     result
 }
 
+/// Launches the filesystem-worker child with the broker's standard streams
+/// relayed through: the worker request arrives on the child's stdin, the
+/// worker response leaves on the child's stdout, and diagnostics stay on
+/// stderr. Handle inheritance is restricted to exactly the three duplicated
+/// std handles via PROC_THREAD_ATTRIBUTE_HANDLE_LIST so no job, manifest or
+/// pipe handles leak into the AppContainer.
 unsafe fn create_appcontainer_child(
     request: &LaunchRequest,
     job: HANDLE,
@@ -481,9 +498,10 @@ unsafe fn create_appcontainer_child(
     } else {
         environment.as_ptr() as *const c_void
     };
+    let stdio = unsafe { InheritableStdio::capture() }?;
 
     let mut attribute_size = 0usize;
-    unsafe { InitializeProcThreadAttributeList(null_mut(), 2, 0, &mut attribute_size) };
+    unsafe { InitializeProcThreadAttributeList(null_mut(), 3, 0, &mut attribute_size) };
     if attribute_size == 0 {
         return Err(last_error(
             "InitializeProcThreadAttributeList(appcontainer size)",
@@ -492,7 +510,7 @@ unsafe fn create_appcontainer_child(
     let words = attribute_size.div_ceil(size_of::<usize>());
     let mut attribute_storage = vec![0usize; words];
     let attribute_list = attribute_storage.as_mut_ptr() as *mut c_void;
-    if unsafe { InitializeProcThreadAttributeList(attribute_list, 2, 0, &mut attribute_size) } == 0
+    if unsafe { InitializeProcThreadAttributeList(attribute_list, 3, 0, &mut attribute_size) } == 0
     {
         return Err(last_error(
             "InitializeProcThreadAttributeList(appcontainer)",
@@ -539,6 +557,20 @@ unsafe fn create_appcontainer_child(
                 "UpdateProcThreadAttribute(SECURITY_CAPABILITIES)",
             ));
         }
+        if unsafe {
+            UpdateProcThreadAttribute(
+                attribute_list,
+                0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                stdio.handles.as_ptr() as *const c_void,
+                size_of::<[HANDLE; 3]>(),
+                null_mut(),
+                null(),
+            )
+        } == 0
+        {
+            return Err(last_error("UpdateProcThreadAttribute(HANDLE_LIST)"));
+        }
         Ok(())
     })();
     if let Err(error) = attributes {
@@ -549,6 +581,10 @@ unsafe fn create_appcontainer_child(
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.lpAttributeList = attribute_list;
+    startup.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = stdio.handles[0];
+    startup.StartupInfo.hStdOutput = stdio.handles[1];
+    startup.StartupInfo.hStdError = stdio.handles[2];
     let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
     let creation_flags = CREATE_SUSPENDED
         | EXTENDED_STARTUPINFO_PRESENT
@@ -563,7 +599,7 @@ unsafe fn create_appcontainer_child(
             command.as_mut_ptr(),
             null(),
             null(),
-            0,
+            1,
             creation_flags,
             environment_ptr,
             cwd.as_ptr(),
@@ -572,6 +608,11 @@ unsafe fn create_appcontainer_child(
         )
     };
     unsafe { DeleteProcThreadAttributeList(attribute_list) };
+    // Close the parent's inheritable duplicates immediately: the child then
+    // owns the only remaining copies, so closing the client side of stdin
+    // reaches the child as EOF and the child closing stdout ends the
+    // response stream.
+    drop(stdio);
     if created == 0 {
         return Err(last_error("CreateProcessW(appcontainer atomic-job)"));
     }
@@ -583,8 +624,10 @@ unsafe fn create_appcontainer_child(
         let child_app_container = unsafe { child_token_is_appcontainer(process.hProcess) }?;
         let child_in_job = unsafe { child_process_is_in_job(process.hProcess) }?;
         if child_app_container && child_in_job {
-            println!("{{\"appContainer\":true,\"inJob\":true,\"atomicJob\":true}}");
-            unsafe { wait_for_child(process.hProcess) }
+            // Diagnostics go to stderr: stdout is reserved for the child's
+            // relayed worker response.
+            eprintln!("{{\"appContainer\":true,\"inJob\":true,\"atomicJob\":true}}");
+            unsafe { wait_for_child(process.hProcess, request.timeout_ms) }
         } else {
             Err(
                 "AppContainer launch did not establish the required token and Job boundary"
@@ -599,11 +642,105 @@ unsafe fn create_appcontainer_child(
     result
 }
 
-unsafe fn wait_for_child(process: HANDLE) -> Result<u8, String> {
-    let wait = unsafe { WaitForSingleObject(process, 30_000) };
+struct InheritableStdio {
+    handles: [HANDLE; 3],
+}
+
+impl InheritableStdio {
+    /// Duplicates the broker's std handles as inheritable copies so the
+    /// AppContainer child reads the worker request from the real stdin and
+    /// writes the worker response to the real stdout. A missing std handle
+    /// (fully detached parent) falls back to an inheritable NUL handle so the
+    /// child always receives a complete set. Only the remote named-pipe broker
+    /// would want detached stdio; it currently reuses the serving process's
+    /// console, which keeps behavior deterministic.
+    unsafe fn capture() -> Result<Self, String> {
+        let mut handles: [HANDLE; 3] = [null_mut(); 3];
+        for (index, id) in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE]
+            .into_iter()
+            .enumerate()
+        {
+            let duplicated = (|| {
+                let source = unsafe { GetStdHandle(id) };
+                if source.is_null() || source == INVALID_HANDLE_VALUE {
+                    return unsafe { open_inheritable_nul(id == STD_INPUT_HANDLE) };
+                }
+                let mut duplicate = null_mut();
+                if unsafe {
+                    DuplicateHandle(
+                        GetCurrentProcess(),
+                        source,
+                        GetCurrentProcess(),
+                        &mut duplicate,
+                        0,
+                        1,
+                        DUPLICATE_SAME_ACCESS,
+                    )
+                } == 0
+                {
+                    return Err(last_error("DuplicateHandle(stdio)"));
+                }
+                Ok(duplicate)
+            })();
+            match duplicated {
+                Ok(handle) => handles[index] = handle,
+                Err(error) => {
+                    for handle in &handles[..index] {
+                        unsafe { CloseHandle(*handle) };
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(Self { handles })
+    }
+}
+
+impl Drop for InheritableStdio {
+    fn drop(&mut self) {
+        for handle in self.handles {
+            unsafe {
+                CloseHandle(handle);
+            }
+        }
+    }
+}
+
+unsafe fn open_inheritable_nul(readable: bool) -> Result<HANDLE, String> {
+    let name = wide("NUL");
+    let mut security = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: null_mut(),
+        bInheritHandle: 1,
+    };
+    let access = if readable {
+        GENERIC_READ
+    } else {
+        GENERIC_WRITE
+    };
+    let handle = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            access,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            &mut security,
+            OPEN_EXISTING,
+            0,
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(last_error("CreateFileW(NUL stdio)"));
+    }
+    Ok(handle)
+}
+
+unsafe fn wait_for_child(process: HANDLE, timeout_ms: Option<u64>) -> Result<u8, String> {
+    let timeout_ms = timeout_ms.unwrap_or(DEFAULT_LAUNCH_TIMEOUT_MS);
+    let wait = unsafe { WaitForSingleObject(process, timeout_ms as u32) };
     if wait == WAIT_TIMEOUT {
         unsafe { TerminateProcess(process, 124) };
-        return Err("child exceeded the 30 second W0 timeout".to_owned());
+        return Err(format!("child exceeded the {timeout_ms} ms launch timeout"));
     }
     if wait != WAIT_OBJECT_0 {
         return Err(last_error("WaitForSingleObject"));

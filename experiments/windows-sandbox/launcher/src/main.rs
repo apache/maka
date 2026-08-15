@@ -55,6 +55,25 @@ fn run() -> Result<u8, String> {
         }
         return windows_launcher::self_probe();
     }
+    if first == "--stdio-probe" {
+        let sleep_seconds = match args.next() {
+            None => 0,
+            Some(flag) if flag == "--sleep" => {
+                let seconds = args
+                    .next()
+                    .ok_or_else(|| "--sleep requires a seconds value".to_owned())?
+                    .to_string_lossy()
+                    .parse::<u64>()
+                    .map_err(|error| format!("invalid --sleep seconds: {error}"))?;
+                if args.next().is_some() {
+                    return Err("--stdio-probe accepts only --sleep <seconds>".to_owned());
+                }
+                seconds
+            }
+            Some(_) => return Err("--stdio-probe accepts only --sleep <seconds>".to_owned()),
+        };
+        return stdio_probe(sleep_seconds);
+    }
     if first == "--appcontainer-sid" {
         if args.next().is_some() {
             return Err("--appcontainer-sid does not accept arguments".to_owned());
@@ -191,6 +210,34 @@ fn run() -> Result<u8, String> {
         }
         _ => unreachable!(),
     }
+}
+
+/// Test child for the stdio relay: consumes all of stdin, reports what it saw
+/// on stdout as a single JSON document, and keeps diagnostics on stderr —
+/// mirroring the filesystem-worker contract without needing Node inside the
+/// AppContainer.
+fn stdio_probe(sleep_seconds: u64) -> Result<u8, String> {
+    use std::io::{Read, Write};
+
+    use sha2::{Digest, Sha256};
+
+    let mut payload = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut payload)
+        .map_err(|error| format!("stdio-probe read failed: {error}"))?;
+    if sleep_seconds > 0 {
+        std::thread::sleep(Duration::from_secs(sleep_seconds));
+    }
+    eprintln!("stdio-probe: diagnostics stay on stderr");
+    println!(
+        "{{\"echoBytes\":{},\"sha256\":\"{:x}\"}}",
+        payload.len(),
+        Sha256::digest(&payload)
+    );
+    std::io::stdout()
+        .flush()
+        .map_err(|error| format!("stdio-probe flush failed: {error}"))?;
+    Ok(0)
 }
 
 fn boundary_probe(

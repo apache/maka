@@ -21,7 +21,7 @@ jobs:
   protocol:
     name: windows_sandbox_w0_protocol
     runs-on: windows-2025
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,9 +53,22 @@ jobs:
       - name: Verify AppContainer identity candidate
         shell: pwsh
         run: ./experiments/windows-sandbox/appcontainer-smoke.ps1
+      - name: Verify filesystem-worker stdio relay
+        shell: pwsh
+        run: ./experiments/windows-sandbox/stdio-relay-smoke.ps1
+      - name: Verify ACL grant recovery
+        shell: pwsh
+        run: ./experiments/windows-sandbox/acl-recovery-smoke.ps1
       - name: Probe atomic Job launch candidate
         shell: pwsh
         run: ./experiments/windows-sandbox/atomic-launch-smoke.ps1
       - name: Probe unprivileged restricted-token candidate
         shell: pwsh
         run: ./experiments/windows-sandbox/launcher-smoke.ps1
+
+      - name: Install workspace dependencies
+        run: npm ci
+      - name: Build core and runtime workspaces
+        run: npm run build --workspace @maka/core --workspace @maka/runtime
+      - name: Run real filesystem-worker operations through the broker
+        run: node --test packages/runtime/dist/__tests__/filesystem-worker-windows-smoke.test.js

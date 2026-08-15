@@ -21,7 +21,15 @@ pub struct LaunchRequest {
     pub exact_write_roots: Vec<String>,
     pub network: NetworkMode,
     pub environment: BTreeMap<String, String>,
+    /// Optional child-wait deadline. Appended last and skipped when absent so
+    /// manifests written before this field keep an identical launch digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
+
+pub const MIN_LAUNCH_TIMEOUT_MS: u64 = 1_000;
+pub const MAX_LAUNCH_TIMEOUT_MS: u64 = 600_000;
+pub const DEFAULT_LAUNCH_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -83,6 +91,13 @@ impl LaunchRequest {
         validate_roots(&self.write_roots, "writeRoots")?;
         validate_roots(&self.exact_read_roots, "exactReadRoots")?;
         validate_roots(&self.exact_write_roots, "exactWriteRoots")?;
+        if let Some(timeout_ms) = self.timeout_ms
+            && !(MIN_LAUNCH_TIMEOUT_MS..=MAX_LAUNCH_TIMEOUT_MS).contains(&timeout_ms)
+        {
+            return Err(format!(
+                "timeoutMs must be between {MIN_LAUNCH_TIMEOUT_MS} and {MAX_LAUNCH_TIMEOUT_MS}"
+            ));
+        }
         for name in self.environment.keys() {
             let mut chars = name.chars();
             let valid_first = chars
