@@ -13,6 +13,10 @@ const ERROR: SearchError = {
   message: 'Host A failed',
 };
 
+function result(title: string): SearchResult {
+  return { source: 'thread', title };
+}
+
 test('preserves total multi-Host search failure without discarding partial success', async () => {
   await assert.rejects(
     collectThreadSearchResponses(
@@ -36,5 +40,18 @@ test('preserves total multi-Host search failure without discarding partial succe
   assert.deepEqual(
     await collectThreadSearchResponses([Promise.resolve(ERROR)], 10),
     ERROR,
+  );
+});
+
+test('shares a bounded result window across ready Hosts', async () => {
+  assert.deepEqual(
+    await collectThreadSearchResponses(
+      [
+        Promise.resolve([result('A1'), result('A2')]),
+        Promise.resolve([result('B1'), result('B2')]),
+      ],
+      3,
+    ),
+    [result('A1'), result('B1'), result('A2')],
   );
 });

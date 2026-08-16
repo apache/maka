@@ -69,10 +69,15 @@ test('keeps connection projections isolated and cached by owning Host', async ()
   });
   assert.equal(seen.at(-1), 'connection-b');
 
+  const beforeReturn = seen.length;
   await act(async () => {
     root.render(createElement(Probe, { sessionId: sessionA }));
   });
-  assert.equal(seen.at(-1), 'connection-a', 'returning to Host A reuses its projection');
+  assert.deepEqual(
+    seen.slice(beforeReturn).filter((value) => value !== 'connection-a'),
+    [],
+    'returning to Host A reuses its projection without an empty frame',
+  );
 });
 
 afterEach(() => {
