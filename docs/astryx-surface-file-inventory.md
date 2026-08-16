@@ -164,7 +164,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/chat-empty-hero.tsx` | shell-chrome-or-panel | Item | aligned — uses Astryx (Item) | aligned |
 | `packages/ui/src/chat-model-switcher.tsx` | shell-chrome-or-panel | Button | aligned — uses Astryx (Button) | aligned |
 | `packages/ui/src/chat-surface-layout.tsx` | shell-chrome-or-panel | ChatLayout | aligned — uses Astryx (ChatLayout) | aligned |
-| `packages/ui/src/chat-turn.tsx` | shell-chrome-or-panel | Badge, Button, HStack, IconButton, Token, Tooltip | aligned — uses Astryx (Badge, Button, HStack, IconButton, Token, Tooltip) | aligned |
+| `packages/ui/src/chat-turn.tsx` | shell-chrome-or-panel | Badge, Banner, Button, HStack, IconButton, Token, Tooltip | aligned — uses Astryx (Badge, Banner, Button, HStack, IconButton, Token, Tooltip) | aligned |
 | `packages/ui/src/chat-view.tsx` | shell-chrome-or-panel | Button, EmptyState, Spinner | aligned — uses Astryx (Button, EmptyState, Spinner) | aligned |
 | `packages/ui/src/components.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/composer.tsx` | shell-chrome-or-panel | Button, ChatComposer, IconButton, Lightbox, Token, Tooltip | aligned — uses Astryx (Button, ChatComposer, IconButton, Lightbox, Token, Tooltip) | aligned |
