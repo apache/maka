@@ -40,6 +40,23 @@ describe('Extension UI contributions', () => {
       registry.inspect('desktop-ui', committed(kernel))[0]?.document,
       '<h1>revision 1</h1>',
     );
+    assert.deepEqual(Object.keys(registry.inspect('desktop-ui', committed(kernel))[0]!).sort(), [
+      'bindingId',
+      'document',
+      'documentSha256',
+      'extensionId',
+      'hostMethods',
+      'hostState',
+      'id',
+      'network',
+      'priority',
+      'revision',
+      'scopeId',
+      'sessionAccess',
+      'slots',
+      'surface',
+    ]);
+    assert.doesNotThrow(() => structuredClone(registry.inspect('desktop-ui', committed(kernel))));
     await kernel.update('appearance-binding', '2');
     assert.equal(candidateObserved, '<h1>revision 1</h1>');
     assert.equal(

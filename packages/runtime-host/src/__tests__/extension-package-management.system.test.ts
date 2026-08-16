@@ -15,6 +15,7 @@ import { HostExtensionRuntime } from '../server/extension-runtime.js';
 import { HostExtensionStateStore } from '../server/extension-state-store.js';
 import { HookPackageStore } from '../server/hook-package-store.js';
 import { ToolPackageStore } from '../server/tool-package-store.js';
+import { HostUiPackageManagementTools } from '../server/ui-package-management-tools.js';
 import { UiPackageStore } from '../server/ui-package-store.js';
 
 test('define_package installs Tool, UI, Hook, dependencies, and secret configuration as one Revision', async () => {
@@ -118,6 +119,16 @@ test('define_package installs Tool, UI, Hook, dependencies, and secret configura
     assert.deepEqual(result.toolNames, ['codebase_scan']);
     assert.deepEqual(result.uiContributionIds, ['studio-panel']);
     assert.deepEqual(result.hookContributionIds, ['PreToolUse:safe-write']);
+    const uiManagement = new HostUiPackageManagementTools(control, controller, runtime, uiStore);
+    const testedUi = (await call(uiManagement.tools(), 'test_ui', {
+      extensionId: result.extensionId,
+      revision: result.revision,
+    })) as { ok: boolean; contributions: Array<{ id: string }> };
+    assert.equal(testedUi.ok, true);
+    assert.deepEqual(
+      testedUi.contributions.map(({ id }) => id),
+      ['studio-panel'],
+    );
     const revisions = await Promise.all([toolStore.list(), uiStore.list(), hookStore.list()]);
     assert.deepEqual(
       revisions.map(

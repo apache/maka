@@ -90,7 +90,13 @@ export class ExtensionUiContributionRegistry {
       );
     }
     const entry: RegisteredUi = Object.freeze({
-      ...context,
+      // ExtensionActivationContext also carries runtime-only capabilities such as
+      // AbortSignal and effect/dependency functions. Never retain those in the UI
+      // inspection record: inspections cross the durable Tool-result boundary.
+      bindingId: context.bindingId,
+      scopeId: context.scopeId,
+      extensionId: context.extensionId,
+      revision: context.revision,
       ...contribution,
       slots: Object.freeze([...(contribution.slots ?? [])]),
       hostState: contribution.hostState === true,

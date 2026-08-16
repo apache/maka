@@ -11,7 +11,7 @@ import {
 } from '../protocol/index.js';
 import type { ConnectionContext } from './operation-dispatcher.js';
 import type { HostExtensionController } from './extension-controller.js';
-import type { HostExtensionRuntime } from './extension-runtime.js';
+import { HostExtensionRuntime } from './extension-runtime.js';
 import { UiPackageService } from './ui-package-service.js';
 import { UiPackageStore } from './ui-package-store.js';
 
@@ -356,32 +356,25 @@ export class HostUiPackageManagementTools {
           ),
           healthCheck: () => service.healthCheck(installed),
         };
-        if (
-          !this.runtime
-            .installedRevisions()
-            .some(
-              (item) => item.extensionId === input.extensionId && item.revision === input.revision,
-            )
-        ) {
-          await this.runtime.installUiRevision(loaded);
-        }
+        // A package Revision may also carry Tool and Hook contributions. Testing its UI
+        // through the shared Runtime would activate that complete Revision in the preview
+        // scope and can perturb the later package lifecycle. Keep previews in a separate
+        // Runtime so test_ui exercises only the installed UI package it loaded above.
+        const previewRuntime = new HostExtensionRuntime();
+        await previewRuntime.installUiRevision(loaded);
         const nonce = randomUUID().replaceAll('-', '');
         const scopeId = `ui-preview-${nonce}`;
         const bindingId = `ui-preview-binding-${nonce}`;
         try {
-          await this.runtime.activate({
+          await previewRuntime.activate({
             bindingId,
             scopeId,
             extensionId: input.extensionId,
             revision: input.revision,
           });
-          return { ok: true, contributions: this.runtime.inspectUi(scopeId) };
+          return { ok: true, contributions: previewRuntime.inspectUi(scopeId) };
         } finally {
-          try {
-            await this.runtime.removeBinding(bindingId);
-          } catch {
-            /* diagnostic remains inspectable */
-          }
+          await previewRuntime.close().catch(() => undefined);
         }
       },
     });
