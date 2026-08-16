@@ -287,12 +287,6 @@ async function initializeWorkspaceStorageRootBinding(
   }
 }
 
-export async function openHeadlessExecutionStoresForWrite(
-  lease: StorageRootLease<'headless', 'write'>,
-): Promise<ExecutionStoresWriter<'headless'>> {
-  return openExecutionStoresForWrite(lease, 'headless', {});
-}
-
 async function openExecutionStoresForWrite<K extends StorageRootKind, E extends object>(
   lease: StorageRootLease<K, 'write'>,
   kind: K,
