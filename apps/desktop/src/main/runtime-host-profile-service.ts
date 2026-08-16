@@ -53,10 +53,43 @@ export async function resolveDesktopRuntimeHostStartup(
   } = {},
 ): Promise<DesktopRuntimeHostStartup> {
   const preferencesPath = join(clientDataRoot, PREFERENCES_FILE);
-  let preferences = await (overrides.readPreferences?.() ??
-    readRuntimeHostPreferences(preferencesPath));
+  let preferences: DesktopRuntimeHostPreferences;
+  try {
+    preferences = await (overrides.readPreferences?.() ??
+      readRuntimeHostPreferences(preferencesPath));
+  } catch (error) {
+    console.error(
+      "[runtime-host] preferences could not be read; using Local defaults:",
+      error,
+    );
+    preferences = defaultPreferences();
+  }
   const catalog = overrides.catalog ?? createClientRuntimeHostProfileCatalog(clientDataRoot);
-  const document = await catalog.read();
+  let document: Awaited<ReturnType<RuntimeHostProfileCatalog["read"]>>;
+  try {
+    document = await catalog.read();
+  } catch (error) {
+    const failure = asError(error);
+    console.error(
+      "[runtime-host] remote profiles could not be read; starting with Local only:",
+      failure,
+    );
+    const unavailable = new Map<string, Error>();
+    for (const profileId of preferences.enabledRemoteProfileIds) {
+      unavailable.set(profileId, failure);
+    }
+    if (preferences.defaultProfileId !== LOCAL_RUNTIME_HOST_PROFILE.id) {
+      unavailable.set(preferences.defaultProfileId, failure);
+    }
+    return {
+      preferences: {
+        ...preferences,
+        defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+      },
+      remotes: [],
+      unavailable,
+    };
+  }
   const profileIds = new Set(document.profiles.map((profile) => profile.id));
   const defaultProfileId =
     preferences.defaultProfileId === LOCAL_RUNTIME_HOST_PROFILE.id ||

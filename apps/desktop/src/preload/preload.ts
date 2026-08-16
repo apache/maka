@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
+import { collectThreadSearchResponses } from './multi-host-thread-search.js';
 import { notifyWhenSeeded } from './seed-completion.js';
 import { releaseSessionObservation } from './session-observation-release.js';
 import type {
@@ -992,16 +993,18 @@ const makaBridge = {
     ): () => void {
       let disposed = false;
       const unsubscribes: Array<() => void> = [];
-      void runtimeHostSessionRef(rootSessionId).then(({ scope, sessionId }) => {
-        if (disposed) return;
-        const onChanged = (payload: { rootSessionId: string }): void => {
-          if (payload.rootSessionId === sessionId) handler();
-        };
-        unsubscribes.push(
-          subscribeRuntimeHostEvent('graphs:changed', scope, onChanged),
-          subscribeRuntimeHostEvent('graphs:resync', scope, onChanged),
-        );
-      });
+      void runtimeHostSessionRef(rootSessionId)
+        .then(({ scope, sessionId }) => {
+          if (disposed) return;
+          const onChanged = (payload: { rootSessionId: string }): void => {
+            if (payload.rootSessionId === sessionId) handler();
+          };
+          unsubscribes.push(
+            subscribeRuntimeHostEvent('graphs:changed', scope, onChanged),
+            subscribeRuntimeHostEvent('graphs:resync', scope, onChanged),
+          );
+        })
+        .catch(() => undefined);
       return () => {
         disposed = true;
         for (const unsubscribe of unsubscribes) unsubscribe();
@@ -1253,16 +1256,18 @@ const makaBridge = {
     subscribePlanChanges(sessionId: string, handler: () => void): () => void {
       let disposed = false;
       let unsubscribe = () => {};
-      void runtimeHostSessionRef(sessionId).then((session) => {
-        if (disposed) return;
-        unsubscribe = subscribeRuntimeHostEvent(
-          'plan-mode:changed',
-          session.scope,
-          (payload: { sessionId: string }) => {
-            if (payload.sessionId === session.sessionId) handler();
-          },
-        );
-      });
+      void runtimeHostSessionRef(sessionId)
+        .then((session) => {
+          if (disposed) return;
+          unsubscribe = subscribeRuntimeHostEvent(
+            'plan-mode:changed',
+            session.scope,
+            (payload: { sessionId: string }) => {
+              if (payload.sessionId === session.sessionId) handler();
+            },
+          );
+        })
+        .catch(() => undefined);
       return () => {
         disposed = true;
         unsubscribe();
@@ -1816,7 +1821,7 @@ const makaBridge = {
     // over that Host's authenticated connection, never through telemetry.
     async thread(request: SearchRequest): Promise<SearchResult[] | { ok: false; reason: SearchErrorReason; message: string }> {
       const scopes = await runtimeHostScopeList();
-      const settled = await Promise.allSettled(
+      return collectThreadSearchResponses(
         scopes.map(async (scope) => {
           const result = await ipcRenderer.invoke('search:thread', scope, request) as
             | SearchResult[]
@@ -1838,12 +1843,8 @@ const makaBridge = {
               )
             : result;
         }),
+        request.limit,
       );
-      const groups = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
-      const results = groups.flatMap((group) => Array.isArray(group) ? group : []);
-      return results.length > 0
-        ? results.slice(0, request.limit)
-        : groups.find((group) => !Array.isArray(group)) ?? [];
     },
   },
   // PR-OAUTH-SUBSCRIPTION-0: Claude subscription OAuth bridge.
@@ -2485,23 +2486,29 @@ const makaBridge = {
     /** Tell main which conversation this window shows, so it can validate targets. */
     setActiveSession(sessionId: string | null): void {
       if (sessionId) {
-        void runtimeHostSessionRef(sessionId).then((session) =>
-          ipcRenderer.send('browser:active-session', session.scope, session.sessionId),
-        );
+        void runtimeHostSessionRef(sessionId)
+          .then((session) =>
+            ipcRenderer.send('browser:active-session', session.scope, session.sessionId),
+          )
+          .catch(() => undefined);
         return;
       }
-      void runtimeHostScopeList().then((scopes) => {
-        for (const scope of scopes) ipcRenderer.send('browser:active-session', scope, null);
-      });
+      void runtimeHostScopeList()
+        .then((scopes) => {
+          for (const scope of scopes) ipcRenderer.send('browser:active-session', scope, null);
+        })
+        .catch(() => undefined);
     },
     /** Mirror the panel strip's on-screen rect (null hides the native view). */
     setViewport(input: { sessionId: string; rect: BrowserViewRect | null }): void {
-      void runtimeHostSessionRef(input.sessionId).then((session) =>
-        ipcRenderer.send('browser:setViewport', session.scope, {
-          ...input,
-          sessionId: session.sessionId,
-        }),
-      );
+      void runtimeHostSessionRef(input.sessionId)
+        .then((session) =>
+          ipcRenderer.send('browser:setViewport', session.scope, {
+            ...input,
+            sessionId: session.sessionId,
+          }),
+        )
+        .catch(() => undefined);
     },
     navigate(sessionId: string, url: string): Promise<void> {
       return invokeSessionRuntimeHost('browser:navigate', sessionId, url);

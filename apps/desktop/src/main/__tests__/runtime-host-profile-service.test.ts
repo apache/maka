@@ -66,6 +66,31 @@ test("starts with Local defaults when Runtime Host preferences are malformed", a
   assert.equal(await readFile(preferencesPath, "utf8"), malformed);
 });
 
+test("starts Local and preserves remote preferences when the profile catalog is unreadable", async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  catalog.read = async () => {
+    throw new Error("profile catalog is unreadable");
+  };
+
+  const startup = await resolveDesktopRuntimeHostStartup(root, {
+    catalog,
+    readPreferences: async () => ({
+      schemaVersion: 2,
+      defaultProfileId: PROFILE.id,
+      enabledRemoteProfileIds: [PROFILE.id],
+    }),
+  });
+
+  assert.deepEqual(startup.preferences, {
+    schemaVersion: 2,
+    defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+    enabledRemoteProfileIds: [PROFILE.id],
+  });
+  assert.deepEqual(startup.remotes, []);
+  assert.match(startup.unavailable.get(PROFILE.id)?.message ?? "", /unreadable/);
+});
+
 test("keeps Local enabled while a new remote Host connects", async () => {
   const root = await clientRoot();
   const enabled: string[] = [];
