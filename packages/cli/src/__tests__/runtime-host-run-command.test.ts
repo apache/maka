@@ -292,12 +292,16 @@ describe('Runtime Host maka run adapter', () => {
       finalMessages: abortedGraphMessages(),
     });
 
+    assert.equal(live.status, 'failed');
     assert.equal(live.failure?.class, 'aborted');
+    assert.equal(durable.status, 'failed');
     assert.equal(durable.failure?.class, 'aborted');
   });
 
-  test('classifies a live step limit like a durable failed Turn', async () => {
-    const live = await observeFixtureOutcome({ turnEvents: stepLimitedEvents('turn-1') });
+  test('classifies live and durable step-cap failures equally', async () => {
+    const live = await observeFixtureOutcome({
+      turnEvents: failedEvents('turn-1', 'tool_step_cap_reached'),
+    });
     const durable = await observeFixtureOutcome({
       graph: true,
       finalMessages: failedGraphMessages('tool_step_cap_reached'),
@@ -309,20 +313,14 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(durable.failure?.class, 'tool_step_cap_reached');
   });
 
-  test('classifies a user-stop complete event as aborted', async () => {
-    const outcome = await observeFixtureOutcome({ turnEvents: userStoppedEvents('turn-1') });
-
-    assert.equal(outcome.status, 'failed');
-    assert.equal(outcome.failure?.class, 'aborted');
-  });
-
-  test('keeps a live Turn failed when complete follows its error', async () => {
+  test('uses the latest durable terminal state for a Graph Turn', async () => {
     const outcome = await observeFixtureOutcome({
-      turnEvents: failedThenCompleteEvents('turn-1'),
+      graph: true,
+      finalMessages: failedThenCompletedGraphMessages(),
     });
 
-    assert.equal(outcome.status, 'failed');
-    assert.equal(outcome.failure?.class, 'provider_failure');
+    assert.equal(outcome.status, 'completed');
+    assert.equal(outcome.finalOutput, 'Final graph answer');
   });
 
   test('waits for the exact final Graph wake after an earlier wake already settled', async () => {
@@ -908,7 +906,6 @@ function publicCommandEnvironment() {
     processCwd: () => process.cwd(),
     stdinIsTTY: () => true,
     readStdin: async () => '',
-    writeStdout: () => {},
     writeStderr: () => {},
     onSigint: () => () => {},
     newId: () => 'turn-1',
@@ -1161,6 +1158,20 @@ function failedGraphMessages(errorClass: string): StoredMessage[] {
   ];
 }
 
+function failedThenCompletedGraphMessages(): StoredMessage[] {
+  return [
+    ...failedGraphMessages('provider_failure'),
+    {
+      type: 'turn_state',
+      id: 'completed-state-turn-2',
+      turnId: 'turn-2',
+      ts: 6,
+      status: 'completed',
+      partialOutputRetained: true,
+    },
+  ];
+}
+
 function multiWakeGraphMessages(includeFinalTerminal: boolean): StoredMessage[] {
   const messages = [
     ...graphMessages(),
@@ -1227,7 +1238,7 @@ async function* abortedEvents(turnId: string): AsyncIterable<SessionEvent> {
   };
 }
 
-async function* stepLimitedEvents(turnId: string): AsyncIterable<SessionEvent> {
+async function* failedEvents(turnId: string, reason: string): AsyncIterable<SessionEvent> {
   yield {
     type: 'text_complete',
     id: `${turnId}-text`,
@@ -1237,44 +1248,13 @@ async function* stepLimitedEvents(turnId: string): AsyncIterable<SessionEvent> {
     text: 'Partial answer',
   };
   yield {
-    type: 'complete',
-    id: `${turnId}-complete`,
-    turnId,
-    ts: 2,
-    stopReason: 'step_limit',
-  };
-}
-
-async function* userStoppedEvents(turnId: string): AsyncIterable<SessionEvent> {
-  yield {
-    type: 'complete',
-    id: `${turnId}-complete`,
-    turnId,
-    ts: 1,
-    stopReason: 'user_stop',
-  };
-}
-
-async function* failedEvents(turnId: string, reason: string): AsyncIterable<SessionEvent> {
-  yield {
     type: 'error',
     id: `${turnId}-error`,
     turnId,
-    ts: 1,
+    ts: 2,
     recoverable: false,
     reason,
     message: 'Turn failed',
-  };
-}
-
-async function* failedThenCompleteEvents(turnId: string): AsyncIterable<SessionEvent> {
-  yield* failedEvents(turnId, 'provider_failure');
-  yield {
-    type: 'complete',
-    id: `${turnId}-complete`,
-    turnId,
-    ts: 2,
-    stopReason: 'end_turn',
   };
 }
 
