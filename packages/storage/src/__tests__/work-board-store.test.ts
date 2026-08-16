@@ -349,7 +349,7 @@ describe('Work Board store', () => {
     });
   });
 
-  test('cross-process CAS produces exactly one winner and one conflict', async () => {
+  test('CAS across separate worker connections produces exactly one winner and one conflict', async () => {
     await withTempRoot(async (root) => {
       const store = createWorkBoardStore(root);
       const item = await store.create(itemInput(), 100);

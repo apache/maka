@@ -1,4 +1,4 @@
-import { parentPort, workerData } from 'node:worker_threads';
+import { parentPort, threadId, workerData } from 'node:worker_threads';
 import { createWorkBoardStore } from '../../work-board-store.js';
 
 interface WorkerInput {
@@ -12,7 +12,7 @@ const store = createWorkBoardStore(input.workspaceRoot);
 try {
   const updated = await store.update(
     input.itemId,
-    { title: `worker-${process.pid}` },
+    { title: `worker-${threadId}` },
     { expectedRevision: 1 },
     200,
   );
