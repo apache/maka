@@ -61,6 +61,35 @@ test('completion waits for the bounded process-tree signal attempt after root ex
   });
 });
 
+test('incomplete descendant output forces a tree kill after the direct root exits', async () => {
+  const child = new EventEmitter() as ChildProcess;
+  const inheritedOutput = new PassThrough();
+  const signals: string[] = [];
+  const lifecycle = manageChildProcessLifecycle(
+    child,
+    [{ key: 'stdout', stream: inheritedOutput }],
+    {
+      killGraceMs: 100,
+      ioDrainTimeoutMs: 10,
+      async signalProcessTree(signal) {
+        signals.push(signal);
+        return true;
+      },
+    },
+  );
+
+  lifecycle.terminate();
+  child.emit('exit', 0, 'SIGTERM');
+
+  assert.deepEqual(await lifecycle.completion, {
+    exitCode: 0,
+    signal: 'SIGTERM',
+    ioDrained: false,
+    incompleteOutputs: new Set(['stdout']),
+  });
+  assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
+});
+
 test('forced termination rejects boundedly when the direct root never acknowledges exit', async () => {
   const child = new EventEmitter() as ChildProcess;
   const signals: string[] = [];

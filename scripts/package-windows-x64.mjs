@@ -67,6 +67,9 @@ export async function packageWindowsX64({
   await run('npm', ['run', 'clean']);
   await run('npm', ['run', 'build']);
   await run('npm', ['run', 'prepare:bundled-git']);
+  await run('npm', ['run', 'prepare:bundled-npm']);
+  await run('npm', ['run', 'verify:bundled-npm']);
+  await run('npm', ['run', 'audit:bundled-npm']);
   await run('npm', ['run', 'check:release']);
   await remove(releaseDirectory, { recursive: true, force: true });
   await run('npm', ['--workspace', '@maka/desktop', 'run', 'package:windows-x64']);

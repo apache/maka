@@ -139,6 +139,10 @@ export async function verifyWindowsInstallerLifecycle(
       await verifyApp(installDirectory, {
         workingDirectory: smokeDirectory,
         expectedVersion: previousVersion,
+        // The pinned upgrade baseline predates bundled npm. Verify the legacy
+        // installation with its own release contract; the upgraded app below
+        // is still required to contain the current bundled npm authority.
+        requireBundledNpm: false,
       });
       console.log('[verify-windows-installer] waiting for previous-version processes to exit');
       await waitForProcessesToExit(installDirectory);

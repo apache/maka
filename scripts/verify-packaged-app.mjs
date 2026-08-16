@@ -295,7 +295,7 @@ export async function smokePackagedRenderer(executable, { workingDirectory } = {
 
 export async function assertPackagedResources(
   resourcesPath,
-  { requirePath, forbidPath = assertMissing } = {},
+  { requirePath, forbidPath = assertMissing, requireBundledNpm = true } = {},
 ) {
   const required = [
     'app.asar',
@@ -321,6 +321,13 @@ export async function assertPackagedResources(
     join('licenses', 'renderer', 'SEMI_ICONS_LICENSE.txt'),
     join('licenses', 'renderer', 'MINGCUTE_APACHE_LICENSE.txt'),
   ];
+  if (requireBundledNpm) {
+    required.push(
+      'bundled-npm.json',
+      join('npm', 'bin', 'npm-cli.js'),
+      join('licenses', 'npm-cli', 'LICENSE'),
+    );
+  }
   for (const path of required) {
     await requirePath(join(resourcesPath, path));
   }
