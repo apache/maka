@@ -37,6 +37,7 @@
     "./shell-run": "./dist/shell-run.js",
     "./shell-run-result": "./dist/shell-run-result.js",
     "./browser": "./dist/browser.js",
+    "./browser-workflow": "./dist/browser-workflow.js",
     "./session-event-health": "./dist/session-event-health.js",
     "./permission": "./dist/permission.js",
     "./permission-profile": "./dist/permission-profile.js",
