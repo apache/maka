@@ -5,7 +5,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { AstryxLocaleProvider, type ComposerHandle, LocaleProvider } from '@maka/ui';
 import { ChatComposerRegion } from '../../renderer/chat-composer-region.js';
-import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from '../../renderer/new-task-reload-intent.js';
+import {
+  markNewTaskReloadIntent,
+  UNRESOLVED_NEW_TASK_DRAFT_KEY,
+  writeNewTaskReloadDraft,
+} from '../../renderer/new-task-reload-intent.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -14,6 +18,7 @@ const originalGlobals = {
   HTMLIFrameElement: globalThis.HTMLIFrameElement,
   Event: globalThis.Event,
   Node: globalThis.Node,
+  sessionStorage: globalThis.sessionStorage,
   matchMedia: globalThis.matchMedia,
   requestAnimationFrame: globalThis.requestAnimationFrame,
   cancelAnimationFrame: globalThis.cancelAnimationFrame,
@@ -31,6 +36,7 @@ afterEach(async () => {
 
 test('hands off only the unresolved new-task draft while a Session is open', async () => {
   const { document, window } = parseHTML('<div id="root"></div>');
+  const storage = new Map<string, string>();
   Object.assign(document, {
     getSelection: () => ({
       removeAllRanges() {},
@@ -44,6 +50,11 @@ test('hands off only the unresolved new-task draft while a Session is open', asy
     HTMLIFrameElement: window.HTMLIFrameElement ?? class HTMLIFrameElement {},
     Event: window.Event,
     Node: window.Node,
+    sessionStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    },
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(callback, 0),
     cancelAnimationFrame: (handle: number) => clearTimeout(handle),
@@ -54,6 +65,8 @@ test('hands off only the unresolved new-task draft while a Session is open', asy
   const root = createRoot(container);
   mountedRoot = root;
   const composer = createRef<ComposerHandle>();
+  markNewTaskReloadIntent();
+  writeNewTaskReloadDraft(UNRESOLVED_NEW_TASK_DRAFT_KEY, 'new task draft');
 
   const render = async (activeId: string | undefined, newTaskDraftKey: string) => {
     await act(async () => {
@@ -85,9 +98,6 @@ test('hands off only the unresolved new-task draft while a Session is open', asy
       );
     });
   };
-
-  await render(undefined, UNRESOLVED_NEW_TASK_DRAFT_KEY);
-  await act(() => composer.current?.setText('new task draft'));
 
   await render('session-1', UNRESOLVED_NEW_TASK_DRAFT_KEY);
   await act(() => composer.current?.setText('session draft'));

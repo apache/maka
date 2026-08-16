@@ -77,9 +77,12 @@ export function useComposerDraft(input: {
   }
 
   function getDraft(key: string | undefined) {
-    return activeDraftKeyRef.current === key
-      ? input.text.getValue()
-      : readComposerDraft(draftStoreRef.current, key);
+    if (activeDraftKeyRef.current === key) return input.text.getValue();
+    const remembered = readComposerDraft(draftStoreRef.current, key);
+    if (remembered) return remembered;
+    const persisted = input.persistence?.read(key) ?? '';
+    if (persisted) rememberComposerDraft(draftStoreRef.current, key, persisted);
+    return persisted;
   }
 
   function appendDraft(key: string | undefined, value: string) {
