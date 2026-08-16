@@ -48,6 +48,27 @@ export class BotRegistry extends EventEmitter {
     return next;
   }
 
+  /** Force a provider restart even when its persisted settings are unchanged. */
+  async restart(platform: BotPlatform, settings: BotChannelSettings): Promise<BotStatus> {
+    const restart = async (): Promise<BotStatus> => {
+      const existing = this.bridges.get(platform);
+      if (existing) {
+        await existing.stop().catch(() => {});
+        this.detach(existing);
+        this.bridges.delete(platform);
+      }
+      this.statuses.delete(platform);
+      await this.reconcileOne(platform, settings);
+      return this.getStatus(platform);
+    };
+    const next = this.applyQueue.then(restart, restart);
+    this.applyQueue = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
   getStatus(platform: BotPlatform): BotStatus {
     return (
       this.bridges.get(platform)?.getStatus() ??
@@ -134,18 +155,7 @@ export class BotRegistry extends EventEmitter {
       ).updateSettings;
       if (update && !update.call(existing, settings).needsRestart) return;
       await existing.stop().catch(() => {});
-      // Drop our 'message' / 'statusChange' listeners on the old
-      // bridge before dereferencing it. Some bridges (Discord
-      // gateway, WeChat poll) hold async tasks that can still emit
-      // after `stop()` returns; without removeAllListeners those
-      // emissions would race-call onIncomingMessage / onStatusChange
-      // against a bridge the registry already considers gone.
-      try {
-        (existing as BotBridge & EventEmitter).removeAllListeners('message');
-        (existing as BotBridge & EventEmitter).removeAllListeners('statusChange');
-      } catch {
-        // best-effort — non-EventEmitter bridges don't have listeners to clear.
-      }
+      this.detach(existing);
     }
     this.statuses.delete(platform);
 
@@ -172,6 +182,18 @@ export class BotRegistry extends EventEmitter {
       .catch((error) =>
         console.error(`[BotRegistry] ${platform} start failed: ${generalizedErrorMessage(error)}`),
       );
+  }
+
+  private detach(bridge: BotBridge): void {
+    // Some bridges retain async tasks after stop(); detach registry listeners
+    // before dereferencing them so stale emissions cannot race the replacement.
+    try {
+      const emitter = bridge as BotBridge & EventEmitter;
+      emitter.removeAllListeners('message');
+      emitter.removeAllListeners('statusChange');
+    } catch {
+      // Non-EventEmitter bridges have no listeners to clear.
+    }
   }
 
   private wire(bridge: BotBridge): void {

@@ -33,6 +33,7 @@ describe('bot event contract', () => {
   test('recognizes only exact plaintext commands in direct messages', () => {
     assert.equal(isPlaintextResetCommand({ isGroup: false, text: '  RESET  ' }), true);
     assert.equal(isPlaintextHelpCommand({ isGroup: false, text: '帮助' }), true);
+    assert.equal(isPlaintextHelpCommand({ isGroup: false, text: ' /START ' }), true);
     assert.equal(isPlaintextHelpCommand({ isGroup: true, text: 'help' }), false);
     assert.equal(isPlaintextHelpCommand({ isGroup: false, text: 'please help' }), false);
     assert.equal(isPlaintextHelpCommand({ isGroup: false, text: '   ' }), false);

@@ -121,7 +121,11 @@ async function testTelegram(channel: BotChannelSettings): Promise<BotTestResult>
   const base = `https://api.telegram.org/bot${channel.token}`;
   try {
     const me = await (
-      await proxiedFetch(`${base}/getMe`, { method: 'GET', timeoutMs: BOT_TEST_TIMEOUT_MS })
+      await proxiedFetch(`${base}/getMe`, {
+        method: 'GET',
+        timeoutMs: BOT_TEST_TIMEOUT_MS,
+        proxyUrl: channel.proxyUrl,
+      })
     ).json();
     if (!me.ok) return { ok: false, error: me.description ?? 'Invalid bot token' };
     return {

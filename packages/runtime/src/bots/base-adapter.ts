@@ -76,6 +76,7 @@ export function botSettingsRequireRestart(
     previous.appId !== next.appId ||
     previous.appSecret !== next.appSecret ||
     previous.domain !== next.domain ||
-    previous.webhookUrl !== next.webhookUrl
+    previous.webhookUrl !== next.webhookUrl ||
+    previous.proxyUrl !== next.proxyUrl
   );
 }

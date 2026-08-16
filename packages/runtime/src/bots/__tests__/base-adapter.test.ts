@@ -47,6 +47,10 @@ describe('BaseBotAdapter', () => {
       botSettingsRequireRestart(base, { ...base, domain: 'https://bot.example.test' }),
       true,
     );
+    assert.equal(
+      botSettingsRequireRestart(base, { ...base, proxyUrl: 'http://127.0.0.1:7897' }),
+      true,
+    );
 
     const adapter = new TestAdapter('telegram', { ...base, enabled: true, token: 'old-token' });
     assert.deepEqual(adapter.updateSettings({ ...base, enabled: true, token: 'old-token' }), {

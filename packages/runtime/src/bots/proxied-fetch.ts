@@ -1,3 +1,4 @@
+import type { ProxySettings } from '@maka/core/settings/network-settings';
 import { fetch, type Dispatcher, type RequestInit as UndiciRequestInit } from 'undici';
 import { matchesBypassList } from '../network/bypass-matcher.js';
 import { buildProxyDispatcher } from '../network/proxy-dispatcher.js';
@@ -12,6 +13,8 @@ export type ProxiedFetchInit = Omit<
 > & {
   signal?: AbortSignal | null;
   timeoutMs?: number;
+  /** Per-channel proxy override (for example Telegram's saved proxy URL). */
+  proxyUrl?: string;
 };
 
 export async function proxiedFetch(
@@ -20,12 +23,12 @@ export async function proxiedFetch(
 ): Promise<Response> {
   const url =
     typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-  const proxy = resolveActiveProxy();
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, signal, proxyUrl, ...fetchInit } = init;
+  const proxy = proxyUrl?.trim() ? proxySettingsFromUrl(proxyUrl) : resolveActiveProxy();
   let dispatcher: Dispatcher | undefined;
   if (proxy && !matchesBypassList(new URL(url).hostname, proxy.bypassList)) {
     dispatcher = buildProxyDispatcher(proxy) as Dispatcher;
   }
-  const { timeoutMs = DEFAULT_TIMEOUT_MS, signal, ...fetchInit } = init;
   const timeoutEnabled = timeoutMs > 0;
   const controller = new AbortController();
   const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
@@ -89,6 +92,32 @@ export async function proxiedFetch(
   if (timer) clearTimeout(timer);
   void disposeDispatcher(false);
   return response;
+}
+
+function proxySettingsFromUrl(value: string): ProxySettings {
+  const url = new URL(value);
+  const type =
+    url.protocol === 'socks5:'
+      ? 'socks5'
+      : url.protocol === 'https:'
+        ? 'https'
+        : url.protocol === 'http:'
+          ? 'http'
+          : undefined;
+  if (!type) throw new Error(`Unsupported proxy protocol: ${url.protocol}`);
+  const port = Number(url.port || (type === 'https' ? 443 : type === 'socks5' ? 1080 : 80));
+  if (!url.hostname || !Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error('Invalid proxy URL');
+  }
+  return {
+    enabled: true,
+    type,
+    host: url.hostname,
+    port,
+    ...(url.username ? { username: decodeURIComponent(url.username) } : {}),
+    ...(url.password ? { password: decodeURIComponent(url.password) } : {}),
+    bypassList: [],
+  };
 }
 
 Object.defineProperty(proxiedFetch, FETCH_PROXY_SNAPSHOT, {

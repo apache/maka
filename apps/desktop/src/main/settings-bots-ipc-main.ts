@@ -87,16 +87,25 @@ export function registerSettingsBotsIpc(
     });
     return toSettingsTestResult(provider, result);
   });
-  deps.ipcMain.handle('settings:bots:listStatuses', () =>
-    tryResult(async () => deps.botRegistry.allStatuses(), 'BOTS_STATUS_FAILED'),
-  );
+  deps.ipcMain.handle('settings:bots:listStatuses', () => deps.botRegistry.allStatuses());
   deps.ipcMain.handle('settings:bots:restart', (_event, provider: BotProvider) =>
-    tryResult(async () => {
-      await deps.botRegistry.applySettings(
-        (await deps.settingsStore.get()).botChat,
+    (async () => {
+      const settings = await deps.settingsStore.get();
+      const status = await deps.botRegistry.restart(
+        provider,
+        settings.botChat.channels[provider],
       );
-      return deps.botRegistry.getStatus(provider);
-    }, 'BOTS_RESTART_FAILED'),
+      if (!status.running) {
+        const reason = status.reason ?? 'unknown';
+        console.error(
+          `[BotRegistry] ${provider} restart did not enter listening: ${reason}`,
+        );
+        // The renderer intentionally hides unmapped raw status reasons. Reject
+        // here so diagnostics retain the actionable, already-generalized cause.
+        throw new Error(`${provider} listener startup failed: ${reason}`);
+      }
+      return status;
+    })(),
   );
   deps.ipcMain.handle(
     'settings:bots:onboarding:start',

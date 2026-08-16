@@ -45,6 +45,7 @@ test('creates an explore Session through the Host-owned default model route', as
     {
       sessionId: 'bot-session-1',
       workspace: { kind: 'project', projectId: 'project-1' },
+      mode: 'bot_chat',
       name: 'Telegram conversation',
       labels: ['bot', 'telegram'],
       modelTarget: { kind: 'default' },

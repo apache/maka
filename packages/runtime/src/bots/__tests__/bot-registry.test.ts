@@ -70,6 +70,33 @@ describe('BotRegistry', () => {
     assert.equal(registry.getStatus('wecom').readiness, 'scaffolded');
   });
 
+  test('restart force-starts a stopped bridge even when settings are unchanged', async () => {
+    const statuses: BotStatus[] = [];
+    const registry = new BotRegistry({
+      onIncomingMessage: () => {},
+      onStatusChange: (status) => statuses.push(status),
+    });
+    const channel = {
+      ...createDefaultBotChannel('wecom'),
+      enabled: true,
+      token: '',
+      appId: undefined,
+      appSecret: undefined,
+    };
+
+    await registry.applySettings(settingsWith({ wecom: channel }));
+    const beforeRestart = statuses.length;
+    const status = await registry.restart('wecom', channel);
+
+    assert.equal(status.running, false);
+    assert.equal(status.reason, 'no-credentials');
+    assert.equal(statuses.length > beforeRestart, true);
+    assert.equal(
+      statuses.slice(beforeRestart).some((entry) => entry.platform === 'wecom'),
+      true,
+    );
+  });
+
   test('stopAll waits behind any pending applySettings call and clears bridges', async () => {
     const registry = new BotRegistry({
       onIncomingMessage: () => {},

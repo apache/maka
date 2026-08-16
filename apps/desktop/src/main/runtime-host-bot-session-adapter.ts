@@ -54,6 +54,7 @@ export function createRuntimeHostBotSessionAdapter(
         session = await deps.client.createSession({
           sessionId,
           workspace: target.workspace,
+          mode: 'bot_chat',
           name: input.name,
           labels: [...input.labels],
           modelTarget: { kind: 'default' },
