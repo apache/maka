@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { ActiveInteractionRequestEvent, SessionEvent } from '@maka/core/events';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import type {
@@ -8,6 +9,7 @@ import type {
   SessionMessageQueueProjection,
   SteeringMessageSnapshot,
   SubscriptionFrame,
+  LiveTurnSnapshot,
   TurnSnapshot,
 } from '../protocol/index.js';
 
@@ -122,9 +124,11 @@ export class RuntimeHostSessionProjector {
     const root = this.#snapshot.rootTurn;
     if (!root || isRuntimeHostTerminalTurn(root)) return [];
     const events: SessionEvent[] = [];
+    let seededAssistantText = false;
     if (includeAssistantText) {
       for (const accumulator of this.#accumulators.values()) {
         if (accumulator.complete) continue;
+        seededAssistantText = true;
         events.push({
           type: accumulator.kind === 'text' ? 'text_delta' : 'thinking_delta',
           id: `host-seed:${root.runId}:${accumulator.kind}:${accumulator.messageId}`,
@@ -135,6 +139,9 @@ export class RuntimeHostSessionProjector {
           text: accumulator.text,
         });
       }
+    }
+    if (root.providerRetry && !seededAssistantText) {
+      events.push(providerRetryEvent(root, this.#now()));
     }
     for (const interaction of this.#snapshot.interactions.pending) {
       events.push(...projectRuntimeHostInteractionRequest(interaction, this.#now()));
@@ -348,6 +355,8 @@ export class RuntimeHostSessionProjector {
     const startedTurn =
       root && (!previousRoot || root.runId !== previousRoot.runId) ? root : undefined;
     if (startedTurn) this.#accumulators.clear();
+    const retry = liveProviderRetryEvent(previousRoot, root, this.#now());
+    if (retry) events.push(retry);
     const terminalTurn =
       root && isRuntimeHostTerminalTurn(root) && !sameRuntimeHostTerminalTurn(previousRoot, root)
         ? root
@@ -610,6 +619,36 @@ export function sameRuntimeHostTerminalTurn(
     previous.runId === next.runId &&
     previous.terminalEventId === next.terminalEventId
   );
+}
+
+function liveProviderRetryEvent(
+  previous: TurnSnapshot | null | undefined,
+  next: TurnSnapshot | null | undefined,
+  ts: number,
+): Extract<SessionEvent, { type: 'provider_retry' }> | undefined {
+  if (!next || isRuntimeHostTerminalTurn(next) || !next.providerRetry) return undefined;
+  const previousRetry =
+    previous && !isRuntimeHostTerminalTurn(previous) ? previous.providerRetry : undefined;
+  if (previous?.runId === next.runId && isDeepStrictEqual(previousRetry, next.providerRetry)) {
+    return undefined;
+  }
+  return providerRetryEvent(next, ts);
+}
+
+function providerRetryEvent(
+  root: LiveTurnSnapshot,
+  ts: number,
+): Extract<SessionEvent, { type: 'provider_retry' }> {
+  if (!root.providerRetry) {
+    throw new Error('Non-terminal Turn snapshot has no provider retry');
+  }
+  return {
+    type: 'provider_retry',
+    id: `host-seed:${root.runId}:provider_retry`,
+    turnId: root.turnId,
+    ts,
+    ...root.providerRetry,
+  };
 }
 
 function abortReason(source: string): Extract<SessionEvent, { type: 'abort' }>['reason'] {

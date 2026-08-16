@@ -45,7 +45,6 @@ import { ToolTrow } from './tool-activity.js';
 import { formatBytes } from './tool-activity/preview-utils.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import { presentProviderRetry } from './provider-retry-presentation.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { InlineReferenceText } from './inline-reference.js';
 
@@ -975,15 +974,23 @@ export function TurnRunningStatus(props: { startedAt?: number }) {
 }
 
 export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }) {
-  const presented = presentProviderRetry(props.retry, useUiLocale());
+  const copy = getConversationCopy(useUiLocale()).messages;
+  const title =
+    props.retry.phase === 'scheduled'
+      ? copy.providerRetryScheduled(
+          Math.max(1, Math.ceil(props.retry.delayMs / 1_000)),
+          props.retry.attempt,
+          props.retry.maxAttempts,
+        )
+      : copy.providerRetryStarted(props.retry.attempt, props.retry.maxAttempts);
   return (
     <Banner
-      status={presented.status}
+      status="warning"
       container="section"
       role="status"
       className="maka-turn-provider-retry"
-      title={presented.title}
-      description={presented.description}
+      title={title}
+      description={copy.providerRetryReason[props.retry.reason]}
     />
   );
 }

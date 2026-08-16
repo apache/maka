@@ -111,6 +111,8 @@ export type {
   TurnMessageSubmitResult,
 } from './message.js';
 export type {
+  LiveTurnSnapshot,
+  TurnProviderRetry,
   TurnQueryInput,
   TurnRegenerateInput,
   TurnResumeParkReason,

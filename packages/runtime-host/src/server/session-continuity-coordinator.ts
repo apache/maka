@@ -26,6 +26,8 @@ import {
   type SubscriptionFrame,
   type SubscriptionOpenInput,
   type SubscriptionOpenResult,
+  type LiveTurnSnapshot,
+  type TurnProviderRetry,
   type TurnSnapshot,
 } from '../protocol/index.js';
 import type { SessionContinuityOperationHandlerMap } from './operation-dispatcher.js';
@@ -70,7 +72,8 @@ export type RuntimeSessionTransientEvent = Extract<
       | 'tool_output_delta'
       | 'tool_progress'
       | 'tool_result_preview'
-      | 'tool_result';
+      | 'tool_result'
+      | 'provider_retry';
   }
 >;
 
@@ -628,6 +631,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       ) {
         throw new Error('Runtime event does not belong to the canonical active root Turn');
       }
+      if (event.type === 'provider_retry') {
+        this.#publishCanonical(state, withProviderRetry(state.canonical, event));
+        return;
+      }
+      this.#publishCanonical(state, withoutProviderRetry(state.canonical));
       if (event.type === 'text_delta' || event.type === 'thinking_delta') {
         const kind: SessionAssistantDelta['kind'] =
           event.type === 'text_delta' ? 'text' : 'thinking';
@@ -1637,6 +1645,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       this.#sessions.set(sessionId, state);
       return { changed: true, state, value };
     }
+    canonical = preserveProviderRetry(state.canonical, canonical);
     const changed = !isDeepStrictEqual(state.canonical, canonical);
     if (changed) {
       if (state.canonical.rootTurn?.runId !== canonical.rootTurn?.runId) {
@@ -1654,6 +1663,15 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       state,
       value: createSessionContinuitySnapshot(state.canonical, state.revision),
     };
+  }
+
+  #publishCanonical(state: SessionProjectionState, canonical: CanonicalSessionProjection): void {
+    if (isDeepStrictEqual(state.canonical, canonical)) return;
+    const nextRevision = state.revision + 1;
+    const snapshot = createSessionContinuitySnapshot(canonical, nextRevision);
+    state.canonical = immutableClone(canonical);
+    state.revision = nextRevision;
+    this.#broadcastProjection(state, snapshot);
   }
 
   #broadcastProjection(state: SessionProjectionState, snapshot: SessionContinuitySnapshot): void {
@@ -1745,6 +1763,64 @@ function isTerminalTurn(turn: TurnSnapshot): boolean {
   return turn.status === 'completed' || turn.status === 'failed' || turn.status === 'cancelled';
 }
 
+function isLiveTurn(turn: TurnSnapshot): turn is LiveTurnSnapshot {
+  return !isTerminalTurn(turn);
+}
+
+function withProviderRetry(
+  canonical: CanonicalSessionProjection,
+  event: Extract<SessionEvent, { type: 'provider_retry' }>,
+): CanonicalSessionProjection {
+  const rootTurn = canonical.rootTurn;
+  if (!rootTurn || !isLiveTurn(rootTurn)) return canonical;
+  const providerRetry: TurnProviderRetry =
+    event.phase === 'scheduled'
+      ? {
+          phase: 'scheduled',
+          attempt: event.attempt,
+          maxAttempts: event.maxAttempts,
+          delayMs: event.delayMs,
+          reason: event.reason,
+        }
+      : {
+          phase: 'started',
+          attempt: event.attempt,
+          maxAttempts: event.maxAttempts,
+          reason: event.reason,
+        };
+  return { ...canonical, rootTurn: { ...rootTurn, providerRetry } };
+}
+
+function withoutProviderRetry(canonical: CanonicalSessionProjection): CanonicalSessionProjection {
+  const rootTurn = canonical.rootTurn;
+  if (!rootTurn || !isLiveTurn(rootTurn) || rootTurn.providerRetry === undefined) {
+    return canonical;
+  }
+  const { providerRetry: _providerRetry, ...cleared } = rootTurn;
+  return { ...canonical, rootTurn: cleared };
+}
+
+function preserveProviderRetry(
+  current: CanonicalSessionProjection,
+  next: CanonicalSessionProjection,
+): CanonicalSessionProjection {
+  const currentTurn = current.rootTurn;
+  const nextTurn = next.rootTurn;
+  if (
+    !currentTurn ||
+    !nextTurn ||
+    !isLiveTurn(currentTurn) ||
+    !isLiveTurn(nextTurn) ||
+    currentTurn.runId !== nextTurn.runId ||
+    currentTurn.turnId !== nextTurn.turnId ||
+    currentTurn.providerRetry === undefined
+  ) {
+    return next;
+  }
+  if (nextTurn.providerRetry !== undefined) return next;
+  return { ...next, rootTurn: { ...nextTurn, providerRetry: currentTurn.providerRetry } };
+}
+
 function wireTextByteLimit(frame: SessionDeltaFrame): number {
   return RUNTIME_HOST_MAX_MESSAGE_BYTES - encodeProtocolMessage(frame).byteLength;
 }
@@ -1764,7 +1840,14 @@ function jsonStringContentBytes(value: string): number {
 function projectToolEvent(
   event: Exclude<
     RuntimeSessionTransientEvent,
-    { type: 'text_delta' | 'thinking_delta' | 'text_complete' | 'thinking_complete' }
+    {
+      type:
+        | 'text_delta'
+        | 'thinking_delta'
+        | 'text_complete'
+        | 'thinking_complete'
+        | 'provider_retry';
+    }
   >,
 ): SessionToolEvent {
   const identity = {
