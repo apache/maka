@@ -7,6 +7,7 @@ import type {
   ConnectionModel,
 } from '@maka/core/runtime-policy';
 import { createDefaultSettings } from '@maka/core/settings';
+import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily-review-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { openInteractiveScheduledTaskStoreForWrite } from '@maka/storage/scheduled-task-store';
 import {
@@ -14,7 +15,6 @@ import {
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
 import { writeJson } from './seed-helpers.js';
-import { createDailyReviewArchiveStore } from '../daily-review-archive-store.js';
 
 export async function writeSettings(
   workspaceRoot: string,
@@ -266,8 +266,8 @@ export async function writeScheduledTasks(workspaceRoot: string, now: number): P
 }
 
 export async function writeDailyReviewArchives(workspaceRoot: string, now: number): Promise<void> {
-  const dayFromMs = Date.UTC(2026, 4, 21, 0, 0, 0);
-  const dayToMs = Date.UTC(2026, 4, 22, 0, 0, 0);
+  const dayFromMs = new Date(2026, 4, 21).getTime();
+  const dayToMs = new Date(2026, 4, 22).getTime();
   const daily: DailyReviewArchive = {
     id: '2026-05-21-1d',
     day: { fromMs: dayFromMs, toMs: dayToMs },
@@ -293,7 +293,7 @@ export async function writeDailyReviewArchives(workspaceRoot: string, now: numbe
   const deep: DailyReviewArchive = {
     ...daily,
     id: '2026-05-15-7d',
-    day: { fromMs: Date.UTC(2026, 4, 15, 0, 0, 0), toMs: dayToMs },
+    day: { fromMs: new Date(2026, 4, 15).getTime(), toMs: dayToMs },
     range: 7,
     generatedAt: now - 5 * 60_000,
     trigger: 'cron',
@@ -312,7 +312,18 @@ export async function writeDailyReviewArchives(workspaceRoot: string, now: numbe
       code: '下一步优先建立模块页 PageShell、SettingsActionRow 和 StatusPill primitives，再迁移 Daily Review、权限中心、计划任务和技能页。',
     },
   };
-  const store = createDailyReviewArchiveStore(workspaceRoot);
-  await store.putArchive(daily);
-  await store.putArchive(deep);
+  const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  if (!owner) throw new Error('Unable to acquire the Daily Review fixture root');
+  try {
+    const store = await openInteractiveDailyReviewAuthorityForWrite(owner.lease);
+    try {
+      await store.publishArchive(daily, 180);
+      await store.publishArchive(deep, 180);
+    } finally {
+      store.close();
+    }
+  } finally {
+    await owner.close();
+  }
 }

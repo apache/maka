@@ -14,6 +14,7 @@ import { messageReadErrorMessage } from './app-shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { applyTheme, applyThemePalette } from './theme';
+import { startTitlebarModalSync } from './titlebar-modal-sync';
 import { safeLocalStorageSet } from './browser-storage';
 import type { NavigationState } from './nav-selection.js';
 import { writeSessionListViewMode } from './session-list-layout.js';
@@ -32,6 +33,7 @@ import type {
   DesktopRuntimeHostProfileChangedEvent,
   WindowCommand,
 } from '../preload/bridge-contract.js';
+import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import {
   mergeShellRunNotification,
   mergeShellRunUpdates,
@@ -71,7 +73,6 @@ export function useAppShellNavRefSync(options: { navSelection: NavSelection; nav
 
 export function useAppShellHostEffects(options: {
   activeId: string | undefined;
-  hasModalOpen: boolean;
   setLiveBrowserSessionIds: (sessionIds: string[]) => void;
 }) {
   // Tag the document with the host OS so glass-material CSS rules
@@ -107,12 +108,11 @@ export function useAppShellHostEffects(options: {
     window.maka.browser.setActiveSession(options.activeId ?? null);
   }, [options.activeId]);
 
-  useEffect(() => {
-    void window.maka.appWindow.setTitlebarControlsVisible(!options.hasModalOpen).catch(() => {});
-    return () => {
-      void window.maka.appWindow.setTitlebarControlsVisible(true).catch(() => {});
-    };
-  }, [options.hasModalOpen]);
+  // Modal-open titlebar dimming/hiding is driven by observing the top layer
+  // (`dialog:modal`) rather than the shell's own modal state, so dialogs
+  // mounted deep in module pages — the scheduled-task form above all — are
+  // covered too. See titlebar-modal-sync.ts.
+  useEffect(() => startTitlebarModalSync(), []);
 }
 
 export function useAppShellPersistenceEffects(options: {
@@ -219,7 +219,6 @@ export function useAppShellBootstrapSubscriptions(options: {
   /** Releases a send's pending claim once the authority names that turn. */
   confirmLiveTurn: (sessionId: string, turnId: string) => void;
   clearSessionRendererState: (sessionId: string) => void;
-  clearRuntimeHostRendererState: () => void;
   createSession: () => Promise<void> | void;
   handleConnectionEvent: (event: ConnectionEvent) => void;
   openHelp: () => void;
@@ -230,8 +229,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   pendingTurnActionsRef: RefBox<Set<string>>;
   projectPickerPendingRef: RefBox<boolean>;
   projectPickerRequestRef: RefBox<number>;
-  refreshAppInfo: () => Promise<void>;
-  refreshConnections: () => Promise<void>;
+  refreshConnections: (sessionId?: string) => Promise<void>;
   refreshMemoryActive: (failureContext?: 'load') => Promise<void>;
   refreshMessages: (sessionId: string) => Promise<boolean>;
   refreshScheduledTasks: (options?: { shouldShowError?: () => boolean }) => Promise<void>;
@@ -249,8 +247,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   toastApi: ToastApi;
 }) {
   const runDeferredStartupRefreshes = useEffectEvent(() => {
-    void options.refreshAppInfo();
-    void options.refreshMemoryActive('load');
+    void options.refreshSessions();
     void options.refreshSkills();
     void options.refreshManagedSkillSources();
     void options.refreshBundledSkillCatalog();
@@ -261,11 +258,19 @@ export function useAppShellBootstrapSubscriptions(options: {
     options.handleConnectionEvent(event);
   });
   const handleRuntimeHostChange = useEffectEvent((event: DesktopRuntimeHostProfileChangedEvent) => {
-    if (event.targetChanged) options.clearRuntimeHostRendererState();
-    if (event.readiness !== 'ready') return;
-    void options.refreshProjects();
+    if ((event.removed || event.readiness === 'unavailable') && event.hostId) {
+      const activeSessionId = options.activeIdRef.current;
+      if (activeSessionId && desktopSessionHostId(activeSessionId) === event.hostId) {
+        options.setActiveId(undefined);
+        options.setMessages([]);
+        options.clearSessionRendererState(activeSessionId);
+      }
+    }
     void options.refreshSessions();
-    void options.refreshConnections();
+    if (event.readiness !== 'ready') return;
+    if (!event.isDefault) return;
+    void options.refreshProjects();
+    void options.refreshConnections(options.activeIdRef.current);
     void options.refreshMemoryActive('load');
     void options.refreshSkills();
     void options.refreshManagedSkillSources();
@@ -387,20 +392,21 @@ export function useAppShellBootstrapSubscriptions(options: {
   });
 
   useEffect(() => {
-    // Critical data: sessions + connections are seeded from the onboarding
-    // snapshot (see AppShell useEffect above).  `refreshShellSettings` is
+    // The default Host seeds sessions + connections through onboarding.
+    // `refreshSessions` below expands that seed across every ready Host.
+    // `refreshShellSettings` is
     // waited because it drives theme + locale before first paint settles.
     // Everything else is fire-and-forget on a rAF to keep the critical
     // render path as short as possible.
     void options.refreshShellSettings();
     // Non-critical: defer to next frame so the first paint isn't blocked.
-    requestAnimationFrame(runDeferredStartupRefreshes);
+    const startupFrame = requestAnimationFrame(runDeferredStartupRefreshes);
     const unsubscribeConnections = window.maka.connections.subscribeEvents(handleConnectionSubscriptionEvent);
     const unsubscribeRuntimeHostChanges =
       window.maka.runtimeHostProfiles.subscribeChanges(handleRuntimeHostChange);
     const unsubscribeSettingsExternal = window.maka.settings.subscribeExternalChanged(() => {
       void options.refreshShellSettings();
-      void options.refreshConnections();
+      void options.refreshConnections(options.activeIdRef.current);
     });
     const unsubscribeSessionChanges = window.maka.sessions.subscribeChanges(handleSessionChange);
     const unsubscribeScheduledTaskChanges = window.maka.scheduledTasks.subscribeChanges(handleScheduledTaskChange);
@@ -408,6 +414,7 @@ export function useAppShellBootstrapSubscriptions(options: {
     const unsubscribeWindowCommand = window.maka.appWindow.subscribeCommand(handleWindowCommand);
     markRendererMounted();
     return () => {
+      cancelAnimationFrame(startupFrame);
       cleanupPendingRefs();
       unsubscribeConnections();
       unsubscribeRuntimeHostChanges();
@@ -418,6 +425,14 @@ export function useAppShellBootstrapSubscriptions(options: {
       unsubscribeWindowCommand();
     };
   }, []);
+}
+
+function desktopSessionHostId(sessionId: string): string | undefined {
+  try {
+    return parseDesktopSessionKey(sessionId).hostId;
+  } catch {
+    return undefined;
+  }
 }
 
 export function useActiveSessionEvents(options: {
@@ -500,7 +515,7 @@ export function useActiveSessionEvents(options: {
     if (!activeId) return;
     const observationGeneration = beginObservationSeed(activeId);
     let disposed = false;
-    const transcript = new DesktopTranscriptRangeStore();
+    const transcript = new DesktopTranscriptRangeStore(activeId);
     const subscribedAt = Date.now();
     options.setMessageLoadErrorBySession((current) => {
       if (!current[activeId]) return current;

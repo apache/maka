@@ -10,6 +10,7 @@ import {
   type SetStateAction,
 } from 'react';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
+import type { ProjectRecord } from '@maka/core/project';
 import type { QuoteRef } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import type { SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
@@ -35,6 +36,7 @@ import {
   type ToastErrorAction,
   type NavSelection,
   SessionListPanel,
+  type SessionHistoryGroup,
   SkillsPage,
   type SessionViewMode,
   TitlebarSessionIdentity,
@@ -48,6 +50,7 @@ import {
   getSharedUiCopy,
   reconcileInteractions,
 } from '@maka/ui';
+import type { ConnectionEvent } from '@maka/core/connections';
 import { GitBranch, MessageCircleQuestion, Minimize2, Network } from '@maka/ui/icons';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
@@ -94,7 +97,11 @@ import {
 } from './plan-mode-panel';
 import { McpPage } from './mcp-page';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
-import type { AppUpdateStatus, OnboardingSnapshot } from '../preload/bridge-contract.js';
+import type {
+  AppUpdateStatus,
+  DesktopSessionSummary,
+  OnboardingSnapshot,
+} from '../preload/bridge-contract.js';
 import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../preload/transcript-contract.js';
 import {
   isAppUpdateInstallFailure,
@@ -347,7 +354,6 @@ function AppShellContent({
     setActiveId,
     startNewSession,
     clearOwnedSessionState,
-    clearRuntimeHostSessionState,
     messages,
     setMessages,
     transcriptRangeRef,
@@ -383,7 +389,6 @@ function AppShellContent({
     attachFilePaths,
     removeAttachment,
     clearSubmittedAttachments,
-    clearAllAttachments,
   } = useAppShellComposerAttachments({
     draftKey: attachmentDraftKey,
     toastApi,
@@ -393,7 +398,6 @@ function AppShellContent({
     addQuote,
     removeQuote,
     clearQuotes,
-    clearAllQuotes,
   } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
   const [scheduledTaskCreateRequestNonce, setScheduledTaskCreateRequestNonce] = useState(0);
@@ -432,19 +436,44 @@ function AppShellContent({
     streamingSessionIds,
     activeLiveTurnSnapshot,
   } = useAppShellSessionUiReads(sessionUiController, activeId);
-  // PR-MEMORY-VISIBILITY-INDICATOR-0: session-context memory state (MEMORY.md
-  // injected into the system prompt). State and the fire-and-forget refresh
-  // live in `useShellMemoryPill`; recompute is triggered on mount (bootstrap
-  // subscriptions) and when Settings closes (closeSettings).
-  const { memoryActive, clearMemoryActive, refreshMemoryActive } = useShellMemoryPill({ toastApi, uiLocale });
-  const {
-    connections,
-    defaultConnection,
-    setConnections,
-    setDefaultConnection,
-    refreshConnections,
-    handleConnectionEvent,
-  } = useShellConnections({ toastApi, uiLocale });
+  // The chat surface follows the active Session's Host. Settings and global
+  // commands remain owned by the default Host.
+  const { memoryActive, refreshMemoryActive } = useShellMemoryPill({
+    toastApi,
+    uiLocale,
+    sessionId: activeId,
+  });
+  const defaultHostConnections = useShellConnections({ toastApi, uiLocale });
+  const sessionHostConnections = useShellConnections({
+    toastApi,
+    uiLocale,
+    activeSessionId: activeId,
+  });
+  const connections = activeId
+    ? sessionHostConnections.snapshot.connections
+    : defaultHostConnections.snapshot.connections;
+  const defaultConnection = activeId
+    ? sessionHostConnections.snapshot.defaultConnection
+    : defaultHostConnections.snapshot.defaultConnection;
+  const connectionModelChoices = activeId
+    ? sessionHostConnections.snapshot.chatModelChoices
+    : defaultHostConnections.snapshot.chatModelChoices;
+  const refreshConnections = activeId
+    ? () => sessionHostConnections.refreshConnections(activeId)
+    : () => defaultHostConnections.refreshConnections();
+  function refreshConnectionProjections(sessionId?: string): Promise<void> {
+    return Promise.all([
+      defaultHostConnections.refreshConnections(),
+      ...(sessionId ? [sessionHostConnections.refreshConnections(sessionId)] : []),
+    ]).then(() => undefined);
+  }
+  function handleConnectionEvent(event: ConnectionEvent): void {
+    defaultHostConnections.handleConnectionEvent(event);
+    if (activeId) sessionHostConnections.handleConnectionEvent(event);
+  }
+  useLayoutEffect(() => {
+    if (activeId) void sessionHostConnections.refreshConnections(activeId);
+  }, [activeId]);
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   const onboardingState = onboarding.snapshot?.state;
   const onboardingSettled = hasSettledInitialOnboarding(onboarding.snapshot?.milestones ?? []);
@@ -687,9 +716,9 @@ function AppShellContent({
     () =>
       deriveStaleSessionIds({
         sessions,
-        knownConnectionSlugs: new Set(connections.map((connection) => connection.slug)),
+        sendOutcomes: onboarding.snapshot?.sessionSendOutcomes ?? {},
       }),
-    [sessions, connections],
+    [sessions, onboarding.snapshot?.sessionSendOutcomes],
   );
   // Status-grouped sidebar. The `chats`
   // filter shows sessions grouped by SessionStatus (Pinned →
@@ -728,6 +757,7 @@ function AppShellContent({
     activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const activeSession = sessions.find((session) => session.id === activeId);
+  const activeDesktopSession = activeSession;
   // The shell's reading of the active live turn: streaming/settled flags, the
   // in-flight tool signal, and the #646 turn-wait cues, all derived from the
   // semantic snapshot rather than the projection (#1985).
@@ -781,7 +811,7 @@ function AppShellContent({
   } = useShellChatModel({
     uiLocale,
     connections,
-    snapshotChoices: onboarding.snapshot?.chatModelChoices,
+    chatModelChoices: connectionModelChoices,
     sessionSendOutcome: activeSessionSendOutcome,
     defaultConnection,
     activationCandidate: onboardingActivationCandidate,
@@ -854,26 +884,6 @@ function AppShellContent({
     orchestrationModeChangeRegistry.keysRef.current.delete(sessionId);
     setPendingOrchestrationModeBySession((current) => omitSessionKey(current, sessionId));
     sessionModelChangeRegistry.keysRef.current.delete(sessionId);
-  }
-
-  function clearRuntimeHostRendererState(): void {
-    clearRuntimeHostSessionState();
-    interactionHydrationEpochRef.current.clear();
-    turnActionRegistry.clearAll();
-    sessionRowActionRegistry.clearAll();
-    permissionModeChangeRegistry.clearAll();
-    collaborationModeChangeRegistry.clearAll();
-    orchestrationModeChangeRegistry.clearAll();
-    sessionModelChangeRegistry.clearAll();
-    setPendingCollaborationModeBySession({});
-    setPendingOrchestrationModeBySession({});
-    clearRuntimeHostProjectState();
-    clearRuntimeHostModuleData();
-    clearMemoryActive();
-    setConnections([]);
-    setDefaultConnection(null);
-    clearAllAttachments();
-    clearAllQuotes();
   }
 
   const sessionRowActionHandlers = useStableActions(createAppShellSessionRowActions, {
@@ -1279,7 +1289,7 @@ function AppShellContent({
   const sessionStartPendingRef = useRef(false);
   // Seed sessions from the onboarding snapshot on first load — the snapshot
   // already fetches the session list + connections internally, so separate
-  // `sessions:list` / `connections:list` / `getDefault` IPCs are redundant.
+  // Session and connection snapshot IPCs are redundant.
   // This lets the UI show the sidebar + model picker immediately on first load.
   const initialSnapshotSeededRef = useRef(false);
   const mountedSnapshotSeededRef = useRef(false);
@@ -1301,7 +1311,7 @@ function AppShellContent({
     ) {
       bootstrapFallbackStartedRef.current = true;
       void bootstrapSessions();
-      void refreshConnections();
+      void defaultHostConnections.refreshConnections();
       return;
     }
     let snapshot: OnboardingSnapshot | null = null;
@@ -1326,9 +1336,12 @@ function AppShellContent({
     // refreshSessions() overwrites the seed.
     const next = seedSessions(snapshot.sessions);
     bootstrapSelectionLease.reconcile(collapseSessionRevisions(next));
-    // Seed connections — avoids separate connections:list + getDefault IPCs
-    setConnections(snapshot.connections);
-    setDefaultConnection(snapshot.defaultSlug);
+    // Seed the default Host while its live connection snapshot catches up.
+    defaultHostConnections.setSnapshot({
+      connections: snapshot.connections,
+      defaultConnection: snapshot.defaultSlug,
+      chatModelChoices: snapshot.chatModelChoices,
+    });
     if (releaseSelectionLease) bootstrapSelectionLease.release();
   }, [initialOnboardingSnapshot, onboarding.mountedSnapshotHandoff, onboarding.error]);
   // PR110c (@kenji review): suppress hero AND the fallback EmptyChatHero
@@ -1709,7 +1722,6 @@ function AppShellContent({
     managedSkillSources,
     bundledSkillCatalog,
     scheduledTasks,
-    clearRuntimeHostModuleData,
     refreshScheduledTasks,
     createScheduledTask,
     updateScheduledTask,
@@ -1746,14 +1758,14 @@ function AppShellContent({
     projectInfo,
     projects,
     projectCapabilities,
+    activeProjectCapabilities,
+    localProjects,
     selectedProjectId,
     currentProjectId,
     currentProject,
     projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,
-    clearRuntimeHostProjectState,
-    refreshAppInfo,
     refreshProjects,
     addProject,
     selectProject,
@@ -1773,6 +1785,7 @@ function AppShellContent({
     sessionId: activeId,
     sessionCwd: activeSession?.cwd,
     sessionProjectId: activeSession?.projectId,
+    sessionProfileKind: activeDesktopSession?.profileKind,
     onProjectSelected: (ownerSessionId) => {
       void refreshSkills();
       void refreshManagedSkillSources();
@@ -1815,6 +1828,7 @@ function AppShellContent({
   const taskReadiness = useTaskSubmissionReadiness(
     taskReadinessRequest,
     onboarding.snapshot,
+    activeId,
   );
   const taskReadinessNotice = deriveTaskReadinessNotice(taskReadiness.snapshot, uiLocale);
   const ignoreTaskReadinessModelTarget =
@@ -1830,25 +1844,29 @@ function AppShellContent({
     projectPath: projectInfo?.projectPath,
   });
   const sessionProjectGroups = useMemo(
-    () => deriveProjectGroups(visibleSessions, projects, uiLocale),
-    [visibleSessions, projects, uiLocale],
+    () => deriveDesktopSessionGroups(visibleSessions, localProjects, uiLocale),
+    [visibleSessions, localProjects, uiLocale],
   );
   const worktreeSessionIds = useMemo(
-    () => deriveWorktreeSessionIds(visibleSessions, projects),
-    [visibleSessions, projects],
+    () => deriveWorktreeSessionIds(
+      visibleSessions.filter(
+        (session) => session.profileKind !== 'remote',
+      ),
+      localProjects,
+    ),
+    [visibleSessions, localProjects],
   );
-  // 已归档任务 reads the shell's catalog rather than listing again behind the
-  // modal, and writes through the same row actions the rail uses — one owner
-  // for restoring and deleting a task, whichever surface asked.
+  // Archived Local tasks use the Local Host catalog; remote rows identify
+  // their Host instead of resolving Project ids across unrelated catalogs.
   const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
     () => ({
       sessions,
-      projects,
+      projects: localProjects,
       onRestore: (sessionId) => void sessionRowActionHandlers.unarchiveSession(sessionId),
       onDelete: (sessionId) => void sessionRowActionHandlers.deleteSession(sessionId),
       onPurge: (sessionIds) => sessionRowActionHandlers.purgeSessions(sessionIds),
     }),
-    [sessions, projects],
+    [sessions, localProjects],
   );
   const { startModeSession } = useStableActions(createAppShellSessionStartActions, {
     uiLocale,
@@ -1864,17 +1882,24 @@ function AppShellContent({
     showModelSetupToast,
     toastApi,
   });
-  const projectRowActions: NonNullable<Parameters<typeof SessionListPanel>[0]['projectActions']> = {
-    onNew: createSessionInProject,
-    onRename: renameProject,
-    onArchive: archiveProject,
-    onRestore: restoreProject,
-    ...(projectCapabilities.chooseClientDirectory
+  // Sidebar Project groups come from the Local catalog. Until new tasks have
+  // an explicit Host selector, expose their actions only when Local is also
+  // the default target; otherwise the default-scoped commands would mutate a
+  // different catalog with the same Project id.
+  const projectRowActions: Parameters<typeof SessionListPanel>[0]['projectActions'] =
+    projectCapabilities.setLocalDefault
       ? {
-          onRelink: (projectId: string) => relinkProject(projectId).then(() => undefined),
+          onNew: createSessionInProject,
+          onRename: renameProject,
+          onArchive: archiveProject,
+          onRestore: restoreProject,
+          ...(projectCapabilities.chooseClientDirectory
+            ? {
+                onRelink: (projectId: string) => relinkProject(projectId).then(() => undefined),
+              }
+            : {}),
         }
-      : {}),
-  };
+      : undefined;
 
   // Composer mention popups: `/` uses Runtime's session/project-aware,
   // host-compatible projection; `@` uses workspace file search. Keep the
@@ -2300,7 +2325,6 @@ function AppShellContent({
   });
   useAppShellHostEffects({
     activeId,
-    hasModalOpen,
     setLiveBrowserSessionIds,
   });
   useAppShellBootstrapSubscriptions({
@@ -2311,7 +2335,6 @@ function AppShellContent({
     clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
     confirmLiveTurn,
     clearSessionRendererState,
-    clearRuntimeHostRendererState,
     createSession,
     handleConnectionEvent,
     openHelp,
@@ -2322,8 +2345,7 @@ function AppShellContent({
     pendingTurnActionsRef: turnActionRegistry.keysRef,
     projectPickerPendingRef,
     projectPickerRequestRef,
-    refreshAppInfo,
-    refreshConnections,
+    refreshConnections: refreshConnectionProjections,
     refreshMemoryActive,
     refreshMessages,
     refreshScheduledTasks,
@@ -2588,6 +2610,7 @@ function AppShellContent({
     // session-context memory state — user may have just flipped the
     // agentReadEnabled switch.
     void refreshMemoryActive();
+    void defaultHostConnections.refreshConnections();
     // Settings pages own optimistic local drafts, so the shell does not see
     // every write live. Refresh its display mirrors on close (e.g. default
     // permission mode) without requiring an app restart.
@@ -2652,9 +2675,12 @@ function AppShellContent({
     activeId,
     activePermissionMode,
     canSetPermissionMode: activeBoundarySurface.localInteractionAvailable,
-    clientPathsAccessible: projectCapabilities.viewClientPath,
-    connections,
-    defaultConnection,
+    clientPathsAccessible:
+      activeId
+        ? activeProjectCapabilities.viewClientPath
+        : projectCapabilities.viewClientPath,
+    connections: defaultHostConnections.snapshot.connections,
+    defaultConnection: defaultHostConnections.snapshot.defaultConnection,
     dailyReviewBridge,
     messages,
     sessions,
@@ -2674,7 +2700,7 @@ function AppShellContent({
     openSettingsSection,
     openSkillsFolder,
     openWorkspaceFolder,
-    refreshConnections,
+    refreshConnections: defaultHostConnections.refreshConnections,
     saveDailyReviewMarkdown,
     setNavSelection,
     setPermissionMode,
@@ -2772,7 +2798,7 @@ function AppShellContent({
                   titlebarProjectName
                     ? {
                         name: titlebarProjectName,
-                        ...(projectCapabilities.viewClientPath
+                        ...(activeProjectCapabilities.viewClientPath
                           ? { onOpenFolder: () => void openProjectFolder() }
                           : {}),
                       }
@@ -2824,6 +2850,7 @@ function AppShellContent({
             onViewModeChange={setViewMode}
             groups={viewMode === 'project' ? sessionProjectGroups : undefined}
             worktreeSessionIds={worktreeSessionIds}
+            sessionMeta={runtimeHostSessionMeta}
             moduleMemory={navigationState.moduleMemory}
             onSelect={setNavSelection}
             onSelectSession={sessionListSelectSession}
@@ -3367,9 +3394,9 @@ function AppShellContent({
 
       <AppShellOverlays
         settingsOpen={settingsOpen}
-        connections={connections}
-        defaultConnection={defaultConnection}
-        refreshConnections={refreshConnections}
+        connections={defaultHostConnections.snapshot.connections}
+        defaultConnection={defaultHostConnections.snapshot.defaultConnection}
+        refreshConnections={defaultHostConnections.refreshConnections}
         closeSettings={closeSettings}
         themePref={themePref}
         setThemePref={setThemePref}
@@ -3415,4 +3442,38 @@ function AppShellContent({
       />
     </div>
   );
+}
+
+function runtimeHostSessionMeta(session: DesktopSessionSummary): string | undefined {
+  return session.profileKind === 'remote' ? session.profileName : undefined;
+}
+
+function deriveDesktopSessionGroups(
+  sessions: readonly DesktopSessionSummary[],
+  projects: readonly ProjectRecord[],
+  locale: UiLocale,
+): SessionHistoryGroup[] {
+  const local: DesktopSessionSummary[] = [];
+  const remote = new Map<string, { label: string; sessions: DesktopSessionSummary[] }>();
+  for (const session of sessions) {
+    if (session.profileKind !== 'remote') {
+      local.push(session);
+      continue;
+    }
+    const key = session.profileId;
+    const group = remote.get(key) ?? {
+      label: session.profileName,
+      sessions: [],
+    };
+    group.sessions.push(session);
+    remote.set(key, group);
+  }
+  return [
+    ...deriveProjectGroups(local, projects, locale),
+    ...[...remote].map(([id, group]) => ({
+      id: `runtime-host:${id}`,
+      label: group.label,
+      sessions: group.sessions,
+    })),
+  ];
 }

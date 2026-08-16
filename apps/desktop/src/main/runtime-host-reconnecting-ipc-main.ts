@@ -20,7 +20,7 @@ interface BoundHandler {
 interface HandlerSlot {
   readonly waiters: Set<HandlerWaiter>;
   readonly reconnectableRead: boolean;
-  handler?: BoundHandler;
+  readonly handlers: Map<string, BoundHandler>;
 }
 
 export interface RuntimeHostTargetIpcMain
@@ -45,7 +45,7 @@ export class RuntimeHostTargetChangedError extends Error {
 export class RuntimeHostReconnectingIpcMain {
   readonly #ipcMain: Pick<IpcMain, "handle" | "removeHandler">;
   readonly #slots = new Map<string, HandlerSlot>();
-  #activeEpoch: string | undefined;
+  readonly #activeEpochs = new Set<string>();
   #closed = false;
 
   constructor(ipcMain: Pick<IpcMain, "handle" | "removeHandler">) {
@@ -58,7 +58,7 @@ export class RuntimeHostReconnectingIpcMain {
     const owner = Symbol(epoch);
     return {
       epoch,
-      isActive: () => this.#activeEpoch === epoch,
+      isActive: () => this.#activeEpochs.has(epoch),
       handle: (channel, listener) =>
         this.#handle(epoch, owner, channel, listener, false),
       handleReconnectableRead: (channel, listener) =>
@@ -69,31 +69,27 @@ export class RuntimeHostReconnectingIpcMain {
 
   activate(epoch: string): void {
     if (this.#closed) throw new Error("Desktop Runtime Host IPC router is closed");
-    if (this.#activeEpoch === epoch) return;
-    const previous = this.#activeEpoch;
-    this.#activeEpoch = epoch;
-    if (previous !== undefined) this.#rejectEpoch(previous);
+    this.#activeEpochs.add(epoch);
   }
 
   isActive(epoch: string): boolean {
-    return this.#activeEpoch === epoch;
+    return this.#activeEpochs.has(epoch);
   }
 
   deactivate(epoch: string): void {
-    if (this.#activeEpoch !== epoch) return;
-    this.#activeEpoch = undefined;
+    if (!this.#activeEpochs.delete(epoch)) return;
     this.#rejectEpoch(epoch);
   }
 
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.#activeEpoch = undefined;
+    this.#activeEpochs.clear();
     const error = new Error("Desktop Runtime Host IPC router is closed");
     for (const [channel, slot] of this.#slots) {
       for (const waiter of slot.waiters) waiter.reject(error);
       slot.waiters.clear();
-      slot.handler = undefined;
+      slot.handlers.clear();
       this.#ipcMain.removeHandler(channel);
     }
     this.#slots.clear();
@@ -109,7 +105,11 @@ export class RuntimeHostReconnectingIpcMain {
     if (this.#closed) throw new Error("Desktop Runtime Host IPC router is closed");
     let slot = this.#slots.get(channel);
     if (!slot) {
-      const created: HandlerSlot = { waiters: new Set(), reconnectableRead };
+      const created: HandlerSlot = {
+        handlers: new Map(),
+        waiters: new Set(),
+        reconnectableRead,
+      };
       this.#ipcMain.handle(channel, (event, ...args) =>
         this.#dispatch(created, event, args),
       );
@@ -119,11 +119,11 @@ export class RuntimeHostReconnectingIpcMain {
     if (slot.reconnectableRead !== reconnectableRead) {
       throw new Error(`Desktop Runtime Host IPC policy changed: ${channel}`);
     }
-    if (slot.handler) {
+    if (slot.handlers.has(epoch)) {
       throw new Error(`Desktop Runtime Host IPC handler already exists: ${channel}`);
     }
     const handler = { epoch, owner, listener };
-    slot.handler = handler;
+    slot.handlers.set(epoch, handler);
     for (const waiter of [...slot.waiters]) {
       if (waiter.epoch !== epoch) continue;
       slot.waiters.delete(waiter);
@@ -133,7 +133,10 @@ export class RuntimeHostReconnectingIpcMain {
 
   #removeHandler(owner: symbol, channel: string): void {
     const slot = this.#slots.get(channel);
-    if (slot?.handler?.owner === owner) slot.handler = undefined;
+    if (!slot) return;
+    for (const [epoch, handler] of slot.handlers) {
+      if (handler.owner === owner) slot.handlers.delete(epoch);
+    }
   }
 
   async #dispatch(
@@ -141,21 +144,21 @@ export class RuntimeHostReconnectingIpcMain {
     event: Parameters<IpcHandler>[0],
     args: readonly unknown[],
   ): Promise<unknown> {
-    const epoch = this.#requireActiveEpoch();
-    let handler = slot.handler?.epoch === epoch ? slot.handler : undefined;
+    const epoch = this.#requireTargetEpoch(args[0]);
+    let handler = slot.handlers.get(epoch);
     if (!handler) handler = await this.#waitForHandler(slot, epoch);
     while (true) {
       try {
         const result = await handler.listener(event, ...args);
         this.#assertActive(epoch);
-        if (slot.reconnectableRead && slot.handler !== handler) {
+        if (slot.reconnectableRead && slot.handlers.get(epoch) !== handler) {
           handler = await this.#waitForHandler(slot, epoch, handler);
           continue;
         }
         return result;
       } catch (error) {
         this.#assertActive(epoch);
-        if (slot.reconnectableRead && slot.handler !== handler) {
+        if (slot.reconnectableRead && slot.handlers.get(epoch) !== handler) {
           handler = await this.#waitForHandler(slot, epoch, handler);
           continue;
         }
@@ -177,25 +180,32 @@ export class RuntimeHostReconnectingIpcMain {
     } catch (error) {
       return Promise.reject(error);
     }
-    if (
-      slot.handler?.epoch === epoch &&
-      slot.handler !== previous
-    ) {
-      return Promise.resolve(slot.handler);
+    const current = slot.handlers.get(epoch);
+    if (current !== undefined && current !== previous) {
+      return Promise.resolve(current);
     }
     return new Promise((resolve, reject) => {
       slot.waiters.add({ epoch, resolve, reject });
     });
   }
 
-  #requireActiveEpoch(): string {
+  #requireTargetEpoch(value: unknown): string {
     if (this.#closed) throw new Error("Desktop Runtime Host IPC router is closed");
-    if (this.#activeEpoch === undefined) throw new RuntimeHostTargetChangedError();
-    return this.#activeEpoch;
+    if (
+      !value ||
+      typeof value !== "object" ||
+      typeof (value as { targetEpoch?: unknown }).targetEpoch !== "string" ||
+      !(value as { targetEpoch: string }).targetEpoch
+    ) {
+      throw new RuntimeHostTargetChangedError();
+    }
+    const epoch = (value as { targetEpoch: string }).targetEpoch;
+    this.#assertActive(epoch);
+    return epoch;
   }
 
   #assertActive(epoch: string): void {
-    if (this.#activeEpoch !== epoch) throw new RuntimeHostTargetChangedError();
+    if (!this.#activeEpochs.has(epoch)) throw new RuntimeHostTargetChangedError();
   }
 
   #rejectEpoch(epoch: string): void {

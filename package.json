@@ -49,6 +49,8 @@
     "verify:windows-x64": "node scripts/verify-windows-x64.mjs",
     "verify:windows-installer": "node scripts/verify-windows-installer-lifecycle.mjs",
     "astryx:theme": "node scripts/build-astryx-theme.mjs",
+    "astryx:surface-inventory": "node scripts/check-astryx-surface-inventory.mjs",
+    "astryx:surface-inventory:write": "node scripts/generate-astryx-surface-inventory.mjs",
     "sync:model-metadata": "node scripts/sync-model-metadata.mjs",
     "generate:bundled-skills": "node scripts/gen-bundled-skill-catalog.mjs",
     "cost:deepseek-baseline": "node scripts/deepseek-live-cost-baseline.mjs",

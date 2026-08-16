@@ -24,7 +24,7 @@ export async function readSettledMessages(
   options: RefreshMessagesOptions = {},
 ): Promise<{ messages: StoredMessage[]; settled: boolean }> {
   const deadline = Date.now() + COMMITTED_ASSISTANT_SETTLE_TIMEOUT_MS;
-  const store = new DesktopTranscriptRangeStore();
+  const store = new DesktopTranscriptRangeStore(sessionId);
   let notify: () => void = () => {};
   const changed = () => new Promise<void>((resolve) => {
     notify = resolve;

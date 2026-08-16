@@ -22,6 +22,7 @@ import type { ExternalSessionSummary } from '@maka/core/external-session';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState } from '@maka/core/local-memory';
 import { buildHealthSnapshot } from '@maka/core/health';
 import { createDefaultSettings, mergeSettings } from '@maka/core/settings';
@@ -31,6 +32,7 @@ import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-
 import type { ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import type { ProjectRecord } from '@maka/core/project';
 import type { ArchivedTasksBridge } from '../../src/renderer/settings/tasks-settings-page';
+import type { DesktopSessionSummary } from '../../src/preload/bridge-contract.js';
 import { withScopedMakaBridge } from '../maka-bridge';
 import { getDailyReviewSettingsCopy } from '../../src/renderer/locales/settings-daily-review-copy';
 
@@ -88,11 +90,12 @@ const connections: LlmConnection[] = [
 ];
 
 const connectionsBridge: ConnectionsBridge = {
-  async list() {
-    return connections;
-  },
-  async getDefault() {
-    return 'zai-live';
+  async getSnapshot() {
+    return {
+      connections,
+      defaultConnection: 'zai-live',
+      chatModelChoices: buildChatModelChoices(connections),
+    };
   },
   async setDefault() {
     /* noop */
@@ -814,7 +817,15 @@ const archivedTaskProjects: ProjectRecord[] = [
  */
 function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedTasksBridge {
   const toast = useToast();
-  const [sessions, setSessions] = useState<SessionSummary[]>([...seed]);
+  const [sessions, setSessions] = useState<DesktopSessionSummary[]>(() =>
+    seed.map((session) => ({
+      ...session,
+      runtimeHostId: 'storybook-local',
+      profileId: 'local',
+      profileName: 'Local',
+      profileKind: 'local',
+    })),
+  );
   const confirmDelete = (sessionId: string) =>
     toast.confirm({
       title: `彻底删除「${sessions.find((session) => session.id === sessionId)?.name ?? ''}」？`,
@@ -852,7 +863,13 @@ function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedT
     },
     onPurge: async (sessionIds) => {
       drop(sessionIds);
-      return { removed: sessionIds.length, remaining: [], verified: true, firstError: undefined };
+      return {
+        removed: sessionIds.length,
+        remaining: [],
+        restored: [],
+        verified: true,
+        firstError: undefined,
+      };
     },
   };
 }

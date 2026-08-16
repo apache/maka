@@ -62,7 +62,6 @@ export function SessionRenameDialog(props: {
   return (
     <Dialog isOpen onOpenChange={props.onOpenChange} purpose="form" width={440}>
       <Layout
-        height="auto"
         header={
           <DialogHeader
             title={title}

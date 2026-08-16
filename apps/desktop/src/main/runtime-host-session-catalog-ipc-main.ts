@@ -191,9 +191,33 @@ export function registerRuntimeHostSessionCatalogIpc(
   ipcMain.handle('sessions:remove', async (_event, sessionId: string, options?: unknown) => {
     requestsRevisionFamily(options);
     const ids = await actionIds(sessionId, { revisionFamily: true });
-    await deps.client.removeSession(sessionId);
-    await finishSessionRetirement(deps, ids, 'deleted');
+    // A task restored under the caller's decision is left alone, and nothing
+    // downstream of the deletion runs for it.
+    const disposition = await deps.client.removeSession(sessionId, {
+      requireArchived: requiresArchivedSession(options),
+    });
+    if (disposition === 'removed') await finishSessionRetirement(deps, ids, 'deleted');
+    return disposition;
   });
+}
+
+/**
+ * Reads the archived premise off the remove options.
+ *
+ * This guards a permanent deletion, so it refuses anything it cannot read
+ * rather than falling through to "no premise stated" — which would be the
+ * destructive answer. It repeats the shape check its sibling does instead of
+ * relying on the caller running that one first.
+ */
+function requiresArchivedSession(options: unknown): boolean {
+  if (options === undefined) return false;
+  if (!options || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error('Invalid session family action options');
+  }
+  const value = (options as { requireArchived?: unknown }).requireArchived;
+  if (value === undefined) return false;
+  if (typeof value !== 'boolean') throw new Error('Invalid requireArchived option');
+  return value;
 }
 
 async function finishSessionRetirement(

@@ -187,7 +187,6 @@ export function ModulePage({
               width={420}
             >
               <Layout
-                height="auto"
                 header={<DialogHeader title={inspectorLabel ?? title} onOpenChange={(open) => {
                   if (!open) onInspectorDismiss?.();
                 }} />}

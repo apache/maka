@@ -105,6 +105,21 @@ function isStorybookPath(path) {
  * Electron e2e should pay cold install/boot only when the real window surface
  * or e2e driver changed — not when only packages/ui unit tests changed.
  */
+function isAstryxSurfaceInventoryPath(path) {
+  if (
+    path === 'docs/astryx-surface-file-inventory.md' ||
+    path === 'docs/astryx-surface-file-inventory.paths' ||
+    path === 'scripts/generate-astryx-surface-inventory.mjs' ||
+    path === 'scripts/check-astryx-surface-inventory.mjs'
+  ) {
+    return true;
+  }
+  if (path === 'apps/desktop/src/renderer' || path.startsWith('apps/desktop/src/renderer/')) {
+    return !isPackageTestPath(path);
+  }
+  return isUiProductSourcePath(path);
+}
+
 function isE2eProductPath(path) {
   if (E2E_DRIVING_SCRIPTS.has(path)) return true;
   if (path === 'apps/desktop' || path.startsWith('apps/desktop/')) {
@@ -214,6 +229,7 @@ export function planTests(changedFiles, options = {}) {
   if (full) {
     const workspaces = [...graph.dirs];
     return {
+      astryxSurface: true,
       code: true,
       e2e: true,
       full: true,
@@ -284,6 +300,7 @@ export function planTests(changedFiles, options = {}) {
     windowsBaselineChanged || files.some((path) => isWindowsStorageSensitivePath(path));
 
   return {
+    astryxSurface: files.some((path) => isAstryxSurfaceInventoryPath(path)),
     code,
     // Electron E2E + alignment audit (same job). Product desktop/ui sources and
     // e2e drivers only — a storage/runtime change must not drag cold Electron
@@ -310,6 +327,7 @@ export function planTests(changedFiles, options = {}) {
 
 export function formatGitHubOutputs(plan) {
   return [
+    `astryx_surface=${plan.astryxSurface}`,
     `code=${plan.code}`,
     `e2e=${plan.e2e}`,
     `full=${plan.full}`,

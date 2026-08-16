@@ -47,11 +47,11 @@ export function isActionableBlocked(reason: SessionBlockedReason | undefined): b
  * each consumer re-implementing the rule. Everything else passes through
  * unchanged.
  */
-export function normalizeSessionSummaryForDisplay(session: SessionSummary): SessionSummary {
+export function normalizeSessionSummaryForDisplay<T extends SessionSummary>(session: T): T {
   if (session.status !== 'blocked' || isActionableBlocked(session.blockedReason)) return session;
   const { blockedReason: _blockedReason, ...rest } = session;
   void _blockedReason;
-  return { ...rest, status: 'active' };
+  return { ...rest, status: 'active' } as T;
 }
 
 /**

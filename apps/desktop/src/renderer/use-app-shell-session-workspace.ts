@@ -63,15 +63,6 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     sessionUi.clearSessionUiState(sessionId);
   }
 
-  function clearRuntimeHostSessionState(): void {
-    setActiveId(undefined);
-    setMessages([]);
-    messageRetryPendingRef.current.clear();
-    stopPendingRef.current.clear();
-    sessionUi.clearAllSessionUiState();
-    sessionList.clearSessions();
-  }
-
   return {
     ...sessionList,
     activeId,
@@ -80,7 +71,6 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     setActiveId,
     startNewSession,
     clearOwnedSessionState,
-    clearRuntimeHostSessionState,
     messages,
     setMessages,
     transcriptRangeRef,

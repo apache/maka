@@ -149,21 +149,24 @@ test('publishes every production Desktop-owned tool schema through the protocol'
 
 test('publishes and admits additional Desktop native-effect services', async () => {
   let admitted = false;
-  const provider = createDesktopNativeCapabilityProvider({
-    browserTools: [],
-    releaseBrowserSession() {},
-    computerUseTools: computerTools(),
-    releaseComputerUseSession() {},
-    additionalServices: () => [
-      {
-        serviceId: 'maka_scheduled_task_native_effect',
-        version: '1',
-        async call(method, input) {
-          return { method, id: input.id };
+  const provider = createDesktopNativeCapabilityProvider(
+    {
+      browserTools: [],
+      releaseBrowserSession() {},
+      computerUseTools: computerTools(),
+      releaseComputerUseSession() {},
+      additionalServices: (scope) => [
+        {
+          serviceId: 'maka_scheduled_task_native_effect',
+          version: '1',
+          async call(method, input) {
+            return { method, id: input.id, hostId: scope.hostId };
+          },
         },
-      },
-    ],
-  });
+      ],
+    },
+    { targetScope: { hostId: 'host-1', targetEpoch: 'epoch-1' } },
+  );
   assert.deepEqual(provider.services?.(), [
     { serviceId: 'maka_scheduled_task_native_effect', version: '1' },
   ]);
@@ -175,7 +178,7 @@ test('publishes and admits additional Desktop native-effect services', async () 
     },
   });
   assert.equal(admitted, true);
-  assert.deepEqual(result, { method: 'notify_local', id: 'task-1' });
+  assert.deepEqual(result, { method: 'notify_local', id: 'task-1', hostId: 'host-1' });
 });
 
 test('validates before admission and invokes the exact offered tool with Host context', async () => {

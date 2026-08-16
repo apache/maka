@@ -33,8 +33,12 @@ function restored(id: string): SessionSummary {
 
 type SweepHarness = {
   removed: string[];
+  /** Each `remove` call as `[sessionId, requireArchived]`. */
+  removeOptions: Array<[string, boolean]>;
   cleared: string[];
   selections: Array<string | undefined>;
+  /** Titles of the success toasts a row action raised. */
+  toasts: string[];
   listCalls: number;
 };
 
@@ -50,6 +54,12 @@ function installWindow(
     surviving?: readonly SessionSummary[];
     /** Runs after each accepted removal, to model what another client did meanwhile. */
     onRemove?: (sessionId: string) => void;
+    /**
+     * The catalog the fake Host decides against. It checks the archived premise
+     * here, where the real one checks it inside its compare-and-set — not
+     * against whatever the renderer last saw.
+     */
+    catalog?: readonly SessionSummary[];
   } = {},
 ): () => void {
   const target = globalThis as unknown as { window?: unknown };
@@ -60,10 +70,14 @@ function installWindow(
     value: {
       maka: {
         sessions: {
-          remove: async (id: string) => {
+          remove: async (id: string, removeOptions?: { requireArchived?: boolean }) => {
+            harness.removeOptions.push([id, removeOptions?.requireArchived === true]);
             if (options.rejectIds?.includes(id)) throw new Error(`busy:${id}`);
+            const target = options.catalog?.find((session) => session.id === id);
+            if (removeOptions?.requireArchived && target && !target.isArchived) return 'restored';
             harness.removed.push(id);
             options.onRemove?.(id);
+            return 'removed';
           },
           list: async () => {
             harness.listCalls += 1;
@@ -101,12 +115,25 @@ function createActions(input: {
       input.activeIdRef.current = id;
     },
     setMessages: () => undefined,
-    toastApi: { success: () => undefined, error: () => undefined, confirm: async () => true },
+    toastApi: {
+      success: (title: string) => {
+        input.harness.toasts.push(title);
+      },
+      error: () => undefined,
+      confirm: async () => true,
+    },
   });
 }
 
 function harness(): SweepHarness {
-  return { removed: [], cleared: [], selections: [], listCalls: 0 };
+  return {
+    removed: [],
+    removeOptions: [],
+    cleared: [],
+    selections: [],
+    toasts: [],
+    listCalls: 0,
+  };
 }
 
 describe('purgeSessions', () => {
@@ -124,7 +151,18 @@ describe('purgeSessions', () => {
     const outcome = await actions.purgeSessions(['a-v2', 'b']).finally(restore);
 
     assert.deepEqual(h.removed, ['a-v2', 'b']);
-    assert.deepEqual(outcome, { removed: 2, remaining: [], verified: true, firstError: undefined });
+    assert.deepEqual(outcome, {
+      removed: 2,
+      remaining: [],
+      restored: [],
+      verified: true,
+      firstError: undefined,
+    });
+    // Every delete in a sweep carries the archived premise the confirm named.
+    assert.deepEqual(h.removeOptions, [
+      ['a-v2', true],
+      ['b', true],
+    ]);
     // The family goes, not just the representative, and the open member of it
     // stops being the active session.
     assert.deepEqual(h.cleared.sort(), ['a', 'a-v2', 'b']);
@@ -133,41 +171,99 @@ describe('purgeSessions', () => {
     assert.equal(h.listCalls, 0);
   });
 
-  it('leaves a task that stopped being archived before the sweep reached it', async () => {
+  it('reports a task restored before the sweep reached it, rather than dropping it', async () => {
     // The confirm named a set. One restored from another surface while the
     // dialog was up has left it, and a sweep that deleted it anyway would be
-    // acting outside what was agreed to.
+    // acting outside what was agreed to. Reporting it is the other half: the
+    // person agreed to two and one went, which needs saying.
     const h = harness();
-    const sessions = [restored('kept'), summary('doomed')];
-    const restore = installWindow(h);
-    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined } });
+    const catalog = [restored('kept'), summary('doomed')];
+    const restore = installWindow(h, { catalog });
+    const actions = createActions({
+      harness: h,
+      sessions: [...catalog],
+      activeIdRef: { current: undefined },
+    });
 
     const outcome = await actions.purgeSessions(['kept', 'doomed']).finally(restore);
 
     assert.deepEqual(h.removed, ['doomed']);
     assert.equal(outcome.removed, 1);
+    assert.deepEqual(outcome.restored, ['kept']);
     assert.deepEqual(outcome.remaining, []);
+    // Kept tasks are settled by the delete itself; nothing to check back.
+    assert.equal(h.listCalls, 0);
   });
 
-  it('leaves a task restored while the sweep was already running', async () => {
+  it('reports a task restored while the sweep was already running', async () => {
     // The page disables its own controls during a sweep, so the restore comes
-    // from a second window. A set of archived ids snapshotted before the loop
-    // would not see it, and would delete a task that had left the set the
-    // confirm named — the catalog has to be read as each task is reached.
+    // from a second window, landing after the sweep started and before it
+    // reached this task.
     const h = harness();
-    const sessions = [summary('first'), summary('second')];
+    const catalog = [summary('first'), summary('second')];
     const restore = installWindow(h, {
+      catalog,
       onRemove: (id) => {
-        if (id === 'first') sessions[1] = restored('second');
+        if (id === 'first') catalog[1] = restored('second');
       },
     });
-    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined } });
+    const actions = createActions({
+      harness: h,
+      sessions: [...catalog],
+      activeIdRef: { current: undefined },
+    });
 
     const outcome = await actions.purgeSessions(['first', 'second']).finally(restore);
 
     assert.deepEqual(h.removed, ['first']);
     assert.equal(outcome.removed, 1);
+    assert.deepEqual(outcome.restored, ['second']);
     assert.deepEqual(outcome.remaining, []);
+  });
+
+  it('keeps everything the renderer holds for a task the delete left alone', async () => {
+    const h = harness();
+    const catalog = [summary('first'), restored('rescued')];
+    const restore = installWindow(h, { catalog });
+    const activeIdRef = { current: 'rescued' as string | undefined };
+    const actions = createActions({ harness: h, sessions: [...catalog], activeIdRef });
+
+    const outcome = await actions.purgeSessions(['first', 'rescued']).finally(restore);
+
+    assert.deepEqual(outcome.restored, ['rescued']);
+    assert.equal(outcome.firstError, undefined);
+    // A task that is still there keeps its renderer state, including being the
+    // open one.
+    assert.deepEqual(h.cleared, ['first']);
+    assert.deepEqual(h.selections, []);
+    assert.equal(activeIdRef.current, 'rescued');
+  });
+
+  it('sends every id to the delete instead of deciding against its own snapshot', async () => {
+    // The renderer's list is one observer of a state the Host owns, and a
+    // serial sweep gives a second window plenty of room to outdate it — in
+    // either direction. Here the snapshot is stale in the direction that
+    // silently spares a task: it reads `stale` as no longer archived while the
+    // catalog the delete commits against still has it archived. Filtering here
+    // would drop the id with no outcome at all, which is how a confirmed count
+    // stops adding up.
+    const h = harness();
+    const restore = installWindow(h, { catalog: [summary('stale'), summary('plain')] });
+    const actions = createActions({
+      harness: h,
+      sessions: [restored('stale'), summary('plain')],
+      activeIdRef: { current: undefined },
+    });
+
+    const outcome = await actions.purgeSessions(['stale', 'plain']).finally(restore);
+
+    assert.deepEqual(h.removeOptions, [
+      ['stale', true],
+      ['plain', true],
+    ]);
+    assert.deepEqual(h.removed, ['stale', 'plain']);
+    assert.equal(outcome.removed, 2);
+    assert.deepEqual(outcome.restored, []);
   });
 
   it('skips an id whose row action is already in flight instead of racing it', async () => {
@@ -226,5 +322,46 @@ describe('purgeSessions', () => {
     assert.equal(outcome.verified, false);
     assert.deepEqual(outcome.remaining, []);
     assert.equal(outcome.removed, 0);
+  });
+});
+
+describe('deleteSession', () => {
+  it('carries the archived premise of the row the confirm named', async () => {
+    // Deleting from 已归档任务 is the same decision a sweep makes, one row at a
+    // time, so a restore revokes it the same way.
+    const h = harness();
+    const sessions = [summary('archived-row'), restored('active-row')];
+    const restore = installWindow(h);
+    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined } });
+
+    await actions.deleteSession('archived-row');
+    await actions.deleteSession('active-row');
+    restore();
+
+    // An active task never had an archived premise to lose, so requiring one
+    // would refuse every delete from the rail.
+    assert.deepEqual(h.removeOptions, [
+      ['archived-row', true],
+      ['active-row', false],
+    ]);
+  });
+
+  it('keeps a task the Host reports as restored, and says so', async () => {
+    const h = harness();
+    // The row was archived when the confirm named it; the catalog the delete
+    // commits against says otherwise by the time it lands.
+    const sessions = [summary('rescued')];
+    const restore = installWindow(h, { catalog: [restored('rescued')] });
+    const activeIdRef = { current: 'rescued' as string | undefined };
+    const actions = createActions({ harness: h, sessions, activeIdRef });
+
+    await actions.deleteSession('rescued');
+    restore();
+
+    assert.deepEqual(h.removed, []);
+    assert.deepEqual(h.cleared, []);
+    assert.equal(activeIdRef.current, 'rescued');
+    // Not "Deleted rescued": nothing was.
+    assert.deepEqual(h.toasts, ['rescued was restored, so it was kept']);
   });
 });

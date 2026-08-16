@@ -73,9 +73,9 @@ The Client Profile must separately persist the plaintext acknowledgement. Maka n
 
 ## Connect Desktop
 
-Open `Settings → Workspace → Runtime Host`, choose **Add remote Host**, select the connection method, and enter the method-specific endpoint, the ready event's `rootId`, and the issued credential. Choose **Save and connect**.
+Open `Settings → Workspace → Runtime Host`, choose **Add remote Host**, select the connection method, and enter the method-specific endpoint, the ready event's `rootId`, and the issued credential. Choose **Save and enable**.
 
-The credential is stored separately from the Profile. A failed connection keeps the current Host active and removes the incomplete Profile. After connecting, choose a Project registered on that Host; Client-local directory actions remain unavailable.
+The credential is stored separately from the Profile. Desktop keeps Local and every enabled remote Host connected independently. Choose one as the default for new Sessions; existing Sessions continue to use their owning Host. A failed remote connection remains visible without interrupting the other Hosts. After connecting, choose a Project registered on that Host; Client-local directory actions remain unavailable.
 
 ## Connect TUI or CLI
 

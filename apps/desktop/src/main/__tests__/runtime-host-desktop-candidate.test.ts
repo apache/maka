@@ -23,7 +23,7 @@ import {
   type DesktopRuntimeHostCandidateDeps,
 } from '../runtime-host-desktop-candidate.js';
 import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
-import { desktopSessionResourceKey } from '../../preload/runtime-host-identity.js';
+import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
 
 const TEST_HOST_ID = 'a'.repeat(64);
 const TEST_TARGET_EPOCH = 'test-target-epoch';

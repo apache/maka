@@ -40,16 +40,15 @@ export type SettingsProjectsCopy = {
     rootIdHelp: string;
     credential: string;
     credentialHelp: string;
-    saveAndConnect: string;
-    active: string;
-    connect: string;
+    saveAndEnable: string;
+    defaultBadge: string;
+    defaultDisableHelp: string;
     unavailable: string;
     remove: string;
     empty: string;
     loadFailed: string;
     selectFailed: string;
     saveFailed: string;
-    selectionNotSaved: string;
     removeFailed: string;
     moreActions(name: string): string;
   };
@@ -93,9 +92,9 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
   zh: {
     runtimeHost: {
       title: 'Runtime Host',
-      description: '选择运行任务、自动化和后台工作的 Host。Local 使用这台设备。',
-      selected: 'Host',
-      selectedHelp: '切换会立即生效；连接失败时继续使用当前 Host',
+      description: 'Local 与启用的远程 Host 会同时保持连接；任务仍由其所属 Host 处理。',
+      selected: '默认 Host',
+      selectedHelp: '新任务和未指定 Host 的设置使用默认 Host',
       remoteTitle: '远程 Host',
       remoteDescription: '先在远程机器准备 service、Project 和访问凭据，再通过 TLS 或 SSH tunnel 连接。凭据不会写入 profile 文件。',
       add: '添加远程 Host',
@@ -130,16 +129,15 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       rootIdHelp: '来自远程 service 的 ready 输出，用于确认连接的是预期 Host',
       credential: '访问凭据',
       credentialHelp: '在远程机器使用 desktop-client preset 签发',
-      saveAndConnect: '保存并连接',
-      active: '当前',
-      connect: '连接',
+      saveAndEnable: '保存并启用',
+      defaultBadge: '默认',
+      defaultDisableHelp: '先选择另一个默认 Host，才能停用此 Host',
       unavailable: '无法连接',
       remove: '移除',
       empty: '还没有远程 Host',
       loadFailed: '无法读取 Runtime Host profiles',
-      selectFailed: '无法选择 Runtime Host',
+      selectFailed: '无法更新 Runtime Host',
       saveFailed: '无法保存 Runtime Host profile',
-      selectionNotSaved: 'Runtime Host 已连接，但未保存为启动选择',
       removeFailed: '无法移除 Runtime Host profile',
       moreActions: (name: string) => `更多操作：${name}`,
     },
@@ -180,9 +178,9 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
   en: {
     runtimeHost: {
       title: 'Runtime Host',
-      description: 'Choose the Host that runs tasks, automations, and background work. Local uses this device.',
-      selected: 'Host',
-      selectedHelp: 'Switches immediately; if connection fails, Desktop keeps using the current Host',
+      description: 'Local and enabled remote Hosts stay connected together. Each task remains owned by its Host.',
+      selected: 'Default Host',
+      selectedHelp: 'New tasks and unscoped settings use the default Host',
       remoteTitle: 'Remote Hosts',
       remoteDescription:
         'Prepare the service, Project, and access credential on the remote machine, then connect through TLS or an SSH tunnel. Credentials are never written to the profile file.',
@@ -218,16 +216,15 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       rootIdHelp: 'Copied from the remote service ready output to verify the expected Host',
       credential: 'Access credential',
       credentialHelp: 'Issue it on the remote machine with the desktop-client preset',
-      saveAndConnect: 'Save and connect',
-      active: 'Active',
-      connect: 'Connect',
+      saveAndEnable: 'Save and enable',
+      defaultBadge: 'Default',
+      defaultDisableHelp: 'Choose another default Host before disabling this Host',
       unavailable: 'Unavailable',
       remove: 'Remove',
       empty: 'No remote Hosts yet',
       loadFailed: 'Could not load Runtime Host profiles',
-      selectFailed: 'Could not select the Runtime Host',
+      selectFailed: 'Could not update the Runtime Host',
       saveFailed: 'Could not save the Runtime Host profile',
-      selectionNotSaved: 'Runtime Host connected, but the startup selection was not saved',
       removeFailed: 'Could not remove the Runtime Host profile',
       moreActions: (name: string) => `More actions for ${name}`,
     },

@@ -189,17 +189,17 @@ Authenticated Client 可以发布带大小限制、带版本的 tool 或 service
 
 发布或调用 capability 不会把 Session、Run 或 execution ownership 转移给 Client。Connection loss 会使对应 provider unavailable；拥有该操作的 Domain 仍通过自己的 durable contract 处理 capability loss 或明确的 result-unknown outcome。
 
-### Host profile 选择连接目标
+### Host profile 描述连接目标
 
 Host profile 是 Client-owned connection configuration，不是 Host state。内置 `local` profile 保留现有的零配置 Local IPC 与 candidate spawn 路径。Remote profile 包含显示名称、一种明确的 transport（Direct TLS、SSH tunnel 或已确认风险的明文连接）和必填的 State Root identity；access credential 会单独保存，并绑定到这个 profile 的确切 target。一个 profile ID 对应不可变的 target：改变连接方式、endpoint 或 root 时必须创建新的 profile ID；显示名称与 credential 可以原地更新。
 
-选择 profile 只决定 Client 连接哪个 Host，不会移动 Project 或 Session、改变 Host Epoch，也不会修改所选 Host。所有 remote transport 最终都进入同一 authenticated WebSocket connector，绝不 fallback 到本地 discovery 或 candidate spawn。Tunnel 是 connection-scoped resource：reconnect 会创建新 tunnel，tunnel 关闭或丢失也会关闭对应 connection。每次远程连接都固定 profile 中的 State Root identity；endpoint 给出不同 root 时必须失败。
+启用 profile 会让 Client 连接对应 Host。同一个 Desktop 对同一 State Root 最多启用一个 profile，避免同一个 Host 以不同连接配置重复出现。启用操作不会移动 Project 或 Session、改变 Host Epoch，也不会修改 Host。所有 remote transport 最终都进入同一 authenticated WebSocket connector，绝不 fallback 到本地 discovery 或 candidate spawn。Tunnel 是 connection-scoped resource：reconnect 会创建新 tunnel，tunnel 关闭或丢失也会关闭对应 connection。每次远程连接都固定 profile 中的 State Root identity；endpoint 给出不同 root 时必须失败。
 
-Desktop 会在当前进程内应用新 profile，不需要重启应用。每个 target generation 独占自己的 connection 与 live-event scope，因此为某一 generation 捕获的 request 或 event 不能跨到另一 generation。切换失败时会尝试恢复之前的 target；如果新旧 target 都无法连接，Desktop 会明确报告当前没有 active Host。
+Desktop 会让 `local` 与所有已启用的 remote profile 独立保持连接。其中一个 profile 是默认 Host，只用于创建新 Session 和其他没有现成 Host scope 的操作；改变默认 Host 不会重连 Host，也不会移动已有 Session。一个 remote connection 失败不会中断 Local 或其他 remote Host。
 
-Desktop 使用 Host handshake 已验证的 root identity 与当前 target generation，共同作为每个 Host-backed IPC request 和 event 的 scope。Desktop 仍只有一个 active Host 时，preload 会把现有产品 API 绑定到该 scope，main process 在分发给 domain handler 前统一校验。相同 target 重连时会保留该绑定；切换 profile 时，即使两个 profile 指向同一个 root，也会使旧绑定失效。Browser control、diagnostics 等 persistent Client-local surface 也使用同一道 fence。这个 scope 用于防止跨 target 误路由，不是 authentication boundary。
+Desktop 会聚合所有已连接 Host 的 Session summary。产品中的 Session identity 是 `(Host rootId, Session id)`，因此不同 Host 上相同的 Session id 仍是两个不同 Session。Request、event 与 persistent Client-local resource 都会路由回拥有该 Session 的 Host。Transport scope 还包含 Client target Epoch（`targetEpoch`），用于在 Desktop 替换该 profile 的 connection lifecycle 后阻止迟到的 request 或 event。Client target Epoch 不是 Host Epoch，也不是 authentication boundary。
 
-持久化的 Desktop selection 表示期望连接的 target，不是当前 connection 已生效的证明。启动时若所选 profile 或 credential 不可用，Desktop 会让用户选择重试、明确使用 `local` 或退出，不会静默改写 selection。TUI 与 CLI 在启动时解析一个 profile，并把 selection 不可用作为错误报告。
+已启用 profile 与默认 profile 是持久化偏好，不代表 connection 已 ready。Remote profile 不可用时，Desktop 仍会显示它，供用户重试或停用。TUI 与 CLI 仍是单 Host Client：启动时解析一个 profile，并把 profile 不可用作为错误报告。
 
 Remote Desktop generation 不能提交任意 Host path。它读取 Project summary、提交 Project ID，并阻止 Client-local capability 收到远端 Host path。目录选择、Git review、workspace search 和打开 Skill 文件等本地文件系统操作只在 `local` 下可用。
 
@@ -219,7 +219,7 @@ type WorkspaceTarget =
 
 Project summary 不暴露已注册的 location。`canUseHostPaths` 控制 Client 能否在 operation 中指定 Host path，不是 path confidentiality boundary。Canonical Session projection 可以包含解析后的 `hostCwd`；remote Client 只能把它当作 Host metadata，不能当作 Client filesystem path。读取或修改 Project location、让 Host reveal path 仍是各自独立的 operation，而提交 `host_path` 必须具有 Host-path authority。
 
-Client 不把 path 与 Project ID 拼在一起，也不自行解析 Host path。Desktop 会按 State Root 在本地记住所选 Project；选择它不会修改 Host 全局状态。Remote Client 必须从所选 Host 中选择已有 Project。Desktop 不能打开 Client-local directory picker 并假装它选择了 Host directory；CLI/TUI 也不能通过 Client filesystem 重新解释、验证、迁移或补全 Host path。
+Client 不把 path 与 Project ID 拼在一起，也不自行解析 Host path。Desktop 会按 State Root 在本地记住所选 Project；选择它不会修改 Host 全局状态。Remote Client 必须从将要拥有新 Session 的 Host 中选择已有 Project。Desktop 不能打开 Client-local directory picker 并假装它选择了 Host directory；CLI/TUI 也不能通过 Client filesystem 重新解释、验证、迁移或补全 Host path。
 
 ## 生命周期
 

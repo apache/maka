@@ -13,10 +13,10 @@ import {
 import { type UiLocale } from '@maka/core/ui-locale';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
 import { cleanErrorMessage } from '../model-connection-errors.js';
+import type { DesktopConnectionSnapshot } from '../../shared/desktop-connection-snapshot.js';
 
 export interface ConnectionsBridge {
-  list(): Promise<LlmConnection[]>;
-  getDefault(): Promise<string | null>;
+  getSnapshot(): Promise<DesktopConnectionSnapshot>;
   setDefault(slug: string | null): Promise<void>;
   create(input: CreateConnectionInput): Promise<LlmConnection>;
   update(slug: string, patch: UpdateConnectionInput): Promise<LlmConnection>;

@@ -16,6 +16,12 @@ export type SettingsTasksCopy = {
   purgeConfirmBody: string;
   purgeConfirmAction: string;
   purgedToast(count: number): string;
+  /**
+   * Tasks a sweep kept because they were restored while it ran. Reads after
+   * either outcome, so a sweep never has to choose between reporting a failure
+   * and reporting what it deliberately left alone.
+   */
+  purgeKeptRestored(count: number): string;
   purgeFailedTitle: string;
   purgeFailedBody(count: number): string;
   purgeUnverified: string;
@@ -41,6 +47,7 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     purgeConfirmBody: '这些任务及其全部消息会被永久删除，无法撤销。',
     purgeConfirmAction: '永久删除',
     purgedToast: (count: number) => `已删除 ${count} 条任务`,
+    purgeKeptRestored: (count: number) => `另有 ${count} 条在此期间被恢复，已保留。`,
     purgeFailedTitle: '删除任务失败',
     purgeFailedBody: (count: number) => `${count} 条仍在，请重试。`,
     purgeUnverified: '任务已删除，但无法读取列表确认结果。请重新打开本页查看。',
@@ -67,6 +74,10 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
       'The tasks and all of their messages are removed permanently. This cannot be undone.',
     purgeConfirmAction: 'Delete permanently',
     purgedToast: (count: number) => (count === 1 ? 'Deleted 1 task' : `Deleted ${count} tasks`),
+    purgeKeptRestored: (count: number) =>
+      count === 1
+        ? '1 more was restored meanwhile and kept.'
+        : `${count} more were restored meanwhile and kept.`,
     purgeFailedTitle: 'Could not delete the tasks',
     purgeFailedBody: (count: number) =>
       count === 1 ? '1 task is still there. Try again.' : `${count} tasks are still there. Try again.`,

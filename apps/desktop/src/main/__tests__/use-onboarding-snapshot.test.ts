@@ -242,6 +242,10 @@ describe('onboarding mounted snapshot handoff', () => {
       ...READY_SNAPSHOT,
       sessions: [
         {
+          runtimeHostId: 'host-1',
+          profileId: 'local',
+          profileName: 'Local',
+          profileKind: 'local',
           id: 'created-during-bootstrap',
           name: 'New session',
           isFlagged: false,

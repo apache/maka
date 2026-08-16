@@ -41,19 +41,21 @@ export function useAppShellProjectContext(options: {
   sessionId?: string;
   sessionCwd?: string;
   sessionProjectId?: string | null;
+  sessionProfileKind?: 'local' | 'remote';
   onProjectSelected(ownerSessionId?: string): void;
   toastApi: ToastApi;
 }): AppShellProjectActions & {
   projectInfo: RendererAppInfo | null;
   projects: ProjectRecord[];
   projectCapabilities: DesktopProjectCapabilities;
+  activeProjectCapabilities: DesktopProjectCapabilities;
+  localProjects: readonly ProjectRecord[];
   selectedProjectId: string | null | undefined;
   currentProjectId: string | null | undefined;
   currentProject: ProjectRecord | undefined;
   projectPickerPending: boolean;
   projectPickerPendingRef: RefBox<boolean>;
   projectPickerRequestRef: RefBox<number>;
-  clearRuntimeHostProjectState(): void;
 } {
   const {
     uiLocale,
@@ -61,6 +63,7 @@ export function useAppShellProjectContext(options: {
     sessionId,
     sessionCwd,
     sessionProjectId,
+    sessionProfileKind,
     onProjectSelected,
     toastApi,
   } = options;
@@ -69,34 +72,67 @@ export function useAppShellProjectContext(options: {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [projectCapabilities, setProjectCapabilities] =
     useState<DesktopProjectCapabilities>(NO_PROJECT_CAPABILITIES);
+  const [localHostProjects, setLocalHostProjects] = useState<ProjectRecord[]>([]);
+  const [sessionProjectSnapshot, setSessionProjectSnapshot] = useState<{
+    sessionId: string;
+    projects: ProjectRecord[];
+    capabilities: DesktopProjectCapabilities;
+  } | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null | undefined>(undefined);
   const [projectPickerPending, setProjectPickerPending] = useState(false);
   const projectPickerPendingRef = useRef(false);
   const projectPickerRequestRef = useRef(0);
+  const defaultRefreshGenerationRef = useRef(0);
+
+  const refreshDefaultProjectState = async (): Promise<ProjectRecord[]> => {
+    const generation = ++defaultRefreshGenerationRef.current;
+    const { snapshot, info } = await window.maka.projects.getDefaultContext();
+    if (
+      !rendererMountedRef.current ||
+      generation !== defaultRefreshGenerationRef.current
+    ) {
+      return [];
+    }
+    const nextProjects = [...snapshot.projects];
+    setProjects(nextProjects);
+    setProjectCapabilities(snapshot.capabilities);
+    setAppInfo({
+      projectId: info.projectId,
+      projectPath: info.projectPath,
+      projectGit: info.projectGit,
+    });
+    setSelectedProjectId(info.projectId);
+    return nextProjects;
+  };
+
+  useEffect(() => {
+    const refresh = () => void refreshDefaultProjectState().catch(() => {
+      // Project management failures surface at the next user action.
+    });
+    const unsubscribe = window.maka.projects.subscribeChanges(refresh);
+    refresh();
+    return () => {
+      defaultRefreshGenerationRef.current += 1;
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     let refreshGeneration = 0;
     const refresh = () => {
       const generation = ++refreshGeneration;
-      return Promise.all([window.maka.projects.getSnapshot(), window.maka.app.info()]).then(
-        ([snapshot, info]) => {
+      return window.maka.projects.getLocalSnapshot().then(
+        (snapshot) => {
           if (cancelled || generation !== refreshGeneration) return;
-          setProjects([...snapshot.projects]);
-          setProjectCapabilities(snapshot.capabilities);
-          setAppInfo({
-            projectId: info.projectId,
-            projectPath: info.projectPath,
-            projectGit: info.projectGit,
-          });
-          setSelectedProjectId(info.projectId);
+          setLocalHostProjects([...snapshot.projects]);
         },
         () => {
-          // Project management failures surface at the next user action.
+          // The Local Host may be reconnecting; its ready event retries this read.
         },
       );
     };
-    const unsubscribe = window.maka.projects.subscribeChanges(() => void refresh());
+    const unsubscribe = window.maka.projects.subscribeLocalChanges(() => void refresh());
     void refresh();
     return () => {
       cancelled = true;
@@ -105,7 +141,36 @@ export function useAppShellProjectContext(options: {
   }, []);
 
   useEffect(() => {
-    if (!sessionId || !projectCapabilities.viewClientPath) return;
+    if (!sessionId) {
+      setSessionProjectSnapshot(null);
+      return;
+    }
+    let cancelled = false;
+    let refreshGeneration = 0;
+    const refresh = () => {
+      const generation = ++refreshGeneration;
+      return window.maka.projects.getSnapshot(sessionId).then(
+        (snapshot) => {
+          if (cancelled || generation !== refreshGeneration) return;
+          setSessionProjectSnapshot({
+            sessionId,
+            projects: [...snapshot.projects],
+            capabilities: snapshot.capabilities,
+          });
+        },
+        () => undefined,
+      );
+    };
+    const unsubscribe = window.maka.projects.subscribeChanges(() => void refresh(), sessionId);
+    void refresh();
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || sessionProfileKind !== 'local') return;
     let cancelled = false;
     void window.maka.app.sessionProjectInfo(sessionId).then(
       (info) => {
@@ -119,7 +184,7 @@ export function useAppShellProjectContext(options: {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, sessionCwd, projectCapabilities.viewClientPath]);
+  }, [sessionId, sessionCwd, sessionProfileKind]);
 
   const resolvedSessionProjectInfo =
     sessionId &&
@@ -132,51 +197,46 @@ export function useAppShellProjectContext(options: {
       (sessionCwd ? { projectPath: sessionCwd, projectGit: { isGitRepo: false } } : null))
     : appInfo;
   const currentProjectId = sessionId ? (sessionProjectId ?? null) : selectedProjectId;
-  const currentProject = projects.find(
-    (project) => project.id === currentProjectId || project.aliases?.includes(currentProjectId ?? ''),
-  );
+  const activeProjectSnapshot = sessionProjectSnapshot?.sessionId === sessionId
+    ? sessionProjectSnapshot
+    : null;
+  const activeProjectCapabilities = sessionId
+    ? (activeProjectSnapshot?.capabilities ?? NO_PROJECT_CAPABILITIES)
+    : projectCapabilities;
+  const activeProjects = sessionId ? (activeProjectSnapshot?.projects ?? []) : projects;
+  const currentProject = !activeProjectCapabilities.viewClientPath
+    ? undefined
+    : activeProjects.find(
+        (project) =>
+          project.id === currentProjectId || project.aliases?.includes(currentProjectId ?? ''),
+      );
   const actions = createAppShellProjectActions({
     uiLocale,
     projectPickerPendingRef,
     projectPickerRequestRef,
     rendererMountedRef,
-    setAppInfo,
-    setSessionProjectInfo,
     setProjectPickerPending,
-    setProjects,
-    setProjectCapabilities,
-    setSelectedProjectId,
+    refreshDefaultProjectState,
     selectedProjectId,
     projects,
     projectCapabilities,
-    projectInfo,
     sessionId,
     onProjectSelected,
     toastApi,
   });
 
-  function clearRuntimeHostProjectState(): void {
-    projectPickerRequestRef.current += 1;
-    projectPickerPendingRef.current = false;
-    setProjectPickerPending(false);
-    setProjects([]);
-    setProjectCapabilities(NO_PROJECT_CAPABILITIES);
-    setAppInfo(null);
-    setSessionProjectInfo(null);
-    setSelectedProjectId(undefined);
-  }
-
   return {
     projectInfo,
     projects,
     projectCapabilities,
+    activeProjectCapabilities,
+    localProjects: localHostProjects,
     selectedProjectId,
     currentProjectId,
     currentProject,
     projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,
-    clearRuntimeHostProjectState,
     ...actions,
   };
 }

@@ -14,6 +14,7 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
+      astryx_surface: ${{ steps.plan.outputs.astryx_surface }}
       code: ${{ steps.plan.outputs.code }}
       e2e: ${{ steps.plan.outputs.e2e }}
       runtime_host: ${{ steps.plan.outputs.runtime_host }}
@@ -42,6 +43,22 @@ jobs:
           else
             node scripts/ci-test-plan.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
           fi
+
+  astryx_surface:
+    needs: changes
+    if: needs.changes.outputs.astryx_surface == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Astryx surface inventory
+        run: npm run astryx:surface-inventory
 
   typecheck:
     needs: changes

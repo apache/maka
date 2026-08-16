@@ -54,7 +54,9 @@ test('cancels settlement while transcript open is pending', async () => {
   });
   const controller = new AbortController();
   try {
-    const settling = readSettledMessages('session-1', { signal: controller.signal });
+    const settling = readSettledMessages(JSON.stringify(['host-1', 'session-1']), {
+      signal: controller.signal,
+    });
     controller.abort();
     await assert.rejects(settling, /settlement was cancelled/);
     assert.equal(cancelled, true);
@@ -71,7 +73,7 @@ test('moves a fragmented overlay record to durable storage without duplicating i
     generation: 'generation-1',
     hostEpoch: 'host-1',
   };
-  const store = new DesktopTranscriptRangeStore();
+  const store = transcriptStore();
   const snapshot = [...encodeDesktopTranscriptSnapshot({
     ...identity,
     durableThrough: null,
@@ -116,7 +118,7 @@ test('retains the newest observed durable prompt across eviction', () => {
     generation: 'generation-1',
     hostEpoch: 'host-1',
   };
-  const store = new DesktopTranscriptRangeStore();
+  const store = transcriptStore();
   for (const batch of encodeDesktopTranscriptSnapshot({
     ...identity,
     durableThrough: 3,
@@ -143,7 +145,7 @@ test('retains the newest observed durable prompt across eviction', () => {
 });
 
 test('drops stale transcript batches after a generation reset', () => {
-  const store = new DesktopTranscriptRangeStore();
+  const store = transcriptStore();
   const oldBatches = [...encodeDesktopTranscriptSnapshot({
     sessionId: 'session-1',
     generation: 'old',
@@ -386,7 +388,7 @@ test('does not release resident bytes when preparation accounting rejects them',
 });
 
 test('reopens a failed transcript range with a fresh generation', async () => {
-  const store = new DesktopTranscriptRangeStore();
+  const store = transcriptStore();
   let attempts = 0;
   const controller = createDesktopTranscriptRangeController(store, async () => {
     attempts += 1;
@@ -420,7 +422,7 @@ test('reopens a failed transcript range with a fresh generation', async () => {
 });
 
 test('forwards a larger logical history range without changing batch size', async () => {
-  const store = new DesktopTranscriptRangeStore();
+  const store = transcriptStore();
   for (const batch of encodeDesktopTranscriptSnapshot({
     sessionId: 'session-1',
     generation: 'generation-1',
@@ -451,7 +453,7 @@ test('forwards a larger logical history range without changing batch size', asyn
 });
 
 test('waits for the required durable message on the current transcript generation', async () => {
-  const store = new DesktopTranscriptRangeStore();
+  const store = transcriptStore();
   const identity = {
     sessionId: 'session-1',
     generation: 'generation-1',
@@ -479,7 +481,7 @@ test('waits for the required durable message on the current transcript generatio
 });
 
 test('cancels a transcript open that is still waiting for a Host', async () => {
-  const store = new DesktopTranscriptRangeStore();
+  const store = transcriptStore();
   let openSignal: AbortSignal | undefined;
   const controller = createDesktopTranscriptRangeController(
     store,
@@ -506,6 +508,10 @@ function assistantMessage(
     text,
     modelId: 'model-1',
   };
+}
+
+function transcriptStore(): DesktopTranscriptRangeStore {
+  return new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
 }
 
 function userMessage(

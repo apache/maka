@@ -1513,6 +1513,67 @@ test('absolute live offsets survive a gap with no connected subscribers', async 
   coordinator.close();
 });
 
+test('keeps the current provider retry on the live Turn until the next content event', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const liveSink = new RecordingSink();
+  const live = coordinator.attachConnection('connection-live', liveSink);
+  const opened = await open(coordinator, 'connection-live');
+  assert.equal(opened.snapshot.rootTurn && 'providerRetry' in opened.snapshot.rootTurn, false);
+  live.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'provider_retry',
+    id: 'retry-1',
+    turnId: 'turn-1',
+    ts: 1,
+    phase: 'scheduled',
+    attempt: 8,
+    maxAttempts: 10,
+    delayMs: 40_000,
+    reason: 'rate_limit',
+  });
+
+  const retry = {
+    phase: 'scheduled' as const,
+    attempt: 8,
+    maxAttempts: 10,
+    delayMs: 40_000,
+    reason: 'rate_limit' as const,
+  };
+  coordinator.attachConnection('connection-remount', new RecordingSink());
+  const remounted = await open(coordinator, 'connection-remount');
+  assert.deepEqual(
+    remounted.snapshot.rootTurn && 'providerRetry' in remounted.snapshot.rootTurn
+      ? remounted.snapshot.rootTurn.providerRetry
+      : undefined,
+    retry,
+  );
+  assert.ok(
+    liveSink.frames.some(
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.rootTurn &&
+        'providerRetry' in frame.snapshot.rootTurn &&
+        frame.snapshot.rootTurn.providerRetry?.phase === 'scheduled',
+    ),
+  );
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+  coordinator.attachConnection('connection-after-text', new RecordingSink());
+  const afterText = await open(coordinator, 'connection-after-text');
+  assert.equal(
+    afterText.snapshot.rootTurn && 'providerRetry' in afterText.snapshot.rootTurn,
+    false,
+  );
+
+  live.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
 test('rejoin seeds tool_result_preview at the open nextSequence without sequence_gap', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,

@@ -8,6 +8,7 @@ import { redactSecrets } from './redact.js';
 import { isProgressiveStreamingEnabled, isTimeDrivenMotionEnabled } from './streaming-presentation.js';
 import {
   Badge,
+  Banner,
   Button as UiButton,
   ChatMessage,
   ChatMessageBubble,
@@ -974,7 +975,7 @@ export function TurnRunningStatus(props: { startedAt?: number }) {
 
 export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const text =
+  const title =
     props.retry.phase === 'scheduled'
       ? copy.providerRetryScheduled(
           Math.max(1, Math.ceil(props.retry.delayMs / 1_000)),
@@ -983,14 +984,14 @@ export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }
         )
       : copy.providerRetryStarted(props.retry.attempt, props.retry.maxAttempts);
   return (
-    <div
-      className="maka-turn-status"
+    <Banner
+      status="warning"
+      container="section"
       role="status"
-      aria-live="polite"
-    >
-      <RefreshCcw size={ICON_SIZE.chrome} aria-hidden="true" className="maka-turn-status-icon" />
-      <span className="maka-turn-indicator-text">{text}</span>
-    </div>
+      className="maka-turn-provider-retry"
+      title={title}
+      description={copy.providerRetryReason[props.retry.reason]}
+    />
   );
 }
 

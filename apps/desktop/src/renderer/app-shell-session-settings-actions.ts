@@ -3,11 +3,11 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 import type { PermissionMode } from '@maka/core/permission';
 import {
   deriveModelSwitchTranscript,
-  type SessionSummary,
   type StoredMessage,
 } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiLocale } from '@maka/core/ui-locale';
+import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 
 type RefBox<T> = { current: T };
@@ -38,15 +38,17 @@ export function createAppShellSessionSettingsActions(deps: {
   messages: readonly StoredMessage[];
   pendingPermissionModeChangesRef: RefBox<Set<string>>;
   pendingSessionModelChangesRef: RefBox<Set<string>>;
-  refreshSessions: () => Promise<SessionSummary[]>;
+  refreshSessions: () => Promise<DesktopSessionSummary[]>;
   saveComposerDefaults: (patch: {
     model: { llmConnectionSlug: string; model: string };
   }) => void;
-  sessionsRef: RefBox<SessionSummary[]>;
+  sessionsRef: RefBox<DesktopSessionSummary[]>;
   setDefaultPermissionMode: (mode: ChatDefaultPermissionMode) => void;
   setPendingPermissionModeBySession: BooleanRecordUpdater;
   setPendingSessionModelBySession: BooleanRecordUpdater;
-  setSessions: (updater: (current: SessionSummary[]) => SessionSummary[]) => void;
+  setSessions: (
+    updater: (current: DesktopSessionSummary[]) => DesktopSessionSummary[],
+  ) => void;
   toastApi: ToastApi;
 }): AppShellSessionSettingsActions {
   const {

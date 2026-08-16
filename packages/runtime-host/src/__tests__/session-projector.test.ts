@@ -49,6 +49,103 @@ test('applies authoritative replacement once and does not complete it again at T
   );
 });
 
+test('reseeds the latest provider retry when the active Turn still carries one', () => {
+  const retry = {
+    phase: 'scheduled' as const,
+    attempt: 8,
+    maxAttempts: 10,
+    delayMs: 40_000,
+    reason: 'rate_limit' as const,
+  };
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        status: 'running',
+        providerRetry: retry,
+      },
+    }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const seeded = projector.seedActive(true);
+  assert.equal(seeded.length, 1);
+  assert.equal(seeded[0]?.type, 'provider_retry');
+  assert.equal(seeded[0] && 'phase' in seeded[0] ? seeded[0].phase : undefined, 'scheduled');
+});
+
+test('emits a live provider retry when the snapshot overlay appears, then drops it after content', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const retrying = snapshot({
+    projectionRevision: 2,
+    rootTurn: {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'running',
+      providerRetry: {
+        phase: 'scheduled',
+        attempt: 8,
+        maxAttempts: 10,
+        delayMs: 40_000,
+        reason: 'rate_limit',
+      },
+    },
+  });
+  const appeared = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: retrying,
+  }).events;
+  assert.equal(appeared.length, 1);
+  assert.equal(appeared[0]?.type, 'provider_retry');
+
+  const recovered = snapshot({
+    projectionRevision: 3,
+    rootTurn: {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'running',
+    },
+  });
+  projector.accept({
+    kind: 'subscription.session_delta',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 2,
+    sessionId: 'session-1',
+    delta: {
+      kind: 'text',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      messageId: 'message-1',
+      startOffset: 0,
+      text: 'ok',
+    },
+  });
+  projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 3,
+    snapshot: recovered,
+  });
+  assert.deepEqual(
+    projector.seedActive(true).map((event) => event.type),
+    ['text_delta'],
+  );
+});
+
 test('seeds only streams identified as active by the Host catch-up state', () => {
   const transcript: StoredMessage[] = [
     assistant('completed-step', 'done'),

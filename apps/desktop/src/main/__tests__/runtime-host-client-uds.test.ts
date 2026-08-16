@@ -103,6 +103,8 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
   const base = await mkdtemp(join(tmpdir(), 'maka-desktop-host-ipc-'));
   let host: RuntimeHostKernel | undefined;
   let projected: SessionCatalogProjection | undefined;
+  /** Arms one concurrent restore, landing between the Client's read and its remove. */
+  let restoreUnderNextRemove = false;
   try {
     const capability = await resolveStorageRoot({ path: base, kind: 'interactive' });
     const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -180,6 +182,26 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
           },
           'session.remove': async (input) => {
             assert.ok(projected);
+            if (restoreUnderNextRemove) {
+              // Another window restored the task between the Client's read and
+              // this write. The Host rejects the stale revision, which is what
+              // a restore looks like from here.
+              restoreUnderNextRemove = false;
+              projected = session(projected.id, {
+                ...projected,
+                revision: projected.revision + 1,
+                isArchived: false,
+                status: 'active',
+              });
+              return {
+                ok: true,
+                result: {
+                  kind: 'revision_conflict',
+                  expectedRevision: input.expectedRevision,
+                  actualRevision: projected.revision,
+                },
+              };
+            }
             assert.equal(input.expectedRevision, projected.revision);
             const sessionId = projected.id;
             projected = undefined;
@@ -240,11 +262,23 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     );
     await ipc.invoke('sessions:archive', 'session-ipc');
     assert.equal((await ipc.invoke('sessions:list') as Array<{ isArchived: boolean }>)[0]?.isArchived, true);
-    await ipc.invoke('sessions:remove', 'session-ipc');
+    // A purge sweep asks for the task it saw archived. Restored under it, the
+    // deletion is called off rather than replayed at the fresh revision (#3050).
+    restoreUnderNextRemove = true;
+    assert.equal(
+      await ipc.invoke('sessions:remove', 'session-ipc', { revisionFamily: true, requireArchived: true }),
+      'restored',
+    );
+    assert.equal((await ipc.invoke('sessions:list') as Array<{ isArchived: boolean }>)[0]?.isArchived, false);
+    await ipc.invoke('sessions:archive', 'session-ipc');
+    assert.equal(await ipc.invoke('sessions:remove', 'session-ipc'), 'removed');
     assert.deepEqual(await ipc.invoke('sessions:list'), []);
+    // Nothing was retired for the restored task: no `deleted` between the two
+    // archives, and the renderer keeps everything it holds for it.
     assert.deepEqual(changes, [
       { reason: 'created', sessionId: 'session-ipc' },
       { reason: 'mode-change', sessionId: 'session-ipc' },
+      { reason: 'archived', sessionId: 'session-ipc' },
       { reason: 'archived', sessionId: 'session-ipc' },
       { reason: 'deleted', sessionId: 'session-ipc' },
     ]);

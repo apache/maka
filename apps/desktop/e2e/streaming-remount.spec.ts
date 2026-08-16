@@ -3,7 +3,12 @@ import {
   FAKE_HOLD_OPEN_REWRITE_PROMPT,
   FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT,
 } from '@maka/runtime/fake-backend';
+import type { Locator } from '@playwright/test';
 import { expect, COMPOSER_INPUT, test } from './fixtures';
+
+function sessionRow(sidebar: Locator, sessionId: string): Locator {
+  return sidebar.locator(`[data-session-id=${JSON.stringify(sessionId)}]`);
+}
 
 test('remounting a live surface leaves accumulated output settled', async ({
   window: page,
@@ -142,13 +147,13 @@ test('keeps a completed reply after an interrupted turn and conversation remount
     timeout: 20_000,
   });
 
-  const temporarySessionRow = sidebar.locator(`[data-session-id="${temporarySessionId}"]`);
+  const temporarySessionRow = sessionRow(sidebar, temporarySessionId!);
   await temporarySessionRow.click();
   await expect(temporarySessionRow.locator('[aria-current="page"]')).toHaveCount(1, {
     timeout: 20_000,
   });
   await expect(page.getByRole('log')).toContainText('Fake backend received: temporary conversation');
-  const originalSessionRow = sidebar.locator(`[data-session-id="${originalSessionId}"]`);
+  const originalSessionRow = sessionRow(sidebar, originalSessionId!);
   await originalSessionRow.click();
   await expect(originalSessionRow.locator('[aria-current="page"]')).toHaveCount(1, {
     timeout: 20_000,
@@ -247,7 +252,7 @@ test('returning to a live conversation settles output accumulated while away', a
     ).__makaBackgroundRestoreObserved = observed;
     window.requestAnimationFrame(sample);
   });
-  await sidebar.locator(`[data-session-id="${originalSessionId}"]`).click();
+  await sessionRow(sidebar, originalSessionId!).click();
   await liveBubble.waitFor({ state: 'attached' });
   await expect(liveBubble).toContainText(backgroundSteering);
 

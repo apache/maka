@@ -24,10 +24,9 @@ test('registers pure Connection reads for replacement-Host retry', () => {
   });
 
   assert.deepEqual([...reads].sort(), [
-    'connections:getDefault',
     'connections:getRequestHeaders',
+    'connections:getSnapshot',
     'connections:hasSecret',
-    'connections:list',
   ]);
   assert.ok(effects.has('connections:create'));
   assert.ok(effects.has('connections:test'));

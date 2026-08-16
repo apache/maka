@@ -5,209 +5,149 @@ import {
   createClientRuntimeHostProfileCatalog,
   LOCAL_RUNTIME_HOST_PROFILE,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
-  RuntimeHostPermanentReconnectError,
   sameResolvedRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostProfileCatalog,
-  type RuntimeHostProfileDocument,
 } from "@maka/runtime-host/client";
 import { withFileUpdateLock } from "@maka/storage/file-update-lock";
 import type {
   DesktopRuntimeHostProfileAddInput,
   DesktopRuntimeHostProfileAddResult,
+  DesktopRuntimeHostProfileEntry,
   DesktopRuntimeHostProfileSnapshot,
 } from "../preload/bridge-contract.js";
+import type { RuntimeHostDesktopTargetState } from "./runtime-host-desktop-manager.js";
 
-const SELECTION_SCHEMA_VERSION = 1;
-const SELECTION_FILE = "runtime-host-profile-selection.json";
+const PREFERENCES_SCHEMA_VERSION = 2;
+const PREFERENCES_FILE = "runtime-host-profile-selection.json";
+const PROFILE_FILE = "runtime-host-profiles.json";
+
+export interface DesktopRuntimeHostPreferences {
+  readonly schemaVersion: 2;
+  readonly defaultProfileId: string;
+  readonly enabledRemoteProfileIds: readonly string[];
+}
+
+export interface DesktopRuntimeHostStartup {
+  readonly preferences: DesktopRuntimeHostPreferences;
+  readonly preferencesReadFailure?: Error;
+  readonly remotes: readonly ResolvedRuntimeHostProfile[];
+  readonly unavailable: ReadonlyMap<string, Error>;
+}
 
 export interface DesktopRuntimeHostProfileService {
   getSnapshot(): Promise<DesktopRuntimeHostProfileSnapshot>;
-  addAndSelect(input: DesktopRuntimeHostProfileAddInput): Promise<DesktopRuntimeHostProfileAddResult>;
+  addAndEnable(
+    input: DesktopRuntimeHostProfileAddInput,
+  ): Promise<DesktopRuntimeHostProfileAddResult>;
+  setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
+  setDefault(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
   remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
-  select(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
 }
 
-export type DesktopRuntimeHostStartupSelection =
-  | {
-      readonly kind: "ready";
-      readonly selectedProfileId: string;
-      readonly target: ResolvedRuntimeHostProfile;
-    }
-  | {
-      readonly kind: "unavailable";
-      readonly selectedProfileId?: string;
-      readonly error: Error;
-    };
-
-export type DesktopRuntimeHostActivationResult =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly error: unknown };
-
-export interface DesktopRuntimeHostProfileSelectionAuthority {
-  selectIfCurrentTarget(target: ResolvedRuntimeHostProfile): Promise<{
-    readonly selected: boolean;
-    readonly document: RuntimeHostProfileDocument;
-  }>;
-}
-
-export async function resolveSelectedDesktopRuntimeHostProfile(
+export async function resolveDesktopRuntimeHostStartup(
   clientDataRoot: string,
   overrides: {
     catalog?: RuntimeHostProfileCatalog;
-    readSelection?: () => Promise<string>;
+    readPreferences?: () => Promise<DesktopRuntimeHostPreferences>;
   } = {},
-): Promise<DesktopRuntimeHostStartupSelection> {
-  const selectionPath = join(clientDataRoot, SELECTION_FILE);
+): Promise<DesktopRuntimeHostStartup> {
+  const preferencesPath = join(clientDataRoot, PREFERENCES_FILE);
+  let preferences: DesktopRuntimeHostPreferences;
+  let preferencesReadFailure: Error | undefined;
+  try {
+    preferences = await (overrides.readPreferences?.() ??
+      readRuntimeHostPreferences(preferencesPath));
+  } catch (error) {
+    preferencesReadFailure = asError(error);
+    console.error(
+      "[runtime-host] preferences could not be read; using Local defaults:",
+      preferencesReadFailure,
+    );
+    preferences = defaultPreferences();
+  }
   const catalog = overrides.catalog ?? createClientRuntimeHostProfileCatalog(clientDataRoot);
-  let selectedProfileId: string;
+  let document: Awaited<ReturnType<RuntimeHostProfileCatalog["read"]>>;
   try {
-    selectedProfileId = await (overrides.readSelection?.() ??
-      readSelectedProfileId(selectionPath));
+    document = await catalog.read();
   } catch (error) {
+    const failure = asError(error);
+    console.error(
+      "[runtime-host] remote profiles could not be read; starting with Local only:",
+      failure,
+    );
+    const unavailable = new Map<string, Error>();
+    for (const profileId of preferences.enabledRemoteProfileIds) {
+      unavailable.set(profileId, failure);
+    }
+    if (preferences.defaultProfileId !== LOCAL_RUNTIME_HOST_PROFILE.id) {
+      unavailable.set(preferences.defaultProfileId, failure);
+    }
     return {
-      kind: "unavailable",
-      error: asError(error),
+      preferences,
+      ...(preferencesReadFailure ? { preferencesReadFailure } : {}),
+      remotes: [],
+      unavailable,
     };
   }
-  try {
-    return {
-      kind: "ready",
-      selectedProfileId,
-      target: await catalog.resolve(selectedProfileId),
-    };
-  } catch (error) {
-    return {
-      kind: "unavailable",
-      selectedProfileId,
-      error: asError(error),
-    };
+  const profileIds = new Set(document.profiles.map((profile) => profile.id));
+  const defaultProfileId =
+    preferences.defaultProfileId === LOCAL_RUNTIME_HOST_PROFILE.id ||
+    profileIds.has(preferences.defaultProfileId)
+      ? preferences.defaultProfileId
+      : LOCAL_RUNTIME_HOST_PROFILE.id;
+  const enabledRemoteProfileIds = new Set(
+    preferences.enabledRemoteProfileIds.filter((profileId) => profileIds.has(profileId)),
+  );
+  if (defaultProfileId !== LOCAL_RUNTIME_HOST_PROFILE.id) {
+    enabledRemoteProfileIds.add(defaultProfileId);
   }
-}
-
-export function selectDesktopRuntimeHostProfile(
-  clientDataRoot: string,
-  profileId: string,
-): Promise<void> {
-  return writeSelectedProfileId(join(clientDataRoot, SELECTION_FILE), profileId);
+  const normalized: DesktopRuntimeHostPreferences = {
+    ...preferences,
+    defaultProfileId,
+    enabledRemoteProfileIds: [...enabledRemoteProfileIds].sort(),
+  };
+  if (JSON.stringify(normalized) !== JSON.stringify(preferences)) {
+    await writeRuntimeHostPreferences(preferencesPath, normalized);
+    preferences = normalized;
+  }
+  const enabledIds = new Set(preferences.enabledRemoteProfileIds);
+  if (preferences.defaultProfileId !== LOCAL_RUNTIME_HOST_PROFILE.id) {
+    enabledIds.add(preferences.defaultProfileId);
+  }
+  const remotes: ResolvedRuntimeHostProfile[] = [];
+  const unavailable = new Map<string, Error>();
+  for (const profileId of enabledIds) {
+    try {
+      remotes.push(await catalog.resolve(profileId));
+    } catch (error) {
+      unavailable.set(profileId, asError(error));
+    }
+  }
+  return {
+    preferences,
+    ...(preferencesReadFailure ? { preferencesReadFailure } : {}),
+    remotes,
+    unavailable,
+  };
 }
 
 export function createDesktopRuntimeHostProfileService(input: {
   readonly clientDataRoot: string;
-  readonly selectedProfileId: string;
-  readonly unavailable?: {
-    readonly profileId: string;
-    readonly error: Error;
-  };
-  readonly getActiveTarget: () => ResolvedRuntimeHostProfile | undefined;
-  readonly getRuntimeHostReadiness: () =>
-    | "connecting"
-    | "ready"
-    | "reconnecting"
-    | "unavailable";
-  readonly activate: (
-    target: ResolvedRuntimeHostProfile,
-  ) => Promise<DesktopRuntimeHostActivationResult>;
+  readonly startup: DesktopRuntimeHostStartup;
+  readonly states: () => readonly RuntimeHostDesktopTargetState[];
+  readonly enable: (target: ResolvedRuntimeHostProfile) => Promise<void>;
+  readonly disable: (profileId: string) => Promise<void>;
+  readonly setDefault: (profileId: string) => void;
   readonly catalog?: RuntimeHostProfileCatalog;
-  readonly selectionAuthority?: DesktopRuntimeHostProfileSelectionAuthority;
 }): DesktopRuntimeHostProfileService {
   const catalog = input.catalog ?? createClientRuntimeHostProfileCatalog(input.clientDataRoot);
-  const selectionPath = join(input.clientDataRoot, SELECTION_FILE);
-  const selectionAuthority = input.selectionAuthority ??
-    createDesktopRuntimeHostProfileSelectionAuthority({
-      catalog,
-      profilePath: join(input.clientDataRoot, "runtime-host-profiles.json"),
-      selectionPath,
-    });
-  let selectedProfileId = input.selectedProfileId;
-  let unavailable = input.unavailable;
-  let mutationTail: Promise<void> = Promise.resolve();
-
-  const snapshot = async (
-    document?: RuntimeHostProfileDocument,
-    knownActiveProfileId?: string,
-  ): Promise<DesktopRuntimeHostProfileSnapshot> => {
-    const activeTarget = input.getActiveTarget();
-    const currentDocument = document ?? await catalog.read();
-    const remoteProfiles = [...currentDocument.profiles];
-    const activeProfileId = knownActiveProfileId ?? (activeTarget && await catalog
-      .resolve(activeTarget.profile.id)
-      .then((resolved) =>
-        sameResolvedRuntimeHostProfileTarget(resolved, activeTarget)
-          ? activeTarget.profile.id
-          : undefined,
-      )
-      .catch(() => undefined));
-    return {
-      profiles: [LOCAL_RUNTIME_HOST_PROFILE, ...remoteProfiles],
-      selectedProfileId,
-      runtimeHostReadiness: input.getRuntimeHostReadiness(),
-      ...(activeTarget ? { activeProfile: activeTarget.profile } : {}),
-      ...(activeProfileId ? { activeProfileId } : {}),
-      ...(unavailable?.profileId === selectedProfileId
-        ? {
-            unavailable: {
-              profileId: unavailable.profileId,
-              message: unavailable.error.message,
-            },
-          }
-        : {}),
-    };
-  };
-
-  const selectProfile = async (
-    profileId: string,
-  ): Promise<DesktopRuntimeHostProfileSnapshot> => {
-    let target: ResolvedRuntimeHostProfile;
-    try {
-      target = await catalog.resolve(profileId);
-    } catch (error) {
-      await persistSelection(profileId);
-      selectedProfileId = profileId;
-      unavailable = { profileId, error: asError(error) };
-      return snapshot();
-    }
-    const activeTarget = input.getActiveTarget();
-    if (activeTarget && sameResolvedRuntimeHostProfileTarget(target, activeTarget)) {
-      const document = await persistCurrentSelection(target);
-      selectedProfileId = profileId;
-      unavailable = undefined;
-      return snapshot(document, profileId);
-    }
-    const activation = await input.activate(target);
-    if (!activation.ok) {
-      const document = await persistCurrentSelection(target);
-      selectedProfileId = profileId;
-      unavailable = { profileId, error: asError(activation.error) };
-      return snapshot(document);
-    }
-    let document: RuntimeHostProfileDocument | undefined;
-    try {
-      document = await persistCurrentSelection(target);
-    } catch (error) {
-      throw new Error(
-        "Runtime Host switched for this run, but the selection could not be saved",
-        { cause: error },
-      );
-    }
-    selectedProfileId = profileId;
-    unavailable = undefined;
-    return snapshot(document, profileId);
-  };
-
-  const persistSelection = (profileId: string): Promise<void> =>
-    writeSelectedProfileId(selectionPath, profileId);
-
-  const persistCurrentSelection = async (
-    target: ResolvedRuntimeHostProfile,
-  ): Promise<RuntimeHostProfileDocument> => {
-    const result = await selectionAuthority.selectIfCurrentTarget(target);
-    if (!result.selected) {
-      throw new Error("Runtime Host profile changed while connecting and was not selected");
-    }
-    return result.document;
-  };
+  const preferencesPath = join(input.clientDataRoot, PREFERENCES_FILE);
+  const profilePath = join(input.clientDataRoot, PROFILE_FILE);
+  let preferences = input.startup.preferences;
+  const unavailable = new Map(input.startup.unavailable);
+  let mutationTail = Promise.resolve();
 
   const mutate = <T>(operation: () => Promise<T>): Promise<T> => {
     const pending = mutationTail.then(operation);
@@ -218,17 +158,82 @@ export function createDesktopRuntimeHostProfileService(input: {
     return pending;
   };
 
+  const mutateProfiles = <T>(operation: () => Promise<T>): Promise<T> =>
+    mutate(async () => {
+      // The Local fallback is effective startup state, not a replacement for
+      // preferences whose durable value is unknown.
+      if (input.startup.preferencesReadFailure) {
+        throw new Error(
+          "Saved Runtime Host settings could not be read; restart Maka before changing them",
+          { cause: input.startup.preferencesReadFailure },
+        );
+      }
+      return operation();
+    });
+
+  const snapshot = async (): Promise<DesktopRuntimeHostProfileSnapshot> => {
+    const document = await catalog.read();
+    const profiles = [LOCAL_RUNTIME_HOST_PROFILE, ...document.profiles];
+    const states = new Map(input.states().map((state) => [state.target.profile.id, state]));
+    const enabled = new Set(preferences.enabledRemoteProfileIds);
+    return {
+      defaultProfileId: preferences.defaultProfileId,
+      entries: profiles.map((profile): DesktopRuntimeHostProfileEntry => {
+        const isEnabled = profile.kind === "local" || enabled.has(profile.id);
+        const state = states.get(profile.id);
+        const error = state?.readiness === "unavailable"
+          ? state.error
+          : unavailable.get(profile.id);
+        return {
+          profile,
+          enabled: isEnabled,
+          isDefault: preferences.defaultProfileId === profile.id,
+          readiness: isEnabled ? (state?.readiness ?? "unavailable") : "disabled",
+          ...(state?.readiness === "ready"
+            ? { hostId: state.candidate.client.hostId }
+            : state && "hostId" in state && state.hostId
+              ? { hostId: state.hostId }
+              : {}),
+          ...(error ? { message: error.message } : {}),
+        };
+      }),
+    };
+  };
+
+  const persist = async (next: DesktopRuntimeHostPreferences): Promise<void> => {
+    await withFileUpdateLock(profilePath, () =>
+      writeRuntimeHostPreferences(preferencesPath, next),
+    );
+    preferences = next;
+  };
+
+  const enable = async (profileId: string): Promise<Error | undefined> => {
+    const target = await catalog.resolve(profileId);
+    assertRootIsNotEnabled(target, preferences, await catalog.read(), input.states());
+    const next = withEnabled(preferences, profileId, true);
+    await persistIfCurrentTarget(catalog, profilePath, preferencesPath, target, next);
+    preferences = next;
+    try {
+      await input.enable(target);
+      const current = await catalog.resolve(profileId).catch(() => undefined);
+      if (!current || !sameResolvedRuntimeHostProfileTarget(current, target)) {
+        await input.disable(profileId);
+        throw new Error("Runtime Host profile changed while it was connecting");
+      }
+      unavailable.delete(profileId);
+      return undefined;
+    } catch (error) {
+      const failure = asError(error);
+      unavailable.set(profileId, failure);
+      return failure;
+    }
+  };
+
   return {
-    async getSnapshot() {
-      return mutate(() => snapshot());
-    },
-    addAndSelect(value) {
+    getSnapshot: () => mutate(snapshot),
+    addAndEnable(value) {
       requireSaveInput(value);
-      return mutate(async () => {
-        const activeTarget = input.getActiveTarget();
-        if (value.profile.id === activeTarget?.profile.id) {
-          throw new Error("Switch away from an active Runtime Host profile before changing it");
-        }
+      return mutateProfiles(async () => {
         if (value.credential === undefined) {
           throw new Error("A Runtime Host access credential is required");
         }
@@ -236,111 +241,142 @@ export function createDesktopRuntimeHostProfileService(input: {
         const profile = document.profiles.find((candidate) => candidate.id === value.profile.id);
         if (!profile) throw new Error("Runtime Host profile creation did not persist");
         const target = { profile, credential: value.credential } as const;
-        let activation: DesktopRuntimeHostActivationResult;
+        let error: Error | undefined;
         try {
-          activation = await input.activate(target);
-        } catch (error) {
-          await rollbackCreatedProfile(catalog, target, error);
-          throw error;
+          error = await enable(profile.id);
+        } catch (failure) {
+          await rollbackCreatedProfile(catalog, target, failure);
+          throw failure;
         }
-        if (!activation.ok) {
-          await rollbackCreatedProfile(catalog, target, activation.error);
-          return {
-            kind: "unavailable",
-            snapshot: await snapshot(),
-            message: asError(activation.error).message,
-          };
-        }
-        let selection: Awaited<
-          ReturnType<DesktopRuntimeHostProfileSelectionAuthority["selectIfCurrentTarget"]>
-        >;
-        try {
-          selection = await selectionAuthority.selectIfCurrentTarget(target);
-        } catch {
-          return {
-            kind: "connected",
-            snapshot: await snapshot(),
-            warning: "Runtime Host switched for this run, but the selection could not be saved",
-          };
-        }
-        if (!selection.selected) {
-          return {
-            kind: "connected",
-            snapshot: await snapshot(selection.document),
-            warning:
-              "Runtime Host connected, but its profile changed while connecting and was not selected",
-          };
-        }
-        selectedProfileId = value.profile.id;
-        unavailable = undefined;
-        return {
-          kind: "connected",
-          snapshot: await snapshot(selection.document, value.profile.id),
-        };
+        return error
+          ? { kind: "unavailable", snapshot: await snapshot(), message: error.message }
+          : { kind: "connected", snapshot: await snapshot() };
       });
     },
-    remove(profileId) {
-      return mutate(async () => {
-        const activeTarget = input.getActiveTarget();
-        if (profileId === activeTarget?.profile.id) {
-          throw new Error("The active Runtime Host profile cannot be removed");
+    setEnabled(profileId, isEnabled) {
+      return mutateProfiles(async () => {
+        if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
+          if (!isEnabled) throw new Error("Local Runtime Host cannot be disabled");
+          return snapshot();
         }
-        if (profileId === selectedProfileId) {
-          throw new Error("Select another Runtime Host profile before removing this one");
+        if (isEnabled) {
+          await enable(profileId);
+          return snapshot();
         }
-        await catalog.remove(profileId);
+        if (preferences.defaultProfileId === profileId) {
+          throw new Error("Choose another default Runtime Host before disabling this one");
+        }
+        const next = withEnabled(preferences, profileId, false);
+        await persist(next);
+        unavailable.delete(profileId);
+        await input.disable(profileId);
         return snapshot();
       });
     },
-    select(profileId) {
-      return mutate(() => selectProfile(profileId));
-    },
-  };
-}
-
-function createDesktopRuntimeHostProfileSelectionAuthority(input: {
-  readonly catalog: RuntimeHostProfileCatalog;
-  readonly profilePath: string;
-  readonly selectionPath: string;
-}): DesktopRuntimeHostProfileSelectionAuthority {
-  return {
-    selectIfCurrentTarget: (target) =>
-      withFileUpdateLock(input.profilePath, async () => {
-        const document = await input.catalog.read();
-        if (target.profile.kind === "remote") {
-          let current: ResolvedRuntimeHostProfile | undefined;
-          try {
-            current = await input.catalog.resolve(target.profile.id);
-          } catch (error) {
-            if (!(error instanceof RuntimeHostPermanentReconnectError)) throw error;
-          }
-          if (!current || !sameResolvedRuntimeHostProfileTarget(current, target)) {
-            return { selected: false, document };
-          }
+    setDefault(profileId) {
+      return mutateProfiles(async () => {
+        if (
+          profileId !== LOCAL_RUNTIME_HOST_PROFILE.id &&
+          !preferences.enabledRemoteProfileIds.includes(profileId)
+        ) {
+          throw new Error("Enable a Runtime Host before making it the default");
         }
-        await writeSelectedProfileId(input.selectionPath, target.profile.id);
-        return { selected: true, document };
-      }),
+        const next = { ...preferences, defaultProfileId: profileId };
+        await persist(next);
+        input.setDefault(profileId);
+        return snapshot();
+      });
+    },
+    remove(profileId) {
+      return mutateProfiles(async () => {
+        if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
+          throw new Error("Local Runtime Host cannot be removed");
+        }
+        if (preferences.enabledRemoteProfileIds.includes(profileId)) {
+          throw new Error("Disable a Runtime Host before removing it");
+        }
+        if (preferences.defaultProfileId === profileId) {
+          throw new Error("Choose another default Runtime Host before removing this one");
+        }
+        await catalog.remove(profileId);
+        unavailable.delete(profileId);
+        return snapshot();
+      });
+    },
   };
 }
 
 async function rollbackCreatedProfile(
   catalog: RuntimeHostProfileCatalog,
   target: ResolvedRuntimeHostProfile,
-  connectionError: unknown,
+  failure: unknown,
 ): Promise<void> {
   try {
     await catalog.removeIfCurrent(target);
-  } catch (rollbackError) {
+  } catch (rollbackFailure) {
     throw new AggregateError(
-      [connectionError, rollbackError],
-      "Runtime Host connection failed and the incomplete profile could not be removed",
+      [failure, rollbackFailure],
+      "Runtime Host could not be added and the incomplete profile could not be removed",
     );
   }
 }
 
-function asError(value: unknown): Error {
-  return value instanceof Error ? value : new Error(String(value));
+function assertRootIsNotEnabled(
+  target: ResolvedRuntimeHostProfile,
+  preferences: DesktopRuntimeHostPreferences,
+  document: Awaited<ReturnType<RuntimeHostProfileCatalog["read"]>>,
+  states: readonly RuntimeHostDesktopTargetState[],
+): void {
+  if (target.profile.kind !== "remote") return;
+  const rootId = target.profile.rootId;
+  const duplicateProfile = document.profiles.find(
+    (profile) =>
+      profile.kind === "remote" &&
+      profile.id !== target.profile.id &&
+      preferences.enabledRemoteProfileIds.includes(profile.id) &&
+      profile.rootId === rootId,
+  );
+  const duplicateState = states.find((state) => {
+    if (state.target.profile.id === target.profile.id) return false;
+    const stateRootId = state.target.profile.kind === "remote"
+      ? state.target.profile.rootId
+      : state.readiness === "ready"
+        ? state.candidate.client.hostId
+        : "hostId" in state
+          ? state.hostId
+          : undefined;
+    return stateRootId === rootId;
+  });
+  if (duplicateProfile || duplicateState) {
+    throw new Error(`Runtime Host ${rootId} is already enabled`);
+  }
+}
+
+async function persistIfCurrentTarget(
+  catalog: RuntimeHostProfileCatalog,
+  profilePath: string,
+  preferencesPath: string,
+  target: ResolvedRuntimeHostProfile,
+  preferences: DesktopRuntimeHostPreferences,
+): Promise<void> {
+  await withFileUpdateLock(profilePath, async () => {
+    const current = await catalog.resolve(target.profile.id);
+    if (!sameResolvedRuntimeHostProfileTarget(current, target)) {
+      throw new Error("Runtime Host profile changed while it was being enabled");
+    }
+    await writeRuntimeHostPreferences(preferencesPath, preferences);
+  });
+}
+
+function withEnabled(
+  preferences: DesktopRuntimeHostPreferences,
+  profileId: string,
+  enabled: boolean,
+): DesktopRuntimeHostPreferences {
+  const ids = new Set(preferences.enabledRemoteProfileIds);
+  if (enabled) ids.add(profileId);
+  else ids.delete(profileId);
+  return { ...preferences, enabledRemoteProfileIds: [...ids].sort() };
 }
 
 export function registerDesktopRuntimeHostProfileIpc(
@@ -349,16 +385,20 @@ export function registerDesktopRuntimeHostProfileIpc(
 ): () => void {
   const channels = [
     "runtime-host-profiles:getSnapshot",
-    "runtime-host-profiles:add-and-select",
+    "runtime-host-profiles:add-and-enable",
+    "runtime-host-profiles:set-enabled",
+    "runtime-host-profiles:set-default",
     "runtime-host-profiles:remove",
-    "runtime-host-profiles:select",
   ] as const;
   ipcMain.handle(channels[0], () => service.getSnapshot());
-  ipcMain.handle(channels[1], (_event, input: DesktopRuntimeHostProfileAddInput) =>
-    service.addAndSelect(input),
+  ipcMain.handle(channels[1], (_event, value: DesktopRuntimeHostProfileAddInput) =>
+    service.addAndEnable(value),
   );
-  ipcMain.handle(channels[2], (_event, profileId: string) => service.remove(profileId));
-  ipcMain.handle(channels[3], (_event, profileId: string) => service.select(profileId));
+  ipcMain.handle(channels[2], (_event, profileId: string, enabled: boolean) =>
+    service.setEnabled(profileId, enabled),
+  );
+  ipcMain.handle(channels[3], (_event, profileId: string) => service.setDefault(profileId));
+  ipcMain.handle(channels[4], (_event, profileId: string) => service.remove(profileId));
   return () => {
     for (const channel of channels) ipcMain.removeHandler(channel);
   };
@@ -383,50 +423,80 @@ function requireSaveInput(value: unknown): asserts value is {
     "credential" in value &&
     value.credential !== undefined &&
     (typeof value.credential !== "string" ||
-      Buffer.byteLength(value.credential, "utf8") >
-        RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES)
+      Buffer.byteLength(value.credential, "utf8") > RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES)
   ) {
     throw new Error("Runtime Host credential input is invalid");
   }
 }
 
-async function readSelectedProfileId(path: string): Promise<string> {
+async function readRuntimeHostPreferences(path: string): Promise<DesktopRuntimeHostPreferences> {
   let value: unknown;
   try {
     value = JSON.parse(await readFile(path, "utf8"));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return LOCAL_RUNTIME_HOST_PROFILE.id;
-    }
-    throw new Error("Runtime Host profile selection is invalid", { cause: error });
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return defaultPreferences();
+    if (!(error instanceof SyntaxError)) throw error;
+    console.error("[runtime-host] preferences are invalid; using Local defaults");
+    return defaultPreferences();
   }
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    Object.keys(value).length !== 2 ||
-    !("schemaVersion" in value) ||
-    value.schemaVersion !== SELECTION_SCHEMA_VERSION ||
-    !("profileId" in value) ||
-    typeof value.profileId !== "string"
-  ) {
-    throw new Error("Runtime Host profile selection is invalid");
+  if (isLegacySelection(value)) {
+    const migrated = {
+      schemaVersion: PREFERENCES_SCHEMA_VERSION,
+      defaultProfileId: value.profileId,
+      enabledRemoteProfileIds:
+        value.profileId === LOCAL_RUNTIME_HOST_PROFILE.id ? [] : [value.profileId],
+    } as const;
+    await writeRuntimeHostPreferences(path, migrated);
+    return migrated;
   }
-  return value.profileId;
+  if (!isRuntimeHostPreferences(value)) {
+    console.error("[runtime-host] preferences are invalid; using Local defaults");
+    return defaultPreferences();
+  }
+  return value;
 }
 
-async function writeSelectedProfileId(path: string, profileId: string): Promise<void> {
-  const temporaryPath = join(
-    dirname(path),
-    `.runtime-host-profile-selection-${randomUUID()}.tmp`,
+function isLegacySelection(value: unknown): value is { schemaVersion: 1; profileId: string } {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as { schemaVersion?: unknown }).schemaVersion === 1 &&
+    typeof (value as { profileId?: unknown }).profileId === "string",
   );
+}
+
+function isRuntimeHostPreferences(value: unknown): value is DesktopRuntimeHostPreferences {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const input = value as Partial<DesktopRuntimeHostPreferences>;
+  return (
+    input.schemaVersion === PREFERENCES_SCHEMA_VERSION &&
+    typeof input.defaultProfileId === "string" &&
+    Array.isArray(input.enabledRemoteProfileIds) &&
+    input.enabledRemoteProfileIds.every(
+      (profileId) => typeof profileId === "string" && profileId !== LOCAL_RUNTIME_HOST_PROFILE.id,
+    ) &&
+    new Set(input.enabledRemoteProfileIds).size === input.enabledRemoteProfileIds.length
+  );
+}
+
+function defaultPreferences(): DesktopRuntimeHostPreferences {
+  return {
+    schemaVersion: PREFERENCES_SCHEMA_VERSION,
+    defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+    enabledRemoteProfileIds: [],
+  };
+}
+
+async function writeRuntimeHostPreferences(
+  path: string,
+  preferences: DesktopRuntimeHostPreferences,
+): Promise<void> {
+  const temporaryPath = join(dirname(path), `.runtime-host-preferences-${randomUUID()}.tmp`);
   const handle = await open(temporaryPath, "wx", 0o600);
   try {
     try {
-      await handle.writeFile(
-        `${JSON.stringify({ schemaVersion: SELECTION_SCHEMA_VERSION, profileId }, null, 2)}\n`,
-        "utf8",
-      );
+      await handle.writeFile(`${JSON.stringify(preferences, null, 2)}\n`, "utf8");
       await handle.sync();
     } finally {
       await handle.close();
@@ -435,4 +505,8 @@ async function writeSelectedProfileId(path: string, profileId: string): Promise<
   } finally {
     await rm(temporaryPath, { force: true });
   }
+}
+
+function asError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
 }

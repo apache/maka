@@ -14,8 +14,7 @@ import { isThemePreference, toNativeThemeSource } from './theme-source.js';
 import { createWindowRevealGate } from './window-reveal.js';
 import {
   parseDesktopSessionResourceKey,
-  type DesktopHostRef,
-} from '../preload/runtime-host-identity.js';
+} from '../shared/runtime-host-identity.js';
 
 type SettingsReader = {
   get(): Promise<AppSettings>;
@@ -66,7 +65,6 @@ interface MainWindowControllerDeps {
   // main.ts computes this from the same isE2e gate that also guards userData
   // and the fake backend, so main-window.ts owns no env policy of its own.
   startHidden: boolean;
-  getActiveRuntimeHostRef?: () => DesktopHostRef | undefined;
   onClose?: () => void;
 }
 
@@ -134,6 +132,7 @@ const titleBarOverlayOptions = (
 
 export function createMainWindowController(deps: MainWindowControllerDeps): MainWindowController {
   const { workspaceRoot, e2eFixture, settingsStore, startHidden } = deps;
+  const liveBrowserScopes = new Map<string, { hostId: string; targetEpoch: string }>();
 
   // PR-SHOW-AFTER-FIRST-COMMIT: windows launched hidden (startHidden covers
   // e2e-fixture capture and E2E — see main.ts) must never be revealed;
@@ -171,16 +170,30 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
           });
         },
         onLiveChange: (sessionIds) => {
-          const activeHost = deps.getActiveRuntimeHostRef?.();
-          if (!activeHost) return;
-          const activeSessionIds = sessionIds.flatMap((sessionId) => {
+          const groups = new Map<string, ReturnType<typeof parseDesktopSessionResourceKey>[]>();
+          for (const sessionId of sessionIds) {
             const ref = parseDesktopSessionResourceKey(sessionId);
-            return ref.hostId === activeHost.hostId &&
-              ref.targetEpoch === activeHost.targetEpoch
-              ? [ref.sessionId]
-              : [];
-          });
-          safeSendToRenderer('browser:live', activeHost, { sessionIds: activeSessionIds });
+            const key = JSON.stringify([ref.targetEpoch, ref.hostId]);
+            const group = groups.get(key) ?? [];
+            group.push(ref);
+            groups.set(key, group);
+          }
+          const keys = new Set([...liveBrowserScopes.keys(), ...groups.keys()]);
+          for (const key of keys) {
+            const group = groups.get(key) ?? [];
+            const first = group[0];
+            const scope = first
+              ? { hostId: first.hostId, targetEpoch: first.targetEpoch }
+              : liveBrowserScopes.get(key);
+            if (!scope) continue;
+            safeSendToRenderer(
+              'browser:live',
+              scope,
+              { sessionIds: group.map(({ sessionId }) => sessionId) },
+            );
+            if (first) liveBrowserScopes.set(key, scope);
+            else liveBrowserScopes.delete(key);
+          }
         },
       });
     }

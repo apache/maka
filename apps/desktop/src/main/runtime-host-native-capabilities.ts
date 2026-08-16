@@ -16,6 +16,7 @@ import type {
   ClientCapabilityServiceOffer,
 } from "@maka/runtime-host/protocol";
 import { toJSONSchema, z } from "zod";
+import type { DesktopTargetScope } from '../shared/runtime-host-identity.js';
 
 const CAPABILITY_VERSION = "0";
 const BROWSER_OFFER_ID = "desktop_browser";
@@ -49,7 +50,9 @@ export interface DesktopNativeCapabilityProviderInput {
   ) => void | Promise<void>;
   readonly oauthPresentation?: OAuthPresentationBackend;
   readonly additionalGroups?: () => readonly DesktopCapabilityGroup[];
-  readonly additionalServices?: () => readonly DesktopCapabilityService[];
+  readonly additionalServices?: (
+    scope: DesktopTargetScope,
+  ) => readonly DesktopCapabilityService[];
 }
 
 export interface DesktopCapabilityService extends ClientCapabilityServiceOffer {
@@ -75,6 +78,7 @@ interface DesktopNativeCapabilityProviderOptions {
   readonly onComputerUseTurnUsed?: (sessionId: string, turnId: string) => void;
   readonly onClosed?: () => void;
   readonly nativeSessionId?: (sessionId: string) => string;
+  readonly targetScope?: DesktopTargetScope;
 }
 
 /** Adapt Desktop-owned Maka tools to the open Client Capability protocol. */
@@ -91,7 +95,10 @@ export function createDesktopNativeCapabilityProvider(
   const oauthPresentation = input.oauthPresentation
     ? createOAuthPresentationClientProvider(input.oauthPresentation)
     : undefined;
-  const services = indexServices(oauthPresentation?.services?.() ?? [], input.additionalServices?.() ?? []);
+  const additionalServices = input.additionalServices
+    ? input.additionalServices(requireTargetScope(providerOptions.targetScope))
+    : [];
+  const services = indexServices(oauthPresentation?.services?.() ?? [], additionalServices);
   const releaseSessionResources = [
     input.releaseBrowserSession,
     input.releaseComputerUseSession,
@@ -173,6 +180,11 @@ export function createDesktopNativeCapabilityProvider(
     },
     close,
   };
+}
+
+function requireTargetScope(scope: DesktopTargetScope | undefined): DesktopTargetScope {
+  if (!scope) throw new Error('Desktop native capability target scope is required');
+  return scope;
 }
 
 type IndexedService =

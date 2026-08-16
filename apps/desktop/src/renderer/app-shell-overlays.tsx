@@ -1,7 +1,7 @@
 import { lazy, Suspense } from 'react';
 import type { ChatDefaultPermissionMode, SettingsSection, ThemePalette, ThemePreference } from '@maka/core/settings';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
-import type { SessionSummary } from '@maka/core/session';
+import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { SearchModal, useUiLocale } from '@maka/ui';
@@ -64,7 +64,7 @@ export function AppShellOverlays(props: {
   paletteOpen: boolean;
   closePalette(): void;
   commandOptions: AppShellCommandListOptions;
-  onExternalSessionImported(session: SessionSummary): void;
+  onExternalSessionImported(session: DesktopSessionSummary): void;
 }) {
   const {
     closeHelp,

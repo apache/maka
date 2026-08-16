@@ -5,6 +5,7 @@ import type { DesktopTaskSubmissionReadinessRequest } from '../preload/bridge-co
 export function useTaskSubmissionReadiness(
   request: DesktopTaskSubmissionReadinessRequest,
   refreshKey: unknown,
+  sessionId?: string,
 ) {
   const [snapshot, setSnapshot] = useState<TaskSubmissionReadinessSnapshot>();
   const [revision, setRevision] = useState(0);
@@ -14,14 +15,14 @@ export function useTaskSubmissionReadiness(
   const checkNow = useCallback(async () => {
     const sequence = ++requestSequence.current;
     try {
-      const next = await window.maka.taskReadiness.getSnapshot(request);
+      const next = await window.maka.taskReadiness.getSnapshot(request, sessionId);
       if (requestSequence.current === sequence) setSnapshot(next);
       return next;
     } catch {
       if (requestSequence.current === sequence) setSnapshot(undefined);
       return undefined;
     }
-  }, [request.connectionSlug, request.model, request.cwd]);
+  }, [request.connectionSlug, request.model, request.cwd, sessionId]);
 
   useEffect(() => {
     requestSequence.current += 1;

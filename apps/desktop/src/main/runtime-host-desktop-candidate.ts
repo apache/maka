@@ -54,9 +54,9 @@ import type { IpcHandler, ReconnectableReadIpcMain } from "./ipc-reconnect-polic
 import type { RuntimeHostTargetIpcMain } from "./runtime-host-reconnecting-ipc-main.js";
 import {
   desktopSessionResourceKey,
-  requireDesktopHostRef,
-  type DesktopHostRef,
-} from "../preload/runtime-host-identity.js";
+  requireDesktopTargetScope,
+  type DesktopTargetScope,
+} from "../shared/runtime-host-identity.js";
 
 type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler">;
 
@@ -76,7 +76,7 @@ export interface DesktopRuntimeHostCandidateDeps {
     target: DesktopRuntimeHostTargetPolicy,
   ) => Promise<WorkspaceTarget>;
   readonly emitSessionsChanged: (
-    scope: DesktopHostRef,
+    scope: DesktopTargetScope,
     reason: SessionChangedReason,
     sessionId?: string,
     extra?: Pick<SessionChangedEvent, "connectionSlug" | "modelId" | "turnId">,
@@ -86,7 +86,7 @@ export interface DesktopRuntimeHostCandidateDeps {
   ) => void | Promise<void>;
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
   readonly renderer?: {
-    send(channel: string, scope: DesktopHostRef, payload: unknown): void;
+    send(channel: string, scope: DesktopTargetScope, payload: unknown): void;
   };
   readonly onError?: RuntimeHostSessionDomainsIpcDeps["onError"];
   readonly isTargetActive?: () => boolean;
@@ -110,7 +110,7 @@ export interface DesktopRuntimeHostCandidateDeps {
     ipcMain: ReconnectableReadIpcMain,
     controls: DesktopRuntimeHostCandidateControls,
     target: DesktopRuntimeHostTargetPolicy,
-    scope: DesktopHostRef,
+    scope: DesktopTargetScope,
     isTargetActive: () => boolean,
   ) => void | (() => void | Promise<void>);
 }
@@ -518,6 +518,7 @@ export async function createDesktopRuntimeHostCandidate(
           hostPathAccess: target.kind === "local" ? "cwd" : "none",
           ...(target.kind === "remote" ? { clientCwd: deps.workspaceRoot } : {}),
           releaseResourcesOnClose: false,
+          targetScope: scope,
           nativeSessionId: (sessionId) =>
             desktopSessionResourceKey({ ...scope, sessionId }),
           onSessionUsed: (sessionId) => nativeSessionIds.add(sessionId),
@@ -715,7 +716,7 @@ class ScopedIpcMain implements ReconnectableReadIpcMain {
 
   constructor(
     ipcMain: CandidateIpcMain,
-    private readonly scope: DesktopHostRef,
+    private readonly scope: DesktopTargetScope,
   ) {
     this.#ipcMain = ipcMain;
   }
@@ -737,7 +738,7 @@ class ScopedIpcMain implements ReconnectableReadIpcMain {
       );
     }
     const hostScopedListener: IpcHandler = (event, scope, ...args) => {
-      requireDesktopHostRef(scope, this.scope);
+      requireDesktopTargetScope(scope, this.scope);
       return listener(event, ...args);
     };
     if (reconnectableRead && this.#ipcMain.handleReconnectableRead) {

@@ -1,5 +1,6 @@
-import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
+import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import type { TurnFooterActionMeta } from '@maka/ui';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
@@ -30,10 +31,10 @@ export function createAppShellTurnActions(deps: {
   openSessionInChat: (sessionId: string, turnId?: string) => void;
   pendingKeyOf: (sessionId: string, turnId: string, actionId: TurnFooterActionMeta['id']) => string;
   refreshMessages: (sessionId: string) => Promise<boolean>;
-  refreshSessions: () => Promise<SessionSummary[]>;
+  refreshSessions: () => Promise<DesktopSessionSummary[]>;
   setMessages: MessageListUpdater;
   toastApi: ToastApi;
-  upsertSessionSummary: (session: SessionSummary) => void;
+  upsertSessionSummary: (session: DesktopSessionSummary) => void;
 }): AppShellTurnActions {
   const {
     uiLocale,

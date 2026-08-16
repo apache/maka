@@ -4,6 +4,8 @@ import type {
   DesktopTranscriptFragment,
   DesktopTranscriptHandle,
 } from '../preload/transcript-contract.js';
+import { projectDesktopStoredMessage } from '../shared/desktop-session-projection.js';
+import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 
 export interface DesktopTranscriptRangeController {
   readonly store: DesktopTranscriptRangeStore;
@@ -105,10 +107,13 @@ export interface DesktopTranscriptRangeSnapshot extends DesktopTranscriptRangeSt
 }
 
 export class DesktopTranscriptRangeStore {
+  readonly #sessionKey: string;
+  readonly #hostId: string;
+  readonly #expectedSessionId: string;
   readonly #durable = new Map<number, StoredRecord>();
   readonly #overlay = new Map<string, OverlayRecord>();
   readonly #pending = new Map<string, PendingRecord>();
-  #sessionId: string | undefined;
+  #sourceSessionId: string | undefined;
   #generation: string | undefined;
   #hostEpoch: string | undefined;
   #durableThrough: number | null = null;
@@ -121,10 +126,17 @@ export class DesktopTranscriptRangeStore {
   #batchChanged = false;
   readonly #durableWaiters = new Set<() => void>();
 
+  constructor(sessionKey: string) {
+    const { hostId, sessionId } = parseDesktopSessionKey(sessionKey);
+    this.#sessionKey = sessionKey;
+    this.#hostId = hostId;
+    this.#expectedSessionId = sessionId;
+  }
+
   accept(batch: DesktopTranscriptBatchPayload): boolean {
     if (batch.reset) this.#reset(batch);
     if (
-      batch.sessionId !== this.#sessionId ||
+      batch.sessionId !== this.#sourceSessionId ||
       batch.generation !== this.#generation ||
       batch.hostEpoch !== this.#hostEpoch
     ) {
@@ -175,11 +187,11 @@ export class DesktopTranscriptRangeStore {
   }
 
   range(): DesktopTranscriptRangeState {
-    if (!this.#sessionId || !this.#generation || !this.#hostEpoch) {
+    if (!this.#sourceSessionId || !this.#generation || !this.#hostEpoch) {
       throw new Error('Desktop transcript range is not initialized');
     }
     return {
-      sessionId: this.#sessionId,
+      sessionId: this.#sessionKey,
       generation: this.#generation,
       hostEpoch: this.#hostEpoch,
       durableThrough: this.#durableThrough,
@@ -220,10 +232,13 @@ export class DesktopTranscriptRangeStore {
   }
 
   #reset(batch: DesktopTranscriptBatchPayload): void {
+    if (batch.sessionId !== this.#expectedSessionId) {
+      throw new Error('Desktop transcript belongs to a different Session');
+    }
     this.#durable.clear();
     this.#overlay.clear();
     this.#pending.clear();
-    this.#sessionId = batch.sessionId;
+    this.#sourceSessionId = batch.sessionId;
     this.#generation = batch.generation;
     this.#hostEpoch = batch.hostEpoch;
     this.#durableThrough = batch.durableThrough;
@@ -272,7 +287,11 @@ export class DesktopTranscriptRangeStore {
     pending.receivedBytes += bytes.byteLength;
     if (pending.receivedBytes < pending.totalBytes) return false;
     const encoded = new TextDecoder('utf-8', { fatal: true }).decode(pending.bytes);
-    const message = decodeStoredMessage(JSON.parse(encoded) as unknown);
+    const message = projectDesktopStoredMessage(
+      { hostId: this.#hostId },
+      decodeStoredMessage(JSON.parse(encoded) as unknown),
+    );
+    const projected = JSON.stringify(message);
     this.#pending.delete(key);
     if (pending.source === 'durable') {
       if (!Number.isSafeInteger(pending.identity) || (pending.identity as number) < 0) {
@@ -280,7 +299,7 @@ export class DesktopTranscriptRangeStore {
       }
       const sequence = pending.identity as number;
       const existing = this.#durable.get(sequence);
-      if (existing && JSON.stringify(existing.message) !== encoded) {
+      if (existing && JSON.stringify(existing.message) !== projected) {
         throw new Error('Desktop transcript durable record changed');
       }
       this.#durable.set(sequence, { message });
@@ -304,7 +323,7 @@ export class DesktopTranscriptRangeStore {
     });
     return (
       !existing ||
-      JSON.stringify(existing.message) !== encoded ||
+      JSON.stringify(existing.message) !== projected ||
       existing.order !== pending.order
     );
   }

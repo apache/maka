@@ -41,6 +41,7 @@ export function SessionListPanel(props: {
   staleSessionIds?: Set<string>;
   groups?: ReadonlyArray<SessionHistoryGroup>;
   worktreeSessionIds?: ReadonlySet<string>;
+  sessionMeta?(session: SessionSummary): string | undefined;
   projectActions?: ProjectRowActions;
   viewMode?: SessionViewMode;
   onViewModeChange?: (mode: SessionViewMode) => void;
@@ -165,6 +166,7 @@ export function SessionListPanel(props: {
             groupVariant={viewMode}
             groups={groups}
             worktreeSessionIds={props.worktreeSessionIds}
+            sessionMeta={props.sessionMeta}
             projectActions={props.projectActions}
             onSelectSession={props.onSelectSession}
             rowActions={props.rowActions}

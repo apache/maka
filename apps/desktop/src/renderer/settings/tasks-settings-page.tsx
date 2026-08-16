@@ -1,6 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
-import type { SessionSummary } from '@maka/core/session';
 import { formatCompactTimestamp } from '@maka/core/relative-time';
 import { Button, EmptyState, MoreMenu, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { Archive, ICON_SIZE, Search } from '@maka/ui/icons';
@@ -8,6 +7,7 @@ import { HStack, StackItem } from '@astryxdesign/core';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import type { SessionPurgeOutcome } from '../app-shell-session-row-actions.js';
+import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { getSettingsTasksCopy } from '../locales/settings-tasks-copy.js';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -20,7 +20,7 @@ import { archivedTaskRows, matchesArchivedTaskQuery } from './task-catalog-rows'
  * not have to understand.
  */
 export interface ArchivedTasksBridge {
-  sessions: readonly SessionSummary[];
+  sessions: readonly DesktopSessionSummary[];
   projects: readonly ProjectRecord[];
   onRestore(sessionId: string): void;
   onDelete(sessionId: string): void;
@@ -69,8 +69,10 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
    * rather than something false.
    */
   const projectLabelOf = useCallback(
-    (session: SessionSummary): string | undefined =>
-      session.projectId ? projectNames.get(session.projectId) : copy.noProject,
+    (session: DesktopSessionSummary): string | undefined => {
+      if (session.profileKind === 'remote') return session.profileName;
+      return session.projectId ? projectNames.get(session.projectId) : copy.noProject;
+    },
     [copy.noProject, projectNames],
   );
 
@@ -88,8 +90,8 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
     // Frozen at the click. A confirm names a number to a person, and a set
     // re-read afterwards can be larger than the one they agreed to — another
     // client archiving a task while the dialog is up would add it. Shrinking is
-    // safe and happens at the other end: `onPurge` skips anything no longer
-    // archived, so a task restored meanwhile is left alone.
+    // safe and happens at the other end: `onPurge` keeps anything restored
+    // meanwhile and says so.
     const ids = purgeTargets.map((session) => session.id);
     const confirmed = await toast.confirm({
       title: isSearching
@@ -104,19 +106,23 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
     setPurging(true);
     try {
       const outcome = await props.onPurge(ids);
-      if (!outcome.verified) {
-        toast.error(copy.purgeFailedTitle, copy.purgeUnverified);
-      } else if (outcome.remaining.length > 0) {
+      // The person agreed to a number, so a sweep that lands on a smaller one
+      // owes them the whole account rather than whichever single fact a branch
+      // picked. Kept tasks and failures are independent — reporting one and
+      // dropping the other is how a count quietly stops adding up.
+      const kept =
+        outcome.restored.length > 0 ? copy.purgeKeptRestored(outcome.restored.length) : undefined;
+      if (!outcome.verified || outcome.remaining.length > 0) {
         // A reason beats a count: a task refuses to retire while its turn is
         // still running, and "N still there" gives the reader nothing to do.
-        toast.error(
-          copy.purgeFailedTitle,
-          outcome.firstError
+        const reason = !outcome.verified
+          ? copy.purgeUnverified
+          : outcome.firstError
             ? settingsActionErrorMessage(outcome.firstError, locale)
-            : copy.purgeFailedBody(outcome.remaining.length),
-        );
+            : copy.purgeFailedBody(outcome.remaining.length);
+        toast.error(copy.purgeFailedTitle, kept ? `${reason} ${kept}` : reason);
       } else {
-        toast.success(copy.purgedToast(outcome.removed));
+        toast.success(copy.purgedToast(outcome.removed), kept);
       }
     } finally {
       if (mountedRef.current) setPurging(false);

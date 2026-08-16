@@ -5,6 +5,7 @@ import type {
   SavedRequestHeaders,
   UpdateConnectionInput,
 } from '@maka/core/llm-connections';
+import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import {
   connectionEnabledModelIds,
   defaultEnabledModelIdsWhenOmitted,
@@ -30,6 +31,7 @@ import {
   normalizeConnectionSlugForIpc,
   normalizeCreateConnectionInputForIpc,
 } from './connections-ipc-validation.js';
+import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
 
 type HostConnectionsClient = Pick<
   DesktopRuntimeHostClient,
@@ -57,12 +59,15 @@ export function registerRuntimeHostConnectionsIpc(
   deps: RuntimeHostConnectionsIpcDeps,
 ): void {
   const snapshot = () => deps.client.loadConnectionCatalog();
-  const projected = async () => projectHostConnections(await snapshot());
 
-  handleReconnectableRead(deps.ipcMain, 'connections:list', projected);
-  handleReconnectableRead(deps.ipcMain, 'connections:getDefault', async () => {
+  handleReconnectableRead(deps.ipcMain, 'connections:getSnapshot', async () => {
     const catalog = await snapshot();
-    return defaultConnection(catalog)?.slug ?? null;
+    const connections = projectHostConnections(catalog);
+    return {
+      connections,
+      defaultConnection: defaultConnection(catalog)?.slug ?? null,
+      chatModelChoices: buildChatModelChoices(connections),
+    } satisfies DesktopConnectionSnapshot;
   });
   handleReconnectableRead(deps.ipcMain, 'connections:hasSecret', async (_event, slug: unknown) => {
     const catalog = await snapshot();

@@ -105,13 +105,10 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   async function reload(): Promise<boolean> {
     const ticket = ++providersReloadTicketRef.current;
     try {
-      const [list, defaultConnection] = await Promise.all([
-        bridge.list(),
-        bridge.getDefault(),
-      ]);
+      const snapshot = await bridge.getSnapshot();
       if (!providersPanelMountedRef.current || providersReloadTicketRef.current !== ticket) return false;
-      setConnections(list);
-      setDefaultSlug(defaultConnection);
+      setConnections(snapshot.connections);
+      setDefaultSlug(snapshot.defaultConnection);
       setLoadError(null);
       setLoading(false);
       return true;

@@ -43,7 +43,7 @@ export interface CompanionSessionApi {
     },
   ): Promise<SessionSummary>;
   cleanupSessionCopy(sessionId: string): Promise<void>;
-  abandonSessionCopy(sessionId: string): Promise<void>;
+  abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
   stop(sessionId: string): Promise<void>;
   send(
     sessionId: string,
@@ -124,7 +124,7 @@ export async function abandonPendingCompanionCopy(
   if (!attempt) return true;
   abandonSessionCopyAttempt(key, attempt.copyId);
   try {
-    await api.abandonSessionCopy(attempt.copyId);
+    await api.abandonSessionCopy(sourceSessionId, attempt.copyId);
     completeSessionCopyAttempt(key, attempt.copyId);
     return true;
   } catch {
@@ -140,7 +140,7 @@ export async function recoverOrphanedCompanionCopies(
     attempts.map(async ({ key, attempt }) => {
       abandonSessionCopyAttempt(key, attempt.copyId);
       try {
-        await api.abandonSessionCopy(attempt.copyId);
+        await api.abandonSessionCopy(key.sourceSessionId, attempt.copyId);
         completeSessionCopyAttempt(key, attempt.copyId);
       } catch {
         // Keep the abandoning lease so the next renderer reload retries cleanup.

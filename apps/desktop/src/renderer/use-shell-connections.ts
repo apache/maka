@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import type { ConnectionEvent } from '@maka/core/connections';
-import type { LlmConnection } from '@maka/core/llm-connections';
 import type { UiLocale } from '@maka/core/ui-locale';
+import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
+import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 
@@ -9,45 +10,58 @@ type ToastApi = {
   error(title: string, description?: string): void;
 };
 
-function connectionsEqual(a: LlmConnection[], b: LlmConnection[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i].slug !== b[i].slug || a[i].updatedAt !== b[i].updatedAt) return false;
-  }
-  return true;
-}
+const EMPTY_SNAPSHOT: DesktopConnectionSnapshot = {
+  connections: [],
+  defaultConnection: null,
+  chatModelChoices: [],
+};
+
+const DEFAULT_HOST_KEY = 'default';
 
 /**
- * Owns the LLM-connection cluster: the connection list, the default
- * connection slug, and the fire-and-forget refresh glue. `setConnections`
- * and `setDefaultConnection` are returned so the onboarding-snapshot seed
- * (which lives in AppShell so it can also seed sessions) can prime them
- * before the first `connections:list` round-trip. `refreshConnections`
- * dedups via `connectionsEqual` so an unchanged list never churns the
- * dozen derived model/thinking selectors that read `connections`.
+ * Owns one Host's atomic connection projection and refresh lifecycle.
  */
-export function useShellConnections(options: { toastApi: ToastApi; uiLocale: UiLocale }): {
-  connections: LlmConnection[];
-  defaultConnection: string | null;
-  setConnections: (updater: LlmConnection[] | ((prev: LlmConnection[]) => LlmConnection[])) => void;
-  setDefaultConnection: (next: string | null) => void;
-  refreshConnections: () => Promise<void>;
+export function useShellConnections(options: {
+  toastApi: ToastApi;
+  uiLocale: UiLocale;
+  activeSessionId?: string;
+}): {
+  snapshot: DesktopConnectionSnapshot;
+  setSnapshot: (next: DesktopConnectionSnapshot) => void;
+  refreshConnections: (sessionId?: string) => Promise<void>;
   handleConnectionEvent: (event: ConnectionEvent) => void;
 } {
   const { toastApi, uiLocale } = options;
   const copy = getShellRemainingCopy(uiLocale).connections;
-  const [connections, setConnections] = useState<LlmConnection[]>([]);
-  const [defaultConnection, setDefaultConnection] = useState<string | null>(null);
+  const snapshotKey = options.activeSessionId
+    ? parseDesktopSessionKey(options.activeSessionId).hostId
+    : DEFAULT_HOST_KEY;
+  const currentKey = useRef(snapshotKey);
+  useLayoutEffect(() => {
+    currentKey.current = snapshotKey;
+  }, [snapshotKey]);
+  const [snapshots, setSnapshots] = useState(
+    () => new Map<string, DesktopConnectionSnapshot>(),
+  );
+  const refreshSequence = useRef(new Map<string, number>());
 
-  async function refreshConnections() {
+  function setSnapshot(next: DesktopConnectionSnapshot) {
+    setSnapshots((previous) => new Map(previous).set(snapshotKey, next));
+  }
+
+  async function refreshConnections(sessionId?: string) {
+    const key = sessionId ? parseDesktopSessionKey(sessionId).hostId : DEFAULT_HOST_KEY;
+    const sequence = (refreshSequence.current.get(key) ?? 0) + 1;
+    refreshSequence.current.set(key, sequence);
     try {
-      const [next, nextDefault] = await Promise.all([
-        window.maka.connections.list(),
-        window.maka.connections.getDefault(),
-      ]);
-      setConnections((prev) => connectionsEqual(prev, next) ? prev : next);
-      setDefaultConnection(nextDefault);
+      const next = await window.maka.connections.getSnapshot(sessionId);
+      if (refreshSequence.current.get(key) !== sequence) return;
+      setSnapshots((previous) => new Map(previous).set(key, next));
     } catch (error) {
+      if (
+        refreshSequence.current.get(key) !== sequence ||
+        currentKey.current !== key
+      ) return;
       toastApi.error(copy.refreshFailed, localizedShellErrorMessage(error, copy.refreshFallback, uiLocale));
     }
   }
@@ -55,16 +69,14 @@ export function useShellConnections(options: { toastApi: ToastApi; uiLocale: UiL
   function handleConnectionEvent(event: ConnectionEvent) {
     switch (event.type) {
       case 'connection_list_changed':
-        void refreshConnections();
+        void refreshConnections(options.activeSessionId);
         break;
     }
   }
 
   return {
-    connections,
-    defaultConnection,
-    setConnections,
-    setDefaultConnection,
+    snapshot: snapshots.get(snapshotKey) ?? EMPTY_SNAPSHOT,
+    setSnapshot,
     refreshConnections,
     handleConnectionEvent,
   };

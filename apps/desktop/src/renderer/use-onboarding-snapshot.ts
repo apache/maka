@@ -39,7 +39,7 @@ export interface UseOnboardingSnapshotResult {
   refresh: () => void;
   /** Sessions from the snapshot — populated on first load, before the separate sessions:list IPC. */
   getSessions(): SessionSummary[] | null;
-  /** Connections from the snapshot — populated on first load, avoids separate connections:list + getDefault. */
+  /** Connections from the snapshot — populated on first load before the live projection refresh. */
   getConnections(): LlmConnection[] | null;
   getDefaultSlug(): string | null;
 }

@@ -1,7 +1,8 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
-import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { StoredMessage } from '@maka/core/session';
+import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import { createAppShellSessionSettingsActions } from '../../renderer/app-shell-session-settings-actions.js';
 
 function deferred<T>() {
@@ -14,7 +15,7 @@ function deferred<T>() {
   return { promise, reject, resolve };
 }
 
-function session(id: string): SessionSummary {
+function session(id: string): DesktopSessionSummary {
   return {
     id,
     name: id,
@@ -28,6 +29,10 @@ function session(id: string): SessionSummary {
     connectionLocked: true,
     model: 'claude-sonnet',
     permissionMode: 'ask',
+    runtimeHostId: 'host-local',
+    profileId: 'local',
+    profileName: 'Local',
+    profileKind: 'local',
   };
 }
 
@@ -46,8 +51,8 @@ function createHarness(options: {
   const thinkingCalls: string[] = [];
   const errors: string[] = [];
   const successes: Array<{ title: string; description?: string }> = [];
-  const modelResult = deferred<SessionSummary>();
-  const thinkingResult = deferred<SessionSummary>();
+  const modelResult = deferred<DesktopSessionSummary>();
+  const thinkingResult = deferred<DesktopSessionSummary>();
 
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
