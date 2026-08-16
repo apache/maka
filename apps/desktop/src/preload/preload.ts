@@ -1168,9 +1168,11 @@ const makaBridge = {
       onObservationSeed?: (phase: 'pending' | 'ready') => void,
     ): () => void {
       const observerId = crypto.randomUUID();
+      let disposed = false;
       let unsubscribeEvents = () => {};
       let unsubscribeObservationSeed = () => {};
       const observeDispatch = runtimeHostSessionRef(sessionId).then((session) => {
+        if (disposed) return { completion: Promise.resolve() };
         unsubscribeEvents = subscribeRuntimeHostEvent(
           `sessions:event:${session.sessionId}`,
           session.scope,
@@ -1198,6 +1200,7 @@ const makaBridge = {
       const observing = observeDispatch.then(({ completion }) => completion);
       const disposeSeedNotification = notifyWhenSeeded(observing, onSeeded);
       return () => {
+        disposed = true;
         disposeSeedNotification();
         unsubscribeObservationSeed();
         unsubscribeEvents();

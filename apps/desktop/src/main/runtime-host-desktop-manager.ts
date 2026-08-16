@@ -25,6 +25,7 @@ import { RuntimeHostSessionObservationRegistry } from './runtime-host-session-ob
 export interface RuntimeHostDesktopManager {
   current(profileId?: string): RuntimeHostDesktopTargetSnapshot | undefined;
   entries(): readonly RuntimeHostDesktopTargetState[];
+  ownsScope(scope: { readonly hostId: string; readonly targetEpoch: string }): boolean;
   defaultProfileId(): string;
   handleBotIncomingMessage(message: BotIncomingMessage): Promise<void>;
   stopSession(ref: DesktopTargetSessionRef): Promise<void>;
@@ -246,6 +247,13 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
 
   entries(): readonly RuntimeHostDesktopTargetState[] {
     return [...this.#targets.values()].map((target) => target.state);
+  }
+
+  ownsScope(scope: { readonly hostId: string; readonly targetEpoch: string }): boolean {
+    for (const target of this.#targets.values()) {
+      if (target.epoch === scope.targetEpoch && target.hostId === scope.hostId) return true;
+    }
+    return false;
   }
 
   defaultProfileId(): string {

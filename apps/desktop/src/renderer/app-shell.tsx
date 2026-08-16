@@ -472,7 +472,6 @@ function AppShellContent({
     if (activeId) sessionHostConnections.handleConnectionEvent(event);
   }
   useLayoutEffect(() => {
-    sessionHostConnections.clearConnections();
     if (activeId) void sessionHostConnections.refreshConnections(activeId);
   }, [activeId]);
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);

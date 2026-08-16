@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import type { ConnectionEvent } from '@maka/core/connections';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
+import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 
@@ -15,16 +16,7 @@ const EMPTY_SNAPSHOT: DesktopConnectionSnapshot = {
   chatModelChoices: [],
 };
 
-function connectionsEqual(
-  a: DesktopConnectionSnapshot['connections'],
-  b: DesktopConnectionSnapshot['connections'],
-): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i].slug !== b[i].slug || a[i].updatedAt !== b[i].updatedAt) return false;
-  }
-  return true;
-}
+const DEFAULT_HOST_KEY = 'default';
 
 /**
  * Owns one Host's atomic connection projection and refresh lifecycle.
@@ -37,27 +29,38 @@ export function useShellConnections(options: {
   snapshot: DesktopConnectionSnapshot;
   setSnapshot: (next: DesktopConnectionSnapshot) => void;
   refreshConnections: (sessionId?: string) => Promise<void>;
-  clearConnections: () => void;
   handleConnectionEvent: (event: ConnectionEvent) => void;
 } {
   const { toastApi, uiLocale } = options;
   const copy = getShellRemainingCopy(uiLocale).connections;
-  const [snapshot, setSnapshot] = useState<DesktopConnectionSnapshot>(EMPTY_SNAPSHOT);
-  const refreshSequence = useRef(0);
+  const snapshotKey = options.activeSessionId
+    ? parseDesktopSessionKey(options.activeSessionId).hostId
+    : DEFAULT_HOST_KEY;
+  const currentKey = useRef(snapshotKey);
+  currentKey.current = snapshotKey;
+  const [snapshots, setSnapshots] = useState(
+    () => new Map<string, DesktopConnectionSnapshot>(),
+  );
+  const refreshSequence = useRef(new Map<string, number>());
+
+  function setSnapshot(next: DesktopConnectionSnapshot) {
+    const key = currentKey.current;
+    setSnapshots((previous) => new Map(previous).set(key, next));
+  }
 
   async function refreshConnections(sessionId?: string) {
-    const sequence = ++refreshSequence.current;
+    const key = sessionId ? parseDesktopSessionKey(sessionId).hostId : DEFAULT_HOST_KEY;
+    const sequence = (refreshSequence.current.get(key) ?? 0) + 1;
+    refreshSequence.current.set(key, sequence);
     try {
       const next = await window.maka.connections.getSnapshot(sessionId);
-      if (refreshSequence.current !== sequence) return;
-      setSnapshot((previous) =>
-        previous.defaultConnection === next.defaultConnection &&
-        connectionsEqual(previous.connections, next.connections)
-          ? previous
-          : next,
-      );
+      if (refreshSequence.current.get(key) !== sequence) return;
+      setSnapshots((previous) => new Map(previous).set(key, next));
     } catch (error) {
-      if (refreshSequence.current !== sequence) return;
+      if (
+        refreshSequence.current.get(key) !== sequence ||
+        currentKey.current !== key
+      ) return;
       toastApi.error(copy.refreshFailed, localizedShellErrorMessage(error, copy.refreshFallback, uiLocale));
     }
   }
@@ -70,16 +73,10 @@ export function useShellConnections(options: {
     }
   }
 
-  function clearConnections() {
-    refreshSequence.current += 1;
-    setSnapshot(EMPTY_SNAPSHOT);
-  }
-
   return {
-    snapshot,
+    snapshot: snapshots.get(snapshotKey) ?? EMPTY_SNAPSHOT,
     setSnapshot,
     refreshConnections,
-    clearConnections,
     handleConnectionEvent,
   };
 }

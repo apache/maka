@@ -117,6 +117,7 @@ import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ip
 import { registerRuntimeHostRendererIpc } from "./runtime-host-renderer-ipc-main.js";
 import { registerRuntimeHostSearchIpc } from "./runtime-host-search-ipc-main.js";
 import { createRuntimeHostProjectCatalog } from "./runtime-host-project-catalog.js";
+import { createRuntimeHostDefaultRecovery } from "./runtime-host-default-recovery.js";
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import {
   loadRuntimeHostSettings,
@@ -291,6 +292,28 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
     runtimeHostManager.setDefaultProfile(profileId);
   },
 });
+const defaultRuntimeHostRecovery = createRuntimeHostDefaultRecovery({
+  defaultProfileId: () =>
+    runtimeHostManager?.defaultProfileId() ??
+    runtimeHostStartup.preferences.defaultProfileId,
+  prompt: promptForDefaultRuntimeHostRecovery,
+  retry: async (profileId) => {
+    try {
+      const snapshot = await runtimeHostProfileService.setEnabled(profileId, true);
+      const entry = snapshot.entries.find((candidate) => candidate.profile.id === profileId);
+      return entry?.readiness === "unavailable"
+        ? new Error(entry.message ?? "Runtime Host is unavailable")
+        : undefined;
+    } catch (error) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
+  },
+  useLocal: async () => {
+    await runtimeHostProfileService.setDefault(LOCAL_RUNTIME_HOST_PROFILE.id);
+  },
+  onError: (error) =>
+    console.error("[runtime-host] default Host recovery failed:", error),
+});
 interface DesktopRuntimeHostTargetContext {
   readonly client: DesktopRuntimeHostClient;
   readonly policy: DesktopRuntimeHostTargetPolicy;
@@ -415,8 +438,7 @@ const browserIpc = registerBrowserIpc({
     const target = runtimePolicyTargetsByEpoch.get(scope.targetEpoch);
     return Boolean(
       target?.isActive() &&
-      target.scope.hostId === scope.hostId &&
-      target.scope.targetEpoch === scope.targetEpoch,
+      target.scope.hostId === scope.hostId,
     );
   },
 });
@@ -575,6 +597,13 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
           console.error("[runtime-host] Browser target retirement failed:", error),
         );
       }
+      if (state.readiness === "unavailable") {
+        defaultRuntimeHostRecovery.offer({
+          profileId: state.target.profile.id,
+          profileName: state.target.profile.name,
+          error: state.error,
+        });
+      }
       if (state.readiness === "ready") {
         const scope = { hostId: state.candidate.client.hostId, targetEpoch: state.epoch };
         mainWindowController.send("projects:changed", scope);
@@ -638,6 +667,25 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
 });
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
+const unavailableDefault = runtimeHostStartup.unavailable.get(
+  runtimeHostStartup.preferences.defaultProfileId,
+);
+if (unavailableDefault) {
+  void runtimeHostProfileService
+    .getSnapshot()
+    .then((snapshot) => {
+      const entry = snapshot.entries.find((candidate) => candidate.isDefault);
+      defaultRuntimeHostRecovery.offer({
+        profileId: runtimeHostStartup.preferences.defaultProfileId,
+        profileName:
+          entry?.profile.name ?? runtimeHostStartup.preferences.defaultProfileId,
+        error: unavailableDefault,
+      });
+    })
+    .catch((error) =>
+      console.error("[runtime-host] failed to resolve unavailable default Host:", error),
+    );
+}
 // Startup may present one interactive SSH prompt without serializing every
 // enabled Host behind it. Other SSH targets fail batch-mode and remain retryable.
 for (const target of runtimeHostStartup.remotes) {
@@ -1150,10 +1198,11 @@ function requireRuntimePolicyTarget(target: DesktopRuntimeHostTargetPolicy) {
 }
 
 function resolveRuntimeHostDiagnostics(scope: DesktopTargetScope) {
-  const current = runtimePolicyTargetsByEpoch.get(scope.targetEpoch);
-  if (!current || current.scope.hostId !== scope.hostId || !current.isActive()) {
+  if (!runtimeHostManager?.ownsScope(scope)) {
     throw new Error("Desktop Runtime Host request belongs to a different target");
   }
+  const current = runtimePolicyTargetsByEpoch.get(scope.targetEpoch);
+  if (!current || !current.isActive()) return undefined;
   const client = current.client;
   return {
     getDiagnostics: () => client.queryHostDiagnostics(),
@@ -1304,4 +1353,33 @@ async function confirmDesktopStorageRootRepair(
     }),
   );
   return response === 0;
+}
+
+async function promptForDefaultRuntimeHostRecovery(input: {
+  readonly profileName: string;
+  readonly error: Error;
+}): Promise<"retry" | "use_local" | "keep_offline"> {
+  const isChinese =
+    resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
+  const { response } = await whileAwaitingPerson(
+    dialog.showMessageBox({
+      type: "warning",
+      title: isChinese
+        ? "默认 Runtime Host 无法连接"
+        : "Default Runtime Host is unavailable",
+      message: isChinese
+        ? `无法连接 ${input.profileName}`
+        : `Could not connect to ${input.profileName}`,
+      detail: isChinese
+        ? `${input.error.message}\n\n你可以重试、改用 Local 作为默认 Host，或保持当前选择并稍后在设置中处理。`
+        : `${input.error.message}\n\nRetry, use Local as the default Host, or keep the current selection and resolve it later in Settings.`,
+      buttons: isChinese
+        ? ["重试", "改用 Local", "保持离线"]
+        : ["Retry", "Use Local", "Keep Offline"],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    }),
+  );
+  return response === 0 ? "retry" : response === 1 ? "use_local" : "keep_offline";
 }

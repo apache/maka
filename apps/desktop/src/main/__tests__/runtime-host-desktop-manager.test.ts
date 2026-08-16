@@ -60,6 +60,14 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
   first.finishDisconnect();
   await secondStarted;
   assert.equal(owner.current()?.hostId, 'test-host');
+  assert.equal(
+    owner.ownsScope({
+      hostId: 'test-host',
+      targetEpoch: owner.current()!.epoch,
+    }),
+    true,
+    'the target still owns its scope while its candidate is reconnecting',
+  );
   assert.equal(second.botMessages, 0);
   assert.deepEqual(second.stoppedSessions, []);
   releaseSecond();
@@ -171,6 +179,10 @@ test('keeps Local and remote Hosts active and routes work by owning Host', async
     'local',
     'office',
   ]);
+  await assert.rejects(
+    () => manager.enable(remoteTarget('duplicate', 'other-endpoint')),
+    /already enabled/,
+  );
   await manager.close();
 });
 
