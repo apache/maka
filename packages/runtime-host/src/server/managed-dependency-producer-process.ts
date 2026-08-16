@@ -1,14 +1,6 @@
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { lstat, mkdir, readdir, readlink, realpath, writeFile } from 'node:fs/promises';
-import {
-  basename,
-  dirname,
-  isAbsolute,
-  join,
-  normalize,
-  relative,
-  resolve,
-} from 'node:path';
+import { basename, dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import {
   DEFAULT_PROCESS_IO_DRAIN_TIMEOUT_MS,
@@ -278,8 +270,7 @@ function hermeticNpmEnvironment(
   // though Node's filesystem APIs can access the owned long path. The cwd is
   // the exact staging project, so a relative home preserves the same authority
   // boundary without depending on that fixed-size OS lookup buffer.
-  const effectiveHomeRoot =
-    process.platform === 'win32' ? join('.maka-runtime', 'home') : homeRoot;
+  const effectiveHomeRoot = process.platform === 'win32' ? join('.maka-runtime', 'home') : homeRoot;
   return {
     HOME: effectiveHomeRoot,
     USERPROFILE: effectiveHomeRoot,
