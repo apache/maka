@@ -1,4 +1,5 @@
-import type { PlanExecutionStep, PlanProposal, UiCatalog, UiLocale } from '@maka/core';
+import type { PlanExecutionStep, PlanProposal } from '@maka/core/plan';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export interface PlanModeCopy {
   readonly abandonConfirmation: {
