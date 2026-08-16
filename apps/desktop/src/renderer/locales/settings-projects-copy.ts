@@ -41,7 +41,8 @@ export type SettingsProjectsCopy = {
     credential: string;
     credentialHelp: string;
     saveAndEnable: string;
-    active: string;
+    defaultBadge: string;
+    defaultDisableHelp: string;
     unavailable: string;
     remove: string;
     empty: string;
@@ -129,7 +130,8 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       credential: '访问凭据',
       credentialHelp: '在远程机器使用 desktop-client preset 签发',
       saveAndEnable: '保存并启用',
-      active: '默认',
+      defaultBadge: '默认',
+      defaultDisableHelp: '先选择另一个默认 Host，才能停用此 Host',
       unavailable: '无法连接',
       remove: '移除',
       empty: '还没有远程 Host',
@@ -215,7 +217,8 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       credential: 'Access credential',
       credentialHelp: 'Issue it on the remote machine with the desktop-client preset',
       saveAndEnable: 'Save and enable',
-      active: 'Default',
+      defaultBadge: 'Default',
+      defaultDisableHelp: 'Choose another default Host before disabling this Host',
       unavailable: 'Unavailable',
       remove: 'Remove',
       empty: 'No remote Hosts yet',

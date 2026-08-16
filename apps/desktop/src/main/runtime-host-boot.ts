@@ -642,7 +642,8 @@ for (const target of runtimeHostStartup.remotes) {
     .enable({
       profile: target.profile,
       credential: target.credential,
-      ...(target.profile.transport.kind === "ssh"
+      ...(target.profile.transport.kind === "ssh" &&
+      target.profile.id === runtimeHostStartup.preferences.defaultProfileId
         ? { sshInteraction: "terminal" as const }
         : {}),
     })

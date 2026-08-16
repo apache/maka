@@ -97,9 +97,9 @@ import type { ExternalSessionImportIpcResult } from './external-session-import-r
 
 export interface DesktopSessionSummary extends SessionSummary {
   readonly runtimeHostId: string;
-  readonly profileId?: string;
-  readonly profileName?: string;
-  readonly profileKind?: 'local' | 'remote';
+  readonly profileId: string;
+  readonly profileName: string;
+  readonly profileKind: 'local' | 'remote';
 }
 import type {
   DesktopDiagnosticCopyResult,

@@ -250,6 +250,10 @@ async function runtimeHostScopeList(): Promise<readonly DesktopTargetScope[]> {
       if (authoritativeHostIds.has(hostId)) continue;
       runtimeHostScopes.delete(hostId);
     }
+    for (const hostId of runtimeHostSessionCache.keys()) {
+      if (authoritativeHostIds.has(hostId)) continue;
+      runtimeHostSessionCache.delete(hostId);
+    }
     return readyScopes;
   }
 }
@@ -365,8 +369,10 @@ function projectSessionSummary(
   scope: DesktopTargetScope,
   session: SessionSummary,
 ): DesktopSessionSummary {
+  const metadata = runtimeHostMetadata.get(scope.hostId);
+  if (!metadata) throw new Error('Desktop Runtime Host metadata is unavailable');
   return projectDesktopSessionSummary(
-    { ...scope, ...runtimeHostMetadata.get(scope.hostId) },
+    { ...scope, ...metadata },
     session,
   );
 }

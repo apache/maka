@@ -361,7 +361,9 @@ async function readRuntimeHostPreferences(path: string): Promise<DesktopRuntimeH
     value = JSON.parse(await readFile(path, "utf8"));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return defaultPreferences();
-    throw new Error("Runtime Host preferences are invalid", { cause: error });
+    if (!(error instanceof SyntaxError)) throw error;
+    console.error("[runtime-host] preferences are invalid; using Local defaults");
+    return defaultPreferences();
   }
   if (isLegacySelection(value)) {
     const migrated = {
@@ -374,7 +376,8 @@ async function readRuntimeHostPreferences(path: string): Promise<DesktopRuntimeH
     return migrated;
   }
   if (!isRuntimeHostPreferences(value)) {
-    throw new Error("Runtime Host preferences are invalid");
+    console.error("[runtime-host] preferences are invalid; using Local defaults");
+    return defaultPreferences();
   }
   return value;
 }

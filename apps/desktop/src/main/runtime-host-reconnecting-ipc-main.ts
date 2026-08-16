@@ -180,11 +180,9 @@ export class RuntimeHostReconnectingIpcMain {
     } catch (error) {
       return Promise.reject(error);
     }
-    if (
-      slot.handlers.get(epoch) !== undefined &&
-      slot.handlers.get(epoch) !== previous
-    ) {
-      return Promise.resolve(slot.handlers.get(epoch)!);
+    const current = slot.handlers.get(epoch);
+    if (current !== undefined && current !== previous) {
+      return Promise.resolve(current);
     }
     return new Promise((resolve, reject) => {
       slot.waiters.add({ epoch, resolve, reject });

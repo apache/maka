@@ -10,7 +10,15 @@ import {
 
 test('keeps equal raw Session ids distinct across Runtime Hosts', () => {
   const raw = summary('same-session');
-  const local = projectDesktopSessionSummary({ hostId: 'local-root' }, raw);
+  const local = projectDesktopSessionSummary(
+    {
+      hostId: 'local-root',
+      profileId: 'local',
+      profileName: 'Local',
+      profileKind: 'local',
+    },
+    raw,
+  );
   const remote = projectDesktopSessionSummary(
     {
       hostId: 'remote-root',
@@ -22,6 +30,7 @@ test('keeps equal raw Session ids distinct across Runtime Hosts', () => {
   );
 
   assert.notEqual(local.id, remote.id);
+  assert.equal(local.profileKind, 'local');
   assert.equal(remote.profileName, 'Office');
 });
 

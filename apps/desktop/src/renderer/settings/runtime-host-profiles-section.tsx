@@ -295,13 +295,14 @@ export function RuntimeHostProfilesSection() {
                 startContent={<Cpu size={ICON_SIZE.control} aria-hidden="true" />}
                 endContent={
                   <HStack gap={2} align="center">
-                    {entry.isDefault ? <Badge variant="neutral" label={copy.active} /> : null}
+                    {entry.isDefault ? <Badge variant="neutral" label={copy.defaultBadge} /> : null}
                     {entry.readiness === "unavailable" ? <Badge variant="neutral" label={copy.unavailable} /> : null}
                     <Switch
                       label={profile.name}
                       isLabelHidden
                       value={entry.enabled}
                       isDisabled={switching || entry.isDefault}
+                      disabledMessage={entry.isDefault ? copy.defaultDisableHelp : undefined}
                       onChange={(enabled) => void setEnabled(profile.id, enabled)}
                     />
                     <MoreMenu

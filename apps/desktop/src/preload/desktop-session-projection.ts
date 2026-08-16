@@ -10,9 +10,9 @@ export type { DesktopSessionSummary } from './bridge-contract.js';
 import { desktopSessionKey, type DesktopHostRef } from './runtime-host-identity.js';
 
 export interface DesktopSessionHost extends DesktopHostRef {
-  readonly profileId?: string;
-  readonly profileName?: string;
-  readonly profileKind?: 'local' | 'remote';
+  readonly profileId: string;
+  readonly profileName: string;
+  readonly profileKind: 'local' | 'remote';
 }
 
 function projectSessionId(host: DesktopHostRef, sessionId: string): string {
@@ -103,28 +103,24 @@ export function projectDesktopSessionSummary(
   host: DesktopSessionHost,
   session: SessionSummary,
 ): DesktopSessionSummary {
-  const projectRelatedSessionId = (value: string | undefined): string | undefined =>
-    value === undefined
-      ? undefined
-      : projectSessionId(host, value);
   return {
     ...session,
     id: desktopSessionKey({ hostId: host.hostId, sessionId: session.id }),
     ...(session.parentSessionId === undefined
       ? {}
-      : { parentSessionId: projectRelatedSessionId(session.parentSessionId) }),
+      : { parentSessionId: projectSessionId(host, session.parentSessionId) }),
     ...(session.revisionRootSessionId === undefined
       ? {}
-      : { revisionRootSessionId: projectRelatedSessionId(session.revisionRootSessionId) }),
+      : { revisionRootSessionId: projectSessionId(host, session.revisionRootSessionId) }),
     ...(session.revisionParentSessionId === undefined
       ? {}
-      : { revisionParentSessionId: projectRelatedSessionId(session.revisionParentSessionId) }),
+      : { revisionParentSessionId: projectSessionId(host, session.revisionParentSessionId) }),
     ...(session.subagent === undefined
       ? {}
       : {
           subagent: {
             ...session.subagent,
-            parentSessionId: projectRelatedSessionId(session.subagent.parentSessionId)!,
+            parentSessionId: projectSessionId(host, session.subagent.parentSessionId),
           },
         }),
     ...(session.subagentParent === undefined
@@ -132,12 +128,12 @@ export function projectDesktopSessionSummary(
       : {
           subagentParent: {
             ...session.subagentParent,
-            parentSessionId: projectRelatedSessionId(session.subagentParent.parentSessionId)!,
+            parentSessionId: projectSessionId(host, session.subagentParent.parentSessionId),
           },
         }),
     runtimeHostId: host.hostId,
-    ...(host.profileId ? { profileId: host.profileId } : {}),
-    ...(host.profileName ? { profileName: host.profileName } : {}),
-    ...(host.profileKind ? { profileKind: host.profileKind } : {}),
+    profileId: host.profileId,
+    profileName: host.profileName,
+    profileKind: host.profileKind,
   };
 }

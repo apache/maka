@@ -43,10 +43,27 @@ test("migrates the former selected Host into enabled and default preferences", a
   assert.equal(startup.preferences.defaultProfileId, PROFILE.id);
   assert.deepEqual(startup.preferences.enabledRemoteProfileIds, [PROFILE.id]);
   assert.equal(startup.remotes[0]?.profile.id, PROFILE.id);
-  assert.match(
-    await readFile(join(root, "runtime-host-profile-selection.json"), "utf8"),
-    /"schemaVersion": 2/,
+  assert.equal(
+    JSON.parse(await readFile(join(root, "runtime-host-profile-selection.json"), "utf8"))
+      .schemaVersion,
+    2,
   );
+});
+
+test("starts with Local defaults when Runtime Host preferences are malformed", async () => {
+  const root = await clientRoot();
+  const preferencesPath = join(root, "runtime-host-profile-selection.json");
+  const malformed = '{"schemaVersion":2';
+  await writeFile(preferencesPath, malformed);
+
+  const startup = await resolveDesktopRuntimeHostStartup(root);
+
+  assert.deepEqual(startup.preferences, {
+    schemaVersion: 2,
+    defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+    enabledRemoteProfileIds: [],
+  });
+  assert.equal(await readFile(preferencesPath, "utf8"), malformed);
 });
 
 test("keeps Local enabled while a new remote Host connects", async () => {
@@ -136,7 +153,7 @@ test("preserves an enabled remote profile when that Host is unavailable", async 
   assert.equal(result.snapshot.entries.find((entry) => entry.profile.id === "local")?.enabled, true);
 });
 
-test("separates enabled Hosts from the default Host", async () => {
+test("keeps enablement, default selection, and removal as separate states", async () => {
   const root = await clientRoot();
   await createClientRuntimeHostProfileCatalog(root).create(PROFILE, "token");
   const startup = await resolveDesktopRuntimeHostStartup(root);
