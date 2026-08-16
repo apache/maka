@@ -387,7 +387,7 @@ export const test = base.extend<{
   projectSidebarWindow: async ({}, use) => {
     await withE2eWindow({
       seed: false,
-      readinessSelector: '[data-maka-contract="search-modal"]',
+      readinessSelector: '[data-maka-contract="search-modal"][open]',
       e2eFixtureScenario: 'sidebar-search-modal-open',
       locale: 'zh',
       showWindow: true,

@@ -100,7 +100,7 @@ test('rail grouping survives a renderer reload', async ({ projectSidebarWindow: 
     .toBe('project');
 
   await page.reload();
-  await expect(page.locator('[data-maka-contract="search-modal"]')).toBeVisible();
+  await expect(page.locator('[data-maka-contract="search-modal"][open]')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();
 
