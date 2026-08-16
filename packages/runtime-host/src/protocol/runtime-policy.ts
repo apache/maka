@@ -152,10 +152,7 @@ export type CreateCatalogConnectionResult =
   | CatalogConnectionCommitted
   | RevisionConflict
   | { readonly kind: 'connection_exists'; readonly slug: string };
-export type UpdateCatalogConnectionResult =
-  | CatalogConnectionCommitted
-  | ConnectionStale
-  | { readonly kind: 'invalid_default_target'; readonly target: ConnectionTarget };
+export type UpdateCatalogConnectionResult = CatalogConnectionCommitted | ConnectionStale;
 export type RemoveCatalogConnectionResult = CatalogCommitted | ConnectionStale;
 export type SetDefaultConnectionTargetResult =
   | CatalogCommitted
@@ -713,9 +710,7 @@ function decodeCreateConnectionResult(value: unknown): CreateCatalogConnectionRe
 
 function decodeUpdateConnectionResult(value: unknown): UpdateCatalogConnectionResult {
   const item = requireRecord(value, 'update connection result');
-  if (item.kind === 'committed') return catalogConnectionCommitted(item);
-  if (item.kind === 'connection_stale') return connectionStale(item);
-  return invalidDefaultTarget(item, 'update connection result');
+  return item.kind === 'committed' ? catalogConnectionCommitted(item) : connectionStale(item);
 }
 
 function decodeRemoveConnectionResult(value: unknown): RemoveCatalogConnectionResult {

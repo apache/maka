@@ -155,9 +155,7 @@ export class HostRuntimePolicyCoordinator {
   ): Promise<OperationOutcome<'connection.catalog.update'>> {
     return this.#storeMutation(async () => {
       const result = await this.#stores.connectionCatalog.update(input);
-      if (result.kind === 'connection_stale' || result.kind === 'invalid_default_target') {
-        return result;
-      }
+      if (result.kind === 'connection_stale') return result;
       if (result.kind !== 'committed') {
         throw invariantFailure(`Connection update returned ${result.kind}`);
       }

@@ -257,10 +257,7 @@ export class ConnectionCatalogDocumentOwner {
         ? {}
         : { lastTest: previous.lastTest }),
     };
-    if (current.defaultTarget && !isValidTarget(current.defaultTarget, connections)) {
-      return deepFreeze({ kind: 'invalid_default_target', target: current.defaultTarget });
-    }
-    const next = { ...current, revision: nextRevision(current.revision), connections };
+    const next = this.nextDocument(current, connections);
     await this.write(root, next);
     return committed(next);
   }
@@ -276,15 +273,10 @@ export class ConnectionCatalogDocumentOwner {
     if (!previous || previous.revision !== input.expected.revision) {
       return connectionStale(input.expected, previous ? connectionBasis(previous) : null);
     }
-    const next: ConnectionCatalogDocument = {
-      ...current,
-      revision: nextRevision(current.revision),
-      defaultTarget:
-        current.defaultTarget && sameConnectionIdentity(current.defaultTarget, previous)
-          ? null
-          : current.defaultTarget,
-      connections: current.connections.filter((_item, candidate) => candidate !== index),
-    };
+    const next = this.nextDocument(
+      current,
+      current.connections.filter((_item, candidate) => candidate !== index),
+    );
     await this.write(root, next);
     return committed(next);
   }
@@ -298,14 +290,12 @@ export class ConnectionCatalogDocumentOwner {
     if (current.revision !== input.expectedCatalogRevision) {
       return revisionConflict(input.expectedCatalogRevision, current.revision);
     }
+    // The one place a caller states the target itself, so the one place an
+    // unusable target is the caller's error rather than a consequence to repair.
     if (input.target && !isValidTarget(input.target, current.connections)) {
       return deepFreeze({ kind: 'invalid_default_target', target: input.target });
     }
-    const next = {
-      ...current,
-      revision: nextRevision(current.revision),
-      defaultTarget: input.target,
-    };
+    const next = this.nextDocument(current, current.connections, input.target);
     await this.write(root, next);
     return committed(next);
   }
@@ -457,13 +447,15 @@ export class ConnectionCatalogDocumentOwner {
       modelSource: result.source,
       modelsFetchedAt: result.fetchedAt,
     };
-    const defaultTarget =
-      current.defaultTarget === null
-        ? { connectionId, modelId: changes.enabledModelIds[0]! }
-        : current.defaultTarget.connectionId === connectionId &&
-            !changes.enabledModelIds.includes(current.defaultTarget.modelId)
-          ? { connectionId, modelId: changes.enabledModelIds[0]! }
-          : current.defaultTarget;
+    // Onboarding only states its preference — seeding the first default when
+    // the catalog has none. Repairing a target this selection invalidates is
+    // the document constructor's job, and the short-circuit below stays exact
+    // because the branches it admits (same selection, same inventory) are the
+    // ones where that repair is the identity.
+    const defaultTarget = current.defaultTarget ?? {
+      connectionId,
+      modelId: changes.enabledModelIds[0]!,
+    };
     if (
       previous?.enabled &&
       sameStringArray(previous.enabledModelIds, changes.enabledModelIds) &&
@@ -486,12 +478,7 @@ export class ConnectionCatalogDocumentOwner {
     const entry = testBasisChanged || invalidateLastTest ? finalizedWithoutLastTest : finalized;
     if (previous) connections[index] = entry;
     else connections.push(entry);
-    const next = {
-      ...current,
-      revision: nextRevision(current.revision),
-      defaultTarget,
-      connections,
-    };
+    const next = this.nextDocument(current, connections, defaultTarget);
     this.assertDocumentSize(next);
     return { kind: 'ready', document: next, changed: true };
   }
@@ -572,17 +559,25 @@ export class ConnectionCatalogDocumentOwner {
   ): Promise<ConnectionCatalogSnapshot> {
     const connections = [...current.connections];
     connections[index] = patched;
-    if (defaultTarget && !isValidTarget(defaultTarget, connections)) {
-      throw codecError('invalid_document', 'Connection effect produced an invalid default target');
-    }
-    const next = {
-      ...current,
-      revision: nextRevision(current.revision),
-      defaultTarget,
-      connections,
-    };
+    const next = this.nextDocument(current, connections, defaultTarget);
     await this.write(root, next);
     return catalogSnapshot(next);
+  }
+
+  // The catalog's only next-version constructor, so the default-target
+  // invariant holds by construction: a caller states the target it prefers and
+  // never the one it has to police.
+  private nextDocument(
+    current: ConnectionCatalogDocument,
+    connections: readonly ConnectionCatalogEntry[],
+    defaultTarget: ConnectionTarget | null = current.defaultTarget,
+  ): ConnectionCatalogDocument {
+    return {
+      ...current,
+      revision: nextRevision(current.revision),
+      defaultTarget: reconcileDefaultTarget(defaultTarget, connections),
+      connections,
+    };
   }
 
   private async write(root: string, document: ConnectionCatalogDocument): Promise<void> {
@@ -680,6 +675,24 @@ function isValidTarget(
 ): boolean {
   const connection = connections.find((item) => sameConnectionIdentity(item, target));
   return Boolean(connection?.enabled && connection.enabledModelIds.includes(target.modelId));
+}
+
+// The catalog's single repair point for the default target. The target is a
+// pointer into the selection, not an independent fact, so a mutation that
+// legitimately drops the model it names moves the pointer instead of failing:
+// unchecking the default model is a statement about the model, never a request
+// to keep pointing at it. Repair stays inside the target's own connection —
+// which connection should carry the default once that one runs out is a
+// product decision, and `null` is what hands it back to the bootstrap layer
+// that owns it.
+function reconcileDefaultTarget(
+  target: ConnectionTarget | null,
+  connections: readonly ConnectionCatalogEntry[],
+): ConnectionTarget | null {
+  if (!target || isValidTarget(target, connections)) return target;
+  const connection = connections.find((item) => sameConnectionIdentity(item, target));
+  const modelId = connection?.enabled ? connection.enabledModelIds[0] : undefined;
+  return modelId === undefined ? null : { connectionId: target.connectionId, modelId };
 }
 
 function sameStringArray(actual: readonly string[], expected: readonly string[]): boolean {

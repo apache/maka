@@ -1051,6 +1051,86 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('repairs the canonical default target when a selection change removes its model', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('selection-default', 'ollama', 'Selection default'),
+      );
+      const widened = await stores.connectionCatalog.update({
+        expected: connectionBasis(connection),
+        changes: {
+          name: connection.name,
+          enabled: true,
+          enabledModelIds: ['gpt-5', 'llama3.3'],
+          relayModelProfiles: null,
+        },
+      });
+      assert.equal(widened.kind, 'committed');
+      if (widened.kind !== 'committed') return;
+      const widenedEntry = widened.snapshot.connections[0];
+      assert.ok(widenedEntry);
+      assert.equal(
+        (
+          await stores.connectionCatalog.setDefaultTarget({
+            expectedCatalogRevision: widened.snapshot.revision,
+            target: { connectionId: connection.connectionId, modelId: 'gpt-5' },
+          })
+        ).kind,
+        'committed',
+      );
+
+      const narrowed = await stores.connectionCatalog.update({
+        expected: connectionBasis(widenedEntry),
+        changes: {
+          name: connection.name,
+          enabled: true,
+          enabledModelIds: ['llama3.3'],
+          relayModelProfiles: null,
+        },
+      });
+      assert.equal(narrowed.kind, 'committed');
+      if (narrowed.kind !== 'committed') return;
+      const expected = { connectionId: connection.connectionId, modelId: 'llama3.3' };
+      assert.deepEqual(narrowed.snapshot.defaultTarget, expected);
+      assert.deepEqual((await stores.connectionCatalog.getSnapshot()).defaultTarget, expected);
+    });
+  });
+
+  test('releases the canonical default target when its connection keeps no model', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('selection-emptied', 'ollama', 'Selection emptied'),
+      );
+      assert.equal(
+        (
+          await stores.connectionCatalog.setDefaultTarget({
+            expectedCatalogRevision: 1,
+            target: { connectionId: connection.connectionId, modelId: 'gpt-5' },
+          })
+        ).kind,
+        'committed',
+      );
+
+      const emptied = await stores.connectionCatalog.update({
+        expected: connectionBasis(connection),
+        changes: {
+          name: connection.name,
+          enabled: true,
+          enabledModelIds: [],
+          relayModelProfiles: null,
+        },
+      });
+      assert.equal(emptied.kind, 'committed');
+      if (emptied.kind !== 'committed') return;
+      assert.equal(emptied.snapshot.defaultTarget, null);
+      assert.equal((await stores.connectionCatalog.getSnapshot()).defaultTarget, null);
+    });
+  });
+
   test('keeps an emptied model selection across the next canonical discovery', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(
