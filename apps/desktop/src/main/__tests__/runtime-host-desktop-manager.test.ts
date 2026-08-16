@@ -253,11 +253,15 @@ test('waits for an in-flight remote enable before closing', async () => {
 test('keeps Local usable when a remote Host is unavailable', async () => {
   const local = candidateHarness();
   let starts = 0;
+  const removedDefaults: boolean[] = [];
   const manager = await startRuntimeHostDesktopManager(
     {} as DesktopRuntimeHostCandidateStartInput,
     {
       startCandidate: async () =>
         starts++ === 0 ? ready(local.candidate) : { kind: 'failed', reason: 'host_unresponsive' },
+      onTargetRemoved: (state) => {
+        removedDefaults.push(manager.defaultProfileId() === state.target.profile.id);
+      },
     },
   );
 
@@ -274,6 +278,9 @@ test('keeps Local usable when a remote Host is unavailable', async () => {
     'unavailable',
   );
   await manager.disable('offline');
+  assert.deepEqual(removedDefaults, [true]);
+  assert.equal(manager.defaultProfileId(), 'offline');
+  assert.equal(manager.current()?.target.profile.id, 'local');
   await manager.close();
 });
 

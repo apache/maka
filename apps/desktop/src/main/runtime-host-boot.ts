@@ -617,7 +617,9 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
         profileName: state.target.profile.name,
         profileKind: state.target.profile.kind,
         readiness: "unavailable",
-        isDefault: false,
+        isDefault:
+          (runtimeHostManager?.defaultProfileId() ??
+            runtimeHostStartup.preferences.defaultProfileId) === state.target.profile.id,
         removed: true,
       });
       const scope = state.readiness === "ready"

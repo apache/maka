@@ -384,9 +384,6 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     const target = this.#targets.get(profileId);
     if (!target) return;
     await this.#removeTarget(target);
-    if (this.#defaultProfileId === profileId) {
-      this.#defaultProfileId = LOCAL_RUNTIME_HOST_PROFILE.id;
-    }
   }
 
   setDefaultProfile(profileId: string): void {
