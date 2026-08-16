@@ -201,6 +201,19 @@ export function ImportTasksSettingsPage(props: {
     [adapterId, copy.importFailedFallback, importingId, locale, mountedRef, props],
   );
 
+  /**
+   * The one thing an in-flight import needs is to stay identifiable until it
+   * settles, and every catalog control can take its row away: a `loadCatalog`
+   * without a cursor resets the catalog to page one, and the source switch,
+   * the archived filter and 重试 all trigger one.
+   *
+   * 加载更多 appends, so it would keep the row. It is frozen anyway: a page
+   * where every control but one holds still has to be read control by control
+   * before it can be trusted, and nothing is lost by waiting out an import that
+   * takes well under a second.
+   */
+  const catalogFrozen = importingId !== null;
+
   const noSource = sourceResolved && !sourceLoading && !sourceError && adapterIds.length === 0;
   const catalogEmpty =
     adapterId !== null && !catalogLoading && !catalogError && catalog.sessions.length === 0;
@@ -266,13 +279,11 @@ export function ImportTasksSettingsPage(props: {
               layout="fill"
               size="sm"
               onChange={setAdapterId}
-              // Frozen during an import for the same reason the filter below
-              // is: either one replaces the catalog, which would take away the
-              // row the in-flight import belongs to while every other row is
-              // still disabled. `importingId` is a bare source id, and those
-              // are unique only within one source — the second adapter would
-              // otherwise be able to show 正在导入… on an unrelated row.
-              isDisabled={catalogLoading || importingId !== null}
+              // Freezing this also closes a collision `importingId` is open to:
+              // it holds a bare source id, and those are unique only within one
+              // source, so a second adapter could otherwise show 正在导入… on an
+              // unrelated row.
+              isDisabled={catalogLoading || catalogFrozen}
             >
               {adapterIds.map((id) => (
                 <SegmentedControlItem key={id} value={id} label={sourceLabel(id, copy.codex)} />
@@ -283,7 +294,7 @@ export function ImportTasksSettingsPage(props: {
             label={copy.includeArchived}
             value={includeArchived}
             onChange={setIncludeArchived}
-            isDisabled={catalogLoading || importingId !== null}
+            isDisabled={catalogLoading || catalogFrozen}
           />
         </VStack>
       </SettingsSection>
@@ -301,6 +312,7 @@ export function ImportTasksSettingsPage(props: {
                     variant="ghost"
                     size="sm"
                     label={copy.retry}
+                    isDisabled={catalogFrozen}
                     onClick={() => void loadCatalog(adapterId)}
                   />
                 )
@@ -401,7 +413,7 @@ export function ImportTasksSettingsPage(props: {
               size="sm"
               width="100%"
               label={loadingMore ? copy.loadingMore : copy.loadMore}
-              isDisabled={loadingMore}
+              isDisabled={loadingMore || catalogFrozen}
               // `onClick` for the same reason as the row buttons: inside
               // `clickAction`'s transition `loadingMore` commits too late to
               // disable anything or to say 正在加载….
