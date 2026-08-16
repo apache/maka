@@ -37,7 +37,7 @@ describe('Provider error classification', () => {
       httpStatus: 429,
       providerCode: 'rate_limit_exceeded',
       providerRequestId: 'req-123',
-      retryable: true,
+      retryable: false,
     });
     const serialized = JSON.stringify(diagnostic);
     assert.doesNotMatch(serialized, /secret|private|authorization|request body/i);
@@ -134,6 +134,27 @@ describe('Provider error classification', () => {
     assert.equal(classifyError(websocketFailure), 'Network');
     assert.deepEqual(providerRetryMetadata(websocketFailure), { retryable: true });
     assert.deepEqual(providerRetryMetadata(missingContinuation), { retryable: true });
+  });
+
+  test('retries a rate limit only when the provider names a retry delay', () => {
+    const bareRateLimit = Object.assign(new Error('Rate limit exceeded'), {
+      name: 'AI_APICallError',
+      statusCode: 429,
+      data: { error: { code: 'FreeUsageLimitError', message: 'Rate limit exceeded' } },
+    });
+    const delayedRateLimit = Object.assign(new Error('Too many requests'), {
+      name: 'AI_APICallError',
+      statusCode: 429,
+      responseHeaders: { 'retry-after': '40' },
+    });
+
+    assert.deepEqual(providerRetryMetadata(bareRateLimit), { retryable: false });
+    assert.deepEqual(providerRetryMetadata(delayedRateLimit), {
+      retryable: true,
+      retryAfterMs: 40_000,
+    });
+    assert.equal(providerFailureDiagnostic(bareRateLimit).retryable, false);
+    assert.equal(providerFailureDiagnostic(delayedRateLimit).retryable, true);
   });
 
   test('classifies context overflow by predicate, carrier shape, and evidence precedence', () => {

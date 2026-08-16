@@ -118,15 +118,17 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
 
   const status = Number(evidence.statusCode || evidence.code);
   const errorClass = classifyProviderFacts(facts);
+  const retryAfterMs = parseRetryAfterMs(facts.responseHeaders ?? {});
+  if (errorClass === 'RateLimit' || status === 429) {
+    if (retryAfterMs === undefined || retryAfterMs === null) return { retryable: false };
+    return { retryable: true, retryAfterMs };
+  }
   const retryable =
     errorClass === 'Network' ||
     status === 408 ||
     status === 409 ||
-    status === 429 ||
     (status >= 500 && status <= 599);
   if (!retryable) return { retryable: false };
-
-  const retryAfterMs = parseRetryAfterMs(facts.responseHeaders ?? {});
   if (retryAfterMs === null) return { retryable: false };
   return {
     retryable: true,
