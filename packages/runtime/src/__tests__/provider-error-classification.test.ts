@@ -6,11 +6,86 @@ import { z } from 'zod/v4';
 
 import {
   classifyError,
+  providerFailureDiagnostic,
   providerFailureSummary,
   providerRetryMetadata,
 } from '../provider-error-classification.js';
 
 describe('Provider error classification', () => {
+  test('projects only bounded allowlisted facts into durable diagnostics', () => {
+    const diagnostic = providerFailureDiagnostic(
+      Object.assign(new Error('must not persist sk-secret-or-prompt'), {
+        name: 'AI_APICallError',
+        statusCode: 429,
+        responseHeaders: {
+          'x-request-id': 'req-123',
+          authorization: 'Bearer secret',
+        },
+        data: {
+          error: {
+            code: 'rate_limit_exceeded',
+            message: 'private provider payload',
+          },
+          prompt: 'private customer text',
+        },
+        requestBodyValues: { input: 'private request body' },
+      }),
+    );
+
+    assert.deepEqual(diagnostic, {
+      errorClass: 'RateLimit',
+      httpStatus: 429,
+      providerCode: 'rate_limit_exceeded',
+      providerRequestId: 'req-123',
+      retryable: true,
+    });
+    const serialized = JSON.stringify(diagnostic);
+    assert.doesNotMatch(serialized, /secret|private|authorization|request body/i);
+  });
+
+  test('recovers structured Codex HTTP facts through an SDK wrapper and truncates identifiers', () => {
+    const cause = Object.assign(new Error('Codex OAuth request failed'), {
+      name: 'OpenAiCodexHttpError',
+      statusCode: 400,
+      data: { error: { code: 'x'.repeat(1_024) } },
+      responseHeaders: { 'x-request-id': 'r'.repeat(1_024) },
+    });
+    const diagnostic = providerFailureDiagnostic(
+      Object.assign(new Error('Cannot connect to API'), {
+        name: 'AI_APICallError',
+        code: 'FETCH_FAILED',
+        cause,
+      }),
+    );
+
+    assert.equal(diagnostic.errorClass, 'RequestRejected');
+    assert.equal(diagnostic.httpStatus, 400);
+    assert.ok((diagnostic.providerCode?.length ?? 0) <= 256);
+    assert.ok((diagnostic.providerRequestId?.length ?? 0) <= 256);
+    assert.equal(diagnostic.retryable, false);
+  });
+
+  test('durable diagnostics distinguish the provider failure classes used by fail-open handling', () => {
+    const cases: Array<[unknown, string]> = [
+      [Object.assign(new Error('bad request'), { statusCode: 400 }), 'RequestRejected'],
+      [Object.assign(new Error('slow down'), { statusCode: 429 }), 'RateLimit'],
+      [Object.assign(new Error('upstream failed'), { statusCode: 503 }), 'ProviderUnavailable'],
+      [new DOMException('request timed out', 'TimeoutError'), 'Timeout'],
+      [new TypeError('fetch failed'), 'Network'],
+      [
+        Object.assign(new Error('input rejected'), {
+          statusCode: 400,
+          data: { error: { code: 'context_length_exceeded' } },
+        }),
+        'ContextLength',
+      ],
+    ];
+
+    for (const [error, expected] of cases) {
+      assert.equal(providerFailureDiagnostic(error).errorClass, expected);
+    }
+  });
+
   test('extracts allowlisted fields from JSON string failures without copying the payload', () => {
     const summary = providerFailureSummary(
       JSON.stringify({

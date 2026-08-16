@@ -48,6 +48,15 @@ export interface ProviderRetryMetadata {
   retryAfterMs?: number;
 }
 
+/** Bounded, allowlisted provider failure facts safe for durable telemetry. */
+export interface ProviderFailureDiagnostic {
+  errorClass: string;
+  httpStatus?: number;
+  providerCode?: string;
+  providerRequestId?: string;
+  retryable: boolean;
+}
+
 interface ProviderFailureSummary {
   message: string;
   code?: string;
@@ -262,6 +271,88 @@ export function providerFailureSummary(error: unknown): ProviderFailureSummary |
     message: truncateUtf8(summary, PROVIDER_FAILURE_SUMMARY_MAX_BYTES, '…'),
     ...(code || statusCode ? { code: code ?? statusCode } : {}),
   };
+}
+
+const DURABLE_PROVIDER_ERROR_CLASSES: ReadonlySet<string> = new Set([
+  'Abort',
+  'Auth',
+  'ContextLength',
+  'Network',
+  'ProviderBilling',
+  'ProviderUnavailable',
+  'RateLimit',
+  'Timeout',
+]);
+
+/**
+ * Projects provider errors into a small durable fingerprint. Unlike the
+ * presentation summary, this intentionally excludes provider messages and
+ * response bodies: even redacted free text can echo prompts or credentials.
+ */
+export function providerFailureDiagnostic(error: unknown): ProviderFailureDiagnostic {
+  const facts = providerFailureDiagnosticFacts(error);
+  if (!facts) return { errorClass: 'Other', retryable: false };
+  const sources = facts.summarySources;
+  const rawStatus =
+    facts.evidence.statusCode || firstProviderField(sources, ['statusCode', 'status']);
+  const numericStatus = Number(rawStatus);
+  const httpStatus =
+    Number.isInteger(numericStatus) && numericStatus >= 100 && numericStatus <= 599
+      ? numericStatus
+      : undefined;
+  const classified = classifyProviderFacts(facts);
+  const errorClass = durableProviderErrorClass(classified, httpStatus);
+  const providerCode =
+    firstProviderField(sources, ['code']) ?? firstProviderField(sources, ['type']);
+  const providerRequestId =
+    firstProviderField(sources, ['requestId', 'request_id']) ??
+    boundedProviderField(facts.responseHeaders?.['x-request-id']);
+  return {
+    errorClass,
+    ...(httpStatus !== undefined ? { httpStatus } : {}),
+    ...(providerCode !== undefined ? { providerCode } : {}),
+    ...(providerRequestId !== undefined ? { providerRequestId } : {}),
+    retryable: providerRetryMetadata(facts.target).retryable,
+  };
+}
+
+function durableProviderErrorClass(classified: string, httpStatus: number | undefined): string {
+  // Structured context-overflow evidence can legitimately arrive behind a
+  // generic 4xx/5xx proxy response and remains stronger than the wrapper code.
+  if (classified === 'ContextLength') return classified;
+  if (httpStatus === 401 || httpStatus === 403) return 'Auth';
+  if (httpStatus === 402) return 'ProviderBilling';
+  if (httpStatus === 408) return 'Timeout';
+  if (httpStatus === 413) return 'ContextLength';
+  if (httpStatus === 429) return 'RateLimit';
+  if (httpStatus !== undefined && httpStatus >= 400 && httpStatus <= 499) {
+    return 'RequestRejected';
+  }
+  if (httpStatus !== undefined && httpStatus >= 500 && httpStatus <= 599) {
+    return 'ProviderUnavailable';
+  }
+  return DURABLE_PROVIDER_ERROR_CLASSES.has(classified) ? classified : 'Other';
+}
+
+function providerFailureDiagnosticFacts(error: unknown): ProviderErrorFacts | undefined {
+  let current = providerErrorTarget(error);
+  let fallback: ProviderErrorFacts | undefined;
+  let codedFallback: ProviderErrorFacts | undefined;
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 4 && current !== undefined && !seen.has(current); depth += 1) {
+    seen.add(current);
+    const facts = normalizeProviderError(current);
+    fallback ??= facts;
+    if (facts && (facts.evidence.statusCode || facts.evidence.structuredCodes.length > 0)) {
+      return facts;
+    }
+    if (facts?.evidence.code) codedFallback ??= facts;
+    current =
+      current && typeof current === 'object'
+        ? safeField(current as Record<string, unknown>, 'cause')
+        : undefined;
+  }
+  return codedFallback ?? fallback;
 }
 
 interface ProviderFailureSources {

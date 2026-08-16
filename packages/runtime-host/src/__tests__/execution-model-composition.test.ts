@@ -16,7 +16,7 @@ import {
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
-import { type ModelCallKind } from '@maka/core/model-call-attempt';
+import { type ModelCallAttempt, type ModelCallKind } from '@maka/core/model-call-attempt';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { PlanSessionState, PlanStore } from '@maka/core/plan';
@@ -256,6 +256,127 @@ test('provider dispatch fails closed when the Run Composition commit fails', asy
   } finally {
     await backend?.dispose();
     await provider.close();
+  }
+});
+
+test('Codex OAuth history compaction uses the provider-native route and preserves failure facts', async () => {
+  const modelId = 'gpt-5.6-sol';
+  const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const attempts: ModelCallAttempt[] = [];
+  const oauthTokens: OAuthSubscriptionTokens = {
+    access_token: codexAccessToken('compact-account'),
+    refresh_token: 'compact-refresh-token',
+    expires_at: Date.now() + 60_000,
+  };
+  const oauthCredentials = {
+    bind: () => ({
+      providerType: 'openai-codex' as const,
+      connectionSlug: 'backend-creation-connection',
+      resolve: async () => oauthTokens,
+    }),
+  } as unknown as HostOAuthExecutionAuthority;
+  const backend = await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      modelId,
+      oauthCredentials,
+      resolveExecutionConnection: async () => ({
+        kind: 'ready',
+        connection: {
+          slug: 'backend-creation-connection',
+          providerType: 'openai-codex',
+          enabledModelIds: [modelId],
+          models: [
+            {
+              id: modelId,
+              capabilities: { chat: true, functionCalling: true },
+              contextWindow: 32_768,
+              maxOutputTokens: 1_024,
+            },
+          ],
+        },
+        networkProxy: { enabled: false },
+        secretMaterial: { connection: { secret: 'oauth-material' } },
+      }),
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+      recordHistoryCompactCheckpoint: async () => undefined,
+      recordModelCallAttempt: async ({ attempt }) => {
+        attempts.push(attempt);
+      },
+      createFetchTransport: () => ({
+        fetch: async (url, init) => {
+          requests.push({
+            url: String(url),
+            body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+          });
+          return Response.json(
+            {
+              error: {
+                message: 'request rejected without echoing this body',
+                code: 'invalid_request_error',
+              },
+            },
+            {
+              status: 400,
+              headers: { 'x-request-id': 'req-codex-compact' },
+            },
+          );
+        },
+        close: async () => undefined,
+      }),
+    }),
+  );
+
+  try {
+    const runtimeContext: RuntimeEvent[] = [
+      compactRuntimeTextEvent(
+        'compact-old-user',
+        'turn-old-user',
+        'user',
+        'user',
+        'a'.repeat(8_000),
+      ),
+      compactRuntimeTextEvent(
+        'compact-old-model',
+        'turn-old-model',
+        'model',
+        'agent',
+        'b'.repeat(8_000),
+      ),
+      compactRuntimeTextEvent(
+        'compact-recent-user',
+        'turn-recent-user',
+        'user',
+        'user',
+        'recent context',
+      ),
+    ];
+    const result = await backend.compactHistory({
+      turnId: 'turn-compact',
+      runId: 'run-compact',
+      runtimeContext,
+      minRecentTurns: 1,
+    });
+
+    assert.equal(requests.length, 1, JSON.stringify(result));
+    assert.match(requests[0]!.url, /\/codex\/responses$/);
+    const requestText = JSON.stringify(requests[0]!.body);
+    assert.match(requestText, /"type":"compaction_trigger"/);
+    assert.doesNotMatch(requestText, /context summarization assistant/i);
+    assert.equal(result.contextBudget?.historyCompactWriteFailures, 1);
+    assert.equal(result.contextBudget?.compactionDecisions?.[0]?.decision, 'failedOpen');
+    assert.equal(attempts.length, 1);
+    assert.equal(attempts[0]?.callKind, 'history_compact');
+    assert.equal(attempts[0]?.providerId, 'openai-codex');
+    assert.equal(attempts[0]?.historyCompactRoute, 'provider_native');
+    assert.equal(attempts[0]?.status, 'failed');
+    assert.equal(attempts[0]?.errorClass, 'RequestRejected');
+    assert.equal(attempts[0]?.httpStatus, 400);
+    assert.equal(attempts[0]?.providerCode, 'invalid_request_error');
+    assert.equal(attempts[0]?.providerRequestId, 'req-codex-compact');
+    assert.equal(attempts[0]?.retryable, false);
+  } finally {
+    await backend.dispose();
   }
 });
 
@@ -2786,6 +2907,8 @@ function backendCreationFixture(input: {
   recordRunTrace?: (event: RunTraceEvent) => unknown;
   runtimeCommitSink?: HostAiSdkBackendInput['runtimeCommitSink'];
   recordRunComposition?: BackendFactoryContext['recordRunComposition'];
+  recordHistoryCompactCheckpoint?: BackendFactoryContext['recordHistoryCompactCheckpoint'];
+  recordModelCallAttempt?: BackendFactoryContext['recordModelCallAttempt'];
   createFetchTransport?: HostAiSdkBackendInput['createFetchTransport'];
   createRunComposer?: HostAiSdkBackendInput['createRunComposer'];
 }): HostAiSdkBackendInput {
@@ -2844,6 +2967,12 @@ function backendCreationFixture(input: {
         : {}),
       ...(input.recordRunTrace ? { recordRunTrace: input.recordRunTrace } : {}),
       ...(input.recordRunComposition ? { recordRunComposition: input.recordRunComposition } : {}),
+      ...(input.recordHistoryCompactCheckpoint
+        ? { recordHistoryCompactCheckpoint: input.recordHistoryCompactCheckpoint }
+        : {}),
+      ...(input.recordModelCallAttempt
+        ? { recordModelCallAttempt: input.recordModelCallAttempt }
+        : {}),
       store: {
         appendMessage: async () => undefined,
         readExecutionBoundary: async () => input.executionBoundary,
@@ -2869,6 +2998,11 @@ function backendCreationFixture(input: {
       telemetry: {
         recordLlmCall: async () => undefined,
         recordToolInvocation: async () => undefined,
+      },
+      modelCalls: {
+        markRunPendingReprojection: async () => undefined,
+        recordModelCallAttempt: async () => undefined,
+        clearPendingReprojection: async () => undefined,
       },
     },
     requestDrain: () => undefined,
@@ -2910,6 +3044,27 @@ function readyExecutionConnection(
         ? { requestHeaders: { secret: JSON.stringify(customization.requestHeaders) } }
         : {}),
     },
+  };
+}
+
+function compactRuntimeTextEvent(
+  id: string,
+  turnId: string,
+  role: 'user' | 'model',
+  author: 'user' | 'agent',
+  text: string,
+): RuntimeEvent {
+  return {
+    id,
+    invocationId: 'compact-invocation',
+    runId: 'compact-source-run',
+    sessionId: 'backend-creation-session',
+    turnId,
+    ts: 1,
+    partial: false,
+    role,
+    author,
+    content: { kind: 'text', text },
   };
 }
 

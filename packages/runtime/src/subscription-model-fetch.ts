@@ -218,7 +218,7 @@ async function checkedOpenAiCodexFetch(
       edgeRetry += 1;
       continue;
     }
-    throw new Error(formatOpenAiCodexHttpError(response.status, detail));
+    throw openAiCodexHttpError(response, detail);
   }
 }
 
@@ -334,6 +334,36 @@ function formatOpenAiCodexHttpError(statusCode: number, detail: string): string 
   return compact
     ? `Codex OAuth request failed: HTTP ${statusCode} ${compact}`
     : `Codex OAuth request failed: HTTP ${statusCode}`;
+}
+
+function openAiCodexHttpError(response: Response, detail: string): Error {
+  const providerCode = openAiCodexProviderCode(detail);
+  const rawRequestId = response.headers.get('x-request-id')?.trim();
+  const requestId = rawRequestId ? redactSecrets(rawRequestId).slice(0, 256) : undefined;
+  return Object.assign(new Error(formatOpenAiCodexHttpError(response.status, detail)), {
+    name: 'OpenAiCodexHttpError',
+    statusCode: response.status,
+    ...(providerCode ? { data: { error: { code: providerCode } } } : {}),
+    ...(requestId ? { responseHeaders: { 'x-request-id': requestId.slice(0, 256) } } : {}),
+  });
+}
+
+function openAiCodexProviderCode(detail: string): string | undefined {
+  try {
+    const payload = JSON.parse(detail) as unknown;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+    const root = payload as Record<string, unknown>;
+    const error =
+      root.error && typeof root.error === 'object' && !Array.isArray(root.error)
+        ? (root.error as Record<string, unknown>)
+        : root;
+    const value = error.code ?? error.type;
+    if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+    const normalized = redactSecrets(String(value).trim()).slice(0, 256);
+    return normalized || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function buildClaudeSubscriptionCloakedFetch(

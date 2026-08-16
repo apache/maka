@@ -5,6 +5,10 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import type { AgentRunHeader, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import {
+  MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+  decodeModelCallAttempt,
+} from '@maka/core/model-call-attempt';
 import type { InteractionCanonicalOutcome, InteractionRequest } from '@maka/core/interaction';
 import type { ShellRunRecord } from '@maka/core/shell-run';
 import { createSqliteAgentRunStore } from '../agent-run-store.js';
@@ -29,6 +33,60 @@ describe('SQLite core execution stores', () => {
       try {
         assert.equal((await reopened.readRun('session-1', 'run-1')).runId, 'run-1');
         assert.equal((await reopened.readEvents('session-1', 'run-1'))[0]?.id, 'event-1');
+      } finally {
+        reopened.close?.();
+      }
+    });
+  });
+
+  test('preserves provider failure diagnostics in the AgentRun authority after reopen', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      await store.createRun(runHeader());
+      await store.appendEvent('session-1', 'run-1', {
+        type: 'model_call_attempt_recorded',
+        id: 'attempt-1',
+        runId: 'run-1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        ts: 10,
+        data: {
+          schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+          logicalCallId: 'call-1',
+          attemptId: 'attempt-1',
+          traceId: 'trace-1',
+          sessionId: 'session-1',
+          runId: 'run-1',
+          turnId: 'turn-1',
+          step: 0,
+          attempt: 0,
+          callKind: 'history_compact',
+          historyCompactRoute: 'provider_native',
+          connectionSlug: 'codex-subscription',
+          providerId: 'openai-codex',
+          modelId: 'gpt-5.6-sol',
+          startedAt: 1,
+          completedAt: 10,
+          latencyMs: 9,
+          status: 'failed',
+          errorClass: 'RequestRejected',
+          httpStatus: 400,
+          providerCode: 'invalid_request_error',
+          providerRequestId: 'req-authority-1',
+          retryable: false,
+          usageBasis: 'missing',
+          costBasis: 'unpriced',
+        },
+      });
+      store.close?.();
+
+      const reopened = createSqliteAgentRunStore(root);
+      try {
+        const event = (await reopened.readEvents('session-1', 'run-1'))[0];
+        const attempt = decodeModelCallAttempt(event?.data);
+        assert.equal(attempt.historyCompactRoute, 'provider_native');
+        assert.equal(attempt.httpStatus, 400);
+        assert.equal(attempt.providerRequestId, 'req-authority-1');
       } finally {
         reopened.close?.();
       }

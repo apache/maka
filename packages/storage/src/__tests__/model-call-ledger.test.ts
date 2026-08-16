@@ -72,6 +72,48 @@ describe('canonical model call ledger', () => {
     });
   });
 
+  test('provider failure diagnostics survive closing and reopening the ledger', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-model-call-ledger-reopen-'));
+    const first = createSqliteModelCallLedger(root);
+    try {
+      await first.record(
+        attempt({
+          callKind: 'history_compact',
+          historyCompactRoute: 'provider_native',
+          providerId: 'openai-codex',
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+          errorClass: 'RequestRejected',
+          httpStatus: 400,
+          providerCode: 'invalid_request_error',
+          providerRequestId: 'req-reopen-1',
+          retryable: false,
+        }),
+      );
+      await first.close();
+
+      const reopened = createSqliteModelCallLedger(root);
+      try {
+        const restored = reopened.read({ from: 0, to: NOW }).attempts[0];
+        assert.equal(restored?.historyCompactRoute, 'provider_native');
+        assert.equal(restored?.errorClass, 'RequestRejected');
+        assert.equal(restored?.httpStatus, 400);
+        assert.equal(restored?.providerCode, 'invalid_request_error');
+        assert.equal(restored?.providerRequestId, 'req-reopen-1');
+        assert.equal(restored?.retryable, false);
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      await first.close().catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('a late settlement replaces the provisional record under the same attempt id', async () => {
     // The abort path records provisionally without usage; a `finish` arriving
     // afterwards settles the same attempt. Two rows would double-count it.

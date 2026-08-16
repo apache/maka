@@ -1,4 +1,5 @@
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
+import type { HistoryCompactRoute } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
@@ -177,6 +178,8 @@ export interface AiSdkCompactionCapabilities {
   loadHistoryCompactCheckpoint?: HistoryCompactCheckpointLoader;
   /** Produces a checkpoint value from prior state plus newly evicted RuntimeEvents. */
   summarizeHistoryCompact?: HistoryCompactSummarizer;
+  /** Actual route used by the configured history compactor, for durable diagnostics. */
+  historyCompactRoute?: HistoryCompactRoute;
   /** Best-effort durable recorder for accepted checkpoints. */
   recordHistoryCompactCheckpoint?: HistoryCompactCheckpointRecorder;
   /**
