@@ -64,7 +64,7 @@ export interface ModelMenuGroup {
  * the SAME provider are present and neither supplied a name (e.g. two OpenAI
  * keys) — the slug is a safe `[a-z0-9-]` identifier, never the OAuth
  * account email `connection.name` carries for `claude-subscription` /
- * `openai-codex` / `gemini-cli`.
+ * `openai-codex`.
  */
 export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale = 'zh'): ModelMenuGroup[] {
   const copy = getSharedUiCopy(locale).providers;

@@ -7,9 +7,17 @@ import {
   applyAssistantDelta,
 } from '@maka/ui/assistant-stream';
 
+function visibleDeltaResult(result: ReturnType<typeof applyAssistantDelta>) {
+  return {
+    text: result.text,
+    redacted: result.redacted,
+    truncated: result.truncated,
+  };
+}
+
 describe('assistant stream state boundary', () => {
   it('appends valid deltas and drops malformed input', () => {
-    assert.deepEqual(applyAssistantDelta('', 'hello'), {
+    assert.deepEqual(visibleDeltaResult(applyAssistantDelta('', 'hello')), {
       text: 'hello',
       redacted: false,
       truncated: false,
@@ -19,7 +27,9 @@ describe('assistant stream state boundary', () => {
     assert.equal(applyAssistantDelta(null as unknown as string, 'x').text, 'x');
 
     for (const delta of [undefined, null, 42, {}, [], true, '']) {
-      assert.deepEqual(applyAssistantDelta('so far', delta as unknown as string), {
+      assert.deepEqual(visibleDeltaResult(
+        applyAssistantDelta('so far', delta as unknown as string),
+      ), {
         text: 'so far',
         redacted: false,
         truncated: false,
@@ -36,7 +46,7 @@ describe('assistant stream state boundary', () => {
       assert.equal(result.text.includes(secret), false);
       assert.equal(result.redacted, true);
     }
-    assert.deepEqual(applyAssistantDelta('', 'normal prose'), {
+    assert.deepEqual(visibleDeltaResult(applyAssistantDelta('', 'normal prose')), {
       text: 'normal prose',
       redacted: false,
       truncated: false,
@@ -74,7 +84,7 @@ describe('assistant stream state boundary', () => {
     assert.ok(overridden.text.length <= 16);
     assert.equal(overridden.truncated, true);
 
-    assert.deepEqual(applyAssistantDelta('hi ', 'world', { maxTotalChars: 8 }), {
+    assert.deepEqual(visibleDeltaResult(applyAssistantDelta('hi ', 'world', { maxTotalChars: 8 })), {
       text: 'hi world',
       redacted: false,
       truncated: false,
@@ -104,8 +114,11 @@ describe('assistant stream state boundary', () => {
     const secondHalf = '6d7e8f9012345678abcdef';
     const first = applyAssistantDelta('', firstHalf);
     assert.equal(first.redacted, false);
+    assert.ok(first.redactionState);
 
-    const second = applyAssistantDelta(first.text, secondHalf);
+    const second = applyAssistantDelta(first.text, secondHalf, {
+      redactionState: first.redactionState,
+    });
     assert.equal(second.text.includes(firstHalf + secondHalf), false);
     assert.equal(second.redacted, true);
 
@@ -118,10 +131,15 @@ describe('assistant stream state boundary', () => {
     const secret = 'sk-deadbeef00000000deadbeef00000000';
     let text = '';
     let redacted = false;
+    let redactionState: NonNullable<ReturnType<typeof applyAssistantDelta>['redactionState']>
+      | undefined;
     for (const delta of `Authorization: Bearer ${secret}`) {
-      const result = applyAssistantDelta(text, delta);
+      const result = applyAssistantDelta(text, delta, {
+        ...(redactionState === undefined ? {} : { redactionState }),
+      });
       text = result.text;
       redacted ||= result.redacted;
+      redactionState = result.redactionState;
     }
     assert.equal(text.includes(secret), false);
     assert.equal(redacted, true);

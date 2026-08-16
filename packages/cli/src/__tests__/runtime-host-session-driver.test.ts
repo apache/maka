@@ -121,6 +121,72 @@ describe('Runtime Host Maka Session driver', () => {
     }
   });
 
+  test('drops a per-session Full access elevation when a fresh Session starts (#3020)', async () => {
+    // The TUI flow behind /new: session A is elevated to bypass, then the
+    // driver is asked to start over. The next prompt lazily creates session B
+    // through preparePrompt. Session B must be created with the
+    // construction-time default — Full access is an explicit per-session
+    // opt-in, never inherited.
+    const connection = new FakeConnection([
+      new FakeSubscription(continuitySnapshot(), Promise.resolve([])),
+      new FakeSubscription(
+        continuitySnapshot({
+          session: {
+            sessionId: 'session-2',
+            metadataRevision: 1,
+            status: 'running',
+            createdAt: 1,
+            lastUsedAt: 1,
+            isArchived: false,
+          },
+          rootTurn: null,
+        }),
+        Promise.resolve([]),
+      ),
+    ]);
+    let nextId = 0;
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+      newId: () => `session-${++nextId}`,
+    });
+
+    await driver.createSession({
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      backend: 'ai-sdk',
+      permissionMode: 'ask',
+    });
+    connection.executionBoundary = { kind: 'bypass', revision: 2 };
+    await driver.setPermissionMode('bypass');
+    assert.equal(driver.getPermissionMode?.(), 'bypass');
+
+    driver.startNewSession();
+    assert.equal(driver.getPermissionMode?.(), 'ask');
+
+    // The fresh Session's boundary is managed again once it exists.
+    connection.executionBoundary = { kind: 'managed', access: 'writable', revision: 3 };
+    await driver.preparePrompt('hello');
+
+    const creates = connection.requests.filter(({ operation }) => operation === 'session.create');
+    assert.equal(creates.length, 2);
+    assert.deepEqual(creates[1]!.input, {
+      sessionId: 'session-2',
+      workspace: { kind: 'host_path', path: '/repo' },
+      name: 'New Chat',
+      modelTarget: {
+        kind: 'explicit',
+        connectionSlug: 'openai-main',
+        model: 'gpt-5',
+      },
+      permissionMode: 'ask',
+    });
+  });
+
   test('relocates a moved Session through Host authority before attaching', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-tui-resume-moved-cwd-'));
     const target = join(root, 'new-worktree');
@@ -1205,6 +1271,16 @@ class FakeConnection {
           hostCwd: create.workspace.kind === 'host_path' ? create.workspace.path : '/project',
         },
       }) as OperationOutput<K>;
+    }
+    if (operation === 'session.configuration.update') {
+      const update = input as OperationInput<'session.configuration.update'>;
+      return {
+        kind: 'committed',
+        session: sessionProjection({
+          revision: update.expectedRevision + 1,
+          permissionMode: update.configuration.permissionMode,
+        }),
+      } as OperationOutput<K>;
     }
     const turnInput = input as {
       sessionId?: string;

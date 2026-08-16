@@ -17,7 +17,7 @@ export function longSidebarSessions(
     return {
       header: header({
         id: sessionId,
-        name: `会话 ${suffix}`,
+        name: `任务 ${suffix}`,
         connection: 'zai-live',
         model: 'glm-5.1',
         now,

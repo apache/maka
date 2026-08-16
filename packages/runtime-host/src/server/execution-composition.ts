@@ -197,7 +197,7 @@ export function runtimeHostFilesystemWorkerRuntime(versions: {
 }
 
 export async function createExecutionRuntimeHostComposition(
-  context: RuntimeHostCompositionContext<'interactive'>,
+  context: RuntimeHostCompositionContext,
   options: CreateExecutionRuntimeHostCompositionOptions = {},
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<ExecutionRuntimeHostComposition> {

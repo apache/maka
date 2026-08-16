@@ -13,7 +13,8 @@
  *       UserMessage / AssistantMessage / ToolCallMessage / ToolResultMessage.
  *     Excluded: SystemNoteMessage / TokenUsageMessage / TurnStateMessage /
  *     PermissionDecisionMessage.
- *   - Excludes sessions with `backend === 'fake'` (e2e-fixture fixtures).
+ *   - Excludes sessions with `backend === 'fake'` (e2e-fixture fixtures) and
+ *     archived sessions (managed in Settings › 活动 › 已归档任务).
  *   - Snippets are redacted via `@maka/core/redaction.redactSecrets()`.
  *   - `ToolResultMessage.content` is JSON-serialized for scan and capped to
  *     the first `TOOL_RESULT_SCAN_CAP_BYTES` bytes (worst-case bound).
@@ -161,7 +162,13 @@ export async function runThreadSearch(
   const sessions = collapseSessionRevisions(await deps.listSessions())
     // Exclude fake-backend sessions — e2e-fixture fixtures and
     // similar dev-only state should not surface as real chat hits.
-    .filter((session) => session.backend !== 'fake')
+    //
+    // Archived tasks are excluded for the same reason the command palette
+    // skips them: archiving a task says it is out of the working set, and a
+    // result you cannot land on anywhere but Settings is not a chat hit. They
+    // also stop consuming the `MAX_SESSIONS_SCANNED` budget, which they shared
+    // with active tasks while being unreachable from the rail.
+    .filter((session) => session.backend !== 'fake' && !session.isArchived)
     // Newest first by lastMessageAt; secondary by id for determinism.
     .sort((a, b) => {
       const ts = (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0);
@@ -195,7 +202,7 @@ export async function runThreadSearch(
       results.push({
         source: THREAD_SOURCE,
         title: session.name,
-        summary: '会话标题',
+        summary: '任务标题',
         snippet,
         target: {
           kind: 'thread',

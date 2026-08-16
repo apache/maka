@@ -17,7 +17,7 @@ export type InteractiveRuntimeHostCandidateResult =
 
 export async function startInteractiveRuntimeHostCandidate(
   options: InteractiveRuntimeHostCandidateOptions,
-  composition: RuntimeHostCompositionSource<'interactive'>,
+  composition: RuntimeHostCompositionSource,
 ): Promise<InteractiveRuntimeHostCandidateResult> {
   const capability = await resolveExistingStorageRoot({
     path: options.rootPath,

@@ -1,0 +1,67 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: "en-US"
+tone_instructions: "Be concise, direct, and evidence-based."
+
+reviews:
+  profile: "chill"
+  poem: false
+  in_progress_fortune: false
+  enable_prompt_for_ai_agents: false
+  request_changes_workflow: false
+  auto_assign_reviewers: false
+
+  path_instructions:
+    - path: "{**/*,**/.*,**/.*/**}"
+      instructions: |
+        Review the diff adversarially against the problem it claims to solve.
+        Determine whether it is the smallest coherent solution at the existing source of truth.
+        Flag concrete cases where code can be deleted or simplified.
+        Flag tests that duplicate existing coverage, assert implementation details, or do not protect observable behavior.
+        Do not suggest speculative refactors or alternatives without a concrete correctness or maintenance benefit.
+
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  high_level_summary_instructions: |
+    Explain:
+    1. What problem the PR solves.
+    2. Whether it extends the existing source of truth or creates a parallel path.
+    3. Whether it is the smallest coherent solution and any added complexity is necessary.
+    4. What code or tests, if any, can be deleted or simplified without weakening behavior or regression coverage.
+    5. The concrete risks and validation performed.
+
+    End with a section named "Review-relevant risks":
+    - Identify, with concrete evidence from the current diff, any apparent effect on user-visible behavior, public contracts, security, licensing, releases, or governance.
+    - For each apparent effect, state that material changes in that area require independent human review under the repository policy.
+    - If none is identified, state only that no protected-area effect was identified in the current diff.
+    - Treat the final status of required checks as unverified unless direct evidence is available.
+    - Do not classify the PR as a fast-path candidate or present the assessment as authorization. State that the person performing the merge reviews the final diff and a maintainer makes the final determination.
+
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    description:
+      mode: "warning"
+    custom_checks:
+      - name: "AI use disclosure"
+        mode: "warning"
+        instructions: |
+          Evaluate only the repository's AI-use disclosure policy.
+
+          Inspect the entire current PR description and the complete commit messages for every commit introduced by the PR. Do not treat text found only in changed files, quoted examples, diffs, or CodeRabbit-generated output as disclosure.
+
+          A valid trailer is a standalone commit-message line in the form `Generated-by: <actual tool name>`. The literal placeholder `<tool>`, an empty value, or prose that merely discusses the trailer is invalid.
+
+          Pass only when exactly one of these cases applies:
+          1. The PR description explicitly selects "No generative tool made a substantive contribution", and no contradictory disclosure or Generated-by trailer is present.
+          2. The PR description explicitly selects "Generative tooling made a substantive contribution" and names the tool and its scope. When that scope says AI authored material contribution content, the affected PR commits must also contain a valid Generated-by trailer consistent with the disclosure. A trailer is not required when the disclosed substantive use did not author material contribution content.
+
+          Fail with a warning when neither or both declarations are selected, the declaration conflicts with a commit trailer, substantive use is disclosed without a named tool and scope, a trailer names a tool that the PR description does not disclose, or no valid trailer is present when disclosed AI use authored material contribution content.
+
+          Never infer AI use from writing style, code style, commit structure, or perceived authorship. When no disclosure exists, use conditional language: "If generative tooling made a substantive contribution..."
+
+          On failure, explain the smallest corrective action and refer the author to the "Human ownership and AI attribution" section of `CONTRIBUTING.md` for responsibility, provenance, licensing, and tool-output obligations. When a required trailer is missing or inconsistent, specifically remind the author that it must survive squash or amend.
+
+  auto_review:
+    enabled: true
+    drafts: false

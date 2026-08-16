@@ -86,8 +86,8 @@ cohort. `MAKA_EVAL_EGRESS_NAMESPACE_TEST=1 python3 harbor/test_cell_egress_names
 the overlay and the checked-in policy and asserts that contract in a real cell namespace; it needs
 a Docker daemon and outbound network, and skips otherwise. This URL policy is a blocklist for known
 benchmark and public-solution contamination surfaces, not a complete defense against a deliberately
-invented lookup channel. It classifies what it can read: a `CONNECT` tunnel carrying something other
-than TLS or HTTP reaches no rule and no audit record, which is tracked in issue #2977. Collected Maka runtime files
+invented lookup channel. It classifies HTTP(S) requests and `CONNECT` hosts against the blocklist, and
+kills tunnels that fall back to raw TCP. Collected Maka runtime files
 and egress audit logs are represented in attempt artifacts with byte counts and SHA-256 digests.
 The local image tag remains a machine deployment identity rather than a registry digest; digest
 pinning is tracked in issue #2953.

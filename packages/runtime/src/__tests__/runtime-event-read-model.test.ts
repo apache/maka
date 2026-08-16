@@ -1894,17 +1894,6 @@ class ReadOnlyStore implements SessionStore {
     return { ...makeHeader(id), ...patch };
   }
 
-  async markSessionReadThrough(id: string, readThroughTs: number): Promise<SessionHeader> {
-    const header = makeHeader(id);
-    if (
-      !Number.isFinite(readThroughTs) ||
-      !header.hasUnread ||
-      (header.lastMessageAt !== undefined && header.lastMessageAt > readThroughTs)
-    )
-      return header;
-    return { ...header, hasUnread: false };
-  }
-
   async archive(_sessionId: string): Promise<void> {}
   async unarchive(_sessionId: string): Promise<void> {}
   async setFlagged(_sessionId: string, _isFlagged: boolean): Promise<void> {}

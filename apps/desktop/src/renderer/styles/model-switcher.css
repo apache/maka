@@ -26,9 +26,25 @@
   white-space: nowrap;
 }
 
-/* A quiet, always-discoverable warning on the EXISTING-conversation picker.
-   The whole trigger owns the tooltip, so the icon adds no second focus target. */
-.maka-model-switch-warning-icon {
+/* Switching can abandon a provider prompt cache, but that is a property of
+   the pending action, not the current model. Keep the notice inside the open
+   picker so a healthy resting control never looks unhealthy. */
+.maka-model-switch-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1-5);
+  margin: var(--space-1);
+  padding: var(--space-1-5) var(--space-2);
+  border: var(--border-width-hairline) solid var(--warning-wash-border);
+  border-radius: var(--radius-control);
+  background: var(--warning-wash);
+  color: var(--foreground-secondary);
+  font: var(--maka-text-supporting);
+  white-space: normal;
+}
+
+.maka-model-switch-notice > svg {
+  margin-top: 1px;
   color: var(--warning-text);
   flex: 0 0 auto;
 }

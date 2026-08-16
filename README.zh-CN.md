@@ -75,7 +75,7 @@ Windows 目前仍是未签名预览版，不属于正式支持的平台。当某
 
 ### 环境要求
 
-- Node.js 22（当前 CI 基线）；
+- Node.js 22.19 或更高（CI 使用 Node.js 24）；
 - npm（仓库 lockfile 和 scripts 以 npm 为准，`packageManager` 当前为 npm 11）；
 - Git；
 - `ripgrep`，供 Runtime 的 `Grep` 工具使用。
@@ -123,10 +123,10 @@ npm run build
 然后可以启动 TUI 或执行单次 Turn：
 
 ```sh
-npm --workspace maka-agent exec -- maka
-npm --workspace maka-agent exec -- maka run "总结当前仓库并指出最重要的风险"
-npm --workspace maka-agent exec -- maka run --graph "并行实现两个切片，完成集成，然后独立审查"
-npm --workspace maka-agent exec -- maka --help
+npm run cli:dev
+npm run cli:dev -- run "总结当前仓库并指出最重要的风险"
+npm run cli:dev -- run --graph "并行实现两个切片，完成集成，然后独立审查"
+npm run cli:dev -- --help
 ```
 
 TUI 同时支持 `/graph on`、`/graph off` 和 `/graph <任务>`。非交互
@@ -134,7 +134,8 @@ TUI 同时支持 `/graph on`、`/graph off` 和 `/graph <任务>`。非交互
 Graph 的 implementation operator 使用隔离的 Git worktree，因此源项目必须是干净的
 Git worktree。
 
-CLI 读取 Desktop 写入的同一份模型连接和 workspace 配置。评测 spec 和 adapter 位于 [`packages/eval`](./packages/eval)。
+仓库 CLI 使用与开发版 Desktop 构建相同的 `Maka Dev` profile；发布版 `maka` 二进制仍使用
+`Maka` profile，二者不会自动复制或同步。评测 spec 和 adapter 位于 [`packages/eval`](./packages/eval)。
 
 ## 架构
 
@@ -160,7 +161,7 @@ Experiment → Cells → Attempts → Results
 apps/desktop/       Electron main / preload / React renderer
 
 packages/core/      Session、Event、Permission、Connection 等纯 contracts
-packages/storage/   File-backed stores 与 run ledgers
+packages/storage/   SQLite 运行状态、配置与 payload stores
 packages/runtime/   AgentRun、模型适配、工具、上下文和恢复
 packages/eval/      Experiment cell、attempt、result 与 executor/subject adapter
 packages/cli/       TUI 和非交互 CLI
@@ -176,39 +177,60 @@ Maka 默认把 workspace 数据放在 Electron `userData` 下：
 
 ```text
 <Electron userData>/workspaces/default/
+  runtime.sqlite
   llm-connections.json
   credentials.json
   settings.json
-  sessions/
+  artifacts/
 ```
 
 需要明确的当前边界：
 
-- 会话和连接元数据保存在本地文件系统；
+- 会话、消息、执行 ledger、workflow、usage、Automations 和 Daily Review 都保存在 `runtime.sqlite`；
 - API key、bot token、proxy password 等运行凭据当前保存在本地 plaintext `credentials.json`，依赖 OS 账号边界，并在 POSIX 上强制目录 `0700`、文件 `0600`；
-- 订阅 OAuth token（Claude、Codex、GitHub Copilot、xAI 以及 Antigravity preview）统一存放在同一份 `credentials.json`，它是 Runtime Host client 的唯一凭据权威；历史 Electron `safeStorage` 凭据/token 文件不会被导入，仅保留这些历史副本的用户需要重新登录；
+- 订阅 OAuth token（Claude、Codex、GitHub Copilot 和 xAI）统一存放在同一份 `credentials.json`，它是 Runtime Host client 的唯一凭据权威；历史 Electron `safeStorage` 凭据/token 文件不会被导入，仅保留这些历史副本的用户需要重新登录；
 - Renderer 不接收明文凭据；文件写入、Shell 和危险工具调用需要经过 permission engine；
 - Eval 不构造 Runtime，也不读取 Runtime storage；Maka subject 连接已有 Runtime Host。
 
 安全问题请阅读 [SECURITY.md](./SECURITY.md)，当前隐私和 sandbox contract 见 [docs/README.md](./docs/README.md)。
 
-## 实验性 Runtime 恢复开关
+## 运行时存储与恢复
 
-RuntimeEvent 现在始终以 `runtime.sqlite` 为 canonical store。首次写入时，Maka
-会批量、幂等导入 legacy RuntimeEvent JSONL，且不会改写旧文件；在首次写入前，
-仅包含 legacy 数据的 workspace 仍可由只读检查路径读取。
+`runtime.sqlite` 是唯一的运行 authority。它拥有 RuntimeEvents、
+session 元数据和消息历史、Agent Graph 控制、核心执行状态、
+workflow 状态、usage 与定价、Artifact 元数据、Automations、Daily Review
+以及 Runtime continuation 记录。Artifact 的 payload 字节仍是 `artifacts/` 下的普通文件；
+connections、credentials、settings、MCP 配置、skills
+和 device identity 仍是配置文件。
 
-Runtime continuation 仍需显式开启：
+本存储代次不会导入更早的 File/JSONL authority。升级时，
+legacy session 标题仍可能通过当前元数据被发现，但仅存在于 legacy transcript
+文件中的会话历史不会被复制进 `session_messages`，打开时会显示为空会话。同样，
+pre-version 或 `safeStorage` 加密的 credential/token 文件不会被迁移；
+仅保留这些副本的用户必须重新认证。这一数据丢失边界是本版本的有意设计，
+升级既有 workspace 之前必须仔细考虑。
 
-- `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` 会开启 Desktop 中断横幅的“安全恢复”按钮、
-  CLI/TUI 的 `/resume` 命令和 Desktop 启动时自动续跑。这些路径都可能调用已配置的模型 provider 并消耗 token，
+完整运维备份使用数据库 owner 的 online SQLite backup API，并在 Artifact
+writer 锁下复制 canonical Artifact payload。其 manifest 以 size 和 SHA-256
+绑定每个文件。校验会在 restore 之前检查独立 SQLite snapshot 的完整性、
+foreign keys、schema registry 与必需表，解码 canonical session-message
+和 Artifact 记录，并对照 SQLite 元数据核对 Artifact payload 大小。备份与恢复
+使用 owner-only 文件权限、文件与目录同步、staging 以及原子发布。
+
+Runtime continuation 仍为显式开启：
+
+- `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` 会开启 Desktop 中断回合的
+  **安全恢复**（Safe resume）操作、CLI/TUI 的 `/resume` 以及 Desktop 启动时自动续跑。
+  这些路径都可能调用已配置的模型 provider 并消耗 token，
   只应在你明确需要这一行为时开启。
 
-Phase 2 交付的是 durable 写侧边界和 fail-closed 的 safe-boundary continuation。
-Phase 3 针对不确定工具副作用的 reconcile 尚未实现；结果不明的工具调用会 park，
+Phase 2 交付 durable 的写侧边界和 fail-closed 的 safe-boundary continuation。
+Phase 3 针对不确定工具副作用的 reconcile 尚未实现；结果不明的工具结果仍保持 park，
 不会被盲目重试。
 
 ## 开发与验证
+
+提交改动前请先阅读 [CONTRIBUTING.zh-CN.md](./CONTRIBUTING.zh-CN.md)。
 
 常用仓库级命令：
 

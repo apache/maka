@@ -11,26 +11,23 @@ import { useMountedRef } from './use-mounted-ref.js';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { formatCompactTimestamp } from '@maka/core/relative-time';
 import {
   ICON_SIZE,
   AlertTriangle,
   Archive,
   ArchiveRestore,
-  FolderGit2,
   FolderOpen,
   Pencil,
   Pin,
   PinOff,
   Plug,
-  Plus,
   SquarePen,
   Trash2,
 } from './icons.js';
+import { RelativeTime } from './relative-time.js';
+import { formatAbsoluteTimestamp } from './chat-display-helpers.js';
 import { Badge } from '@astryxdesign/core/Badge';
-import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
-import { IconButton } from '@astryxdesign/core/IconButton';
 import {
   SideNavItem,
   SideNavSection,
@@ -38,10 +35,10 @@ import {
 import { VStack } from '@astryxdesign/core/Stack';
 import { StatusDot, type StatusDotVariant } from '@astryxdesign/core/StatusDot';
 import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
+import { dotForStatus } from './status-vocabulary.js';
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import { getShellControlsCopy } from './shell-controls-copy.js';
 
 type SessionRowActionId = 'flag' | 'archive' | 'rename' | 'delete';
 type ProjectRowActionId = 'new' | 'relink' | 'rename' | 'archive' | 'restore';
@@ -79,22 +76,10 @@ export function SessionHistoryList(props: {
   worktreeSessionIds?: ReadonlySet<string>;
   projectActions?: ProjectRowActions;
   groupVariant?: SessionHistoryGroupVariant;
-  /** Optional section chrome (title + end actions) wrapping the history. */
-  heading?: string;
-  headingEnd?: ReactNode;
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
-  /**
-   * Creates a new task from a group header's trailing trigger (time grouping
-   * only). Same handler as the rail's top-level 新任务 row: a session created
-   * here lands where any new session lands; the trigger is a proximity entry,
-   * not a different creation path. Absent = no trigger.
-   */
-  onNewTask?(): void;
 }) {
   const locale = useUiLocale();
-  const copy = getConversationCopy(locale).sessions;
-  const sessionListTitle = props.heading ?? copy.title;
 
   function handleListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key !== 'Delete' && event.key !== 'Backspace') return;
@@ -112,48 +97,37 @@ export function SessionHistoryList(props: {
     }
   }
 
-  const body = (
-    <SessionListGroups
-      groups={
-        props.groups
-          ? props.groups.map((g) => ({
-              key: g.id,
-              label: g.label,
-              sessions: g.sessions,
-              project: g.project,
-            }))
-          : groupSessionsForHistory(props.sessions, locale).map((g) => ({
-              key: g.id,
-              label: g.label,
-              sessions: g.sessions,
-            }))
-      }
-      groupVariant={props.groupVariant ?? 'conversation'}
-      activeId={props.activeId}
-      streamingSessionIds={props.streamingSessionIds}
-      staleSessionIds={props.staleSessionIds}
-      worktreeSessionIds={props.worktreeSessionIds}
-      onSelectSession={props.onSelectSession}
-      rowActions={props.rowActions}
-      projectActions={props.projectActions}
-      onNewTask={props.onNewTask}
-    />
-  );
-
-  // Outer SideNav is the sole navigation landmark; this is scroll content only.
+  // Outer SideNav is the sole navigation landmark and it already carries this
+  // panel's name; naming this element too put "任务列表" inside "任务列表",
+  // which is one ambiguous match for anything selecting by that name and no
+  // extra information for anyone hearing it. It is scroll content and a key
+  // handler, nothing an assistive tech user needs to be told about separately.
   return (
-    <div className="maka-session-list" role="group" aria-label={sessionListTitle} onKeyDown={handleListKeyDown}>
-      {props.heading ? (
-        <SideNavSection
-          title={props.heading}
-          endContent={props.headingEnd}
-          className="maka-session-heading-section"
-        >
-          {body}
-        </SideNavSection>
-      ) : (
-        body
-      )}
+    <div className="maka-session-list" onKeyDown={handleListKeyDown}>
+      <SessionListGroups
+        groups={
+          props.groups
+            ? props.groups.map((g) => ({
+                key: g.id,
+                label: g.label,
+                sessions: g.sessions,
+                project: g.project,
+              }))
+            : groupSessionsForHistory(props.sessions, locale).map((g) => ({
+                key: g.id,
+                label: g.label,
+                sessions: g.sessions,
+              }))
+        }
+        groupVariant={props.groupVariant ?? 'conversation'}
+        activeId={props.activeId}
+        streamingSessionIds={props.streamingSessionIds}
+        staleSessionIds={props.staleSessionIds}
+        worktreeSessionIds={props.worktreeSessionIds}
+        onSelectSession={props.onSelectSession}
+        rowActions={props.rowActions}
+        projectActions={props.projectActions}
+      />
     </div>
   );
 }
@@ -173,10 +147,8 @@ function SessionListGroups(props: {
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
   projectActions?: ProjectRowActions;
-  onNewTask?(): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
-  const newTaskCopy = getShellControlsCopy(useUiLocale()).navigation.groupNewTask;
   const [renameTarget, setRenameTarget] = useState<SessionRenameTarget | null>(null);
   /**
    * The control the rename was started from, so focus can go back to it.
@@ -309,27 +281,6 @@ function SessionListGroups(props: {
     );
   }
 
-  // Group-header new-task trigger (time grouping). Same HANDLER as the
-  // rail's top-level 新任务 SideNavItem, but a different NAME
-  // (navigation.groupNewTask): reusing copy.newTask would give two controls
-  // the same accessible name, a strict-mode collision for
-  // getByRole('button', { name: '新任务' }) and an ambiguity for screen
-  // readers. IconButton + Tooltip is the icon-only pattern
-  // SessionSidebarFooter already uses; the compact 24px box and column
-  // alignment belong to sidebar.css.
-  const newTaskAction = props.onNewTask ? (
-    <Tooltip content={newTaskCopy}>
-      <IconButton
-        className="maka-group-new-task-button"
-        variant="ghost"
-        size="sm"
-        label={newTaskCopy}
-        icon={<Plus size={ICON_SIZE.control} aria-hidden="true" />}
-        onClick={() => void props.onNewTask?.()}
-      />
-    </Tooltip>
-  ) : undefined;
-
   return (
     <>
       {renameDialog}
@@ -343,12 +294,7 @@ function SessionListGroups(props: {
           );
         }
         return (
-          <SideNavSection
-            key={group.key}
-            title={group.label}
-            endContent={newTaskAction}
-            className="maka-session-group"
-          >
+          <SideNavSection key={group.key} title={group.label} className="maka-session-group">
             {items}
           </SideNavSection>
         );
@@ -414,7 +360,29 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
 }) {
   const locale = useUiLocale();
-  const metaTitle = formatSessionMeta(props.session, locale);
+  const copy = getConversationCopy(locale).sessions;
+  const signals = sessionRowSignals(
+    props.session,
+    { streaming: props.streaming, stale: props.stale, active: props.active },
+    locale,
+  );
+  const signal = signals[0];
+  // What the row communicates without text and the dot does NOT already say,
+  // inside the button so it lands in the accessible name. `signals[0]` is
+  // skipped because `StatusDot` carries it; the rest of the list, the worktree
+  // attribute, and the timestamp reached assistive tech nowhere else — the
+  // timestamp renders `aria-hidden` and swaps out for the ⋯ menu, and worktree
+  // is an attribute of the row rather than a signal, so it never competes for
+  // the dot.
+  const rowDescription = [
+    ...signals.slice(1).map((entry) => entry.tooltip ?? entry.label),
+    props.worktree ? copy.worktreeAriaLabel : undefined,
+    props.session.lastMessageAt
+      ? formatAbsoluteTimestamp(props.session.lastMessageAt, locale)
+      : undefined,
+  ]
+    .filter((entry): entry is string => Boolean(entry))
+    .join(' · ');
 
   return (
     <div
@@ -422,12 +390,28 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       data-maka-contract="session-row"
       data-session-id={props.session.id}
       data-stale={props.stale ? 'true' : undefined}
-      title={metaTitle}
+      data-worktree={props.worktree ? 'true' : undefined}
     >
       <SideNavItem
         label={props.session.name}
         size="md"
         isSelected={props.active}
+        // Slot 1, the row's leading edge. A fixed gutter every row pays for,
+        // whether or not it has a dot, so state reads as one column down the
+        // rail instead of a mark that drifts with each title's length.
+        icon={
+          signal ? (
+            <StatusDot
+              variant={signal.variant}
+              label={signal.label}
+              isPulsing={signal.isPulsing}
+              tooltip={signal.tooltip}
+              data-session-status={props.session.status}
+            />
+          ) : (
+            <span className="maka-session-row-signal-empty" aria-hidden="true" />
+          )
+        }
         onClick={(event) => {
           if (event.detail > 1 && props.actions) {
             props.onStartRename(
@@ -445,14 +429,25 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           props.onSelectSession(props.session.id);
         }}
         endContent={
-          <SessionItemMeta
-            session={props.session}
-            active={props.active}
-            streaming={props.streaming}
-            stale={props.stale}
-            worktree={props.worktree}
-            reserveAction={props.actions !== undefined}
-          />
+          // Slot 2. The timestamp is what the row shows at rest; the ⋯ menu
+          // below is absolutely positioned over this box and sidebar.css swaps
+          // the two on hover or keyboard focus. The span is rendered even with
+          // no timestamp so the column exists on every row.
+          <span className="maka-session-row-end">
+            <span className="maka-session-row-time">
+              {props.session.lastMessageAt ? (
+                <RelativeTime
+                  ts={props.session.lastMessageAt}
+                  variant="compact"
+                  className="maka-session-row-time-label"
+                  suppressTitle
+                />
+              ) : null}
+            </span>
+            {rowDescription ? (
+              <span className="maka-visually-hidden">{rowDescription}</span>
+            ) : null}
+          </span>
         }
       />
       {props.actions && (
@@ -590,70 +585,6 @@ function ProjectItemActions(props: {
   );
 }
 
-const SessionItemMeta = memo(function SessionItemMeta(props: {
-  session: SessionSummary;
-  active: boolean;
-  streaming: boolean;
-  stale: boolean;
-  worktree: boolean;
-  reserveAction: boolean;
-}) {
-  const locale = useUiLocale();
-  const copy = getConversationCopy(locale).sessions;
-  const statusDot = resolveSessionStatusDot(props.session, props.streaming, props.active, locale);
-
-  // Signal (status/unread) and action (MoreMenu) are orthogonal — same as
-  // project rows (badge + menu). No hover XOR state machine.
-  const signal = statusDot ? (
-    <StatusDot
-      variant={statusDot.variant}
-      label={statusDot.label}
-      isPulsing={statusDot.isPulsing}
-      tooltip={statusDot.tooltip}
-      data-session-status={props.session.status}
-    />
-  ) : shouldShowSessionUnreadDot(props.session, props.streaming, props.active) ? (
-    <StatusDot variant="accent" label={copy.unreadAriaLabel} data-session-status="unread" />
-  ) : null;
-
-  return (
-    <span className="maka-session-row-end">
-      {props.stale && (
-        <Tooltip content={copy.staleTitle}>
-          {/* `yellow`, not `warning`. Astryx keeps two archives: the semantic
-              names paint a solid saturated fill (maka's `warning` is a flat
-              #ffce2f that does not adapt to dark mode), the colour names paint
-              a tint. This pill sits on every stale row in the rail, where the
-              chrome it replaced was an 18% wash — a solid block on each row
-              reads as an alert the state does not mean. */}
-          <Badge
-            variant="yellow"
-            label={copy.stale}
-            className="maka-list-row-stale-pill"
-            /* The reason belongs in the name, not only in the Tooltip. `title`
-               used to carry it, and a screen reader read it as the accessible
-               description; Astryx's Tooltip points `aria-describedby` at a
-               popover that is `display: none` until hovered, so off the mouse
-               the description computes to empty. */
-            aria-label={`${copy.staleAriaLabel}. ${copy.staleTitle}`}
-          />
-        </Tooltip>
-      )}
-      {props.worktree && (
-        <FolderGit2
-          size={ICON_SIZE.meta}
-          aria-label={copy.worktreeAriaLabel}
-          className="maka-session-worktree-icon"
-        />
-      )}
-      {signal}
-      <span className="maka-session-row-trailing" aria-hidden="true">
-        {!props.reserveAction && !signal && <span className="maka-session-row-trailing-spacer" />}
-      </span>
-    </span>
-  );
-});
-
 function SessionItemActions(props: {
   session: SessionSummary;
   actions: SessionRowActions;
@@ -762,79 +693,99 @@ function SessionItemActions(props: {
   );
 }
 
-function resolveSessionStatusDot(
+interface SessionRowSignal {
+  variant: StatusDotVariant;
+  label: string;
+  isPulsing?: boolean;
+  tooltip?: string;
+}
+
+/**
+ * Everything true about the session that is worth saying, in priority order.
+ *
+ * The row draws ONE dot — `signals[0]` — but it says all of them. Keeping the
+ * list is what lets the two visible slots stay two while the row still reaches
+ * a screen reader with the same facts a sighted user gets from the dot's
+ * colour, the row's dimming, and the tooltip. Collapsing to a single signal
+ * inside this function is what previously made the trailing `Badge` the only
+ * carrier of "stale", so removing the Badge removed the fact.
+ *
+ * It also stops signals from eating each other. `aborted` used to resolve to no
+ * dot at all, which dropped the row into the unread branch: an aborted task
+ * with unread text drew the same accent dot as one that is running. Now it
+ * draws its own neutral dot and unread is still in the list behind it.
+ *
+ * `streaming` is the only live-run source the rail actually has. It knows only
+ * about turns THIS renderer sent, which is a real limit — a task running under
+ * a bot channel or a second window reads as idle here. The fix for that is a
+ * live-run projection from Runtime Host, which is not in this change; there is
+ * no `runningTurnIds` on a `SessionSummary` that reaches Desktop, so reading it
+ * would be reading a field nothing populates.
+ */
+function sessionRowSignals(
   session: SessionSummary,
-  streaming: boolean,
-  active: boolean,
+  options: { streaming: boolean; stale: boolean; active: boolean },
   locale: UiLocale,
-): { variant: StatusDotVariant; label: string; isPulsing?: boolean; tooltip?: string } | null {
-  if (streaming) {
-    const copy = getConversationCopy(locale).sessions;
-    return {
-      variant: 'accent',
+): SessionRowSignal[] {
+  const copy = getConversationCopy(locale).sessions;
+  const signals: SessionRowSignal[] = [];
+
+  // `active`, through the same vocabulary as everything else here: streaming is
+  // the system working on it right now, which is what that semantic names.
+  // Writing `accent` directly would resolve to the identical colour and reopen
+  // the drift this change closed — half the row's dots deciding for themselves.
+  if (options.streaming) {
+    signals.push({
+      variant: dotForStatus('active'),
       label: copy.respondingAriaLabel,
       isPulsing: true,
       tooltip: copy.respondingTitle,
-    };
+    });
   }
 
-  const status = session.status;
-  if (status === 'active' && !active) {
-    // Idle rows keep a quiet neutral dot (shell-side-nav pattern).
-    return null;
+  const { label, variant } = presentSessionStatus(session.status, locale);
+  if (variant) {
+    const blockedDetail =
+      session.status === 'blocked' && session.blockedReason
+        ? describeBlockedReason(session.blockedReason, locale)
+        : null;
+    signals.push({
+      variant,
+      label,
+      // A `running` header with nothing streaming here: the run ended without
+      // its status write landing, or it is running somewhere this renderer
+      // cannot see. Still pulsing — the row should not change shape based on
+      // which projection delivered it.
+      isPulsing: session.status === 'running',
+      tooltip: blockedDetail ? `${label} · ${blockedDetail}` : label,
+    });
   }
-  if (status === 'active') return null;
 
-  const { label, tone } = presentSessionStatus(status, locale);
-  const blockedDetail =
-    status === 'blocked' && session.blockedReason
-      ? describeBlockedReason(session.blockedReason, locale)
-      : null;
-  return {
-    variant: toneToStatusDotVariant(tone),
-    label,
-    isPulsing: status === 'running',
-    tooltip: blockedDetail ? `${label} · ${blockedDetail}` : label,
-  };
-}
-
-function toneToStatusDotVariant(
-  tone: ReturnType<typeof presentSessionStatus>['tone'],
-): StatusDotVariant {
-  switch (tone) {
-    case 'accent':
-      return 'accent';
-    case 'warning':
-      return 'warning';
-    case 'destructive':
-      return 'error';
-    case 'success':
-      return 'success';
-    case 'info':
-      return 'accent';
-    case 'muted':
-    case 'neutral':
-    default:
-      return 'neutral';
+  // Unread ranks under both because it is the weakest claim on attention: a
+  // task that is running or holding a question already says something more
+  // specific about the same unread text. `active` and not `attention`: unread
+  // text is "something happened here", not a question waiting on the user —
+  // that distinction is the whole point of the two semantics.
+  if (!options.active && session.hasUnread) {
+    signals.push({ variant: dotForStatus('active'), label: copy.unreadAriaLabel });
   }
-}
 
-function shouldShowSessionUnreadDot(
-  session: SessionSummary,
-  streaming: boolean,
-  active: boolean,
-): boolean {
-  if (active) return false;
-  if (!session.hasUnread) return false;
-  if (streaming) return false;
-  return !SIDEBAR_UNREAD_SUPPRESSED_STATUSES.has(session.status);
-}
+  // Stale is a renderer-derived fact, not a persisted status, which is why it
+  // is resolved here rather than in `presentSessionStatus`. `attention`, not
+  // `error`: the connection is gone but the task still sends, on the default
+  // connection. It used to be a trailing `Badge`; the row's dimming is the
+  // visual now, and dimming is cancelled on the selected row and says nothing
+  // to assistive tech, so it needs to be in this list either way.
+  if (options.stale) {
+    signals.push({
+      variant: dotForStatus('attention'),
+      label: copy.staleAriaLabel,
+      tooltip: copy.staleTitle,
+    });
+  }
 
-const SIDEBAR_UNREAD_SUPPRESSED_STATUSES = new Set<string>([
-  'running',
-  'waiting_for_user',
-  'blocked',
-]);
+  return signals;
+}
 
 interface SessionGroup {
   id: 'pinned' | 'unpinned';
@@ -860,9 +811,4 @@ function groupSessionsForHistory(sessions: SessionSummary[], locale: UiLocale): 
     groups.push({ id: 'unpinned', label: copy.recent, sessions: unpinned });
   }
   return groups;
-}
-
-function formatSessionMeta(session: SessionSummary, locale: UiLocale): string {
-  if (!session.lastMessageAt) return getConversationCopy(locale).chat.noMessages;
-  return formatCompactTimestamp(session.lastMessageAt, Date.now(), locale);
 }

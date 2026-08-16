@@ -38,8 +38,8 @@ const RESUME_PARK_REASON_COPY: Readonly<Record<string, string>> = {
 export function resumeParkToastCopy(reasons: readonly string[]): ResumeParkToastCopy {
   if (reasons.length === 1 && reasons[0] === 'resume_candidate_missing') {
     return {
-      title: '没有可恢复的对话',
-      description: '会话已是最新状态。',
+      title: '没有可恢复的任务',
+      description: '任务已是最新状态。',
     };
   }
 
@@ -53,6 +53,6 @@ export function resumeParkToastCopy(reasons: readonly string[]): ResumeParkToast
     title: '暂时无法安全恢复',
     description: descriptions.length > 0
       ? descriptions.join(' ')
-      : '当前会话不满足安全恢复条件。',
+      : '当前任务不满足安全恢复条件。',
   };
 }

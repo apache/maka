@@ -183,7 +183,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     noticeTtlMs: number,
   ): Promise<string | undefined> {
     if (botConversationSessions.size >= BOT_CONVERSATION_SESSION_LIMIT) {
-      await sendTransientBotNotice(message, 'Maka 当前机器人会话数量已达上限，请重置或清理旧会话后再试。', noticeTtlMs);
+      await sendTransientBotNotice(message, 'Maka 当前机器人任务数量已达上限，请重置或清理旧任务后再试。', noticeTtlMs);
       return undefined;
     }
     if (!consumeBotConversationToken(conversationKey)) {
@@ -191,7 +191,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       return undefined;
     }
     const sessionId = await deps.sessions.createSession({
-      name: `${botDisplayLabel(message.platform)} 对话`,
+      name: `${botDisplayLabel(message.platform)} 任务`,
       labels: ['bot', message.platform],
     });
     botConversationSessions.set(conversationKey, sessionId);
@@ -240,8 +240,8 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
         ephemeralTtlMs: SYSTEM_NOTICE_TTL_MS,
       };
       const ack = had
-        ? '会话已重置，下一条消息会开新对话。'
-        : '当前没有进行中的对话；下一条消息会开新对话。';
+        ? '任务已重置，下一条消息会开新任务。'
+        : '当前没有进行中的任务；下一条消息会开新任务。';
       await deps.botRegistry.sendMessage(message.platform, message.chatId, ack, replyOptions).catch(() => null);
       return;
     }
@@ -396,7 +396,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     if ((await deps.sessions.prepareSession(sessionId)) === 'ready') return true;
     await sendTransientBotNotice(
       message,
-      'Maka 已拒绝这条机器人消息：绑定会话当前不是只读探索模式，请先在桌面端切回 explore 后再试。',
+      'Maka 已拒绝这条机器人消息：绑定任务当前不是只读探索模式，请先在桌面端切回 explore 后再试。',
       noticeTtlMs,
     );
     return false;

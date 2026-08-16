@@ -3,7 +3,6 @@ import type {
   ExtensionModule,
   NavModuleMemory,
   NavSelection,
-  SessionFilter,
 } from '@maka/ui';
 import { safeLocalStorageGet } from './browser-storage.js';
 
@@ -19,13 +18,9 @@ const DEFAULT_MODULE_MEMORY: NavModuleMemory = {
 
 function defaultNavigationState(): NavigationState {
   return {
-    selection: { section: 'sessions', filter: 'chats' },
+    selection: { section: 'sessions' },
     moduleMemory: { ...DEFAULT_MODULE_MEMORY },
   };
-}
-
-function isSessionFilter(value: unknown): value is SessionFilter {
-  return value === 'chats' || value === 'flagged' || value === 'archived';
 }
 
 function isExtensionModule(value: unknown): value is ExtensionModule {
@@ -38,10 +33,11 @@ function isAutomationModule(value: unknown): value is AutomationModule {
 
 function parseSelection(value: unknown): NavSelection | null {
   if (!value || typeof value !== 'object') return null;
-  const candidate = value as { section?: unknown; filter?: unknown; module?: unknown };
-  if (candidate.section === 'sessions' && isSessionFilter(candidate.filter)) {
-    return { section: 'sessions', filter: candidate.filter };
-  }
+  const candidate = value as { section?: unknown; module?: unknown };
+  // Any stored `filter` is dropped rather than validated: `archived` named a
+  // destination that moved to Settings (#2985) and `flagged` was never written,
+  // so every stored value maps to the one session section that exists (#2984).
+  if (candidate.section === 'sessions') return { section: 'sessions' };
   if (candidate.section === 'extensions' && isExtensionModule(candidate.module)) {
     return { section: 'extensions', module: candidate.module };
   }

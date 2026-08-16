@@ -183,7 +183,7 @@ export async function writeScheduledTasks(workspaceRoot: string, now: number): P
     for (const [index, title] of [
       '每日站会前汇总阻塞项',
       '每月依赖许可证审计',
-      '季度收尾清点未归档会话',
+      '季度收尾清点未归档任务',
       '发布前跑一轮回归',
     ].entries()) {
       await create(

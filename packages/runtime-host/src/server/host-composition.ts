@@ -1,4 +1,3 @@
-import type { StorageRootKind } from '@maka/storage/root-authority';
 import type { RuntimeHostCompositionFactory } from './host-kernel.js';
 import { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../protocol/index.js';
 import {
@@ -199,15 +198,15 @@ async function closeModuleResources(
   }
 }
 
-export interface RuntimeHostCompositionSource<K extends StorageRootKind = 'interactive'> {
+export interface RuntimeHostCompositionSource {
   readonly descriptor: HostCompositionDescriptor;
-  readonly create: RuntimeHostCompositionFactory<K>;
+  readonly create: RuntimeHostCompositionFactory;
 }
 
-export function defineRuntimeHostComposition<K extends StorageRootKind>(
+export function defineRuntimeHostComposition(
   descriptor: HostCompositionDescriptor,
-  create: RuntimeHostCompositionFactory<K>,
-): RuntimeHostCompositionSource<K> {
+  create: RuntimeHostCompositionFactory,
+): RuntimeHostCompositionSource {
   return Object.freeze({
     descriptor: normalizeHostCompositionDescriptor(descriptor),
     create,
@@ -215,8 +214,8 @@ export function defineRuntimeHostComposition<K extends StorageRootKind>(
 }
 
 export function defineInteractiveRuntimeHostComposition(
-  create: RuntimeHostCompositionFactory<'interactive'>,
-): RuntimeHostCompositionSource<'interactive'> {
+  create: RuntimeHostCompositionFactory,
+): RuntimeHostCompositionSource {
   return defineRuntimeHostComposition(INTERACTIVE_HOST_COMPOSITION_DESCRIPTOR, create);
 }
 

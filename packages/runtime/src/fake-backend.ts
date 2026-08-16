@@ -23,6 +23,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export const FAKE_ASK_USER_QUESTION_PROMPT = '__e2e_ask_user_question__';
 export const FAKE_ASK_SANDBOX_BOUNDARY_PROMPT = '__e2e_ask_sandbox_boundary__';
 export const FAKE_WAIT_FOR_STEERING_PROMPT = '__e2e_wait_for_steering__';
+export const FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT =
+  '__e2e_wait_for_steering_large_response__';
 export const FAKE_HOLD_OPEN_PROMPT = '__e2e_hold_open__';
 export const FAKE_HOLD_OPEN_REWRITE_PROMPT = '__e2e_hold_open_rewrite__';
 export const FAKE_MERMAID_PROMPT = '__e2e_mermaid__';
@@ -79,8 +81,12 @@ export class FakeBackend implements AgentBackend {
     const messageId = randomUUID();
     const attNames = (input.attachments ?? []).map((a) => a.name);
     const attLine = attNames.length > 0 ? `\nAttachments received: ${attNames.join(', ')}` : '';
-    let text =
-      input.text === FAKE_MERMAID_PROMPT
+    const isLargeSteeringResponse = input.text === FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT;
+    const isSteeringScenario =
+      input.text === FAKE_WAIT_FOR_STEERING_PROMPT || isLargeSteeringResponse;
+    let text = isLargeSteeringResponse
+      ? `${'Detailed response. '.repeat(1_400)}Large response complete.`
+      : input.text === FAKE_MERMAID_PROMPT
         ? [
             'Fake backend Mermaid fixture:',
             '',
@@ -126,7 +132,9 @@ export class FakeBackend implements AgentBackend {
           : `Fake backend received: ${input.text}${attLine}\n\nThis proves the session stream, SQLite storage, and renderer loop are connected.`;
     // Every delta must concatenate to text_complete; `.` would silently drop
     // line terminators and make structured Markdown reflow only at completion.
-    const chunks = text.match(/[\s\S]{1,9}/g) ?? [text];
+    const chunks = text.match(isLargeSteeringResponse ? /[\s\S]{1,1024}/g : /[\s\S]{1,9}/g) ?? [
+      text,
+    ];
 
     // Mid-turn steering: drain the caller's pending steering at each step
     // boundary (here, between streamed chunks), echoing every message as a
@@ -220,7 +228,7 @@ export class FakeBackend implements AgentBackend {
         return;
       }
 
-      if (input.text === FAKE_WAIT_FOR_STEERING_PROMPT) {
+      if (isSteeringScenario) {
         let pending = drainSteering();
         while (pending.length === 0 && !this.stopped) {
           await sleep(5);
@@ -244,7 +252,7 @@ export class FakeBackend implements AgentBackend {
           };
           return;
         }
-        if (input.text !== FAKE_WAIT_FOR_STEERING_PROMPT) await sleep(45);
+        if (!isSteeringScenario) await sleep(45);
         for (const { leaseId, event } of drainSteering()) {
           yield event;
           settleOutstanding(leaseId);

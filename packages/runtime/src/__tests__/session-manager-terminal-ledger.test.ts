@@ -1158,162 +1158,6 @@ describe('SessionManager terminal ledger invariants', () => {
     ).toBe(false);
   });
 
-  test('direct AgentRun execute records terminal RuntimeEvents before terminal headers', async () => {
-    const store = new TinySessionStore();
-    const runStore = new TinyAgentRunStore();
-    const session = await store.create(makeInput());
-    const backend = new ScriptBackend({ sessionId: session.id } as BackendFactoryContext, [
-      { type: 'complete', stopReason: 'end_turn' },
-    ]);
-    const activeRuns = new Map<string, AgentRun>();
-    const turnToRunId = new Map<string, string>();
-    const run = new AgentRun({
-      sessionId: session.id,
-      header: session,
-      userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
-      runStore,
-      runtimeEventStore: runStore,
-      newId: nextId(),
-      now: nextNow(40_000),
-      hooks: {
-        reserveRun: async (_sessionId, _header, activeRun) => {
-          activeRuns.set(activeRun.runId, activeRun);
-          turnToRunId.set(activeRun.turnId, activeRun.runId);
-          return {
-            sessionId: session.id,
-            backend,
-            cachedHeader: session,
-            activeRuns,
-            turnToRunId,
-          };
-        },
-        unregisterRun: (_active, activeRun) => {
-          activeRuns.delete(activeRun.runId);
-          turnToRunId.delete(activeRun.turnId);
-        },
-        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
-        updateStatus: async () => {},
-        appendTurnState: async () => {},
-      },
-    });
-
-    await drain(run.execute());
-
-    const header = await runStore.readRun(session.id, run.runId);
-    expect(header.status).toBe('completed');
-    const terminalEvents = (await runStore.readRuntimeEvents(session.id, run.runId)).filter(
-      isTerminalRuntimeEvent,
-    );
-    expect(terminalEvents).toHaveLength(1);
-    expect(terminalEvents[0]?.status).toBe('completed');
-  });
-
-  test('direct AgentRun execute ignores backend events after the terminal event', async () => {
-    const store = new TinySessionStore();
-    const runStore = new TinyAgentRunStore();
-    const session = await store.create(makeInput());
-    const backend = new ScriptBackend({ sessionId: session.id } as BackendFactoryContext, [
-      { type: 'complete', stopReason: 'end_turn' },
-      { type: 'text_delta', messageId: 'message-after-terminal', text: 'after-terminal' },
-    ]);
-    const activeRuns = new Map<string, AgentRun>();
-    const turnToRunId = new Map<string, string>();
-    const run = new AgentRun({
-      sessionId: session.id,
-      header: session,
-      userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
-      runStore,
-      runtimeEventStore: runStore,
-      newId: nextId(),
-      now: nextNow(40_500),
-      hooks: {
-        reserveRun: async (_sessionId, _header, activeRun) => {
-          activeRuns.set(activeRun.runId, activeRun);
-          turnToRunId.set(activeRun.turnId, activeRun.runId);
-          return {
-            sessionId: session.id,
-            backend,
-            cachedHeader: session,
-            activeRuns,
-            turnToRunId,
-          };
-        },
-        unregisterRun: (_active, activeRun) => {
-          activeRuns.delete(activeRun.runId);
-          turnToRunId.delete(activeRun.turnId);
-        },
-        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
-        updateStatus: async () => {},
-        appendTurnState: async () => {},
-      },
-    });
-
-    const yielded: SessionEvent[] = [];
-    for await (const event of run.execute()) {
-      yielded.push(event);
-    }
-
-    expect(yielded.map((event) => event.type)).toEqual(['complete']);
-    const runtimeEvents = await runStore.readRuntimeEvents(session.id, run.runId);
-    expect(
-      runtimeEvents.map((event) =>
-        event.content?.kind === 'text' ? event.content.text : event.status,
-      ),
-    ).toEqual(['hello', 'completed']);
-  });
-
-  test('direct AgentRun execute forwards the effective tool mode to the Flow', async () => {
-    const store = new TinySessionStore();
-    const runStore = new TinyAgentRunStore();
-    const session = await store.create(makeInput());
-    let observedToolMode: BackendSendInput['toolMode'];
-    const backend = new ScriptBackend(
-      { sessionId: session.id } as BackendFactoryContext,
-      [{ type: 'complete', stopReason: 'end_turn' }],
-      (input) => {
-        observedToolMode = input.toolMode;
-      },
-    );
-    const activeRuns = new Map<string, AgentRun>();
-    const turnToRunId = new Map<string, string>();
-    const run = new AgentRun({
-      sessionId: session.id,
-      header: session,
-      userInput: { turnId: 'turn-code-mode', text: 'hello', toolMode: 'code_mode' },
-      store,
-      runStore,
-      runtimeEventStore: runStore,
-      newId: nextId(),
-      now: nextNow(40_750),
-      hooks: {
-        reserveRun: async (_sessionId, _header, activeRun) => {
-          activeRuns.set(activeRun.runId, activeRun);
-          turnToRunId.set(activeRun.turnId, activeRun.runId);
-          return {
-            sessionId: session.id,
-            backend,
-            cachedHeader: session,
-            activeRuns,
-            turnToRunId,
-          };
-        },
-        unregisterRun: (_active, activeRun) => {
-          activeRuns.delete(activeRun.runId);
-          turnToRunId.delete(activeRun.turnId);
-        },
-        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
-        updateStatus: async () => {},
-        appendTurnState: async () => {},
-      },
-    });
-
-    await drain(run.execute());
-
-    expect(observedToolMode).toBe('code_mode');
-  });
-
   test('direct AgentRun finalize synthesizes a failed terminal fact when no terminal event was recorded', async () => {
     const store = new TinySessionStore();
     const runStore = new TinyAgentRunStore();
@@ -1780,54 +1624,20 @@ describe('SessionManager terminal ledger invariants', () => {
     expect(cancelled).toHaveLength(1);
   });
 
-  test('direct AgentRun error events still commit failed terminal facts when failed turn projection fails', async () => {
-    const store = new TinySessionStore();
-    const runStore = new TinyAgentRunStore();
-    const session = await store.create(makeInput());
-    const backend = new ScriptBackend({ sessionId: session.id } as BackendFactoryContext, [
-      { type: 'error', recoverable: false, reason: 'tool_failed', message: 'Tool failed' },
-    ]);
-    const activeRuns = new Map<string, AgentRun>();
-    const turnToRunId = new Map<string, string>();
-    const run = new AgentRun({
-      sessionId: session.id,
-      header: session,
-      userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
-      runStore,
-      runtimeEventStore: runStore,
-      newId: nextId(),
-      now: nextNow(41_500),
-      hooks: {
-        reserveRun: async (_sessionId, _header, activeRun) => {
-          activeRuns.set(activeRun.runId, activeRun);
-          turnToRunId.set(activeRun.turnId, activeRun.runId);
-          return {
-            sessionId: session.id,
-            backend,
-            cachedHeader: session,
-            activeRuns,
-            turnToRunId,
-          };
-        },
-        unregisterRun: (_active, activeRun) => {
-          activeRuns.delete(activeRun.runId);
-          turnToRunId.delete(activeRun.turnId);
-        },
-        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
-        updateStatus: async () => {},
-        appendTurnState: async (_sessionId, _turnId, status) => {
-          if (status === 'failed') throw new Error('turn state write failed');
-        },
-      },
-    });
+  test('Runtime execution still commits failed terminal facts when failed turn projection fails', async () => {
+    const store = new TinySessionStore({ failTurnStateStatus: 'failed' });
+    const { manager, runStore, session } = await makeHarness(
+      [{ type: 'error', recoverable: false, reason: 'tool_failed', message: 'Tool failed' }],
+      { store },
+    );
 
-    await drain(run.execute());
+    await drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'hello' }));
 
-    const header = await runStore.readRun(session.id, run.runId);
+    const [header] = await runStore.listSessionRuns(session.id);
+    if (!header) throw new Error('run was not recorded');
     expect(header.status).toBe('failed');
     expect(header.failureClass).toBe('tool_failed');
-    const terminalEvents = (await runStore.readRuntimeEvents(session.id, run.runId)).filter(
+    const terminalEvents = (await runStore.readRuntimeEvents(session.id, header.runId)).filter(
       isTerminalRuntimeEvent,
     );
     expect(terminalEvents).toHaveLength(1);
@@ -2314,12 +2124,17 @@ type ScriptEvent =
   | Omit<Extract<SessionEvent, { type: 'abort' }>, 'id' | 'turnId' | 'ts'>
   | Omit<Extract<SessionEvent, { type: 'complete' }>, 'id' | 'turnId' | 'ts'>;
 
-async function makeHarness(events: readonly ScriptEvent[]): Promise<{
+async function makeHarness(
+  events: readonly ScriptEvent[],
+  options: {
+    store?: TinySessionStore;
+  } = {},
+): Promise<{
   manager: SessionManager;
   runStore: TinyAgentRunStore;
   session: SessionSummary;
 }> {
-  const store = new TinySessionStore();
+  const store = options.store ?? new TinySessionStore();
   const runStore = new TinyAgentRunStore();
   const backends = new BackendRegistry();
   backends.register('fake', (ctx) => new ScriptBackend(ctx, events));
@@ -2343,13 +2158,11 @@ class ScriptBackend implements AgentBackend {
   constructor(
     ctx: BackendFactoryContext,
     private readonly events: readonly ScriptEvent[],
-    private readonly onInput?: (input: BackendSendInput) => void,
   ) {
     this.sessionId = ctx.sessionId;
   }
 
   async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
-    this.onInput?.(input);
     let index = 0;
     for (const event of this.events) {
       index += 1;
@@ -2443,6 +2256,8 @@ class TinySessionStore implements SessionStore {
   private headers = new Map<string, SessionHeader>();
   private messages = new Map<string, StoredMessage[]>();
 
+  constructor(private readonly options: { failTurnStateStatus?: TurnRecord['status'] } = {}) {}
+
   async createSubagent(
     _input: CreateSessionInput,
   ): Promise<{ header: SessionHeader; created: boolean }> {
@@ -2528,6 +2343,14 @@ class TinySessionStore implements SessionStore {
   }
 
   async appendMessages(sessionId: string, messages: StoredMessage[]): Promise<void> {
+    if (
+      messages.some(
+        (message) =>
+          message.type === 'turn_state' && message.status === this.options.failTurnStateStatus,
+      )
+    ) {
+      throw new Error('turn state write failed');
+    }
     this.messages.set(sessionId, [...(this.messages.get(sessionId) ?? []), ...clone(messages)]);
   }
 
@@ -2536,10 +2359,6 @@ class TinySessionStore implements SessionStore {
     const next = { ...current, ...patch };
     this.headers.set(sessionId, next);
     return clone(next);
-  }
-
-  async markSessionReadThrough(sessionId: string, _readThroughTs: number): Promise<SessionHeader> {
-    return this.readHeader(sessionId);
   }
 
   async archive(sessionId: string): Promise<void> {

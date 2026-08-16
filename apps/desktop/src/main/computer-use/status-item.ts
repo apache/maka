@@ -114,7 +114,7 @@ const COPY: UiCatalog<StatusItemCopy> = {
   zh: {
     stopUsing: (appName) => `停止操作 ${appName}`,
     stopUnnamed: '停止 Computer Use',
-    empty: '没有正在进行的会话',
+    empty: '没有正在进行的任务',
   },
   en: {
     stopUsing: (appName) => `Stop Using ${appName}`,

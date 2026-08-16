@@ -467,6 +467,13 @@ export class ShellRunProcessManager
         }),
       );
     }
+    // persistObservation decides whether to join finalization at call time.
+    // A real PTY can exit while that persist is still in flight, leaving a
+    // running snapshot here even though finalizeOnce has already started.
+    if (live.driverExit || live.finalizeOnce) {
+      record = await this.markObserved(await live.finished.join());
+      return shellRunContent(record, operation);
+    }
     if (isTerminalShellRunStatus(record.status)) record = await this.markObserved(record);
     return shellRunContent(record, operation);
   }

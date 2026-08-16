@@ -402,7 +402,6 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
     case 'github-copilot':
       return <ProviderAssetMask src={githubCopilotBrandMark} />;
     case 'google':
-    case 'gemini-cli':
       return <Gemini />;
     case 'deepseek':
       return <DeepSeek />;

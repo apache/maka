@@ -20,7 +20,10 @@ import {
 import type { InvocationContext } from '../invocation-context.js';
 import { applyRuntimeEventContextBudget } from '../context-budget.js';
 import { evaluateHistoryCompactCheckpointReplay } from '../history-compact.js';
-import type { HistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
+import type {
+  HistoryCompactCheckpoint,
+  HistoryCompactProviderState,
+} from '../history-compact-checkpoint.js';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { HistoryCompactSummarizerError } from '../history-compact-error.js';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
@@ -90,7 +93,13 @@ interface MidTurnFixtureOptions {
   historyCompactOff?: boolean;
   historyBudgetTokens?: number;
   reserveTokens?: number;
-  summarize?: () => Promise<string | undefined> | string | undefined;
+  summarize?: () =>
+    | Promise<string | HistoryCompactProviderState | undefined>
+    | string
+    | HistoryCompactProviderState
+    | undefined;
+  /** Return and replay a Codex subscription V2 provider checkpoint. */
+  providerNative?: boolean;
   branch?: string;
   /** Omit the prior turns so the compaction pool has no safe completed span. */
   withoutPriorTurns?: boolean;
@@ -328,6 +337,9 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     },
     connection: {
       ...connection(),
+      ...(options.providerNative
+        ? { slug: 'codex-subscription', providerType: 'openai-codex' as const }
+        : {}),
       models: [{ id: 'mock-model-id', ...(options.withoutContextWindow ? {} : { contextWindow }) }],
     },
     apiKey: 'sk-test',
@@ -430,7 +442,17 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       // The real summarizer is what carries the accounting the backend hands
       // it, so the metered case must go through it rather than a stub.
       if (options.meteredSummarizer) return await meteredSummarize(input);
-      const summary = options.summarize ? await options.summarize() : 'MID_TURN_SUMMARY_SENTINEL';
+      const summary = options.providerNative
+        ? ({
+            kind: 'openai_codex_remote_v2',
+            connectionSlug: 'codex-subscription',
+            modelId: 'mock-model-id',
+            itemId: 'cmp_mid_turn',
+            encryptedContent: 'MID_TURN_ENCRYPTED_STATE',
+          } satisfies HistoryCompactProviderState)
+        : options.summarize
+          ? await options.summarize()
+          : 'MID_TURN_SUMMARY_SENTINEL';
       return summary;
     },
     ...(options.meteredSummarizer
@@ -607,6 +629,21 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       100_000,
     );
     assert.equal(fit.fits, true);
+  });
+
+  test('replays a Codex V2 mid-turn checkpoint as native provider state', async () => {
+    const fixture = buildFixture({ providerNative: true });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]?.version, 3);
+    const thirdPrompt = promptJson(fixture, 2);
+    assert.match(thirdPrompt, /MID_TURN_ENCRYPTED_STATE/);
+    assert.match(thirdPrompt, /cmp_mid_turn/);
+    assert.doesNotMatch(thirdPrompt, /Provider-native OpenAI Codex compaction checkpoint/);
+    assert.doesNotMatch(thirdPrompt, /RAW_SPAN_ONE_|PRIOR_FACT/);
+    assert.match(thirdPrompt, /RAW_SPAN_TWO_/);
+    assert.match(thirdPrompt, new RegExp(ANCHOR_TEXT));
   });
 
   test('a mid-turn compaction settles a canonical record for the run it interrupts', async () => {

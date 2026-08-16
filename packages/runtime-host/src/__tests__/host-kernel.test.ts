@@ -54,6 +54,9 @@ import {
   type InteractiveRuntimeHostCandidateResult,
   type RuntimeHostComposition,
   type RuntimeHostCompositionContext,
+  type RuntimeHostCompositionFactory,
+  type RuntimeHostCompositionSource,
+  type RuntimeHostKernelOptions,
 } from '../server/index.js';
 import { createUnavailableDomainOperationHandlers } from '../server/operation-dispatcher.js';
 import { HostConfigurationChangeService } from '../server/configuration-change-service.js';
@@ -66,6 +69,7 @@ import {
   STORAGE_ROOT_MARKER_FILE,
   StorageRootAuthorityError,
   tryAcquireInteractiveRootOwner,
+  type InteractiveRootOwner,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
 import { bindStateRootComposition } from '@maka/storage/state-root-composition';
@@ -84,6 +88,28 @@ const KERNEL_COMPOSITION = defineInteractiveRuntimeHostComposition(async () => (
 }));
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
+
+type IsExact<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
+    ? (<Value>() => Value extends Right ? 1 : 2) extends <Value>() => Value extends Left ? 1 : 2
+      ? true
+      : false
+    : false;
+type AssertTrue<Value extends true> = Value;
+
+export type RuntimeHostInteractiveRootTypeContract = [
+  AssertTrue<IsExact<RuntimeHostCompositionContext['owner'], InteractiveRootOwner>>,
+  AssertTrue<IsExact<RuntimeHostKernelOptions['owner'], InteractiveRootOwner>>,
+];
+
+// @ts-expect-error Runtime Host composition contexts are concretely interactive.
+export type GenericRuntimeHostCompositionContext = RuntimeHostCompositionContext<'interactive'>;
+// @ts-expect-error Runtime Host composition factories are concretely interactive.
+export type GenericRuntimeHostCompositionFactory = RuntimeHostCompositionFactory<'interactive'>;
+// @ts-expect-error Runtime Host composition sources are concretely interactive.
+export type GenericRuntimeHostCompositionSource = RuntimeHostCompositionSource<'interactive'>;
+// @ts-expect-error Runtime Host kernel options are concretely interactive.
+export type GenericRuntimeHostKernelOptions = RuntimeHostKernelOptions<'interactive'>;
 
 describe('non-serving Runtime Host kernel', () => {
   test('reports a recovery failure when the election produces no ready Host', async () => {
@@ -685,6 +711,104 @@ describe('non-serving Runtime Host kernel', () => {
       } finally {
         await owner.close();
       }
+    });
+  });
+
+  test('never-connected ephemeral candidate drains after the initial connection timeout despite a boot residency', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      let releaseBootWork: (() => void) | undefined;
+      const host = await RuntimeHostKernel.start({
+        owner,
+        initialConnectionTimeoutMs: 100,
+        idleGraceMs: 10_000,
+        composition: defineInteractiveRuntimeHostComposition(async (context) => {
+          const residency = context.acquireResidency('boot-work');
+          releaseBootWork = () => residency.release();
+          return testComposition({
+            beginDrain: () => releaseBootWork?.(),
+          });
+        }),
+      });
+
+      await withTimeout(
+        host.closed,
+        2_000,
+        'ephemeral candidate outlived its initial connection timeout',
+      );
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successor);
+      await successor.close();
+    });
+  });
+
+  test('never-connected ephemeral candidate with a hung composition startup fails stop at the deadlines', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const hostTask = RuntimeHostKernel.start({
+        owner,
+        initialConnectionTimeoutMs: 100,
+        idleGraceMs: 10_000,
+        shutdownGraceMs: 100,
+        composition: defineInteractiveRuntimeHostComposition(() => new Promise(() => {})),
+      });
+
+      try {
+        const error = await withTimeout(
+          hostTask.then(
+            () => assert.fail('Runtime Host startup unexpectedly succeeded'),
+            (startupError: unknown) => startupError,
+          ),
+          2_000,
+          'hung composition startup was not bounded by the initial connection deadline',
+        );
+        assert.ok(error instanceof AggregateError);
+        assert.ok(
+          error.errors.some(
+            (candidate: unknown) => candidate instanceof RuntimeHostProcessTerminationRequiredError,
+          ),
+        );
+      } finally {
+        await owner.close();
+      }
+    });
+  });
+
+  test('a silent handshake defers the never-connected drain instead of being drained under it', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const host = await RuntimeHostKernel.start({
+        owner,
+        initialConnectionTimeoutMs: 500,
+        idleGraceMs: 10_000,
+        handshakeTimeoutMs: 2_000,
+        composition: defineInteractiveRuntimeHostComposition(async () => testComposition()),
+      });
+
+      const silent = await openSocket(host.endpoint);
+      try {
+        // Past the initial connection timeout but inside the handshake
+        // deferral window: the pending handshake must keep the Host alive.
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        assert.equal(host.state, 'ready');
+      } finally {
+        silent.destroy();
+      }
+      // With the handshake gone, the deferred deadline drains the Host.
+      await withTimeout(
+        host.closed,
+        5_000,
+        'silently-handshaked ephemeral candidate never drained after the deferral',
+      );
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successor);
+      await successor.close();
     });
   });
 

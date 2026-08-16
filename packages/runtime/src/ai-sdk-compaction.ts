@@ -43,6 +43,8 @@ import {
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
 import {
   buildHistoryCompactCheckpoint,
+  canContinueHistoryCompactCheckpointForModel,
+  canReplayHistoryCompactCheckpointForModel,
   matchHistoryCompactCheckpointPrefix,
   type HistoryCompactCheckpoint,
   type HistoryCompactMemoryExtractionBoundary,
@@ -158,6 +160,7 @@ export interface AiSdkCompactionDeps {
   materializeRuntimeReplayPlan: (
     plan: RuntimeEventModelReplayPlan,
     imageBudget: ProviderImageBudget,
+    checkpoint?: HistoryCompactCheckpoint,
   ) => Promise<ModelMessage[]>;
   canReplayProviderNative: (plan: RuntimeEventModelReplayPlan) => boolean;
   appendTurnTailPrompt: (
@@ -180,6 +183,7 @@ export class AiSdkCompaction {
   private readonly materializeRuntimeReplayPlan: (
     plan: RuntimeEventModelReplayPlan,
     imageBudget: ProviderImageBudget,
+    checkpoint?: HistoryCompactCheckpoint,
   ) => Promise<ModelMessage[]>;
   private readonly canReplayProviderNative: (plan: RuntimeEventModelReplayPlan) => boolean;
   private readonly appendTurnTailPrompt: (
@@ -482,7 +486,16 @@ export class AiSdkCompaction {
       ? matchHistoryCompactCheckpointPrefix(loadedCheckpoint, foldedRuntimeEvents)
       : undefined;
     const previousCheckpoint =
-      checkpointMatch && !checkpointMatch.reason ? loadedCheckpoint : undefined;
+      checkpointMatch &&
+      !checkpointMatch.reason &&
+      loadedCheckpoint &&
+      canContinueHistoryCompactCheckpointForModel(
+        loadedCheckpoint,
+        this.input.connection,
+        this.input.modelId,
+      )
+        ? loadedCheckpoint
+        : undefined;
     const newlyFoldedRuntimeEvents = previousCheckpoint
       ? checkpointMatch!.successorRuntimeEvents
       : foldedRuntimeEvents;
@@ -530,19 +543,27 @@ export class AiSdkCompaction {
       };
     }
     try {
-      const summary = await Promise.resolve(
+      const compacted = await Promise.resolve(
         summarizer({
           sessionId: this.sessionId,
           turnId: input.turnId,
           source: { foldedRuntimeEvents },
           ...(previousCheckpoint ? { previousCheckpoint } : {}),
           newlyFoldedRuntimeEvents,
+          ...(input.contextBudget.maxHistoryEstimatedTokens !== undefined
+            ? {
+                inputBudget: {
+                  maxEstimatedTokens: input.contextBudget.maxHistoryEstimatedTokens,
+                  charsPerToken: input.contextBudget.charsPerToken ?? 4,
+                },
+              }
+            : {}),
           requestShapeHashBefore: input.requestShapeHashBefore,
           abortSignal: input.abortSignal,
           ...(historyCompactTracker ? { providerRequestTracker: historyCompactTracker } : {}),
         }),
       );
-      if (!summary?.trim()) {
+      if (compacted === undefined || (typeof compacted === 'string' && !compacted.trim())) {
         return {
           ...(previousCheckpoint ? { fallbackCheckpoint: previousCheckpoint } : {}),
           diagnosticPatch: {
@@ -564,7 +585,7 @@ export class AiSdkCompaction {
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: this.sessionId,
         coveredRuntimeEvents: foldedRuntimeEvents,
-        summary,
+        ...(typeof compacted === 'string' ? { summary: compacted } : { providerState: compacted }),
         highWaterName: input.draftBlock.highWaterName,
         highWaterSeq: input.draftBlock.highWaterSeq,
         ...(previousCheckpoint ? { previousCheckpointId: previousCheckpoint.checkpointId } : {}),
@@ -996,6 +1017,18 @@ export class AiSdkCompaction {
 
     const compactLoadPatch = await this.loadHistoryCompactBlocks(nextPolicy);
     if (compactLoadPatch.policy !== nextPolicy) nextPolicy = compactLoadPatch.policy;
+    const loadedCheckpoint = nextPolicy.historyCompact?.checkpoint;
+    if (
+      loadedCheckpoint &&
+      !canReplayHistoryCompactCheckpointForModel(
+        loadedCheckpoint,
+        this.input.connection,
+        this.input.modelId,
+      )
+    ) {
+      const { checkpoint: _incompatibleCheckpoint, ...historyCompact } = nextPolicy.historyCompact!;
+      nextPolicy = { ...nextPolicy, historyCompact };
+    }
     const loadPatch = await this.loadSynthesisCacheBlocks(nextPolicy);
     if (loadPatch.policy !== nextPolicy) nextPolicy = loadPatch.policy;
     const diagnosticPatch = mergeContextBudgetDiagnosticPatches(
@@ -1654,6 +1687,10 @@ export class AiSdkCompaction {
             source: { foldedRuntimeEvents: [...coveredRuntimeEvents] },
             ...(previousCheckpoint ? { previousCheckpoint } : {}),
             newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
+            inputBudget: {
+              maxEstimatedTokens: Math.max(1, state.capacity.tokens - reserveTokens),
+              charsPerToken,
+            },
             ...(abortSignal ? { abortSignal } : {}),
             ...(midTurnTracker ? { providerRequestTracker: midTurnTracker } : {}),
           }),
@@ -1705,6 +1742,7 @@ export class AiSdkCompaction {
     const replacementMessages = await this.materializeRuntimeReplayPlan(
       { ...replayPlan, items: replayItemsWithAnchorTail },
       input.origin.imageBudget,
+      plan.checkpoint,
     );
     // Apply the shape only when it actually shrinks the request versus the
     // reference payload (the incoming request for the proactive hook, the
@@ -1729,7 +1767,7 @@ export class AiSdkCompaction {
     // only this owner can measure the fully materialized provider request.
     const replayFit = evaluateHistoryCompactCheckpointReplay(
       plan.checkpoint,
-      plan.replacementEvents.slice(1),
+      plan.checkpoint.version === 3 ? plan.replacementEvents : plan.replacementEvents.slice(1),
       policy?.charsPerToken,
       policy?.maxHistoryEstimatedTokens,
     );

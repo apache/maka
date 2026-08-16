@@ -678,7 +678,6 @@ export interface SessionStore {
     sessionId: string,
     input: SessionConfigurationStoreUpdate,
   ): Promise<VersionedSessionHeader>;
-  markSessionReadThrough(sessionId: string, readThroughTs: number): Promise<SessionHeader>;
   archive(sessionId: string): Promise<void>;
   unarchive(sessionId: string): Promise<void>;
   setFlagged(sessionId: string, isFlagged: boolean): Promise<void>;
@@ -1642,12 +1641,6 @@ export class SessionManager {
     if (header) this.runtimeKernel.updateCachedHeader(sessionId, header);
   }
 
-  async markSessionRead(sessionId: string, readThroughTs: number | undefined): Promise<void> {
-    if (readThroughTs === undefined || !Number.isFinite(readThroughTs)) return;
-    const next = await this.deps.store.markSessionReadThrough(sessionId, readThroughTs);
-    this.runtimeKernel.updateCachedHeader(sessionId, next);
-  }
-
   async renameSession(sessionId: string, name: string): Promise<void> {
     await this.deps.store.rename(sessionId, name);
     const header = await this.deps.store.readHeader(sessionId).catch(() => undefined);
@@ -1676,7 +1669,7 @@ export class SessionManager {
     }
 
     if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前对话正在运行，等结束后再切换权限模式。');
+      throw new Error('当前任务正在运行，等结束后再切换权限模式。');
     }
     if (previous.status === 'waiting_for_user') {
       throw new Error('当前有工具调用正在等待确认，处理后再切换权限模式。');
@@ -1709,7 +1702,7 @@ export class SessionManager {
     kind: 'managed' | 'bypass',
   ): Promise<ExecutionBoundary> {
     if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前对话正在运行，等结束后再切换沙箱边界。');
+      throw new Error('当前任务正在运行，等结束后再切换沙箱边界。');
     }
     const header = await this.deps.store.readHeader(sessionId);
     if (header.status === 'waiting_for_user') {
@@ -1898,7 +1891,7 @@ export class SessionManager {
       throw new PlanConflictError('Linked child Sessions cannot enter Plan mode');
     }
     if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前对话正在运行，等结束后再切换协作模式。');
+      throw new Error('当前任务正在运行，等结束后再切换协作模式。');
     }
     if (previous.status === 'waiting_for_user') {
       throw new Error('当前有工具调用正在等待确认，处理后再切换协作模式。');

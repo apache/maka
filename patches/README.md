@@ -8,7 +8,17 @@ Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
 around at the call site.
 
-## `@ai-sdk/provider-utils@5.0.21`
+## `node-pty@1.2.0-beta.15`
+
+On Unix, `CustomWriteStream` submits raw file-descriptor writes through libuv.
+Those writes can survive PTY exit and target an unrelated file after descriptor
+reuse. The patch keeps writes synchronous on node-pty's non-blocking PTY master,
+checks an `fstat` fingerprint before retries, yields between attempts, and cancels
+the queue at the native exit fence. See #2978.
+
+Delete when node-pty ships an equivalent Unix write-lifecycle fix.
+
+## `@ai-sdk/provider-utils@5.0.27`
 
 Streaming tool-call association for gateways that reuse or omit `index` / `id`
 (Ollama-style, Anthropic→OpenAI translators). See #1967 / #1976 and

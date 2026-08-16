@@ -3,7 +3,7 @@ import test from 'node:test';
 import { parseHTML } from 'linkedom';
 import { captureChatScrollAnchor, restoreChatScrollAnchor } from '../chat-scroll-anchor.js';
 
-test('reuses the visible article while progressive history grows above it', () => {
+test('reuses the visible article while virtual history changes above it', () => {
   const { document } = parseHTML('<main id="root"></main>');
   const root = document.querySelector<HTMLElement>('#root')!;
   Object.defineProperty(root, 'scrollTop', { value: 0, writable: true });

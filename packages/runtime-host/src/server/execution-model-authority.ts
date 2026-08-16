@@ -780,7 +780,7 @@ export async function resolveExecutionTarget(
     );
   }
   const provider = PROVIDER_DEFAULTS[resolved.connection.providerType];
-  if (!provider || provider.runtimeAdapter.kind === 'unavailable') {
+  if (!provider) {
     throw new AuxiliaryModelCallConfigurationError('Runtime Host model provider is not executable');
   }
   const model = header.model.trim();

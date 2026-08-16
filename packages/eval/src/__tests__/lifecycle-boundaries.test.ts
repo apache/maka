@@ -834,6 +834,12 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
     'utf8',
   );
   assert.doesNotMatch(networkPolicy, /meta mark \S+ (?:accept|return)/u);
+  const entrypoint = await readFile(
+    new URL('../../harbor/egress-proxy/entrypoint.sh', import.meta.url),
+    'utf8',
+  );
+  assert.match(entrypoint, /^touch "\$STATE_DIR\/hits\.jsonl"$/mu);
+  assert.doesNotMatch(entrypoint, /: > "\$STATE_DIR\/hits\.jsonl"/u);
   // The relay compares the subject's namespace against the namespace of the
   // service that installs the policy, so the service it reads has to be the one
   // the overlay mounts the policy script into. The two names live in different

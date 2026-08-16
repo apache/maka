@@ -35,20 +35,12 @@ const SHARED_OAUTH_IPC_OPERATIONS = [
   'refresh-tokens',
   'logout',
 ] as const;
-const ANTIGRAVITY_OAUTH_IPC_OPERATIONS = [
-  'is-experimental-enabled',
-  ...SHARED_OAUTH_IPC_OPERATIONS,
-] as const;
-
 export const RUNTIME_HOST_OAUTH_IPC_CHANNELS = Object.freeze([
   ...OAUTH_LOGIN_PROVIDERS.flatMap((provider) => [
     ...(provider === 'xai-oauth' ? [] : [`${provider}:is-experimental-enabled`]),
     ...SHARED_OAUTH_IPC_OPERATIONS.map((operation) => `${provider}:${operation}`),
     ...(provider === 'claude-subscription' ? [`${provider}:refresh-quota`] : []),
   ]),
-  ...ANTIGRAVITY_OAUTH_IPC_OPERATIONS.map(
-    (operation) => `antigravity-subscription:${operation}`,
-  ),
 ]);
 
 type OAuthClient = RuntimeHostAccountConnectionClient & Pick<
@@ -227,28 +219,6 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
       return { ok: true as const };
     });
   }
-  registerUnavailableAntigravityIpc(deps.ipcMain);
-}
-
-function registerUnavailableAntigravityIpc(ipcMain: ReconnectableReadIpcMain): void {
-  const prefix = 'antigravity-subscription';
-  const unavailable = () =>
-    actionFailure(
-      'Google Antigravity account access is not available in Runtime Host',
-      'experimental_disabled',
-    );
-  ipcMain.handle(`${prefix}:is-experimental-enabled`, async () => false);
-  ipcMain.handle(`${prefix}:get-auth-url`, unavailable);
-  ipcMain.handle(`${prefix}:open-auth-url`, unavailable);
-  ipcMain.handle(`${prefix}:complete-authorization`, unavailable);
-  ipcMain.handle(`${prefix}:cancel-authorization`, async () => ({ ok: true as const }));
-  ipcMain.handle(`${prefix}:get-account-state`, async () => ({
-    provider: prefix,
-    status: 'preview' as const,
-    runtimeState: 'not_logged_in' as const,
-  }));
-  ipcMain.handle(`${prefix}:refresh-tokens`, unavailable);
-  ipcMain.handle(`${prefix}:logout`, async () => ({ ok: true as const }));
 }
 
 async function waitForPresentation(

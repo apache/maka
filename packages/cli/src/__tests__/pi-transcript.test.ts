@@ -806,7 +806,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.ok(visibleLines.some((line) => line.includes('Read the user-selected file.')));
     assert.ok(visibleLines.some((line) => line.includes('read exact /outside/file.txt')));
     assert.ok(visibleLines.some((line) => line.includes('network enabled')));
-    assert.ok(visibleLines.some((line) => line.includes('y/Enter allow for session')));
+    assert.ok(visibleLines.some((line) => line.includes('y/Enter allow for this task')));
     assert.ok(visibleLines.some((line) => line.includes('n/Esc deny')));
     assert.ok(visibleLines.every((line) => !line.includes(' a ')));
   });

@@ -395,8 +395,6 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.updateSessionConfiguration(sessionId, input)),
       markSessionReadThroughMessage: (sessionId, messageId) =>
         run(() => sessionStore.markSessionReadThroughMessage(sessionId, messageId)),
-      markSessionReadThrough: (sessionId, readThroughTs) =>
-        run(() => sessionStore.markSessionReadThrough(sessionId, readThroughTs)),
       archive: (sessionId) => run(() => sessionStore.archive(sessionId)),
       unarchive: (sessionId) => run(() => sessionStore.unarchive(sessionId)),
       setFlagged: (sessionId, isFlagged) =>

@@ -323,7 +323,6 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
       thinkingOptions: { toggle: true, offBehavior: 'cohere-thinking-disabled' },
     },
   },
-  'gemini-cli': GOOGLE_MODEL_OVERRIDES,
   'openai-codex': OPENAI_OAUTH_MODEL_METADATA,
   siliconflow: SILICONFLOW_MODEL_OVERRIDES,
   'tencent-coding-plan': {
@@ -525,12 +524,6 @@ const CURATED_CATALOG_FALLBACK_MODELS: Partial<Record<ProviderType, readonly str
   openai: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5'],
   deepseek: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-reasoner', 'deepseek-chat'],
   google: ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash'],
-  'gemini-cli': [
-    'gemini-3.5-flash',
-    'gemini-3.1-pro-preview',
-    'gemini-2.5-pro',
-    'gemini-2.5-flash',
-  ],
   'zai-coding-plan': ['glm-5.2', 'glm-5.1', 'glm-5-turbo', 'glm-4.7', 'glm-4.5-air'],
   MiniMax: ['MiniMax-M3'],
   'MiniMax-cn': ['MiniMax-M3'],

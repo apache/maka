@@ -1067,7 +1067,7 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
     case 'model_change':
       return 'Model changed.';
     case 'context_compacted':
-      return 'Context compacted to keep this session within the model window.';
+      return 'Context compacted to keep this task within the model window.';
     case 'context_compaction_failed_open':
       return 'Context summary failed; the session continued without a new summary.';
     case 'step_limit':
@@ -1702,7 +1702,7 @@ function renderWelcomeBlock(width: number): string[] {
   // `/`. The active model and connection live in the statusline, so the
   // welcome does not repeat them.
   const hints: [string, string][] = [
-    ['/session', '切换或恢复会话'],
+    ['/session', '切换或恢复任务'],
     ['/model', '切换模型'],
     ['/setup', '配置模型提供商'],
   ];
@@ -1741,7 +1741,7 @@ function renderSandboxBoundaryPrompt(
   }
   lines.push(
     fitLine(
-      `${ansi.bold('y')}${ansi.dim('/Enter allow for session')}  ${ansi.bold('n')}${ansi.dim('/Esc deny')}`,
+      `${ansi.bold('y')}${ansi.dim('/Enter allow for this task')}  ${ansi.bold('n')}${ansi.dim('/Esc deny')}`,
       width,
     ),
   );

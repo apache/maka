@@ -1,6 +1,5 @@
 import {
   PROVIDER_DEFAULTS,
-  isWiredOAuthProvider,
   providerAuthRequiresSecret,
   providerSupportsModelDiscovery,
   type ConnectionAuth,
@@ -9,7 +8,7 @@ import {
   type ProviderType,
 } from './llm-connections.js';
 
-export const PROVIDER_AUTH_SETUP_MODES = ['api_key', 'oauth', 'oauth_preview', 'none'] as const;
+export const PROVIDER_AUTH_SETUP_MODES = ['api_key', 'oauth', 'none'] as const;
 export type ProviderAuthSetupMode = (typeof PROVIDER_AUTH_SETUP_MODES)[number];
 
 export const PROVIDER_AUTH_STATES = [
@@ -19,7 +18,6 @@ export const PROVIDER_AUTH_STATES = [
   'validated',
   'needs_reauth',
   'error',
-  'preview_only',
 ] as const;
 export type ProviderAuthState = (typeof PROVIDER_AUTH_STATES)[number];
 
@@ -33,7 +31,7 @@ export const PROVIDER_AUTH_ACTIONS = [
 ] as const;
 export type ProviderAuthAction = (typeof PROVIDER_AUTH_ACTIONS)[number];
 
-export type ProviderAuthActionAvailability = 'available' | 'preview_only' | 'hidden';
+export type ProviderAuthActionAvailability = 'available' | 'hidden';
 
 export interface ProviderAuthContractInput {
   providerType: ProviderType;
@@ -107,44 +105,24 @@ export function deriveProviderAuthContract(input: ProviderAuthContractInput): Pr
   }
 
   if (defaults.authKind === 'oauth_token') {
-    if (isWiredOAuthProvider(input.providerType)) {
-      const validationStatus = input.lastTestStatus ?? 'not_run';
-      const state: ProviderAuthState = authStateFromSecretAndTest(hasSecret, input.lastTestStatus);
-      return {
-        providerType: input.providerType,
-        setupMode: 'oauth',
-        state,
-        validationStatus,
-        requiresSecret: true,
-        sendMayUseWithoutSecret: false,
-        actionAvailability: {
-          ...actionAvailability,
-          test_credentials: hasSecret ? 'available' : 'hidden',
-          fetch_models: hasSecret && supportsModelDiscovery ? 'available' : 'hidden',
-          start_oauth: hasSecret ? 'hidden' : 'available',
-          refresh_oauth: hasSecret ? 'available' : 'hidden',
-          revoke_auth: hasSecret ? 'available' : 'hidden',
-        },
-        copy: copyForOAuth(defaults.label, state),
-      };
-    }
+    const validationStatus = input.lastTestStatus ?? 'not_run';
+    const state: ProviderAuthState = authStateFromSecretAndTest(hasSecret, input.lastTestStatus);
     return {
       providerType: input.providerType,
-      setupMode: 'oauth_preview',
-      state: 'preview_only',
-      validationStatus: 'not_run',
+      setupMode: 'oauth',
+      state,
+      validationStatus,
       requiresSecret: true,
       sendMayUseWithoutSecret: false,
       actionAvailability: {
         ...actionAvailability,
-        start_oauth: 'preview_only',
-        refresh_oauth: 'preview_only',
-        revoke_auth: 'preview_only',
+        test_credentials: hasSecret ? 'available' : 'hidden',
+        fetch_models: hasSecret && supportsModelDiscovery ? 'available' : 'hidden',
+        start_oauth: hasSecret ? 'hidden' : 'available',
+        refresh_oauth: hasSecret ? 'available' : 'hidden',
+        revoke_auth: hasSecret ? 'available' : 'hidden',
       },
-      copy: {
-        label: `${defaults.label} 账号登录预览`,
-        detail: '当前仅展示账号登录状态入口；普通模型密钥连接仍可在聊天模型中使用。',
-      },
+      copy: copyForOAuth(defaults.label, state),
     };
   }
 
@@ -248,14 +226,12 @@ function hiddenActions(): Record<ProviderAuthAction, ProviderAuthActionAvailabil
 
 function setupModeForAuthKind(authKind: ConnectionAuth['kind']): ProviderAuthSetupMode {
   if (authKind === 'none') return 'none';
-  if (authKind === 'oauth_token') return 'oauth_preview';
+  if (authKind === 'oauth_token') return 'oauth';
   return 'api_key';
 }
 
 function setupModeForProvider(providerType: ProviderType): ProviderAuthSetupMode {
-  const authKind = PROVIDER_DEFAULTS[providerType]?.authKind;
-  if (authKind === 'oauth_token' && isWiredOAuthProvider(providerType)) return 'oauth';
-  return setupModeForAuthKind(authKind);
+  return setupModeForAuthKind(PROVIDER_DEFAULTS[providerType]?.authKind);
 }
 
 function copyForApiKey(label: string, state: ProviderAuthState): ProviderAuthContract['copy'] {
@@ -286,7 +262,6 @@ function copyForApiKey(label: string, state: ProviderAuthState): ProviderAuthCon
         detail: '凭据已保存，等待验证；测试通过前不要把它展示成运行可用。',
       };
     case 'disabled':
-    case 'preview_only':
       return {
         label,
         detail: '当前状态不走模型密钥凭据流程。',
@@ -325,7 +300,6 @@ function copyForOptionalApiKey(
       };
     case 'not_configured':
     case 'disabled':
-    case 'preview_only':
       return {
         label,
         detail: '当前状态不走可选模型密钥流程。',
@@ -361,7 +335,6 @@ function copyForOAuth(label: string, state: ProviderAuthState): ProviderAuthCont
         detail: '账号令牌已保存，等待验证；测试通过前不要把它展示成运行可用。',
       };
     case 'disabled':
-    case 'preview_only':
       return {
         label,
         detail: '当前状态不走 OAuth 账号流程。',

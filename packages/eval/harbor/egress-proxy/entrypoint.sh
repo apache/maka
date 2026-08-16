@@ -5,7 +5,10 @@ STATE_DIR=/opt/maka-egress-state
 CERT_DIR=/opt/maka-egress
 
 mkdir -p "$STATE_DIR" "$CERT_DIR"
-: > "$STATE_DIR/hits.jsonl"
+# Create the audit log if this is the first start. Truncating here would erase
+# hits already written if the proxy restarts mid-trial, and the trial would
+# look like an honest zero-hit run.
+touch "$STATE_DIR/hits.jsonl"
 
 # confdir holds the CA private key and this cell's audit log, so it stays
 # container-private and only the certificate reaches the volume the subject

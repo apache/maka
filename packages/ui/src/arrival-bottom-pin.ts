@@ -5,12 +5,9 @@
  * instantly and springs every later growth. That one-shot lives on the hook
  * instance, and `ChatSurfaceLayout` mounts once for the whole app shell, so it
  * is spent on the session that happened to be open at boot. Every switch after
- * that is "later growth" — and a switched-to transcript does not arrive in one
- * piece: the progressive mount commits a tail window, idle chunks fill the
- * prefix, and the `content-visibility` warm-up then inflates every placeholder.
- * Each step grows the document under a scroller the spring is chasing, so the
- * new session opens mid-document and visibly flies to its latest turn (measured
- * at ~10k px over ~1.2s on the 24-turn fixture).
+ * that is "later growth". A switched-to transcript still arrives across the
+ * virtual tail's first render and measured-height corrections, so a one-shot
+ * scroll would let the spring chase a moving bottom.
  *
  * A session change is navigation, not content growth: the transcript is meant
  * to be at its latest turn the first time it is painted, exactly as it is on a

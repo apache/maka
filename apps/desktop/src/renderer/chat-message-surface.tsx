@@ -53,7 +53,7 @@ interface ChatMessageSurfaceProps extends Omit<
   sessionUiController: AppShellSessionUiStateController;
   /** The shell's selected session. Not derived from `activeSession`, which the shell substitutes for an unsaved chat. */
   activeSessionId: string | undefined;
-  /** Advances after Runtime Host has seeded the active session's current live projection. */
+  /** Advances after the active session's current observation generation finishes seeding. */
   liveContentSeedRevision: number;
   sessionHealthNotice?: SessionHealthNoticeView;
   workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
@@ -141,26 +141,30 @@ export function ChatMessageSurface({
     isDeepResearchSession(activeSession?.labels),
   );
   const liveTurn = useAppShellSessionUiSelector(sessionUiController, selectLiveTurn, activeSessionId);
+  const seededLiveTurn = liveContentSeedRevision > 0 ? liveTurn : undefined;
   const [activation, setActivation] = useState(() => ({
     sessionId: activeSessionId,
     seedRevision: liveContentSeedRevision,
-    initialLiveContent: captureLiveContent(liveTurn),
+    initialLiveContent: liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined,
   }));
-  if (
-    activation.sessionId !== activeSessionId
-    || activation.seedRevision !== liveContentSeedRevision
-  ) {
+  if (activation.sessionId !== activeSessionId) {
     setActivation({
       sessionId: activeSessionId,
       seedRevision: liveContentSeedRevision,
-      initialLiveContent: captureLiveContent(liveTurn),
+      initialLiveContent: liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined,
+    });
+  } else if (activation.seedRevision !== liveContentSeedRevision) {
+    setActivation({
+      sessionId: activeSessionId,
+      seedRevision: liveContentSeedRevision,
+      initialLiveContent: liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined,
     });
   } else if (
     activation.initialLiveContent
     && (
-      !liveTurn
-      || liveTurn.terminal
-      || liveTurn.turnId !== activation.initialLiveContent.turnId
+      !seededLiveTurn
+      || seededLiveTurn.terminal
+      || seededLiveTurn.turnId !== activation.initialLiveContent.turnId
     )
   ) {
     setActivation({
@@ -216,10 +220,10 @@ export function ChatMessageSurface({
     <>
       <ChatView
         {...chatViewRest}
-        liveTurn={liveTurn}
+        liveTurn={seededLiveTurn}
         initialLiveContentSnapshot={activation.sessionId === activeSessionId
           ? activation.initialLiveContent
-          : captureLiveContent(liveTurn)}
+          : liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined}
         shellRunUpdates={shellRunUpdates}
         deepResearchRun={deepResearchRun}
         emptyOverride={emptyOverride}

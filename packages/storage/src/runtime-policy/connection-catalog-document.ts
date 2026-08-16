@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   decodeCanonicalConnectionCatalogEntry,
+  decodeConnectionSlug,
   decodeConnectionTarget,
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
@@ -93,23 +94,45 @@ export class ConnectionCatalogDocumentOwner {
     ) {
       throw codecError('invalid_document', `${FILE}.connections must be a bounded array`);
     }
-    const connections = raw.connections.map((item) =>
+    // Releases before #3054 could persist the non-executable Gemini account
+    // preview. Keep the raw file recoverable on read, but omit retired entries
+    // from the active catalog; the next catalog mutation writes the canonical
+    // supported set and completes the migration.
+    const retiredConnections: Array<{
+      readonly connectionId: ConnectionCatalogEntry['connectionId'];
+      readonly slug: ConnectionCatalogEntry['slug'];
+    }> = [];
+    const maintainedConnections = raw.connections.filter((item) => {
+      if (!isRetiredGeminiCliConnection(item)) return true;
+      retiredConnections.push({
+        connectionId: decodePersistedDomain(() => decodeRuntimePolicyEntityId(item.connectionId)),
+        slug: decodePersistedDomain(() => decodeConnectionSlug(item.slug)),
+      });
+      return false;
+    });
+    const connections = maintainedConnections.map((item) =>
       decodePersistedDomain(() => decodeCanonicalConnectionCatalogEntry(item)),
     );
+    const catalogIdentities = [...retiredConnections, ...connections];
     unique(
-      connections.map((item) => item.slug),
+      catalogIdentities.map((item) => item.slug),
       `${FILE} connection slugs`,
       'invalid_document',
     );
     unique(
-      connections.map((item) => item.connectionId),
+      catalogIdentities.map((item) => item.connectionId),
       `${FILE} connection ids`,
       'invalid_document',
     );
-    const defaultTarget =
+    const retiredConnectionIds = new Set(retiredConnections.map((item) => item.connectionId));
+    const decodedDefaultTarget =
       raw.defaultTarget === null
         ? null
         : decodePersistedDomain(() => decodeConnectionTarget(raw.defaultTarget));
+    const defaultTarget =
+      decodedDefaultTarget && retiredConnectionIds.has(decodedDefaultTarget.connectionId)
+        ? null
+        : decodedDefaultTarget;
     if (defaultTarget && !isValidTarget(defaultTarget, connections)) {
       throw codecError('invalid_document', `${FILE} contains an invalid default target`);
     }
@@ -671,6 +694,19 @@ function revisionConflict(expectedRevision: number, actualRevision: number) {
 
 function connectionStale(expected: ConnectionVersionBasis, actual: ConnectionVersionBasis | null) {
   return deepFreeze({ kind: 'connection_stale' as const, expected, actual });
+}
+
+function isRetiredGeminiCliConnection(value: unknown): value is {
+  readonly connectionId?: unknown;
+  readonly providerType: 'gemini-cli';
+  readonly slug?: unknown;
+} {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Reflect.get(value, 'providerType') === 'gemini-cli'
+  );
 }
 
 function committed(document: ConnectionCatalogDocument): ConnectionCatalogMutationResult {

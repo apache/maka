@@ -260,4 +260,47 @@ describe('buildLlmHistorySummarizer', () => {
     expect(serialized).toContain('NEWLY_EVICTED_RAW');
     expect(serialized.includes('ALREADY_SUMMARIZED_RAW')).toBe(false);
   });
+
+  test('recompresses the full source when the previous checkpoint is provider-native', async () => {
+    let seen: unknown;
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async (options) => {
+        seen = options.messages;
+        return { text: 'portable summary' };
+      },
+    });
+    const old = ev({
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'OLD_PROVIDER_ONLY_FACT' },
+    });
+    const newer = ev({
+      role: 'model',
+      author: 'agent',
+      content: { kind: 'text', text: 'NEW_PORTABLE_FACT' },
+    });
+    const previousCheckpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'sess-1',
+      coveredRuntimeEvents: [old],
+      providerState: {
+        kind: 'openai_codex_remote_v2',
+        connectionSlug: 'codex-subscription',
+        modelId: 'gpt-5.3-codex',
+        itemId: 'cmp_123',
+        encryptedContent: 'opaque-state',
+      },
+    });
+
+    await summarize({
+      ...inputWith([old, newer]),
+      previousCheckpoint,
+      newlyFoldedRuntimeEvents: [newer],
+    });
+
+    const serialized = JSON.stringify(seen);
+    expect(serialized).toContain('OLD_PROVIDER_ONLY_FACT');
+    expect(serialized).toContain('NEW_PORTABLE_FACT');
+    expect(serialized.includes('opaque-state')).toBe(false);
+  });
 });

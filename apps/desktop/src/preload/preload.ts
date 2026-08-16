@@ -421,7 +421,7 @@ function executeWebSearchQuery(input: {
     return Promise.resolve({
       ok: false,
       reason: 'unsupported_provider',
-      message: '原生联网搜索由对话中的主模型请求执行，不支持从设置页单独调用。',
+      message: '原生联网搜索由任务中的主模型请求执行，不支持从设置页单独调用。',
     });
   }
   const query = normalizeWebSearchQuery(input.query);
@@ -448,7 +448,7 @@ function executeWebSearchTest(input: {
     return Promise.resolve({
       ok: false,
       reason: 'unsupported_provider',
-      message: '原生联网搜索由对话中的主模型请求执行，不需要单独测试搜索凭据。',
+      message: '原生联网搜索由任务中的主模型请求执行，不需要单独测试搜索凭据。',
     });
   }
   const apiKey = webSearchCredentialOverride(input.apiKey);
@@ -743,6 +743,7 @@ const makaBridge = {
       sessionId: string,
       handler: (event: SessionEvent) => void,
       onSeeded?: () => void,
+      onObservationSeed?: (phase: 'pending' | 'ready') => void,
     ): () => void {
       const channel = `sessions:event:${sessionId}`;
       const unsubscribeEvents = subscribeActiveRuntimeHostEvent(channel, handler);
@@ -753,8 +754,18 @@ const makaBridge = {
       }));
       const observing = observeDispatch.then(({ completion }) => completion);
       const disposeSeedNotification = notifyWhenSeeded(observing, onSeeded);
+      const unsubscribeObservationSeed = subscribeActiveRuntimeHostEvent(
+        'sessions:observation-seed',
+        (payload: { sessionId?: string; phase?: string }) => {
+          if (payload.sessionId !== sessionId) return;
+          if (payload.phase === 'pending' || payload.phase === 'ready') {
+            onObservationSeed?.(payload.phase);
+          }
+        },
+      );
       return () => {
         disposeSeedNotification();
+        unsubscribeObservationSeed();
         unsubscribeEvents();
         void releaseSessionObservation(observeDispatch, () =>
           ipcRenderer.invoke('sessions:unobserve', observerId),
@@ -1327,12 +1338,9 @@ const makaBridge = {
       return invokeActiveRuntimeHost('claude-subscription:logout');
     },
   },
-  // PR-MODEL-OAUTH-ALL-0: Codex / Antigravity subscription
-  // bridges. Same shape as `claudeSubscription` (no token-shaped
-  // fields, opaque authRequestId, action-result envelopes). Each
-  // service's state snapshot is provider-specific because the
-  // upstream auth claims differ (Codex carries JWT account_id /
-  // plan; Antigravity is preview-only).
+  // Browser-assisted Codex account bridge. Same shape as
+  // `claudeSubscription`: no token-shaped fields cross preload, the
+  // authorization attempt stays opaque, and actions return envelopes.
   openAiCodex: {
     isExperimentalEnabled(): Promise<boolean> {
       return invokeActiveRuntimeHost('openai-codex:is-experimental-enabled');
@@ -1416,37 +1424,6 @@ const makaBridge = {
     },
     logout(): Promise<SubscriptionActionResult> {
       return invokeActiveRuntimeHost('github-copilot:logout');
-    },
-  },
-  antigravitySubscription: {
-    isExperimentalEnabled(): Promise<boolean> {
-      return invokeActiveRuntimeHost('antigravity-subscription:is-experimental-enabled');
-    },
-    getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
-      return invokeActiveRuntimeHost('antigravity-subscription:get-auth-url');
-    },
-    openAuthUrl(authRequestId: string): Promise<SubscriptionActionResult> {
-      return invokeActiveRuntimeHost('antigravity-subscription:open-auth-url', authRequestId);
-    },
-    completeAuthorization(authRequestId: string): Promise<SubscriptionActionResult> {
-      return invokeActiveRuntimeHost('antigravity-subscription:complete-authorization', authRequestId);
-    },
-    cancelAuthorization(authRequestId?: string): Promise<{ ok: true }> {
-      return invokeActiveRuntimeHost('antigravity-subscription:cancel-authorization', authRequestId);
-    },
-    getAccountState(): Promise<{
-      provider: 'antigravity-subscription';
-      status: 'preview';
-      runtimeState: 'not_logged_in' | 'authorizing' | 'authenticated' | 'refreshing' | 'refresh_failed';
-      errorMessage?: string;
-    }> {
-      return invokeActiveRuntimeHost('antigravity-subscription:get-account-state');
-    },
-    refreshTokens(): Promise<SubscriptionActionResult> {
-      return invokeActiveRuntimeHost('antigravity-subscription:refresh-tokens');
-    },
-    logout(): Promise<SubscriptionActionResult> {
-      return invokeActiveRuntimeHost('antigravity-subscription:logout');
     },
   },
   scheduledTasks: {

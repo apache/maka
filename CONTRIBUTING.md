@@ -48,19 +48,23 @@ Every contribution must have a human contributor of record. That person reviews 
 
 Disclose generative tooling when it makes a substantive contribution to code, documentation, analysis, or a project position. Disclosure is not required when a human determines the facts and position and the tool only translates, edits wording, autocompletes, or corrects spelling. Automated messages must identify themselves.
 
+Every pull request must state whether generative tooling made a substantive contribution. If it did, name the tool and briefly describe its scope. If it did not, explicitly state that no generative tool made a substantive contribution.
+
 When AI authors a material part of a contribution, Maka project policy requires the final commit on the target branch to name the tool:
 
 ```text
 Generated-by: <tool>
 ```
 
-The trailer must survive squash or amend.
+Add the trailer to each pull request commit that contains material AI-authored content, and ensure it survives squash or amend in the final commit.
 
 ## Review and fast path
 
 Material changes to user-visible behavior, public contracts, security, licensing, releases, or governance require independent review by another human. AI review does not count as independent human review. This requirement is separate from the human contributor of record, who is required for every contribution.
 
-A contribution may be self-merged without independent human review only when it is low impact, easy to reverse, does not affect a protected area above, and passes the required checks. The contributor must record why the fast path applies. Tests, CI, documentation, and mechanical changes may qualify, but their file type does not exempt them from review.
+A contribution may use the fast path and be merged without independent human review only when it is low impact, easy to reverse, does not affect a protected area above, and passes the required checks.
+
+When using the fast path, the person merging the pull request must comment on how the final revision meets these criteria. Any later commit requires a fresh determination and comment. A maintainer makes the final determination. Tests, CI, documentation, and mechanical changes may qualify, but their file type does not exempt them from review.
 
 ## Provenance and licensing
 

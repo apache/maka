@@ -1,10 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { arch as osArch, release as osRelease } from 'node:os';
 import {
-  assertStateRootOwner,
-  authenticateStateRootOwner,
-  type StateRootOwner,
-  type StorageRootKind,
+  assertInteractiveRootOwner,
+  authenticateInteractiveRootOwner,
+  type InteractiveRootOwner,
 } from '@maka/storage/root-authority';
 import { bindStateRootComposition } from '@maka/storage/state-root-composition';
 import { removeHostRegistration, writeHostRegistration } from '../control/registration.js';
@@ -68,6 +67,7 @@ const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
 const DEFAULT_SHUTDOWN_GRACE_MS = 10_000;
 const SHUTDOWN_HANDSHAKE_GRACE_MS = 1_000;
 const SHUTDOWN_OPERATION_GRACE_MS = 1_000;
+const INITIAL_CONNECTION_DEADLINE_DEFERRAL_LIMIT = 3;
 const HOST_PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
   max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -84,8 +84,8 @@ export class RuntimeHostProcessTerminationRequiredError extends Error {
   }
 }
 
-export interface RuntimeHostCompositionContext<K extends StorageRootKind = 'interactive'> {
-  owner: StateRootOwner<K>;
+export interface RuntimeHostCompositionContext {
+  owner: InteractiveRootOwner;
   hostEpoch: string;
   acquireResidency(label: string): RuntimeHostResidency;
   /** Irreversible fail-stop latch; normal residency still uses acquireResidency(). */
@@ -110,39 +110,36 @@ export interface RuntimeHostComposition {
   close(): Promise<void>;
 }
 
-export type RuntimeHostCompositionFactory<K extends StorageRootKind = 'interactive'> = (
-  context: RuntimeHostCompositionContext<K>,
+export type RuntimeHostCompositionFactory = (
+  context: RuntimeHostCompositionContext,
 ) => Promise<RuntimeHostComposition>;
 
-interface RuntimeHostKernelCommonOptions<K extends StorageRootKind> {
-  owner: StateRootOwner<K>;
+interface RuntimeHostKernelCommonOptions {
+  owner: InteractiveRootOwner;
   handshakeTimeoutMs?: number;
   shutdownGraceMs?: number;
-  composition: RuntimeHostCompositionSource<K>;
+  composition: RuntimeHostCompositionSource;
   listenerSetFactory?: RuntimeHostListenerSetFactory;
   accessAuthority?: RuntimeHostAccessAuthority;
 }
 
 export type RuntimeHostLifecycleMode = 'ephemeral' | 'service';
 
-export type RuntimeHostKernelOptions<K extends StorageRootKind = 'interactive'> =
-  RuntimeHostKernelCommonOptions<K> &
-    (
-      | {
-          lifecycleMode?: 'ephemeral';
-          initialConnectionTimeoutMs?: number;
-          idleGraceMs?: number;
-          generation?: string;
-        }
-      | {
-          lifecycleMode: 'service';
-          initialConnectionTimeoutMs?: never;
-          idleGraceMs?: never;
-          generation?: never;
-        }
-    );
-
-type RuntimeHostKernelInternalOptions = RuntimeHostKernelOptions<StorageRootKind>;
+export type RuntimeHostKernelOptions = RuntimeHostKernelCommonOptions &
+  (
+    | {
+        lifecycleMode?: 'ephemeral';
+        initialConnectionTimeoutMs?: number;
+        idleGraceMs?: number;
+        generation?: string;
+      }
+    | {
+        lifecycleMode: 'service';
+        initialConnectionTimeoutMs?: never;
+        idleGraceMs?: never;
+        generation?: never;
+      }
+  );
 
 type RuntimeHostLifecycle =
   | {
@@ -155,7 +152,7 @@ type RuntimeHostLifecycle =
 export class RuntimeHostKernel {
   readonly hostEpoch = randomUUID();
   readonly closed: Promise<void>;
-  readonly #options: RuntimeHostKernelInternalOptions;
+  readonly #options: RuntimeHostKernelOptions;
   readonly #createdAt = new Date().toISOString();
   readonly #handshakingTransports = new Set<RuntimeHostMessageTransport>();
   readonly #acceptedTransports = new Set<RuntimeHostMessageTransport>();
@@ -180,6 +177,8 @@ export class RuntimeHostKernel {
   #compositionStartup: Promise<void> | undefined;
   #operationHandlers: OperationHandlerMap;
   #idleTimer: NodeJS.Timeout | undefined;
+  #initialConnectionDeadline: NodeJS.Timeout | undefined;
+  #initialConnectionDeadlineDeferrals = 0;
   #shutdownRequested = false;
   #shutdownTask: Promise<void> | undefined;
   #shutdownDeadlineTimer: NodeJS.Timeout | undefined;
@@ -188,7 +187,7 @@ export class RuntimeHostKernel {
   #rejectClosed!: (error: unknown) => void;
   readonly #unsubscribeAccessRevocations: (() => void) | undefined;
 
-  private constructor(options: RuntimeHostKernelInternalOptions) {
+  private constructor(options: RuntimeHostKernelOptions) {
     this.#lifecycle = normalizeLifecycle(options);
     if (options.generation !== undefined) requireHostGeneration(options.generation);
     assertDuration(
@@ -212,13 +211,11 @@ export class RuntimeHostKernel {
     });
   }
 
-  static async start<K extends StorageRootKind>(
-    options: RuntimeHostKernelOptions<K>,
-  ): Promise<RuntimeHostKernel> {
-    const owner = authenticateStateRootOwner(options.owner, options.owner.capability.kind);
+  static async start(options: RuntimeHostKernelOptions): Promise<RuntimeHostKernel> {
+    const owner = authenticateInteractiveRootOwner(options.owner);
     let host: RuntimeHostKernel | undefined;
     try {
-      host = new RuntimeHostKernel(eraseRootKind(options, owner));
+      host = new RuntimeHostKernel(options);
       await host.#start();
       return host;
     } catch (error) {
@@ -278,6 +275,7 @@ export class RuntimeHostKernel {
     if (!this.#shutdownRequested) {
       this.#shutdownRequested = true;
       this.#cancelIdle();
+      this.#cancelInitialConnectionDeadline();
       this.#armShutdownDeadline();
       this.#beginCompositionDrain();
     }
@@ -285,7 +283,7 @@ export class RuntimeHostKernel {
   }
 
   async #start(): Promise<void> {
-    await assertStateRootOwner(this.#options.owner, this.#options.owner.capability.kind);
+    await assertInteractiveRootOwner(this.#options.owner);
     await bindStateRootComposition(this.#options.owner.lease, this.compositionDescriptor.id);
     this.#listeners = await (this.#options.listenerSetFactory ?? startLocalRuntimeHostListenerSet)({
       rootId: this.#options.owner.capability.rootId,
@@ -300,6 +298,10 @@ export class RuntimeHostKernel {
     this.#compositionStartup = new Promise((resolve) => {
       settleCompositionStartup = resolve;
     });
+    // Armed only once #compositionStartup is assigned: a deadline that fired
+    // earlier would drive #closeResources past an undefined startup await and
+    // let shutdown complete without closing the composition created below.
+    this.#armInitialConnectionDeadline();
     const compositionStartup = (async () => {
       try {
         this.#composition = await this.#options.composition.create({
@@ -456,6 +458,7 @@ export class RuntimeHostKernel {
       };
     }
     this.#hasAcceptedConnection = true;
+    this.#cancelInitialConnectionDeadline();
     this.#acceptedTransports.add(transport);
     this.#handshakingTransports.delete(transport);
     this.#cancelIdle();
@@ -530,7 +533,7 @@ export class RuntimeHostKernel {
   async #hasLiveOwnerOrDrain(): Promise<boolean> {
     if (this.#isDraining()) return false;
     try {
-      await assertStateRootOwner(this.#options.owner, this.#options.owner.capability.kind);
+      await assertInteractiveRootOwner(this.#options.owner);
     } catch {
       void this.#commitShutdown().catch(() => undefined);
       return false;
@@ -683,15 +686,17 @@ export class RuntimeHostKernel {
   #scheduleIdleIfNeeded(): void {
     if (this.#lifecycle.kind === 'service') return;
     if (this.#shutdownRequested) return;
+    // One timer authority per lifecycle phase: until the first connection is
+    // accepted, only #initialConnectionDeadline governs (it defers under an
+    // in-flight handshake, which #isTrueIdle() cannot see); afterwards the
+    // idle timer owns the idleGraceMs exit.
+    if (!this.#hasAcceptedConnection) return;
     if (!this.#isTrueIdle() || this.#idleTimer) return;
-    const timeoutMs = this.#hasAcceptedConnection
-      ? this.#lifecycle.idleGraceMs
-      : this.#lifecycle.initialConnectionTimeoutMs;
     this.#idleTimer = setTimeout(() => {
       this.#idleTimer = undefined;
       if (!this.#isTrueIdle()) return;
       void this.#commitShutdown().catch(() => undefined);
-    }, timeoutMs);
+    }, this.#lifecycle.idleGraceMs);
   }
 
   #isTrueIdle(): boolean {
@@ -701,6 +706,39 @@ export class RuntimeHostKernel {
       this.#activeOperations === 0 &&
       this.#residencies.activeCount === 0
     );
+  }
+
+  // The idle timer only arms once the kernel reaches true idle, so a
+  // composition startup that never settles or a residency held from boot
+  // would keep an ephemeral candidate that no Client ever reached alive
+  // forever. This deadline bounds the wait for the first accepted connection
+  // independently of composition progress. A handshake in flight defers it by
+  // the handshake budget instead of draining under a connecting Client, but
+  // only a bounded number of times: connections enter the handshaking set
+  // before their first hello byte, so a reconnect loop that never completes a
+  // handshake must not push the deadline out indefinitely.
+  #armInitialConnectionDeadline(delayMs?: number): void {
+    if (this.#lifecycle.kind !== 'ephemeral') return;
+    if (this.#hasAcceptedConnection || this.#shutdownRequested) return;
+    this.#initialConnectionDeadline = setTimeout(() => {
+      this.#initialConnectionDeadline = undefined;
+      if (this.#hasAcceptedConnection || this.#shutdownRequested) return;
+      if (
+        this.#handshakingTransports.size > 0 &&
+        this.#initialConnectionDeadlineDeferrals < INITIAL_CONNECTION_DEADLINE_DEFERRAL_LIMIT
+      ) {
+        this.#initialConnectionDeadlineDeferrals += 1;
+        this.#armInitialConnectionDeadline(this.#handshakeTimeoutMs);
+        return;
+      }
+      this.#requestDrain();
+    }, delayMs ?? this.#lifecycle.initialConnectionTimeoutMs);
+  }
+
+  #cancelInitialConnectionDeadline(): void {
+    if (!this.#initialConnectionDeadline) return;
+    clearTimeout(this.#initialConnectionDeadline);
+    this.#initialConnectionDeadline = undefined;
   }
 
   #cancelIdle(): void {
@@ -732,6 +770,7 @@ export class RuntimeHostKernel {
       }
       this.#state = 'draining';
       this.#cancelIdle();
+      this.#cancelInitialConnectionDeadline();
       this.#shutdownTask = this.#closeResources();
       void this.#shutdownTask.then(
         () => {
@@ -888,9 +927,7 @@ function assertDuration(value: number, label: string, minimum: 0 | 1): void {
   }
 }
 
-function normalizeLifecycle<K extends StorageRootKind>(
-  options: RuntimeHostKernelOptions<K>,
-): RuntimeHostLifecycle {
+function normalizeLifecycle(options: RuntimeHostKernelOptions): RuntimeHostLifecycle {
   const lifecycleMode: unknown = options.lifecycleMode;
   if (lifecycleMode === 'service') {
     if (
@@ -909,19 +946,4 @@ function normalizeLifecycle<K extends StorageRootKind>(
   assertDuration(initialConnectionTimeoutMs, 'initialConnectionTimeoutMs', 0);
   assertDuration(idleGraceMs, 'idleGraceMs', 0);
   return { kind: 'ephemeral', initialConnectionTimeoutMs, idleGraceMs };
-}
-
-function eraseRootKind<K extends StorageRootKind>(
-  options: RuntimeHostKernelOptions<K>,
-  owner: StateRootOwner<K>,
-): RuntimeHostKernelInternalOptions {
-  return {
-    ...options,
-    owner,
-    composition: {
-      descriptor: options.composition.descriptor,
-      create: (context: RuntimeHostCompositionContext<StorageRootKind>) =>
-        options.composition.create({ ...context, owner }),
-    },
-  };
 }

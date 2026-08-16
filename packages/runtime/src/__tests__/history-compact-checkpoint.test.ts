@@ -4,8 +4,12 @@ import type { AgentRunEvent, AgentRunHeader, AgentRunStore } from '@maka/core/ag
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   buildHistoryCompactCheckpoint,
+  canContinueHistoryCompactCheckpointForModel,
+  canReplayHistoryCompactCheckpointForModel,
   canReplaceHistoryCompactCheckpoint,
+  historyCompactCheckpointToModelMessage,
   historyCompactCheckpointToRuntimeEvent,
+  isProviderHistoryCompactCheckpoint,
   matchHistoryCompactCheckpointPrefix,
   validateHistoryCompactCheckpointShape,
 } from '../history-compact-checkpoint.js';
@@ -17,6 +21,126 @@ import { estimateRuntimeEventsTokens } from '../context-budget.js';
 import { applyRuntimeEventHistoryCompact } from '../history-compact.js';
 
 describe('history compact checkpoint', () => {
+  test('persists provider-native state as a V3 checkpoint bound to one Codex model', () => {
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0), textEvent(1)],
+      providerState: {
+        kind: 'openai_codex_remote_v2',
+        connectionSlug: 'codex-subscription',
+        modelId: 'gpt-5.3-codex',
+        itemId: 'cmp_123',
+        encryptedContent: 'encrypted-state',
+      },
+    });
+
+    assert.equal(checkpoint.version, 3);
+    assert.equal('summary' in checkpoint, false);
+    assert.equal(validateHistoryCompactCheckpointShape(checkpoint, 'session-1'), true);
+    assert.equal(isProviderHistoryCompactCheckpoint(checkpoint), true);
+    assert.equal(
+      canReplayHistoryCompactCheckpointForModel(
+        checkpoint,
+        { providerType: 'openai-codex', slug: 'codex-subscription' },
+        'gpt-5.3-codex',
+      ),
+      true,
+    );
+    assert.equal(
+      canReplayHistoryCompactCheckpointForModel(
+        checkpoint,
+        { providerType: 'openai-codex', slug: 'other-codex-account' },
+        'gpt-5.3-codex',
+      ),
+      false,
+    );
+    assert.equal(
+      canContinueHistoryCompactCheckpointForModel(
+        checkpoint,
+        { providerType: 'openai-codex', slug: 'codex-subscription' },
+        'gpt-5.3-codex',
+      ),
+      true,
+    );
+    assert.equal(
+      canContinueHistoryCompactCheckpointForModel(
+        checkpoint,
+        { providerType: 'openai', slug: 'openai-api' },
+        'gpt-5.3-codex',
+      ),
+      false,
+    );
+    assert.equal(
+      canReplayHistoryCompactCheckpointForModel(
+        checkpoint,
+        { providerType: 'openai', slug: 'openai-api' },
+        'gpt-5.3-codex',
+      ),
+      false,
+    );
+    if (!isProviderHistoryCompactCheckpoint(checkpoint)) assert.fail('expected V3 checkpoint');
+    assert.deepEqual(historyCompactCheckpointToModelMessage(checkpoint), {
+      role: 'assistant',
+      content: [
+        {
+          type: 'custom',
+          kind: 'openai.compaction',
+          providerOptions: {
+            openai: { itemId: 'cmp_123', encryptedContent: 'encrypted-state' },
+          },
+        },
+      ],
+    });
+  });
+
+  test('rejects malformed provider-native checkpoint state and keeps V2 strict', () => {
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0)],
+      providerState: {
+        kind: 'openai_codex_remote_v2',
+        connectionSlug: 'codex-subscription',
+        modelId: 'gpt-5.3-codex',
+        itemId: 'cmp_123',
+        encryptedContent: 'encrypted-state',
+      },
+    });
+    if (!isProviderHistoryCompactCheckpoint(checkpoint)) assert.fail('expected V3 checkpoint');
+    assert.equal(
+      validateHistoryCompactCheckpointShape({
+        ...checkpoint,
+        providerState: { ...checkpoint.providerState, encryptedContent: '' },
+      }),
+      false,
+    );
+    assert.equal(
+      validateHistoryCompactCheckpointShape({ ...checkpoint, summary: 'opaque state leaked here' }),
+      false,
+    );
+    const v2 = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0)],
+      summary: 'text summary',
+    });
+    assert.equal(validateHistoryCompactCheckpointShape({ ...v2, providerState: {} }), false);
+    assert.equal(
+      canContinueHistoryCompactCheckpointForModel(
+        v2,
+        { providerType: 'openai', slug: 'openai-api' },
+        'gpt-5.3-codex',
+      ),
+      true,
+    );
+    assert.equal(
+      canContinueHistoryCompactCheckpointForModel(
+        v2,
+        { providerType: 'openai-codex', slug: 'codex-subscription' },
+        'gpt-5.3-codex',
+      ),
+      false,
+    );
+  });
+
   test('validates the exact ordered source prefix', () => {
     const events = Array.from({ length: 4 }, (_, index) => textEvent(index));
     const checkpoint = buildHistoryCompactCheckpoint({
@@ -251,6 +375,34 @@ describe('history compact checkpoint', () => {
         'session-1',
       ),
       false,
+    );
+  });
+
+  test('reloads a valid provider-native V3 checkpoint from the run ledger', async () => {
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0), textEvent(1)],
+      providerState: {
+        kind: 'openai_codex_remote_v2',
+        connectionSlug: 'codex-subscription',
+        modelId: 'gpt-5.3-codex',
+        itemId: 'cmp_durable',
+        encryptedContent: 'durable-encrypted-state',
+      },
+      now: 20,
+    });
+    const store = new StubAgentRunStore(
+      [run('run-1', 20)],
+      new Map([['run-1', [checkpointEvent('ledger-v3', 'run-1', checkpoint, 20)]]]),
+    );
+
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+
+    assert.deepEqual(loaded, checkpoint);
+    assert.equal(
+      matchHistoryCompactCheckpointPrefix(loaded!, [textEvent(0), textEvent(1), textEvent(2)])
+        .coveredEventCount,
+      2,
     );
   });
 

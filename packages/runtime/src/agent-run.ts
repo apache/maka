@@ -61,8 +61,6 @@ import {
   buildSyntheticTerminalRuntimeEvent,
   commitOrCreateTerminalRunFact,
 } from './terminal-run-commit.js';
-import { AiSdkFlow } from './ai-sdk-flow.js';
-import type { InvocationContext } from './invocation-context.js';
 import { buildInitialUserRuntimeEvent } from './runtime-runner.js';
 import type { RuntimeContinuation } from './runtime-resume.js';
 import {
@@ -597,85 +595,6 @@ export class AgentRun {
         },
       });
     });
-  }
-
-  async *execute(): AsyncIterable<SessionEvent> {
-    try {
-      const begin = await this.begin();
-      const invocationId = begin.initialRuntimeEvent.invocationId;
-      const source = 'desktop' as const;
-      const request: InvocationContext['request'] = {
-        sessionId: this.sessionId,
-        invocationId,
-        runId: this.runId,
-        turnId: this.turnId,
-        orchestration: this.effectiveOrchestration,
-        toolMode: this.toolMode,
-        ...(this.input.userInput.maxSteps !== undefined
-          ? { maxSteps: this.input.userInput.maxSteps }
-          : {}),
-        text: this.input.userInput.text,
-        ...(this.input.userInput.attachments
-          ? { attachments: this.input.userInput.attachments }
-          : {}),
-        ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
-        ...(this.input.userInput.inlineReferences
-          ? { inlineReferences: this.input.userInput.inlineReferences }
-          : {}),
-        context: begin.backendInput.context,
-        ...(begin.backendInput.runtimeContext
-          ? { runtimeContext: begin.backendInput.runtimeContext }
-          : {}),
-        initialRuntimeEvent: begin.initialRuntimeEvent,
-        source,
-        lineage: this.lineage,
-      };
-      const ctx: InvocationContext = {
-        sessionId: this.sessionId,
-        invocationId,
-        runId: this.runId,
-        turnId: this.turnId,
-        source,
-        startedAt: begin.initialRuntimeEvent.ts,
-        request,
-        newId: this.input.newId,
-        now: this.input.now,
-      };
-      let acceptedSessionEvent: SessionEvent | undefined;
-      const flow = new AiSdkFlow({
-        backend: begin.backend,
-        drainAfterTerminal: true,
-        onSessionEvent: async (sessionEvent, runtimeEvent) => {
-          await this.acceptMappedEvent(sessionEvent, runtimeEvent);
-          acceptedSessionEvent = sessionEvent;
-        },
-      });
-      for await (const _runtimeEvent of flow.run(ctx, {
-        text: begin.backendInput.text,
-        ...(begin.backendInput.toolMode !== undefined
-          ? { toolMode: begin.backendInput.toolMode }
-          : {}),
-        ...(begin.backendInput.maxSteps !== undefined
-          ? { maxSteps: begin.backendInput.maxSteps }
-          : {}),
-        ...(begin.backendInput.attachments ? { attachments: begin.backendInput.attachments } : {}),
-        ...(begin.backendInput.quotes ? { quotes: begin.backendInput.quotes } : {}),
-        context: begin.backendInput.context,
-        ...(begin.backendInput.runtimeContext
-          ? { runtimeContext: begin.backendInput.runtimeContext }
-          : {}),
-      })) {
-        if (acceptedSessionEvent) {
-          yield acceptedSessionEvent;
-          acceptedSessionEvent = undefined;
-        }
-      }
-    } catch (error) {
-      await this.recordFailure(error);
-      throw error;
-    } finally {
-      await this.finalize();
-    }
   }
 
   async acceptMappedEvent(

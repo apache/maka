@@ -163,6 +163,23 @@ test('normalizes catalog inputs while canonical entries reject noncanonical endp
   );
 });
 
+test('rejects new connections for the retired Gemini CLI account provider', () => {
+  assert.throws(
+    () =>
+      normalizeCreateCatalogConnectionInput({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'gemini-account',
+          name: 'Gemini account',
+          providerType: 'gemini-cli',
+          enabled: true,
+          enabledModelIds: [],
+        },
+      }),
+    /provider type is not registered/,
+  );
+});
+
 test('relay model profiles round-trip canonical entries and drafts, strictly', () => {
   const table = {
     'relay-reasoner': {

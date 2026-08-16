@@ -121,7 +121,7 @@ import { useAppShellTurnPresentation } from './app-shell-turn-view-model';
 import { readScrollMotionBehavior } from './scroll-motion-policy';
 import { deriveBranchBanner } from './branch-banner';
 import { readNavigationState, selectNavigation } from './nav-selection';
-import { sessionMatchesNavSelection } from './session-nav-filter';
+import { sessionMatchesRail } from './session-nav-filter';
 import { deriveSessionRevisionNavigation } from './session-revisions';
 import { deriveDesktopExecutionBoundarySurface } from './desktop-execution-boundary-surface';
 import { useActiveExecutionBoundary } from './use-active-execution-boundary';
@@ -135,13 +135,17 @@ import { AppShellTopbarActions, AppShellWorkspaceTopActions } from './app-shell-
 import { updateReminderFromStatus } from './app-shell-app-update';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
 import { AppShellOverlays } from './app-shell-overlays';
+import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import { CustomPetCompanion } from './custom-pet-companion';
 import { derivePetActivityState } from './custom-pet-companion-model';
 import { createAppShellDailyReviewBridge } from './app-shell-daily-review-bridge';
 import { useAppShellModuleData } from './use-module-data';
 import { useKeepSystemAwake } from './use-keep-system-awake';
 import { useAppShellProjectContext } from './use-project-context';
-import { createAppShellSessionEventHandlers } from './app-shell-session-events';
+import {
+  createAppShellSessionDisplayBatch,
+  createAppShellSessionEventHandlers,
+} from './app-shell-session-events';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
 import {
   createAppShellChatActions,
@@ -170,6 +174,13 @@ import {
   useShellRunUpdates,
   useSettledSessionTransientReconcile,
 } from './app-shell-effects';
+import {
+  EMPTY_LIVE_CONTENT_SEED,
+  beginLiveContentSeed,
+  completeLiveContentSeed,
+  liveContentSeedRevision,
+  type LiveContentSeed,
+} from './live-content-seed';
 import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults';
 import { useKeyedPendingRegistry } from './use-pending-action-registry';
 import { useAppShellComposerAttachments } from './use-app-shell-composer-attachments';
@@ -591,7 +602,6 @@ function AppShellContent({
   const persistedComposerDefaults = loadComposerDefaults();
   const [helpOpen, closeHelp, openHelp] = useKeyboardHelp();
   const [paletteOpen, openPalette, closePalette] = useCommandPalette();
-  const [externalImportOpen, setExternalImportOpen] = useState(false);
   const [viewMode, setViewMode] = useState<SessionViewMode>('conversation');
   const composerRef = useRef<ComposerHandle>(null);
   // The rail's toggle has to reach Astryx's resizable state, not just this
@@ -695,11 +705,9 @@ function AppShellContent({
   } = useMemo(
     () =>
       deriveSessionRail(sessions, activeId, (session) =>
-        !hiddenCompanionForkIds.has(session.id)
-          ? sessionMatchesNavSelection(session, navSelection)
-          : false,
+        !hiddenCompanionForkIds.has(session.id) && sessionMatchesRail(session),
       ),
-    [sessions, activeId, navSelection, hiddenCompanionForkIds],
+    [sessions, activeId, hiddenCompanionForkIds],
   );
   // PR-DAILY-REVIEW-MVP-0: bridge for the main Daily Review module.
   // Memoized so the panel's `useEffect` cleanup keys
@@ -1085,7 +1093,7 @@ function AppShellContent({
   }
 
   function openSessionInChat(sessionId: string, turnId?: string, sequence?: number): void {
-    setNavSelection({ section: 'sessions', filter: 'chats' });
+    setNavSelection({ section: 'sessions' });
     setActiveId(sessionId);
     if (turnId) {
       setSearchScrollTarget({ sessionId, turnId, sequence, nonce: Date.now() });
@@ -1123,7 +1131,7 @@ function AppShellContent({
    *  path is unchanged while a half-written message is no longer clobbered. */
   const useSkillInChat = useCallback(
     (_skillId: string, skillName: string) => {
-    setNavSelection({ section: 'sessions', filter: 'chats' });
+    setNavSelection({ section: 'sessions' });
     const seed = () => {
         composerRef.current?.appendText(shellCopy.useSkillPrompt(skillName));
       composerRef.current?.focus();
@@ -1245,9 +1253,19 @@ function AppShellContent({
   const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
     id: proposal.proposalId,
     afterTurnId: proposal.turnId,
+    renderWhenAnchorMissing:
+      proposal.status === 'pending_approval'
+      && proposal.proposalId === planMode.state?.latestProposalId,
     content: <PlanProposalCard proposal={proposal} planMode={planMode} />,
   }));
   const activeMessageLoading = Boolean(activeId && messageLoadPending);
+  // Session switches clear the transcript projection before its async read.
+  // Keep the switch warning anchored to the durable session summary, while
+  // retaining the local projection for an optimistic first message that has
+  // not reached the catalog yet.
+  const modelSwitchHasHistory =
+    activeSessionForView?.lastMessageAt !== undefined ||
+    messages.some((message) => message.type === 'user' || message.type === 'assistant');
   // PR110c: OnboardingState is now the single source of truth for
   // first-run UI. The renderer never re-derives provider readiness;
   // `useOnboardingSnapshot()` pulls the derived state from the main
@@ -1818,6 +1836,19 @@ function AppShellContent({
     () => deriveWorktreeSessionIds(visibleSessions, projects),
     [visibleSessions, projects],
   );
+  // 已归档任务 reads the shell's catalog rather than listing again behind the
+  // modal, and writes through the same row actions the rail uses — one owner
+  // for restoring and deleting a task, whichever surface asked.
+  const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
+    () => ({
+      sessions,
+      projects,
+      onRestore: (sessionId) => void sessionRowActionHandlers.unarchiveSession(sessionId),
+      onDelete: (sessionId) => void sessionRowActionHandlers.deleteSession(sessionId),
+      onPurge: (sessionIds) => sessionRowActionHandlers.purgeSessions(sessionIds),
+    }),
+    [sessions, projects],
+  );
   const { startModeSession } = useStableActions(createAppShellSessionStartActions, {
     uiLocale,
     activeIdRef,
@@ -2172,7 +2203,15 @@ function AppShellContent({
     toastApi,
   });
 
-  const { handleEvent, reconcilePersistedMessages, settleAssistantStreaming } = useStableActions(createAppShellSessionEventHandlers, {
+  const [sessionDisplayBatch] = useState(createAppShellSessionDisplayBatch);
+  const {
+    handleEvent,
+    reconcilePersistedMessages,
+    settleAssistantStreaming,
+    flushDisplayEvents,
+    markDisplayPending,
+    markDisplayReady,
+  } = useStableActions(createAppShellSessionEventHandlers, {
     uiLocale,
     activeIdRef,
     liveTurnBySessionRef,
@@ -2180,6 +2219,7 @@ function AppShellContent({
     refreshSessions,
     setLiveTurnBySession,
     setInteractionBySession,
+    displayBatch: sessionDisplayBatch,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     showModelSetupToast,
@@ -2211,7 +2251,7 @@ function AppShellContent({
     return () => window.clearTimeout(timer);
   }, [activeId, activeStreamingMessageId, messages, settleAssistantStreaming]);
 
-  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen || externalImportOpen;
+  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen;
   const shellObscured = hasModalOpen || settingsOpen;
 
   useEffect(() => {
@@ -2311,22 +2351,34 @@ function AppShellContent({
     themePalette,
     themePref,
   });
-  const [activeEventSeed, setActiveEventSeed] = useState({
-    sessionId: undefined as string | undefined,
-    revision: 0,
-  });
+  const [activeEventSeed, setActiveEventSeed] = useState<LiveContentSeed>(EMPTY_LIVE_CONTENT_SEED);
+  const activeEventSeedRef = useRef(activeEventSeed);
+  activeEventSeedRef.current = activeEventSeed;
+  const beginObservationSeed = (sessionId: string): number => {
+    const next = beginLiveContentSeed(activeEventSeedRef.current, sessionId);
+    activeEventSeedRef.current = next;
+    markDisplayPending(sessionId);
+    setActiveEventSeed(next);
+    return next.generation;
+  };
+  const completeObservationSeed = (sessionId: string, generation?: number): void => {
+    const current = activeEventSeedRef.current;
+    const expected = generation ?? current.generation;
+    if (current.sessionId !== sessionId || current.generation !== expected) return;
+    flushDisplayEvents(sessionId);
+    markDisplayReady(sessionId);
+    const next = completeLiveContentSeed(current, sessionId, expected);
+    activeEventSeedRef.current = next;
+    setActiveEventSeed(next);
+  };
   useActiveSessionEvents({
     uiLocale,
     activeId,
     activeIdRef,
     handleEvent,
     markSessionReadLocally,
-    onEventSeeded: (sessionId) => {
-      setActiveEventSeed((current) => ({
-        sessionId,
-        revision: current.revision + 1,
-      }));
-    },
+    beginObservationSeed,
+    completeObservationSeed,
     setMessageLoadErrorBySession,
     setMessageLoadPending,
     setMessages,
@@ -2465,7 +2517,7 @@ function AppShellContent({
   function openNewTaskSurface() {
     startNewSession();
     setNewChatPlanModeActive(false);
-    setNavSelection({ section: 'sessions', filter: 'chats' });
+    setNavSelection({ section: 'sessions' });
     setSearchScrollTarget(null);
     // New-task affordances reset to the empty-state composer; move focus
     // there so the user can start typing immediately.
@@ -2777,7 +2829,6 @@ function AppShellContent({
             updateReminder={updateReminder}
             onOpenUpdate={openUpdateDownload}
             onNew={createSession}
-            onImport={() => setExternalImportOpen(true)}
             rowActions={sessionRowActions}
             projectActions={projectRowActions}
           />
@@ -2945,14 +2996,11 @@ function AppShellContent({
                   }
                   modelLabel={activeModelLabel ?? newChatModelLabel ?? undefined}
                   activeSession={activeSessionForView}
-                  activeConnectionLabel={activeConnectionLabel}
                   activeModel={activeModel}
                   activeModelLabel={activeModelLabel}
                   activeProviderType={activeConnection?.providerType}
                   modelChoices={chatModelChoices}
-                  modelSwitchHasHistory={messages.some(
-                    (message) => message.type === 'user' || message.type === 'assistant',
-                  )}
+                  modelSwitchHasHistory={modelSwitchHasHistory}
                   renderProviderMark={(type) => <ProviderBrandMark type={type} />}
                   modelChangePending={activeId ? pendingSessionModelBySession[activeId] === true : false}
                   onModelChange={(input) => setSessionModel(input)}
@@ -3064,9 +3112,7 @@ function AppShellContent({
                 historyLoadPending={historyLoadPendingSessionId === activeId}
                 onLoadEarlierHistory={() => loadTranscriptHistory('earlier')}
                 onReturnToLatestHistory={() => loadTranscriptHistory('latest')}
-                liveContentSeedRevision={activeEventSeed.sessionId === activeId
-                  ? activeEventSeed.revision
-                  : 0}
+                liveContentSeedRevision={liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}
                 messageLoading={activeMessageLoading}
                 runningStatus={showRunningStatus}
@@ -3344,6 +3390,7 @@ function AppShellContent({
           closeSettings();
           openSessionInChat(sessionId);
         }}
+        archivedTasks={archivedTasksBridge}
         helpOpen={helpOpen}
         closeHelp={closeHelp}
         searchModalOpen={searchModalOpen}
@@ -3353,10 +3400,14 @@ function AppShellContent({
         paletteOpen={paletteOpen}
         closePalette={closePalette}
         commandOptions={commandOptions}
-        externalImportOpen={externalImportOpen}
-        onExternalImportOpenChange={setExternalImportOpen}
+        /* Seeding is for the navigation, not for correctness: the import IPC
+           already emits `sessions:changed`, so the task reaches the rail on its
+           own even if the user closes Settings mid-import. Seeding it here just
+           means `openSessionInChat` has something to open without waiting for
+           the refresh to land. */
         onExternalSessionImported={(session) => {
           upsertSessionSummary(session);
+          closeSettings();
           openSessionInChat(session.id);
         }}
       />

@@ -184,6 +184,10 @@ export class RuntimeHostSessionObservationRegistry {
     return [...new Set(restored.filter((sessionId): sessionId is string => !!sessionId))];
   }
 
+  observedSessionIds(): string[] {
+    return [...new Set([...this.#registrations.values()].map((registration) => registration.sessionId))];
+  }
+
   detach(source: SessionObservationSource): void {
     if (this.#source === source) {
       this.#source = undefined;

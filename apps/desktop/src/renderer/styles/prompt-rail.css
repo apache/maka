@@ -126,7 +126,6 @@
   height: auto;
   width: 100%;
   box-shadow: none;
-  transition: color var(--duration-base) var(--ease-out-strong);
   animation: maka-prompt-rail-tick-in var(--duration-large) var(--ease-out-strong) backwards;
   /* Capped, so a 90-prompt conversation cascades in a third of a second rather
      than nearly two: past the cap the tail arrives together. */
@@ -138,9 +137,9 @@
   color: var(--foreground);
 }
 
-/* Dock-style falloff. `--maka-prompt-rail-proximity` counts ticks away from the
-   pointer (0 = hovered) and rests at the falloff distance, so the whole ramp is
-   one expression and the resting width is its own tail. */
+/* Dock-style falloff. The bar keeps a fixed layout width and changes only its
+   compositor transform, so active-prompt tracking never starts a width-driven
+   layout animation while the transcript is scrolling. */
 .maka-prompt-rail-tick-bar {
   /* Load-bearing since #2580 put the tick on Astryx's Button: the bar used to
      be a direct child of the flex tick, which blockified it, and now it sits
@@ -148,59 +147,17 @@
      width or height, so without this the bar computes to 0x0 and the whole
      rail paints nothing. */
   display: block;
-  width: calc(14px + ((3 - var(--maka-prompt-rail-proximity, 3)) * 3px));
-  height: 3px;
-  border-radius: var(--radius-pill);
-  background: currentColor;
-  transition: width var(--duration-emphasized) var(--ease-out-strong);
-}
-
-/* The travelling highlight for the prompt currently being read. Anchor
-   positioning is Astryx's own idiom for a sliding indicator (see its Outline):
-   the active tick's bar publishes an anchor name, the highlight reads its
-   position, and the transition on `top` is what makes it glide between prompts
-   as the transcript scrolls. Sized past the widest tick so it always reads as
-   the longer bar. */
-.maka-prompt-rail-tick[data-active="true"] .maka-prompt-rail-tick-bar {
-  anchor-name: --maka-prompt-rail-active;
-  /* The highlight is drawn over this bar, so hide the bar rather than
-     double-print it. Fading rather than hiding also gives the prompt being
-     left something to do while the highlight travels away from it. */
-  opacity: 0;
-  transition:
-    width var(--duration-emphasized) var(--ease-out-strong),
-    opacity var(--duration-base) var(--ease-out-strong);
-}
-
-.maka-prompt-rail-indicator {
-  position: absolute;
-  position-anchor: --maka-prompt-rail-active;
-  right: var(--space-1);
-  top: anchor(center);
-  translate: 0 -50%;
   width: 26px;
   height: 3px;
   border-radius: var(--radius-pill);
-  background: var(--foreground);
-  pointer-events: none;
-  transition: top var(--duration-large) var(--ease-out-strong);
+  background: currentColor;
+  transform: scaleX(var(--maka-prompt-rail-scale, 0.5385));
+  transform-origin: right center;
+  transition: transform var(--duration-emphasized) var(--ease-out-strong);
 }
 
-/* The glide is for reading: it carries the eye between neighbouring prompts as
-   the transcript scrolls. A click is the opposite — the reader picked the
-   destination, and the same 280ms spent crossing twenty prompts instead of one
-   reads as the bar flying off across the rail. `jumpTo` in
-   prompt-anchor-rail.tsx holds this attribute until the scroll it started has
-   settled, so the highlight is placed at each turn the jump passes through. */
-.maka-prompt-rail[data-jumping="true"] .maka-prompt-rail-indicator {
-  transition: none;
-}
-
-/* No active prompt yet (a transcript that has not been scrolled) leaves the
-   anchor undefined, and an unresolved anchor would park the bar at the top of
-   the rail. Hide it until a tick claims the anchor. */
-.maka-prompt-rail:not(:has(.maka-prompt-rail-tick[data-active="true"])) .maka-prompt-rail-indicator {
-  display: none;
+.maka-prompt-rail-tick[data-active="true"] .maka-prompt-rail-tick-bar {
+  transform: scaleX(1);
 }
 
 /* HoverCard content. Astryx owns the card itself — surface, radius, shadow,

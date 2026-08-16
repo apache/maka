@@ -76,6 +76,7 @@ export interface RuntimeHostSessionObserverDeps {
     interactions: readonly ActiveInteractionRequestEvent[],
   ) => void;
   emitSubscriptionRecovered?: (sessionId: string) => void;
+  emitObservationSeed?: (sessionId: string, phase: 'pending' | 'ready') => void;
   recoverConnectionClosed?: boolean;
   now?: () => number;
 }
@@ -180,6 +181,10 @@ export class RuntimeHostSessionObserver {
     interactions: readonly ActiveInteractionRequestEvent[],
   ) => void;
   readonly #emitSubscriptionRecovered: (sessionId: string) => void;
+  readonly #emitObservationSeed: (
+    sessionId: string,
+    phase: 'pending' | 'ready',
+  ) => void;
   readonly #recoverConnectionClosed: boolean;
   readonly #now: () => number;
   #closed = false;
@@ -201,6 +206,7 @@ export class RuntimeHostSessionObserver {
       deps.emitActiveInteractionsChanged ?? (() => undefined);
     this.#emitSubscriptionRecovered =
       deps.emitSubscriptionRecovered ?? (() => undefined);
+    this.#emitObservationSeed = deps.emitObservationSeed ?? (() => undefined);
     this.#recoverConnectionClosed = deps.recoverConnectionClosed ?? false;
     this.#now = deps.now ?? Date.now;
   }
@@ -805,6 +811,7 @@ export class RuntimeHostSessionObserver {
       this.#touchReplica(state);
 
       if (replacement) {
+        this.#emitObservationSeed(state.sessionId, 'pending');
         for (const event of replacement.terminalEvents) {
           this.#broadcast(state.sessionId, event);
         }
@@ -812,6 +819,7 @@ export class RuntimeHostSessionObserver {
           this.#broadcast(state.sessionId, event);
         }
         for (const group of state.targets.values()) group.seeded = true;
+        this.#emitObservationSeed(state.sessionId, 'ready');
         for (const turnId of replacement.terminalTurnIds) {
           this.#finishWatchedTurn(state, turnId, "completed");
           this.#emitSessionsChanged("turn-status-change", state.sessionId, {

@@ -255,7 +255,6 @@ export const Composer = forwardRef<
     onPasteAsQuote?(input: { text: string; label?: string }): void;
     modelLabel?: string;
     activeSession?: SessionSummary;
-    activeConnectionLabel?: string;
     activeModel?: string;
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
@@ -1679,7 +1678,6 @@ export const Composer = forwardRef<
                   <ChatModelSwitcher
                     activeSession={props.activeSession}
                     activeModel={props.activeModel}
-                    activeConnectionLabel={props.activeConnectionLabel}
                     activeModelLabel={props.activeModelLabel}
                     currentProviderType={props.activeProviderType}
                     choices={props.modelChoices ?? []}

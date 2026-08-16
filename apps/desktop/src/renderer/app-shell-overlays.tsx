@@ -8,9 +8,9 @@ import { SearchModal, useUiLocale } from '@maka/ui';
 import { KeyboardHelpModal } from './keyboard-help';
 import { CommandPalette } from './command-palette';
 import { useAppShellCommands, type AppShellCommandListOptions } from './app-shell-command-actions';
+import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import type { UiLocaleUpdateGate } from './settings/ui-locale-update-gate';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
-import { ExternalSessionImportDialog } from './external-session-import-dialog.js';
 
 const SettingsModal = lazy(() => import('./settings/settings-modal').then((m) => ({ default: m.SettingsModal })));
 
@@ -54,6 +54,7 @@ export function AppShellOverlays(props: {
   onOpenDailyReview(): void;
   onOpenKeyboardHelp(): void;
   onOpenSettingsSession(sessionId: string): void;
+  archivedTasks: ArchivedTasksBridge;
   helpOpen: boolean;
   closeHelp(): void;
   searchModalOpen: boolean;
@@ -63,8 +64,6 @@ export function AppShellOverlays(props: {
   paletteOpen: boolean;
   closePalette(): void;
   commandOptions: AppShellCommandListOptions;
-  externalImportOpen: boolean;
-  onExternalImportOpenChange(open: boolean): void;
   onExternalSessionImported(session: SessionSummary): void;
 }) {
   const {
@@ -94,8 +93,6 @@ export function AppShellOverlays(props: {
     setDefaultPermissionMode,
     themePalette,
     themePref,
-    externalImportOpen,
-    onExternalImportOpenChange,
     onExternalSessionImported,
   } = props;
 
@@ -126,6 +123,8 @@ export function AppShellOverlays(props: {
             onOpenDailyReview={props.onOpenDailyReview}
             onOpenKeyboardHelp={props.onOpenKeyboardHelp}
             onOpenSession={props.onOpenSettingsSession}
+            archivedTasks={props.archivedTasks}
+            onTaskImported={onExternalSessionImported}
           />
         </Suspense>
       )}
@@ -149,11 +148,6 @@ export function AppShellOverlays(props: {
           if (!open) closePalette();
         }}
         commands={commands}
-      />
-      <ExternalSessionImportDialog
-        isOpen={externalImportOpen}
-        onOpenChange={onExternalImportOpenChange}
-        onImported={onExternalSessionImported}
       />
     </>
   );

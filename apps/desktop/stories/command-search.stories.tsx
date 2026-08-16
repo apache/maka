@@ -36,7 +36,7 @@ const threadResults: SearchResult[] = [
   {
     source: 'thread',
     title: 'Benchmark 结果横评',
-    summary: '会话 · 今天 10:24',
+    summary: '任务 · 今天 10:24',
     snippet: '把 benchmark 输出整理成稳定的对比表，再补一轮 verifier。',
     target: { kind: 'thread', sessionId: 'session-benchmark', turnId: 'turn-benchmark-table' },
     truncated: true,
@@ -44,14 +44,14 @@ const threadResults: SearchResult[] = [
   {
     source: 'thread',
     title: 'Command palette 搜索状态',
-    summary: '会话 · 昨天 18:42',
+    summary: '任务 · 昨天 18:42',
     snippet: 'content search blocked state 要保持 disabled，不能触发关闭。',
     target: { kind: 'thread', sessionId: 'session-command-search' },
   },
   {
     source: 'thread',
     title: 'Harbor adapter metadata',
-    summary: '会话 · 周一',
+    summary: '任务 · 周一',
     snippet: '确认 provider env passthrough，不要复制本地 adapter。',
     target: { kind: 'thread', sessionId: 'session-harbor', turnId: 'turn-provider-env' },
   },
@@ -61,8 +61,8 @@ const paletteCommands: Command[] = [
   {
     id: 'action:new-chat',
     kind: 'action',
-    label: '新建对话',
-    hint: '开始新的会话',
+    label: '新建任务',
+    hint: '开始新的任务',
     group: '操作',
     Icon: Plus,
     keywords: ['new', 'chat', '新建'],
@@ -101,7 +101,7 @@ const paletteCommands: Command[] = [
   {
     id: 'diag:export-conversation',
     kind: 'action',
-    label: '导出当前对话为 Markdown',
+    label: '导出当前任务为 Markdown',
     hint: '复制到剪贴板',
     group: '诊断',
     Icon: Download,
@@ -113,9 +113,9 @@ const paletteCommands: Command[] = [
     kind: 'session',
     label: '生成本周 benchmark 对比表',
     hint: '当前',
-    group: '会话',
+    group: '任务',
     Icon: MessageSquare,
-    keywords: ['benchmark', '会话'],
+    keywords: ['benchmark', '任务'],
     run: noop,
   },
 ];

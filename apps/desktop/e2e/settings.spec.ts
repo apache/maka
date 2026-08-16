@@ -8,8 +8,8 @@ test('opening settings commits an active titlebar rename', async ({ window: page
   const identity = page.locator('[data-maka-contract="titlebar-identity"]');
   await expect(identity).toBeVisible();
   await page.getByRole('button', { name: '展开侧边栏' }).click();
-  await identity.getByRole('button', { name: /重命名对话/ }).click();
-  await page.getByRole('textbox', { name: '重命名对话' }).fill('renamed before settings');
+  await identity.getByRole('button', { name: /重命名任务/ }).click();
+  await page.getByRole('textbox', { name: '重命名任务' }).fill('renamed before settings');
 
   // Programmatic activation preserves input focus, matching the macOS
   // application-menu command that opens Settings before Chromium can blur it.

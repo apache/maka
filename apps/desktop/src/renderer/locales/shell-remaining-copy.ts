@@ -55,7 +55,7 @@ const zhCopy = {
     refreshFailed: "刷新模型连接失败",
     refreshFallback: "模型连接暂时无法刷新，请稍后重试。",
   },
-  tasks: { loadFailed: "任务载入失败，请重试。" },
+  tasks: { loadFailed: "待办载入失败，请重试。" },
   projects: { ungrouped: "未归属项目" },
   models: { unavailable: "当前不可用" },
   overlays: {
@@ -131,7 +131,7 @@ const enCopy: ShellRemainingCopy = {
     refreshFallback:
       "Model connections are temporarily unavailable. Try again later.",
   },
-  tasks: { loadFailed: "Failed to load tasks. Try again." },
+  tasks: { loadFailed: "Failed to load the to-do list. Try again." },
   projects: { ungrouped: "No project" },
   models: { unavailable: "Currently unavailable" },
   overlays: {

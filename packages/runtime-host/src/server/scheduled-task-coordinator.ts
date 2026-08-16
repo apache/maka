@@ -579,8 +579,8 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
         claim,
         'ok',
         task.effect.kind === 'session_resume'
-          ? '已在原会话中继续执行。'
-          : '已启动 Agent 会话执行。',
+          ? '已在原任务中继续执行。'
+          : '已启动 Agent 任务执行。',
         'fired',
         execution,
       );

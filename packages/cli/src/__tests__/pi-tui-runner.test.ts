@@ -3009,7 +3009,7 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     // The scan failure is surfaced, not swallowed into an empty list.
     await waitFor(() =>
-      plainTerminalOutput(terminal.output()).includes('读取外部会话失败：corrupt index'),
+      plainTerminalOutput(terminal.output()).includes('读取外部对话失败：corrupt index'),
     );
 
     exitMaka(terminal);
