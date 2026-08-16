@@ -81,10 +81,10 @@ mod tests {
         icacls(&[path.to_str().expect("path")]).contains(sid)
     }
 
-    fn ledger(roots: Vec<LedgerRoot>) -> Ledger {
+    fn ledger(request_id: &str, roots: Vec<LedgerRoot>) -> Ledger {
         Ledger {
             version: LEDGER_VERSION,
-            request_id: "test-request".to_owned(),
+            request_id: request_id.to_owned(),
             app_container_sid: APP_SID.to_owned(),
             roots,
         }
@@ -126,14 +126,17 @@ mod tests {
         let ledger_path = fixture.ledger_path("with-backup.json");
         write_ledger(
             &ledger_path,
-            &ledger(vec![LedgerRoot {
-                path: fixture.target_str(),
-                read: true,
-                write: false,
-                read_recursive: true,
-                write_recursive: false,
-                backup_path: Some(backup.to_string_lossy().into_owned()),
-            }]),
+            &ledger(
+                "preserve",
+                vec![LedgerRoot {
+                    path: fixture.target_str(),
+                    read: true,
+                    write: false,
+                    read_recursive: true,
+                    write_recursive: false,
+                    backup_path: Some(backup.to_string_lossy().into_owned()),
+                }],
+            ),
         )
         .expect("write ledger");
 
@@ -153,14 +156,17 @@ mod tests {
         let ledger_path = fixture.ledger_path("missing-root.json");
         write_ledger(
             &ledger_path,
-            &ledger(vec![LedgerRoot {
-                path: missing.to_string_lossy().into_owned(),
-                read: true,
-                write: false,
-                read_recursive: true,
-                write_recursive: false,
-                backup_path: None,
-            }]),
+            &ledger(
+                "missing-root",
+                vec![LedgerRoot {
+                    path: missing.to_string_lossy().into_owned(),
+                    read: true,
+                    write: false,
+                    read_recursive: true,
+                    write_recursive: false,
+                    backup_path: None,
+                }],
+            ),
         )
         .expect("write ledger");
 
@@ -178,14 +184,17 @@ mod tests {
         let valid = fixture.ledger_path("valid.json");
         write_ledger(
             &valid,
-            &ledger(vec![LedgerRoot {
-                path: fixture.target_str(),
-                read: true,
-                write: false,
-                read_recursive: true,
-                write_recursive: false,
-                backup_path: None,
-            }]),
+            &ledger(
+                "corrupt-valid",
+                vec![LedgerRoot {
+                    path: fixture.target_str(),
+                    read: true,
+                    write: false,
+                    read_recursive: true,
+                    write_recursive: false,
+                    backup_path: None,
+                }],
+            ),
         )
         .expect("write valid ledger");
 
@@ -278,14 +287,17 @@ mod tests {
 
     #[test]
     fn new_ledgers_serialize_without_backup_path() {
-        let value = serde_json::to_value(ledger(vec![LedgerRoot {
-            path: "C:\\workspace".to_owned(),
-            read: true,
-            write: true,
-            read_recursive: false,
-            write_recursive: true,
-            backup_path: None,
-        }]))
+        let value = serde_json::to_value(ledger(
+            "serialization",
+            vec![LedgerRoot {
+                path: "C:\\workspace".to_owned(),
+                read: true,
+                write: true,
+                read_recursive: false,
+                write_recursive: true,
+                backup_path: None,
+            }],
+        ))
         .expect("serialize ledger");
         let root = &value["roots"][0];
         assert!(root.get("backupPath").is_none());
