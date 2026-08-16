@@ -34,6 +34,12 @@ class FakeWebSocket {
   close(code?: number): void {
     this.closed.push(code);
     this.readyState = 3;
+    // Real sockets deliver the close event asynchronously, after the
+    // caller has finished detaching them (queueMicrotask so the
+    // bridge's synchronous forceReconnect/stop completes first).
+    queueMicrotask(() => {
+      this.emit('close', { code: code ?? 1005, reason: '' });
+    });
   }
 }
 
@@ -58,12 +64,12 @@ class TestGatewayBridge extends GatewayBridgeBase {
     return null;
   }
 
-  protected override buildIdentifyPayload(): Record<string, unknown> {
+  protected override buildIdentifyPayload(): Record<string, unknown> | null {
     this.identifyCalls += 1;
     return { token: 'test-identify' };
   }
 
-  protected override buildResumePayload(): Record<string, unknown> {
+  protected override buildResumePayload(): Record<string, unknown> | null {
     this.resumeCalls += 1;
     return { token: 'test-resume' };
   }
@@ -90,18 +96,38 @@ class TestGatewayBridge extends GatewayBridgeBase {
   hasReconnectTimer(): boolean {
     return this.reconnectTimer !== null;
   }
+
+  getReconnectAttempts(): number {
+    return this.reconnectAttempts;
+  }
+
+  getHeartbeatInterval(): number {
+    return this.heartbeatInterval;
+  }
+
+  hasInitialHeartbeatTimer(): boolean {
+    return this.heartbeatInitialTimer !== null;
+  }
+
+  hasHeartbeatTimers(): boolean {
+    return this.heartbeatInitialTimer !== null || this.heartbeatTimer !== null;
+  }
+}
+
+function botSettings() {
+  return {
+    ...createDefaultBotChannel('qq'),
+    enabled: true,
+    token: 'token',
+    appId: 'app-id',
+    appSecret: 'app-secret',
+  };
 }
 
 async function startBridge(
   platform: 'qq' | 'discord' = 'qq',
 ): Promise<{ bridge: TestGatewayBridge; fake: FakeWebSocket }> {
-  const bridge = new TestGatewayBridge(platform, {
-    ...createDefaultBotChannel(platform),
-    enabled: true,
-    token: 'token',
-    appId: 'app-id',
-    appSecret: 'app-secret',
-  });
+  const bridge = new TestGatewayBridge(platform, botSettings());
   await bridge.start();
   return { bridge, fake: bridge.fake };
 }
@@ -310,6 +336,104 @@ describe('GatewayBridgeBase close policy', () => {
     fake.emit('close', { code: 4000, reason: '' });
     assert.equal(bridge.getStatus().reason, 'stopped');
     assert.equal(bridge.isRunning(), false);
+    assert.equal(bridge.hasReconnectTimer(), false);
+  });
+});
+
+describe('review hardening: HELLO interval validation', () => {
+  it('falls back to the default interval when HELLO omits heartbeat_interval', async () => {
+    const { bridge, fake } = await startBridge();
+    const before = bridge.getHeartbeatInterval();
+    sendFrame(fake, { op: 10, d: {} });
+    await settle();
+    assert.equal(bridge.getHeartbeatInterval(), before);
+    assert.equal(bridge.identifyCalls, 1);
+    await bridge.stop();
+  });
+
+  it('falls back to the default interval when HELLO has no payload at all', async () => {
+    const { bridge, fake } = await startBridge();
+    const before = bridge.getHeartbeatInterval();
+    sendFrame(fake, { op: 10 });
+    await settle();
+    assert.equal(bridge.getHeartbeatInterval(), before);
+    await bridge.stop();
+  });
+
+  it('accepts a valid HELLO interval', async () => {
+    const { bridge, fake } = await startBridge();
+    sendFrame(fake, { op: 10, d: { heartbeat_interval: 5_000 } });
+    assert.equal(bridge.getHeartbeatInterval(), 5_000);
+    await bridge.stop();
+  });
+});
+
+describe('review hardening: null auth payloads', () => {
+  it('force-reconnects without the session when the identify payload is null', async () => {
+    class NullIdentifyBridge extends TestGatewayBridge {
+      protected override buildIdentifyPayload(): Record<string, unknown> | null {
+        return null;
+      }
+    }
+    const bridge = new NullIdentifyBridge('qq', botSettings());
+    await bridge.start();
+    sendFrame(bridge.fake, { op: 10, d: { heartbeat_interval: HELLO_INTERVAL_MS } });
+    await settle();
+    assert.equal(bridge.fake.closed.length, 1);
+    assert.equal(bridge.hasReconnectTimer(), true);
+    assert.equal(bridge.getReconnectAttempts(), 1);
+    await bridge.stop();
+  });
+
+  it('force-reconnects keeping the session when the resume payload is null', async () => {
+    class NullResumeBridge extends TestGatewayBridge {
+      protected override buildResumePayload(): Record<string, unknown> | null {
+        return null;
+      }
+    }
+    const bridge = new NullResumeBridge('qq', botSettings());
+    await bridge.start();
+    receiveReady(bridge.fake);
+    sendFrame(bridge.fake, { op: 10, d: { heartbeat_interval: HELLO_INTERVAL_MS } });
+    await settle();
+    assert.deepEqual(bridge.getSessionState(), { sessionId: 'sess-1', seq: 12 });
+    assert.equal(bridge.fake.closed.length, 1);
+    assert.equal(bridge.getReconnectAttempts(), 1);
+    await bridge.stop();
+  });
+});
+
+describe('review hardening: jitter timeout ownership', () => {
+  it('cancels a pending jitter timeout on stop', async () => {
+    const { bridge, fake } = await startBridge();
+    sendFrame(fake, { op: 10, d: { heartbeat_interval: HELLO_INTERVAL_MS } });
+    assert.equal(bridge.hasInitialHeartbeatTimer(), true);
+    await bridge.stop();
+    assert.equal(bridge.hasHeartbeatTimers(), false);
+  });
+});
+
+describe('review hardening: detached socket close events', () => {
+  it('ignores the late close event from a socket forceReconnect already closed', async () => {
+    const { bridge, fake } = await startBridge();
+    receiveReady(fake);
+    sendFrame(fake, { op: 1 });
+    sendFrame(fake, { op: 1 });
+    assert.equal(bridge.getReconnectAttempts(), 1);
+    assert.equal(bridge.getStatus().readiness, 'operational');
+    await settle();
+    assert.equal(bridge.getReconnectAttempts(), 1);
+    assert.deepEqual(bridge.getSessionState(), { sessionId: 'sess-1', seq: 12 });
+    assert.equal(bridge.getStatus().readiness, 'operational');
+    assert.equal(bridge.getStatus().reason, undefined);
+    await bridge.stop();
+  });
+
+  it('ignores the late close event that fires after an explicit stop', async () => {
+    const { bridge } = await startBridge();
+    await bridge.stop();
+    await settle();
+    assert.equal(bridge.getStatus().reason, 'stopped');
     assert.equal(bridge.hasReconnectTimer(), false);
   });
 });

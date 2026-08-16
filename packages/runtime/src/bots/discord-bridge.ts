@@ -197,7 +197,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
-  private resumeGatewayUrl: string | null = null;
+  protected resumeGatewayUrl: string | null = null;
 
   protected override checkCredentials(): string | null {
     return this.settings.token.trim() ? null : 'no-token';
@@ -205,6 +205,15 @@ export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
 
   protected override decideClose(code: number, explicitlyStopped: boolean): WsCloseDecision {
     return decideDiscordClose(code, explicitlyStopped);
+  }
+
+  /**
+   * Discord's resume_gateway_url is only valid while the session it
+   * belongs to is alive — never route a fresh identify to it.
+   */
+  protected override resetSession(): void {
+    super.resetSession();
+    this.resumeGatewayUrl = null;
   }
 
   protected override async fetchGatewayUrl(): Promise<string | null> {

@@ -27,6 +27,7 @@ const OP_HEARTBEAT_ACK = 11;
 
 export abstract class GatewayBridgeBase extends WsBridgeBase {
   protected heartbeatTimer: NodeJS.Timeout | null = null;
+  protected heartbeatInitialTimer: NodeJS.Timeout | null = null;
   protected heartbeatInterval = 41_250;
   protected heartbeatAcked = true;
   protected seq: number | null = null;
@@ -39,8 +40,10 @@ export abstract class GatewayBridgeBase extends WsBridgeBase {
    */
   protected abstract fetchGatewayUrl(): Promise<string | null>;
   /**
-   * Build the identify `d` payload (auth + intents). Return null to
-   * skip the send entirely — QQ does this when its token refresh fails.
+   * Build the identify `d` payload (auth + intents). Return null when
+   * auth is unavailable (QQ's token refresh failing) — the base then
+   * force-reconnects so the backoff path owns the retry instead of
+   * leaving an un-identified socket open.
    */
   protected abstract buildIdentifyPayload():
     | Record<string, unknown>
@@ -91,12 +94,16 @@ export abstract class GatewayBridgeBase extends WsBridgeBase {
     }
   }
 
-  private onHello(d: { heartbeat_interval: number }): void {
-    this.heartbeatInterval = d.heartbeat_interval;
+  private onHello(d: { heartbeat_interval: number } | null | undefined): void {
+    // A malformed HELLO (missing d / heartbeat_interval) must not
+    // schedule on NaN — setTimeout(NaN) fires immediately and
+    // setInterval(NaN) degrades to a ~1ms heartbeat loop.
+    const interval = d?.heartbeat_interval;
+    if (typeof interval === 'number' && interval > 0) this.heartbeatInterval = interval;
     this.heartbeatAcked = true;
     // Jitter the initial heartbeat per platform recommendation so a
     // fleet of bots does not synchronize their pings.
-    this.scheduleHeartbeat(Math.random() * d.heartbeat_interval);
+    this.scheduleHeartbeat(Math.random() * this.heartbeatInterval);
     if (this.sessionId && this.seq !== null) {
       void this.sendResume();
     } else {
@@ -106,12 +113,22 @@ export abstract class GatewayBridgeBase extends WsBridgeBase {
 
   private async sendIdentify(): Promise<void> {
     const d = await this.buildIdentifyPayload();
-    if (d !== null) this.sendWs({ op: OP_IDENTIFY, d });
+    if (d === null) {
+      // Auth unavailable — drop the socket instead of idling until
+      // the remote gateway gives up on us.
+      this.forceReconnect(false);
+      return;
+    }
+    this.sendWs({ op: OP_IDENTIFY, d });
   }
 
   private async sendResume(): Promise<void> {
     const d = await this.buildResumePayload();
-    if (d !== null) this.sendWs({ op: OP_RESUME, d });
+    if (d === null) {
+      this.forceReconnect(true);
+      return;
+    }
+    this.sendWs({ op: OP_RESUME, d });
   }
 
   protected sendHeartbeat(): void {
@@ -127,15 +144,23 @@ export abstract class GatewayBridgeBase extends WsBridgeBase {
 
   private scheduleHeartbeat(initialDelay: number): void {
     this.clearHeartbeat();
-    const initial = setTimeout(() => {
+    this.heartbeatInitialTimer = setTimeout(() => {
+      this.heartbeatInitialTimer = null;
       this.sendHeartbeat();
+      // The socket may have died between scheduling and firing; do
+      // not spin up an interval nothing will clear.
+      if (!this.ws) return;
       this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), this.heartbeatInterval);
       this.heartbeatTimer.unref?.();
     }, initialDelay);
-    initial.unref?.();
+    this.heartbeatInitialTimer.unref?.();
   }
 
   protected clearHeartbeat(): void {
+    if (this.heartbeatInitialTimer) {
+      clearTimeout(this.heartbeatInitialTimer);
+      this.heartbeatInitialTimer = null;
+    }
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;

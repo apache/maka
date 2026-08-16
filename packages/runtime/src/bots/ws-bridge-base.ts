@@ -121,6 +121,11 @@ export abstract class WsBridgeBase extends BaseBotAdapter {
       this.handleWsMessage(typeof data === 'string' ? data : String(data));
     });
     ws.addEventListener('close', (event: { code: number; reason: string }) => {
+      // A socket the bridge already detached (stop/forceReconnect
+      // closed it and moved on) must not re-enter the close policy —
+      // its late close event would double-schedule the reconnect and
+      // could drop a session the intentional reconnect meant to keep.
+      if (this.ws !== ws) return;
       this.handleClose(event.code, event.reason);
     });
     ws.addEventListener('error', () => {
