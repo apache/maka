@@ -1,9 +1,10 @@
 # Unified Extension Package Platform
 
 Maka Extensions have one product identity and one immutable content Revision.
-Tool and UI are typed Contributions of that Revision, not separate plugin
+Tool, UI, and Hook are typed Contributions of that Revision, not separate plugin
 products. `maka.extension.json` is the shared product contract; the existing
-`maka.tool.json` and `maka.ui.json` remain the typed execution manifests.
+`maka.tool.json`, `maka.ui.json`, and `maka.hook.json` remain the typed execution
+manifests.
 
 ## Unified contract
 
@@ -14,10 +15,18 @@ products. `maka.extension.json` is the shared product contract; the existing
 - a bounded, flat configuration Schema with defaults, required keys, enums,
   and secret markers.
 
-`extension.contract.query` joins this metadata with the Tool and UI manifests
-and returns one typed Contribution Catalog. Agent `inspect_tools` and
-`inspect_ui` both expose the same Catalog, so authoring starts from one source
-of truth instead of domain-specific guesses.
+`extension.contract.query` joins this metadata with every typed manifest and
+returns one typed Contribution Catalog. Agent `inspect_package`,
+`inspect_tools`, `inspect_ui`, and `inspect_hooks` expose the same Catalog, so
+authoring starts from one source of truth instead of domain-specific guesses.
+
+`define_package` is the unified Agent authoring transaction. One call writes the
+shared metadata plus any combination of Tool, UI, and Hook manifests, seals the
+complete directory once, and installs every Contribution under the same content
+Revision. Source and UI documents are replaced by byte counts and SHA-256
+digests in model history. `manage_package` binds Tool and Hook Contributions to
+the current Session and UI Contributions to `desktop-ui`; a partial multi-scope
+activation or update rolls back to the prior Bindings.
 
 ## Profile installation and dependencies
 
@@ -47,7 +56,9 @@ different settings in different scopes. Mutation is Schema-validated and
 persisted before the Binding is restarted. Tool workers receive the complete
 configuration inside their isolated invocation context. UI frames receive only
 non-secret keys through `window.makaUI.getConfig()`; secret values never cross
-into the Renderer.
+into the Renderer. Unified Agent-authored packages declare secrets with
+`secret: true`; secret properties cannot carry manifest defaults, so a secret
+never enters an immutable Bundle or model-visible contract as a value.
 
 ## Distribution and management
 
@@ -57,7 +68,7 @@ digest. Import rejects traversal, symlinks, corruption, duplicate paths, and
 oversized payloads before either typed Store installs the Revision. Export is
 exclusive and never overwrites an existing target.
 
-The Desktop Extensions page lists Tool and UI Contributions together and
+The Desktop Extensions page lists Tool, UI, and Hook Contributions together and
 supports directory/Bundle installation, Profile/Desktop activation, unified
 enable/disable, per-scope Schema-backed JSON configuration, export, and removal. Agent
 dynamic definitions write the same unified manifest and enter the same Store,

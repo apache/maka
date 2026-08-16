@@ -71,6 +71,7 @@ export {
 } from './hook-package-store.js';
 export { HookPackageActivation } from './hook-package-activation.js';
 export { HostHookPackageManagementTools } from './hook-package-management-tools.js';
+export { HostExtensionPackageManagementTools } from './extension-package-management-tools.js';
 export {
   compareExtensionVersions,
   decodeExtensionPackageManifest,

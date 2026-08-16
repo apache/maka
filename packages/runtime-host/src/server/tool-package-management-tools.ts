@@ -17,6 +17,9 @@ import { ToolPackageActivation } from './tool-package-worker.js';
 import { ToolPackageStore } from './tool-package-store.js';
 
 const MANAGEMENT_TOOL_NAMES = new Set([
+  'inspect_package',
+  'define_package',
+  'manage_package',
   'inspect_tools',
   'define_tool',
   'test_tool',

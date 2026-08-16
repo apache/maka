@@ -126,6 +126,7 @@ import { HostToolPackageManagementTools } from './tool-package-management-tools.
 import { UiPackageStore } from './ui-package-store.js';
 import { HookPackageStore } from './hook-package-store.js';
 import { HostHookPackageManagementTools } from './hook-package-management-tools.js';
+import { HostExtensionPackageManagementTools } from './extension-package-management-tools.js';
 import { HostUiPackageManagementTools } from './ui-package-management-tools.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
@@ -257,7 +258,12 @@ export async function createExecutionRuntimeHostComposition(
     extensions,
     hookPackageStore,
   );
+  const extensionPackageManagement = new HostExtensionPackageManagementTools(
+    context.owner.controlDirectory,
+    extensionController,
+  );
   extensions.registerHostTools([
+    ...extensionPackageManagement.tools(),
     ...toolPackageManagement.tools(),
     ...uiPackageManagement.tools(),
     ...hookPackageManagement.tools(),
@@ -456,6 +462,7 @@ export async function createExecutionRuntimeHostComposition(
       builtinTools,
       hostTools: [
         ...hostTools,
+        ...extensionPackageManagement.authorTools(),
         ...toolPackageManagement.authorTools(),
         ...uiPackageManagement.authorTools(),
       ],
