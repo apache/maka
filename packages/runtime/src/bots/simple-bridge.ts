@@ -236,6 +236,12 @@ function classifyTelegramSendResponse(response: any): TelegramSendClassification
   return { kind: 'fatal', description };
 }
 
+function telegramPollingFailureReadiness(
+  readiness: BotStatus['readiness'],
+): BotStatus['readiness'] {
+  return readiness === 'operational' ? 'degraded' : 'credentials_valid';
+}
+
 export const __TEST__ = {
   utf16Len,
   prefixWithinUtf16,
@@ -245,6 +251,7 @@ export const __TEST__ = {
   normalizeTelegramPrivateChatId,
   isAllowedUser,
   classifyTelegramSendResponse,
+  telegramPollingFailureReadiness,
   createTelegramReplyStream,
   telegramDraftId,
 };
@@ -527,7 +534,7 @@ export class SimpleBotBridge extends BaseBotAdapter implements SendCapable {
         if (!updates.ok || !Array.isArray(updates.result)) {
           this.reason =
             typeof updates?.description === 'string' ? updates.description : 'polling-failed';
-          this.readiness = this.readiness === 'operational' ? 'degraded' : 'credentials_valid';
+          this.readiness = telegramPollingFailureReadiness(this.readiness);
           this.emitStatusChange();
           await sleep(5_000);
           continue;
@@ -539,6 +546,9 @@ export class SimpleBotBridge extends BaseBotAdapter implements SendCapable {
       } catch (error) {
         if (!this.running) return;
         if (error instanceof Error && error.name === 'AbortError') return;
+        this.reason = generalizedErrorMessage(error);
+        this.readiness = telegramPollingFailureReadiness(this.readiness);
+        this.emitStatusChange();
         await sleep(5_000);
       }
     }

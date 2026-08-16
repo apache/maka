@@ -269,6 +269,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
         } catch (error) {
           if (!isBotSessionUnavailableError(error)) throw error;
           invalidateSessionBindings(sessionId);
+          processingStage = 'session-create';
           sessionId = await createBotConversationSession(
             conversationKey,
             message,

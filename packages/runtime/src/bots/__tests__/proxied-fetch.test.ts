@@ -105,6 +105,8 @@ describe('proxiedFetch', () => {
       const first = await withTimeout(reader.read(), 5_000, 'proxy body was not readable');
       assert.equal(Buffer.from(first.value ?? []).toString(), 'hello world');
       proxy.sendTail();
+      const tail = await withTimeout(reader.read(), 5_000, 'proxy body tail was not readable');
+      assert.equal(Buffer.from(tail.value ?? []).toString(), '-tail');
       await reader.cancel();
     } finally {
       setActiveProxy(null);

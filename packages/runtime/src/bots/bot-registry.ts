@@ -132,7 +132,9 @@ export class BotRegistry extends EventEmitter {
   }
 
   private async stopAllNow(): Promise<void> {
-    await Promise.all([...this.bridges.values()].map((bridge) => bridge.stop().catch(() => {})));
+    const bridges = [...this.bridges.values()];
+    await Promise.all(bridges.map((bridge) => bridge.stop().catch(() => {})));
+    for (const bridge of bridges) this.detach(bridge);
     this.bridges.clear();
     this.statuses.clear();
   }
@@ -142,6 +144,7 @@ export class BotRegistry extends EventEmitter {
     if (!settings.enabled) {
       if (existing) {
         await existing.stop().catch(() => {});
+        this.detach(existing);
         this.bridges.delete(platform);
       }
       this.statuses.set(platform, defaultStatus(platform));

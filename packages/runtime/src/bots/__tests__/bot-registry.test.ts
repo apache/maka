@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { describe, test } from 'node:test';
 import { createDefaultBotChannel } from '@maka/core/settings';
 import type { BotChatSettings, BotProvider } from '@maka/core/bot-chat-settings';
 import { BotRegistry } from '../bot-registry.js';
-import type { BotStatus } from '../types.js';
+import type { BotBridge, BotStatus } from '../types.js';
 
 describe('BotRegistry', () => {
   test('reports disabled and missing-credential statuses without opening network connections', async () => {
@@ -38,6 +39,8 @@ describe('BotRegistry', () => {
       statuses.some((status) => status.platform === 'wecom' && status.readiness === 'operational'),
       false,
     );
+    const disabledBridge = bridgeFor(registry, 'wecom');
+    assert.ok(disabledBridge.listenerCount('statusChange') > 0);
 
     await registry.applySettings(
       settingsWith({
@@ -47,6 +50,8 @@ describe('BotRegistry', () => {
 
     assert.equal(registry.getStatus('wecom').running, false);
     assert.equal(registry.getStatus('wecom').reason, 'disabled');
+    assert.equal(disabledBridge.listenerCount('message'), 0);
+    assert.equal(disabledBridge.listenerCount('statusChange'), 0);
     assert.equal(
       statuses.some((status) => status.platform === 'wecom' && status.reason === 'disabled'),
       true,
@@ -111,7 +116,32 @@ describe('BotRegistry', () => {
     assert.equal(registry.getStatus('wecom').running, false);
     assert.equal(registry.getStatus('wecom').reason, 'disabled');
   });
+
+  test('stopAll detaches registry listeners from discarded bridges', async () => {
+    const registry = new BotRegistry({
+      onIncomingMessage: () => {},
+      onStatusChange: () => {},
+    });
+
+    await registry.applySettings(settingsWith({ wecom: { enabled: true, token: 'wecom-token' } }));
+    const bridge = bridgeFor(registry, 'wecom');
+    assert.ok(bridge.listenerCount('message') > 0);
+    assert.ok(bridge.listenerCount('statusChange') > 0);
+
+    await registry.stopAll();
+
+    assert.equal(bridge.listenerCount('message'), 0);
+    assert.equal(bridge.listenerCount('statusChange'), 0);
+  });
 });
+
+function bridgeFor(registry: BotRegistry, provider: BotProvider): BotBridge & EventEmitter {
+  const bridge = (
+    registry as unknown as { bridges: Map<BotProvider, BotBridge & EventEmitter> }
+  ).bridges.get(provider);
+  assert.ok(bridge);
+  return bridge;
+}
 
 function settingsWith(
   overrides: Partial<Record<BotProvider, Partial<ReturnType<typeof createDefaultBotChannel>>>>,

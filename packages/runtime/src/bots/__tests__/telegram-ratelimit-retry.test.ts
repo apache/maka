@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 
 import { __TEST__ } from '../simple-bridge.js';
 
-const { classifyTelegramSendResponse } = __TEST__;
+const { classifyTelegramSendResponse, telegramPollingFailureReadiness } = __TEST__;
 
 describe('classifyTelegramSendResponse', () => {
   it('returns the optional message id on successful responses', () => {
@@ -41,5 +41,12 @@ describe('classifyTelegramSendResponse', () => {
     for (const [payload, description] of cases) {
       assert.deepEqual(classifyTelegramSendResponse(payload), { kind: 'fatal', description });
     }
+  });
+});
+
+describe('telegramPollingFailureReadiness', () => {
+  it('degrades an operational listener and preserves credential validation before first message', () => {
+    assert.equal(telegramPollingFailureReadiness('operational'), 'degraded');
+    assert.equal(telegramPollingFailureReadiness('credentials_valid'), 'credentials_valid');
   });
 });
