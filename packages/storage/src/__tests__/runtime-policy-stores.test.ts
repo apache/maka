@@ -1051,7 +1051,7 @@ describe('runtime policy stores', () => {
     });
   });
 
-  test('repairs the canonical default target when a selection change removes its model', async () => {
+  test('releases the canonical default target when a selection change removes its model', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(
         stores,
@@ -1092,42 +1092,63 @@ describe('runtime policy stores', () => {
       });
       assert.equal(narrowed.kind, 'committed');
       if (narrowed.kind !== 'committed') return;
-      const expected = { connectionId: connection.connectionId, modelId: 'llama3.3' };
-      assert.deepEqual(narrowed.snapshot.defaultTarget, expected);
-      assert.deepEqual((await stores.connectionCatalog.getSnapshot()).defaultTarget, expected);
+      // Not `llama3.3`: the surviving member of the set is not the user's
+      // answer to which model a new chat starts on.
+      assert.equal(narrowed.snapshot.defaultTarget, null);
+      assert.equal((await stores.connectionCatalog.getSnapshot()).defaultTarget, null);
     });
   });
 
-  test('releases the canonical default target when its connection keeps no model', async () => {
+  test('releases the canonical default target when its connection is disabled', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(
         stores,
         0,
-        connectionDraft('selection-emptied', 'ollama', 'Selection emptied'),
+        connectionDraft('default-disabled', 'ollama', 'Default disabled'),
       );
+      const catalog = await stores.connectionCatalog.getSnapshot();
       assert.equal(
         (
           await stores.connectionCatalog.setDefaultTarget({
-            expectedCatalogRevision: 1,
+            expectedCatalogRevision: catalog.revision,
             target: { connectionId: connection.connectionId, modelId: 'gpt-5' },
           })
         ).kind,
         'committed',
       );
 
-      const emptied = await stores.connectionCatalog.update({
+      const disabled = await stores.connectionCatalog.update({
         expected: connectionBasis(connection),
         changes: {
           name: connection.name,
-          enabled: true,
-          enabledModelIds: [],
+          enabled: false,
+          enabledModelIds: connection.enabledModelIds,
           relayModelProfiles: null,
         },
       });
-      assert.equal(emptied.kind, 'committed');
-      if (emptied.kind !== 'committed') return;
-      assert.equal(emptied.snapshot.defaultTarget, null);
+      assert.equal(disabled.kind, 'committed');
+      if (disabled.kind !== 'committed') return;
+      assert.equal(disabled.snapshot.defaultTarget, null);
       assert.equal((await stores.connectionCatalog.getSnapshot()).defaultTarget, null);
+    });
+  });
+
+  test('rejects a stated default target that names an unselected model', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('stated-default', 'ollama', 'Stated default'),
+      );
+      const catalog = await stores.connectionCatalog.getSnapshot();
+      const rejected = await stores.connectionCatalog.setDefaultTarget({
+        expectedCatalogRevision: catalog.revision,
+        target: { connectionId: connection.connectionId, modelId: 'llama3.3' },
+      });
+      assert.equal(rejected.kind, 'invalid_default_target');
+      const unchanged = await stores.connectionCatalog.getSnapshot();
+      assert.equal(unchanged.defaultTarget, null);
+      assert.equal(unchanged.revision, catalog.revision);
     });
   });
 

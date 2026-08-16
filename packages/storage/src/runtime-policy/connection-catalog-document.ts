@@ -163,22 +163,18 @@ export class ConnectionCatalogDocumentOwner {
       );
     }
     const fallbackModels = fallbackInventory(input.connection.providerType);
-    const next: ConnectionCatalogDocument = {
-      ...current,
-      revision: nextRevision(current.revision),
-      connections: [
-        ...current.connections,
-        {
-          ...input.connection,
-          connectionId: randomUUID(),
-          revision: 1,
-          models: fallbackModels,
-          ...(fallbackModels.length > 0
-            ? { modelSource: 'fallback' as const, modelsFetchedAt: 0 }
-            : {}),
-        },
-      ],
-    };
+    const next = this.nextDocument(current, [
+      ...current.connections,
+      {
+        ...input.connection,
+        connectionId: randomUUID(),
+        revision: 1,
+        models: fallbackModels,
+        ...(fallbackModels.length > 0
+          ? { modelSource: 'fallback' as const, modelsFetchedAt: 0 }
+          : {}),
+      },
+    ]);
     await this.write(root, next);
     return committed(next);
   }
@@ -338,9 +334,22 @@ export class ConnectionCatalogDocumentOwner {
             defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0] ?? '',
             enabledModelIds: previous.enabledModelIds,
           };
+    // Discovery is the one path that MOVES a target rather than keeping or
+    // dropping it: a provider that renames a model carries the default across
+    // by alias, which is a migration of the same choice and not a new one made
+    // for the user. The reconciler owes a default drawn from the selection it
+    // just decided, and a violation is its bug — worth failing closed on here,
+    // where it is still attributable, rather than letting the document
+    // constructor silently release the user's default instead.
     const defaultTarget = currentDefaultTarget
       ? { connectionId: previous.connectionId, modelId: reconciled.defaultModel }
       : current.defaultTarget;
+    if (currentDefaultTarget && !reconciled.enabledModelIds.includes(reconciled.defaultModel)) {
+      throw codecError(
+        'invalid_document',
+        'Model discovery reconciled a default outside its own selection',
+      );
+    }
     // A refresh is a new enabledModelIds authority on the same endpoint:
     // profiles keyed by a model the refresh dropped would violate the
     // subset invariant, and this write path bypasses the canonical decoder,
@@ -448,10 +457,10 @@ export class ConnectionCatalogDocumentOwner {
       modelsFetchedAt: result.fetchedAt,
     };
     // Onboarding only states its preference — seeding the first default when
-    // the catalog has none. Repairing a target this selection invalidates is
-    // the document constructor's job, and the short-circuit below stays exact
-    // because the branches it admits (same selection, same inventory) are the
-    // ones where that repair is the identity.
+    // the catalog has none. Releasing a target this selection invalidates is
+    // the document constructor's job, so the short-circuit has to ask the same
+    // question the constructor would: an already-doomed target means there is
+    // still a write to make, whatever else stayed the same.
     const defaultTarget = current.defaultTarget ?? {
       connectionId,
       modelId: changes.enabledModelIds[0]!,
@@ -463,6 +472,7 @@ export class ConnectionCatalogDocumentOwner {
       previous.modelSource === result.source &&
       previous.modelsFetchedAt === result.fetchedAt &&
       isDeepStrictEqual(current.defaultTarget, defaultTarget) &&
+      retainedDefaultTarget(defaultTarget, current.connections) === defaultTarget &&
       (!invalidateLastTest || previous.lastTest === undefined)
     ) {
       return { kind: 'ready', document: current, changed: false };
@@ -542,11 +552,7 @@ export class ConnectionCatalogDocumentOwner {
         revision: nextRevision(connection.revision),
       };
     });
-    await this.write(root, {
-      ...current,
-      revision: nextRevision(current.revision),
-      connections,
-    });
+    await this.write(root, this.nextDocument(current, connections));
     return true;
   }
 
@@ -564,9 +570,9 @@ export class ConnectionCatalogDocumentOwner {
     return catalogSnapshot(next);
   }
 
-  // The catalog's only next-version constructor, so the default-target
-  // invariant holds by construction: a caller states the target it prefers and
-  // never the one it has to police.
+  // The catalog's only next-version constructor, so the default-target rule
+  // holds by construction: a caller states the target it wants kept and never
+  // the one it has to police.
   private nextDocument(
     current: ConnectionCatalogDocument,
     connections: readonly ConnectionCatalogEntry[],
@@ -575,7 +581,7 @@ export class ConnectionCatalogDocumentOwner {
     return {
       ...current,
       revision: nextRevision(current.revision),
-      defaultTarget: reconcileDefaultTarget(defaultTarget, connections),
+      defaultTarget: retainedDefaultTarget(defaultTarget, connections),
       connections,
     };
   }
@@ -677,22 +683,19 @@ function isValidTarget(
   return Boolean(connection?.enabled && connection.enabledModelIds.includes(target.modelId));
 }
 
-// The catalog's single repair point for the default target. The target is a
-// pointer into the selection, not an independent fact, so a mutation that
-// legitimately drops the model it names moves the pointer instead of failing:
-// unchecking the default model is a statement about the model, never a request
-// to keep pointing at it. Repair stays inside the target's own connection —
-// which connection should carry the default once that one runs out is a
-// product decision, and `null` is what hands it back to the bootstrap layer
-// that owns it.
-function reconcileDefaultTarget(
+// THE rule of `reconcileConnectionAfterEnabledModelsChange`, stated for the
+// catalog document: the default target is either absent, or it names an
+// enabled model of an enabled connection. A mutation that legitimately drops
+// what the target names drops the target with it, rather than moving it to
+// some other member of the set — which model a new chat starts on is
+// 设置 · 通用's one control, and picking a replacement here would answer that
+// question from a page that no longer asks it. The catalog is then simply
+// without a default, and the readiness gate reports that as what it is.
+function retainedDefaultTarget(
   target: ConnectionTarget | null,
   connections: readonly ConnectionCatalogEntry[],
 ): ConnectionTarget | null {
-  if (!target || isValidTarget(target, connections)) return target;
-  const connection = connections.find((item) => sameConnectionIdentity(item, target));
-  const modelId = connection?.enabled ? connection.enabledModelIds[0] : undefined;
-  return modelId === undefined ? null : { connectionId: target.connectionId, modelId };
+  return target && isValidTarget(target, connections) ? target : null;
 }
 
 function sameStringArray(actual: readonly string[], expected: readonly string[]): boolean {
