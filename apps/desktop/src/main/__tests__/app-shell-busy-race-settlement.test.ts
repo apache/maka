@@ -90,9 +90,11 @@ function createActionsDeps() {
     upsertSessionSummary: () => undefined,
     newChatModel: null,
     pendingNewChatThinkingLevel: null,
+    newChatPermissionMode: 'ask' as const,
     newChatCollaborationMode: 'agent' as const,
     newChatOrchestrationMode: 'default' as const,
     newChatProjectId: undefined,
+    newTaskTarget: { profileId: 'local', hostId: 'host-local', projectId: null },
   };
 }
 
@@ -210,8 +212,10 @@ describe('busy-raced send settlement', () => {
     const activated: string[] = [];
     const removed: string[] = [];
     const restoreWindow = installWindow({
-      sessions: {
+      newTasks: {
         create: async () => ({ id: 'session-new' }),
+      },
+      sessions: {
         remove: async (sessionId: string) => {
           removed.push(sessionId);
         },
@@ -251,8 +255,10 @@ describe('busy-raced send settlement', () => {
     const turnState = createTurnState();
     const messageState = createMessageState();
     const restoreWindow = installWindow({
-      sessions: {
+      newTasks: {
         create: async () => ({ id: 'session-new' }),
+      },
+      sessions: {
         send: async () => ({
           ok: true,
           turnId: 'host-turn',
