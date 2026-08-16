@@ -85,10 +85,7 @@ export async function resolveDesktopRuntimeHostStartup(
       unavailable.set(preferences.defaultProfileId, failure);
     }
     return {
-      preferences: {
-        ...preferences,
-        defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
-      },
+      preferences,
       ...(preferencesReadFailure ? { preferencesReadFailure } : {}),
       remotes: [],
       unavailable,

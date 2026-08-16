@@ -69,26 +69,50 @@ test("starts with Local defaults when Runtime Host preferences are malformed", a
 test("starts Local and preserves remote preferences when the profile catalog is unreadable", async () => {
   const root = await clientRoot();
   const catalog = createClientRuntimeHostProfileCatalog(root);
-  catalog.read = async () => {
-    throw new Error("profile catalog is unreadable");
-  };
-
-  const startup = await resolveDesktopRuntimeHostStartup(root, {
-    catalog,
-    readPreferences: async () => ({
+  await catalog.create(PROFILE, "token");
+  const preferencesPath = join(root, "runtime-host-profile-selection.json");
+  await writeFile(
+    preferencesPath,
+    `${JSON.stringify({
       schemaVersion: 2,
       defaultProfileId: PROFILE.id,
       enabledRemoteProfileIds: [PROFILE.id],
-    }),
-  });
+    })}\n`,
+  );
+  const read = catalog.read.bind(catalog);
+  let firstRead = true;
+  catalog.read = async () => {
+    if (firstRead) {
+      firstRead = false;
+      throw new Error("profile catalog is unreadable");
+    }
+    return read();
+  };
+
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
 
   assert.deepEqual(startup.preferences, {
     schemaVersion: 2,
-    defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+    defaultProfileId: PROFILE.id,
     enabledRemoteProfileIds: [PROFILE.id],
   });
   assert.deepEqual(startup.remotes, []);
   assert.match(startup.unavailable.get(PROFILE.id)?.message ?? "", /unreadable/);
+
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    disable: async () => undefined,
+    setDefault: () => undefined,
+  });
+  await service.setEnabled(PROFILE.id, true);
+  assert.equal(
+    JSON.parse(await readFile(preferencesPath, "utf8")).defaultProfileId,
+    PROFILE.id,
+  );
 });
 
 test("does not overwrite Runtime Host preferences that were unreadable at startup", async () => {
