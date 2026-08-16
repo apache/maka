@@ -110,9 +110,43 @@ except ImportError:
     Layer = object
     TCPLayer = None
 
+try:
+    from mitmproxy.net.tls import starts_like_tls_record
+except ImportError:
+    def starts_like_tls_record(data: bytes) -> bool:
+        return len(data) >= 3 and data[0] == 0x16 and data[1] == 0x03
+
+
+def configure(updated: object) -> None:
+    # HTTP 101 upgrades construct TCPLayer inside the HTTP layer without
+    # another next_layer hook. rawtcp=false makes that path CloseConnection
+    # itself; WebSocket upgrades stay on the websocket layer.
+    try:
+        from mitmproxy import ctx
+    except ImportError:
+        return
+    if getattr(ctx.options, "rawtcp", False):
+        ctx.options.rawtcp = False
+
 
 def request(flow: object) -> None:
     apply_http_policy(flow, flow.request.pretty_url)
+
+
+def response(flow: object) -> None:
+    response = getattr(flow, "response", None)
+    if getattr(response, "status_code", None) != 101:
+        return
+    headers = getattr(response, "headers", None)
+    upgrade = ""
+    if headers is not None:
+        try:
+            upgrade = str(headers.get("upgrade", "") or "")
+        except Exception:
+            upgrade = ""
+    if upgrade.lower() == "websocket":
+        return
+    record_raw_tunnel(flow)
 
 
 def http_connect(flow: object) -> None:
@@ -124,9 +158,9 @@ def http_connect(flow: object) -> None:
 
 
 def tcp_start(flow: object) -> None:
-    # Script next_layer runs before the built-in classifier assigns
-    # nextlayer.layer, so CONNECT raw tunnels and HTTP 101 upgrades are
-    # closed here — not by replacing a TCPLayer that does not exist yet.
+    # Last resort if a TCPLayer is still admitted (tcp_hosts / ignore).
+    # CONNECT raw is closed by next_layer → CloseRawLayer; HTTP 101 raw is
+    # closed by rawtcp=false. Neither of those paths starts a TCPLayer.
     record_raw_tunnel(flow)
     kill_flow(flow)
 
@@ -139,10 +173,19 @@ def tcp_message(flow: object) -> None:
 
 
 def next_layer(nextlayer: object) -> None:
+    # Script addons run before the built-in classifier assigns layer. If we
+    # set CloseRawLayer here, NextLayer leaves it in place. Waiting for
+    # isinstance(..., TCPLayer) never fires on the production CONNECT path.
     current = getattr(nextlayer, "layer", None)
+    context = getattr(nextlayer, "context", None)
+    if current is None:
+        if not looks_like_raw_tcp(nextlayer):
+            return
+        record_raw_tunnel(context)
+        nextlayer.layer = CloseRawLayer(context)
+        return
     if TCPLayer is None or not isinstance(current, TCPLayer):
         return
-    context = getattr(nextlayer, "context", None)
     record_raw_tunnel(context)
     closer = CloseRawLayer(context)
     replace_layer(context, current, closer)
@@ -187,6 +230,36 @@ def connect_target_url(flow: object) -> str:
     if port == 80:
         return f"http://{host}/"
     return f"https://{host}:{port}/"
+
+
+def looks_like_raw_tcp(nextlayer: object) -> bool:
+    """Match mitmproxy 12.2.3's raw-TCP classifier without waiting for TCPLayer."""
+    data_client = _next_layer_bytes(nextlayer, "data_client")
+    data_server = _next_layer_bytes(nextlayer, "data_server")
+    if starts_like_tls_record(data_client):
+        return False
+    if not data_client and not data_server:
+        return False
+    probably_no_http = (
+        len(data_client) < 3
+        or b" " not in data_client
+        or (data_client.find(b" ") > data_client.find(b"\n"))
+        or not data_client[:3].isalpha()
+        or bool(data_server)
+        or data_client.startswith(b"SSH")
+    )
+    return probably_no_http
+
+
+def _next_layer_bytes(nextlayer: object, name: str) -> bytes:
+    getter = getattr(nextlayer, name, None)
+    if not callable(getter):
+        return b""
+    try:
+        data = getter()
+    except Exception:
+        return b""
+    return bytes(data) if isinstance(data, (bytes, bytearray)) else b""
 
 
 def tcp_peer(flow: object) -> tuple[str, str]:

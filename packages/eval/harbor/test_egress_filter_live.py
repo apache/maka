@@ -20,17 +20,14 @@ import subprocess
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 
 HARBOR_DIR = Path(__file__).parent
 PROXY_IMAGE = "maka-eval-egress-proxy:12.2.3"
-PROJECT = "maka-eval-egress-proxy-live"
-NETWORK = f"{PROJECT}_net"
-PROXY = f"{PROJECT}-proxy"
-ORIGIN = f"{PROJECT}-origin"
 ORIGIN_IMAGE = "python:3.12-slim"
-PROXY_PORT = 18081
 COMMAND_TIMEOUT_S = 60
+CLOSE_TIMEOUT_S = 2.0
 
 ORIGIN_SCRIPT = r"""
 import base64, hashlib, json, socket, threading
@@ -75,9 +72,13 @@ class UpgradeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"UPGRADE-BANNER\n")
         self.wfile.flush()
-        self.connection.settimeout(2)
+        self.connection.settimeout(60)
         try:
-            stats["upgrade_recv"] += len(self.connection.recv(64) or b"")
+            while True:
+                chunk = self.connection.recv(64)
+                if not chunk:
+                    break
+                stats["upgrade_recv"] += len(chunk)
         except OSError:
             pass
     def log_message(self, format, *args):
@@ -90,10 +91,14 @@ def serve_raw():
     sock.listen(8)
     while True:
         conn, _ = sock.accept()
-        conn.settimeout(3)
         try:
             conn.sendall(b"RAW-BANNER\n")
-            stats["raw_recv"] += len(conn.recv(64) or b"")
+            conn.settimeout(60)
+            while True:
+                chunk = conn.recv(64)
+                if not chunk:
+                    break
+                stats["raw_recv"] += len(chunk)
         except OSError:
             pass
         finally:
@@ -134,6 +139,10 @@ def docker_available() -> bool:
 )
 class LiveEgressFilterTest(unittest.TestCase):
     workdir: Path | None = None
+    network: str = ""
+    proxy: str = ""
+    origin: str = ""
+    proxy_port: int = 0
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -146,21 +155,24 @@ class LiveEgressFilterTest(unittest.TestCase):
         )
         if images.returncode != 0:
             raise unittest.SkipTest(f"{PROXY_IMAGE} is not present")
+        run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        cls.network = f"maka-eval-egress-live-{run_id}-net"
+        cls.proxy = f"maka-eval-egress-live-{run_id}-proxy"
+        cls.origin = f"maka-eval-egress-live-{run_id}-origin"
         cls.workdir = Path(tempfile.mkdtemp(prefix="maka-eval-egress-proxy-live-"))
         (cls.workdir / "origin.py").write_text(ORIGIN_SCRIPT)
         cls.addClassCleanup(shutil.rmtree, cls.workdir, ignore_errors=True)
         cls.addClassCleanup(cls._down)
-        cls._down()
-        subprocess.run(["docker", "network", "create", NETWORK], check=True, timeout=COMMAND_TIMEOUT_S)
+        subprocess.run(["docker", "network", "create", cls.network], check=True, timeout=COMMAND_TIMEOUT_S)
         subprocess.run(
             [
                 "docker",
                 "run",
                 "-d",
                 "--name",
-                ORIGIN,
+                cls.origin,
                 "--network",
-                NETWORK,
+                cls.network,
                 "--network-alias",
                 "origin",
                 "-v",
@@ -178,11 +190,11 @@ class LiveEgressFilterTest(unittest.TestCase):
                 "run",
                 "-d",
                 "--name",
-                PROXY,
+                cls.proxy,
                 "--network",
-                NETWORK,
+                cls.network,
                 "-p",
-                f"127.0.0.1:{PROXY_PORT}:8080",
+                "127.0.0.1::8080",
                 "-v",
                 f"{HARBOR_DIR / 'egress_filter.py'}:/opt/maka-eval/egress_filter.py:ro",
                 PROXY_IMAGE,
@@ -190,22 +202,40 @@ class LiveEgressFilterTest(unittest.TestCase):
             check=True,
             timeout=COMMAND_TIMEOUT_S,
         )
+        cls.proxy_port = cls._published_port()
         cls._wait_for_proxy()
         cls._wait_for_origin_via_proxy()
 
     @classmethod
+    def _published_port(cls) -> int:
+        listed = subprocess.run(
+            ["docker", "port", cls.proxy, "8080/tcp"],
+            capture_output=True,
+            text=True,
+            timeout=COMMAND_TIMEOUT_S,
+        )
+        if listed.returncode != 0:
+            raise AssertionError(listed.stderr)
+        # "127.0.0.1:49152"
+        hostport = listed.stdout.strip().splitlines()[0]
+        return int(hostport.rsplit(":", 1)[1])
+
+    @classmethod
     def _down(cls) -> None:
-        for name in (PROXY, ORIGIN):
+        for name in (cls.proxy, cls.origin):
+            if not name:
+                continue
             subprocess.run(
                 ["docker", "rm", "-f", name],
                 capture_output=True,
                 timeout=COMMAND_TIMEOUT_S,
             )
-        subprocess.run(
-            ["docker", "network", "rm", NETWORK],
-            capture_output=True,
-            timeout=COMMAND_TIMEOUT_S,
-        )
+        if cls.network:
+            subprocess.run(
+                ["docker", "network", "rm", cls.network],
+                capture_output=True,
+                timeout=COMMAND_TIMEOUT_S,
+            )
 
     @classmethod
     def _wait_for_proxy(cls) -> None:
@@ -213,7 +243,7 @@ class LiveEgressFilterTest(unittest.TestCase):
         last_error = "proxy did not listen"
         while time.time() < deadline:
             try:
-                with socket.create_connection(("127.0.0.1", PROXY_PORT), 1):
+                with socket.create_connection(("127.0.0.1", cls.proxy_port), 1):
                     return
             except OSError as error:
                 last_error = str(error)
@@ -238,17 +268,17 @@ class LiveEgressFilterTest(unittest.TestCase):
         raise AssertionError(last_error)
 
     @classmethod
-    def _recv_all(cls, sock: socket.socket, limit: int = 8192) -> bytes:
-        sock.settimeout(6)
+    def _recv_until_close(cls, sock: socket.socket, limit: int = 8192) -> bytes:
+        sock.settimeout(CLOSE_TIMEOUT_S)
         data = b""
-        try:
-            while len(data) < limit:
+        while len(data) < limit:
+            try:
                 chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                data += chunk
-        except (TimeoutError, ConnectionResetError, BrokenPipeError):
-            pass
+            except ConnectionResetError:
+                return data
+            if not chunk:
+                return data
+            data += chunk
         return data
 
     @classmethod
@@ -259,34 +289,35 @@ class LiveEgressFilterTest(unittest.TestCase):
             f"{extra_headers}"
             "Connection: close\r\n\r\n"
         ).encode()
-        with socket.create_connection(("127.0.0.1", PROXY_PORT), 5) as sock:
+        with socket.create_connection(("127.0.0.1", cls.proxy_port), 5) as sock:
             sock.sendall(request)
-            return cls._recv_all(sock)
+            return cls._recv_until_close(sock)
 
     @classmethod
     def connect_via_proxy(cls, host: str, port: int, payload: bytes = b"CLIENT\n") -> tuple[bytes, bytes]:
-        with socket.create_connection(("127.0.0.1", PROXY_PORT), 5) as sock:
+        with socket.create_connection(("127.0.0.1", cls.proxy_port), 5) as sock:
             sock.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
             header = b""
-            sock.settimeout(6)
-            try:
-                while b"\r\n\r\n" not in header:
-                    chunk = sock.recv(4096)
-                    if not chunk:
-                        break
-                    header += chunk
-            except (TimeoutError, ConnectionResetError):
-                return header, b""
+            sock.settimeout(CLOSE_TIMEOUT_S)
+            while b"\r\n\r\n" not in header:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    return header, b""
+                header += chunk
+            leftover = header.split(b"\r\n\r\n", 1)[1]
+            header = header[: header.index(b"\r\n\r\n") + 4]
+            if not payload:
+                return header, leftover
             try:
                 sock.sendall(payload)
             except OSError:
-                pass
-            return header, cls._recv_all(sock)
+                return header, leftover
+            return header, leftover + cls._recv_until_close(sock)
 
     @classmethod
     def audit_records(cls) -> list[dict[str, object]]:
         listed = subprocess.run(
-            ["docker", "exec", PROXY, "cat", "/opt/maka-egress-state/hits.jsonl"],
+            ["docker", "exec", cls.proxy, "cat", "/opt/maka-egress-state/hits.jsonl"],
             capture_output=True,
             text=True,
             timeout=COMMAND_TIMEOUT_S,
@@ -301,7 +332,7 @@ class LiveEgressFilterTest(unittest.TestCase):
             [
                 "docker",
                 "exec",
-                ORIGIN,
+                cls.origin,
                 "python",
                 "-c",
                 "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:19084/').read().decode())",
@@ -322,10 +353,11 @@ class LiveEgressFilterTest(unittest.TestCase):
                 "curl",
                 "--silent",
                 "--show-error",
+                "--http1.1",
                 "--max-time",
                 "20",
                 "--proxy",
-                f"http://127.0.0.1:{PROXY_PORT}",
+                f"http://127.0.0.1:{self.proxy_port}",
                 "--insecure",
                 "--output",
                 "/dev/null",

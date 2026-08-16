@@ -184,6 +184,93 @@ class EgressFilterTest(unittest.TestCase):
         self.assertEqual(message.content, b"")
         self.assertEqual(killed, ["killed"])
 
+    def test_next_layer_closes_raw_tcp_before_the_builtin_classifier(self) -> None:
+        class CloseConnection:
+            def __init__(self, connection: object) -> None:
+                self.connection = connection
+
+        with tempfile.TemporaryDirectory() as directory:
+            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
+            previous_commands = MODULE.proxy_commands
+            self.addCleanup(setattr, MODULE, "proxy_commands", previous_commands)
+            MODULE.proxy_commands = SimpleNamespace(CloseConnection=CloseConnection)
+            client = object()
+            server = SimpleNamespace(address=("ssh.github.com", 443))
+            context = SimpleNamespace(client=client, server=server, layers=[], options=None)
+
+            def data_client() -> bytes:
+                return b"SSH-2.0-OpenSSH_9.0"
+
+            nextlayer = SimpleNamespace(
+                layer=None, context=context, data_client=data_client, data_server=lambda: b""
+            )
+            MODULE.next_layer(nextlayer)
+            self.assertIsInstance(nextlayer.layer, MODULE.CloseRawLayer)
+            commands = list(nextlayer.layer.handle_event(object()))
+            self.assertEqual([command.connection for command in commands], [client, server])
+            record = json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])
+            self.assertEqual(record["ruleId"], "raw_tunnel")
+            self.assertEqual(record["host"], "ssh.github.com")
+
+    def test_next_layer_leaves_tls_and_http_for_the_builtin_classifier(self) -> None:
+        context = SimpleNamespace(layers=[])
+        tls = SimpleNamespace(
+            layer=None,
+            context=context,
+            data_client=lambda: b"\x16\x03\x01\x00\x00",
+            data_server=lambda: b"",
+        )
+        MODULE.next_layer(tls)
+        self.assertIsNone(tls.layer)
+
+        http = SimpleNamespace(
+            layer=None,
+            context=context,
+            data_client=lambda: b"GET / HTTP/1.1\r\n",
+            data_server=lambda: b"",
+        )
+        MODULE.next_layer(http)
+        self.assertIsNone(http.layer)
+
+        empty = SimpleNamespace(
+            layer=None,
+            context=context,
+            data_client=lambda: b"",
+            data_server=lambda: b"",
+        )
+        MODULE.next_layer(empty)
+        self.assertIsNone(empty.layer)
+
+    def test_response_audits_a_non_websocket_101_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
+            raw = type(
+                "Flow",
+                (),
+                {
+                    "response": SimpleNamespace(
+                        status_code=101, headers={"upgrade": "raw"}
+                    ),
+                    "server_conn": SimpleNamespace(address=("origin", 19083)),
+                },
+            )()
+            MODULE.response(raw)
+            record = json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])
+            self.assertEqual(record["ruleId"], "raw_tunnel")
+
+            websocket = type(
+                "Flow",
+                (),
+                {
+                    "response": SimpleNamespace(
+                        status_code=101, headers={"upgrade": "websocket"}
+                    ),
+                    "server_conn": SimpleNamespace(address=("origin", 19082)),
+                },
+            )()
+            MODULE.response(websocket)
+            self.assertEqual(len(MODULE.AUDIT_PATH.read_text().splitlines()), 1)
+
     def test_next_layer_replaces_raw_tcp_with_a_closer(self) -> None:
         class FakeTCPLayer:
             def __init__(self, context: object) -> None:
