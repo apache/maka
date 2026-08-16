@@ -1,4 +1,4 @@
-import type { RuntimeWorkspaceVersionAuthorityStore } from '@maka/core';
+import type { RuntimeWorkspaceVersionAuthorityStore } from '@maka/core/runtime-event-store';
 
 const workspaceAuthorities = new WeakMap<object, RuntimeWorkspaceVersionAuthorityStore>();
 
