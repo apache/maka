@@ -176,7 +176,7 @@ describe('Git workspace service', () => {
     assert.equal((await restarted.inspectManagedWorkspace(adopted)).state, 'ready');
   });
 
-  test('reopens an existing managed epoch after the source checkout advances', async () => {
+  test('rejects reopening an existing managed epoch after the source checkout advances', async () => {
     const root = await temporaryRoot();
     const sourceRoot = await createEligibleSource(join(root, 'source'));
     const storageRoot = join(root, 'storage');
@@ -199,11 +199,10 @@ describe('Git workspace service', () => {
     );
 
     const restarted = await serviceAt(storageRoot);
-    const reopened = await restarted.openManagedWorkspaceFromBinding(created);
-
-    assert.deepEqual(reopened, created);
-    assert.equal((await restarted.inspectManagedWorkspace(reopened)).state, 'ready');
-    assert.equal(await readFile(join(reopened.worktreePath, 'tracked.txt'), 'utf8'), 'tracked\n');
+    await assert.rejects(
+      restarted.openManagedWorkspaceFromBinding(created),
+      isWorkspaceError('managed_workspace_source_drifted'),
+    );
   });
 
   test('creates a second epoch with a different baseline in the same managed repository', async () => {
