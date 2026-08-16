@@ -23,10 +23,7 @@ import {
   hydrateAgentGraphInputHandoffs,
   renderAgentGraphScheduledWorkPrompt,
 } from './stream-graph-handoff.js';
-import {
-  buildAgentGraphReadinessSnapshot,
-  type AgentGraphReadinessPolicy,
-} from './stream-graph-readiness.js';
+import { buildAgentGraphReadinessSnapshot } from './stream-graph-readiness.js';
 import type {
   AgentGraphSupervisorObservation,
   AgentGraphSupervisorObserver,
@@ -98,10 +95,6 @@ export interface AgentGraphCoordinatorInput {
   /** Restrict an attempt-local coordinator to exactly one root Session graph. */
   rootSessionId?: string;
   maxNewActivations?: number;
-  resolvePolicies?(
-    topology: AgentGraphTraceTopology,
-    observation: Pick<AgentGraphSupervisorObservation, 'projection' | 'claims'>,
-  ): readonly AgentGraphReadinessPolicy[] | Promise<readonly AgentGraphReadinessPolicy[]>;
   renderPrompt?(input: RenderAgentGraphScheduledWorkPromptInput): string | Promise<string>;
   supervisor?: AgentGraphSupervisorObserver;
   onReconciliation?(
@@ -508,13 +501,12 @@ export class AgentGraphCoordinator {
       .map(decodeAgentGraphIntentClaim)
       .sort((a, b) => a.intentId.localeCompare(b.intentId) || a.claimId.localeCompare(b.claimId));
     assertUniqueClaims(graphId, claims);
-    const policies = (await this.#input.resolvePolicies?.(topology, { projection, claims })) ?? [];
     return {
       projection,
       readiness: buildAgentGraphReadinessSnapshot({
         topology,
         records: projection.records,
-        policies,
+        policies: [],
       }),
       claims,
     };

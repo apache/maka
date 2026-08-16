@@ -178,17 +178,18 @@ Maka 默认把 workspace 数据放在 Electron `userData` 下：
 ```text
 <Electron userData>/workspaces/default/
   runtime.sqlite
-  llm-connections.json
-  credentials.json
+  connection-catalog.json
+  credential-vault.json
   settings.json
   artifacts/
 ```
 
 需要明确的当前边界：
 
+- 当前连接配置文件为 `connection-catalog.json`；已有的 `llm-connections.json` 不会被导入；
 - 会话、消息、执行 ledger、workflow、usage、Automations 和 Daily Review 都保存在 `runtime.sqlite`；
-- API key、bot token、proxy password 等运行凭据当前保存在本地 plaintext `credentials.json`，依赖 OS 账号边界，并在 POSIX 上强制目录 `0700`、文件 `0600`；
-- 订阅 OAuth token（Claude、Codex、GitHub Copilot 和 xAI）统一存放在同一份 `credentials.json`，它是 Runtime Host client 的唯一凭据权威；历史 Electron `safeStorage` 凭据/token 文件不会被导入，仅保留这些历史副本的用户需要重新登录；
+- Runtime Policy 凭据（包括 Connection API/OAuth 信息、请求头、Web Search key 和代理密码）保存在本地 plaintext `credential-vault.json`，依赖 OS 账号边界，并在 POSIX 上强制目录 `0700`、文件 `0600`；
+- Runtime Host client profile 的访问凭据单独保存在 `<Electron userData>/runtime-host-client/credentials.json`；历史 Electron `safeStorage` 凭据/token 文件不会被导入，仅保留这些历史副本的用户需要重新登录；
 - Renderer 不接收明文凭据；文件写入、Shell 和危险工具调用需要经过 permission engine；
 - Eval 不构造 Runtime，也不读取 Runtime storage；Maka subject 连接已有 Runtime Host。
 

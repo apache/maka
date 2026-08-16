@@ -28,7 +28,7 @@ const FIXTURES = [
   ['module-daily-review', '.maka-module-main'],
   ['scheduled-tasks', '.maka-module-main'],
   ['settings-general', '.settingsSurface'],
-  ['fetched-empty', '.settingsSurface'],
+  ['settings-models', '.settingsSurface'],
   ['settings-data', '.settingsSurface'],
   // 使用统计 restyle: the range/refresh row, underline tab bar, and stats
   // tables now sit under the alignment auditor's watch.

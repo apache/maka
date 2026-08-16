@@ -2,8 +2,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { E2eFixtureScenario, E2eFixtureState } from '@maka/core/e2e-fixture';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { createFileCredentialStore, createProjectCatalog } from '@maka/storage';
-import type { CredentialStore } from '@maka/storage';
+import { createProjectCatalog } from '@maka/storage';
 import { resolveStorageRoot } from '@maka/storage/root-authority';
 import {
   E2E_FIXTURE_NOW,
@@ -31,7 +30,7 @@ import {
 import { usageStatsSessions } from './e2e-fixture/scenarios-usage.js';
 
 const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
-  'fetched-empty',
+  'settings-models',
   'turn-narrative',
   'chat-prompt-rail',
   'settings-data',
@@ -137,7 +136,7 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
     ...(fixture.scrollMotion ? { scrollMotion: fixture.scrollMotion } : {}),
   };
   switch (fixture.scenario) {
-    case 'fetched-empty':
+    case 'settings-models':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'models' };
     case 'turn-narrative':
       return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'tasks' };
@@ -184,7 +183,6 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
 export async function seedE2eFixture(input: {
   workspaceRoot: string;
   fixture: E2eFixture;
-  credentialStore?: Pick<CredentialStore, 'setSecret'>;
   now?: number;
 }): Promise<void> {
   const now = input.now ?? E2E_FIXTURE_NOW;
@@ -194,12 +192,6 @@ export async function seedE2eFixture(input: {
   await resolveStorageRoot({ path: input.workspaceRoot, kind: 'interactive' });
   await writeSettings(input.workspaceRoot, scenario);
   await writeConnections(input.workspaceRoot, now, scenario);
-
-  const credentialStore = input.credentialStore ?? createFileCredentialStore(input.workspaceRoot);
-  await credentialStore.setSecret('zai-live', 'api_key', 'fixture-key-zai-live');
-  if (scenario === 'fetched-empty') {
-    await credentialStore.setSecret('empty-fetched', 'api_key', 'fixture-key-empty-fetched');
-  }
   await writeSession(input.workspaceRoot, turnSession(now), turnMessages(now));
 
   if (scenario === 'chat-prompt-rail') {

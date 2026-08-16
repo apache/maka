@@ -288,7 +288,6 @@ function projectOperator(
       .map(projectReadinessWait);
     return {
       readinessId: entry.readinessId,
-      policyKind: entry.policyKind,
       status: entry.status,
       waitingFor,
       omittedWaitingFor: entry.omittedWaitingFor + entry.waitingFor.length - waitingFor.length,

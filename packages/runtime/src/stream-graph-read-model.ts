@@ -82,7 +82,6 @@ export interface AgentGraphClientOperator {
   scheduledWorkIds: string[];
   readiness: Array<{
     readinessId: string;
-    policyKind: 'map' | 'all_settled';
     status: 'waiting' | 'runnable';
     waitingFor: AgentGraphReadinessWait[];
     omittedWaitingFor: number;
@@ -657,7 +656,6 @@ function buildReadModel(input: BuildAgentGraphClientReadModelInput): BuiltReadMo
       .filter((entry) => entry.operatorId === binding.operatorId)
       .map((entry) => ({
         readinessId: entry.readinessId,
-        policyKind: entry.policyKind,
         status: entry.status,
         waitingFor: entry.waitingFor.slice(0, MAX_OPERATOR_READINESS_WAITS).map(cloneWait),
         omittedWaitingFor: Math.max(0, entry.waitingFor.length - MAX_OPERATOR_READINESS_WAITS),

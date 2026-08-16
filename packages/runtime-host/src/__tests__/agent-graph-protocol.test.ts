@@ -64,6 +64,17 @@ describe('Agent Graph Client protocol', () => {
     assertInvalid(() =>
       decodeAgentGraphClientSnapshot({
         ...snapshot,
+        operators: [
+          {
+            ...snapshot.operators[0],
+            readiness: [{ ...snapshot.operators[0]!.readiness[0], policyKind: 'map' }],
+          },
+        ],
+      }),
+    );
+    assertInvalid(() =>
+      decodeAgentGraphClientSnapshot({
+        ...snapshot,
         operators: Array.from({ length: AGENT_GRAPH_MAX_OPERATORS + 1 }, (_, index) => ({
           ...snapshot.operators[0],
           operatorId: `operator-${index}`,
@@ -149,7 +160,6 @@ function graphSnapshot(): AgentGraphClientSnapshot {
         readiness: [
           {
             readinessId: 'readiness:1',
-            policyKind: 'map',
             status: 'waiting',
             waitingFor: [{ kind: 'input_route', upstreamOperatorIds: ['operator:0'] }],
             omittedWaitingFor: 0,

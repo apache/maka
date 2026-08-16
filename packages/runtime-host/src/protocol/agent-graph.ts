@@ -133,7 +133,6 @@ export interface AgentGraphClientOperator {
   readonly scheduledWorkIds: readonly string[];
   readonly readiness: readonly {
     readonly readinessId: string;
-    readonly policyKind: 'map' | 'all_settled';
     readonly status: 'waiting' | 'runnable';
     readonly waitingFor: readonly AgentGraphReadinessWait[];
     readonly omittedWaitingFor: number;
@@ -618,20 +617,15 @@ function decodeOperator(value: unknown): AgentGraphClientOperator {
 function decodeReadiness(value: unknown): AgentGraphClientOperator['readiness'][number] {
   const record = requireExactRecord(value, 'agent graph readiness', [
     'readinessId',
-    'policyKind',
     'status',
     'waitingFor',
     'omittedWaitingFor',
   ]);
-  if (record.policyKind !== 'map' && record.policyKind !== 'all_settled') {
-    throw invalidProtocolFrame('Invalid agent graph readiness policy');
-  }
   if (record.status !== 'waiting' && record.status !== 'runnable') {
     throw invalidProtocolFrame('Invalid agent graph readiness status');
   }
   return {
     readinessId: requireOpaqueIdentity(record.readinessId, 'readinessId'),
-    policyKind: record.policyKind,
     status: record.status,
     waitingFor: decodeArray(
       record.waitingFor,

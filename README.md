@@ -180,17 +180,18 @@ Maka stores workspace data under Electron `userData` by default:
 ```text
 <Electron userData>/workspaces/default/
   runtime.sqlite
-  llm-connections.json
-  credentials.json
+  connection-catalog.json
+  credential-vault.json
   settings.json
   artifacts/
 ```
 
 Current boundaries that matter:
 
+- The current connection catalog is `connection-catalog.json`. Existing `llm-connections.json` files stay on disk and are not imported;
 - Sessions, messages, execution ledgers, workflows, usage, Automations, and Daily Review live in `runtime.sqlite`;
-- Runtime credentials such as API keys, bot tokens, and proxy passwords currently live in local plaintext `credentials.json`, behind the OS account boundary, with POSIX directory mode `0700` and file mode `0600` enforced;
-- Subscription OAuth tokens (Claude, Codex, GitHub Copilot, and xAI) live in the same `credentials.json` — the single authority for Runtime Host clients. Pre-existing Electron `safeStorage` credential/token files are not imported; affected users must re-authenticate;
+- Runtime Policy credentials, including Connection API/OAuth material, request headers, web-search keys, and proxy passwords, live in local plaintext `credential-vault.json`, behind the OS account boundary, with POSIX directory mode `0700` and file mode `0600` enforced;
+- Runtime Host client profile access credentials are separate and live under `<Electron userData>/runtime-host-client/credentials.json`. Pre-existing Electron `safeStorage` credential/token files are not imported; affected users must re-authenticate;
 - Renderer does not receive plaintext credentials. File writes, Shell, and dangerous tool calls pass through the permission engine;
 - Eval does not construct Runtime or read Runtime storage. Maka subjects connect to an existing Runtime Host.
 

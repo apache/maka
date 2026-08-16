@@ -213,6 +213,7 @@ describe('Host Agent Graph coordinator', () => {
     const source = graphSnapshot();
     Object.assign(source.operators[0]!, { privatePrompt: 'operator-secret' });
     Object.assign(source.operators[0]!.readiness[0]!, {
+      policyKind: 'map',
       privatePolicy: 'readiness-secret',
     });
     Object.assign(source.recentActivity[0]!, { privatePayload: 'activity-secret' });
@@ -287,7 +288,6 @@ function graphOperator(operatorId: string, index: number) {
     readiness: [
       {
         readinessId: `readiness-${index}`,
-        policyKind: 'all_settled' as const,
         status: 'waiting' as const,
         waitingFor: [
           {

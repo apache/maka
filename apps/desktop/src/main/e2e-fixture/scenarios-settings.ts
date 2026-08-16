@@ -1,8 +1,13 @@
 import { join } from 'node:path';
 import type { DailyReviewArchive } from '@maka/core/daily-review';
-import type { LlmConnection } from '@maka/core/llm-connections';
 import type { E2eFixtureScenario } from '@maka/core/e2e-fixture';
+import type {
+  ConnectionCatalogEntryDraft,
+  ConnectionCatalogSnapshot,
+  ConnectionModel,
+} from '@maka/core/runtime-policy';
 import { createDefaultSettings } from '@maka/core/settings';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { openInteractiveScheduledTaskStoreForWrite } from '@maka/storage/scheduled-task-store';
 import {
   resolveStorageRoot,
@@ -42,67 +47,128 @@ export async function writeSettings(
   await writeJson(join(workspaceRoot, 'settings.json'), settings);
 }
 
-export async function writeConnections(workspaceRoot: string, now: number, scenario: E2eFixtureScenario): Promise<void> {
-  const connections: LlmConnection[] = [
-    {
-      slug: 'zai-live',
-      name: 'Z.ai Live Fixture',
-      providerType: 'zai-coding-plan',
-      baseUrl: 'https://api.z.ai/api/coding/paas/v4',
-      defaultModel: 'glm-5.1',
-      enabled: true,
-      models: [
-        model('glm-4.5', { functionCalling: true }, 128_000),
-        model('glm-4.5-air', { functionCalling: true }, 128_000),
-        model('glm-4.6', { reasoning: true, functionCalling: true }, 200_000),
-        model('glm-4.7', { reasoning: true, functionCalling: true }, 200_000),
-        model('glm-5', { reasoning: true, functionCalling: true }, 200_000),
-        model('glm-5-turbo', { reasoning: true, functionCalling: true }, 200_000),
-        model('glm-5.1', { vision: true, reasoning: true, functionCalling: true }, 1_000_000),
-      ],
-      modelSource: 'fetched',
-      modelsFetchedAt: now - 5 * 60_000,
-      lastTestStatus: 'verified',
-      lastTestAt: new Date(now - 4 * 60_000).toISOString(),
-      lastTestMessage: '连接已验证',
-      createdAt: now - 3_600_000,
-      updatedAt: now - 4 * 60_000,
-    },
-    {
-      slug: 'empty-fetched',
-      name: 'Fetched Empty Fixture',
-      providerType: 'openai-compatible',
-      baseUrl: 'https://empty.example.test/v1',
-      defaultModel: 'empty-placeholder',
-      enabled: true,
-      models: [],
-      modelSource: 'fetched',
-      modelsFetchedAt: now - 15 * 60_000,
-      lastTestStatus: 'verified',
-      lastTestAt: new Date(now - 15 * 60_000).toISOString(),
-      lastTestMessage: '连接已验证',
-      createdAt: now - 3_400_000,
-      updatedAt: now - 15 * 60_000,
-    },
-  ];
-  const focusSlug = scenario === 'fetched-empty' ? 'empty-fetched' : null;
-  const ordered = focusSlug
-    ? [
-        ...connections.filter((connection) => connection.slug === focusSlug),
-        ...connections.filter((connection) => connection.slug !== focusSlug),
-      ]
-    : connections;
-  await writeJson(join(workspaceRoot, 'llm-connections.json'), {
-    defaultSlug: focusSlug ?? 'zai-live',
-    connections: ordered,
-  });
+const ZAI_FIXTURE_MODELS: readonly ConnectionModel[] = [
+  model('glm-4.5', { functionCalling: true }, 128_000),
+  model('glm-4.5-air', { functionCalling: true }, 128_000),
+  model('glm-4.6', { reasoning: true, functionCalling: true }, 200_000),
+  model('glm-4.7', { reasoning: true, functionCalling: true }, 200_000),
+  model('glm-5', { reasoning: true, functionCalling: true }, 200_000),
+  model('glm-5-turbo', { reasoning: true, functionCalling: true }, 200_000),
+  model('glm-5.1', { vision: true, reasoning: true, functionCalling: true }, 1_000_000),
+];
+
+export async function writeConnections(
+  workspaceRoot: string,
+  now: number,
+  scenario: E2eFixtureScenario,
+): Promise<void> {
+  const zaiLive: ConnectionCatalogEntryDraft = {
+    slug: 'zai-live',
+    name: 'Z.ai Live Fixture',
+    providerType: 'zai-coding-plan',
+    baseUrl: 'https://api.z.ai/api/coding/paas/v4',
+    enabled: true,
+    enabledModelIds: ZAI_FIXTURE_MODELS.map((item) => item.id),
+  };
+  const noModels: ConnectionCatalogEntryDraft = {
+    slug: 'no-models',
+    name: 'No Models Fixture',
+    providerType: 'openai-compatible',
+    baseUrl: 'https://empty.example.test/v1',
+    enabled: true,
+    enabledModelIds: [],
+  };
+  const drafts = scenario === 'settings-models' ? [noModels, zaiLive] : [zaiLive, noModels];
+  const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  if (!owner) throw new Error('Unable to acquire the connection catalog fixture root');
+  try {
+    const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    let revision = 0;
+    let defaultConnectionId: string | undefined;
+    for (const draft of drafts) {
+      const created = await stores.connectionCatalog.create({
+        expectedCatalogRevision: revision,
+        connection: draft,
+      });
+      if (created.kind !== 'committed') {
+        throw new Error(`Failed to seed ${draft.slug}: ${created.kind}`);
+      }
+      revision = created.snapshot.revision;
+      const connection = findFixtureConnection(created.snapshot, draft.slug);
+      if (draft.slug === 'zai-live' || scenario === 'settings-models') {
+        const credential = await stores.credentialVault.set({
+          locator: {
+            scope: 'connection',
+            connectionId: connection.connectionId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: `fixture-key-${draft.slug}`,
+        });
+        if (credential.kind !== 'committed') {
+          throw new Error(`Failed to seed ${draft.slug} credential: ${credential.kind}`);
+        }
+      }
+      if (draft.slug !== 'zai-live') continue;
+
+      defaultConnectionId = connection.connectionId;
+      const modelFetch = await stores.operations.beginModelFetch(connection.connectionId);
+      if (modelFetch.kind !== 'ready') {
+        throw new Error(`Failed to start the zai-live model fixture: ${modelFetch.kind}`);
+      }
+      const modelInventory = await stores.operations.completeModelFetch(modelFetch.ticket, {
+        models: ZAI_FIXTURE_MODELS,
+        source: 'fetched',
+        fetchedAt: now - 5 * 60_000,
+      });
+      if (modelInventory.kind !== 'committed') {
+        throw new Error(`Failed to seed the zai-live model fixture: ${modelInventory.kind}`);
+      }
+      revision = modelInventory.snapshot.revision;
+
+      const connectionTest = await stores.operations.beginConnectionTest(
+        connection.connectionId,
+        'glm-5.1',
+      );
+      if (connectionTest.kind !== 'ready') {
+        throw new Error(`Failed to start the zai-live test fixture: ${connectionTest.kind}`);
+      }
+      const tested = await stores.operations.completeConnectionTest(connectionTest.ticket, {
+        status: 'verified',
+        checkedAt: new Date(now - 4 * 60_000).toISOString(),
+      });
+      if (tested.kind !== 'committed') {
+        throw new Error(`Failed to seed the zai-live test fixture: ${tested.kind}`);
+      }
+      revision = tested.snapshot.revision;
+    }
+    if (!defaultConnectionId) {
+      throw new Error('Failed to resolve the zai-live fixture connection id');
+    }
+    const defaulted = await stores.connectionCatalog.setDefaultTarget({
+      expectedCatalogRevision: revision,
+      target: { connectionId: defaultConnectionId, modelId: 'glm-5.1' },
+    });
+    if (defaulted.kind !== 'committed') {
+      throw new Error(`Failed to set the fixture default target: ${defaulted.kind}`);
+    }
+  } finally {
+    await owner.close();
+  }
+}
+
+function findFixtureConnection(snapshot: ConnectionCatalogSnapshot, slug: string) {
+  const connection = snapshot.connections.find((item) => item.slug === slug);
+  if (!connection) throw new Error(`Committed fixture connection is missing: ${slug}`);
+  return connection;
 }
 
 function model(
   id: string,
-  capabilities: NonNullable<LlmConnection['models']>[number]['capabilities'],
+  capabilities: NonNullable<ConnectionModel['capabilities']>,
   contextWindow: number,
-): NonNullable<LlmConnection['models']>[number] {
+): ConnectionModel {
   return { id, capabilities, contextWindow };
 }
 
