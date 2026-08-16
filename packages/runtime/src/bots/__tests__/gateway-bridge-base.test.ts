@@ -319,6 +319,7 @@ describe('GatewayBridgeBase close policy', () => {
     assert.equal(bridge.getStatus().readiness, 'degraded');
     assert.deepEqual(bridge.getSessionState(), { sessionId: 'sess-1', seq: 12 });
     assert.equal(bridge.hasReconnectTimer(), true);
+    await bridge.stop();
   });
 
   it('drops the session after a clean close and still reconnects', async () => {
@@ -328,6 +329,7 @@ describe('GatewayBridgeBase close policy', () => {
     assert.equal(bridge.getStatus().reason, 'gateway-closed-1000');
     assert.deepEqual(bridge.getSessionState(), { sessionId: null, seq: null });
     assert.equal(bridge.hasReconnectTimer(), true);
+    await bridge.stop();
   });
 
   it('ignores closes that arrive after an explicit stop', async () => {
