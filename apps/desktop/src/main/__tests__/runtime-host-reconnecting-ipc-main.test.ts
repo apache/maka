@@ -17,10 +17,10 @@ test("holds an invocation across a Runtime Host candidate replacement", async ()
   const firstTarget = router.createTarget("target-a");
   firstTarget.handleReconnectableRead?.("sessions:list", async () => "first");
   router.activate("target-a");
-  assert.equal(await ipc.invoke("sessions:list"), "first");
+  assert.equal(await ipc.invoke("sessions:list", scope("target-a")), "first");
 
   firstTarget.removeHandler("sessions:list");
-  const waiting = ipc.invoke("sessions:list");
+  const waiting = ipc.invoke("sessions:list", scope("target-a"));
   let settled = false;
   void waiting.finally(() => {
     settled = true;
@@ -43,7 +43,7 @@ test("holds an invocation across a Runtime Host candidate replacement", async ()
       "Runtime Host is draining",
     );
   });
-  const draining = ipc.invoke("sessions:list");
+  const draining = ipc.invoke("sessions:list", scope("target-a"));
   drainingTarget.removeHandler("sessions:list");
   const afterDrainTarget = router.createTarget("target-a");
   afterDrainTarget.handleReconnectableRead?.("sessions:list", async () => "after-drain");
@@ -60,7 +60,10 @@ test("holds an invocation across a Runtime Host candidate replacement", async ()
       "timeout",
     );
   });
-  await assert.rejects(() => ipc.invoke("sessions:list"), /was interrupted/);
+  await assert.rejects(
+    () => ipc.invoke("sessions:list", scope("target-a")),
+    /was interrupted/,
+  );
 
   router.close();
   assert.equal(ipc.size, 0);
@@ -74,14 +77,17 @@ test("does not return a late read from a replaced Runtime Host candidate", async
   firstTarget.handleReconnectableRead?.("sessions:list", () => oldRead.promise);
   router.activate("target-a");
 
-  const reading = ipc.invoke("sessions:list");
+  const reading = ipc.invoke("sessions:list", scope("target-a"));
   firstTarget.removeHandler("sessions:list");
   const replacementTarget = router.createTarget("target-a");
   replacementTarget.handleReconnectableRead?.(
     "sessions:list",
     async () => "replacement",
   );
-  assert.equal(await ipc.invoke("sessions:list"), "replacement");
+  assert.equal(
+    await ipc.invoke("sessions:list", scope("target-a")),
+    "replacement",
+  );
   oldRead.resolve("stale");
 
   assert.equal(await reading, "replacement");
@@ -96,7 +102,7 @@ test("does not return a late failure from a replaced Runtime Host candidate", as
   firstTarget.handleReconnectableRead?.("sessions:list", () => oldRead.promise);
   router.activate("target-a");
 
-  const reading = ipc.invoke("sessions:list");
+  const reading = ipc.invoke("sessions:list", scope("target-a"));
   firstTarget.removeHandler("sessions:list");
   const replacementTarget = router.createTarget("target-a");
   replacementTarget.handleReconnectableRead?.(
@@ -124,7 +130,10 @@ test("does not replay a command IPC handler after a draining rejection", async (
     );
   });
 
-  await assert.rejects(() => ipc.invoke("sessions:send"), /draining/);
+  await assert.rejects(
+    () => ipc.invoke("sessions:send", scope("target-a")),
+    /draining/,
+  );
   assert.equal(calls, 1);
   router.close();
 });
@@ -152,7 +161,7 @@ test("does not replay Host commands through a read-marked IPC boundary", async (
     target.handleReconnectableRead?.(channel, async () => {
       throw failure;
     });
-    await assert.rejects(() => ipc.invoke(channel), failure);
+    await assert.rejects(() => ipc.invoke(channel, scope("target-a")), failure);
   }
   router.close();
 });
@@ -166,7 +175,7 @@ test("never dispatches or completes an invocation across target epochs", async (
   targetA.handle("sessions:send", async () => "sent-a");
   router.activate("target-a");
 
-  const readingA = ipc.invoke("skills:list");
+  const readingA = ipc.invoke("skills:list", scope("target-a"));
   router.deactivate("target-a");
   targetA.removeHandler("skills:list");
   targetA.removeHandler("sessions:send");
@@ -174,12 +183,37 @@ test("never dispatches or completes an invocation across target epochs", async (
   targetB.handleReconnectableRead?.("skills:list", async () => "skills-b");
   targetB.handle("sessions:send", async () => "sent-b");
 
-  await assert.rejects(() => ipc.invoke("sessions:send"), /target changed/);
+  await assert.rejects(
+    () => ipc.invoke("sessions:send", scope("target-a")),
+    /target changed/,
+  );
   router.activate("target-b");
   oldRead.resolve("skills-a");
   await assert.rejects(() => readingA, /target changed/);
-  assert.equal(await ipc.invoke("skills:list"), "skills-b");
-  assert.equal(await ipc.invoke("sessions:send"), "sent-b");
+  assert.equal(await ipc.invoke("skills:list", scope("target-b")), "skills-b");
+  assert.equal(await ipc.invoke("sessions:send", scope("target-b")), "sent-b");
+  router.close();
+});
+
+test("routes concurrent Runtime Host targets by explicit scope", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  const targetA = router.createTarget("target-a");
+  const targetB = router.createTarget("target-b");
+  targetA.handleReconnectableRead?.("sessions:list", async () => "sessions-a");
+  targetB.handleReconnectableRead?.("sessions:list", async () => "sessions-b");
+  router.activate("target-a");
+  router.activate("target-b");
+
+  assert.equal(await ipc.invoke("sessions:list", scope("target-a")), "sessions-a");
+  assert.equal(await ipc.invoke("sessions:list", scope("target-b")), "sessions-b");
+
+  router.deactivate("target-a");
+  await assert.rejects(
+    () => ipc.invoke("sessions:list", scope("target-a")),
+    /target changed/,
+  );
+  assert.equal(await ipc.invoke("sessions:list", scope("target-b")), "sessions-b");
   router.close();
 });
 
@@ -233,15 +267,19 @@ function ipcHarness() {
     removeHandler(channel: string): void {
       handlers.delete(channel);
     },
-    async invoke(channel: string): Promise<unknown> {
+    async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
       const handler = handlers.get(channel);
       assert.ok(handler);
-      return handler({} as never);
+      return handler({} as never, ...args);
     },
     get size(): number {
       return handlers.size;
     },
   };
+}
+
+function scope(targetEpoch: string) {
+  return { hostId: `host-${targetEpoch}`, targetEpoch };
 }
 
 function deferred<T = void>() {

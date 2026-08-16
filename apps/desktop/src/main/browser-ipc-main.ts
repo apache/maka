@@ -7,17 +7,17 @@ import type { createMainWindowController } from './main-window.js';
 import {
   desktopSessionResourceKey,
   parseDesktopSessionResourceKey,
-  requireDesktopHostRef,
-  type DesktopHostRef,
+  requireDesktopTargetScope,
+  type DesktopTargetScope,
 } from '../preload/runtime-host-identity.js';
 
 interface BrowserIpcDeps {
   mainWindowController: ReturnType<typeof createMainWindowController>;
-  getActiveHostRef(): DesktopHostRef | undefined;
+  isHostActive(scope: DesktopTargetScope): boolean;
 }
 
 export interface BrowserIpcController {
-  retireTarget(scope: DesktopHostRef): Promise<void>;
+  retireTarget(scope: DesktopTargetScope): Promise<void>;
 }
 
 export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
@@ -25,9 +25,8 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
   provideBrowserViewHost(createBrowserViewHost(deps.mainWindowController.getBrowserViews(), () => shownBrowserSessionId));
 
   const requireBrowserTarget = (scope: unknown, target: unknown): string | undefined => {
-    const activeHost = deps.getActiveHostRef();
-    if (!activeHost) throw new Error('Desktop Runtime Host identity is unavailable');
-    const host = requireDesktopHostRef(scope, activeHost);
+    const host = requireDesktopTargetScope(scope);
+    if (!deps.isHostActive(host)) throw new Error('Desktop Runtime Host identity is unavailable');
     return typeof target === 'string' && target.length > 0
       ? desktopSessionResourceKey({ ...host, sessionId: target })
       : undefined;
@@ -88,15 +87,21 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
 
   return {
     async retireTarget(scope) {
-      shownBrowserSessionId = null;
       const views = deps.mainWindowController.getBrowserViews();
-      views.hideAllExcept(null);
-      revokeHiddenBrowserActions(null);
+      if (shownBrowserSessionId && belongsToTarget(shownBrowserSessionId, scope)) {
+        shownBrowserSessionId = null;
+        views.hideAllExcept(null);
+        revokeHiddenBrowserActions(null);
+      }
       const retired = views.sessionIds().filter((sessionId) => {
-        const ref = parseDesktopSessionResourceKey(sessionId);
-        return ref.hostId === scope.hostId && ref.targetEpoch === scope.targetEpoch;
+        return belongsToTarget(sessionId, scope);
       });
       await Promise.all(retired.map((sessionId) => releaseBrowserSession(sessionId)));
     },
   };
+}
+
+function belongsToTarget(sessionId: string, scope: DesktopTargetScope): boolean {
+  const ref = parseDesktopSessionResourceKey(sessionId);
+  return ref.hostId === scope.hostId && ref.targetEpoch === scope.targetEpoch;
 }

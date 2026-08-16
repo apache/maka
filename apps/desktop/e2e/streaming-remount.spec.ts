@@ -3,7 +3,19 @@ import {
   FAKE_HOLD_OPEN_REWRITE_PROMPT,
   FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT,
 } from '@maka/runtime/fake-backend';
+import type { Locator } from '@playwright/test';
 import { expect, COMPOSER_INPUT, test } from './fixtures';
+
+async function sessionRow(sidebar: Locator, sessionId: string): Promise<Locator> {
+  const rows = sidebar.locator('[data-session-id]');
+  const index = await rows.evaluateAll(
+    (elements, expected) =>
+      elements.findIndex((element) => element.getAttribute('data-session-id') === expected),
+    sessionId,
+  );
+  if (index < 0) throw new Error(`Session row not found: ${sessionId}`);
+  return rows.nth(index);
+}
 
 test('remounting a live surface leaves accumulated output settled', async ({
   window: page,
@@ -142,13 +154,13 @@ test('keeps a completed reply after an interrupted turn and conversation remount
     timeout: 20_000,
   });
 
-  const temporarySessionRow = sidebar.locator(`[data-session-id="${temporarySessionId}"]`);
+  const temporarySessionRow = await sessionRow(sidebar, temporarySessionId!);
   await temporarySessionRow.click();
   await expect(temporarySessionRow.locator('[aria-current="page"]')).toHaveCount(1, {
     timeout: 20_000,
   });
   await expect(page.getByRole('log')).toContainText('Fake backend received: temporary conversation');
-  const originalSessionRow = sidebar.locator(`[data-session-id="${originalSessionId}"]`);
+  const originalSessionRow = await sessionRow(sidebar, originalSessionId!);
   await originalSessionRow.click();
   await expect(originalSessionRow.locator('[aria-current="page"]')).toHaveCount(1, {
     timeout: 20_000,
@@ -229,7 +241,7 @@ test('returning to a live conversation settles output accumulated while away', a
       );
     }).observe(document.body, { childList: true, characterData: true, subtree: true });
   });
-  await sidebar.locator(`[data-session-id="${originalSessionId}"]`).click();
+  await (await sessionRow(sidebar, originalSessionId!)).click();
   await liveBubble.waitFor({ state: 'attached' });
   await expect(liveBubble).toContainText(backgroundSteering);
 

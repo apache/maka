@@ -5,7 +5,7 @@ import type {
   RuntimeHostUpgradePrompts,
   RuntimeHostWaitConflict,
   RuntimeHostWaitDecision,
-} from './runtime-host-desktop-owner.js';
+} from './runtime-host-desktop-manager.js';
 import { whileAwaitingPerson } from './startup-step.js';
 
 export const runtimeHostUpgradePrompts: RuntimeHostUpgradePrompts = {

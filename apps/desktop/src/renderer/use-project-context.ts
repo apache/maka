@@ -41,6 +41,7 @@ export function useAppShellProjectContext(options: {
   sessionId?: string;
   sessionCwd?: string;
   sessionProjectId?: string | null;
+  sessionProfileKind?: 'local' | 'remote';
   onProjectSelected(ownerSessionId?: string): void;
   toastApi: ToastApi;
 }): AppShellProjectActions & {
@@ -53,7 +54,6 @@ export function useAppShellProjectContext(options: {
   projectPickerPending: boolean;
   projectPickerPendingRef: RefBox<boolean>;
   projectPickerRequestRef: RefBox<number>;
-  clearRuntimeHostProjectState(): void;
 } {
   const {
     uiLocale,
@@ -61,6 +61,7 @@ export function useAppShellProjectContext(options: {
     sessionId,
     sessionCwd,
     sessionProjectId,
+    sessionProfileKind,
     onProjectSelected,
     toastApi,
   } = options;
@@ -105,7 +106,11 @@ export function useAppShellProjectContext(options: {
   }, []);
 
   useEffect(() => {
-    if (!sessionId || !projectCapabilities.viewClientPath) return;
+    if (
+      !sessionId ||
+      sessionProfileKind === 'remote' ||
+      !projectCapabilities.viewClientPath
+    ) return;
     let cancelled = false;
     void window.maka.app.sessionProjectInfo(sessionId).then(
       (info) => {
@@ -119,7 +124,7 @@ export function useAppShellProjectContext(options: {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, sessionCwd, projectCapabilities.viewClientPath]);
+  }, [sessionId, sessionCwd, sessionProfileKind, projectCapabilities.viewClientPath]);
 
   const resolvedSessionProjectInfo =
     sessionId &&
@@ -132,9 +137,12 @@ export function useAppShellProjectContext(options: {
       (sessionCwd ? { projectPath: sessionCwd, projectGit: { isGitRepo: false } } : null))
     : appInfo;
   const currentProjectId = sessionId ? (sessionProjectId ?? null) : selectedProjectId;
-  const currentProject = projects.find(
-    (project) => project.id === currentProjectId || project.aliases?.includes(currentProjectId ?? ''),
-  );
+  const currentProject = sessionProfileKind === 'remote'
+    ? undefined
+    : projects.find(
+        (project) =>
+          project.id === currentProjectId || project.aliases?.includes(currentProjectId ?? ''),
+      );
   const actions = createAppShellProjectActions({
     uiLocale,
     projectPickerPendingRef,
@@ -155,17 +163,6 @@ export function useAppShellProjectContext(options: {
     toastApi,
   });
 
-  function clearRuntimeHostProjectState(): void {
-    projectPickerRequestRef.current += 1;
-    projectPickerPendingRef.current = false;
-    setProjectPickerPending(false);
-    setProjects([]);
-    setProjectCapabilities(NO_PROJECT_CAPABILITIES);
-    setAppInfo(null);
-    setSessionProjectInfo(null);
-    setSelectedProjectId(undefined);
-  }
-
   return {
     projectInfo,
     projects,
@@ -176,7 +173,6 @@ export function useAppShellProjectContext(options: {
     projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,
-    clearRuntimeHostProjectState,
     ...actions,
   };
 }

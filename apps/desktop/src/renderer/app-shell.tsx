@@ -10,6 +10,7 @@ import {
   type SetStateAction,
 } from 'react';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
+import type { ProjectRecord } from '@maka/core/project';
 import type { QuoteRef } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import type { SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
@@ -35,6 +36,7 @@ import {
   type ToastErrorAction,
   type NavSelection,
   SessionListPanel,
+  type SessionHistoryGroup,
   SkillsPage,
   type SessionViewMode,
   TitlebarSessionIdentity,
@@ -94,7 +96,11 @@ import {
 } from './plan-mode-panel';
 import { McpPage } from './mcp-page';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
-import type { AppUpdateStatus, OnboardingSnapshot } from '../preload/bridge-contract.js';
+import type {
+  AppUpdateStatus,
+  DesktopSessionSummary,
+  OnboardingSnapshot,
+} from '../preload/bridge-contract.js';
 import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../preload/transcript-contract.js';
 import {
   isAppUpdateInstallFailure,
@@ -347,7 +353,6 @@ function AppShellContent({
     setActiveId,
     startNewSession,
     clearOwnedSessionState,
-    clearRuntimeHostSessionState,
     messages,
     setMessages,
     transcriptRangeRef,
@@ -383,7 +388,6 @@ function AppShellContent({
     attachFilePaths,
     removeAttachment,
     clearSubmittedAttachments,
-    clearAllAttachments,
   } = useAppShellComposerAttachments({
     draftKey: attachmentDraftKey,
     toastApi,
@@ -393,7 +397,6 @@ function AppShellContent({
     addQuote,
     removeQuote,
     clearQuotes,
-    clearAllQuotes,
   } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
   const [scheduledTaskCreateRequestNonce, setScheduledTaskCreateRequestNonce] = useState(0);
@@ -436,7 +439,7 @@ function AppShellContent({
   // injected into the system prompt). State and the fire-and-forget refresh
   // live in `useShellMemoryPill`; recompute is triggered on mount (bootstrap
   // subscriptions) and when Settings closes (closeSettings).
-  const { memoryActive, clearMemoryActive, refreshMemoryActive } = useShellMemoryPill({ toastApi, uiLocale });
+  const { memoryActive, refreshMemoryActive } = useShellMemoryPill({ toastApi, uiLocale });
   const {
     connections,
     defaultConnection,
@@ -444,7 +447,10 @@ function AppShellContent({
     setDefaultConnection,
     refreshConnections,
     handleConnectionEvent,
-  } = useShellConnections({ toastApi, uiLocale });
+  } = useShellConnections({ toastApi, uiLocale, activeSessionId: activeId });
+  useEffect(() => {
+    void refreshConnections(activeId);
+  }, [activeId]);
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   const onboardingState = onboarding.snapshot?.state;
   const onboardingSettled = hasSettledInitialOnboarding(onboarding.snapshot?.milestones ?? []);
@@ -686,7 +692,10 @@ function AppShellContent({
   const staleSessionIds = useMemo(
     () =>
       deriveStaleSessionIds({
-        sessions,
+        sessions: sessions.filter(
+          (session) =>
+            (session as DesktopSessionSummary).profileKind !== 'remote',
+        ),
         knownConnectionSlugs: new Set(connections.map((connection) => connection.slug)),
       }),
     [sessions, connections],
@@ -728,6 +737,7 @@ function AppShellContent({
     activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const activeSession = sessions.find((session) => session.id === activeId);
+  const activeDesktopSession = activeSession as DesktopSessionSummary | undefined;
   // The shell's reading of the active live turn: streaming/settled flags, the
   // in-flight tool signal, and the #646 turn-wait cues, all derived from the
   // semantic snapshot rather than the projection (#1985).
@@ -854,26 +864,6 @@ function AppShellContent({
     orchestrationModeChangeRegistry.keysRef.current.delete(sessionId);
     setPendingOrchestrationModeBySession((current) => omitSessionKey(current, sessionId));
     sessionModelChangeRegistry.keysRef.current.delete(sessionId);
-  }
-
-  function clearRuntimeHostRendererState(): void {
-    clearRuntimeHostSessionState();
-    interactionHydrationEpochRef.current.clear();
-    turnActionRegistry.clearAll();
-    sessionRowActionRegistry.clearAll();
-    permissionModeChangeRegistry.clearAll();
-    collaborationModeChangeRegistry.clearAll();
-    orchestrationModeChangeRegistry.clearAll();
-    sessionModelChangeRegistry.clearAll();
-    setPendingCollaborationModeBySession({});
-    setPendingOrchestrationModeBySession({});
-    clearRuntimeHostProjectState();
-    clearRuntimeHostModuleData();
-    clearMemoryActive();
-    setConnections([]);
-    setDefaultConnection(null);
-    clearAllAttachments();
-    clearAllQuotes();
   }
 
   const sessionRowActionHandlers = useStableActions(createAppShellSessionRowActions, {
@@ -1709,7 +1699,6 @@ function AppShellContent({
     managedSkillSources,
     bundledSkillCatalog,
     scheduledTasks,
-    clearRuntimeHostModuleData,
     refreshScheduledTasks,
     createScheduledTask,
     updateScheduledTask,
@@ -1752,7 +1741,6 @@ function AppShellContent({
     projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,
-    clearRuntimeHostProjectState,
     refreshAppInfo,
     refreshProjects,
     addProject,
@@ -1773,6 +1761,7 @@ function AppShellContent({
     sessionId: activeId,
     sessionCwd: activeSession?.cwd,
     sessionProjectId: activeSession?.projectId,
+    sessionProfileKind: activeDesktopSession?.profileKind,
     onProjectSelected: (ownerSessionId) => {
       void refreshSkills();
       void refreshManagedSkillSources();
@@ -1815,6 +1804,7 @@ function AppShellContent({
   const taskReadiness = useTaskSubmissionReadiness(
     taskReadinessRequest,
     onboarding.snapshot,
+    activeId,
   );
   const taskReadinessNotice = deriveTaskReadinessNotice(taskReadiness.snapshot, uiLocale);
   const ignoreTaskReadinessModelTarget =
@@ -1830,11 +1820,16 @@ function AppShellContent({
     projectPath: projectInfo?.projectPath,
   });
   const sessionProjectGroups = useMemo(
-    () => deriveProjectGroups(visibleSessions, projects, uiLocale),
+    () => deriveDesktopSessionGroups(visibleSessions, projects, uiLocale),
     [visibleSessions, projects, uiLocale],
   );
   const worktreeSessionIds = useMemo(
-    () => deriveWorktreeSessionIds(visibleSessions, projects),
+    () => deriveWorktreeSessionIds(
+      visibleSessions.filter(
+        (session) => (session as DesktopSessionSummary).profileKind !== 'remote',
+      ),
+      projects,
+    ),
     [visibleSessions, projects],
   );
   // 已归档任务 reads the shell's catalog rather than listing again behind the
@@ -2311,7 +2306,6 @@ function AppShellContent({
     clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
     confirmLiveTurn,
     clearSessionRendererState,
-    clearRuntimeHostRendererState,
     createSession,
     handleConnectionEvent,
     openHelp,
@@ -2652,7 +2646,9 @@ function AppShellContent({
     activeId,
     activePermissionMode,
     canSetPermissionMode: activeBoundarySurface.localInteractionAvailable,
-    clientPathsAccessible: projectCapabilities.viewClientPath,
+    clientPathsAccessible:
+      projectCapabilities.viewClientPath &&
+      (!activeId || activeDesktopSession?.profileKind === 'local'),
     connections,
     defaultConnection,
     dailyReviewBridge,
@@ -2772,7 +2768,8 @@ function AppShellContent({
                   titlebarProjectName
                     ? {
                         name: titlebarProjectName,
-                        ...(projectCapabilities.viewClientPath
+                        ...(projectCapabilities.viewClientPath &&
+                        activeDesktopSession?.profileKind === 'local'
                           ? { onOpenFolder: () => void openProjectFolder() }
                           : {}),
                       }
@@ -2824,6 +2821,7 @@ function AppShellContent({
             onViewModeChange={setViewMode}
             groups={viewMode === 'project' ? sessionProjectGroups : undefined}
             worktreeSessionIds={worktreeSessionIds}
+            sessionMeta={runtimeHostSessionMeta}
             moduleMemory={navigationState.moduleMemory}
             onSelect={setNavSelection}
             onSelectSession={sessionListSelectSession}
@@ -3415,4 +3413,40 @@ function AppShellContent({
       />
     </div>
   );
+}
+
+function runtimeHostSessionMeta(session: SessionSummary): string | undefined {
+  const host = session as DesktopSessionSummary;
+  return host.profileKind === 'remote' ? host.profileName : undefined;
+}
+
+function deriveDesktopSessionGroups(
+  sessions: readonly SessionSummary[],
+  projects: readonly ProjectRecord[],
+  locale: UiLocale,
+): SessionHistoryGroup[] {
+  const local: SessionSummary[] = [];
+  const remote = new Map<string, { label: string; sessions: SessionSummary[] }>();
+  for (const session of sessions) {
+    const host = session as DesktopSessionSummary;
+    if (host.profileKind !== 'remote') {
+      local.push(session);
+      continue;
+    }
+    const key = host.profileId ?? host.runtimeHostId;
+    const group = remote.get(key) ?? {
+      label: host.profileName ?? host.runtimeHostId,
+      sessions: [],
+    };
+    group.sessions.push(session);
+    remote.set(key, group);
+  }
+  return [
+    ...deriveProjectGroups(local, projects, locale),
+    ...[...remote].map(([id, group]) => ({
+      id: `runtime-host:${id}`,
+      label: group.label,
+      sessions: group.sessions,
+    })),
+  ];
 }

@@ -74,6 +74,7 @@ export function SessionHistoryList(props: {
   staleSessionIds?: Set<string>;
   groups?: ReadonlyArray<SessionHistoryGroup>;
   worktreeSessionIds?: ReadonlySet<string>;
+  sessionMeta?(session: SessionSummary): string | undefined;
   projectActions?: ProjectRowActions;
   groupVariant?: SessionHistoryGroupVariant;
   onSelectSession(sessionId: string): void;
@@ -124,6 +125,7 @@ export function SessionHistoryList(props: {
         streamingSessionIds={props.streamingSessionIds}
         staleSessionIds={props.staleSessionIds}
         worktreeSessionIds={props.worktreeSessionIds}
+        sessionMeta={props.sessionMeta}
         onSelectSession={props.onSelectSession}
         rowActions={props.rowActions}
         projectActions={props.projectActions}
@@ -144,6 +146,7 @@ function SessionListGroups(props: {
   streamingSessionIds?: Set<string>;
   staleSessionIds?: Set<string>;
   worktreeSessionIds?: ReadonlySet<string>;
+  sessionMeta?(session: SessionSummary): string | undefined;
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
   projectActions?: ProjectRowActions;
@@ -204,6 +207,7 @@ function SessionListGroups(props: {
         streaming={props.streamingSessionIds?.has(session.id) ?? false}
         stale={props.staleSessionIds?.has(session.id) ?? false}
         worktree={props.worktreeSessionIds?.has(session.id) ?? false}
+        meta={props.sessionMeta?.(session)}
         onSelectSession={props.onSelectSession}
         actions={props.rowActions}
         onStartRename={startRename}
@@ -214,6 +218,7 @@ function SessionListGroups(props: {
       props.activeId,
       props.onSelectSession,
       props.rowActions,
+      props.sessionMeta,
       props.staleSessionIds,
       props.streamingSessionIds,
       props.worktreeSessionIds,
@@ -355,6 +360,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   streaming: boolean;
   stale: boolean;
   worktree: boolean;
+  meta?: string;
   onSelectSession(sessionId: string): void;
   actions?: SessionRowActions;
   onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
@@ -377,6 +383,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   const rowDescription = [
     ...signals.slice(1).map((entry) => entry.tooltip ?? entry.label),
     props.worktree ? copy.worktreeAriaLabel : undefined,
+    props.meta,
     props.session.lastMessageAt
       ? formatAbsoluteTimestamp(props.session.lastMessageAt, locale)
       : undefined,
@@ -434,6 +441,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           // the two on hover or keyboard focus. The span is rendered even with
           // no timestamp so the column exists on every row.
           <span className="maka-session-row-end">
+            {props.meta ? <Badge variant="neutral" label={props.meta} /> : null}
             <span className="maka-session-row-time">
               {props.session.lastMessageAt ? (
                 <RelativeTime

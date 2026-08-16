@@ -41,14 +41,8 @@ async function prefetchOnboardingSnapshot(): Promise<OnboardingSnapshot | null> 
   return Promise.race([attempt(), timeout]);
 }
 
-void Promise.all([
-  prefetchOnboardingSnapshot(),
-  window.maka.runtimeHostProfiles.getSnapshot().catch(() => undefined),
-]).then(([initialOnboardingSnapshot, runtimeHostSnapshot]) => {
+void prefetchOnboardingSnapshot().then((initialOnboardingSnapshot) => {
   createRoot(document.getElementById('root')!).render(
-    <App
-      initialOnboardingSnapshot={initialOnboardingSnapshot}
-      initialRuntimeHostReady={runtimeHostSnapshot?.runtimeHostReadiness !== 'connecting'}
-    />,
+    <App initialOnboardingSnapshot={initialOnboardingSnapshot} />,
   );
 });

@@ -219,7 +219,6 @@ export function useAppShellBootstrapSubscriptions(options: {
   /** Releases a send's pending claim once the authority names that turn. */
   confirmLiveTurn: (sessionId: string, turnId: string) => void;
   clearSessionRendererState: (sessionId: string) => void;
-  clearRuntimeHostRendererState: () => void;
   createSession: () => Promise<void> | void;
   handleConnectionEvent: (event: ConnectionEvent) => void;
   openHelp: () => void;
@@ -249,6 +248,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   toastApi: ToastApi;
 }) {
   const runDeferredStartupRefreshes = useEffectEvent(() => {
+    void options.refreshSessions();
     void options.refreshAppInfo();
     void options.refreshMemoryActive('load');
     void options.refreshSkills();
@@ -261,10 +261,10 @@ export function useAppShellBootstrapSubscriptions(options: {
     options.handleConnectionEvent(event);
   });
   const handleRuntimeHostChange = useEffectEvent((event: DesktopRuntimeHostProfileChangedEvent) => {
-    if (event.targetChanged) options.clearRuntimeHostRendererState();
-    if (event.readiness !== 'ready') return;
-    void options.refreshProjects();
     void options.refreshSessions();
+    if (event.readiness !== 'ready') return;
+    if (!event.isDefault) return;
+    void options.refreshProjects();
     void options.refreshConnections();
     void options.refreshMemoryActive('load');
     void options.refreshSkills();
@@ -387,8 +387,9 @@ export function useAppShellBootstrapSubscriptions(options: {
   });
 
   useEffect(() => {
-    // Critical data: sessions + connections are seeded from the onboarding
-    // snapshot (see AppShell useEffect above).  `refreshShellSettings` is
+    // The default Host seeds sessions + connections through onboarding.
+    // `refreshSessions` below expands that seed across every ready Host.
+    // `refreshShellSettings` is
     // waited because it drives theme + locale before first paint settles.
     // Everything else is fire-and-forget on a rAF to keep the critical
     // render path as short as possible.
@@ -500,7 +501,7 @@ export function useActiveSessionEvents(options: {
     if (!activeId) return;
     const observationGeneration = beginObservationSeed(activeId);
     let disposed = false;
-    const transcript = new DesktopTranscriptRangeStore();
+    const transcript = new DesktopTranscriptRangeStore(activeId);
     const subscribedAt = Date.now();
     options.setMessageLoadErrorBySession((current) => {
       if (!current[activeId]) return current;

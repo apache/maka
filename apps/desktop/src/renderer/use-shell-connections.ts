@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { ConnectionEvent } from '@maka/core/connections';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -26,28 +26,36 @@ function connectionsEqual(a: LlmConnection[], b: LlmConnection[]): boolean {
  * dedups via `connectionsEqual` so an unchanged list never churns the
  * dozen derived model/thinking selectors that read `connections`.
  */
-export function useShellConnections(options: { toastApi: ToastApi; uiLocale: UiLocale }): {
+export function useShellConnections(options: {
+  toastApi: ToastApi;
+  uiLocale: UiLocale;
+  activeSessionId?: string;
+}): {
   connections: LlmConnection[];
   defaultConnection: string | null;
   setConnections: (updater: LlmConnection[] | ((prev: LlmConnection[]) => LlmConnection[])) => void;
   setDefaultConnection: (next: string | null) => void;
-  refreshConnections: () => Promise<void>;
+  refreshConnections: (sessionId?: string) => Promise<void>;
   handleConnectionEvent: (event: ConnectionEvent) => void;
 } {
   const { toastApi, uiLocale } = options;
   const copy = getShellRemainingCopy(uiLocale).connections;
   const [connections, setConnections] = useState<LlmConnection[]>([]);
   const [defaultConnection, setDefaultConnection] = useState<string | null>(null);
+  const refreshSequence = useRef(0);
 
-  async function refreshConnections() {
+  async function refreshConnections(sessionId?: string) {
+    const sequence = ++refreshSequence.current;
     try {
       const [next, nextDefault] = await Promise.all([
-        window.maka.connections.list(),
-        window.maka.connections.getDefault(),
+        window.maka.connections.list(sessionId),
+        window.maka.connections.getDefault(sessionId),
       ]);
+      if (refreshSequence.current !== sequence) return;
       setConnections((prev) => connectionsEqual(prev, next) ? prev : next);
       setDefaultConnection(nextDefault);
     } catch (error) {
+      if (refreshSequence.current !== sequence) return;
       toastApi.error(copy.refreshFailed, localizedShellErrorMessage(error, copy.refreshFallback, uiLocale));
     }
   }
@@ -55,7 +63,7 @@ export function useShellConnections(options: { toastApi: ToastApi; uiLocale: UiL
   function handleConnectionEvent(event: ConnectionEvent) {
     switch (event.type) {
       case 'connection_list_changed':
-        void refreshConnections();
+        void refreshConnections(options.activeSessionId);
         break;
     }
   }

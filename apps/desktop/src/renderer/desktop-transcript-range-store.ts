@@ -1,4 +1,5 @@
 import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
+import type { StorageRef, ToolResultContent } from '@maka/core/events';
 import type {
   DesktopTranscriptBatchPayload,
   DesktopTranscriptFragment,
@@ -105,10 +106,13 @@ export interface DesktopTranscriptRangeSnapshot extends DesktopTranscriptRangeSt
 }
 
 export class DesktopTranscriptRangeStore {
+  readonly #sessionKey: string;
+  readonly #hostId: string;
+  readonly #expectedSessionId: string;
   readonly #durable = new Map<number, StoredRecord>();
   readonly #overlay = new Map<string, OverlayRecord>();
   readonly #pending = new Map<string, PendingRecord>();
-  #sessionId: string | undefined;
+  #sourceSessionId: string | undefined;
   #generation: string | undefined;
   #hostEpoch: string | undefined;
   #durableThrough: number | null = null;
@@ -121,10 +125,17 @@ export class DesktopTranscriptRangeStore {
   #batchChanged = false;
   readonly #durableWaiters = new Set<() => void>();
 
+  constructor(sessionKey: string) {
+    const [hostId, sessionId] = parseSessionKey(sessionKey);
+    this.#sessionKey = sessionKey;
+    this.#hostId = hostId;
+    this.#expectedSessionId = sessionId;
+  }
+
   accept(batch: DesktopTranscriptBatchPayload): boolean {
     if (batch.reset) this.#reset(batch);
     if (
-      batch.sessionId !== this.#sessionId ||
+      batch.sessionId !== this.#sourceSessionId ||
       batch.generation !== this.#generation ||
       batch.hostEpoch !== this.#hostEpoch
     ) {
@@ -175,11 +186,11 @@ export class DesktopTranscriptRangeStore {
   }
 
   range(): DesktopTranscriptRangeState {
-    if (!this.#sessionId || !this.#generation || !this.#hostEpoch) {
+    if (!this.#sourceSessionId || !this.#generation || !this.#hostEpoch) {
       throw new Error('Desktop transcript range is not initialized');
     }
     return {
-      sessionId: this.#sessionId,
+      sessionId: this.#sessionKey,
       generation: this.#generation,
       hostEpoch: this.#hostEpoch,
       durableThrough: this.#durableThrough,
@@ -220,10 +231,13 @@ export class DesktopTranscriptRangeStore {
   }
 
   #reset(batch: DesktopTranscriptBatchPayload): void {
+    if (batch.sessionId !== this.#expectedSessionId) {
+      throw new Error('Desktop transcript belongs to a different Session');
+    }
     this.#durable.clear();
     this.#overlay.clear();
     this.#pending.clear();
-    this.#sessionId = batch.sessionId;
+    this.#sourceSessionId = batch.sessionId;
     this.#generation = batch.generation;
     this.#hostEpoch = batch.hostEpoch;
     this.#durableThrough = batch.durableThrough;
@@ -272,7 +286,11 @@ export class DesktopTranscriptRangeStore {
     pending.receivedBytes += bytes.byteLength;
     if (pending.receivedBytes < pending.totalBytes) return false;
     const encoded = new TextDecoder('utf-8', { fatal: true }).decode(pending.bytes);
-    const message = decodeStoredMessage(JSON.parse(encoded) as unknown);
+    const message = projectStoredMessage(
+      this.#hostId,
+      decodeStoredMessage(JSON.parse(encoded) as unknown),
+    );
+    const projected = JSON.stringify(message);
     this.#pending.delete(key);
     if (pending.source === 'durable') {
       if (!Number.isSafeInteger(pending.identity) || (pending.identity as number) < 0) {
@@ -280,7 +298,7 @@ export class DesktopTranscriptRangeStore {
       }
       const sequence = pending.identity as number;
       const existing = this.#durable.get(sequence);
-      if (existing && JSON.stringify(existing.message) !== encoded) {
+      if (existing && JSON.stringify(existing.message) !== projected) {
         throw new Error('Desktop transcript durable record changed');
       }
       this.#durable.set(sequence, { message });
@@ -304,7 +322,7 @@ export class DesktopTranscriptRangeStore {
     });
     return (
       !existing ||
-      JSON.stringify(existing.message) !== encoded ||
+      JSON.stringify(existing.message) !== projected ||
       existing.order !== pending.order
     );
   }
@@ -317,5 +335,75 @@ export class DesktopTranscriptRangeStore {
       this.#oldestSequence = Math.min(this.#oldestSequence ?? sequence, sequence);
       this.#newestSequence = Math.max(this.#newestSequence ?? sequence, sequence);
     }
+  }
+}
+
+function parseSessionKey(value: string): readonly [hostId: string, sessionId: string] {
+  const parsed: unknown = JSON.parse(value);
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length !== 2 ||
+    typeof parsed[0] !== 'string' ||
+    !parsed[0] ||
+    typeof parsed[1] !== 'string' ||
+    !parsed[1]
+  ) {
+    throw new Error('Invalid Desktop Host Session key');
+  }
+  return [parsed[0], parsed[1]];
+}
+
+function sessionKey(hostId: string, sessionId: string): string {
+  return JSON.stringify([hostId, sessionId]);
+}
+
+function projectStorageRef(hostId: string, ref: StorageRef): StorageRef {
+  return ref.kind === 'session_file'
+    ? { ...ref, sessionId: sessionKey(hostId, ref.sessionId) }
+    : ref;
+}
+
+function projectToolResultContent(hostId: string, content: ToolResultContent): ToolResultContent {
+  switch (content.kind) {
+    case 'image':
+      return { ...content, ref: projectStorageRef(hostId, content.ref) };
+    case 'subagent':
+      return content.childSessionId
+        ? { ...content, childSessionId: sessionKey(hostId, content.childSessionId) }
+        : content;
+    case 'agent_swarm':
+      return {
+        ...content,
+        items: content.items.map((item) =>
+          item.childSessionId
+            ? { ...item, childSessionId: sessionKey(hostId, item.childSessionId) }
+            : item,
+        ),
+      };
+    default:
+      return content;
+  }
+}
+
+function projectStoredMessage(hostId: string, message: StoredMessage): StoredMessage {
+  switch (message.type) {
+    case 'user':
+      return message.attachments?.some((attachment) => attachment.ref.kind === 'session_file')
+        ? {
+            ...message,
+            attachments: message.attachments.map((attachment) => ({
+              ...attachment,
+              ref: projectStorageRef(hostId, attachment.ref),
+            })),
+          }
+        : message;
+    case 'tool_result':
+      return { ...message, content: projectToolResultContent(hostId, message.content) };
+    case 'turn_state':
+      return message.parentSessionId
+        ? { ...message, parentSessionId: sessionKey(hostId, message.parentSessionId) }
+        : message;
+    default:
+      return message;
   }
 }
