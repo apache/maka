@@ -251,17 +251,17 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         if (remaining <= 0) break;
         const launch = dependencies.launchCandidate({
           rootPath: capability.canonicalPath,
-            expectedRootId: capability.rootId,
-            entrypoint: input.candidateEntrypoint,
-            initialConnectionTimeoutMs: Math.ceil(remaining),
-            ...(input.generation === undefined ? {} : { generation: input.generation }),
-            ...(input.legacyConfigurationRoot === undefined
+          expectedRootId: capability.rootId,
+          entrypoint: input.candidateEntrypoint,
+          initialConnectionTimeoutMs: Math.ceil(remaining),
+          ...(input.generation === undefined ? {} : { generation: input.generation }),
+          ...(input.legacyConfigurationRoot === undefined
             ? {}
             : { legacyConfigurationRoot: input.legacyConfigurationRoot }),
-            ...(input.packagedCandidateAuthority === undefined
-              ? {}
-              : { packagedCandidateAuthority: input.packagedCandidateAuthority }),
-          });
+          ...(input.packagedCandidateAuthority === undefined
+            ? {}
+            : { packagedCandidateAuthority: input.packagedCandidateAuthority }),
+        });
         const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
         if (attempt.startupFailure) {
           pendingCandidateReports += 1;

@@ -458,10 +458,10 @@ export class RuntimeHostKernel {
           this.#lifecycle.kind === 'ephemeral' && this.#isTrueIdle()
             ? 'wait_for_idle_exit'
             : 'blocked_by_residency',
-      ...(generationMismatch && authority.principalKind === 'local_owner'
-        ? { activity: this.#activitySnapshot() }
-        : {}),
-      ...hostCapabilitiesField(this.#options.hostCapabilities),
+        ...(generationMismatch && authority.principalKind === 'local_owner'
+          ? { activity: this.#activitySnapshot() }
+          : {}),
+        ...hostCapabilitiesField(this.#options.hostCapabilities),
       };
     }
     this.#hasAcceptedConnection = true;
