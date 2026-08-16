@@ -7,6 +7,7 @@ export * from './components.js';
 export type { SandboxBoundaryPromptProps } from './sandbox-boundary-prompt.js';
 export type { SessionHistoryGroup } from './session-history-list.js';
 export * from './session-status-presentation.js';
+export * from './provider-retry-presentation.js';
 export * from './composer-helpers.js';
 export * from './conversation-copy.js';
 export * from './shared-ui-copy.js';

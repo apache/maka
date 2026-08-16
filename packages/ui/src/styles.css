@@ -151,6 +151,7 @@
    (they sit on the column's own 8px). Hugging the last tool card read as part
    of that card. */
 .maka-turn-processing { margin-top: 8px; }
+.maka-turn-provider-retry { margin-top: 8px; }
 .maka-turn-indicator-text { display: inline-flex; min-width: 0; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Duration must match `WORKING_PHRASE_FADE_MS` in chat-turn.tsx: the swap is a
    fade out, then a text change, then a fade in, and the JS timer is what waits
