@@ -32,6 +32,7 @@ import type {
   DesktopRuntimeHostProfileChangedEvent,
   WindowCommand,
 } from '../preload/bridge-contract.js';
+import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import {
   mergeShellRunNotification,
   mergeShellRunUpdates,
@@ -260,6 +261,14 @@ export function useAppShellBootstrapSubscriptions(options: {
     options.handleConnectionEvent(event);
   });
   const handleRuntimeHostChange = useEffectEvent((event: DesktopRuntimeHostProfileChangedEvent) => {
+    if ((event.removed || event.readiness === 'unavailable') && event.hostId) {
+      const activeSessionId = options.activeIdRef.current;
+      if (activeSessionId && desktopSessionHostId(activeSessionId) === event.hostId) {
+        options.setActiveId(undefined);
+        options.setMessages([]);
+        options.clearSessionRendererState(activeSessionId);
+      }
+    }
     void options.refreshSessions();
     if (event.readiness !== 'ready') return;
     if (!event.isDefault) return;
@@ -419,6 +428,14 @@ export function useAppShellBootstrapSubscriptions(options: {
       unsubscribeWindowCommand();
     };
   }, []);
+}
+
+function desktopSessionHostId(sessionId: string): string | undefined {
+  try {
+    return parseDesktopSessionKey(sessionId).hostId;
+  } catch {
+    return undefined;
+  }
 }
 
 export function useActiveSessionEvents(options: {

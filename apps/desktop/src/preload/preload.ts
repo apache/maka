@@ -1314,8 +1314,9 @@ const makaBridge = {
     cleanupSessionCopy(sessionId: string): Promise<void> {
       return invokeSessionRuntimeHost('sessions:cleanupSessionCopy', sessionId);
     },
-    abandonSessionCopy(sessionId: string): Promise<void> {
-      return invokeSessionRuntimeHost('sessions:abandonSessionCopy', sessionId);
+    async abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void> {
+      const source = await runtimeHostSessionRef(sourceSessionId);
+      await ipcRenderer.invoke('sessions:abandonSessionCopy', source.scope, copyId);
     },
   },
   transcripts: {
@@ -1437,7 +1438,7 @@ const makaBridge = {
     async import(input: {
       adapterId: string;
       sourceSessionId: string;
-    }): Promise<ExternalSessionImportIpcResult> {
+    }): Promise<ExternalSessionImportIpcResult<DesktopSessionSummary>> {
       const scope = await activeRuntimeHostRef();
       const result = await ipcRenderer.invoke(
         'external-sessions:import', scope, input,
@@ -1448,11 +1449,23 @@ const makaBridge = {
     },
   },
   projects: {
-    getSnapshot(): Promise<DesktopProjectSnapshot> {
-      return invokeActiveRuntimeHost('projects:getSnapshot');
+    getSnapshot(sessionId?: string): Promise<DesktopProjectSnapshot> {
+      return sessionId
+        ? invokeSessionRuntimeHost('projects:getSnapshot', sessionId)
+        : invokeActiveRuntimeHost('projects:getSnapshot');
     },
-    subscribeChanges(handler: () => void): () => void {
-      return subscribeActiveRuntimeHostEvent('projects:changed', handler);
+    subscribeChanges(handler: () => void, sessionId?: string): () => void {
+      if (!sessionId) return subscribeActiveRuntimeHostEvent('projects:changed', handler);
+      let disposed = false;
+      let unsubscribe = (): void => {};
+      void runtimeHostSessionRef(sessionId).then((session) => {
+        if (disposed) return;
+        unsubscribe = subscribeRuntimeHostEvent('projects:changed', session.scope, handler);
+      }).catch(() => undefined);
+      return () => {
+        disposed = true;
+        unsubscribe();
+      };
     },
     add(): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
@@ -2499,11 +2512,7 @@ const makaBridge = {
           .catch(() => undefined);
         return;
       }
-      void runtimeHostScopeList()
-        .then((scopes) => {
-          for (const scope of scopes) ipcRenderer.send('browser:active-session', scope, null);
-        })
-        .catch(() => undefined);
+      ipcRenderer.send('browser:hide-active-session');
     },
     /** Mirror the panel strip's on-screen rect (null hides the native view). */
     setViewport(input: { sessionId: string; rect: BrowserViewRect | null }): void {

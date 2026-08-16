@@ -24,6 +24,12 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
   let shownBrowserSessionId: string | null = null;
   provideBrowserViewHost(createBrowserViewHost(deps.mainWindowController.getBrowserViews(), () => shownBrowserSessionId));
 
+  const hideActiveSession = (): void => {
+    shownBrowserSessionId = null;
+    deps.mainWindowController.getBrowserViews().hideAllExcept(null);
+    revokeHiddenBrowserActions(null);
+  };
+
   const requireBrowserTarget = (scope: unknown, target: unknown): string | undefined => {
     const host = requireDesktopTargetScope(scope);
     if (!deps.isHostActive(host)) throw new Error('Desktop Runtime Host identity is unavailable');
@@ -41,6 +47,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     deps.mainWindowController.getBrowserViews().hideAllExcept(shownBrowserSessionId);
     revokeHiddenBrowserActions(shownBrowserSessionId);
   });
+  ipcMain.on('browser:hide-active-session', hideActiveSession);
 
   ipcMain.on('browser:setViewport', (_event, scope: unknown, input: { sessionId?: unknown; rect?: BrowserViewRect | null }) => {
     let target: string | undefined;
@@ -89,9 +96,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     async retireTarget(scope) {
       const views = deps.mainWindowController.getBrowserViews();
       if (shownBrowserSessionId && belongsToTarget(shownBrowserSessionId, scope)) {
-        shownBrowserSessionId = null;
-        views.hideAllExcept(null);
-        revokeHiddenBrowserActions(null);
+        hideActiveSession();
       }
       const retired = views.sessionIds().filter((sessionId) => {
         return belongsToTarget(sessionId, scope);

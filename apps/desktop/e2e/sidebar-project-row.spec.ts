@@ -3,7 +3,12 @@ import {
   LONG_SIDEBAR_PROJECT_NAME,
   LONG_SIDEBAR_SESSION_PREFIX,
 } from '../src/main/e2e-fixture/seed-helpers';
+import type { Locator } from '@playwright/test';
 import { expect, test } from './fixtures';
+
+function sessionRow(sidebar: Locator, sessionId: string): Locator {
+  return sidebar.locator(`[data-session-id*=${JSON.stringify(sessionId)}]`);
+}
 
 test('project navigation and actions remain adjacent keyboard controls', async ({
   projectSidebarWindow: page,
@@ -71,9 +76,7 @@ test('task row action menu accepts pointer selection', async ({
   await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();
 
   const sidebar = page.getByRole('navigation', { name: '任务列表' });
-  const taskRow = sidebar.locator(
-    `[data-session-id="${LONG_SIDEBAR_SESSION_PREFIX}00"]`,
-  );
+  const taskRow = sessionRow(sidebar, `${LONG_SIDEBAR_SESSION_PREFIX}00`);
   await taskRow.hover();
   await taskRow.getByRole('button', { name: '任务操作', exact: true }).click();
 

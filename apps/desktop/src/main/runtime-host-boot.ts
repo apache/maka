@@ -574,16 +574,15 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
   {
     upgradePrompts: runtimeHostUpgradePrompts,
     onTargetStateChanged: (state) => {
+      const hostId = state.readiness === "ready"
+        ? state.candidate.client.hostId
+        : state.hostId;
       mainWindowController.send("runtime-host-profiles:changed", {
         epoch: state.epoch,
         profileId: state.target.profile.id,
         profileName: state.target.profile.name,
         profileKind: state.target.profile.kind,
-        ...(state.readiness === "ready"
-          ? { hostId: state.candidate.client.hostId }
-          : state.readiness !== "unavailable" && "hostId" in state && state.hostId
-            ? { hostId: state.hostId }
-            : {}),
+        ...(hostId ? { hostId } : {}),
         readiness: state.readiness,
         isDefault:
           (runtimeHostManager?.defaultProfileId() ??
@@ -611,22 +610,22 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
       }
     },
     onTargetRemoved: (state) => {
+      const hostId = state.readiness === "ready"
+        ? state.candidate.client.hostId
+        : state.hostId;
       mainWindowController.send("runtime-host-profiles:changed", {
         epoch: state.epoch,
         profileId: state.target.profile.id,
         profileName: state.target.profile.name,
         profileKind: state.target.profile.kind,
+        ...(hostId ? { hostId } : {}),
         readiness: "unavailable",
         isDefault:
           (runtimeHostManager?.defaultProfileId() ??
             runtimeHostStartup.preferences.defaultProfileId) === state.target.profile.id,
         removed: true,
       });
-      const scope = state.readiness === "ready"
-        ? { hostId: state.candidate.client.hostId, targetEpoch: state.epoch }
-        : "hostId" in state && state.hostId
-          ? { hostId: state.hostId, targetEpoch: state.epoch }
-          : undefined;
+      const scope = hostId ? { hostId, targetEpoch: state.epoch } : undefined;
       if (scope) {
         void browserIpc.retireTarget(scope).catch((error) =>
           console.error("[runtime-host] Browser target retirement failed:", error),

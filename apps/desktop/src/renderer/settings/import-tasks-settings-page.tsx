@@ -8,7 +8,7 @@ import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/Segme
 import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import type { ExternalSessionSummary } from '@maka/core/external-session';
-import type { SessionSummary } from '@maka/core/session';
+import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import { Spinner, useMountedRef, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, MessageSquare } from '@maka/ui/icons';
 import { getExternalSessionImportCopy } from '../locales/external-session-import-copy.js';
@@ -70,7 +70,7 @@ function isSameAttempt(
  */
 export function ImportTasksSettingsPage(props: {
   /** Hands the freshly imported task to the shell, which opens it. */
-  onImported(session: SessionSummary): void;
+  onImported(session: DesktopSessionSummary): void;
 }) {
   const locale = useUiLocale();
   const copy = getExternalSessionImportCopy(locale);

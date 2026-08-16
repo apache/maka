@@ -504,7 +504,7 @@ export interface MakaBridge {
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionSummary>;
     remove(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
     cleanupSessionCopy(sessionId: string): Promise<void>;
-    abandonSessionCopy(sessionId: string): Promise<void>;
+    abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
   };
   transcripts: {
     open(
@@ -522,11 +522,11 @@ export interface MakaBridge {
     import(input: {
       adapterId: string;
       sourceSessionId: string;
-    }): Promise<ExternalSessionImportIpcResult>;
+    }): Promise<ExternalSessionImportIpcResult<DesktopSessionSummary>>;
   };
   projects: {
-    getSnapshot(): Promise<DesktopProjectSnapshot>;
-    subscribeChanges(handler: () => void): () => void;
+    getSnapshot(sessionId?: string): Promise<DesktopProjectSnapshot>;
+    subscribeChanges(handler: () => void, sessionId?: string): () => void;
     add(): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     >;

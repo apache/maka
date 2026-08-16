@@ -757,7 +757,7 @@ function AppShellContent({
     activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const activeSession = sessions.find((session) => session.id === activeId);
-  const activeDesktopSession = activeSession as DesktopSessionSummary | undefined;
+  const activeDesktopSession = activeSession;
   // The shell's reading of the active live turn: streaming/settled flags, the
   // in-flight tool signal, and the #646 turn-wait cues, all derived from the
   // semantic snapshot rather than the projection (#1985).
@@ -1758,6 +1758,8 @@ function AppShellContent({
     projectInfo,
     projects,
     projectCapabilities,
+    activeProjectCapabilities,
+    localProjects,
     selectedProjectId,
     currentProjectId,
     currentProject,
@@ -1843,17 +1845,17 @@ function AppShellContent({
     projectPath: projectInfo?.projectPath,
   });
   const sessionProjectGroups = useMemo(
-    () => deriveDesktopSessionGroups(visibleSessions, projects, uiLocale),
-    [visibleSessions, projects, uiLocale],
+    () => deriveDesktopSessionGroups(visibleSessions, localProjects, uiLocale),
+    [visibleSessions, localProjects, uiLocale],
   );
   const worktreeSessionIds = useMemo(
     () => deriveWorktreeSessionIds(
       visibleSessions.filter(
-        (session) => (session as DesktopSessionSummary).profileKind !== 'remote',
+        (session) => session.profileKind !== 'remote',
       ),
-      projects,
+      localProjects,
     ),
-    [visibleSessions, projects],
+    [visibleSessions, localProjects],
   );
   // 已归档任务 reads the shell's catalog rather than listing again behind the
   // modal, and writes through the same row actions the rail uses — one owner
@@ -2671,8 +2673,9 @@ function AppShellContent({
     activePermissionMode,
     canSetPermissionMode: activeBoundarySurface.localInteractionAvailable,
     clientPathsAccessible:
-      projectCapabilities.viewClientPath &&
-      (!activeId || activeDesktopSession?.profileKind === 'local'),
+      activeId
+        ? activeProjectCapabilities.viewClientPath
+        : projectCapabilities.viewClientPath,
     connections: defaultHostConnections.snapshot.connections,
     defaultConnection: defaultHostConnections.snapshot.defaultConnection,
     dailyReviewBridge,
@@ -2792,8 +2795,7 @@ function AppShellContent({
                   titlebarProjectName
                     ? {
                         name: titlebarProjectName,
-                        ...(projectCapabilities.viewClientPath &&
-                        activeDesktopSession?.profileKind === 'local'
+                        ...(activeProjectCapabilities.viewClientPath
                           ? { onOpenFolder: () => void openProjectFolder() }
                           : {}),
                       }
@@ -3439,27 +3441,25 @@ function AppShellContent({
   );
 }
 
-function runtimeHostSessionMeta(session: SessionSummary): string | undefined {
-  const host = session as DesktopSessionSummary;
-  return host.profileKind === 'remote' ? host.profileName : undefined;
+function runtimeHostSessionMeta(session: DesktopSessionSummary): string | undefined {
+  return session.profileKind === 'remote' ? session.profileName : undefined;
 }
 
 function deriveDesktopSessionGroups(
-  sessions: readonly SessionSummary[],
+  sessions: readonly DesktopSessionSummary[],
   projects: readonly ProjectRecord[],
   locale: UiLocale,
 ): SessionHistoryGroup[] {
-  const local: SessionSummary[] = [];
-  const remote = new Map<string, { label: string; sessions: SessionSummary[] }>();
+  const local: DesktopSessionSummary[] = [];
+  const remote = new Map<string, { label: string; sessions: DesktopSessionSummary[] }>();
   for (const session of sessions) {
-    const host = session as DesktopSessionSummary;
-    if (host.profileKind !== 'remote') {
+    if (session.profileKind !== 'remote') {
       local.push(session);
       continue;
     }
-    const key = host.profileId ?? host.runtimeHostId;
+    const key = session.profileId;
     const group = remote.get(key) ?? {
-      label: host.profileName ?? host.runtimeHostId,
+      label: session.profileName,
       sessions: [],
     };
     group.sessions.push(session);

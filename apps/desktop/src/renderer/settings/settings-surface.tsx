@@ -25,7 +25,7 @@ import type {
   UsageStats,
 } from '@maka/core/settings';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
-import type { SessionSummary } from '@maka/core/session';
+import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { createDefaultSettings } from '@maka/core/settings';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
@@ -79,7 +79,7 @@ export function SettingsSurface(props: {
   onOpenKeyboardHelp?(): void;
   onOpenSession?(sessionId: string): void;
   archivedTasks: ArchivedTasksBridge;
-  onTaskImported(session: SessionSummary): void;
+  onTaskImported(session: DesktopSessionSummary): void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
@@ -405,7 +405,7 @@ function SettingsPageBody(props: {
   onOpenKeyboardHelp?(): void;
   onOpenSession?(sessionId: string): void;
   archivedTasks: ArchivedTasksBridge;
-  onTaskImported(session: SessionSummary): void;
+  onTaskImported(session: DesktopSessionSummary): void;
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;

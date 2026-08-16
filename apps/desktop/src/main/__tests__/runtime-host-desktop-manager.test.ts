@@ -250,7 +250,7 @@ test('waits for an in-flight remote enable before closing', async () => {
   assert.equal(remote.closeCalls, 1);
 });
 
-test('keeps Local usable when a remote Host is unavailable', async () => {
+test('keeps Local explicitly usable without routing default work away from an unavailable remote', async () => {
   const local = candidateHarness();
   let starts = 0;
   const removedDefaults: boolean[] = [];
@@ -267,10 +267,13 @@ test('keeps Local usable when a remote Host is unavailable', async () => {
 
   await assert.rejects(manager.enable(remoteTarget('offline')), /stopped responding/);
   manager.setDefaultProfile('offline');
-  await manager.handleBotIncomingMessage({ text: 'local' } as BotIncomingMessage);
+  await assert.rejects(
+    manager.handleBotIncomingMessage({ text: 'default' } as BotIncomingMessage),
+    /stopped responding/,
+  );
 
-  assert.equal(local.botMessages, 1);
-  assert.equal(manager.current()?.target.profile.id, 'local');
+  assert.equal(local.botMessages, 0);
+  assert.equal(manager.current(), undefined);
   assert.equal(manager.current('local')?.readiness, 'ready');
   assert.equal(manager.current('offline'), undefined);
   assert.equal(
@@ -280,7 +283,7 @@ test('keeps Local usable when a remote Host is unavailable', async () => {
   await manager.disable('offline');
   assert.deepEqual(removedDefaults, [true]);
   assert.equal(manager.defaultProfileId(), 'offline');
-  assert.equal(manager.current()?.target.profile.id, 'local');
+  assert.equal(manager.current(), undefined);
   await manager.close();
 });
 

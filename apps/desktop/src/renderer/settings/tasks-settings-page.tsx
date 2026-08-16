@@ -1,6 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
-import type { SessionSummary } from '@maka/core/session';
 import { formatCompactTimestamp } from '@maka/core/relative-time';
 import { Button, EmptyState, MoreMenu, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { Archive, ICON_SIZE, Search } from '@maka/ui/icons';
@@ -21,7 +20,7 @@ import { archivedTaskRows, matchesArchivedTaskQuery } from './task-catalog-rows'
  * not have to understand.
  */
 export interface ArchivedTasksBridge {
-  sessions: readonly SessionSummary[];
+  sessions: readonly DesktopSessionSummary[];
   projects: readonly ProjectRecord[];
   onRestore(sessionId: string): void;
   onDelete(sessionId: string): void;
@@ -70,9 +69,8 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
    * rather than something false.
    */
   const projectLabelOf = useCallback(
-    (session: SessionSummary): string | undefined => {
-      const desktopSession = session as DesktopSessionSummary;
-      if (desktopSession.profileKind === 'remote') return desktopSession.profileName;
+    (session: DesktopSessionSummary): string | undefined => {
+      if (session.profileKind === 'remote') return session.profileName;
       return session.projectId ? projectNames.get(session.projectId) : copy.noProject;
     },
     [copy.noProject, projectNames],

@@ -222,17 +222,16 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   }
 
   async handleBotIncomingMessage(message: BotIncomingMessage): Promise<void> {
-    const profileId = this.current()?.target.profile.id ?? LOCAL_RUNTIME_HOST_PROFILE.id;
+    const target = this.#requireTarget(this.#defaultProfileId);
+    if (target.state.readiness === 'unavailable') throw target.state.error;
     const candidate = await this.#waitForReadyCandidate(
-      this.#requireLifecycle(this.#requireTarget(profileId)),
+      this.#requireLifecycle(target),
     );
     await candidate.botIncoming.handleBotIncomingMessage(message);
   }
 
   current(profileId?: string): RuntimeHostDesktopTargetSnapshot | undefined {
-    const preferred = this.#current(profileId ?? this.#defaultProfileId);
-    if (preferred || profileId !== undefined) return preferred;
-    return this.#current(LOCAL_RUNTIME_HOST_PROFILE.id);
+    return this.#current(profileId ?? this.#defaultProfileId);
   }
 
   #current(profileId: string): RuntimeHostDesktopTargetSnapshot | undefined {

@@ -2,15 +2,15 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 
 export type SessionReadBoundaries = Record<string, number>;
 
-export interface SessionListRefresher {
-  refresh(): Promise<SessionSummary[]>;
+export interface SessionListRefresher<T extends SessionSummary = SessionSummary> {
+  refresh(): Promise<T[]>;
 }
 
-export interface SessionListRefresherOptions {
-  listSessions: () => Promise<SessionSummary[]>;
+export interface SessionListRefresherOptions<T extends SessionSummary = SessionSummary> {
+  listSessions: () => Promise<T[]>;
   readBoundaries: () => Readonly<SessionReadBoundaries>;
-  currentSessions: () => SessionSummary[];
-  commitSessions: (sessions: SessionSummary[]) => void;
+  currentSessions: () => T[];
+  commitSessions: (sessions: T[]) => void;
   onError: (error: unknown) => void;
 }
 
@@ -24,10 +24,10 @@ export function rememberSessionReadBoundary(
   boundaries[sessionId] = Math.max(boundaries[sessionId] ?? 0, boundary);
 }
 
-export function applySessionReadOverrides(
-  sessions: SessionSummary[],
+export function applySessionReadOverrides<T extends SessionSummary>(
+  sessions: T[],
   boundaries: Readonly<SessionReadBoundaries>,
-): SessionSummary[] {
+): T[] {
   let changed = false;
   const next = sessions.map((session) => {
     const boundary = boundaries[session.id];
@@ -39,22 +39,24 @@ export function applySessionReadOverrides(
   return changed ? next : sessions;
 }
 
-export function applyLocalSessionRead(
+export function applyLocalSessionRead<T extends SessionSummary>(
   boundaries: SessionReadBoundaries,
-  sessions: SessionSummary[],
+  sessions: T[],
   sessionId: string,
   readMessages: readonly StoredMessage[],
-): SessionSummary[] {
+): T[] {
   rememberSessionReadBoundary(boundaries, sessionId, readMessages);
   return applySessionReadOverrides(sessions, boundaries);
 }
 
-export function createSessionListRefresher(options: SessionListRefresherOptions): SessionListRefresher {
+export function createSessionListRefresher<T extends SessionSummary>(
+  options: SessionListRefresherOptions<T>,
+): SessionListRefresher<T> {
   let requestedGeneration = 0;
   let completedGeneration = 0;
-  let activeRefresh: Promise<SessionSummary[]> | undefined;
+  let activeRefresh: Promise<T[]> | undefined;
 
-  const drainRefreshes = async (): Promise<SessionSummary[]> => {
+  const drainRefreshes = async (): Promise<T[]> => {
     let result = options.currentSessions();
     while (completedGeneration < requestedGeneration) {
       // Session events can arrive in bursts (especially while spawning a swarm). Keep one
@@ -78,7 +80,7 @@ export function createSessionListRefresher(options: SessionListRefresherOptions)
   };
 
   return {
-    refresh(): Promise<SessionSummary[]> {
+    refresh(): Promise<T[]> {
       requestedGeneration += 1;
       if (!activeRefresh) {
         activeRefresh = drainRefreshes().finally(() => {

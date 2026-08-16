@@ -1,5 +1,6 @@
-import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
+import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import { userFacingText } from '@maka/core/session';
 import type { ComposerHandle } from '@maka/ui';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
@@ -69,12 +70,12 @@ export function createAppShellRevisionActions(deps: {
   hasPendingAttachments: () => boolean;
   openSessionInChat: (sessionId: string, turnId?: string) => void;
   refreshMessages: (sessionId: string) => Promise<boolean>;
-  refreshSessions: () => Promise<SessionSummary[]>;
+  refreshSessions: () => Promise<DesktopSessionSummary[]>;
   setMessages: MessageListUpdater;
   commitRevisionDraft: (draft: TurnRevisionDraft | null) => void;
   revisionDraftRef: RefBox<TurnRevisionDraft | null>;
   toastApi: ToastApi;
-  upsertSessionSummary: (session: SessionSummary) => void;
+  upsertSessionSummary: (session: DesktopSessionSummary) => void;
 }): AppShellRevisionActions {
   const {
     uiLocale,
@@ -187,7 +188,7 @@ export function createAppShellRevisionActions(deps: {
       setMessages([]);
       await refreshMessages(draft.sourceSessionId).catch(() => false);
     }
-    const abandonment = await abandonRevisionCopy(draft, revisionSessionId);
+    const abandonment = await abandonRevisionCopy(draft);
     const abandoningDraft = abandonment.draft;
     let restored: TurnRevisionDraft | undefined;
     if (current?.copyId === draft.copyId && revisionDraftRef.current === abandoningDraft) {
@@ -222,7 +223,6 @@ export function createAppShellRevisionActions(deps: {
 
   async function abandonRevisionCopy(
     draft: TurnRevisionDraft,
-    revisionSessionId: string,
   ): Promise<{ acknowledged: boolean; draft: TurnRevisionDraft }> {
     const tracked = abandonSessionCopyAttempt(
       revisionCopyKey(draft.sourceSessionId, draft.sourceTurnId),
@@ -240,7 +240,7 @@ export function createAppShellRevisionActions(deps: {
     try {
       // Main acknowledges only after the cleanup intent is durable; physical
       // removal may finish after this renderer has closed the draft.
-      await window.maka.sessions.abandonSessionCopy(revisionSessionId);
+      await window.maka.sessions.abandonSessionCopy(draft.sourceSessionId, draft.copyId);
       completeRevisionCopyAttempt(draft);
       return { acknowledged: true, draft: abandoningDraft };
     } catch {
@@ -257,7 +257,7 @@ export function createAppShellRevisionActions(deps: {
     if (draft.draftSessionId !== draft.sourceSessionId) return true;
 
     if (draft.copyPhase === 'abandoning') {
-      const abandonment = await abandonRevisionCopy(draft, draft.copyId);
+      const abandonment = await abandonRevisionCopy(draft);
       if (
         !abandonment.acknowledged ||
         revisionDraftRef.current !== abandonment.draft ||
@@ -357,7 +357,7 @@ export function createAppShellRevisionActions(deps: {
         ? draft.draftSessionId
         : draft.copyId
       : undefined;
-    if (cleanupSessionId) await abandonRevisionCopy(draft, cleanupSessionId);
+    if (cleanupSessionId) await abandonRevisionCopy(draft);
     else completeRevisionCopyAttempt(draft);
     commitRevisionDraft(null);
     composerRef.current?.setDraft(draft.sourceSessionId, draft.previousComposerText);
@@ -401,10 +401,8 @@ export async function abandonTurnRevisionCopyAttempt(
     sourceSessionId: draft.sourceSessionId,
   };
   abandonSessionCopyAttempt(key, draft.copyId);
-  const targetSessionId =
-    draft.draftSessionId === draft.sourceSessionId ? draft.copyId : draft.draftSessionId;
   try {
-    await window.maka.sessions.abandonSessionCopy(targetSessionId);
+    await window.maka.sessions.abandonSessionCopy(draft.sourceSessionId, draft.copyId);
     completeSessionCopyAttempt(key, draft.copyId);
     return true;
   } catch {

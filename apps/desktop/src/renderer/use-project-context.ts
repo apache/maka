@@ -48,6 +48,8 @@ export function useAppShellProjectContext(options: {
   projectInfo: RendererAppInfo | null;
   projects: ProjectRecord[];
   projectCapabilities: DesktopProjectCapabilities;
+  activeProjectCapabilities: DesktopProjectCapabilities;
+  localProjects: ProjectRecord[];
   selectedProjectId: string | null | undefined;
   currentProjectId: string | null | undefined;
   currentProject: ProjectRecord | undefined;
@@ -70,6 +72,11 @@ export function useAppShellProjectContext(options: {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [projectCapabilities, setProjectCapabilities] =
     useState<DesktopProjectCapabilities>(NO_PROJECT_CAPABILITIES);
+  const [sessionProjectSnapshot, setSessionProjectSnapshot] = useState<{
+    sessionId: string;
+    projects: ProjectRecord[];
+    capabilities: DesktopProjectCapabilities;
+  } | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null | undefined>(undefined);
   const [projectPickerPending, setProjectPickerPending] = useState(false);
   const projectPickerPendingRef = useRef(false);
@@ -106,11 +113,32 @@ export function useAppShellProjectContext(options: {
   }, []);
 
   useEffect(() => {
-    if (
-      !sessionId ||
-      sessionProfileKind === 'remote' ||
-      !projectCapabilities.viewClientPath
-    ) return;
+    if (!sessionId) {
+      setSessionProjectSnapshot(null);
+      return;
+    }
+    let cancelled = false;
+    const refresh = () => window.maka.projects.getSnapshot(sessionId).then(
+      (snapshot) => {
+        if (cancelled) return;
+        setSessionProjectSnapshot({
+          sessionId,
+          projects: [...snapshot.projects],
+          capabilities: snapshot.capabilities,
+        });
+      },
+      () => undefined,
+    );
+    const unsubscribe = window.maka.projects.subscribeChanges(() => void refresh(), sessionId);
+    void refresh();
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || sessionProfileKind !== 'local') return;
     let cancelled = false;
     void window.maka.app.sessionProjectInfo(sessionId).then(
       (info) => {
@@ -124,7 +152,7 @@ export function useAppShellProjectContext(options: {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, sessionCwd, sessionProfileKind, projectCapabilities.viewClientPath]);
+  }, [sessionId, sessionCwd, sessionProfileKind]);
 
   const resolvedSessionProjectInfo =
     sessionId &&
@@ -137,9 +165,16 @@ export function useAppShellProjectContext(options: {
       (sessionCwd ? { projectPath: sessionCwd, projectGit: { isGitRepo: false } } : null))
     : appInfo;
   const currentProjectId = sessionId ? (sessionProjectId ?? null) : selectedProjectId;
-  const currentProject = sessionProfileKind === 'remote'
+  const activeProjectSnapshot = sessionProjectSnapshot?.sessionId === sessionId
+    ? sessionProjectSnapshot
+    : null;
+  const activeProjectCapabilities = sessionId
+    ? (activeProjectSnapshot?.capabilities ?? NO_PROJECT_CAPABILITIES)
+    : projectCapabilities;
+  const activeProjects = sessionId ? (activeProjectSnapshot?.projects ?? []) : projects;
+  const currentProject = !activeProjectCapabilities.viewClientPath
     ? undefined
-    : projects.find(
+    : activeProjects.find(
         (project) =>
           project.id === currentProjectId || project.aliases?.includes(currentProjectId ?? ''),
       );
@@ -167,6 +202,12 @@ export function useAppShellProjectContext(options: {
     projectInfo,
     projects,
     projectCapabilities,
+    activeProjectCapabilities,
+    localProjects: sessionProfileKind === 'local'
+      ? activeProjects
+      : projectCapabilities.viewClientPath
+        ? projects
+        : [],
     selectedProjectId,
     currentProjectId,
     currentProject,
