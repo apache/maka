@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -70,6 +70,29 @@ test('rejects symlink or junction input before publication', async (t) => {
     }),
     /regular files and directories/u,
   );
+});
+
+test('excludes install-generated internal bin links from the published runtime', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const fixture = await createFixture();
+  t.after(fixture.remove);
+  const generatedBinRoot = join(fixture.inputs.sourceNpmRoot, 'node_modules', '.bin');
+  await mkdir(generatedBinRoot, { recursive: true });
+  await symlink(
+    join('..', '..', 'bin', 'npm-cli.js'),
+    join(generatedBinRoot, 'npm-internal'),
+    'file',
+  );
+  const runtimeOutputRoot = join(fixture.root, 'runtime', 'npm');
+
+  await prepareBundledNpm({
+    ...fixture.inputs,
+    runtimeOutputRoot,
+    outputPath: join(fixture.root, 'runtime', 'bundled-npm.json'),
+  });
+
+  await assert.rejects(access(join(runtimeOutputRoot, 'node_modules', '.bin')));
 });
 
 async function createFixture() {

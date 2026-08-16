@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { cp, lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, relative } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -76,7 +76,7 @@ export async function prepareBundledNpm({
     );
   }
 
-  await inventoryFiles(sourceNpmRoot);
+  await inventoryFiles(sourceNpmRoot, { ignoreGeneratedBinDirectories: true });
   for (const patch of BUNDLED_NPM_SECURITY_PATCHES) {
     await inventoryFiles(join(patchedPackagesRoot, patch.packageName));
   }
@@ -98,6 +98,7 @@ export async function prepareBundledNpm({
       verbatimSymlinks: true,
     });
   }
+  await removeGeneratedBinDirectories(runtimeOutputRoot);
   await requireRegularFile(join(runtimeOutputRoot, 'LICENSE'), 'npm license');
   await requireRegularFile(join(runtimeOutputRoot, 'bin', 'npm-cli.js'), 'npm CLI');
   const files = await inventoryFiles(runtimeOutputRoot);
@@ -172,20 +173,27 @@ async function requirePackageVersion(path, name, version, label) {
   }
 }
 
-async function inventoryFiles(root) {
+async function inventoryFiles(root, { ignoreGeneratedBinDirectories = false } = {}) {
   const files = [];
-  await walk(root, root, files);
+  await walk(root, root, files, { ignoreGeneratedBinDirectories });
   files.sort((left, right) => Buffer.from(left.path).compare(Buffer.from(right.path)));
   return files;
 }
 
-async function walk(root, directory, files) {
+async function walk(root, directory, files, options) {
   const entries = await readdir(directory, { withFileTypes: true });
   for (const entry of entries) {
     const absolutePath = join(directory, entry.name);
+    if (
+      options.ignoreGeneratedBinDirectories &&
+      entry.name === '.bin' &&
+      basename(directory) === 'node_modules'
+    ) {
+      continue;
+    }
     const info = await lstat(absolutePath);
     if (entry.isDirectory() && !info.isSymbolicLink()) {
-      await walk(root, absolutePath, files);
+      await walk(root, absolutePath, files, options);
       continue;
     }
     if (!entry.isFile() || info.isSymbolicLink()) {
@@ -196,6 +204,21 @@ async function walk(root, directory, files) {
       bytes: info.size,
       sha256: await sha256File(absolutePath),
     });
+  }
+}
+
+async function removeGeneratedBinDirectories(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    const absolutePath = join(directory, entry.name);
+    if (entry.name === '.bin' && basename(directory) === 'node_modules') {
+      await rm(absolutePath, { recursive: true, force: true });
+      continue;
+    }
+    const info = await lstat(absolutePath);
+    if (entry.isDirectory() && !info.isSymbolicLink()) {
+      await removeGeneratedBinDirectories(absolutePath);
+    }
   }
 }
 
