@@ -42,9 +42,11 @@ export function useShellChatModel(options: {
   chatModelChoices: ChatModelChoice[];
   sessionSendOutcome: SessionSendProjection | undefined;
   defaultConnection: string | null;
+  newTaskKey: string;
   activationCandidate?: NewChatModel;
   activeSession: SessionSummary | undefined;
   persistedComposerDefaults: ComposerDefaults | null;
+  usePersistedComposerDefaults: boolean;
   /** Settings → 通用 → 默认思考级别; undefined means "no preference". */
   defaultThinkingLevel?: ThinkingLevel;
   openSettingsSection: (section: SettingsSection) => void;
@@ -68,11 +70,18 @@ export function useShellChatModel(options: {
 } {
   const { uiLocale, connections, defaultConnection, activationCandidate, activeSession, persistedComposerDefaults, openSettingsSection } = options;
   const conversationCopy = getDesktopConversationCopy(uiLocale);
-  // Persisted composer defaults seed the empty-state model so the home view is
-  // populated before the async `app:info` round-trip completes on mount.
-  const [pendingNewChatModel, setPendingNewChatModel] = useState<NewChatModel | null>(
-    persistedComposerDefaults?.model ?? null,
-  );
+  const [pendingNewChatModelState, setPendingNewChatModelState] = useState<{
+    key: string;
+    value: NewChatModel | null;
+  }>();
+  const pendingNewChatModel = pendingNewChatModelState?.key === options.newTaskKey
+    ? pendingNewChatModelState.value
+    : options.usePersistedComposerDefaults
+      ? persistedComposerDefaults?.model ?? null
+      : null;
+  const setPendingNewChatModel = (value: NewChatModel | null) => {
+    setPendingNewChatModelState({ key: options.newTaskKey, value });
+  };
   const activeConnection = activeSession
     ? connections.find((connection) => connection.slug === activeSession.llmConnectionSlug)
     : undefined;
@@ -86,14 +95,19 @@ export function useShellChatModel(options: {
   // explicitly choosing 模型默认 for this one chat, which must beat the
   // configured default or the per-chat picker could not undo it.
   //
-  // The settings value is read here rather than seeded into useState because it
-  // arrives from an async settings fetch, after this hook first mounts — a
-  // useState initializer would silently keep the mount-time `undefined` and the
-  // setting would never take effect. (`persistedComposerDefaults` above can use
-  // an initializer only because it is read synchronously from localStorage.)
-  const [pendingNewChatThinkingLevel, setPendingNewChatThinkingLevel] = useState<
-    ThinkingLevel | null | undefined
-  >(undefined);
+  // The pick carries its target key so a Host or Project switch cannot apply it
+  // to a different execution authority, even for an identically named model.
+  const [pendingNewChatThinkingState, setPendingNewChatThinkingState] = useState<{
+    key: string;
+    value: ThinkingLevel | null;
+  }>();
+  const pendingNewChatThinkingLevel =
+    pendingNewChatThinkingState?.key === options.newTaskKey
+      ? pendingNewChatThinkingState.value
+      : undefined;
+  const setPendingNewChatThinkingLevel = (value: ThinkingLevel | null) => {
+    setPendingNewChatThinkingState({ key: options.newTaskKey, value });
+  };
   const requestedNewChatThinkingLevel =
     pendingNewChatThinkingLevel === undefined
       ? options.defaultThinkingLevel ?? null

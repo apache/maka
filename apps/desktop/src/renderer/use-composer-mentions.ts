@@ -48,6 +48,9 @@ export function useComposerMentions(options: {
       const context = {
         ...(newSessionModel ?? {}),
         collaborationMode: newSessionCollaborationMode ?? 'agent',
+        ...(newSessionPermissionMode
+          ? { permissionMode: newSessionPermissionMode }
+          : {}),
       } as const;
       const request = sessionId
         ? window.maka.skills.listInvocable(sessionId)

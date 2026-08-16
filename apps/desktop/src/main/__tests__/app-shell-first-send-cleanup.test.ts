@@ -90,6 +90,7 @@ function createActionsDeps() {
     toastApi: { error: () => undefined, info: () => undefined },
     upsertSessionSummary: () => undefined,
     newChatModel: null,
+    newChatPermissionMode: 'ask' as const,
     pendingNewChatThinkingLevel: null,
     newChatCollaborationMode: 'agent' as const,
     newChatOrchestrationMode: 'default' as const,
@@ -154,6 +155,7 @@ describe('composer first-send cleanup', () => {
     try {
       const deps = {
         ...createActionsDeps(),
+        newChatPermissionMode: 'bypass' as const,
         newChatModel: {
           llmConnectionSlug: 'opencode-free',
           model: 'mimo-v2.5-free',
@@ -169,6 +171,7 @@ describe('composer first-send cleanup', () => {
       'opencode-free',
     );
     assert.equal((createInput as { model?: unknown }).model, 'mimo-v2.5-free');
+    assert.equal((createInput as { permissionMode?: unknown }).permissionMode, 'bypass');
   });
 
   it('creates the first session on the selected Runtime Host and project', async () => {

@@ -9,6 +9,7 @@ import type {
 } from '@maka/core/llm-connections';
 import type {
   AppSettings,
+  ChatDefaultsSettings,
   SettingsTestResult,
   UpdateAppSettingsInput,
   UpdateAppSettingsResult,
@@ -251,11 +252,20 @@ export type DesktopNewTaskHost =
       readonly profile: RuntimeHostProfile;
       readonly hostId: string;
       readonly readiness: 'ready';
+      readonly state: 'available';
       readonly projects: readonly ProjectRecord[];
       readonly capabilities: DesktopProjectCapabilities;
       readonly selectedProjectId: string | null | undefined;
+      readonly chatDefaults: ChatDefaultsSettings;
       readonly projectPath?: string;
       readonly branch?: string;
+    }
+  | {
+      readonly profile: RuntimeHostProfile;
+      readonly hostId: string;
+      readonly readiness: 'ready';
+      readonly state: 'error';
+      readonly message: string;
     }
   | {
       readonly profile: RuntimeHostProfile;
@@ -413,6 +423,7 @@ export interface MakaBridge {
         llmConnectionSlug?: string;
         model?: string;
         collaborationMode?: 'agent' | 'plan';
+        permissionMode?: ChatDefaultsSettings['permissionMode'];
       },
     ): Promise<import('@maka/runtime/skill-invocation').InvocableSkillEntry[]>;
     getReadiness(

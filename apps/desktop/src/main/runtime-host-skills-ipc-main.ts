@@ -99,7 +99,9 @@ export function registerRuntimeHostSkillsIpc(
           context: { workspace },
           collaborationMode:
             normalizeNewSessionCollaborationMode(newSessionContext) ?? "agent",
-          permissionMode: await deps.getDefaultPermissionMode(),
+          permissionMode:
+            normalizeNewSessionPermissionMode(newSessionContext) ??
+            await deps.getDefaultPermissionMode(),
         };
       }
       return (await deps.client.listInvocableSkills(target)).map(
@@ -399,6 +401,14 @@ function normalizeNewSessionCollaborationMode(
   if (!input || typeof input !== "object" || Array.isArray(input)) return;
   const value = (input as Record<string, unknown>).collaborationMode;
   return value === "agent" || value === "plan" ? value : undefined;
+}
+
+function normalizeNewSessionPermissionMode(
+  input: unknown,
+): ChatDefaultPermissionMode | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return;
+  const value = (input as Record<string, unknown>).permissionMode;
+  return value === "ask" || value === "bypass" ? value : undefined;
 }
 
 function normalizeNewSessionProjectId(input: unknown): string | null | undefined {

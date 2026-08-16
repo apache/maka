@@ -78,6 +78,7 @@ test("binds new-session Skill discovery to its explicit Project", async () => {
     await handler({} as never, undefined, {
       projectId: "project-docs",
       collaborationMode: "plan",
+      permissionMode: "bypass",
     }),
     [],
   );
@@ -86,6 +87,6 @@ test("binds new-session Skill discovery to its explicit Project", async () => {
     kind: "new_session",
     context: { workspace: { kind: "project", projectId: "project-docs" } },
     collaborationMode: "plan",
-    permissionMode: "ask",
+    permissionMode: "bypass",
   });
 });

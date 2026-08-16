@@ -7,7 +7,10 @@ import type {
 } from '../preload/bridge-contract.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 
-type ReadyHost = Extract<DesktopNewTaskHost, { readonly readiness: 'ready' }>;
+type ReadyHost = Extract<
+  DesktopNewTaskHost,
+  { readonly readiness: 'ready'; readonly state: 'available' }
+>;
 
 type ToastApi = {
   error(title: string, description?: string): void;
@@ -27,15 +30,32 @@ export function useNewTaskTarget(options: {
     () => new Map<string, string | null>(),
   );
   const [pending, setPending] = useState(false);
+  const [refreshing, setRefreshing] = useState(true);
+  const [error, setError] = useState<string>();
   const refreshSequence = useRef(0);
 
   async function refresh(): Promise<DesktopNewTaskCatalog> {
     const sequence = ++refreshSequence.current;
-    const next = await window.maka.newTasks.getCatalog();
-    if (refreshSequence.current !== sequence) return next;
-    setCatalog(next);
-    setSelectedProfileId((current) => current ?? next.defaultProfileId);
-    return next;
+    setRefreshing(true);
+    try {
+      const next = await window.maka.newTasks.getCatalog();
+      if (refreshSequence.current !== sequence) return next;
+      setCatalog(next);
+      setError(undefined);
+      setSelectedProfileId((current) => selectAvailableProfile(next, current));
+      return next;
+    } catch (cause) {
+      if (refreshSequence.current === sequence) {
+        setError(localizedShellErrorMessage(
+          cause,
+          copy.catalogUnavailable,
+          options.uiLocale,
+        ));
+      }
+      throw cause;
+    } finally {
+      if (refreshSequence.current === sequence) setRefreshing(false);
+    }
   }
 
   useEffect(() => {
@@ -51,7 +71,9 @@ export function useNewTaskTarget(options: {
 
   const selectedHost = catalog.hosts.find(
     (host): host is ReadyHost =>
-      host.profile.id === selectedProfileId && host.readiness === 'ready',
+      host.profile.id === selectedProfileId &&
+      host.readiness === 'ready' &&
+      host.state === 'available',
   );
   const selectedProjectId = selectedHost
     ? resolveProjectSelection(selectedHost, projectSelections.get(selectedHost.profile.id))
@@ -70,7 +92,9 @@ export function useNewTaskTarget(options: {
     (selectedProjectId === null ? selectedHost?.projectPath : undefined);
   const localHost = catalog.hosts.find(
     (host): host is ReadyHost =>
-      host.profile.kind === 'local' && host.readiness === 'ready',
+      host.profile.kind === 'local' &&
+      host.readiness === 'ready' &&
+      host.state === 'available',
   );
 
   const selectProject = (host: ReadyHost, projectId: string): void => {
@@ -146,12 +170,31 @@ export function useNewTaskTarget(options: {
     projectPath,
     localHost,
     pending,
+    refreshing,
+    error,
     refresh,
     selectProject,
     selectNoProject,
     addProject,
     relinkProject,
   };
+}
+
+function selectAvailableProfile(
+  catalog: DesktopNewTaskCatalog,
+  current: string | undefined,
+): string | undefined {
+  const available = catalog.hosts.filter(
+    (host): host is ReadyHost =>
+      host.readiness === 'ready' && host.state === 'available',
+  );
+  if (current && available.some((host) => host.profile.id === current)) return current;
+  if (available.some((host) => host.profile.id === catalog.defaultProfileId)) {
+    return catalog.defaultProfileId;
+  }
+  return available[0]?.profile.id ??
+    catalog.hosts.find((host) => host.profile.id === catalog.defaultProfileId)?.profile.id ??
+    catalog.hosts[0]?.profile.id;
 }
 
 function resolveProjectSelection(

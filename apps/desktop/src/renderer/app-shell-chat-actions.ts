@@ -5,6 +5,7 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { StoredMessage } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
@@ -71,6 +72,7 @@ export type { RefreshMessagesOptions };
 type ComposerImportOwner = {
   sessionId: string | undefined;
   navSection: NavSelection['section'];
+  newTaskDraftKey?: string;
 };
 
 type RefBox<T> = { current: T };
@@ -167,6 +169,7 @@ export function createAppShellChatActions(deps: {
   upsertSessionSummary: (session: DesktopSessionSummary) => void;
   newChatModel: PendingNewChatModel;
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
+  newChatPermissionMode: ChatDefaultPermissionMode;
   newChatCollaborationMode: CollaborationMode;
   newChatOrchestrationMode: OrchestrationMode;
   newTaskTarget: DesktopNewTaskTarget | undefined;
@@ -198,6 +201,7 @@ export function createAppShellChatActions(deps: {
     upsertSessionSummary,
     newChatModel,
     pendingNewChatThinkingLevel,
+    newChatPermissionMode,
     newChatCollaborationMode,
     newChatOrchestrationMode,
     newTaskTarget,
@@ -386,6 +390,7 @@ export function createAppShellChatActions(deps: {
               }
             : {}),
           ...(pendingNewChatThinkingLevel ? { thinkingLevel: pendingNewChatThinkingLevel } : {}),
+          permissionMode: newChatPermissionMode,
           collaborationMode: newChatCollaborationMode,
           orchestrationMode: newChatOrchestrationMode,
         });

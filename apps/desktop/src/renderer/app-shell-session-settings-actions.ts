@@ -43,7 +43,7 @@ export function createAppShellSessionSettingsActions(deps: {
     model: { llmConnectionSlug: string; model: string };
   }) => void;
   sessionsRef: RefBox<DesktopSessionSummary[]>;
-  setDefaultPermissionMode: (mode: ChatDefaultPermissionMode) => void;
+  setNewTaskPermissionMode: (mode: ChatDefaultPermissionMode) => void;
   setPendingPermissionModeBySession: BooleanRecordUpdater;
   setPendingSessionModelBySession: BooleanRecordUpdater;
   setSessions: (
@@ -61,7 +61,7 @@ export function createAppShellSessionSettingsActions(deps: {
     refreshSessions,
     saveComposerDefaults,
     sessionsRef,
-    setDefaultPermissionMode,
+    setNewTaskPermissionMode,
     setPendingPermissionModeBySession,
     setPendingSessionModelBySession,
     setSessions,
@@ -122,17 +122,13 @@ export function createAppShellSessionSettingsActions(deps: {
           prev.map((session) => (session.id === sessionId ? next : session)),
         );
       } else {
-        const result = await window.maka.settings.update({
-          chatDefaults: { permissionMode: mode },
-        });
-        nextMode = result.settings.chatDefaults.permissionMode;
-        setDefaultPermissionMode(nextMode);
+        setNewTaskPermissionMode(mode);
       }
       toastApi.success(
         copy.permissionSwitched(copy.permissionLabels[nextMode]),
         copy.permissionDescriptions[nextMode],
       );
-      await refreshSessions();
+      if (sessionId) await refreshSessions();
     } catch (error) {
       toastApi.error(copy.permissionFailedTitle, localizedShellErrorMessage(error, copy.permissionFallback, uiLocale));
     } finally {

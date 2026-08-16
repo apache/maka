@@ -331,7 +331,7 @@ async function newTaskHostScope(host: DesktopNewTaskHostRef): Promise<DesktopTar
 }
 
 async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
-  while (true) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     const generation = activeRuntimeHostGeneration;
     const profiles = await ipcRenderer.invoke(
       'runtime-host-profiles:getSnapshot',
@@ -353,17 +353,20 @@ async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
         const host = { profileId: entry.profile.id, hostId: entry.hostId };
         try {
           const scope = await newTaskHostScope(host);
-          const [snapshot, info] = await Promise.all([
+          const [snapshot, info, settings] = await Promise.all([
             ipcRenderer.invoke('projects:getSnapshot', scope) as Promise<DesktopProjectSnapshot>,
             ipcRenderer.invoke('app:info', scope) as Promise<DesktopAppInfo>,
+            ipcRenderer.invoke('settings:get', scope) as Promise<AppSettings>,
           ]);
           return {
             profile: entry.profile,
             hostId: entry.hostId,
             readiness: 'ready',
+            state: 'available',
             projects: snapshot.projects,
             capabilities: snapshot.capabilities,
             selectedProjectId: info.projectId,
+            chatDefaults: settings.chatDefaults,
             ...(snapshot.capabilities.viewClientPath && info.projectPath
               ? { projectPath: info.projectPath }
               : {}),
@@ -372,7 +375,9 @@ async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
         } catch (error) {
           return {
             profile: entry.profile,
-            readiness: 'reconnecting',
+            hostId: entry.hostId,
+            readiness: 'ready',
+            state: 'error',
             message: error instanceof Error ? error.message : String(error),
           };
         }
@@ -381,6 +386,7 @@ async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
     if (generation !== activeRuntimeHostGeneration) continue;
     return { defaultProfileId: profiles.defaultProfileId, hosts };
   }
+  throw new Error('Runtime Host targets changed while the new-task catalog was loading');
 }
 
 async function invokeActiveRuntimeHost<T>(channel: string, ...args: unknown[]): Promise<T> {
@@ -1069,6 +1075,7 @@ const makaBridge = {
         llmConnectionSlug?: string;
         model?: string;
         collaborationMode?: 'agent' | 'plan';
+        permissionMode?: import('@maka/core/settings').ChatDefaultPermissionMode;
       },
     ) {
       return ipcRenderer.invoke(

@@ -297,6 +297,8 @@ export const Composer = forwardRef<
      * constant footprint (#740).
      */
     noModelConnection?: boolean;
+    /** Optional Host-aware replacement for the generic no-model hint. */
+    noModelHint?: string;
     /**
      * Optional edit-and-resend banner above the composer. Desktop owns the
      * revision draft; Composer only renders the notice + cancel affordance.
@@ -1350,7 +1352,7 @@ export const Composer = forwardRef<
     <>
       {!props.hidden && noModelConnection && (
         <div className="maka-composer-no-model-hint" role="status">
-          <span>{copy.noModelHint}</span>
+          <span>{props.noModelHint ?? copy.noModelHint}</span>
           {props.onOpenModelSettings && (
             <UiButton
               variant="ghost"

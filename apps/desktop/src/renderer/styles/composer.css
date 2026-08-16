@@ -411,6 +411,10 @@
   border-top: 1px solid var(--border);
 }
 
+.maka-workspace-picker-scroll + .maka-workspace-picker-actions {
+  border-top: 1px solid var(--border);
+}
+
 .maka-workspace-picker-group-label {
   display: flex;
   justify-content: space-between;

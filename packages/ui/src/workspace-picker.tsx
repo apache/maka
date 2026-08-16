@@ -1,6 +1,6 @@
 import type { ProjectRecord } from '@maka/core/project';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
-import { ICON_SIZE, AlertTriangle, Check, FolderOpen, Network, Plus, X } from './icons.js';
+import { ICON_SIZE, AlertTriangle, Check, FolderOpen, Network, Plus, RefreshCcw, X } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
@@ -24,6 +24,7 @@ export interface WorkspacePickerModel {
   pending?: boolean;
   selectedGroupId?: string;
   groups: readonly WorkspacePickerGroup[];
+  retry?: { label: string; onClick(): void };
 }
 
 export function WorkspacePicker({ workspacePicker: picker }: {
@@ -31,6 +32,7 @@ export function WorkspacePicker({ workspacePicker: picker }: {
 }) {
   const copy = getConversationCopy(useUiLocale()).workspace;
   const locked = picker.pending === true;
+  const selectedGroup = picker.groups.find((group) => group.id === picker.selectedGroupId);
 
   return (
     <DropdownMenu
@@ -60,7 +62,7 @@ export function WorkspacePicker({ workspacePicker: picker }: {
         ),
       }}
     >
-      <div className="maka-workspace-picker-scroll">
+      {picker.groups.length > 0 ? <div className="maka-workspace-picker-scroll">
         {picker.groups.map((group) => (
           <div
             key={group.id}
@@ -104,29 +106,40 @@ export function WorkspacePicker({ workspacePicker: picker }: {
                 />
               );
             })}
-            {group.onAdd ? (
-              <DropdownMenuItem
-                icon={<Plus size={ICON_SIZE.meta} aria-hidden="true" />}
-                label={copy.addProject}
-                isDisabled={locked || group.disabled}
-                onClick={group.onAdd}
-              />
-            ) : null}
-            {group.onSelectNoProject ? (
-              <DropdownMenuItem
-                icon={<X size={ICON_SIZE.meta} aria-hidden="true" />}
-                label={copy.noProject}
-                endContent={picker.selectedGroupId === group.id &&
-                    group.selectedProjectId === null
-                  ? <Check size={ICON_SIZE.control} aria-hidden="true" />
-                  : undefined}
-                isDisabled={locked || group.disabled}
-                onClick={group.onSelectNoProject}
-              />
-            ) : null}
           </div>
         ))}
-      </div>
+      </div> : null}
+      {selectedGroup?.onAdd || selectedGroup?.onSelectNoProject || picker.retry ? (
+        <div role="group" className="maka-workspace-picker-actions">
+          {selectedGroup?.onAdd ? (
+            <DropdownMenuItem
+              icon={<Plus size={ICON_SIZE.meta} aria-hidden="true" />}
+              label={copy.addProject}
+              isDisabled={locked || selectedGroup.disabled}
+              onClick={selectedGroup.onAdd}
+            />
+          ) : null}
+          {selectedGroup?.onSelectNoProject ? (
+            <DropdownMenuItem
+              icon={<X size={ICON_SIZE.meta} aria-hidden="true" />}
+              label={copy.noProject}
+              endContent={selectedGroup.selectedProjectId === null
+                ? <Check size={ICON_SIZE.control} aria-hidden="true" />
+                : undefined}
+              isDisabled={locked || selectedGroup.disabled}
+              onClick={selectedGroup.onSelectNoProject}
+            />
+          ) : null}
+          {picker.retry ? (
+            <DropdownMenuItem
+              icon={<RefreshCcw size={ICON_SIZE.meta} aria-hidden="true" />}
+              label={picker.retry.label}
+              isDisabled={locked}
+              onClick={picker.retry.onClick}
+            />
+          ) : null}
+        </div>
+      ) : null}
     </DropdownMenu>
   );
 }

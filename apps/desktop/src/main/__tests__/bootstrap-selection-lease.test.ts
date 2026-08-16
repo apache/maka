@@ -107,9 +107,11 @@ describe('bootstrap selection lease', () => {
       removeItem: (key: string) => void values.delete(key),
     };
     markNewTaskReloadIntent(storage);
-    writeNewTaskReloadDraft('unfinished prompt', storage);
+    const draftKey = '["new-task","office","host-office","project-docs"]';
+    writeNewTaskReloadDraft(draftKey, 'unfinished prompt', storage);
     assert.deepEqual(readNewTaskReloadIntent(storage), {
       draft: 'unfinished prompt',
+      draftKey,
     });
   });
 });

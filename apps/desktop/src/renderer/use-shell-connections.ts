@@ -18,7 +18,6 @@ const EMPTY_SNAPSHOT: DesktopConnectionSnapshot = {
 };
 
 const NO_HOST_KEY = 'none';
-const DEFAULT_HOST_KEY = 'default';
 
 /**
  * Owns one Host's atomic connection projection and refresh lifecycle.
@@ -28,10 +27,10 @@ export function useShellConnections(options: {
   uiLocale: UiLocale;
   activeSessionId?: string;
   newTaskHost?: DesktopNewTaskHostRef;
-  defaultHost?: boolean;
 }): {
   snapshot: DesktopConnectionSnapshot;
-  setSnapshot: (next: DesktopConnectionSnapshot) => void;
+  hasSnapshot: boolean;
+  seedSnapshot: (next: DesktopConnectionSnapshot) => void;
   refreshConnections: (sessionId?: string) => Promise<void>;
   handleConnectionEvent: (event: ConnectionEvent) => void;
 } {
@@ -39,7 +38,7 @@ export function useShellConnections(options: {
   const copy = getShellRemainingCopy(uiLocale).connections;
   const snapshotKey = options.activeSessionId
     ? parseDesktopSessionKey(options.activeSessionId).hostId
-    : options.newTaskHost?.hostId ?? (options.defaultHost ? DEFAULT_HOST_KEY : NO_HOST_KEY);
+    : options.newTaskHost?.hostId ?? NO_HOST_KEY;
   const currentKey = useRef(snapshotKey);
   useLayoutEffect(() => {
     currentKey.current = snapshotKey;
@@ -50,28 +49,34 @@ export function useShellConnections(options: {
   const refreshSequence = useRef(new Map<string, number>());
 
   useLayoutEffect(() => {
-    if (!options.activeSessionId && (options.newTaskHost || options.defaultHost)) {
+    if (!options.activeSessionId && options.newTaskHost) {
       void refreshConnections();
     }
-  }, [options.activeSessionId, options.newTaskHost?.hostId, options.defaultHost]);
+  }, [options.activeSessionId, options.newTaskHost?.hostId]);
 
-  function setSnapshot(next: DesktopConnectionSnapshot) {
-    setSnapshots((previous) => new Map(previous).set(snapshotKey, next));
+  function seedSnapshot(next: DesktopConnectionSnapshot) {
+    setSnapshots((previous) =>
+      previous.has(snapshotKey) ? previous : new Map(previous).set(snapshotKey, next),
+    );
   }
 
   async function refreshConnections(sessionId?: string) {
+    const newTaskHost = options.newTaskHost;
     const key = sessionId
       ? parseDesktopSessionKey(sessionId).hostId
-      : options.newTaskHost?.hostId ?? (options.defaultHost ? DEFAULT_HOST_KEY : NO_HOST_KEY);
-    if (!sessionId && !options.newTaskHost && !options.defaultHost) return;
+      : newTaskHost?.hostId ?? NO_HOST_KEY;
+    if (!sessionId && !newTaskHost) return;
     const sequence = (refreshSequence.current.get(key) ?? 0) + 1;
     refreshSequence.current.set(key, sequence);
     try {
-      const next = sessionId
-        ? await window.maka.connections.getSnapshot(sessionId)
-        : options.newTaskHost
-          ? await window.maka.newTasks.getConnections(options.newTaskHost)
-          : await window.maka.connections.getSnapshot();
+      let next: DesktopConnectionSnapshot;
+      if (sessionId) {
+        next = await window.maka.connections.getSnapshot(sessionId);
+      } else if (newTaskHost) {
+        next = await window.maka.newTasks.getConnections(newTaskHost);
+      } else {
+        return;
+      }
       if (refreshSequence.current.get(key) !== sequence) return;
       setSnapshots((previous) => new Map(previous).set(key, next));
     } catch (error) {
@@ -93,7 +98,8 @@ export function useShellConnections(options: {
 
   return {
     snapshot: snapshots.get(snapshotKey) ?? EMPTY_SNAPSHOT,
-    setSnapshot,
+    hasSnapshot: snapshots.has(snapshotKey),
+    seedSnapshot,
     refreshConnections,
     handleConnectionEvent,
   };
