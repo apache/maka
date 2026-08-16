@@ -56,7 +56,10 @@
     "smoke:windows": "npm run build && npm run smoke:windows:dist",
     "smoke:windows:dist": "node scripts/windows-smoke.mjs",
     "prepare:bundled-git": "node scripts/prepare-bundled-git.mjs",
-    "prepare:bundled-git-source": "node scripts/prepare-bundled-git-source.mjs"
+    "prepare:bundled-git-source": "node scripts/prepare-bundled-git-source.mjs",
+    "prepare:bundled-npm": "node scripts/prepare-bundled-npm.mjs",
+    "verify:bundled-npm": "node scripts/verify-bundled-npm-runtime.mjs",
+    "audit:bundled-npm": "npm audit --prefix apps/desktop/.generated/bundled-npm/audit --omit=dev --audit-level=high"
   },
   "devDependencies": {
     "@ai-sdk/provider-utils": "5.0.27",
@@ -64,10 +67,15 @@
     "@astryxdesign/core": "0.4.0",
     "@biomejs/biome": "2.5.6",
     "@types/node": "^26.1.2",
+    "brace-expansion": "5.0.9",
     "dugite": "3.2.2",
+    "ip-address": "10.4.0",
     "knip": "^6.26.0",
+    "npm": "12.0.2",
     "patch-package": "8.0.1",
-    "typescript": "^7.0.2"
+    "tar": "7.5.22",
+    "typescript": "^7.0.2",
+    "undici": "6.28.0"
   },
   "allowScripts": {
     "esbuild@0.27.7": true,

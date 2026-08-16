@@ -96,6 +96,33 @@ test('public Store mutation waits for a child-held writer lock and preserves met
   });
 });
 
+test('an aborted artifact writer admission stops waiting for a child-held lock', {
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  await withTemporaryDirectory(async (root) => {
+    const stateRoot = join(root, 'state');
+    const holder = await spawnLockHolder(stateRoot);
+    const abort = new AbortController();
+    let entered = false;
+    try {
+      const admission = withArtifactWriterLock(
+        stateRoot,
+        async () => {
+          entered = true;
+        },
+        abort.signal,
+      );
+      await assertPending(admission, 'abortable artifact writer admission');
+      abort.abort(new DOMException('Baseline admission cancelled', 'AbortError'));
+
+      await assert.rejects(admission, { name: 'AbortError' });
+      assert.equal(entered, false);
+    } finally {
+      await stopHolder(holder);
+    }
+  });
+});
+
 test('public Store mutations in separate processes reload and publish under one OS lock', {
   timeout: TEST_TIMEOUT_MS,
 }, async () => {

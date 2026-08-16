@@ -27,6 +27,13 @@ interface WorkspaceBaselineAuthorityRegistration {
   boundRootId?: string;
 }
 
+export class WorkspaceStorageRootAdoptionRequiredError extends Error {
+  constructor() {
+    super('Unbound operational data require explicit storage-root adoption');
+    this.name = 'WorkspaceStorageRootAdoptionRequiredError';
+  }
+}
+
 const workspaceBaselineAuthorityWriters = new WeakMap<
   object,
   WorkspaceBaselineAuthorityRegistration

@@ -1022,6 +1022,50 @@ test('reissues execution authority after a real process crash during admission v
   }
 });
 
+test('rejects reopening an accepted baseline after the source HEAD advances', async () => {
+  const root = await temporaryRoot();
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createEligibleSource(join(root, 'source'));
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  try {
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+    });
+    const request = openRequest(sourceRoot);
+    await owner.openManagedWorkspaceBaseline(runtimeStore, request);
+
+    await writeFile(join(sourceRoot, 'tracked.txt'), 'advanced\n', 'utf8');
+    await git(sourceRoot, 'add', 'tracked.txt');
+    await git(
+      sourceRoot,
+      '-c',
+      'user.name=Maka Test',
+      '-c',
+      'user.email=test@maka.invalid',
+      'commit',
+      '--quiet',
+      '-m',
+      'advance source',
+    );
+
+    await assert.rejects(
+      owner.openManagedWorkspaceBaseline(runtimeStore, request),
+      /source no longer matches its accepted Git boundary/u,
+    );
+    await owner.close();
+  } finally {
+    runtimeStore.close();
+    await rootOwner.close();
+  }
+});
+
 test('rejects a source tree containing a non-UTF-8 Git path', {
   skip: process.platform === 'win32',
 }, async () => {

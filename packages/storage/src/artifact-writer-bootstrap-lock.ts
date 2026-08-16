@@ -2,13 +2,15 @@
 
 import { constants as fsConstants } from 'node:fs';
 import { lstat, open, type FileHandle } from 'node:fs/promises';
-import { unlock, waitForLock } from 'fs-native-extensions';
+import { setTimeout as delay } from 'node:timers/promises';
+import { tryLock, unlock, waitForLock } from 'fs-native-extensions';
 
 const lockGates = new Map<string, Promise<void>>();
 
 export async function withArtifactWriterBootstrapLock<T>(
   lockPath: string,
   operation: () => Promise<T>,
+  abortSignal?: AbortSignal,
 ): Promise<T> {
   const previous = lockGates.get(lockPath);
   let releaseGate!: () => void;
@@ -16,8 +18,9 @@ export async function withArtifactWriterBootstrapLock<T>(
     releaseGate = resolve;
   });
   lockGates.set(lockPath, current);
-  await previous?.catch(() => {});
   try {
+    if (previous) await waitForGate(previous, abortSignal);
+    abortSignal?.throwIfAborted();
     const handle = await open(
       lockPath,
       fsConstants.O_CREAT | fsConstants.O_RDWR | fsConstants.O_NOFOLLOW,
@@ -27,9 +30,10 @@ export async function withArtifactWriterBootstrapLock<T>(
     try {
       await assertStableRegularFile(handle, lockPath);
       if (process.platform !== 'win32') await handle.chmod(0o600);
-      await waitForLock(handle.fd);
+      await acquireLock(handle.fd, abortSignal);
       locked = true;
       await assertStableRegularFile(handle, lockPath);
+      abortSignal?.throwIfAborted();
       return await operation();
     } finally {
       if (locked) releaseLock(handle);
@@ -39,6 +43,41 @@ export async function withArtifactWriterBootstrapLock<T>(
     releaseGate();
     if (lockGates.get(lockPath) === current) lockGates.delete(lockPath);
   }
+}
+
+async function acquireLock(fd: number, abortSignal: AbortSignal | undefined): Promise<void> {
+  if (!abortSignal) {
+    await waitForLock(fd);
+    return;
+  }
+  abortSignal.throwIfAborted();
+  while (!tryLock(fd)) {
+    await delay(25, undefined, { signal: abortSignal });
+  }
+}
+
+async function waitForGate(
+  gate: Promise<void>,
+  abortSignal: AbortSignal | undefined,
+): Promise<void> {
+  if (!abortSignal) {
+    await gate.catch(() => {});
+    return;
+  }
+  abortSignal.throwIfAborted();
+  await Promise.race([
+    gate.catch(() => {}),
+    new Promise<never>((_resolve, reject) => {
+      const onAbort = () =>
+        reject(
+          abortSignal.reason instanceof Error
+            ? abortSignal.reason
+            : new DOMException('Artifact writer admission was aborted', 'AbortError'),
+        );
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+      gate.finally(() => abortSignal.removeEventListener('abort', onAbort)).catch(() => {});
+    }),
+  ]);
 }
 
 async function assertStableRegularFile(handle: FileHandle, lockPath: string): Promise<void> {

@@ -88,6 +88,7 @@ export async function verifyPackagedWindowsApp(
     smokeRenderer = smokePackagedRenderer,
     workingDirectory = appDirectory,
     expectedVersion,
+    requireBundledNpm = true,
   } = {},
 ) {
   const desktopManifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
@@ -97,7 +98,7 @@ export async function verifyPackagedWindowsApp(
 
   step('checking packaged resources');
   await requirePath(executable);
-  await assertPackagedResources(resources, { requirePath, forbidPath });
+  await assertPackagedResources(resources, { requirePath, forbidPath, requireBundledNpm });
   await requirePath(join(resources, 'git', 'cmd', 'git.exe'));
 
   step('reading the executable architecture');
