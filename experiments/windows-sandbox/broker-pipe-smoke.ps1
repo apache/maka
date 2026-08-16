@@ -25,7 +25,7 @@ $launch = @{
   cwd = Split-Path -Parent $launcher
   readRoots = @()
   writeRoots = @()
-  network = 'enabled'
+  network = 'restricted'
   environment = @{}
 }
 $digestInput = Join-Path $env:RUNNER_TEMP "maka-windows-digest-$PID.json"
