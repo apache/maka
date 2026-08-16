@@ -12,7 +12,10 @@ import {
 } from '../operational-state-backup.js';
 import { buildWorkBoardListStatement } from '../work-board-list-query.js';
 import { createWorkBoardStore, WorkBoardStoreError } from '../work-board-store.js';
-import { WORK_BOARD_DEFAULT_PAGE_SIZE } from '@maka/core/work-board';
+import {
+  WORK_BOARD_DEFAULT_PAGE_SIZE,
+  WORK_BOARD_PROJECT_ID_MAX_CHARS,
+} from '@maka/core/work-board';
 
 describe('Work Board store', () => {
   test('persists items across reopen', async () => {
@@ -257,6 +260,36 @@ describe('Work Board store', () => {
         const secondItem = secondPage.items[0];
         assert.ok(secondItem);
         assert.notEqual(secondItem.id, firstItem.id);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  test('round-trips pagination cursors with a maximum-length project id', async () => {
+    await withTempRoot(async (root) => {
+      const store = createWorkBoardStore(root);
+      try {
+        const projectId = 'p'.repeat(WORK_BOARD_PROJECT_ID_MAX_CHARS);
+        for (let index = 0; index < 2; index += 1) {
+          await store.create(
+            itemInput({
+              title: `long-project-${index}`,
+              scope: { kind: 'project', projectId },
+            }),
+            100 + index,
+          );
+        }
+
+        const first = await store.list({ limit: 1, scope: { kind: 'project', projectId } });
+        assert.ok(first.nextCursor);
+        const second = await store.list({
+          limit: 1,
+          scope: { kind: 'project', projectId },
+          cursor: first.nextCursor,
+        });
+        assert.equal(second.items.length, 1);
+        assert.notEqual(second.items[0]?.id, first.items[0]?.id);
       } finally {
         store.close();
       }

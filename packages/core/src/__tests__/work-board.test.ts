@@ -4,6 +4,7 @@ import {
   applyWorkBoardItemPatch,
   archiveWorkBoardItem,
   decodeWorkBoardItem,
+  WORK_BOARD_CURSOR_MAX_CHARS,
   normalizeCreateWorkBoardItemInput,
   normalizeWorkBoardCreator,
   normalizeWorkBoardScope,
@@ -252,6 +253,14 @@ describe('Work Board contract', () => {
   test('bounds the list query page size and cursor', () => {
     assert.equal(normalizeWorkBoardListQuery({ limit: 0 }).ok, false);
     assert.equal(normalizeWorkBoardListQuery({ limit: 101 }).ok, false);
+    assert.equal(
+      normalizeWorkBoardListQuery({ cursor: 'x'.repeat(WORK_BOARD_CURSOR_MAX_CHARS) }).ok,
+      true,
+    );
+    assert.equal(
+      normalizeWorkBoardListQuery({ cursor: 'x'.repeat(WORK_BOARD_CURSOR_MAX_CHARS + 1) }).ok,
+      false,
+    );
     const bounded = normalizeWorkBoardListQuery({ limit: 25, includeArchived: true });
     assert.ok(bounded.ok);
     if (bounded.ok) {

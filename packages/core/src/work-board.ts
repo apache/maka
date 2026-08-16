@@ -18,7 +18,7 @@ export const WORK_BOARD_MESSAGE_ID_MAX_CHARS = 256;
 export const WORK_BOARD_PROJECT_ID_MAX_CHARS = 160;
 export const WORK_BOARD_DEFAULT_PAGE_SIZE = 50;
 export const WORK_BOARD_PAGE_SIZE_MAX = 100;
-export const WORK_BOARD_CURSOR_MAX_CHARS = 256;
+export const WORK_BOARD_CURSOR_MAX_CHARS = 1024;
 
 export const WORK_BOARD_ITEM_STATES = ['todo', 'in_progress', 'done'] as const;
 export type WorkBoardItemState = (typeof WORK_BOARD_ITEM_STATES)[number];

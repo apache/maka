@@ -77,7 +77,7 @@ function decodeWorkBoardCursor(
     if (
       typeof filterFingerprint !== 'string' ||
       filterFingerprint.length === 0 ||
-      filterFingerprint.length > 128
+      filterFingerprint.length > 512
     ) {
       return null;
     }
