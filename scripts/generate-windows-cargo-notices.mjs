@@ -29,7 +29,10 @@ const metadata = JSON.parse(
 const packages = metadata.packages
   .filter((pkg) => pkg.name !== 'maka-windows-sandbox-spike')
   .sort((left, right) =>
-    `${left.name}@${left.version}`.localeCompare(`${right.name}@${right.version}`),
+    Buffer.compare(
+      Buffer.from(`${left.name}@${left.version}`, 'utf8'),
+      Buffer.from(`${right.name}@${right.version}`, 'utf8'),
+    ),
   );
 
 const sections = packages.map((pkg) => {
@@ -54,7 +57,7 @@ const sections = packages.map((pkg) => {
     ...licenseFiles.flatMap((name) => [
       '',
       `--- ${name} ---`,
-      readFileSync(join(directory, name), 'utf8').trimEnd(),
+      readFileSync(join(directory, name), 'utf8').replace(/\r\n?/gu, '\n').trimEnd(),
     ]),
   ].join('\n');
 });
