@@ -262,9 +262,11 @@ test('keeps Local usable when a remote Host is unavailable', async () => {
   );
 
   await assert.rejects(manager.enable(remoteTarget('offline')), /stopped responding/);
+  manager.setDefaultProfile('offline');
   await manager.handleBotIncomingMessage({ text: 'local' } as BotIncomingMessage);
 
   assert.equal(local.botMessages, 1);
+  assert.equal(manager.current()?.target.profile.id, 'local');
   assert.equal(manager.current('local')?.readiness, 'ready');
   assert.equal(manager.current('offline'), undefined);
   assert.equal(

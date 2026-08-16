@@ -179,8 +179,7 @@ test("does not enable the same State Root twice", async () => {
     /already enabled/,
   );
   assert.equal(
-    (await service.getSnapshot()).entries.find((entry) => entry.profile.id === PROFILE.id)
-      ?.enabled,
+    (await service.getSnapshot()).entries.some((entry) => entry.profile.id === PROFILE.id),
     false,
   );
 });

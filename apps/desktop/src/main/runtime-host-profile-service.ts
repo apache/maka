@@ -243,7 +243,14 @@ export function createDesktopRuntimeHostProfileService(input: {
         const document = await catalog.create(value.profile, value.credential);
         const profile = document.profiles.find((candidate) => candidate.id === value.profile.id);
         if (!profile) throw new Error("Runtime Host profile creation did not persist");
-        const error = await enable(profile.id);
+        const target = { profile, credential: value.credential } as const;
+        let error: Error | undefined;
+        try {
+          error = await enable(profile.id);
+        } catch (failure) {
+          await rollbackCreatedProfile(catalog, target, failure);
+          throw failure;
+        }
         return error
           ? { kind: "unavailable", snapshot: await snapshot(), message: error.message }
           : { kind: "connected", snapshot: await snapshot() };
@@ -300,6 +307,21 @@ export function createDesktopRuntimeHostProfileService(input: {
       });
     },
   };
+}
+
+async function rollbackCreatedProfile(
+  catalog: RuntimeHostProfileCatalog,
+  target: ResolvedRuntimeHostProfile,
+  failure: unknown,
+): Promise<void> {
+  try {
+    await catalog.removeIfCurrent(target);
+  } catch (rollbackFailure) {
+    throw new AggregateError(
+      [failure, rollbackFailure],
+      "Runtime Host could not be added and the incomplete profile could not be removed",
+    );
+  }
 }
 
 function assertRootIsNotEnabled(
