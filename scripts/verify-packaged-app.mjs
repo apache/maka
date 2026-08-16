@@ -295,21 +295,18 @@ export async function smokePackagedRenderer(executable, { workingDirectory } = {
 
 export async function assertPackagedResources(
   resourcesPath,
-  { requirePath, forbidPath = assertMissing } = {},
+  { requirePath, forbidPath = assertMissing, requireBundledNpm = true } = {},
 ) {
   const required = [
     'app.asar',
     'bundled-tools.json',
     'bundled-git.json',
-    'bundled-npm.json',
-    join('npm', 'bin', 'npm-cli.js'),
     join('licenses', 'git', 'LICENSE.txt'),
     join('licenses', 'git', 'SOURCE_OFFER.txt'),
     join('workers', 'filesystem-worker.js'),
     join('licenses', 'maka', 'LICENSE'),
     join('licenses', 'maka', 'NOTICE'),
     join('licenses', 'dugite', 'LICENSE'),
-    join('licenses', 'npm-cli', 'LICENSE'),
     join('licenses', 'git', 'NOTICE.txt'),
     join('licenses', 'electron', 'LICENSE'),
     join('licenses', 'electron', 'LICENSES.chromium.html'),
@@ -324,6 +321,13 @@ export async function assertPackagedResources(
     join('licenses', 'renderer', 'SEMI_ICONS_LICENSE.txt'),
     join('licenses', 'renderer', 'MINGCUTE_APACHE_LICENSE.txt'),
   ];
+  if (requireBundledNpm) {
+    required.push(
+      'bundled-npm.json',
+      join('npm', 'bin', 'npm-cli.js'),
+      join('licenses', 'npm-cli', 'LICENSE'),
+    );
+  }
   for (const path of required) {
     await requirePath(join(resourcesPath, path));
   }
