@@ -1118,9 +1118,18 @@ function registerPersistentClientIpc(): void {
     },
   );
   ipcMain.handle("runtime-host:activeIdentity", () => {
-    const scope = activeRuntimeHostRef();
-    if (!scope) throw new Error("Desktop Runtime Host identity is unavailable");
-    return scope;
+    const current = runtimeHostManager?.current();
+    if (!current?.hostId) {
+      throw new Error("Desktop Runtime Host identity is unavailable");
+    }
+    return {
+      hostId: current.hostId,
+      targetEpoch: current.epoch,
+      profileId: current.target.profile.id,
+      profileName: current.target.profile.name,
+      profileKind: current.target.profile.kind,
+      readiness: current.readiness,
+    };
   });
   ipcMain.handle("runtime-host:identities", () =>
     (runtimeHostManager?.entries() ?? []).flatMap((state) => {

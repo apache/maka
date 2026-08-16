@@ -187,7 +187,10 @@ ipcRenderer.on(
   'runtime-host-profiles:changed',
   (_event, change: RuntimeHostProfileWireEvent) => {
     const previousHostId = runtimeHostProfiles.get(change.profileId);
-    if (previousHostId && previousHostId !== change.hostId) {
+    if (
+      previousHostId &&
+      (change.removed || (change.hostId !== undefined && previousHostId !== change.hostId))
+    ) {
       runtimeHostScopes.delete(previousHostId);
       if (change.removed) {
         runtimeHostMetadata.delete(previousHostId);
@@ -208,9 +211,45 @@ ipcRenderer.on(
     } else if (change.isDefault) {
       activeRuntimeHost = undefined;
     }
-    activeRuntimeHostGeneration += 1;
+    if (
+      change.hostId ||
+      change.removed ||
+      change.isDefault ||
+      change.readiness === 'unavailable'
+    ) {
+      activeRuntimeHostGeneration += 1;
+    }
   },
 );
+
+function recordRuntimeHostIdentity(value: unknown): {
+  readonly scope: DesktopTargetScope;
+  readonly readiness: 'ready' | 'reconnecting';
+} {
+  const scope = requireDesktopTargetScope(value);
+  const metadata = value as {
+    profileId?: unknown;
+    profileName?: unknown;
+    profileKind?: unknown;
+    readiness?: unknown;
+  };
+  if (
+    typeof metadata.profileId !== 'string' ||
+    typeof metadata.profileName !== 'string' ||
+    (metadata.profileKind !== 'local' && metadata.profileKind !== 'remote') ||
+    (metadata.readiness !== 'ready' && metadata.readiness !== 'reconnecting')
+  ) {
+    throw new Error('Desktop Runtime Host identity is invalid');
+  }
+  runtimeHostScopes.set(scope.hostId, scope);
+  runtimeHostProfiles.set(metadata.profileId, scope.hostId);
+  runtimeHostMetadata.set(scope.hostId, {
+    profileId: metadata.profileId,
+    profileName: metadata.profileName,
+    profileKind: metadata.profileKind,
+  });
+  return { scope, readiness: metadata.readiness };
+}
 
 async function runtimeHostScopeList(): Promise<readonly DesktopTargetScope[]> {
   while (true) {
@@ -223,31 +262,9 @@ async function runtimeHostScopeList(): Promise<readonly DesktopTargetScope[]> {
     const authoritativeHostIds = new Set<string>();
     const readyScopes: DesktopTargetScope[] = [];
     for (const identity of identities) {
-      const scope = requireDesktopTargetScope(identity);
-      const metadata = identity as {
-        profileId?: unknown;
-        profileName?: unknown;
-        profileKind?: unknown;
-        readiness?: unknown;
-      };
-      if (metadata.readiness !== 'ready' && metadata.readiness !== 'reconnecting') {
-        throw new Error('Desktop Runtime Host identity has invalid readiness');
-      }
+      const { scope, readiness } = recordRuntimeHostIdentity(identity);
       authoritativeHostIds.add(scope.hostId);
-      runtimeHostScopes.set(scope.hostId, scope);
-      if (metadata.readiness === 'ready') readyScopes.push(scope);
-      if (
-        typeof metadata.profileId === 'string' &&
-        typeof metadata.profileName === 'string' &&
-        (metadata.profileKind === 'local' || metadata.profileKind === 'remote')
-      ) {
-        runtimeHostProfiles.set(metadata.profileId, scope.hostId);
-        runtimeHostMetadata.set(scope.hostId, {
-          profileId: metadata.profileId,
-          profileName: metadata.profileName,
-          profileKind: metadata.profileKind,
-        });
-      }
+      if (readiness === 'ready') readyScopes.push(scope);
     }
     for (const hostId of runtimeHostScopes.keys()) {
       if (authoritativeHostIds.has(hostId)) continue;
@@ -277,21 +294,7 @@ async function activeRuntimeHostRef(): Promise<DesktopTargetScope> {
     const generation = activeRuntimeHostGeneration;
     const snapshot = await ipcRenderer.invoke('runtime-host:activeIdentity');
     if (generation !== activeRuntimeHostGeneration) continue;
-    if (!snapshot || typeof snapshot !== 'object') {
-      throw new Error('Desktop Runtime Host identity is unavailable');
-    }
-    const hostId = (snapshot as { hostId?: unknown }).hostId;
-    const targetEpoch = (snapshot as { targetEpoch?: unknown }).targetEpoch;
-    if (
-      typeof hostId !== 'string' ||
-      !hostId ||
-      typeof targetEpoch !== 'string' ||
-      !targetEpoch
-    ) {
-      throw new Error('Desktop Runtime Host identity is unavailable');
-    }
-    activeRuntimeHost = { hostId, targetEpoch };
-    runtimeHostScopes.set(activeRuntimeHost.hostId, activeRuntimeHost);
+    activeRuntimeHost = recordRuntimeHostIdentity(snapshot).scope;
   }
   return activeRuntimeHost;
 }
@@ -2018,7 +2021,10 @@ const makaBridge = {
       return subscribeActiveRuntimeHostEvent('scheduled-tasks:changed', handler);
     },
     subscribeDue(handler: (task: Pick<ScheduledTask, 'id' | 'title'>) => void): () => void {
-      return subscribeActiveRuntimeHostEvent('scheduled-tasks:fired', handler);
+      return subscribeEveryRuntimeHostEvent(
+        'scheduled-tasks:fired',
+        (_scope, task: Pick<ScheduledTask, 'id' | 'title'>) => handler(task),
+      );
     },
   },
   settings: {
