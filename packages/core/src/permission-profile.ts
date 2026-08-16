@@ -230,9 +230,21 @@ export function isProtectedMetadataPath(
   for (const workspaceRoot of workspaceRoots) {
     const segments = relativeSegments(path, workspaceRoot);
     if (!segments) continue;
-    if (segments.some((segment) => names.includes(segment))) return true;
+    // Windows filesystems and pathWithinRoot are case-insensitive, so the
+    // metadata names must match case-insensitively there too — otherwise a
+    // write to `.GIT\config` bypasses a `.git` deny and still lands in the
+    // real metadata directory.
+    const foldCase = isWindowsDrivePathRoot(workspaceRoot);
+    const matchesName = foldCase
+      ? (segment: string) => names.some((name) => name.toLowerCase() === segment.toLowerCase())
+      : (segment: string) => names.includes(segment);
+    if (segments.some(matchesName)) return true;
   }
   return false;
+}
+
+function isWindowsDrivePathRoot(root: string): boolean {
+  return /^[A-Za-z]:\\/.test(root);
 }
 
 function fileSystemPolicy(profile: PermissionProfile): FileSystemSandboxPolicy | undefined {

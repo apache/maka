@@ -79,6 +79,12 @@ describe('PermissionProfile factories', () => {
       ]),
     ).toBe(true);
     expect(isProtectedMetadataPath('C:\\workspace\\.gitignore', ['C:\\workspace'])).toBe(false);
+    // Windows containment is case-insensitive, so metadata names must be too:
+    // `.GIT\config` reaches the real `.git\config` on a Windows filesystem.
+    expect(isProtectedMetadataPath('C:\\workspace\\.GIT\\config', ['C:\\workspace'])).toBe(true);
+    expect(isProtectedMetadataPath('C:\\WORKSPACE\\.Git\\HEAD', ['C:\\workspace'])).toBe(true);
+    // POSIX filesystems are case-sensitive; `.GIT` is a distinct directory.
+    expect(isProtectedMetadataPath('/workspace/.GIT/config', ['/workspace'])).toBe(false);
     expect(pathWithinRoot('C:\\workspace\\..\\secret', 'C:\\workspace')).toBe(false);
     expect(pathWithinRoot('/workspace/../secret', '/workspace')).toBe(false);
     expect(pathWithinRoot('C:\\workspace\\file:stream', 'C:\\workspace')).toBe(false);

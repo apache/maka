@@ -12,7 +12,7 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows_sys::Win32::Storage::FileSystem::{
-    FlushFileBuffers, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
+    FILE_FLAG_FIRST_PIPE_INSTANCE, FlushFileBuffers, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
 };
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
@@ -60,7 +60,10 @@ unsafe fn serve_once_with_security(
     let pipe = unsafe {
         CreateNamedPipeW(
             pipe_name_wide.as_ptr(),
-            PIPE_ACCESS_DUPLEX,
+            // FIRST_PIPE_INSTANCE makes creation fail closed when the name is
+            // already taken: without it a same-user process could pre-create
+            // the pipe and impersonate the broker toward the client.
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
             PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
             (MAX_BROKER_MESSAGE_BYTES + 4) as u32,

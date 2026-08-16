@@ -15,6 +15,8 @@ mod broker_pipe;
 mod broker_pipe_security;
 #[cfg(test)]
 mod broker_pipe_security_tests;
+#[cfg(test)]
+mod broker_pipe_tests;
 mod protocol;
 #[cfg(test)]
 mod protocol_tests;
