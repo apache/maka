@@ -67,7 +67,7 @@ export const LucideIcons: Story = {
               textAlign: 'center',
             }}
           >
-            <Comp size={20} />
+            <Comp size={Icons.ICON_SIZE.empty} />
             <code style={{ color: 'var(--foreground-secondary)', fontSize: 10, wordBreak: 'break-word' }}>{name}</code>
           </div>
         ))}

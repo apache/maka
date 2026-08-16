@@ -73,6 +73,7 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run format:check
+      - run: npm run check:icon-size
       - run: npm run build
       - run: npm run typecheck
       # Generated-artifact governance. astryx-theme/maka.{css,js} are built
