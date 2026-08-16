@@ -1086,6 +1086,8 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(remembered.result.kind, 'committed');
 
     const turnIds: string[] = [];
+    // Cross the history high-water without making the text-only compact input
+    // exceed this fixture's 2,304-token summarizer budget.
     for (let index = 0; index < 5; index += 1) {
       const turnId = randomUUID();
       turnIds.push(turnId);
@@ -1094,10 +1096,10 @@ test('production Host executes a canonical ai-sdk Session against a real provide
         session.id,
         turnId,
         index === 0
-          ? `Reply with the hosted execution result.${' HISTORY_PRESSURE'.repeat(160)}`
+          ? `Reply with the hosted execution result.${' HISTORY_PRESSURE'.repeat(128)}`
           : index === 1
-            ? `/skill:hosted-skill Continue hosted execution turn ${index}.${' HISTORY_PRESSURE'.repeat(160)}`
-            : `Continue hosted execution turn ${index}.${' HISTORY_PRESSURE'.repeat(160)}`,
+            ? `/skill:hosted-skill Continue hosted execution turn ${index}.${' HISTORY_PRESSURE'.repeat(128)}`
+            : `Continue hosted execution turn ${index}.${' HISTORY_PRESSURE'.repeat(128)}`,
         connectionContext,
       );
       const terminal = await waitForTerminal(

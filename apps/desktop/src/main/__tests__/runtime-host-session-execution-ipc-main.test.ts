@@ -7,6 +7,7 @@ import test from "node:test";
 import type { IpcMain } from "electron";
 import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import { type AttachmentRef } from '@maka/core/events';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type { SessionCatalogProjection } from "@maka/runtime-host/protocol";
 import { createAttachmentApprovalRegistry } from "../attachment-approval.js";
 import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
@@ -491,6 +492,169 @@ test("forwards explicit Skill invocation to the Host-owned Turn admission", asyn
       receipts: [],
     },
   });
+});
+
+test("queues a mid-turn send as steering when the Host reports the session busy", async () => {
+  const submits: unknown[] = [];
+  const changes: unknown[] = [];
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        startTurn: async () => {
+          throw new RuntimeHostOperationError(
+            "turn.start",
+            "session_busy",
+            "Session already has an active root Turn",
+          );
+        },
+        submitMessage: async (input) => {
+          submits.push(input);
+          return { disposition: "steering", queueRevision: 1 };
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged: (reason, sessionId, extra) =>
+        changes.push({ reason, sessionId, ...extra }),
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => "id-1",
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke("sessions:send", "session-1", {
+    type: "send",
+    turnId: "turn-1",
+    text: "also check the tests",
+  });
+
+  assert.deepEqual(submits, [
+    {
+      sessionId: "session-1",
+      messageId: "id-1",
+      content: { text: "also check the tests", inlineReferences: [] },
+      placement: "current_turn",
+    },
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    steered: true,
+    turnId: "turn-1",
+    attachments: [],
+    inlineReferences: [],
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
+  });
+  assert.deepEqual(changes, [
+    { reason: "status-change", sessionId: "session-1" },
+  ]);
+});
+
+test("starts the turn from the queued message when the busy race resolves idle", async () => {
+  const changes: unknown[] = [];
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        startTurn: async () => {
+          throw new RuntimeHostOperationError(
+            "turn.start",
+            "session_busy",
+            "Session already has an active root Turn",
+          );
+        },
+        submitMessage: async () => ({
+          disposition: "turn_started",
+          turnId: "turn-9",
+        }),
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged: (reason, sessionId, extra) =>
+        changes.push({ reason, sessionId, ...extra }),
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => "id-1",
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke("sessions:send", "session-1", {
+    type: "send",
+    turnId: "turn-1",
+    text: "also check the tests",
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    turnId: "turn-9",
+    attachments: [],
+    inlineReferences: [],
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
+  });
+  assert.deepEqual(changes, [
+    { reason: "status-change", sessionId: "session-1", turnId: "turn-9" },
+  ]);
+});
+
+test("keeps the busy failure for a Skill send instead of degrading it to steering", async () => {
+  const submits: unknown[] = [];
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        startTurn: async () => {
+          throw new RuntimeHostOperationError(
+            "turn.start",
+            "session_busy",
+            "Session already has an active root Turn",
+          );
+        },
+        submitMessage: async (input) => {
+          submits.push(input);
+          return { disposition: "steering", queueRevision: 1 };
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => "id-1",
+    },
+    ipc,
+  );
+
+  // The Desktop composer carries Skills as canonical /skill: tokens in the
+  // text; explicit skillIds is the protocol-level variant.
+  await assert.rejects(
+    ipc.invoke("sessions:send", "session-1", {
+      type: "send",
+      turnId: "turn-1",
+      text: "/skill:review explain the tests",
+    }),
+    (error: unknown) =>
+      error instanceof RuntimeHostOperationError && error.code === "session_busy",
+  );
+  await assert.rejects(
+    ipc.invoke("sessions:send", "session-1", {
+      type: "send",
+      turnId: "turn-1",
+      text: "",
+      displayText: "/skill:review",
+      skillIds: ["review"],
+    }),
+    (error: unknown) =>
+      error instanceof RuntimeHostOperationError && error.code === "session_busy",
+  );
+  assert.deepEqual(submits, []);
 });
 
 test("binds steer and stop to Host-owned queue and active Turn identities", async () => {

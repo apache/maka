@@ -450,6 +450,11 @@ export interface MakaBridge {
       | {
           ok: true;
           turnId: string;
+          /**
+           * The send raced a root Turn another client opened first and was
+           * queued into it as steering instead of starting `turnId`.
+           */
+          steered?: true;
           attachments: import('@maka/core/events').AttachmentRef[];
           inlineReferences: import('@maka/core/events').InlineReference[];
           skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;

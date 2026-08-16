@@ -4,6 +4,7 @@ import { toolResultOutput } from './tool-result-output.js';
 import type { HistoryCompactSummaryInput } from './ai-sdk-compaction-contract.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
 import { isTextHistoryCompactCheckpoint } from './history-compact-checkpoint.js';
+import { fitHistoryCompactMessages } from './history-compact-input-fit.js';
 import type { AiSdkUsageLike } from './model-adapter.js';
 import { withProviderGenerateTracking } from './provider-request-telemetry.js';
 
@@ -78,9 +79,9 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
     if (newlyFoldedRuntimeEvents.length === 0) return previousCheckpoint?.summary;
     try {
       const plan = buildRuntimeEventModelReplayPlan(newlyFoldedRuntimeEvents);
-      const messages = replayPlanItemsToModelMessages(plan.items);
+      const projectedMessages = replayPlanItemsToModelMessages(plan.items);
       if (previousCheckpoint) {
-        messages.unshift({
+        projectedMessages.unshift({
           role: 'user',
           content: [
             {
@@ -90,6 +91,11 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
           ],
         });
       }
+      const messages = fitHistoryCompactMessages(projectedMessages, {
+        maxInputEstimatedTokens: input.inputBudget?.maxEstimatedTokens,
+        charsPerToken: input.inputBudget?.charsPerToken,
+        fixedInputChars: SUMMARIZATION_SYSTEM_PROMPT.length,
+      });
       // Handed over whole by the backend, which owns every input a tracker
       // needs — including the run, which no summarizer wiring can know (#1679).
       const providerRequestTracker = input.providerRequestTracker;

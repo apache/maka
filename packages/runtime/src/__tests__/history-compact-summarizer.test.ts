@@ -15,6 +15,7 @@ import { ProviderRequestTracker } from '../provider-request-telemetry.js';
 import type { HistoryCompactSummaryInput } from '../ai-sdk-compaction-contract.js';
 import {
   buildLlmHistorySummarizer,
+  HistoryCompactSummarizerError,
   type AiSdkGenerateTextLike,
 } from '../history-compact-summarizer.js';
 import { buildHistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
@@ -57,9 +58,10 @@ describe('buildLlmHistorySummarizer', () => {
       },
     });
 
-    await summarize(
-      inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
-    );
+    await summarize({
+      ...inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+      inputBudget: { maxEstimatedTokens: 10_000, charsPerToken: 1 },
+    });
 
     expect(seen?.providerOptions).toBe(providerOptions);
     expect(seen?.maxOutputTokens).toBe(undefined);
@@ -342,6 +344,142 @@ describe('buildLlmHistorySummarizer', () => {
     ]);
   });
 
+  test('bounds the oldest oversized tool result before dispatch while preserving newer context', async () => {
+    let seen: Parameters<AiSdkGenerateTextLike>[0] | undefined;
+    const generateText: AiSdkGenerateTextLike = async (options) => {
+      seen = options;
+      return { text: '## Goal\nX' };
+    };
+    const summarize = buildLlmHistorySummarizer({ resolveModel: () => 'fake-model', generateText });
+    const oldToolOutput = 'OLD_OVERSIZED_TOOL_OUTPUT_'.repeat(1_024);
+    const events: RuntimeEvent[] = [
+      ev({
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'old-call', name: 'read', args: { path: 'old.log' } },
+      }),
+      ev({
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'old-call',
+          name: 'read',
+          result: oldToolOutput,
+        },
+      }),
+      ev({
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'recent-call',
+          name: 'read',
+          args: { path: 'recent.log' },
+        },
+      }),
+      ev({
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'recent-call',
+          name: 'read',
+          result: 'RECENT_TOOL_RESULT',
+        },
+      }),
+      ev({
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'LATEST_GROUNDED_CONTEXT' },
+      }),
+    ];
+
+    await summarize({
+      ...inputWith(events),
+      inputBudget: { maxEstimatedTokens: 4_000, charsPerToken: 1 },
+    });
+
+    const messages = seen!.messages;
+    const serialized = JSON.stringify(messages);
+    assert.ok(serialized.length <= 4_000);
+    assert.equal(serialized.includes(oldToolOutput), false);
+    assert.match(serialized, /Tool output omitted/);
+    assert.match(serialized, /RECENT_TOOL_RESULT/);
+    assert.match(serialized, /LATEST_GROUNDED_CONTEXT/);
+    assert.match(JSON.stringify(events), /OLD_OVERSIZED_TOOL_OUTPUT/);
+    assert.deepEqual(
+      messages.flatMap((message) =>
+        typeof message.content === 'string'
+          ? []
+          : message.content
+              .filter((part) => part.type === 'tool-call' || part.type === 'tool-result')
+              .map((part) => ({ type: part.type, toolCallId: part.toolCallId })),
+      ),
+      [
+        { type: 'tool-call', toolCallId: 'old-call' },
+        { type: 'tool-result', toolCallId: 'old-call' },
+        { type: 'tool-call', toolCallId: 'recent-call' },
+        { type: 'tool-result', toolCallId: 'recent-call' },
+      ],
+    );
+  });
+
+  test('fails with input_too_large before dispatch when non-tool history cannot fit', async () => {
+    let calls = 0;
+    let modelResolutions = 0;
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => {
+        modelResolutions += 1;
+        return 'fake-model';
+      },
+      generateText: async () => {
+        calls += 1;
+        return { text: 'should not dispatch' };
+      },
+    });
+
+    await assert.rejects(
+      summarize({
+        ...inputWith([
+          ev({
+            role: 'user',
+            author: 'user',
+            content: { kind: 'text', text: 'x'.repeat(1_000) },
+          }),
+        ]),
+        inputBudget: { maxEstimatedTokens: 10, charsPerToken: 1 },
+      }),
+      (error) =>
+        error instanceof HistoryCompactSummarizerError && error.reason === 'input_too_large',
+    );
+    assert.equal(calls, 0);
+    assert.equal(modelResolutions, 0);
+  });
+
+  test('charges the summarization instructions against the input budget before dispatch', async () => {
+    let calls = 0;
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async () => {
+        calls += 1;
+        return { text: 'should not dispatch' };
+      },
+    });
+
+    await assert.rejects(
+      summarize({
+        ...inputWith([
+          ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'small history' } }),
+        ]),
+        inputBudget: { maxEstimatedTokens: 500, charsPerToken: 1 },
+      }),
+      (error) =>
+        error instanceof HistoryCompactSummarizerError && error.reason === 'input_too_large',
+    );
+    assert.equal(calls, 0);
+  });
+
   test('stamped step ids decide membership over settledness', async () => {
     const seen: Array<{ messages: unknown[] }> = [];
     const generateText: AiSdkGenerateTextLike = async (opts) => {
@@ -494,6 +632,7 @@ describe('buildLlmHistorySummarizer', () => {
       ...input,
       previousCheckpoint,
       newlyFoldedRuntimeEvents: [newer],
+      inputBudget: { maxEstimatedTokens: 10_000, charsPerToken: 1 },
     });
 
     expect(result).toBe('rolled');

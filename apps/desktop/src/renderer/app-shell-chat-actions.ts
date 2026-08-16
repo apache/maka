@@ -289,6 +289,40 @@ export function createAppShellChatActions(deps: {
     });
   }
 
+  // Rename only the exact unconfirmed arm this send created. Host events can
+  // beat the IPC response (main emits the sessions-changed nudge before it
+  // returns), and an authoritative projection that already arrived for the
+  // Host-chosen turn must not be replaced with a fresh waiting arm.
+  function rebindTurnActive(sessionId: string, fromTurnId: string, toTurnId: string): void {
+    setLiveTurnBySession((current) => {
+      const active = current[sessionId];
+      if (!active || active.turnId !== fromTurnId || !active.unconfirmed || active.phase !== 'waiting') {
+        return current;
+      }
+      return { ...current, [sessionId]: armLiveTurn(toTurnId) };
+    });
+  }
+
+  // One interpretation of a successful sessions:send for both the new-chat and
+  // existing-session branches: a busy-raced send can come back `steered` (this
+  // send owns no turn — the steering_message event renders the text) or under
+  // a Host-chosen turnId. Returns the turn the send owns, if any.
+  function settleSendBookkeeping(
+    sessionId: string,
+    requestedTurnId: string,
+    sendResult: { steered?: true; turnId?: string },
+  ): string | undefined {
+    if (sendResult.steered) {
+      disarmTurnActive(sessionId, requestedTurnId);
+      return undefined;
+    }
+    const startedTurnId = sendResult.turnId ?? requestedTurnId;
+    if (startedTurnId !== requestedTurnId) {
+      rebindTurnActive(sessionId, requestedTurnId, startedTurnId);
+    }
+    return startedTurnId;
+  }
+
   async function send(
     text: string,
     pending?: readonly PendingAttachment[],
@@ -382,6 +416,8 @@ export function createAppShellChatActions(deps: {
           return false;
         }
         unsentSessionId = undefined;
+        const settledTurnId = settleSendBookkeeping(session.id, turnId, sendResult);
+        if (settledTurnId !== undefined) optimisticTurnId = settledTurnId;
         options.onSessionResolved?.(session.id);
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
           showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
@@ -389,18 +425,20 @@ export function createAppShellChatActions(deps: {
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
           setNavSelection({ section: 'sessions' });
           setActiveId(session.id);
-          showOptimisticUserMessage(
-            session.id,
-            turnId,
-            options.displayText ??
-              skillInvocationDisplayText(text, sendResult.skillInvocation),
-            sendResult.attachments,
-            {
-              replaceCurrentMessages: true,
-              ...(quotes && quotes.length > 0 ? { quotes } : {}),
-              inlineReferences: sendResult.inlineReferences ?? [],
-            },
-          );
+          if (settledTurnId !== undefined) {
+            showOptimisticUserMessage(
+              session.id,
+              settledTurnId,
+              options.displayText ??
+                skillInvocationDisplayText(text, sendResult.skillInvocation),
+              sendResult.attachments,
+              {
+                replaceCurrentMessages: true,
+                ...(quotes && quotes.length > 0 ? { quotes } : {}),
+                inlineReferences: sendResult.inlineReferences ?? [],
+              },
+            );
+          }
         }
         await refreshSessions();
         return true;
@@ -449,13 +487,16 @@ export function createAppShellChatActions(deps: {
         disarmTurnActive(sessionId, turnId);
         return false;
       }
+      const startedTurnId = settleSendBookkeeping(sessionId, turnId, sendResult);
       options.onSessionResolved?.(sessionId);
+      if (startedTurnId === undefined) return true;
+      optimisticTurnId = startedTurnId;
       if (activeIdRef.current === sessionId) {
         showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
       }
       showOptimisticUserMessage(
         sessionId,
-        turnId,
+        startedTurnId,
         options.displayText ??
           skillInvocationDisplayText(text, sendResult.skillInvocation),
         sendResult.attachments,
