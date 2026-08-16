@@ -239,7 +239,7 @@ function classifyTelegramSendResponse(response: any): TelegramSendClassification
 function telegramPollingFailureReadiness(
   readiness: BotStatus['readiness'],
 ): BotStatus['readiness'] {
-  return readiness === 'operational' ? 'degraded' : 'credentials_valid';
+  return readiness === 'operational' ? 'degraded' : readiness;
 }
 
 export const __TEST__ = {

@@ -45,8 +45,9 @@ describe('classifyTelegramSendResponse', () => {
 });
 
 describe('telegramPollingFailureReadiness', () => {
-  it('degrades an operational listener and preserves credential validation before first message', () => {
+  it('degrades an operational listener and preserves non-operational states across retries', () => {
     assert.equal(telegramPollingFailureReadiness('operational'), 'degraded');
     assert.equal(telegramPollingFailureReadiness('credentials_valid'), 'credentials_valid');
+    assert.equal(telegramPollingFailureReadiness('degraded'), 'degraded');
   });
 });
