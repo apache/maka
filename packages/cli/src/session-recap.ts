@@ -5,11 +5,6 @@ export const AUTO_RECAP_MIN_TURNS = 3;
 /** Raw-output size (bytes) above which an automatic recap is not surfaced in the transcript (still persisted). */
 export const AUTO_RECAP_DISPLAY_LIMIT_BYTES = 500;
 
-/**
- * Cleans a raw model recap response: collapses whitespace, strips a leading
- * `Recap:` / `Summary:` / `回顾：`-style label, strips one layer of wrapping
- * quotes, and truncates to 1200 characters (with an ellipsis) if needed.
- */
 export interface ShouldAutoRecapInput {
   /** Milliseconds since the last recorded user activity. */
   idleMs: number;

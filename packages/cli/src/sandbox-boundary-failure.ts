@@ -1,6 +1,6 @@
 import type { SessionEvent } from '@maka/core/events';
 
-export type SandboxBoundaryFailureReason = 'sandbox_boundary_required' | 'requires_bypass';
+type SandboxBoundaryFailureReason = 'sandbox_boundary_required' | 'requires_bypass';
 
 export function sessionEventSandboxBoundaryFailureReason(
   event: SessionEvent,
