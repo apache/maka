@@ -93,7 +93,6 @@ function createActionsDeps() {
     newChatPermissionMode: 'ask' as const,
     newChatCollaborationMode: 'agent' as const,
     newChatOrchestrationMode: 'default' as const,
-    newChatProjectId: undefined,
     newTaskTarget: { profileId: 'local', hostId: 'host-local', projectId: null },
   };
 }

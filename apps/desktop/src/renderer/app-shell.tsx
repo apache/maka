@@ -85,6 +85,8 @@ import {
   removeStagedCompanionQuote,
   stageCompanionQuote,
 } from './quote-companion-panel-state';
+import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from './new-task-reload-intent';
+import { useNewTaskChoice } from './use-new-task-choice';
 import { sideChatTitleFromPrompt } from './side-chat-command';
 import { parseDesktopSlashCommand } from './desktop-slash-command';
 import {
@@ -236,8 +238,6 @@ type ComposerImportOwner = {
   navSection: NavSelection['section'];
   newTaskDraftKey?: string;
 };
-
-const UNRESOLVED_NEW_TASK_DRAFT_KEY = 'new-task:unresolved';
 
 function newTaskDraftKey(target: {
   profileId: string;
@@ -398,6 +398,7 @@ function AppShellContent({
     epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
   }, []);
 
+  const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   const newTask = useNewTaskTarget({ toastApi, uiLocale });
   const currentNewTaskDraftKey = newTaskDraftKey(newTask.target);
   const attachmentDraftKey = activeId ?? currentNewTaskDraftKey;
@@ -422,10 +423,8 @@ function AppShellContent({
   const [pendingCollaborationModeBySession, setPendingCollaborationModeBySession] = useState<Record<string, boolean>>({});
   const [newChatSwarmModeActive, setNewChatSwarmModeActive] = useState(false);
   const [newChatGraphModeActive, setNewChatGraphModeActive] = useState(false);
-  const [newTaskPermissionChoice, setNewTaskPermissionChoice] = useState<{
-    key: string;
-    mode: ChatDefaultPermissionMode;
-  }>();
+  const [newTaskPermissionChoice, setNewTaskPermissionChoice] =
+    useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [pendingOrchestrationModeBySession, setPendingOrchestrationModeBySession] = useState<Record<string, boolean>>({});
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
   const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
@@ -489,9 +488,23 @@ function AppShellContent({
     uiLocale,
     activeSessionId: activeId,
   });
+  const startupConnectionSnapshot =
+    initialOnboardingSnapshot ?? onboarding.mountedSnapshotHandoff;
+  const newTaskUsesDefaultHost =
+    newTask.catalog.hosts.length === 0 ||
+    newTask.selectedProfileId === newTask.catalog.defaultProfileId;
   const newTaskConnectionSnapshot =
-    newTaskConnections.hasSnapshot ||
-      newTask.selectedProfileId !== newTask.catalog.defaultProfileId
+    newTaskUsesDefaultHost &&
+      !newTaskConnections.hasSnapshot &&
+      !defaultHostConnections.hasSnapshot &&
+      startupConnectionSnapshot
+      ? {
+          connections: startupConnectionSnapshot.connections,
+          defaultConnection: startupConnectionSnapshot.defaultSlug,
+          chatModelChoices: startupConnectionSnapshot.chatModelChoices,
+        }
+      : newTaskConnections.hasSnapshot ||
+          newTask.selectedProfileId !== newTask.catalog.defaultProfileId
       ? newTaskConnections.snapshot
       : defaultHostConnections.snapshot;
   const activeConnectionSnapshot = activeId
@@ -518,7 +531,6 @@ function AppShellContent({
   useLayoutEffect(() => {
     if (activeId) void sessionHostConnections.refreshConnections(activeId);
   }, [activeId]);
-  const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   const onboardingState = onboarding.snapshot?.state;
   const onboardingSettled = hasSettledInitialOnboarding(onboarding.snapshot?.milestones ?? []);
   const onboardingActivationCandidate = getOnboardingActivationCandidate(
@@ -561,14 +573,10 @@ function AppShellContent({
   const terminalPanelCopy = desktopConversationCopy.terminalPanel;
   const workbarCopy = desktopConversationCopy.workbar;
   const newTaskPermissionMode =
-    (newTaskPermissionChoice?.key === currentNewTaskDraftKey
-      ? newTaskPermissionChoice.mode
-      : undefined) ??
+    newTaskPermissionChoice ??
     newTask.selectedHost?.chatDefaults.permissionMode ??
     'ask';
-  const setNewTaskPermissionMode = useCallback((mode: ChatDefaultPermissionMode) => {
-    setNewTaskPermissionChoice({ key: currentNewTaskDraftKey, mode });
-  }, [currentNewTaskDraftKey]);
+  const setNewTaskPermissionMode = setNewTaskPermissionChoice;
   useEffect(() => {
     if (!isAppUpdateInstallFailure(appUpdateStatus)) {
       notifiedInstallErrorRef.current = null;

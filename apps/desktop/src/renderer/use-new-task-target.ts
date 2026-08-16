@@ -67,7 +67,7 @@ export function useNewTaskTarget(options: {
       refreshSequence.current += 1;
       unsubscribe();
     };
-  }, []);
+  }, [options.uiLocale]);
 
   const selectedHost = catalog.hosts.find(
     (host): host is ReadyHost =>

@@ -96,7 +96,11 @@ export function useComposerDraft(input: {
     rememberComposerDraft(draftStoreRef.current, previousKey, input.text.getValue());
     activeDraftKeyRef.current = nextKey;
     input.onDraftKeyChange();
-    const nextDraft = readComposerDraft(draftStoreRef.current, nextKey);
+    const rememberedDraft = readComposerDraft(draftStoreRef.current, nextKey);
+    const nextDraft = rememberedDraft || input.persistence?.read(nextKey) || '';
+    if (!rememberedDraft && nextDraft) {
+      rememberComposerDraft(draftStoreRef.current, nextKey, nextDraft);
+    }
     input.text.setValue(nextDraft);
   }, [input.draftKey]);
 

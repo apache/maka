@@ -1,4 +1,5 @@
 const NEW_TASK_RELOAD_INTENT_KEY = 'maka-new-task-reload-intent-v1';
+export const UNRESOLVED_NEW_TASK_DRAFT_KEY = 'new-task:unresolved';
 
 type SessionStorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
@@ -75,10 +76,27 @@ export function writeNewTaskReloadDraft(
   try {
     const intent = readNewTaskReloadIntent(storage);
     if (!intent) return;
-    storage?.setItem(NEW_TASK_RELOAD_INTENT_KEY, JSON.stringify({ draft, draftKey }));
+    const persistedKey = draftKey === UNRESOLVED_NEW_TASK_DRAFT_KEY
+      ? intent.draftKey ?? draftKey
+      : draftKey;
+    storage?.setItem(
+      NEW_TASK_RELOAD_INTENT_KEY,
+      JSON.stringify({ draft, draftKey: persistedKey }),
+    );
   } catch {
     // Restricted renderer contexts may not expose web storage.
   }
+}
+
+export function readNewTaskReloadDraft(
+  draftKey: string,
+  storage: SessionStorageLike | undefined = rendererSessionStorage(),
+): string | undefined {
+  const intent = readNewTaskReloadIntent(storage);
+  if (!intent) return undefined;
+  return draftKey === UNRESOLVED_NEW_TASK_DRAFT_KEY || intent.draftKey === draftKey
+    ? intent.draft
+    : undefined;
 }
 
 export function clearNewTaskReloadIntent(

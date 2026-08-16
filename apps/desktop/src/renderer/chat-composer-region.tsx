@@ -2,19 +2,19 @@ import { useLayoutEffect, useRef, type ComponentProps, type RefObject } from 're
 import { Button, Composer, SandboxBoundaryPrompt, UserQuestionPrompt, Banner } from '@maka/ui';
 import type { ComposerHandle, ComposerInteraction } from '@maka/ui';
 import {
+  readNewTaskReloadDraft,
   readNewTaskReloadIntent,
+  UNRESOLVED_NEW_TASK_DRAFT_KEY,
   writeNewTaskReloadDraft,
 } from './new-task-reload-intent';
 
 const newTaskDraftPersistence = {
   read(key: string | undefined): string | undefined {
-    const intent = readNewTaskReloadIntent();
-    return key && intent?.draftKey === key ? intent.draft : undefined;
+    return key ? readNewTaskReloadDraft(key) : undefined;
   },
   write(key: string | undefined, value: string): void {
-    if (key?.startsWith('new-task:') || key?.startsWith('["new-task"')) {
-      writeNewTaskReloadDraft(key, value);
-    }
+    if (!key?.startsWith('new-task:') && !key?.startsWith('["new-task"')) return;
+    writeNewTaskReloadDraft(key, value);
   },
 };
 
@@ -84,13 +84,22 @@ export function ChatComposerRegion({
   useLayoutEffect(() => {
     const previous = previousNewTaskDraftKey.current;
     previousNewTaskDraftKey.current = newTaskDraftKey;
-    if (previous !== 'new-task:unresolved' || previous === newTaskDraftKey) return;
+    if (previous !== UNRESOLVED_NEW_TASK_DRAFT_KEY || previous === newTaskDraftKey) return;
     const composer = composerRef.current;
     if (!composer) return;
+    const reloadIntent = readNewTaskReloadIntent();
+    const reloadTarget = reloadIntent?.draftKey;
+    const canCarryUnresolvedDraft =
+      !reloadTarget ||
+      reloadTarget === UNRESOLVED_NEW_TASK_DRAFT_KEY ||
+      reloadTarget === newTaskDraftKey;
+    if (!canCarryUnresolvedDraft) return;
     const current = composer.getText();
     composer.setDraft(
       newTaskDraftKey,
-      current.length > 0 ? current : (newTaskDraftPersistence.read(newTaskDraftKey) ?? ''),
+      current.length > 0
+        ? current
+        : (newTaskDraftPersistence.read(newTaskDraftKey) ?? ''),
     );
   }, [composerRef, newTaskDraftKey]);
 

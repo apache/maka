@@ -5,7 +5,9 @@ import {
   clearNewTaskReloadIntent,
   hasNewTaskReloadIntent,
   markNewTaskReloadIntent,
+  readNewTaskReloadDraft,
   readNewTaskReloadIntent,
+  UNRESOLVED_NEW_TASK_DRAFT_KEY,
   writeNewTaskReloadDraft,
 } from '../../renderer/new-task-reload-intent.js';
 
@@ -113,5 +115,13 @@ describe('bootstrap selection lease', () => {
       draft: 'unfinished prompt',
       draftKey,
     });
+    assert.equal(readNewTaskReloadDraft(UNRESOLVED_NEW_TASK_DRAFT_KEY, storage), 'unfinished prompt');
+
+    writeNewTaskReloadDraft(UNRESOLVED_NEW_TASK_DRAFT_KEY, 'edited during reload', storage);
+    assert.deepEqual(readNewTaskReloadIntent(storage), {
+      draft: 'edited during reload',
+      draftKey,
+    });
+    assert.equal(readNewTaskReloadDraft('different-target', storage), undefined);
   });
 });

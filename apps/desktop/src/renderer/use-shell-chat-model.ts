@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { SessionSendProjection } from '@maka/core/session-send-projection';
@@ -14,6 +14,7 @@ import {
 import { deriveSessionHealthNotice } from './session-health-notice';
 import type { ComposerDefaults } from './composer-defaults';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { useNewTaskChoice } from './use-new-task-choice.js';
 
 export type { NewChatModel } from './shell-chat-model-selection';
 
@@ -70,18 +71,16 @@ export function useShellChatModel(options: {
 } {
   const { uiLocale, connections, defaultConnection, activationCandidate, activeSession, persistedComposerDefaults, openSettingsSection } = options;
   const conversationCopy = getDesktopConversationCopy(uiLocale);
-  const [pendingNewChatModelState, setPendingNewChatModelState] = useState<{
-    key: string;
-    value: NewChatModel | null;
-  }>();
-  const pendingNewChatModel = pendingNewChatModelState?.key === options.newTaskKey
-    ? pendingNewChatModelState.value
+  const [pendingNewChatModelChoice, setPendingNewChatModel] = useNewTaskChoice<
+    NewChatModel | null
+  >(
+    options.newTaskKey,
+  );
+  const pendingNewChatModel = pendingNewChatModelChoice !== undefined
+    ? pendingNewChatModelChoice
     : options.usePersistedComposerDefaults
       ? persistedComposerDefaults?.model ?? null
       : null;
-  const setPendingNewChatModel = (value: NewChatModel | null) => {
-    setPendingNewChatModelState({ key: options.newTaskKey, value });
-  };
   const activeConnection = activeSession
     ? connections.find((connection) => connection.slug === activeSession.llmConnectionSlug)
     : undefined;
@@ -97,17 +96,10 @@ export function useShellChatModel(options: {
   //
   // The pick carries its target key so a Host or Project switch cannot apply it
   // to a different execution authority, even for an identically named model.
-  const [pendingNewChatThinkingState, setPendingNewChatThinkingState] = useState<{
-    key: string;
-    value: ThinkingLevel | null;
-  }>();
-  const pendingNewChatThinkingLevel =
-    pendingNewChatThinkingState?.key === options.newTaskKey
-      ? pendingNewChatThinkingState.value
-      : undefined;
-  const setPendingNewChatThinkingLevel = (value: ThinkingLevel | null) => {
-    setPendingNewChatThinkingState({ key: options.newTaskKey, value });
-  };
+  const [pendingNewChatThinkingLevel, setPendingNewChatThinkingLevel] =
+    useNewTaskChoice<ThinkingLevel | null>(
+      options.newTaskKey,
+    );
   const requestedNewChatThinkingLevel =
     pendingNewChatThinkingLevel === undefined
       ? options.defaultThinkingLevel ?? null
