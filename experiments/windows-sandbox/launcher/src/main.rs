@@ -21,6 +21,8 @@ mod protocol;
 #[cfg(test)]
 mod protocol_tests;
 mod windows_launcher;
+#[cfg(test)]
+mod windows_launcher_tests;
 
 use std::env;
 use std::fs;

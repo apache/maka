@@ -299,17 +299,8 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
     let mut executable = wide(&request.executable);
     let mut cwd = wide(&request.cwd);
     let environment = environment_block(&request.environment);
-    let environment_ptr = if environment.is_empty() {
-        null()
-    } else {
-        environment.as_ptr() as *const c_void
-    };
-    let creation_flags = CREATE_SUSPENDED
-        | if environment.is_empty() {
-            0
-        } else {
-            CREATE_UNICODE_ENVIRONMENT
-        };
+    let environment_ptr = environment.as_ptr() as *const c_void;
+    let creation_flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
     let mut startup: STARTUPINFOW = unsafe { zeroed() };
     startup.cb = size_of::<STARTUPINFOW>() as u32;
     let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
@@ -384,11 +375,7 @@ unsafe fn create_child_atomic(
     let mut executable = wide(&request.executable);
     let mut cwd = wide(&request.cwd);
     let environment = environment_block(&request.environment);
-    let environment_ptr = if environment.is_empty() {
-        null()
-    } else {
-        environment.as_ptr() as *const c_void
-    };
+    let environment_ptr = environment.as_ptr() as *const c_void;
 
     let mut attribute_size = 0usize;
     unsafe { InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut attribute_size) };
@@ -424,13 +411,8 @@ unsafe fn create_child_atomic(
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.lpAttributeList = attribute_list;
     let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
-    let creation_flags = CREATE_SUSPENDED
-        | EXTENDED_STARTUPINFO_PRESENT
-        | if environment.is_empty() {
-            0
-        } else {
-            CREATE_UNICODE_ENVIRONMENT
-        };
+    let creation_flags =
+        CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
     let created = unsafe {
         CreateProcessAsUserW(
             token,
@@ -492,11 +474,7 @@ unsafe fn create_appcontainer_child(
     let executable = wide(&request.executable);
     let cwd = wide(&request.cwd);
     let environment = environment_block(&request.environment);
-    let environment_ptr = if environment.is_empty() {
-        null()
-    } else {
-        environment.as_ptr() as *const c_void
-    };
+    let environment_ptr = environment.as_ptr() as *const c_void;
     let stdio = unsafe { InheritableStdio::capture() }?;
 
     let mut attribute_size = 0usize;
@@ -585,13 +563,8 @@ unsafe fn create_appcontainer_child(
     startup.StartupInfo.hStdOutput = stdio.handles[1];
     startup.StartupInfo.hStdError = stdio.handles[2];
     let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
-    let creation_flags = CREATE_SUSPENDED
-        | EXTENDED_STARTUPINFO_PRESENT
-        | if environment.is_empty() {
-            0
-        } else {
-            CREATE_UNICODE_ENVIRONMENT
-        };
+    let creation_flags =
+        CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
     let created = unsafe {
         CreateProcessW(
             executable.as_ptr(),
@@ -836,13 +809,20 @@ fn quote_argument(value: &str) -> String {
     result
 }
 
-fn environment_block(environment: &std::collections::BTreeMap<String, String>) -> Vec<u16> {
-    if environment.is_empty() {
-        return Vec::new();
-    }
+/// Builds an explicit CreateProcess environment block. An empty allowlist
+/// still produces a valid empty block (a lone list terminator): passing a
+/// null environment pointer would make the child inherit the broker's
+/// ambient environment, silently bypassing the allowlisted-environment
+/// boundary.
+pub(crate) fn environment_block(
+    environment: &std::collections::BTreeMap<String, String>,
+) -> Vec<u16> {
     let mut block = Vec::new();
     for (name, value) in environment {
         block.extend(OsStr::new(&format!("{name}={value}")).encode_wide());
+        block.push(0);
+    }
+    if block.is_empty() {
         block.push(0);
     }
     block.push(0);
