@@ -74,7 +74,9 @@ function isKnownIconValue(expression, scope) {
     );
   }
   if (unwrapped.type === 'ConditionalExpression') {
-    return isKnownIconValue(unwrapped.consequent, scope) && isKnownIconValue(unwrapped.alternate, scope);
+    return (
+      isKnownIconValue(unwrapped.consequent, scope) && isKnownIconValue(unwrapped.alternate, scope)
+    );
   }
   return false;
 }
@@ -249,7 +251,11 @@ function collectHits(node, scope, sourceText, file, hits) {
   if (node.type === 'VariableDeclarator') {
     if (node.init) collectHits(node.init, scope, sourceText, file, hits);
     if (node.id.type === 'Identifier') {
-      defineBinding(scope, node.id.name, node.init && isKnownIconValue(node.init, scope) ? 'icon' : 'not-icon');
+      defineBinding(
+        scope,
+        node.id.name,
+        node.init && isKnownIconValue(node.init, scope) ? 'icon' : 'not-icon',
+      );
     } else {
       for (const name of patternNames(node.id)) defineBinding(scope, name, 'not-icon');
     }
