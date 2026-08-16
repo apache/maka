@@ -28,6 +28,13 @@ type ExternalSessionImportCopy = {
   import: string;
   importTask: (name: string) => string;
   importing: string;
+  importInProgressTitle: string;
+  /**
+   * Named, for the same reason the unconfirmed banner names its conversations:
+   * the catalog is free to change while an import runs, so the row this started
+   * from may already be filtered or paged away.
+   */
+  importInProgressDescription: (name: string) => string;
   importFailedTitle: string;
   importFailedFallback: string;
   importOutcomeUnknownTitle: string;
@@ -65,6 +72,8 @@ const COPY = {
     import: '导入',
     importTask: (name) => `导入「${name}」`,
     importing: '正在导入…',
+    importInProgressTitle: '正在导入',
+    importInProgressDescription: (name) => `正在导入「${name}」，完成后会直接打开这个任务。`,
     importFailedTitle: '导入失败',
     importFailedFallback: '该对话无法转换或保存。请检查来源后重试。',
     importOutcomeUnknownTitle: '需要确认导入结果',
@@ -92,6 +101,9 @@ const COPY = {
     import: 'Import',
     importTask: (name) => `Import ${name}`,
     importing: 'Importing…',
+    importInProgressTitle: 'Import in progress',
+    importInProgressDescription: (name) =>
+      `Importing “${name}”. Maka opens the task as soon as it lands.`,
     importFailedTitle: 'Import failed',
     importFailedFallback: 'This conversation could not be converted or saved. Check the source and try again.',
     importOutcomeUnknownTitle: 'Check the import result',
