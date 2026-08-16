@@ -82,33 +82,37 @@ export function useAppShellProjectContext(options: {
   const [projectPickerPending, setProjectPickerPending] = useState(false);
   const projectPickerPendingRef = useRef(false);
   const projectPickerRequestRef = useRef(0);
+  const defaultRefreshGenerationRef = useRef(0);
+
+  const refreshDefaultProjectState = async (): Promise<ProjectRecord[]> => {
+    const generation = ++defaultRefreshGenerationRef.current;
+    const { snapshot, info } = await window.maka.projects.getDefaultContext();
+    if (
+      !rendererMountedRef.current ||
+      generation !== defaultRefreshGenerationRef.current
+    ) {
+      return [];
+    }
+    const nextProjects = [...snapshot.projects];
+    setProjects(nextProjects);
+    setProjectCapabilities(snapshot.capabilities);
+    setAppInfo({
+      projectId: info.projectId,
+      projectPath: info.projectPath,
+      projectGit: info.projectGit,
+    });
+    setSelectedProjectId(info.projectId);
+    return nextProjects;
+  };
 
   useEffect(() => {
-    let cancelled = false;
-    let refreshGeneration = 0;
-    const refresh = () => {
-      const generation = ++refreshGeneration;
-      return Promise.all([window.maka.projects.getSnapshot(), window.maka.app.info()]).then(
-        ([snapshot, info]) => {
-          if (cancelled || generation !== refreshGeneration) return;
-          setProjects([...snapshot.projects]);
-          setProjectCapabilities(snapshot.capabilities);
-          setAppInfo({
-            projectId: info.projectId,
-            projectPath: info.projectPath,
-            projectGit: info.projectGit,
-          });
-          setSelectedProjectId(info.projectId);
-        },
-        () => {
-          // Project management failures surface at the next user action.
-        },
-      );
-    };
-    const unsubscribe = window.maka.projects.subscribeChanges(() => void refresh());
-    void refresh();
+    const refresh = () => void refreshDefaultProjectState().catch(() => {
+      // Project management failures surface at the next user action.
+    });
+    const unsubscribe = window.maka.projects.subscribeChanges(refresh);
+    refresh();
     return () => {
-      cancelled = true;
+      defaultRefreshGenerationRef.current += 1;
       unsubscribe();
     };
   }, []);
@@ -142,17 +146,21 @@ export function useAppShellProjectContext(options: {
       return;
     }
     let cancelled = false;
-    const refresh = () => window.maka.projects.getSnapshot(sessionId).then(
-      (snapshot) => {
-        if (cancelled) return;
-        setSessionProjectSnapshot({
-          sessionId,
-          projects: [...snapshot.projects],
-          capabilities: snapshot.capabilities,
-        });
-      },
-      () => undefined,
-    );
+    let refreshGeneration = 0;
+    const refresh = () => {
+      const generation = ++refreshGeneration;
+      return window.maka.projects.getSnapshot(sessionId).then(
+        (snapshot) => {
+          if (cancelled || generation !== refreshGeneration) return;
+          setSessionProjectSnapshot({
+            sessionId,
+            projects: [...snapshot.projects],
+            capabilities: snapshot.capabilities,
+          });
+        },
+        () => undefined,
+      );
+    };
     const unsubscribe = window.maka.projects.subscribeChanges(() => void refresh(), sessionId);
     void refresh();
     return () => {
@@ -207,16 +215,11 @@ export function useAppShellProjectContext(options: {
     projectPickerPendingRef,
     projectPickerRequestRef,
     rendererMountedRef,
-    setAppInfo,
-    setSessionProjectInfo,
     setProjectPickerPending,
-    setProjects,
-    setProjectCapabilities,
-    setSelectedProjectId,
+    refreshDefaultProjectState,
     selectedProjectId,
     projects,
     projectCapabilities,
-    projectInfo,
     sessionId,
     onProjectSelected,
     toastApi,

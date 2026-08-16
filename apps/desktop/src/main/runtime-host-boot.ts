@@ -434,13 +434,7 @@ registerPersistentClientIpc();
 registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController, settingsStore });
 const browserIpc = registerBrowserIpc({
   mainWindowController,
-  isHostActive: (scope) => {
-    const target = runtimePolicyTargetsByEpoch.get(scope.targetEpoch);
-    return Boolean(
-      target?.isActive() &&
-      target.scope.hostId === scope.hostId,
-    );
-  },
+  isHostActive: (scope) => runtimeHostManager?.ownsScope(scope) === true,
 });
 registerNotificationsIpc({
   ipcMain,

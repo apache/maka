@@ -300,6 +300,26 @@ export interface DesktopProjectSnapshot {
   readonly capabilities: DesktopProjectCapabilities;
 }
 
+export interface DesktopAppInfo {
+  readonly appVersion: string;
+  readonly electronVersion: string;
+  readonly nodeVersion: string;
+  readonly chromeVersion: string;
+  readonly platform: string;
+  readonly arch: string;
+  readonly osRelease: string;
+  readonly workspacePath: string;
+  /** The OS home directory, for collapsing displayed paths to `~`. */
+  readonly homePath: string;
+  /** Exact operational-state database path resolved by main. */
+  readonly operationalStateDatabasePath: string;
+  readonly projectId?: string | null;
+  readonly projectPath: string;
+  readonly projectGit: { readonly isGitRepo: boolean; readonly branch?: string };
+  readonly buildMode: 'dev' | 'packaged';
+  readonly buildCommit: string | null;
+}
+
 /**
  * Commands dispatched by the native application menu (see
  * main/application-menu.ts). The renderer owns the implementations.
@@ -525,6 +545,10 @@ export interface MakaBridge {
     }): Promise<ExternalSessionImportIpcResult<DesktopSessionSummary>>;
   };
   projects: {
+    getDefaultContext(): Promise<{
+      snapshot: DesktopProjectSnapshot;
+      info: DesktopAppInfo;
+    }>;
     getSnapshot(sessionId?: string): Promise<DesktopProjectSnapshot>;
     subscribeChanges(handler: () => void, sessionId?: string): () => void;
     getLocalSnapshot(): Promise<DesktopProjectSnapshot>;
@@ -884,25 +908,7 @@ export interface MakaBridge {
     >;
   };
   app: {
-    info(): Promise<{
-      appVersion: string;
-      electronVersion: string;
-      nodeVersion: string;
-      chromeVersion: string;
-      platform: string;
-      arch: string;
-      osRelease: string;
-      workspacePath: string;
-      /** The OS home directory, for collapsing displayed paths to `~`. */
-      homePath: string;
-      /** Exact operational-state database path resolved by main. */
-      operationalStateDatabasePath: string;
-      projectId?: string | null;
-      projectPath: string;
-      projectGit: { isGitRepo: boolean; branch?: string };
-      buildMode: 'dev' | 'packaged';
-      buildCommit: string | null;
-    }>;
+    info(): Promise<DesktopAppInfo>;
     subscribeUpdateStatus(handler: (status: AppUpdateStatus) => void): () => void;
     updateStatus(): Promise<AppUpdateStatus>;
     checkForUpdates(): Promise<AppUpdateStatus>;

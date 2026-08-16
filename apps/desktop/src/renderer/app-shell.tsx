@@ -1766,7 +1766,6 @@ function AppShellContent({
     projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,
-    refreshAppInfo,
     refreshProjects,
     addProject,
     selectProject,
@@ -1883,17 +1882,24 @@ function AppShellContent({
     showModelSetupToast,
     toastApi,
   });
-  const projectRowActions: NonNullable<Parameters<typeof SessionListPanel>[0]['projectActions']> = {
-    onNew: createSessionInProject,
-    onRename: renameProject,
-    onArchive: archiveProject,
-    onRestore: restoreProject,
-    ...(projectCapabilities.chooseClientDirectory
+  // Sidebar Project groups come from the Local catalog. Until new tasks have
+  // an explicit Host selector, expose their actions only when Local is also
+  // the default target; otherwise the default-scoped commands would mutate a
+  // different catalog with the same Project id.
+  const projectRowActions: Parameters<typeof SessionListPanel>[0]['projectActions'] =
+    projectCapabilities.setLocalDefault
       ? {
-          onRelink: (projectId: string) => relinkProject(projectId).then(() => undefined),
+          onNew: createSessionInProject,
+          onRename: renameProject,
+          onArchive: archiveProject,
+          onRestore: restoreProject,
+          ...(projectCapabilities.chooseClientDirectory
+            ? {
+                onRelink: (projectId: string) => relinkProject(projectId).then(() => undefined),
+              }
+            : {}),
         }
-      : {}),
-  };
+      : undefined;
 
   // Composer mention popups: `/` uses Runtime's session/project-aware,
   // host-compatible projection; `@` uses workspace file search. Keep the
@@ -2340,7 +2346,6 @@ function AppShellContent({
     pendingTurnActionsRef: turnActionRegistry.keysRef,
     projectPickerPendingRef,
     projectPickerRequestRef,
-    refreshAppInfo,
     refreshConnections: refreshConnectionProjections,
     refreshMemoryActive,
     refreshMessages,

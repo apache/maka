@@ -230,7 +230,6 @@ export function useAppShellBootstrapSubscriptions(options: {
   pendingTurnActionsRef: RefBox<Set<string>>;
   projectPickerPendingRef: RefBox<boolean>;
   projectPickerRequestRef: RefBox<number>;
-  refreshAppInfo: () => Promise<void>;
   refreshConnections: (sessionId?: string) => Promise<void>;
   refreshMemoryActive: (failureContext?: 'load') => Promise<void>;
   refreshMessages: (sessionId: string) => Promise<boolean>;
@@ -250,7 +249,6 @@ export function useAppShellBootstrapSubscriptions(options: {
 }) {
   const runDeferredStartupRefreshes = useEffectEvent(() => {
     void options.refreshSessions();
-    void options.refreshAppInfo();
     void options.refreshSkills();
     void options.refreshManagedSkillSources();
     void options.refreshBundledSkillCatalog();

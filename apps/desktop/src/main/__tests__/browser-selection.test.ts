@@ -19,10 +19,10 @@ describe('browser selection ordering', () => {
     const pending = deferred<{ scope: string; sessionId: string }>();
     const events: string[] = [];
     const selection = createBrowserSelectionCoordinator(() => pending.promise, {
-      show: (generation, session) => events.push(`show:${generation}:${session.sessionId}`),
-      hide: (generation) => events.push(`hide:${generation}`),
+      show: (_documentId, generation, session) => events.push(`show:${generation}:${session.sessionId}`),
+      hide: (_documentId, generation) => events.push(`hide:${generation}`),
       setViewport: () => undefined,
-    });
+    }, 'document-a');
 
     selection.setActiveSession('desktop-a');
     selection.setActiveSession(null);
@@ -41,11 +41,12 @@ describe('browser selection ordering', () => {
     const selection = createBrowserSelectionCoordinator(
       (sessionId) => sessions.get(sessionId)?.promise ?? Promise.reject(new Error('missing')),
       {
-        show: (generation, session) => events.push(`show:${generation}:${session.sessionId}`),
-        hide: (generation) => events.push(`hide:${generation}`),
-        setViewport: (generation, session) =>
+        show: (_documentId, generation, session) => events.push(`show:${generation}:${session.sessionId}`),
+        hide: (_documentId, generation) => events.push(`hide:${generation}`),
+        setViewport: (_documentId, generation, session) =>
           events.push(`viewport:${generation}:${session.sessionId}`),
       },
+      'document-a',
     );
 
     selection.setActiveSession('desktop-a');

@@ -22,7 +22,7 @@ export interface BrowserIpcController {
 
 export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
   let shownBrowserSessionId: string | null = null;
-  let selectionFrame: string | undefined;
+  let selectionDocumentId: string | undefined;
   let selectionGeneration = 0;
   provideBrowserViewHost(createBrowserViewHost(deps.mainWindowController.getBrowserViews(), () => shownBrowserSessionId));
 
@@ -47,25 +47,37 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
       : undefined;
   };
 
-  const advanceSelection = (frame: string, generation: unknown): boolean => {
-    if (typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation <= 0) {
+  const advanceSelection = (documentId: unknown, generation: unknown): boolean => {
+    if (
+      typeof documentId !== 'string' || documentId.length === 0 ||
+      typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation <= 0
+    ) {
       return false;
     }
-    if (frame !== selectionFrame) {
-      selectionFrame = frame;
+    if (documentId !== selectionDocumentId) {
+      selectionDocumentId = documentId;
       selectionGeneration = 0;
+      hideActiveSession();
     }
     if (generation <= selectionGeneration) return false;
     selectionGeneration = generation;
     return true;
   };
 
-  const isCurrentSelection = (frame: string, generation: unknown): boolean =>
-    frame === selectionFrame && generation === selectionGeneration;
+  const isCurrentSelection = (documentId: unknown, generation: unknown): boolean =>
+    documentId === selectionDocumentId && generation === selectionGeneration;
 
-  ipcMain.on('browser:active-session', (event, scope: unknown, sessionId: unknown, generation: unknown) => {
+  ipcMain.on('browser:document-ready', (event, documentId: unknown) => {
+    if (!rendererFrame(event) || typeof documentId !== 'string' || documentId.length === 0) return;
+    if (documentId === selectionDocumentId) return;
+    selectionDocumentId = documentId;
+    selectionGeneration = 0;
+    hideActiveSession();
+  });
+
+  ipcMain.on('browser:active-session', (event, scope: unknown, sessionId: unknown, documentId: unknown, generation: unknown) => {
     const frame = rendererFrame(event);
-    if (!frame || !advanceSelection(frame, generation)) return;
+    if (!frame || !advanceSelection(documentId, generation)) return;
     try {
       shownBrowserSessionId = requireBrowserTarget(scope, sessionId) ?? null;
     } catch {
@@ -75,14 +87,14 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     deps.mainWindowController.getBrowserViews().hideAllExcept(shownBrowserSessionId);
     revokeHiddenBrowserActions(shownBrowserSessionId);
   });
-  ipcMain.on('browser:hide-active-session', (event, generation: unknown) => {
+  ipcMain.on('browser:hide-active-session', (event, documentId: unknown, generation: unknown) => {
     const frame = rendererFrame(event);
-    if (frame && advanceSelection(frame, generation)) hideActiveSession();
+    if (frame && advanceSelection(documentId, generation)) hideActiveSession();
   });
 
-  ipcMain.on('browser:setViewport', (event, scope: unknown, input: { sessionId?: unknown; rect?: BrowserViewRect | null }, generation: unknown) => {
+  ipcMain.on('browser:setViewport', (event, scope: unknown, input: { sessionId?: unknown; rect?: BrowserViewRect | null }, documentId: unknown, generation: unknown) => {
     const frame = rendererFrame(event);
-    if (!frame || !isCurrentSelection(frame, generation)) return;
+    if (!frame || !isCurrentSelection(documentId, generation)) return;
     let target: string | undefined;
     try {
       target = requireBrowserTarget(scope, input?.sessionId);

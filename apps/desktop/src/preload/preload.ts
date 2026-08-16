@@ -22,6 +22,7 @@ import type {
   DesktopRuntimeHostSshTerminalEvent,
   DesktopRuntimeHostSshTerminalSnapshot,
   DesktopProjectSnapshot,
+  DesktopAppInfo,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import {
@@ -866,27 +867,31 @@ async function bridgeResult<T>(operation: () => Promise<T>, code: string): Promi
   }
 }
 
+const browserDocumentId = crypto.randomUUID();
+ipcRenderer.send('browser:document-ready', browserDocumentId);
 const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef, {
-  show(generation, session) {
+  show(documentId, generation, session) {
     ipcRenderer.send(
       'browser:active-session',
       session.scope,
       session.sessionId,
+      documentId,
       generation,
     );
   },
-  hide(generation) {
-    ipcRenderer.send('browser:hide-active-session', generation);
+  hide(documentId, generation) {
+    ipcRenderer.send('browser:hide-active-session', documentId, generation);
   },
-  setViewport(generation, session, rect) {
+  setViewport(documentId, generation, session, rect) {
     ipcRenderer.send(
       'browser:setViewport',
       session.scope,
       { sessionId: session.sessionId, rect },
+      documentId,
       generation,
     );
   },
-});
+}, browserDocumentId);
 
 const makaBridge = {
   runtimeHost,
@@ -1481,6 +1486,17 @@ const makaBridge = {
     },
   },
   projects: {
+    async getDefaultContext(): Promise<{
+      snapshot: DesktopProjectSnapshot;
+      info: DesktopAppInfo;
+    }> {
+      const scope = await activeRuntimeHostRef();
+      const [snapshot, info] = await Promise.all([
+        ipcRenderer.invoke('projects:getSnapshot', scope) as Promise<DesktopProjectSnapshot>,
+        ipcRenderer.invoke('app:info', scope) as Promise<DesktopAppInfo>,
+      ]);
+      return { snapshot, info };
+    },
     getSnapshot(sessionId?: string): Promise<DesktopProjectSnapshot> {
       return sessionId
         ? invokeSessionRuntimeHost('projects:getSnapshot', sessionId)
@@ -2297,23 +2313,7 @@ const makaBridge = {
     },
   },
   app: {
-    info(): Promise<{
-      appVersion: string;
-      electronVersion: string;
-      nodeVersion: string;
-      chromeVersion: string;
-      platform: string;
-      arch: string;
-      osRelease: string;
-      workspacePath: string;
-      homePath: string;
-      operationalStateDatabasePath: string;
-      projectId?: string | null;
-      projectPath: string;
-      projectGit: { isGitRepo: boolean; branch?: string };
-      buildMode: 'dev' | 'packaged';
-      buildCommit: string | null;
-    }> {
+    info(): Promise<DesktopAppInfo> {
       return invokeActiveRuntimeHost('app:info');
     },
     subscribeUpdateStatus(handler: (status: AppUpdateStatus) => void): () => void {

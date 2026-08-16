@@ -6,9 +6,10 @@ export interface ResolvedBrowserSession {
 }
 
 interface BrowserSelectionSink {
-  show(generation: number, session: ResolvedBrowserSession): void;
-  hide(generation: number): void;
+  show(documentId: string, generation: number, session: ResolvedBrowserSession): void;
+  hide(documentId: string, generation: number): void;
   setViewport(
+    documentId: string,
     generation: number,
     session: ResolvedBrowserSession,
     rect: BrowserViewRect | null,
@@ -24,6 +25,7 @@ interface BrowserSelectionSink {
 export function createBrowserSelectionCoordinator(
   resolveSession: (sessionId: string) => Promise<ResolvedBrowserSession>,
   sink: BrowserSelectionSink,
+  documentId: string = crypto.randomUUID(),
 ) {
   let generation = 0;
   let current:
@@ -42,7 +44,7 @@ export function createBrowserSelectionCoordinator(
       generation += 1;
       if (!sessionId) {
         current = undefined;
-        sink.hide(generation);
+        sink.hide(documentId, generation);
         return;
       }
 
@@ -54,10 +56,10 @@ export function createBrowserSelectionCoordinator(
       current = selection;
       void selection.resolved.then(
         (session) => {
-          if (isCurrent(selection)) sink.show(selection.generation, session);
+          if (isCurrent(selection)) sink.show(documentId, selection.generation, session);
         },
         () => {
-          if (isCurrent(selection)) sink.hide(selection.generation);
+          if (isCurrent(selection)) sink.hide(documentId, selection.generation);
         },
       );
     },
@@ -68,7 +70,7 @@ export function createBrowserSelectionCoordinator(
       void selection.resolved.then(
         (session) => {
           if (isCurrent(selection)) {
-            sink.setViewport(selection.generation, session, input.rect);
+            sink.setViewport(documentId, selection.generation, session, input.rect);
           }
         },
         () => undefined,
