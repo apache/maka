@@ -17,7 +17,7 @@ const GLOBS = [
   'apps/desktop/src/**/*.{ts,tsx}',
 ];
 const ICON_METADATA_EXPORTS = new Set(['ICON_SIZE', 'LucideIcon', 'LucideProps']);
-const DYNAMIC_ICON_TAGS = new Map([['packages/ui/stories/icons.stories.tsx', new Set(['Comp'])]]);
+const NUMERIC_SIZE_STRING = /^[+-]?(?:\d+|\d*\.\d+)$/;
 
 function normalizedRelativePath(repoRoot, file) {
   return relative(repoRoot, file).split('\\').join('/');
@@ -59,9 +59,9 @@ function isNumericConstant(expression) {
   );
 }
 
-function isKnownIconValue(expression, iconBindings, iconNamespaces) {
+function isKnownIconValue(expression, scope) {
   const unwrapped = unwrapExpression(expression);
-  if (unwrapped.type === 'Identifier') return iconBindings.has(unwrapped.name);
+  if (unwrapped.type === 'Identifier') return resolveBinding(scope, unwrapped.name) === 'icon';
   if (
     unwrapped.type === 'MemberExpression' &&
     !unwrapped.computed &&
@@ -69,29 +69,108 @@ function isKnownIconValue(expression, iconBindings, iconNamespaces) {
     unwrapped.property.type === 'Identifier'
   ) {
     return (
-      iconNamespaces.has(unwrapped.object.name) &&
+      resolveBinding(scope, unwrapped.object.name) === 'namespace' &&
       !ICON_METADATA_EXPORTS.has(unwrapped.property.name)
     );
   }
   if (unwrapped.type === 'ConditionalExpression') {
-    return (
-      isKnownIconValue(unwrapped.consequent, iconBindings, iconNamespaces) &&
-      isKnownIconValue(unwrapped.alternate, iconBindings, iconNamespaces)
-    );
+    return isKnownIconValue(unwrapped.consequent, scope) && isKnownIconValue(unwrapped.alternate, scope);
   }
   return false;
 }
 
-function visitAst(node, visit) {
-  if (!node || typeof node !== 'object') return;
-  if (typeof node.type === 'string') visit(node);
-  for (const value of Object.values(node)) {
-    if (Array.isArray(value)) {
-      for (const child of value) visitAst(child, visit);
-    } else if (value && typeof value === 'object' && typeof value.type === 'string') {
-      visitAst(value, visit);
+function createScope(parent = null) {
+  return { parent, names: new Map() };
+}
+
+function defineBinding(scope, name, kind) {
+  scope.names.set(name, kind);
+}
+
+function resolveBinding(scope, name) {
+  for (let current = scope; current; current = current.parent) {
+    if (current.names.has(name)) return current.names.get(name);
+  }
+  return 'unbound';
+}
+
+function patternNames(pattern, names = []) {
+  if (!pattern) return names;
+  if (pattern.type === 'Identifier') {
+    names.push(pattern.name);
+    return names;
+  }
+  if (pattern.type === 'AssignmentPattern') return patternNames(pattern.left, names);
+  if (pattern.type === 'RestElement') return patternNames(pattern.argument, names);
+  if (pattern.type === 'TSParameterProperty') return patternNames(pattern.parameter, names);
+  if (pattern.type === 'ArrayPattern') {
+    for (const element of pattern.elements) patternNames(element, names);
+    return names;
+  }
+  if (pattern.type === 'ObjectPattern') {
+    for (const property of pattern.properties) {
+      if (property.type === 'RestElement') patternNames(property.argument, names);
+      else patternNames(property.value, names);
     }
   }
+  return names;
+}
+
+function isFunctionNode(node) {
+  return (
+    node.type === 'FunctionDeclaration' ||
+    node.type === 'FunctionExpression' ||
+    node.type === 'ArrowFunctionExpression' ||
+    node.type === 'ClassMethod' ||
+    node.type === 'ClassPrivateMethod' ||
+    node.type === 'ObjectMethod'
+  );
+}
+
+function childEntries(node) {
+  const entries = [];
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'type' || key === 'loc' || key === 'start' || key === 'end' || key === 'range') {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      for (const child of value) {
+        if (child && typeof child === 'object' && typeof child.type === 'string') {
+          entries.push(child);
+        }
+      }
+    } else if (value && typeof value === 'object' && typeof value.type === 'string') {
+      entries.push(value);
+    }
+  }
+  return entries;
+}
+
+function bindParams(scope, node) {
+  const params = node.params ?? [];
+  for (const param of params) {
+    for (const name of patternNames(param)) defineBinding(scope, name, 'not-icon');
+  }
+  if (node.id?.type === 'Identifier') defineBinding(scope, node.id.name, 'not-icon');
+}
+
+function isNumericSizeAttribute(attribute) {
+  if (
+    attribute.type !== 'JSXAttribute' ||
+    attribute.name.type !== 'JSXIdentifier' ||
+    attribute.name.name !== 'size' ||
+    !attribute.value
+  ) {
+    return false;
+  }
+  if (attribute.value.type === 'StringLiteral') {
+    return NUMERIC_SIZE_STRING.test(attribute.value.value.trim());
+  }
+  return (
+    attribute.value.type === 'JSXExpressionContainer' &&
+    attribute.value.expression.type !== 'JSXEmptyExpression' &&
+    isNumericConstant(attribute.value.expression)
+  );
 }
 
 function importedName(specifier) {
@@ -99,9 +178,7 @@ function importedName(specifier) {
   return specifier.imported.value;
 }
 
-function collectIconBindings(program, file, repoRoot) {
-  const iconBindings = new Set();
-  const iconNamespaces = new Set();
+function bindIconImports(program, file, repoRoot, scope) {
   for (const statement of program.body) {
     if (
       statement.type !== 'ImportDeclaration' ||
@@ -112,47 +189,86 @@ function collectIconBindings(program, file, repoRoot) {
     }
     for (const specifier of statement.specifiers) {
       if (specifier.type === 'ImportNamespaceSpecifier') {
-        iconNamespaces.add(specifier.local.name);
+        defineBinding(scope, specifier.local.name, 'namespace');
       } else if (specifier.type === 'ImportSpecifier' && specifier.importKind !== 'type') {
         const exportedName = importedName(specifier);
         if (!ICON_METADATA_EXPORTS.has(exportedName)) {
-          iconBindings.add(specifier.local.name);
+          defineBinding(scope, specifier.local.name, 'icon');
         }
       }
     }
   }
-
-  // Preserve simple aliases used to select one of several imported icons.
-  let changed = true;
-  while (changed) {
-    changed = false;
-    visitAst(program, (node) => {
-      if (
-        node.type === 'VariableDeclarator' &&
-        node.id.type === 'Identifier' &&
-        node.init &&
-        !iconBindings.has(node.id.name) &&
-        isKnownIconValue(node.init, iconBindings, iconNamespaces)
-      ) {
-        iconBindings.add(node.id.name);
-        changed = true;
-      }
-    });
-  }
-  return { iconBindings, iconNamespaces };
 }
 
-function isGovernedIconTag(tagName, iconBindings, iconNamespaces, dynamicIconTags) {
+function isGovernedIconTag(tagName, scope) {
   if (tagName.type === 'JSXIdentifier') {
-    return iconBindings.has(tagName.name) || dynamicIconTags.has(tagName.name);
+    return resolveBinding(scope, tagName.name) === 'icon';
   }
   return (
     tagName.type === 'JSXMemberExpression' &&
     tagName.object.type === 'JSXIdentifier' &&
     tagName.property.type === 'JSXIdentifier' &&
-    iconNamespaces.has(tagName.object.name) &&
+    resolveBinding(scope, tagName.object.name) === 'namespace' &&
     !ICON_METADATA_EXPORTS.has(tagName.property.name)
   );
+}
+
+function collectHits(node, scope, sourceText, file, hits) {
+  if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+
+  if (isFunctionNode(node)) {
+    const inner = createScope(scope);
+    bindParams(inner, node);
+    for (const child of childEntries(node)) collectHits(child, inner, sourceText, file, hits);
+    return;
+  }
+
+  if (node.type === 'CatchClause') {
+    const inner = createScope(scope);
+    for (const name of patternNames(node.param)) defineBinding(inner, name, 'not-icon');
+    collectHits(node.body, inner, sourceText, file, hits);
+    return;
+  }
+
+  if (node.type === 'BlockStatement') {
+    const inner = createScope(scope);
+    for (const child of node.body) collectHits(child, inner, sourceText, file, hits);
+    return;
+  }
+
+  if (
+    node.type === 'ForStatement' ||
+    node.type === 'ForInStatement' ||
+    node.type === 'ForOfStatement'
+  ) {
+    const inner = createScope(scope);
+    for (const child of childEntries(node)) collectHits(child, inner, sourceText, file, hits);
+    return;
+  }
+
+  if (node.type === 'VariableDeclarator') {
+    if (node.init) collectHits(node.init, scope, sourceText, file, hits);
+    if (node.id.type === 'Identifier') {
+      defineBinding(scope, node.id.name, node.init && isKnownIconValue(node.init, scope) ? 'icon' : 'not-icon');
+    } else {
+      for (const name of patternNames(node.id)) defineBinding(scope, name, 'not-icon');
+    }
+    return;
+  }
+
+  if (node.type === 'JSXOpeningElement' && isGovernedIconTag(node.name, scope)) {
+    for (const attribute of node.attributes) {
+      if (!isNumericSizeAttribute(attribute)) continue;
+      hits.push({
+        file,
+        line: attribute.loc.start.line,
+        column: attribute.loc.start.column + 1,
+        expression: sourceText.slice(attribute.start, attribute.end),
+      });
+    }
+  }
+
+  for (const child of childEntries(node)) collectHits(child, scope, sourceText, file, hits);
 }
 
 export function findRawIconSizes(sourceText, file, options = {}) {
@@ -162,35 +278,10 @@ export function findRawIconSizes(sourceText, file, options = {}) {
     sourceFilename: file,
     plugins: ['typescript', 'jsx'],
   }).program;
-  const { iconBindings, iconNamespaces } = collectIconBindings(program, file, repoRoot);
-  const dynamicIconTags =
-    DYNAMIC_ICON_TAGS.get(normalizedRelativePath(repoRoot, file)) ?? new Set();
+  const moduleScope = createScope();
+  bindIconImports(program, file, repoRoot, moduleScope);
   const hits = [];
-  visitAst(program, (node) => {
-    if (
-      node.type === 'JSXOpeningElement' &&
-      isGovernedIconTag(node.name, iconBindings, iconNamespaces, dynamicIconTags)
-    ) {
-      for (const attribute of node.attributes) {
-        if (
-          attribute.type !== 'JSXAttribute' ||
-          attribute.name.type !== 'JSXIdentifier' ||
-          attribute.name.name !== 'size' ||
-          attribute.value?.type !== 'JSXExpressionContainer' ||
-          attribute.value.expression.type === 'JSXEmptyExpression' ||
-          !isNumericConstant(attribute.value.expression)
-        ) {
-          continue;
-        }
-        hits.push({
-          file: normalizedRelativePath(repoRoot, file),
-          line: attribute.loc.start.line,
-          column: attribute.loc.start.column + 1,
-          expression: sourceText.slice(attribute.start, attribute.end),
-        });
-      }
-    }
-  });
+  collectHits(program, moduleScope, sourceText, normalizedRelativePath(repoRoot, file), hits);
   return hits;
 }
 

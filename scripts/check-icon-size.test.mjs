@@ -25,7 +25,7 @@ test('rejects numeric sizes on named, aliased, derived, and namespace icon impor
   );
 });
 
-test('accepts ICON_SIZE and ignores unrelated size props, strings, and comments', () => {
+test('accepts ICON_SIZE and ignores unrelated size props, comments, and non-numeric strings', () => {
   assert.deepEqual(
     expressions(`
       import { ICON_SIZE, Search } from '@maka/ui/icons';
@@ -33,7 +33,7 @@ test('accepts ICON_SIZE and ignores unrelated size props, strings, and comments'
       const sample = '<Search size={15} />';
       export const Example = () => <>
         <Search size={ICON_SIZE.chrome} />
-        <Search size="16" />
+        <Search size="lg" />
         <Avatar size={16} />
       </>;
     `),
@@ -41,7 +41,33 @@ test('accepts ICON_SIZE and ignores unrelated size props, strings, and comments'
   );
 });
 
-test('resolves the relative icon seam and governs the dynamic icon story', () => {
+test('rejects numeric string sizes on icon tags', () => {
+  assert.deepEqual(
+    expressions(`
+      import { Search } from '@maka/ui/icons';
+      export const Example = () => <Search size="16" />;
+    `),
+    ['size="16"'],
+  );
+});
+
+test('does not treat shadowed or unrelated local tags as icons', () => {
+  assert.deepEqual(
+    expressions(`
+      import { Search } from '@maka/ui/icons';
+      function Shadow(Search) {
+        return <Search size={16} />;
+      }
+      export const Example = () => {
+        const Comp = Avatar;
+        return <Comp size={20} />;
+      };
+    `),
+    [],
+  );
+});
+
+test('resolves the relative icon seam', () => {
   assert.deepEqual(
     expressions(
       `
@@ -52,12 +78,5 @@ test('resolves the relative icon seam and governs the dynamic icon story', () =>
       `${repoRoot}/packages/ui/src/example.tsx`,
     ),
     ['size={13}', 'size={20}'],
-  );
-  assert.deepEqual(
-    expressions(
-      'export const Example = () => <Comp size={20} />;',
-      `${repoRoot}/packages/ui/stories/icons.stories.tsx`,
-    ),
-    ['size={20}'],
   );
 });
