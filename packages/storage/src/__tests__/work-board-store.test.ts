@@ -226,7 +226,69 @@ describe('Work Board store', () => {
     });
   });
 
-  test('serializes concurrent mutations without losing updates', async () => {
+  test('rejects a cursor reused with a different filter result set', async () => {
+    await withTempRoot(async (root) => {
+      const store = createWorkBoardStore(root);
+      try {
+        for (let index = 0; index < 3; index += 1) {
+          await store.create(itemInput({ title: `inbox-${index}` }), 100 + index);
+        }
+        const inboxPage = await store.list({ limit: 1, scope: { kind: 'inbox' } });
+        assert.ok(inboxPage.nextCursor);
+
+        await assert.rejects(
+          store.list({
+            scope: { kind: 'project', projectId: 'p1' },
+            cursor: inboxPage.nextCursor,
+          }),
+          (error: unknown) =>
+            error instanceof WorkBoardStoreError && error.code === 'invalid_input',
+        );
+        await assert.rejects(
+          store.list({ includeArchived: true, cursor: inboxPage.nextCursor }),
+          (error: unknown) =>
+            error instanceof WorkBoardStoreError && error.code === 'invalid_input',
+        );
+
+        const secondPage = await store.list({
+          limit: 1,
+          scope: { kind: 'inbox' },
+          cursor: inboxPage.nextCursor,
+        });
+        assert.equal(secondPage.items.length, 1);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  test('keeps mutation timestamps monotonic when now moves backwards', async () => {
+    await withTempRoot(async (root) => {
+      const store = createWorkBoardStore(root);
+      try {
+        const item = await store.create(itemInput(), 100);
+
+        const renamed = await store.update(item.id, { title: 'earlier clock' }, {}, 50);
+        assert.equal(renamed.updatedAt, 100);
+        assert.equal(renamed.revision, 2);
+
+        const archived = await store.archive(item.id, {}, 30);
+        assert.equal(archived.updatedAt, 100);
+        assert.equal(archived.archivedAt, 100);
+        assert.equal(archived.revision, 3);
+
+        const reopened = await store.unarchive(item.id, {}, 40);
+        assert.equal(reopened.updatedAt, 100);
+        assert.equal(reopened.revision, 4);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  // Process-local serialization only; cross-process CAS is protected by the
+  // BEGIN IMMEDIATE transaction shared by update/archive/unarchive/remove.
+  test('serializes concurrent mutations through the process-local write queue', async () => {
     await withTempRoot(async (root) => {
       const store = createWorkBoardStore(root);
       try {

@@ -99,12 +99,16 @@ Writes:
 - all mutations are serialized on one write queue and committed in a transaction;
 - every effective mutation increments `revision`;
 - `expectedRevision` provides optimistic concurrency (CAS);
+- mutation timestamps are clamped to the stored `updatedAt`, so keyset ordering
+  stays monotonic even if the wall clock moves backwards;
 - permanent deletion requires an archived item;
 - reads reject disagreement between the indexed columns and `record_json.scope`
   as `corrupt_record`.
 
 There is no total item cap. List/query size is bounded by pagination (default 50,
-max 100) with an opaque keyset cursor.
+max 100) with an opaque keyset cursor. Cursors are bound to the normalized
+`scope` / `includeArchived` filters; reusing a cursor with different filters is
+rejected as invalid input.
 
 The default `archived = 0` list queries are covered by partial indexes on active
 rows only:

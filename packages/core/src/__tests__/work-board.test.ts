@@ -5,6 +5,8 @@ import {
   archiveWorkBoardItem,
   decodeWorkBoardItem,
   normalizeCreateWorkBoardItemInput,
+  normalizeWorkBoardCreator,
+  normalizeWorkBoardScope,
   normalizeUpdateWorkBoardItemInput,
   normalizeWorkBoardListQuery,
   unarchiveWorkBoardItem,
@@ -156,6 +158,29 @@ describe('Work Board contract', () => {
       }),
       null,
     );
+  });
+
+  test('rejects unknown fields at the contract boundary', () => {
+    const unknownCreate = normalizeCreateWorkBoardItemInput({
+      scope: { kind: 'inbox' },
+      title: 'x',
+      creator: { kind: 'user' },
+      provenance: { kind: 'manual' },
+      extra: true,
+    });
+    assert.equal(unknownCreate.ok, false);
+
+    for (const patch of [{ titel: 'x' }, { status: 'done' }, { linkedSessions: [] }]) {
+      assert.equal(normalizeUpdateWorkBoardItemInput(patch).ok, false, JSON.stringify(patch));
+    }
+
+    assert.equal(normalizeWorkBoardListQuery({ page: 1 }).ok, false);
+    assert.equal(decodeWorkBoardItem({ ...baseItem, extraField: true }), null);
+    assert.equal(
+      normalizeWorkBoardScope({ kind: 'inbox', projectId: 'p1', extra: true }).ok,
+      false,
+    );
+    assert.equal(normalizeWorkBoardCreator({ kind: 'user', confirmedAt: 5 }).ok, false);
   });
 
   test('normalizes notes patch semantics for absent, undefined, null, empty, whitespace, and values', () => {

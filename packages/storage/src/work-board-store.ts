@@ -11,6 +11,7 @@ import {
   normalizeWorkBoardListQuery,
   unarchiveWorkBoardItem,
   type WorkBoardItem,
+  type WorkBoardListQuery,
   type WorkBoardPage,
   type WorkBoardScope,
 } from '@maka/core/work-board';
@@ -91,6 +92,7 @@ class SqliteWorkBoardStore implements WorkBoardStore {
     const normalized = normalizeWorkBoardListQuery(query);
     if (!normalized.ok) throw storeError('invalid_input', normalized.message);
     const value = normalized.value;
+    const filterFingerprint = workBoardFilterFingerprint(value);
     const limit = value.limit ?? WORK_BOARD_DEFAULT_PAGE_SIZE;
     const params: Array<string | number> = [];
     let sql = `
@@ -106,7 +108,9 @@ class SqliteWorkBoardStore implements WorkBoardStore {
     }
     if (value.cursor) {
       const cursor = decodeCursor(value.cursor);
-      if (!cursor) throw storeError('invalid_input', 'cursor is invalid');
+      if (!cursor || cursor.filterFingerprint !== filterFingerprint) {
+        throw storeError('invalid_input', 'cursor does not match the list filters');
+      }
       sql += ' AND (updated_at < ? OR (updated_at = ? AND item_id < ?))';
       params.push(cursor.updatedAt, cursor.updatedAt, cursor.itemId);
     }
@@ -117,7 +121,7 @@ class SqliteWorkBoardStore implements WorkBoardStore {
     const last = items[items.length - 1];
     return {
       items,
-      ...(rows.length > limit && last ? { nextCursor: encodeCursor(last) } : {}),
+      ...(rows.length > limit && last ? { nextCursor: encodeCursor(last, filterFingerprint) } : {}),
     };
   }
 
@@ -169,7 +173,8 @@ class SqliteWorkBoardStore implements WorkBoardStore {
       this.#lease.transaction('write', () => {
         const current = this.#requireItem(id);
         assertExpectedRevision(expectedRevision, current);
-        const applied = applyWorkBoardItemPatch(current, normalizedPatch.value, now);
+        const effectiveNow = Math.max(now, current.updatedAt);
+        const applied = applyWorkBoardItemPatch(current, normalizedPatch.value, effectiveNow);
         if (applied.changed) {
           this.#writeItem(applied.item);
           result = applied.item;
@@ -195,7 +200,8 @@ class SqliteWorkBoardStore implements WorkBoardStore {
       this.#lease.transaction('write', () => {
         const current = this.#requireItem(id);
         assertExpectedRevision(expectedRevision, current);
-        const applied = archiveWorkBoardItem(current, now);
+        const effectiveNow = Math.max(now, current.updatedAt);
+        const applied = archiveWorkBoardItem(current, effectiveNow);
         if (applied.changed) {
           this.#writeItem(applied.item);
           result = applied.item;
@@ -219,7 +225,8 @@ class SqliteWorkBoardStore implements WorkBoardStore {
       this.#lease.transaction('write', () => {
         const current = this.#requireItem(id);
         assertExpectedRevision(expectedRevision, current);
-        const applied = unarchiveWorkBoardItem(current, now);
+        const effectiveNow = Math.max(now, current.updatedAt);
+        const applied = unarchiveWorkBoardItem(current, effectiveNow);
         if (applied.changed) {
           this.#writeItem(applied.item);
           result = applied.item;
@@ -344,20 +351,43 @@ function appendScopePredicate(
   return sql;
 }
 
-function encodeCursor(item: WorkBoardItem): string {
-  return Buffer.from(`${item.updatedAt}:${item.id}`, 'utf8').toString('base64url');
+function workBoardFilterFingerprint(value: WorkBoardListQuery): string {
+  const scope =
+    value.scope === undefined
+      ? 'any'
+      : value.scope.kind === 'project'
+        ? `project:${value.scope.projectId}`
+        : 'inbox';
+  return `${value.includeArchived ? 'archived-included' : 'active-only'}:${scope}`;
 }
 
-function decodeCursor(cursor: string): { updatedAt: number; itemId: string } | null {
+function encodeCursor(item: WorkBoardItem, filterFingerprint: string): string {
+  return Buffer.from(
+    JSON.stringify({ updatedAt: item.updatedAt, itemId: item.id, filterFingerprint }),
+    'utf8',
+  ).toString('base64url');
+}
+
+function decodeCursor(
+  cursor: string,
+): { updatedAt: number; itemId: string; filterFingerprint: string } | null {
   try {
-    const raw = Buffer.from(cursor, 'base64url').toString('utf8');
-    const separator = raw.indexOf(':');
-    if (separator <= 0) return null;
-    const updatedAt = Number(raw.slice(0, separator));
-    const itemId = raw.slice(separator + 1);
-    if (!Number.isSafeInteger(updatedAt) || updatedAt < 0) return null;
+    const parsed: unknown = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    const { updatedAt, itemId, filterFingerprint } = record;
+    if (typeof updatedAt !== 'number' || !Number.isSafeInteger(updatedAt) || updatedAt < 0) {
+      return null;
+    }
     if (!isSafeWorkBoardId(itemId)) return null;
-    return { updatedAt, itemId };
+    if (
+      typeof filterFingerprint !== 'string' ||
+      filterFingerprint.length === 0 ||
+      filterFingerprint.length > 128
+    ) {
+      return null;
+    }
+    return { updatedAt, itemId, filterFingerprint };
   } catch {
     return null;
   }

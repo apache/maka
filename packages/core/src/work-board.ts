@@ -1,3 +1,5 @@
+import { defineObjectShape, hasExactShape } from './record-schema.js';
+
 /**
  * Work Board — user-owned deferred work and task entry points.
  *
@@ -108,6 +110,71 @@ export interface WorkBoardPage {
   nextCursor?: string;
 }
 
+interface WorkBoardItemJsonShape {
+  schemaVersion: number;
+  id: string;
+  revision: number;
+  scope: WorkBoardScope;
+  title: string;
+  notes?: string;
+  state: WorkBoardItemState;
+  creator: WorkBoardCreator;
+  provenance: WorkBoardProvenance;
+  createdAt: number;
+  updatedAt: number;
+  archived: boolean;
+  archivedAt?: number;
+}
+
+const WORK_BOARD_SCOPE_INBOX_SHAPE = defineObjectShape<{ kind: 'inbox' }>()(['kind'], []);
+const WORK_BOARD_SCOPE_PROJECT_SHAPE = defineObjectShape<{ kind: 'project'; projectId: string }>()(
+  ['kind', 'projectId'],
+  [],
+);
+const WORK_BOARD_CREATOR_USER_SHAPE = defineObjectShape<{ kind: 'user' }>()(['kind'], []);
+const WORK_BOARD_CREATOR_AGENT_SHAPE = defineObjectShape<{
+  kind: 'agent_suggestion';
+  confirmedAt: number;
+}>()(['kind', 'confirmedAt'], []);
+const WORK_BOARD_PROVENANCE_MANUAL_SHAPE = defineObjectShape<{ kind: 'manual' }>()(['kind'], []);
+const WORK_BOARD_PROVENANCE_MAIN_SHAPE = defineObjectShape<
+  Extract<WorkBoardProvenance, { kind: 'main_conversation' }>
+>()(['kind', 'sessionId', 'messageId', 'capturedAt', 'excerpt'], ['runId', 'turnId']);
+const WORK_BOARD_PROVENANCE_SIDE_SHAPE = defineObjectShape<
+  Extract<WorkBoardProvenance, { kind: 'side_conversation' }>
+>()(
+  ['kind', 'sessionId', 'parentSessionId', 'messageId', 'capturedAt', 'excerpt'],
+  ['runId', 'turnId'],
+);
+const WORK_BOARD_ITEM_SHAPE = defineObjectShape<WorkBoardItemJsonShape>()(
+  [
+    'schemaVersion',
+    'id',
+    'revision',
+    'scope',
+    'title',
+    'state',
+    'creator',
+    'provenance',
+    'createdAt',
+    'updatedAt',
+    'archived',
+  ],
+  ['notes', 'archivedAt'],
+);
+const WORK_BOARD_CREATE_INPUT_SHAPE = defineObjectShape<CreateWorkBoardItemInput>()(
+  ['scope', 'title', 'creator', 'provenance'],
+  ['notes'],
+);
+const WORK_BOARD_UPDATE_INPUT_SHAPE = defineObjectShape<UpdateWorkBoardItemInput>()(
+  [],
+  ['title', 'notes', 'scope', 'state'],
+);
+const WORK_BOARD_LIST_QUERY_SHAPE = defineObjectShape<WorkBoardListQuery>()(
+  [],
+  ['scope', 'includeArchived', 'limit', 'cursor'],
+);
+
 export type WorkBoardNormalizeResult<T> = { ok: true; value: T } | { ok: false; message: string };
 
 export function isWorkBoardItemState(value: unknown): value is WorkBoardItemState {
@@ -124,14 +191,15 @@ export function isSafeWorkBoardId(value: unknown): value is string {
 }
 
 export function normalizeWorkBoardScope(input: unknown): WorkBoardNormalizeResult<WorkBoardScope> {
-  if (!isRecord(input) || (input.kind !== 'inbox' && input.kind !== 'project')) {
-    return fail('Work Board scope must be inbox or a project');
-  }
+  if (!isRecord(input)) return fail('Work Board scope must be an object');
   if (input.kind === 'inbox') {
-    if (Object.prototype.hasOwnProperty.call(input, 'projectId')) {
-      return fail('Inbox scope must not carry a projectId');
+    if (!hasExactShape(input, WORK_BOARD_SCOPE_INBOX_SHAPE)) {
+      return fail('Inbox scope must not carry extra fields');
     }
     return { ok: true, value: { kind: 'inbox' } };
+  }
+  if (input.kind !== 'project' || !hasExactShape(input, WORK_BOARD_SCOPE_PROJECT_SHAPE)) {
+    return fail('Work Board scope must be inbox or a project');
   }
   const projectId = normalizeIdString(input.projectId, {
     field: 'scope.projectId',
@@ -148,10 +216,13 @@ export function normalizeWorkBoardCreator(
     return fail('Work Board creator must be user or agent_suggestion');
   }
   if (input.kind === 'user') {
-    if (Object.prototype.hasOwnProperty.call(input, 'confirmedAt')) {
-      return fail('User creator must not carry confirmedAt');
+    if (!hasExactShape(input, WORK_BOARD_CREATOR_USER_SHAPE)) {
+      return fail('User creator must not carry extra fields');
     }
     return { ok: true, value: { kind: 'user' } };
+  }
+  if (!hasExactShape(input, WORK_BOARD_CREATOR_AGENT_SHAPE)) {
+    return fail('agent_suggestion creator shape is invalid');
   }
   const confirmedAt = asSafeInteger(input.confirmedAt);
   if (confirmedAt === null) {
@@ -165,10 +236,17 @@ export function normalizeWorkBoardProvenance(
 ): WorkBoardNormalizeResult<WorkBoardProvenance> {
   if (!isRecord(input)) return fail('Work Board provenance must be an object');
   if (input.kind === 'manual') {
+    if (!hasExactShape(input, WORK_BOARD_PROVENANCE_MANUAL_SHAPE)) {
+      return fail('Manual provenance must not carry extra fields');
+    }
     return { ok: true, value: { kind: 'manual' } };
   }
-  if (input.kind !== 'main_conversation' && input.kind !== 'side_conversation') {
-    return fail('Work Board provenance kind is invalid');
+  const isMain = input.kind === 'main_conversation';
+  const isSide = input.kind === 'side_conversation';
+  if (!isMain && !isSide) return fail('Work Board provenance kind is invalid');
+  const shape = isMain ? WORK_BOARD_PROVENANCE_MAIN_SHAPE : WORK_BOARD_PROVENANCE_SIDE_SHAPE;
+  if (!hasExactShape(input, shape)) {
+    return fail(`${input.kind} provenance shape is invalid`);
   }
   const sessionId = normalizeIdString(input.sessionId, {
     field: 'provenance.sessionId',
@@ -197,10 +275,7 @@ export function normalizeWorkBoardProvenance(
   const turnId = normalizeOptionalToken(input.turnId, 'provenance.turnId');
   if (!turnId.ok) return turnId;
 
-  if (input.kind === 'main_conversation') {
-    if (Object.prototype.hasOwnProperty.call(input, 'parentSessionId')) {
-      return fail('main_conversation provenance must not carry parentSessionId');
-    }
+  if (isMain) {
     return {
       ok: true,
       value: {
@@ -239,8 +314,8 @@ export function normalizeCreateWorkBoardItemInput(
   input: unknown,
 ): WorkBoardNormalizeResult<CreateWorkBoardItemInput> {
   if (!isRecord(input)) return fail('Work Board item input must be an object');
-  if (Object.prototype.hasOwnProperty.call(input, 'linkedSessions')) {
-    return fail('linkedSessions is deferred to Phase 3 and is not part of the Phase 0 contract');
+  if (!hasExactShape(input, WORK_BOARD_CREATE_INPUT_SHAPE)) {
+    return fail('Work Board create input contains unknown fields');
   }
   const scope = normalizeWorkBoardScope(input.scope);
   if (!scope.ok) return scope;
@@ -278,6 +353,9 @@ export function normalizeUpdateWorkBoardItemInput(
   input: unknown,
 ): WorkBoardNormalizeResult<UpdateWorkBoardItemInput> {
   if (!isRecord(input)) return fail('Work Board update must be an object');
+  if (!hasExactShape(input, WORK_BOARD_UPDATE_INPUT_SHAPE)) {
+    return fail('Work Board update patch contains unknown fields');
+  }
   const patch: UpdateWorkBoardItemInput = {};
   if (input.title !== undefined) {
     const title = normalizeOptionalText(input.title, {
@@ -324,6 +402,9 @@ export function normalizeWorkBoardListQuery(
 ): WorkBoardNormalizeResult<WorkBoardListQuery> {
   if (input === undefined) return { ok: true, value: {} };
   if (!isRecord(input)) return fail('Work Board list query must be an object');
+  if (!hasExactShape(input, WORK_BOARD_LIST_QUERY_SHAPE)) {
+    return fail('Work Board list query contains unknown fields');
+  }
   const query: WorkBoardListQuery = {};
   if (input.scope !== undefined) {
     const scope = normalizeWorkBoardScope(input.scope);
@@ -358,8 +439,8 @@ export function normalizeWorkBoardListQuery(
 
 export function decodeWorkBoardItem(value: unknown): WorkBoardItem | null {
   if (!isRecord(value)) return null;
+  if (!hasExactShape(value, WORK_BOARD_ITEM_SHAPE)) return null;
   if (value.schemaVersion !== WORK_BOARD_ITEM_SCHEMA_VERSION) return null;
-  if (Object.prototype.hasOwnProperty.call(value, 'linkedSessions')) return null;
   const id = value.id;
   if (!isSafeWorkBoardId(id)) return null;
   const revision = asSafeInteger(value.revision);
