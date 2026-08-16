@@ -96,3 +96,32 @@ test('rejects noncanonical paths and case-insensitive duplicate environment name
   duplicateEnvironment.env = { Path: 'one', PATH: 'two' };
   assert.throws(() => compileWindowsSandboxPolicy(duplicateEnvironment), /Duplicate/);
 });
+
+test('accepts real Windows environment names with parentheses and rejects block-breaking names', () => {
+  const parenthesized = command(createWorkspaceWritePermissionProfile());
+  parenthesized.env = {
+    'CommonProgramFiles(x86)': String.raw`C:\Program Files (x86)\Common Files`,
+    'ProgramFiles(x86)': String.raw`C:\Program Files (x86)`,
+  };
+  const policy = compileWindowsSandboxPolicy(parenthesized);
+  assert.deepEqual(policy.environment, {
+    'CommonProgramFiles(x86)': String.raw`C:\Program Files (x86)\Common Files`,
+    'ProgramFiles(x86)': String.raw`C:\Program Files (x86)`,
+  });
+
+  for (const badName of ['A=B', '=C:', 'BAD\0NAME', '']) {
+    const invalid = command(createWorkspaceWritePermissionProfile());
+    invalid.env = { [badName]: 'value' };
+    assert.throws(
+      () => compileWindowsSandboxPolicy(invalid),
+      /Invalid Windows sandbox environment/,
+    );
+  }
+
+  const nulValue = command(createWorkspaceWritePermissionProfile());
+  nulValue.env = { GOOD_NAME: 'has\0nul' };
+  assert.throws(
+    () => compileWindowsSandboxPolicy(nulValue),
+    /Invalid Windows sandbox environment value/,
+  );
+});

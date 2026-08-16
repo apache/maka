@@ -69,6 +69,40 @@ mod tests {
     }
 
     #[test]
+    fn accepts_real_windows_env_names_and_rejects_block_breaking_ones() {
+        // `CommonProgramFiles(x86)` is a standard Windows variable; the
+        // launcher must not reject legitimate names that contain parentheses.
+        let mut value = request();
+        value.launch.environment.insert(
+            "CommonProgramFiles(x86)".to_owned(),
+            "C:\\Program Files (x86)\\Common Files".to_owned(),
+        );
+        assert!(value.validate().is_ok());
+
+        for bad_name in ["A=B", "=C:", "BAD\u{0}NAME", ""] {
+            let mut invalid = request();
+            invalid
+                .launch
+                .environment
+                .insert(bad_name.to_owned(), "value".to_owned());
+            assert!(
+                invalid.validate().is_err(),
+                "expected env name {bad_name:?} to be rejected"
+            );
+        }
+
+        let mut nul_value = request();
+        nul_value
+            .launch
+            .environment
+            .insert("GOOD_NAME".to_owned(), "has\u{0}nul".to_owned());
+        assert_eq!(
+            nul_value.validate().unwrap_err(),
+            "invalid environment value for GOOD_NAME"
+        );
+    }
+
+    #[test]
     fn accepts_timeout_within_bounds_and_rejects_outside() {
         let mut value = request();
         value.launch.timeout_ms = Some(130_000);

@@ -98,13 +98,22 @@ impl LaunchRequest {
                 "timeoutMs must be between {MIN_LAUNCH_TIMEOUT_MS} and {MAX_LAUNCH_TIMEOUT_MS}"
             ));
         }
-        for name in self.environment.keys() {
-            let mut chars = name.chars();
-            let valid_first = chars
-                .next()
-                .is_some_and(|c| c == '_' || c.is_ascii_alphabetic());
-            if !valid_first || !chars.all(|c| c == '_' || c.is_ascii_alphanumeric()) {
+        for (name, value) in &self.environment {
+            // The CreateProcess environment block is `name=value\0...\0\0`, so
+            // a name may not be empty, may not contain '=' or a control
+            // character (NUL is < 0x20 and would truncate the block), and may
+            // not begin with '=' — that leading form is Windows' hidden
+            // per-drive cwd variable (`=C:`). Everything else, including the
+            // parentheses in real names like `CommonProgramFiles(x86)`, is a
+            // legitimate Windows environment name.
+            if name.is_empty()
+                || name.starts_with('=')
+                || name.chars().any(|c| c == '=' || (c as u32) < 0x20)
+            {
                 return Err(format!("invalid environment name: {name}"));
+            }
+            if value.contains('\0') {
+                return Err(format!("invalid environment value for {name}"));
             }
         }
         Ok(())

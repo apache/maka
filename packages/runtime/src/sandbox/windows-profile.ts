@@ -112,6 +112,21 @@ function addUnique(target: string[], path: string): void {
   }
 }
 
+function isValidWindowsEnvironmentName(name: string): boolean {
+  // The CreateProcess environment block is `name=value\0...\0\0`, so a name
+  // may not be empty, contain '=' or a control character (NUL is < 0x20 and
+  // would truncate the block), or begin with '=' — that leading form is
+  // Windows' hidden per-drive cwd variable (e.g. `=C:`) and is not meaningful
+  // to forward. Everything else, including the parentheses in real names like
+  // `CommonProgramFiles(x86)`, is a legitimate Windows environment name.
+  if (name.length === 0 || name.startsWith('=')) return false;
+  for (const character of name) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 0x20 || character === '=') return false;
+  }
+  return true;
+}
+
 function windowsEnvironment(
   environment: Readonly<Record<string, string | undefined>> | undefined,
 ): Readonly<Record<string, string>> {
@@ -119,8 +134,11 @@ function windowsEnvironment(
   const names = new Set<string>();
   for (const [name, value] of Object.entries(environment ?? {})) {
     if (value === undefined) continue;
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
+    if (!isValidWindowsEnvironmentName(name)) {
       throw new Error(`Invalid Windows sandbox environment name: ${name}`);
+    }
+    if (value.includes('\0')) {
+      throw new Error(`Invalid Windows sandbox environment value for: ${name}`);
     }
     const folded = name.toLowerCase();
     if (names.has(folded)) {
