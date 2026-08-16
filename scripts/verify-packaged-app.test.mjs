@@ -49,6 +49,29 @@ test('packaged resources forbid the retired bundled Git distribution', async () 
   }
 });
 
+test('requires bundled npm only for the current release contract', async () => {
+  const currentPaths = [];
+  await assertPackagedResources('resources', {
+    requirePath: async (path) => currentPaths.push(path),
+    forbidPath: async () => {},
+    requireWindowsSandbox: false,
+  });
+  assert.ok(currentPaths.includes(join('resources', 'bundled-npm.json')));
+  assert.ok(currentPaths.includes(join('resources', 'npm', 'bin', 'npm-cli.js')));
+  assert.ok(currentPaths.includes(join('resources', 'licenses', 'npm-cli', 'LICENSE')));
+
+  const legacyPaths = [];
+  await assertPackagedResources('resources', {
+    requirePath: async (path) => legacyPaths.push(path),
+    forbidPath: async () => {},
+    requireWindowsSandbox: false,
+    requireBundledNpm: false,
+  });
+  assert.equal(legacyPaths.includes(join('resources', 'bundled-npm.json')), false);
+  assert.equal(legacyPaths.includes(join('resources', 'npm', 'bin', 'npm-cli.js')), false);
+  assert.equal(legacyPaths.includes(join('resources', 'licenses', 'npm-cli', 'LICENSE')), false);
+});
+
 test('legacy packaged resources require the historical bundled Git contract', async () => {
   const required = [];
   const forbidden = [];

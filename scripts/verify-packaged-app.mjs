@@ -738,6 +738,10 @@ export async function assertPackagedResources(
     // reads it at runtime, so current builds must carry it — but a
     // previously released baseline predates it.
     requireCanonicalIcon = true,
+    // The pinned Windows upgrade baseline predates bundled npm. Current
+    // artifacts must carry it, while that historical baseline is verified
+    // against the release contract that applied when it shipped.
+    requireBundledNpm = true,
   } = {},
 ) {
   if (bundledGitContract !== 'forbidden' && bundledGitContract !== 'legacy-required') {
@@ -747,9 +751,13 @@ export async function assertPackagedResources(
   const required = [
     'app.asar',
     'bundled-tools.json',
-    'bundled-npm.json',
-    join('npm', 'bin', 'npm-cli.js'),
-    join('licenses', 'npm-cli', 'LICENSE'),
+    ...(requireBundledNpm
+      ? [
+          'bundled-npm.json',
+          join('npm', 'bin', 'npm-cli.js'),
+          join('licenses', 'npm-cli', 'LICENSE'),
+        ]
+      : []),
     ...(requiresLegacyBundledGit
       ? [
           'bundled-git.json',
