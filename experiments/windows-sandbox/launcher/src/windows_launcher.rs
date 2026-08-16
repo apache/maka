@@ -809,16 +809,37 @@ fn quote_argument(value: &str) -> String {
     result
 }
 
-/// Builds an explicit CreateProcess environment block. An empty allowlist
-/// still produces a valid empty block (a lone list terminator): passing a
-/// null environment pointer would make the child inherit the broker's
-/// ambient environment, silently bypassing the allowlisted-environment
-/// boundary.
+/// Environment variables the Windows process-creation substrate itself
+/// requires. AppContainer creation resolves the package directory under
+/// %LOCALAPPDATA% and CreateProcessW fails with ERROR_ENVVAR_NOT_FOUND
+/// (os error 203) when it is missing from an explicit block; the loader
+/// similarly relies on SystemRoot/SystemDrive. These are fixed, non-secret
+/// machine paths, so filling gaps from the broker's own environment keeps
+/// minimal manifests launchable without re-opening the ambient-environment
+/// inheritance hole a null block used to create.
+const SUBSTRATE_ENVIRONMENT: [&str; 3] = ["SystemRoot", "SystemDrive", "LOCALAPPDATA"];
+
+/// Builds an explicit CreateProcess environment block from the allowlist,
+/// with substrate variables filled in from the broker when the manifest does
+/// not set them (a manifest-provided value always wins, compared
+/// case-insensitively). Passing a null environment pointer would make the
+/// child inherit the broker's entire ambient environment, silently bypassing
+/// the allowlisted-environment boundary, so even an empty allowlist yields an
+/// explicit block.
 pub(crate) fn environment_block(
     environment: &std::collections::BTreeMap<String, String>,
 ) -> Vec<u16> {
+    let mut entries = environment.clone();
+    for name in SUBSTRATE_ENVIRONMENT {
+        if entries.keys().any(|key| key.eq_ignore_ascii_case(name)) {
+            continue;
+        }
+        if let Ok(value) = std::env::var(name) {
+            entries.insert(name.to_owned(), value);
+        }
+    }
     let mut block = Vec::new();
-    for (name, value) in environment {
+    for (name, value) in &entries {
         block.extend(OsStr::new(&format!("{name}={value}")).encode_wide());
         block.push(0);
     }
