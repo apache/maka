@@ -5,11 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
+import { Worker } from 'node:worker_threads';
 import {
   createOperationalStateBackup,
   restoreOperationalStateBackup,
 } from '../operational-state-backup.js';
+import { buildWorkBoardListStatement } from '../work-board-list-query.js';
 import { createWorkBoardStore, WorkBoardStoreError } from '../work-board-store.js';
+import { WORK_BOARD_DEFAULT_PAGE_SIZE } from '@maka/core/work-board';
 
 describe('Work Board store', () => {
   test('persists items across reopen', async () => {
@@ -198,24 +201,17 @@ describe('Work Board store', () => {
 
       const database = new DatabaseSync(join(root, 'runtime.sqlite'));
       try {
-        const unscopedPlan = database
-          .prepare(
-            `EXPLAIN QUERY PLAN
-             SELECT item_id FROM workflow_work_board_items
-             WHERE 1 = 1 AND archived = 0
-             ORDER BY updated_at DESC, item_id DESC LIMIT 51`,
-          )
-          .all() as Array<{ detail: string }>;
-        const scopedPlan = database
-          .prepare(
-            `EXPLAIN QUERY PLAN
-             SELECT item_id FROM workflow_work_board_items
-             WHERE 1 = 1 AND archived = 0 AND scope_kind = 'project' AND project_id = 'p1'
-             ORDER BY updated_at DESC, item_id DESC LIMIT 51`,
-          )
-          .all() as Array<{ detail: string }>;
-        const unscopedDetail = unscopedPlan.map((row) => row.detail).join(' ');
-        const scopedDetail = scopedPlan.map((row) => row.detail).join(' ');
+        const unscopedDetail = explainListPlan(
+          database,
+          buildWorkBoardListStatement({}, WORK_BOARD_DEFAULT_PAGE_SIZE),
+        );
+        const scopedDetail = explainListPlan(
+          database,
+          buildWorkBoardListStatement(
+            { scope: { kind: 'project', projectId: 'p1' } },
+            WORK_BOARD_DEFAULT_PAGE_SIZE,
+          ),
+        );
         assert.match(unscopedDetail, /workflow_work_board_items_active_order/);
         assert.match(scopedDetail, /workflow_work_board_items_active_scope_order/);
         assert.doesNotMatch(unscopedDetail, /USE TEMP B-TREE/);
@@ -311,6 +307,45 @@ describe('Work Board store', () => {
         assert.equal(final.updatedAt, 202);
       } finally {
         store.close();
+      }
+    });
+  });
+
+  test('cross-process CAS produces exactly one winner and one conflict', async () => {
+    await withTempRoot(async (root) => {
+      const store = createWorkBoardStore(root);
+      const item = await store.create(itemInput(), 100);
+      store.close();
+
+      const workerUrl = new URL('./fixtures/work-board-cas-worker.js', import.meta.url);
+      const runWorker = (): Promise<{ ok: boolean; revision?: number; code?: unknown }> =>
+        new Promise((resolve, reject) => {
+          const worker = new Worker(workerUrl, {
+            workerData: { workspaceRoot: root, itemId: item.id },
+          });
+          worker.once('message', resolve);
+          worker.once('error', reject);
+          worker.once('exit', (code) => {
+            if (code !== 0) reject(new Error(`Work Board CAS worker exited with ${code}`));
+          });
+        });
+
+      const results = await Promise.all([runWorker(), runWorker()]);
+      const winners = results.filter((result) => result.ok);
+      const conflicts = results.filter(
+        (result) => !result.ok && result.code === 'operation_conflict',
+      );
+      assert.equal(winners.length, 1);
+      assert.equal(conflicts.length, 1);
+
+      const reopened = createWorkBoardStore(root);
+      try {
+        const final = await reopened.get(item.id);
+        assert.ok(final);
+        assert.equal(final.revision, 2);
+        assert.match(final.title, /^worker-/);
+      } finally {
+        reopened.close();
       }
     });
   });
@@ -550,6 +585,21 @@ describe('Work Board store', () => {
     }
   });
 });
+
+function explainListPlan(
+  database: DatabaseSync,
+  statement: { sql: string; params: Array<string | number> },
+): string {
+  let index = 0;
+  const literalSql = statement.sql.replace(/\?/g, () => {
+    const value = statement.params[index++]!;
+    return typeof value === 'number' ? String(value) : `'${value.replace(/'/g, "''")}'`;
+  });
+  const rows = database.prepare(`EXPLAIN QUERY PLAN ${literalSql}`).all() as Array<{
+    detail: string;
+  }>;
+  return rows.map((row) => row.detail).join(' ');
+}
 
 function itemInput(
   overrides: Partial<{
