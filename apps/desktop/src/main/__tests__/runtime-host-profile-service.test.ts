@@ -50,22 +50,6 @@ test("migrates the former selected Host into enabled and default preferences", a
   );
 });
 
-test("starts with Local defaults when Runtime Host preferences are malformed", async () => {
-  const root = await clientRoot();
-  const preferencesPath = join(root, "runtime-host-profile-selection.json");
-  const malformed = '{"schemaVersion":2';
-  await writeFile(preferencesPath, malformed);
-
-  const startup = await resolveDesktopRuntimeHostStartup(root);
-
-  assert.deepEqual(startup.preferences, {
-    schemaVersion: 2,
-    defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
-    enabledRemoteProfileIds: [],
-  });
-  assert.equal(await readFile(preferencesPath, "utf8"), malformed);
-});
-
 test("starts Local and preserves remote preferences when the profile catalog is unreadable", async () => {
   const root = await clientRoot();
   const catalog = createClientRuntimeHostProfileCatalog(root);

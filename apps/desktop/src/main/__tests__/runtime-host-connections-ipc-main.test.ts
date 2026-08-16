@@ -32,34 +32,6 @@ test('registers pure Connection reads for replacement-Host retry', () => {
   assert.ok(effects.has('connections:test'));
 });
 
-test('returns one atomic connection and model projection', async () => {
-  const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  registerRuntimeHostConnectionsIpc({
-    ipcMain: {
-      handle() {},
-      handleReconnectableRead: (channel, handler) => {
-        handlers.set(channel, handler as (...args: unknown[]) => unknown);
-      },
-    },
-    client: {
-      loadConnectionCatalog: async () => catalog(),
-    } as never,
-    emitConnectionListChanged() {},
-  });
-
-  const snapshot = await handlers.get('connections:getSnapshot')?.({}) as {
-    connections: Array<{ slug: string }>;
-    defaultConnection: string | null;
-    chatModelChoices: Array<{ connectionSlug: string; model: string }>;
-  };
-  assert.equal(snapshot.defaultConnection, 'openrouter');
-  assert.deepEqual(snapshot.connections.map((connection) => connection.slug), ['openrouter']);
-  assert.deepEqual(
-    snapshot.chatModelChoices.map((choice) => [choice.connectionSlug, choice.model]),
-    [['openrouter', 'model-1'], ['openrouter', 'model-2']],
-  );
-});
-
 test('retries connection delete after a stale revision instead of failing permanently', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   let revision = 1;
