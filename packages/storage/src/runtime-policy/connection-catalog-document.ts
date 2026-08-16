@@ -286,8 +286,8 @@ export class ConnectionCatalogDocumentOwner {
     if (current.revision !== input.expectedCatalogRevision) {
       return revisionConflict(input.expectedCatalogRevision, current.revision);
     }
-    // The one place a caller states the target itself, so the one place an
-    // unusable target is the caller's error rather than a consequence to repair.
+    // The one call that states a target, so the one place an unusable one is
+    // the caller's error rather than a consequence to release.
     if (input.target && !isValidTarget(input.target, current.connections)) {
       return deepFreeze({ kind: 'invalid_default_target', target: input.target });
     }
@@ -334,13 +334,9 @@ export class ConnectionCatalogDocumentOwner {
             defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0] ?? '',
             enabledModelIds: previous.enabledModelIds,
           };
-    // Discovery is the one path that MOVES a target rather than keeping or
-    // dropping it: a provider that renames a model carries the default across
-    // by alias, which is a migration of the same choice and not a new one made
-    // for the user. The reconciler owes a default drawn from the selection it
-    // just decided, and a violation is its bug — worth failing closed on here,
-    // where it is still attributable, rather than letting the document
-    // constructor silently release the user's default instead.
+    // Discovery MOVES a target: a provider's model rename carries the default
+    // across by alias. A default outside the selection the reconciler just
+    // decided is its own bug — fail closed where it is still attributable.
     const defaultTarget = currentDefaultTarget
       ? { connectionId: previous.connectionId, modelId: reconciled.defaultModel }
       : current.defaultTarget;
@@ -456,11 +452,8 @@ export class ConnectionCatalogDocumentOwner {
       modelSource: result.source,
       modelsFetchedAt: result.fetchedAt,
     };
-    // Onboarding only states its preference — seeding the first default when
-    // the catalog has none. Releasing a target this selection invalidates is
-    // the document constructor's job, so the short-circuit has to ask the same
-    // question the constructor would: an already-doomed target means there is
-    // still a write to make, whatever else stayed the same.
+    // Onboarding only seeds the first default, so the short-circuit has to ask
+    // what the constructor would: an already-doomed target is still a write.
     const defaultTarget = current.defaultTarget ?? {
       connectionId,
       modelId: changes.enabledModelIds[0]!,
@@ -570,9 +563,8 @@ export class ConnectionCatalogDocumentOwner {
     return catalogSnapshot(next);
   }
 
-  // The catalog's only next-version constructor, so the default-target rule
-  // holds by construction: a caller states the target it wants kept and never
-  // the one it has to police.
+  // The catalog's only next-version constructor: callers state the target they
+  // want kept, never the one they have to police.
   private nextDocument(
     current: ConnectionCatalogDocument,
     connections: readonly ConnectionCatalogEntry[],
@@ -683,14 +675,9 @@ function isValidTarget(
   return Boolean(connection?.enabled && connection.enabledModelIds.includes(target.modelId));
 }
 
-// THE rule of `reconcileConnectionAfterEnabledModelsChange`, stated for the
-// catalog document: the default target is either absent, or it names an
-// enabled model of an enabled connection. A mutation that legitimately drops
-// what the target names drops the target with it, rather than moving it to
-// some other member of the set — which model a new chat starts on is
-// 设置 · 通用's one control, and picking a replacement here would answer that
-// question from a page that no longer asks it. The catalog is then simply
-// without a default, and the readiness gate reports that as what it is.
+// `reconcileConnectionAfterEnabledModelsChange`'s rule, at catalog scope: a
+// mutation that drops what the target names drops the target with it. Nothing
+// here picks a replacement — see that function for why.
 function retainedDefaultTarget(
   target: ConnectionTarget | null,
   connections: readonly ConnectionCatalogEntry[],

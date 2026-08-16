@@ -1092,8 +1092,7 @@ describe('runtime policy stores', () => {
       });
       assert.equal(narrowed.kind, 'committed');
       if (narrowed.kind !== 'committed') return;
-      // Not `llama3.3`: the surviving member of the set is not the user's
-      // answer to which model a new chat starts on.
+      // Not `llama3.3`: a surviving member of the set is not the user's answer.
       assert.equal(narrowed.snapshot.defaultTarget, null);
       assert.equal((await stores.connectionCatalog.getSnapshot()).defaultTarget, null);
     });
