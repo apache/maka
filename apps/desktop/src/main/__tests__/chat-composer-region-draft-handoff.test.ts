@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { act, createRef } from 'react';
+import { act, createElement, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { AstryxLocaleProvider, type ComposerHandle, LocaleProvider } from '@maka/ui';
@@ -58,26 +58,30 @@ test('hands off only the unresolved new-task draft while a Session is open', asy
   const render = async (activeId: string | undefined, newTaskDraftKey: string) => {
     await act(async () => {
       root.render(
-        <LocaleProvider locale="en">
-          <AstryxLocaleProvider>
-            <ChatComposerRegion
-              composerRef={composer}
-              active
-              onboardingComposerHidden={false}
-              activeInteraction={undefined}
-              activeId={activeId}
-              newTaskDraftKey={newTaskDraftKey}
-              stopPendingBySession={{}}
-              respondToSandboxBoundary={() => {}}
-              activeSandboxBoundary={undefined}
-              activeQuestion={undefined}
-              respondToUserQuestion={() => {}}
-              stop={() => {}}
-              onSend={() => {}}
-              onStop={() => {}}
-            />
-          </AstryxLocaleProvider>
-        </LocaleProvider>,
+        createElement(
+          LocaleProvider,
+          {
+            locale: 'en',
+            children: createElement(AstryxLocaleProvider, {
+              children: createElement(ChatComposerRegion, {
+              composerRef: composer,
+              active: true,
+              onboardingComposerHidden: false,
+              activeInteraction: undefined,
+              activeId,
+              newTaskDraftKey,
+              stopPendingBySession: {},
+              respondToSandboxBoundary: () => {},
+              activeSandboxBoundary: undefined,
+              activeQuestion: undefined,
+              respondToUserQuestion: () => {},
+              stop: () => {},
+              onSend: () => {},
+              onStop: () => {},
+            }),
+            }),
+          },
+        ),
       );
     });
   };
