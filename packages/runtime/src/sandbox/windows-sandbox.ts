@@ -135,7 +135,10 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
 
     const requestId = this.options.requestId?.() ?? randomBytes(16).toString('hex');
     const clientNonce = this.options.nonce?.() ?? randomBytes(16).toString('hex');
-    if (requestId.length === 0 || !/^[A-Za-z0-9._:-]+$/u.test(requestId)) {
+    // The request id is embedded in the manifest filename; NTFS treats ':'
+    // as an alternate-data-stream separator, so only Windows-filename-safe
+    // characters are accepted.
+    if (requestId.length === 0 || !/^[A-Za-z0-9._-]+$/u.test(requestId)) {
       return failure('invalid_request', 'Invalid Windows broker request id.', platform, preference);
     }
     if (!/^[a-f0-9]{32}$/iu.test(clientNonce)) {
