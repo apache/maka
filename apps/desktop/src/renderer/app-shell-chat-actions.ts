@@ -1,4 +1,5 @@
 import type { CollaborationMode } from '@maka/core/collaboration';
+import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';
 import type { InlineReference, QuoteRef } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -168,7 +169,7 @@ export function createAppShellChatActions(deps: {
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
   newChatCollaborationMode: CollaborationMode;
   newChatOrchestrationMode: OrchestrationMode;
-  newChatProjectId: string | null | undefined;
+  newTaskTarget: DesktopNewTaskTarget | undefined;
 }): AppShellChatActions {
   const {
     uiLocale,
@@ -199,7 +200,7 @@ export function createAppShellChatActions(deps: {
     pendingNewChatThinkingLevel,
     newChatCollaborationMode,
     newChatOrchestrationMode,
-    newChatProjectId,
+    newTaskTarget,
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
 
@@ -336,8 +337,10 @@ export function createAppShellChatActions(deps: {
   ): Promise<boolean> {
     const quotes = options.quotes;
     const initialSessionId = activeIdRef.current;
+    const initialNewTaskTarget = initialSessionId ? undefined : newTaskTarget;
     const sendOwner = captureComposerImportOwner();
     const newChatOwner = initialSessionId ? null : sendOwner;
+    if (!initialSessionId && !initialNewTaskTarget) return false;
     if (!(await checkTaskSubmissionReadiness())) return false;
     if (
       (initialSessionId && !isShellSurfaceOwnerActive(sendOwner)) ||
@@ -370,8 +373,9 @@ export function createAppShellChatActions(deps: {
     try {
       const turnId = crypto.randomUUID();
       if (!initialSessionId) {
+        if (!initialNewTaskTarget) return false;
         if (pending && pending.length > 0) preflightAttachmentItems(pending, uiLocale);
-        const session = await window.maka.sessions.create({
+        const session = await window.maka.newTasks.create(initialNewTaskTarget, {
           // Omit permissionMode so main.ts's sessions:create resolves the
           // configured chatDefaults.permissionMode as the single authority.
           name: DEFAULT_SESSION_NAME,
@@ -384,7 +388,6 @@ export function createAppShellChatActions(deps: {
           ...(pendingNewChatThinkingLevel ? { thinkingLevel: pendingNewChatThinkingLevel } : {}),
           collaborationMode: newChatCollaborationMode,
           orchestrationMode: newChatOrchestrationMode,
-          ...(newChatProjectId !== undefined ? { projectId: newChatProjectId } : {}),
         });
         unsentSessionId = session.id;
         upsertSessionSummary(session);

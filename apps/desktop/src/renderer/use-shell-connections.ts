@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import type { ConnectionEvent } from '@maka/core/connections';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
+import type { DesktopNewTaskHostRef } from '../preload/bridge-contract.js';
 import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
@@ -16,6 +17,7 @@ const EMPTY_SNAPSHOT: DesktopConnectionSnapshot = {
   chatModelChoices: [],
 };
 
+const NO_HOST_KEY = 'none';
 const DEFAULT_HOST_KEY = 'default';
 
 /**
@@ -25,6 +27,8 @@ export function useShellConnections(options: {
   toastApi: ToastApi;
   uiLocale: UiLocale;
   activeSessionId?: string;
+  newTaskHost?: DesktopNewTaskHostRef;
+  defaultHost?: boolean;
 }): {
   snapshot: DesktopConnectionSnapshot;
   setSnapshot: (next: DesktopConnectionSnapshot) => void;
@@ -35,7 +39,7 @@ export function useShellConnections(options: {
   const copy = getShellRemainingCopy(uiLocale).connections;
   const snapshotKey = options.activeSessionId
     ? parseDesktopSessionKey(options.activeSessionId).hostId
-    : DEFAULT_HOST_KEY;
+    : options.newTaskHost?.hostId ?? (options.defaultHost ? DEFAULT_HOST_KEY : NO_HOST_KEY);
   const currentKey = useRef(snapshotKey);
   useLayoutEffect(() => {
     currentKey.current = snapshotKey;
@@ -45,16 +49,29 @@ export function useShellConnections(options: {
   );
   const refreshSequence = useRef(new Map<string, number>());
 
+  useLayoutEffect(() => {
+    if (!options.activeSessionId && (options.newTaskHost || options.defaultHost)) {
+      void refreshConnections();
+    }
+  }, [options.activeSessionId, options.newTaskHost?.hostId, options.defaultHost]);
+
   function setSnapshot(next: DesktopConnectionSnapshot) {
     setSnapshots((previous) => new Map(previous).set(snapshotKey, next));
   }
 
   async function refreshConnections(sessionId?: string) {
-    const key = sessionId ? parseDesktopSessionKey(sessionId).hostId : DEFAULT_HOST_KEY;
+    const key = sessionId
+      ? parseDesktopSessionKey(sessionId).hostId
+      : options.newTaskHost?.hostId ?? (options.defaultHost ? DEFAULT_HOST_KEY : NO_HOST_KEY);
+    if (!sessionId && !options.newTaskHost && !options.defaultHost) return;
     const sequence = (refreshSequence.current.get(key) ?? 0) + 1;
     refreshSequence.current.set(key, sequence);
     try {
-      const next = await window.maka.connections.getSnapshot(sessionId);
+      const next = sessionId
+        ? await window.maka.connections.getSnapshot(sessionId)
+        : options.newTaskHost
+          ? await window.maka.newTasks.getConnections(options.newTaskHost)
+          : await window.maka.connections.getSnapshot();
       if (refreshSequence.current.get(key) !== sequence) return;
       setSnapshots((previous) => new Map(previous).set(key, next));
     } catch (error) {

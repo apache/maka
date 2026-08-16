@@ -197,6 +197,7 @@ import { useComposerMentions } from './use-composer-mentions';
 import { useAppShellSessionWorkspace } from './use-app-shell-session-workspace';
 import { useShellMemoryPill } from './use-shell-memory-pill';
 import { useShellConnections } from './use-shell-connections';
+import { useNewTaskTarget } from './use-new-task-target';
 import { useShellChatModel } from './use-shell-chat-model';
 import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellLayout } from './use-shell-layout';
@@ -219,6 +220,7 @@ function rebaseWorkspaceFileReferences(
     )
     .map((reference) => ({ ...reference, start: reference.start - offset }));
 }
+
 import { useSettingsModal } from './use-settings-modal';
 import { useSystemUiLocale } from './use-system-ui-locale';
 import {
@@ -443,7 +445,20 @@ function AppShellContent({
     uiLocale,
     sessionId: activeId,
   });
-  const defaultHostConnections = useShellConnections({ toastApi, uiLocale });
+  const newTask = useNewTaskTarget({ toastApi, uiLocale });
+  const newTaskHost = newTask.selectedHost
+    ? { profileId: newTask.selectedHost.profile.id, hostId: newTask.selectedHost.hostId }
+    : undefined;
+  const newTaskConnections = useShellConnections({
+    toastApi,
+    uiLocale,
+    newTaskHost,
+  });
+  const defaultHostConnections = useShellConnections({
+    toastApi,
+    uiLocale,
+    defaultHost: true,
+  });
   const sessionHostConnections = useShellConnections({
     toastApi,
     uiLocale,
@@ -451,24 +466,24 @@ function AppShellContent({
   });
   const connections = activeId
     ? sessionHostConnections.snapshot.connections
-    : defaultHostConnections.snapshot.connections;
+    : newTaskConnections.snapshot.connections;
   const defaultConnection = activeId
     ? sessionHostConnections.snapshot.defaultConnection
-    : defaultHostConnections.snapshot.defaultConnection;
+    : newTaskConnections.snapshot.defaultConnection;
   const connectionModelChoices = activeId
     ? sessionHostConnections.snapshot.chatModelChoices
-    : defaultHostConnections.snapshot.chatModelChoices;
+    : newTaskConnections.snapshot.chatModelChoices;
   const refreshConnections = activeId
     ? () => sessionHostConnections.refreshConnections(activeId)
-    : () => defaultHostConnections.refreshConnections();
+    : () => newTaskConnections.refreshConnections();
   function refreshConnectionProjections(sessionId?: string): Promise<void> {
     return Promise.all([
-      defaultHostConnections.refreshConnections(),
+      newTaskConnections.refreshConnections(),
       ...(sessionId ? [sessionHostConnections.refreshConnections(sessionId)] : []),
     ]).then(() => undefined);
   }
   function handleConnectionEvent(event: ConnectionEvent): void {
-    defaultHostConnections.handleConnectionEvent(event);
+    newTaskConnections.handleConnectionEvent(event);
     if (activeId) sessionHostConnections.handleConnectionEvent(event);
   }
   useLayoutEffect(() => {
@@ -1760,18 +1775,11 @@ function AppShellContent({
     projectCapabilities,
     activeProjectCapabilities,
     localProjects,
-    selectedProjectId,
     currentProjectId,
     currentProject,
-    projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,
     refreshProjects,
-    addProject,
-    selectProject,
-    selectNoProject,
-    prepareDefaultProject,
-    prepareProject,
     relinkProject,
     renameProject,
     archiveProject,
@@ -1797,30 +1805,53 @@ function AppShellContent({
   // Where a NEW chat starts. Built unconditionally and handed to the composer,
   // which renders it only while no session owns it — the project is fixed once
   // the first message creates one, so there is nothing to pick after that.
+  const selectedNewTaskHost = newTask.catalog.hosts.find(
+    (host) => host.profile.id === newTask.selectedProfileId,
+  );
+  const selectedNewTaskProject = newTask.currentProject?.name ??
+    (newTask.selectedProjectId === null && newTask.selectedHost?.capabilities.selectNoProject
+      ? getConversationCopy(uiLocale).workspace.noProject
+      : undefined);
   const workspacePicker: WorkspacePickerModel = {
-    label:
-      currentProject?.name ??
-      (currentProjectId === null && projectCapabilities.selectNoProject
-        ? getConversationCopy(uiLocale).workspace.noProject
-        : undefined),
-    branch: currentProjectId === null ? null : projectInfo?.projectGit.branch,
-    pending: projectPickerPending,
-    projects: projects.filter((project) => project.archivedAt === undefined),
-    selectedProjectId: currentProjectId,
-    ...(projectCapabilities.chooseClientDirectory
-      ? { onAdd: () => void addProject() }
+    label: selectedNewTaskProject ?? selectedNewTaskHost?.profile.name,
+    ...(selectedNewTaskHost?.profile.kind === 'remote'
+      ? { hostBadge: selectedNewTaskHost.profile.name }
       : {}),
-    onSelectProject: (projectId: string) => {
-      void selectProject(projectId);
-    },
-    ...(projectCapabilities.chooseClientDirectory
-      ? { onRelink: (projectId: string) => void relinkProject(projectId, true) }
-      : {}),
-    ...(projectCapabilities.selectNoProject
-      ? { onSelectNoProject: selectNoProject }
-      : {}),
+    branch: newTask.selectedProjectId === null ? null : newTask.selectedHost?.branch,
+    pending: newTask.pending,
+    selectedGroupId: newTask.selectedProfileId,
+    groups: newTask.catalog.hosts.map((host) => {
+      if (host.readiness !== 'ready') {
+        return {
+          id: host.profile.id,
+          label: host.profile.name,
+          status: getShellCopy(uiLocale).projectActions.runtimeHostReadiness[host.readiness],
+          disabled: true,
+          projects: [],
+        };
+      }
+      const selectedProjectId = host.profile.id === newTask.selectedProfileId
+        ? newTask.selectedProjectId
+        : host.selectedProjectId;
+      return {
+        id: host.profile.id,
+        label: host.profile.name,
+        projects: host.projects.filter((project) => project.archivedAt === undefined),
+        selectedProjectId,
+        onSelectProject: (projectId: string) => newTask.selectProject(host, projectId),
+        ...(host.capabilities.chooseClientDirectory
+          ? {
+              onAdd: () => void newTask.addProject(host),
+              onRelink: (projectId: string) => void newTask.relinkProject(host, projectId),
+            }
+          : {}),
+        ...(host.capabilities.selectNoProject
+          ? { onSelectNoProject: () => newTask.selectNoProject(host) }
+          : {}),
+      };
+    }),
   };
-  const taskReadinessWorkspace = activeSession?.cwd ?? projectInfo?.projectPath;
+  const taskReadinessWorkspace = activeSession?.cwd ?? newTask.projectPath;
   const taskReadinessRequest = {
     ...resolveTaskReadinessModelTarget(activeSession, activeSessionSendOutcome, newChatModel),
     ...(taskReadinessWorkspace ? { cwd: taskReadinessWorkspace } : {}),
@@ -1829,13 +1860,16 @@ function AppShellContent({
     taskReadinessRequest,
     onboarding.snapshot,
     activeId,
+    activeId ? undefined : newTask.target,
   );
   const taskReadinessNotice = deriveTaskReadinessNotice(taskReadiness.snapshot, uiLocale);
   const ignoreTaskReadinessModelTarget =
     activeSession !== undefined && activeSessionSendOutcome?.kind !== 'blocked';
-  const taskSubmissionHardBlocked = isTaskSubmissionHardBlocked(taskReadiness.snapshot, {
-    ignoreModelTarget: ignoreTaskReadinessModelTarget,
-  });
+  const taskSubmissionHardBlocked =
+    (!activeId && !newTask.target) ||
+    isTaskSubmissionHardBlocked(taskReadiness.snapshot, {
+      ignoreModelTarget: ignoreTaskReadinessModelTarget,
+    });
   // The titlebar names the directory the ACTIVE session runs in, so it reads
   // the same projected project state the picker does — `projectInfo` already
   // resolves to the session's own cwd once a session owns it.
@@ -1875,17 +1909,15 @@ function AppShellContent({
     composerRef,
     isShellSurfaceOwnerActive,
     openSessionInChat,
-    newChatProjectId: selectedProjectId,
+    newTaskTarget: newTask.target,
     sessionStartPendingRef,
     refreshOnboarding: onboarding.refresh,
     refreshSessions,
     showModelSetupToast,
     toastApi,
   });
-  // Sidebar Project groups come from the Local catalog. Until new tasks have
-  // an explicit Host selector, expose their actions only when Local is also
-  // the default target; otherwise the default-scoped commands would mutate a
-  // different catalog with the same Project id.
+  // Sidebar Project groups are Local. Their catalog mutations remain on the
+  // default-scoped bridge until Settings receives its own Host selector.
   const projectRowActions: Parameters<typeof SessionListPanel>[0]['projectActions'] =
     projectCapabilities.setLocalDefault
       ? {
@@ -1895,7 +1927,8 @@ function AppShellContent({
           onRestore: restoreProject,
           ...(projectCapabilities.chooseClientDirectory
             ? {
-                onRelink: (projectId: string) => relinkProject(projectId).then(() => undefined),
+                onRelink: (projectId: string) =>
+                  relinkProject(projectId).then(() => undefined),
               }
             : {}),
         }
@@ -1907,7 +1940,8 @@ function AppShellContent({
   const { mentionSkills, searchMentionFiles } = useComposerMentions({
     skills,
     sessionId: activeId,
-    projectPath: projectInfo?.projectPath,
+    projectPath: activeId ? projectInfo?.projectPath : newTask.projectPath,
+    newTaskTarget: activeId ? undefined : newTask.target,
     newSessionModel: newChatModel,
     newSessionCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
     // Refresh only; Desktop Main re-reads the authoritative default before
@@ -1967,7 +2001,7 @@ function AppShellContent({
       : newChatSwarmModeActive
         ? 'swarm'
         : 'default',
-    newChatProjectId: selectedProjectId,
+    newTaskTarget: newTask.target,
   });
 
   const { handleTurnFooterAction } = useStableActions(createAppShellTurnActions, {
@@ -2549,11 +2583,13 @@ function AppShellContent({
   }
 
   async function createSession() {
-    if (await prepareDefaultProject()) openNewTaskSurface();
+    openNewTaskSurface();
   }
 
   async function createSessionInProject(projectId: string) {
-    if (await prepareProject(projectId)) openNewTaskSurface();
+    if (!newTask.localHost) return;
+    newTask.selectProject(newTask.localHost, projectId);
+    openNewTaskSurface();
   }
 
   function openScheduledTaskForm() {
@@ -3250,8 +3286,11 @@ function AppShellContent({
                   taskReadinessNotice?.action === 'workspace_picker'
                     ? activeSession
                       ? openNewTaskSurface
-                      : projectCapabilities.chooseClientDirectory
-                        ? () => void addProject()
+                      : newTask.selectedHost?.capabilities.chooseClientDirectory &&
+                          newTask.localHost
+                        ? () => {
+                            if (newTask.localHost) void newTask.addProject(newTask.localHost);
+                          }
                         : undefined
                     : taskReadiness.refresh
                 }

@@ -166,6 +166,7 @@ type ShellCopy = {
     directorySwitchedTitle: string;
     projectUpdateFailedTitle: string;
     projectUpdateFailedFallback: string;
+    runtimeHostReadiness: Record<'connecting' | 'reconnecting' | 'unavailable', string>;
     openFailedTitle(path: string): string;
     openPathLabels: Record<'workspace' | 'skills' | 'memory' | 'project', string>;
     openPathFailures: Record<
@@ -717,6 +718,11 @@ const SHELL_COPY_BY_LOCALE = {
       directorySwitchedTitle: '已切换工作目录',
       projectUpdateFailedTitle: '项目操作失败',
       projectUpdateFailedFallback: '暂时无法更新项目，请稍后重试。',
+      runtimeHostReadiness: {
+        connecting: '连接中',
+        reconnecting: '正在重连',
+        unavailable: '不可用',
+      },
       openFailedTitle: (path: string) => `无法打开${path}`,
       openPathLabels: {
         workspace: '工作区目录',
@@ -1184,6 +1190,11 @@ const SHELL_COPY_BY_LOCALE = {
       directorySwitchedTitle: 'Working directory changed',
       projectUpdateFailedTitle: 'Could not update project',
       projectUpdateFailedFallback: 'The project could not be updated. Try again later.',
+      runtimeHostReadiness: {
+        connecting: 'Connecting',
+        reconnecting: 'Reconnecting',
+        unavailable: 'Unavailable',
+      },
       openFailedTitle: (path: string) => `Could not open ${path}`,
       openPathLabels: {
         workspace: 'workspace folder',

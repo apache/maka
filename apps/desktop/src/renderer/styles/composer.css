@@ -392,49 +392,43 @@
   min-width: 0;
 }
 
-/* Cap the open menu at the window. Astryx gives the popover
-   `min-width: anchor-size(width)` and no ceiling, and the item labels are not
-   truncated, so one long project name grows the shrink-to-fit popover past the
-   right edge of a narrow window — where the actions go with it and there is no
-   way to scroll them back. Same cap the model menus carry
-   (`.maka-composer-quiet-menu`), expressed in the workspace's own tokens.
-
-   The panel itself must not scroll: the catalogue scrolls inside its own
-   region below, and the actions after it must stay put. Astryx caps the menu
-   at 300px with `overflow-y: auto`, which scrolls the actions too and chains
-   overscroll to the page behind the popover — lift both so the only scroller
-   in this menu is the catalogue region. */
 .maka-composer-workspace [role="menu"] {
-  max-width: min(320px, calc(100vw - var(--space-6)));
+  max-width: min(360px, calc(100vw - var(--space-6)));
   max-height: none;
   overflow: visible;
 }
 
-/* The catalogue's own scroll region — the ONLY thing that scrolls in this
-   menu. `max-height` is the budget the whole popover used to share (224px of
-   catalogue + two action rows ≈ the old 300px ceiling); `overscroll-behavior:
-   contain` stops the wheel from chaining past the catalogue's ends into the
-   page behind the popover, which is what dragged the sticky-pinned actions
-   along before. `scrollbar-gutter: stable` keeps the row width constant when
-   the scrollbar appears. */
 .maka-workspace-picker-scroll {
-  max-height: 224px;
+  max-height: min(360px, calc(100vh - var(--space-12)));
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  /* Ink tint, not a border — see --foreground-alpha-16 (same alpha, right family). */
   scrollbar-color: var(--foreground-alpha-16) transparent;
   scrollbar-width: thin;
 }
 
-/* The rule between catalogue and actions, drawn by the group's own top border.
-   `:not(:first-child)` covers first run — no projects yet — where the group
-   would open the menu with a rule dividing nothing. Nothing scrolls under the
-   group, so it needs no background of its own: the menu surface shows through
-   and Astryx keeps painting its hover and keyboard-highlight tints on the
-   rows. */
-.maka-composer-workspace [role="menu"] > [role="group"]:not(:first-child) {
+.maka-workspace-picker-group + .maka-workspace-picker-group {
   border-top: 1px solid var(--border);
+}
+
+.maka-workspace-picker-group-label {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+}
+
+.maka-workspace-picker-host-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-full);
+  background: var(--foreground-alpha-16);
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
 }
 
 .maka-workspace-picker-status {

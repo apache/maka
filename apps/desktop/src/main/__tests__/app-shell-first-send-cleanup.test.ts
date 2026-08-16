@@ -93,7 +93,7 @@ function createActionsDeps() {
     pendingNewChatThinkingLevel: null,
     newChatCollaborationMode: 'agent' as const,
     newChatOrchestrationMode: 'default' as const,
-    newChatProjectId: undefined,
+    newTaskTarget: { profileId: 'local', hostId: 'host-local', projectId: null },
   };
 }
 
@@ -136,11 +136,13 @@ describe('composer first-send cleanup', () => {
   it('passes the effective offered model when creating the first session', async () => {
     let createInput: unknown;
     const restoreWindow = installWindow({
-      sessions: {
-        create: async (input: unknown) => {
+      newTasks: {
+        create: async (_target: unknown, input: unknown) => {
           createInput = input;
           return { id: 'session-1' };
         },
+      },
+      sessions: {
         send: async () => ({
           ok: true,
           attachments: [],
@@ -169,14 +171,18 @@ describe('composer first-send cleanup', () => {
     assert.equal((createInput as { model?: unknown }).model, 'mimo-v2.5-free');
   });
 
-  it('forwards an explicit no-project selection when creating the first session', async () => {
+  it('creates the first session on the selected Runtime Host and project', async () => {
+    let createTarget: unknown;
     let createInput: unknown;
     const restoreWindow = installWindow({
-      sessions: {
-        create: async (input: unknown) => {
+      newTasks: {
+        create: async (target: unknown, input: unknown) => {
+          createTarget = target;
           createInput = input;
           return { id: 'session-1' };
         },
+      },
+      sessions: {
         send: async () => ({
           ok: true,
           attachments: [],
@@ -186,20 +192,32 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const deps = { ...createActionsDeps(), newChatProjectId: null };
+      const deps = {
+        ...createActionsDeps(),
+        newTaskTarget: {
+          profileId: 'office',
+          hostId: 'host-office',
+          projectId: 'project-docs',
+        },
+      };
       assert.equal(await createAppShellChatActions(deps).send('hello'), true);
     } finally {
       restoreWindow();
     }
 
-    assert.equal((createInput as { projectId?: unknown }).projectId, null);
+    assert.deepEqual(createTarget, {
+      profileId: 'office',
+      hostId: 'host-office',
+      projectId: 'project-docs',
+    });
+    assert.equal((createInput as { projectId?: unknown }).projectId, undefined);
   });
 
   it('removes the just-created session when the first send REJECTS', async () => {
     const removed: string[] = [];
     const restoreWindow = installWindow({
+      newTasks: { create: async () => ({ id: 'session-1' }) },
       sessions: {
-        create: async () => ({ id: 'session-1' }),
         // What `prepareSkillInvocation` does when Skill discovery fails.
         send: async () => Promise.reject(new Error('Skill discovery failed')),
         remove: async (sessionId: string) => {
@@ -220,8 +238,8 @@ describe('composer first-send cleanup', () => {
   it('keeps the session once the first send lands', async () => {
     const removed: string[] = [];
     const restoreWindow = installWindow({
+      newTasks: { create: async () => ({ id: 'session-1' }) },
       sessions: {
-        create: async () => ({ id: 'session-1' }),
         send: async () => ({
           ok: true,
           attachments: [],
@@ -250,9 +268,6 @@ describe('composer first-send cleanup', () => {
     const removed: string[] = [];
     const restoreWindow = installWindow({
       sessions: {
-        create: async () => {
-          throw new Error('must not create a session when one is already active');
-        },
         send: async () => Promise.reject(new Error('Skill discovery failed')),
         remove: async (sessionId: string) => {
           removed.push(sessionId);
@@ -337,9 +352,6 @@ function deferred<T>() {
 describe('composer send failure feedback', () => {
   const readinessFailure = () => ({
     sessions: {
-      create: async () => {
-        throw new Error('must not create a session when one is already active');
-      },
       send: async () =>
         Promise.reject(new Error('NO_REAL_CONNECTION:missing_api_key: no ready connection')),
       remove: async () => undefined,
@@ -431,7 +443,6 @@ describe('a send in flight versus a stale session list', () => {
   function sendingWindow() {
     return {
       sessions: {
-        create: async () => ({ id: sessionId }),
         send: async () => ({
           ok: true,
           attachments: [],

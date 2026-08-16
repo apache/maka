@@ -19,8 +19,13 @@ import type {
   PetPackChangedEvent,
   DesktopRuntimeHostProfileAddInput,
   DesktopRuntimeHostProfileChangedEvent,
+  DesktopRuntimeHostProfileSnapshot,
   DesktopRuntimeHostSshTerminalEvent,
   DesktopRuntimeHostSshTerminalSnapshot,
+  DesktopNewTaskCatalog,
+  DesktopNewTaskHost,
+  DesktopNewTaskHostRef,
+  DesktopNewTaskTarget,
   DesktopProjectSnapshot,
   DesktopAppInfo,
 } from './bridge-contract.js';
@@ -182,6 +187,7 @@ const runtimeHostMetadata = new Map<
   { readonly profileId: string; readonly profileName: string; readonly profileKind: 'local' | 'remote' }
 >();
 const runtimeHostSessionCache = new Map<string, DesktopSessionSummary[]>();
+const newTaskChangeListeners = new Set<() => void>();
 
 type RuntimeHostProfileWireEvent = DesktopRuntimeHostProfileChangedEvent;
 
@@ -221,6 +227,7 @@ ipcRenderer.on(
     ) {
       activeRuntimeHostGeneration += 1;
     }
+    for (const listener of newTaskChangeListeners) listener();
   },
 );
 
@@ -308,6 +315,72 @@ async function localRuntimeHostRef(): Promise<DesktopTargetScope> {
   );
   if (!scope) throw new Error('The Local Runtime Host is unavailable');
   return scope;
+}
+
+async function newTaskHostScope(host: DesktopNewTaskHostRef): Promise<DesktopTargetScope> {
+  if (!host.profileId || !host.hostId) {
+    throw new Error('The new task target is invalid');
+  }
+  await runtimeHostScopeList();
+  const currentHostId = runtimeHostProfiles.get(host.profileId);
+  const scope = runtimeHostScopes.get(host.hostId);
+  if (currentHostId !== host.hostId || !scope) {
+    throw new Error('The selected Runtime Host is no longer available');
+  }
+  return scope;
+}
+
+async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
+  while (true) {
+    const generation = activeRuntimeHostGeneration;
+    const profiles = await ipcRenderer.invoke(
+      'runtime-host-profiles:getSnapshot',
+    ) as DesktopRuntimeHostProfileSnapshot;
+    await runtimeHostScopeList();
+    const hosts = await Promise.all(
+      profiles.entries.filter((entry) => entry.enabled).map(async (entry): Promise<DesktopNewTaskHost> => {
+        if (entry.readiness !== 'ready' || !entry.hostId) {
+          return {
+            profile: entry.profile,
+            readiness: entry.readiness === 'ready'
+              ? 'reconnecting'
+              : entry.readiness === 'disabled'
+                ? 'unavailable'
+                : entry.readiness,
+            ...(entry.message ? { message: entry.message } : {}),
+          };
+        }
+        const host = { profileId: entry.profile.id, hostId: entry.hostId };
+        try {
+          const scope = await newTaskHostScope(host);
+          const [snapshot, info] = await Promise.all([
+            ipcRenderer.invoke('projects:getSnapshot', scope) as Promise<DesktopProjectSnapshot>,
+            ipcRenderer.invoke('app:info', scope) as Promise<DesktopAppInfo>,
+          ]);
+          return {
+            profile: entry.profile,
+            hostId: entry.hostId,
+            readiness: 'ready',
+            projects: snapshot.projects,
+            capabilities: snapshot.capabilities,
+            selectedProjectId: info.projectId,
+            ...(snapshot.capabilities.viewClientPath && info.projectPath
+              ? { projectPath: info.projectPath }
+              : {}),
+            ...(info.projectGit.branch ? { branch: info.projectGit.branch } : {}),
+          };
+        } catch (error) {
+          return {
+            profile: entry.profile,
+            readiness: 'reconnecting',
+            message: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }),
+    );
+    if (generation !== activeRuntimeHostGeneration) continue;
+    return { defaultProfileId: profiles.defaultProfileId, hosts };
+  }
 }
 
 async function invokeActiveRuntimeHost<T>(channel: string, ...args: unknown[]): Promise<T> {
@@ -949,6 +1022,96 @@ const makaBridge = {
       ) => handler(payload);
       ipcRenderer.on('runtime-host-ssh-terminal:event', listener);
       return () => ipcRenderer.off('runtime-host-ssh-terminal:event', listener);
+    },
+  },
+  newTasks: {
+    getCatalog(): Promise<DesktopNewTaskCatalog> {
+      return loadNewTaskCatalog();
+    },
+    subscribeChanges(handler: () => void): () => void {
+      newTaskChangeListeners.add(handler);
+      const unsubscribes = [
+        subscribeEveryRuntimeHostEvent('projects:changed', handler),
+        subscribeEveryRuntimeHostEvent('connections:event', handler),
+        subscribeEveryRuntimeHostEvent('mcp:changed', handler),
+        subscribeEveryRuntimeHostEvent('settings:externalChanged', handler),
+      ];
+      return () => {
+        newTaskChangeListeners.delete(handler);
+        for (const unsubscribe of unsubscribes) unsubscribe();
+      };
+    },
+    async addProject(host: DesktopNewTaskHostRef) {
+      const result = await ipcRenderer.invoke(
+        'projects:add',
+        await newTaskHostScope(host),
+      ) as
+        | { ok: true; project: ProjectRecord; path: string }
+        | { ok: false; reason: 'cancelled' };
+      return result.ok ? { ok: true as const, project: result.project } : result;
+    },
+    async relinkProject(host: DesktopNewTaskHostRef, projectId: string) {
+      return ipcRenderer.invoke(
+        'projects:relink',
+        await newTaskHostScope(host),
+        projectId,
+      );
+    },
+    async getConnections(host: DesktopNewTaskHostRef) {
+      return ipcRenderer.invoke(
+        'connections:getSnapshot',
+        await newTaskHostScope(host),
+      );
+    },
+    async listInvocableSkills(
+      target: DesktopNewTaskTarget,
+      context?: {
+        llmConnectionSlug?: string;
+        model?: string;
+        collaborationMode?: 'agent' | 'plan';
+      },
+    ) {
+      return ipcRenderer.invoke(
+        'skills:listInvocable',
+        await newTaskHostScope(target),
+        undefined,
+        { ...context, projectId: target.projectId },
+      );
+    },
+    async getReadiness(
+      target: DesktopNewTaskTarget,
+      input?: DesktopTaskSubmissionReadinessRequest,
+    ) {
+      return ipcRenderer.invoke(
+        'taskReadiness:getSnapshot',
+        await newTaskHostScope(target),
+        input,
+      );
+    },
+    async searchFiles(
+      target: DesktopNewTaskTarget,
+      query: string,
+      options?: { limit?: number },
+    ) {
+      if (target.projectId === null) {
+        return { ok: false as const, reason: 'no_project' as const };
+      }
+      return ipcRenderer.invoke(
+        'workspace:searchFiles',
+        await newTaskHostScope(target),
+        { query, projectId: target.projectId, ...options },
+      );
+    },
+    async create(
+      target: DesktopNewTaskTarget,
+      input?: CreateSessionRequestInput,
+    ): Promise<DesktopSessionSummary> {
+      const scope = await newTaskHostScope(target);
+      const session = await ipcRenderer.invoke('sessions:create', scope, {
+        ...input,
+        projectId: target.projectId,
+      }) as SessionSummary;
+      return projectSessionSummary(scope, session);
     },
   },
   pets: {

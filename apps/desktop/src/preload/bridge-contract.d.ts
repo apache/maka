@@ -237,6 +237,37 @@ export interface DesktopRuntimeHostProfileSnapshot {
   readonly defaultProfileId: string;
 }
 
+export interface DesktopNewTaskHostRef {
+  readonly profileId: string;
+  readonly hostId: string;
+}
+
+export interface DesktopNewTaskTarget extends DesktopNewTaskHostRef {
+  readonly projectId: string | null;
+}
+
+export type DesktopNewTaskHost =
+  | {
+      readonly profile: RuntimeHostProfile;
+      readonly hostId: string;
+      readonly readiness: 'ready';
+      readonly projects: readonly ProjectRecord[];
+      readonly capabilities: DesktopProjectCapabilities;
+      readonly selectedProjectId: string | null | undefined;
+      readonly projectPath?: string;
+      readonly branch?: string;
+    }
+  | {
+      readonly profile: RuntimeHostProfile;
+      readonly readiness: 'connecting' | 'reconnecting' | 'unavailable';
+      readonly message?: string;
+    };
+
+export interface DesktopNewTaskCatalog {
+  readonly defaultProfileId: string;
+  readonly hosts: readonly DesktopNewTaskHost[];
+}
+
 export interface DesktopRuntimeHostProfileAddInput {
   readonly profile: RemoteRuntimeHostProfile;
   readonly credential?: string;
@@ -364,6 +395,42 @@ export interface MakaBridge {
     resize(sessionId: string, cols: number, rows: number): Promise<void>;
     cancel(sessionId: string): Promise<void>;
     subscribe(handler: (event: DesktopRuntimeHostSshTerminalEvent) => void): () => void;
+  };
+
+  newTasks: {
+    getCatalog(): Promise<DesktopNewTaskCatalog>;
+    subscribeChanges(handler: () => void): () => void;
+    addProject(host: DesktopNewTaskHostRef): Promise<
+      { ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }
+    >;
+    relinkProject(host: DesktopNewTaskHostRef, projectId: string): Promise<
+      { ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }
+    >;
+    getConnections(host: DesktopNewTaskHostRef): Promise<DesktopConnectionSnapshot>;
+    listInvocableSkills(
+      target: DesktopNewTaskTarget,
+      context?: {
+        llmConnectionSlug?: string;
+        model?: string;
+        collaborationMode?: 'agent' | 'plan';
+      },
+    ): Promise<import('@maka/runtime/skill-invocation').InvocableSkillEntry[]>;
+    getReadiness(
+      target: DesktopNewTaskTarget,
+      input?: DesktopTaskSubmissionReadinessRequest,
+    ): Promise<import('@maka/core/task-submission-readiness').TaskSubmissionReadinessSnapshot>;
+    searchFiles(
+      target: DesktopNewTaskTarget,
+      query: string,
+      options?: { limit?: number },
+    ): Promise<
+      | { ok: true; files: Array<{ relativePath: string }> }
+      | { ok: false; reason: 'no_project' | 'search_failed' }
+    >;
+    create(
+      target: DesktopNewTaskTarget,
+      input?: CreateSessionRequestInput,
+    ): Promise<DesktopSessionSummary>;
   };
 
   pets: {

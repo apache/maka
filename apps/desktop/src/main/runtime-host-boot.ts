@@ -925,6 +925,19 @@ function registerHostClientIpc(
     workspaceRoot,
     mainWindowController,
     getSelectedWorkspaceTarget: () => selectedDesktopWorkspaceTarget(target),
+    resolveNewSessionWorkspaceTarget: async (projectId) => {
+      if (typeof projectId === "string") {
+        return { kind: "project", projectId };
+      }
+      if (projectId === null) {
+        if (target.kind === "remote") return undefined;
+        return {
+          kind: "host_path",
+          path: (await requireRuntimePolicyTarget(target).projectManagement.current()).path,
+        };
+      }
+      return selectedDesktopWorkspaceTarget(target);
+    },
     getDefaultPermissionMode: () =>
       resolveDefaultPermissionMode(() => loadRuntimeHostSettings(settingsIpcDeps)),
     openPath: (path) => shell.openPath(path),
@@ -966,7 +979,14 @@ function registerHostClientIpc(
   );
   registerWorkspaceSearchIpc({
     ipcMain: scopedIpc,
-    getProjectRoot: resolveProjectRootForContext,
+    getProjectRoot: async (sessionId, projectId) => {
+      if (typeof projectId !== "string") {
+        return resolveProjectRootForContext(sessionId);
+      }
+      const path = await targetProjectManagement.pathFor(projectId);
+      if (!path) throw new Error(`Project is unavailable: ${projectId}`);
+      return path;
+    },
     allowLocalWorkspace: target.kind === "local",
   });
   const onboardingService = createOnboardingService({
