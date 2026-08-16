@@ -527,6 +527,8 @@ export interface MakaBridge {
   projects: {
     getSnapshot(sessionId?: string): Promise<DesktopProjectSnapshot>;
     subscribeChanges(handler: () => void, sessionId?: string): () => void;
+    getLocalSnapshot(): Promise<DesktopProjectSnapshot>;
+    subscribeLocalChanges(handler: () => void): () => void;
     add(): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     >;

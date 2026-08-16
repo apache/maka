@@ -49,7 +49,7 @@ export function useAppShellProjectContext(options: {
   projects: ProjectRecord[];
   projectCapabilities: DesktopProjectCapabilities;
   activeProjectCapabilities: DesktopProjectCapabilities;
-  localProjects: ProjectRecord[];
+  localProjects: readonly ProjectRecord[];
   selectedProjectId: string | null | undefined;
   currentProjectId: string | null | undefined;
   currentProject: ProjectRecord | undefined;
@@ -72,6 +72,7 @@ export function useAppShellProjectContext(options: {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [projectCapabilities, setProjectCapabilities] =
     useState<DesktopProjectCapabilities>(NO_PROJECT_CAPABILITIES);
+  const [localHostProjects, setLocalHostProjects] = useState<ProjectRecord[]>([]);
   const [sessionProjectSnapshot, setSessionProjectSnapshot] = useState<{
     sessionId: string;
     projects: ProjectRecord[];
@@ -105,6 +106,29 @@ export function useAppShellProjectContext(options: {
       );
     };
     const unsubscribe = window.maka.projects.subscribeChanges(() => void refresh());
+    void refresh();
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let refreshGeneration = 0;
+    const refresh = () => {
+      const generation = ++refreshGeneration;
+      return window.maka.projects.getLocalSnapshot().then(
+        (snapshot) => {
+          if (cancelled || generation !== refreshGeneration) return;
+          setLocalHostProjects([...snapshot.projects]);
+        },
+        () => {
+          // The Local Host may be reconnecting; its ready event retries this read.
+        },
+      );
+    };
+    const unsubscribe = window.maka.projects.subscribeLocalChanges(() => void refresh());
     void refresh();
     return () => {
       cancelled = true;
@@ -203,11 +227,7 @@ export function useAppShellProjectContext(options: {
     projects,
     projectCapabilities,
     activeProjectCapabilities,
-    localProjects: sessionProfileKind === 'local'
-      ? activeProjects
-      : projectCapabilities.viewClientPath
-        ? projects
-        : [],
+    localProjects: localHostProjects,
     selectedProjectId,
     currentProjectId,
     currentProject,

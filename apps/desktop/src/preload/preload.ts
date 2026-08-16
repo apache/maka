@@ -106,6 +106,7 @@ import type {
 } from '@maka/core/daily-review';
 import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search';
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
+import { createBrowserSelectionCoordinator } from './browser-selection.js';
 import type { Task, TaskLedgerChangedEvent } from '@maka/core/task-ledger';
 import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import {
@@ -297,6 +298,15 @@ async function activeRuntimeHostRef(): Promise<DesktopTargetScope> {
     activeRuntimeHost = recordRuntimeHostIdentity(snapshot).scope;
   }
   return activeRuntimeHost;
+}
+
+async function localRuntimeHostRef(): Promise<DesktopTargetScope> {
+  const scopes = await runtimeHostScopeList();
+  const scope = scopes.find(
+    (candidate) => runtimeHostMetadata.get(candidate.hostId)?.profileKind === 'local',
+  );
+  if (!scope) throw new Error('The Local Runtime Host is unavailable');
+  return scope;
 }
 
 async function invokeActiveRuntimeHost<T>(channel: string, ...args: unknown[]): Promise<T> {
@@ -855,6 +865,28 @@ async function bridgeResult<T>(operation: () => Promise<T>, code: string): Promi
     };
   }
 }
+
+const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef, {
+  show(generation, session) {
+    ipcRenderer.send(
+      'browser:active-session',
+      session.scope,
+      session.sessionId,
+      generation,
+    );
+  },
+  hide(generation) {
+    ipcRenderer.send('browser:hide-active-session', generation);
+  },
+  setViewport(generation, session, rect) {
+    ipcRenderer.send(
+      'browser:setViewport',
+      session.scope,
+      { sessionId: session.sessionId, rect },
+      generation,
+    );
+  },
+});
 
 const makaBridge = {
   runtimeHost,
@@ -1466,6 +1498,17 @@ const makaBridge = {
         disposed = true;
         unsubscribe();
       };
+    },
+    async getLocalSnapshot(): Promise<DesktopProjectSnapshot> {
+      return ipcRenderer.invoke(
+        'projects:getSnapshot',
+        await localRuntimeHostRef(),
+      ) as Promise<DesktopProjectSnapshot>;
+    },
+    subscribeLocalChanges(handler: () => void): () => void {
+      return subscribeEveryRuntimeHostEvent('projects:changed', (scope) => {
+        if (runtimeHostMetadata.get(scope.hostId)?.profileKind === 'local') handler();
+      });
     },
     add(): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
@@ -2504,26 +2547,11 @@ const makaBridge = {
   browser: {
     /** Tell main which conversation this window shows, so it can validate targets. */
     setActiveSession(sessionId: string | null): void {
-      if (sessionId) {
-        void runtimeHostSessionRef(sessionId)
-          .then((session) =>
-            ipcRenderer.send('browser:active-session', session.scope, session.sessionId),
-          )
-          .catch(() => undefined);
-        return;
-      }
-      ipcRenderer.send('browser:hide-active-session');
+      browserSelection.setActiveSession(sessionId);
     },
     /** Mirror the panel strip's on-screen rect (null hides the native view). */
     setViewport(input: { sessionId: string; rect: BrowserViewRect | null }): void {
-      void runtimeHostSessionRef(input.sessionId)
-        .then((session) =>
-          ipcRenderer.send('browser:setViewport', session.scope, {
-            ...input,
-            sessionId: session.sessionId,
-          }),
-        )
-        .catch(() => undefined);
+      browserSelection.setViewport(input);
     },
     navigate(sessionId: string, url: string): Promise<void> {
       return invokeSessionRuntimeHost('browser:navigate', sessionId, url);

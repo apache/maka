@@ -1857,18 +1857,17 @@ function AppShellContent({
     ),
     [visibleSessions, localProjects],
   );
-  // 已归档任务 reads the shell's catalog rather than listing again behind the
-  // modal, and writes through the same row actions the rail uses — one owner
-  // for restoring and deleting a task, whichever surface asked.
+  // Archived Local tasks use the Local Host catalog; remote rows identify
+  // their Host instead of resolving Project ids across unrelated catalogs.
   const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
     () => ({
       sessions,
-      projects,
+      projects: localProjects,
       onRestore: (sessionId) => void sessionRowActionHandlers.unarchiveSession(sessionId),
       onDelete: (sessionId) => void sessionRowActionHandlers.deleteSession(sessionId),
       onPurge: (sessionIds) => sessionRowActionHandlers.purgeSessions(sessionIds),
     }),
-    [sessions, projects],
+    [sessions, localProjects],
   );
   const { startModeSession } = useStableActions(createAppShellSessionStartActions, {
     uiLocale,
