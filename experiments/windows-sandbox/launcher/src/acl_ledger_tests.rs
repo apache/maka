@@ -91,7 +91,7 @@ mod tests {
     }
 
     #[test]
-    fn recovers_old_format_ledger_without_backup_path() {
+    fn quarantines_legacy_stable_identity_ledgers_without_interpreting_them() {
         let fixture = Fixture::new("old-format");
         grant_recursive(&fixture.target, APP_SID);
         assert!(sid_listed(&fixture.target, APP_SID));
@@ -108,11 +108,12 @@ mod tests {
         )
         .expect("write old-format ledger");
 
-        recover_stale(&fixture.ledger_dir).expect("recover old-format ledger");
+        recover_stale(&fixture.ledger_dir).expect("quarantine old-format ledger");
 
-        assert!(!sid_listed(&fixture.target, APP_SID));
-        assert!(!sid_listed(&fixture.target.join("child"), APP_SID));
+        assert!(sid_listed(&fixture.target, APP_SID));
+        assert!(sid_listed(&fixture.target.join("child"), APP_SID));
         assert!(!ledger_path.exists());
+        assert!(fixture.ledger_path("old.json.quarantined").exists());
     }
 
     #[test]
@@ -127,7 +128,10 @@ mod tests {
             &ledger_path,
             &ledger(vec![LedgerRoot {
                 path: fixture.target_str(),
-                recursive: true,
+                read: true,
+                write: false,
+                read_recursive: true,
+                write_recursive: false,
                 backup_path: Some(backup.to_string_lossy().into_owned()),
             }]),
         )
@@ -151,7 +155,10 @@ mod tests {
             &ledger_path,
             &ledger(vec![LedgerRoot {
                 path: missing.to_string_lossy().into_owned(),
-                recursive: true,
+                read: true,
+                write: false,
+                read_recursive: true,
+                write_recursive: false,
                 backup_path: None,
             }]),
         )
@@ -173,7 +180,10 @@ mod tests {
             &valid,
             &ledger(vec![LedgerRoot {
                 path: fixture.target_str(),
-                recursive: true,
+                read: true,
+                write: false,
+                read_recursive: true,
+                write_recursive: false,
                 backup_path: None,
             }]),
         )
@@ -250,7 +260,10 @@ mod tests {
                 app_container_sid: "not-a-sid".to_owned(),
                 roots: vec![LedgerRoot {
                     path: fixture.target_str(),
-                    recursive: true,
+                    read: true,
+                    write: false,
+                    read_recursive: true,
+                    write_recursive: false,
                     backup_path: None,
                 }],
             },
@@ -267,13 +280,19 @@ mod tests {
     fn new_ledgers_serialize_without_backup_path() {
         let value = serde_json::to_value(ledger(vec![LedgerRoot {
             path: "C:\\workspace".to_owned(),
-            recursive: true,
+            read: true,
+            write: true,
+            read_recursive: false,
+            write_recursive: true,
             backup_path: None,
         }]))
         .expect("serialize ledger");
         let root = &value["roots"][0];
         assert!(root.get("backupPath").is_none());
         assert_eq!(root["path"], "C:\\workspace");
-        assert_eq!(root["recursive"], true);
+        assert_eq!(root["read"], true);
+        assert_eq!(root["write"], true);
+        assert_eq!(root["readRecursive"], false);
+        assert_eq!(root["writeRecursive"], true);
     }
 }

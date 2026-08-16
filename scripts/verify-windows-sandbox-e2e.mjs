@@ -40,12 +40,30 @@ export async function verifyWindowsSandboxWorkerE2E(sandboxExecutablePath) {
   const outside = await realpath(await mkdtemp(join(homedir(), '.maka-packaged-e2e-outside-')));
   const runtimeBase = await realpath(await mkdtemp(join(tmpdir(), 'maka-packaged-e2e-rt-')));
   try {
-    // The launch spec grants the runtime root recursively; a shallow copy of
-    // node.exe keeps that grant to a directory this script owns.
-    const runtimeBin = join(runtimeBase, 'runtime', 'bin');
+    // Mirror an installed `%LOCALAPPDATA%\Programs\Maka` topology with an
+    // unrelated sibling. The launch spec must never widen the recursive grant
+    // to their shared `Programs` parent.
+    const programsRoot = join(runtimeBase, 'Programs');
+    const runtimeBin = join(programsRoot, 'Maka');
     await mkdir(runtimeBin, { recursive: true });
+    await mkdir(join(programsRoot, 'UnrelatedApp'), { recursive: true });
     const nodeCopy = join(runtimeBin, 'node.exe');
     await copyFile(process.execPath, nodeCopy);
+    const getLaunchSpec = createFilesystemWorkerLaunchSpecProvider({
+      runtime: 'node',
+      executable: nodeCopy,
+      resourceLocation: { kind: 'runtime' },
+    });
+    const launchSpec = await getLaunchSpec();
+    assertCondition(launchSpec.ok, 'Windows filesystem-worker launch spec was unavailable.');
+    assertCondition(
+      launchSpec.ok && launchSpec.spec.runtimeReadableRoots.includes(await realpath(runtimeBin)),
+      'Windows launch spec omitted its product-owned application directory.',
+    );
+    assertCondition(
+      launchSpec.ok && !launchSpec.spec.runtimeReadableRoots.includes(await realpath(programsRoot)),
+      'Windows launch spec widened the runtime ACL root to the shared Programs directory.',
+    );
 
     const client = new FilesystemWorkerClient({
       sandboxManager: new SandboxManager([
@@ -55,11 +73,7 @@ export async function verifyWindowsSandboxWorkerE2E(sandboxExecutablePath) {
         }),
       ]),
       platform: 'win32',
-      getLaunchSpec: createFilesystemWorkerLaunchSpecProvider({
-        runtime: 'node',
-        executable: nodeCopy,
-        resourceLocation: { kind: 'runtime' },
-      }),
+      getLaunchSpec,
     });
     const execute = (operation) => client.execute({ operation, cwd: workspace, mode: 'ask' });
 

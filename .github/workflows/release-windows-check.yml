@@ -16,6 +16,7 @@ on:
       - 'apps/desktop/electron-builder.config.mjs'
       - 'apps/desktop/package.json'
       - 'scripts/package-windows-x64.mjs'
+      - 'scripts/verify-windows-sandbox-e2e.mjs'
       - 'scripts/prepare-bundled-git.mjs'
       - 'scripts/verify-windows-x64.mjs'
       - 'scripts/verify-windows-installer-lifecycle.mjs'
@@ -24,10 +25,14 @@ on:
       - 'scripts/verify-packaged-app.mjs'
       - 'scripts/npm-spawn.mjs'
       - 'scripts/generate-third-party-notices.mjs'
+      - 'scripts/generate-windows-cargo-notices.mjs'
+      - 'experiments/windows-sandbox/launcher/**'
+      - 'experiments/windows-sandbox/*.ps1'
       - '.gitattributes'
       - 'package.json'
       - 'package-lock.json'
       - 'apps/desktop/resources/licenses/git/NOTICE.txt'
+      - 'apps/desktop/resources/licenses/cargo/THIRD_PARTY_NOTICES.txt'
       - '.github/workflows/release-windows-check.yml'
   workflow_dispatch:
 

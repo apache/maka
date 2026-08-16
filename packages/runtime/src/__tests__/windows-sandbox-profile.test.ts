@@ -60,6 +60,17 @@ test('fails closed for unsupported deny rules', () => {
   assert.throws(() => compileWindowsSandboxPolicy(command(deny)), /deny entries/);
 });
 
+test('fails closed when a profile requests enabled networking', () => {
+  const enabledNetwork: PermissionProfileManaged = {
+    ...createReadOnlyPermissionProfile(),
+    network: { kind: 'enabled' },
+  };
+  assert.throws(
+    () => compileWindowsSandboxPolicy(command(enabledNetwork)),
+    /only implements restricted networking/,
+  );
+});
+
 test('compiles an exact file grant as a non-recursive broker root', () => {
   const exact: PermissionProfileManaged = {
     ...createReadOnlyPermissionProfile(),

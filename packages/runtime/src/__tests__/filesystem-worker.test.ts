@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 
-import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
+import {
+  assertBoundedInProcessGrepPattern,
+  executeFilesystemWorkerRequest,
+} from '../filesystem-worker/operations.js';
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
   type FilesystemWorkerOperation,
@@ -23,6 +26,14 @@ afterEach(async () => {
 });
 
 describe('filesystem worker operations', () => {
+  test('Windows in-process Grep rejects regex features with unbounded backtracking', () => {
+    assert.doesNotThrow(() => assertBoundedInProcessGrepPattern('healthSignal'));
+    assert.doesNotThrow(() => assertBoundedInProcessGrepPattern(String.raw`health\.signal`));
+    assert.throws(() => assertBoundedInProcessGrepPattern('(a+)+$'), /operators/);
+    assert.throws(() => assertBoundedInProcessGrepPattern(String.raw`(a)\1`), /operators/);
+    assert.throws(() => assertBoundedInProcessGrepPattern('(?=secret)'), /operators/);
+  });
+
   test('creates nested patch files exclusively', async () => {
     const root = await temporaryDirectory('maka-worker-create-patch-');
     const target = join(root, 'nested', 'file.txt');

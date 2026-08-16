@@ -5,20 +5,19 @@ tooling selected by the Windows sandbox RFC. The release build is packaged by
 the Windows x64 pipeline and registered through `SandboxManager` only when the
 native resource is present.
 
-The first slice freezes the launcher request/result shapes and provides an
-untrusted Node probe that both candidate launchers must execute. The dedicated
-identity and AppContainer prototypes must produce results against the same
-manifest; a launcher that merely starts a process is not sufficient evidence.
+The first slice freezes the launcher request/result shapes in the shipped Rust
+types and exercises them through native smoke tests. A launcher that merely
+starts a process is not sufficient evidence.
 
 Run the contract checks on Windows:
 
 ```powershell
-node --test experiments/windows-sandbox/protocol.test.mjs
-node experiments/windows-sandbox/probe.mjs --manifest path\to\manifest.json
+cargo test --manifest-path experiments/windows-sandbox/launcher/Cargo.toml --locked
+pwsh experiments/windows-sandbox/appcontainer-smoke.ps1
 ```
 
-The probe exits non-zero when an observation differs from its expectation. Its
-JSON report is evidence input, not a claim that the current process is
+The smoke probes exit non-zero when an observation differs from its expectation.
+Their JSON reports are evidence inputs, not claims that the parent process is
 sandboxed.
 
 `launcher/` also retains the rejected process-containment prototype. It probes a
@@ -40,10 +39,10 @@ the privileges needed to test the separate privileged-broker prototype. A
 missing privilege is an expected fail-closed capability result; it must not be
 worked around by silently using the non-atomic launcher path.
 
-`maka-windows-sandbox --broker-local <manifest>` creates one protected pipe,
-serves exactly one request, launches it, restores ACLs, and exits. The lower-level
+`maka-windows-sandbox --broker-local <manifest>` consumes one manifest,
+authorizes it in-process, launches it, restores ACLs, and exits. The lower-level
 `--broker-serve-once <pipe> <account-sid> <profile-digest>` mode exposes one
-bounded local request over that pipe. The pipe rejects remote
+bounded experimental request over a pipe. The pipe rejects remote
 clients, grants access only to SYSTEM and the supplied user SID, obtains the
 client PID from the kernel, enforces nonce replay and profile-digest checks,
 and calls only the AppContainer atomic launch path. Authorization validates the
@@ -60,9 +59,12 @@ when the runner has both broker privileges and otherwise requires an explicit
 non-zero, fail-closed outcome.
 
 `launcher --appcontainer <request.json>` is the isolated-identity candidate. It
-combines an AppContainer token with the same atomic Job attribute and supplies
-no network capabilities. Before launch, the broker persists an ACL recovery
-ledger, rejects reparse points, and grants the AppContainer SID only the
-requested roots. The smoke proves allowed read/write access, denial of a
-user-readable sibling file and live loopback endpoint, stale-ledger recovery,
-junction rejection, and removal of the temporary AppContainer ACE after exit.
+creates a fresh request-derived AppContainer identity, combines its token with
+the same atomic Job attribute, and supplies no network capabilities. Before
+launch, the broker persists an ACL recovery ledger, rejects reparse points, and
+grants that per-launch SID only the requested roots. A short-lived global mutex
+serializes ACL mutation, while a request-specific kernel lease distinguishes
+live ledgers from abandoned ones without serializing child execution. The smoke
+proves allowed read/write access, denial of a user-readable sibling file and
+live loopback endpoint, stale-ledger recovery, concurrent launches, junction
+rejection, and removal of the temporary AppContainer ACE after exit.

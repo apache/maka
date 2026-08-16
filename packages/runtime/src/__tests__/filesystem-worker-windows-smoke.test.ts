@@ -48,13 +48,13 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
     // Outside the workspace AND outside tmpdir: the workspace-write profile
     // legitimately allows tmpdir writes, so a tmpdir sibling would not reject.
     outside = await realpath(await mkdtemp(join(homedir(), '.maka-win-worker-outside-')));
-    // The launch spec grants the runtime root (parent of the executable's
-    // directory) to the AppContainer recursively. Copy node.exe (self-contained
-    // on Windows) into a shallow controlled tree so the grant covers exactly
-    // this directory rather than whatever layout installed the host's node.
+    // Use a realistic product-owned application directory with unrelated
+    // sibling applications. The launch spec must grant only `Maka`, never the
+    // shared `Programs` parent.
     runtimeBase = await realpath(await mkdtemp(join(tmpdir(), 'maka-win-worker-runtime-')));
-    const runtimeBin = join(runtimeBase, 'runtime', 'bin');
+    const runtimeBin = join(runtimeBase, 'Programs', 'Maka');
     await mkdir(runtimeBin, { recursive: true });
+    await mkdir(join(runtimeBase, 'Programs', 'UnrelatedApp'), { recursive: true });
     const nodeCopy = join(runtimeBin, 'node.exe');
     await copyFile(process.execPath, nodeCopy);
     client = new FilesystemWorkerClient({

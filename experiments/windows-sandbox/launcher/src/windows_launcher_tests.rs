@@ -2,7 +2,7 @@
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::windows_launcher::environment_block;
+    use crate::windows_launcher::{appcontainer_profile_name, environment_block};
 
     fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().collect()
@@ -85,5 +85,15 @@ mod tests {
             1,
             "manifest value must not be duplicated by broker injection: {entries:?}"
         );
+    }
+
+    #[test]
+    fn appcontainer_profile_identity_is_unique_and_bounded_per_request() {
+        let first = appcontainer_profile_name("request-one");
+        let second = appcontainer_profile_name("request-two");
+        assert_ne!(first, second);
+        let rendered = String::from_utf16(&first[..first.len() - 1]).expect("profile name");
+        assert!(rendered.starts_with("maka.sandbox."));
+        assert_eq!(rendered.len(), "maka.sandbox.".len() + 32);
     }
 }

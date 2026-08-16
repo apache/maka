@@ -3,14 +3,17 @@ use std::iter;
 use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
+use std::thread;
+use std::time::{Duration, Instant};
 
+use sha2::{Digest, Sha256};
 use windows_sys::Win32::Foundation::{
     CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, GENERIC_READ, GENERIC_WRITE, HANDLE,
     INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::Isolation::{
-    CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
+    CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::{
     CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, DuplicateTokenEx, FreeSid, GetTokenInformation,
@@ -26,8 +29,9 @@ use windows_sys::Win32::System::Console::{
 };
 use windows_sys::Win32::System::JobObjects::{
     CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-    SetInformationJobObject,
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{
     CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, CreateProcessW,
@@ -94,10 +98,23 @@ pub fn launch_atomic(request: &LaunchRequest) -> Result<u8, String> {
 }
 
 pub fn launch_appcontainer(request: &LaunchRequest) -> Result<u8, String> {
+    validate_appcontainer_policy(request)?;
     unsafe {
         let job = create_kill_on_close_job()?;
-        let profile = AppContainerProfile::open()?;
-        let sid = sid_string(profile.sid)?;
+        let profile = match AppContainerProfile::create(&request.request_id) {
+            Ok(profile) => profile,
+            Err(error) => {
+                CloseHandle(job);
+                return Err(error);
+            }
+        };
+        let sid = match sid_string(profile.sid) {
+            Ok(sid) => sid,
+            Err(error) => {
+                CloseHandle(job);
+                return Err(error);
+            }
+        };
         let result = with_acl_grants(request, &sid, || {
             create_appcontainer_child(request, job, profile.sid)
         });
@@ -106,10 +123,20 @@ pub fn launch_appcontainer(request: &LaunchRequest) -> Result<u8, String> {
     }
 }
 
-pub fn appcontainer_sid_string() -> Result<String, String> {
+pub fn appcontainer_sid_string(request_id: &str) -> Result<String, String> {
     unsafe {
-        let profile = AppContainerProfile::open()?;
-        sid_string(profile.sid)
+        let name = appcontainer_profile_name(request_id);
+        let mut sid = null_mut();
+        let derived = DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid);
+        if derived < 0 {
+            return Err(format!(
+                "DeriveAppContainerSidFromAppContainerName failed: HRESULT 0x{:08x}",
+                derived as u32
+            ));
+        }
+        let result = sid_string(sid);
+        FreeSid(sid);
+        result
     }
 }
 
@@ -159,13 +186,14 @@ unsafe fn sid_string(sid: *mut c_void) -> Result<String, String> {
 
 struct AppContainerProfile {
     sid: *mut c_void,
+    name: Vec<u16>,
 }
 
 impl AppContainerProfile {
-    unsafe fn open() -> Result<Self, String> {
-        let name = wide("maka.sandbox.w0");
-        let display_name = wide("Maka Windows Sandbox W0");
-        let description = wide("Temporary AppContainer profile for Maka sandbox validation");
+    unsafe fn create(request_id: &str) -> Result<Self, String> {
+        let name = appcontainer_profile_name(request_id);
+        let display_name = wide("Maka Windows Sandbox");
+        let description = wide("Per-launch AppContainer profile for Maka sandbox execution");
         let mut sid = null_mut();
         let result = unsafe {
             CreateAppContainerProfile(
@@ -178,37 +206,41 @@ impl AppContainerProfile {
             )
         };
         if result < 0 {
-            const HRESULT_ALREADY_EXISTS: i32 = 0x8007_00B7u32 as i32;
-            if result != HRESULT_ALREADY_EXISTS {
-                return Err(format!(
-                    "CreateAppContainerProfile failed: HRESULT 0x{:08x}",
-                    result as u32
-                ));
-            }
-            let derived =
-                unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
-            if derived < 0 {
-                return Err(format!(
-                    "DeriveAppContainerSidFromAppContainerName failed: HRESULT 0x{:08x}",
-                    derived as u32
-                ));
-            }
+            // Never derive and reuse an existing profile. A leftover profile
+            // means a previous launch with this identity did not complete its
+            // lifecycle, so reusing it could also reuse stale filesystem ACEs.
+            return Err(format!(
+                "CreateAppContainerProfile failed closed: HRESULT 0x{:08x}",
+                result as u32
+            ));
         }
-        Ok(Self { sid })
+        Ok(Self { sid, name })
     }
 }
 
 impl Drop for AppContainerProfile {
     fn drop(&mut self) {
-        // The named profile is deliberately left registered: concurrent broker
-        // launches share it, and deleting it here while another launch is
-        // between deriving the SID and CreateProcessW makes that launch fail.
-        // The profile is a stable, benign registration; grants tied to its SID
-        // are removed per-launch by the ACL ledger.
         unsafe {
             FreeSid(self.sid);
+            // The request-derived name is never reused by another live launch.
+            // Best-effort deletion keeps the user profile store bounded; a
+            // crash can leave this registration behind, but a future request
+            // has a different SID and cannot inherit its ACL authority.
+            DeleteAppContainerProfile(self.name.as_ptr());
         }
     }
+}
+
+pub(crate) fn appcontainer_profile_name(request_id: &str) -> Vec<u16> {
+    let digest = format!("{:x}", Sha256::digest(request_id.as_bytes()));
+    wide(&format!("maka.sandbox.{}", &digest[..32]))
+}
+
+fn validate_appcontainer_policy(request: &LaunchRequest) -> Result<(), String> {
+    if !matches!(request.network, NetworkMode::Restricted) {
+        return Err("AppContainer backend only implements restricted networking".to_owned());
+    }
+    Ok(())
 }
 
 fn validate_unimplemented_policy(request: &LaunchRequest) -> Result<(), String> {
@@ -353,12 +385,6 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
             }
         }
     };
-    if result.is_err() {
-        unsafe {
-            TerminateProcess(process.hProcess, 1);
-            WaitForSingleObject(process.hProcess, 5_000);
-        }
-    }
     unsafe {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
@@ -446,12 +472,7 @@ unsafe fn create_child_atomic(
             Err("atomic launch did not establish the required token and Job boundary".to_owned())
         }
     })();
-    if result.is_err() {
-        unsafe {
-            TerminateProcess(process.hProcess, 1);
-            WaitForSingleObject(process.hProcess, 5_000);
-        }
-    }
+    let result = unsafe { settle_job(result, job, process.hProcess) };
     unsafe {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
@@ -607,6 +628,7 @@ unsafe fn create_appcontainer_child(
             )
         }
     })();
+    let result = unsafe { settle_job(result, job, process.hProcess) };
     unsafe {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
@@ -711,7 +733,6 @@ unsafe fn wait_for_child(process: HANDLE, timeout_ms: Option<u64>) -> Result<u8,
     let timeout_ms = timeout_ms.unwrap_or(DEFAULT_LAUNCH_TIMEOUT_MS);
     let wait = unsafe { WaitForSingleObject(process, timeout_ms as u32) };
     if wait == WAIT_TIMEOUT {
-        unsafe { TerminateProcess(process, 124) };
         return Err(format!("child exceeded the {timeout_ms} ms launch timeout"));
     }
     if wait != WAIT_OBJECT_0 {
@@ -728,6 +749,77 @@ unsafe fn wait_for_child(process: HANDLE, timeout_ms: Option<u64>) -> Result<u8,
         ));
     }
     Ok(exit_code as u8)
+}
+
+unsafe fn terminate_and_drain_job(job: HANDLE, root_process: HANDLE) -> Result<(), String> {
+    if unsafe { TerminateJobObject(job, 124) } == 0 {
+        return Err(last_error("TerminateJobObject"));
+    }
+    let root_wait = unsafe { WaitForSingleObject(root_process, 5_000) };
+    if root_wait != WAIT_OBJECT_0 {
+        return Err(if root_wait == WAIT_TIMEOUT {
+            "timed out waiting for terminated root process".to_owned()
+        } else {
+            last_error("WaitForSingleObject(terminated root)")
+        });
+    }
+
+    unsafe { wait_for_empty_job(job, Duration::from_secs(5)) }
+}
+
+/// Do not return control to ACL cleanup while any process can still be using
+/// the launch identity. Error paths terminate the entire Job; successful root
+/// exits get a bounded grace period for Job accounting and descendants to
+/// drain, then fail closed and terminate any process tree that remains.
+unsafe fn settle_job(
+    result: Result<u8, String>,
+    job: HANDLE,
+    root_process: HANDLE,
+) -> Result<u8, String> {
+    match result {
+        Ok(exit_code) => match unsafe { wait_for_empty_job(job, Duration::from_secs(5)) } {
+            Ok(()) => Ok(exit_code),
+            Err(drain) => match unsafe { terminate_and_drain_job(job, root_process) } {
+                Ok(()) => Err(format!(
+                    "child exited while its Job still contained processes: {drain}"
+                )),
+                Err(cleanup) => Err(format!("{drain}; Job cleanup also failed: {cleanup}")),
+            },
+        },
+        Err(error) => match unsafe { terminate_and_drain_job(job, root_process) } {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(format!("{error}; Job cleanup also failed: {cleanup}")),
+        },
+    }
+}
+
+unsafe fn wait_for_empty_job(job: HANDLE, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+        if unsafe {
+            QueryInformationJobObject(
+                job,
+                JobObjectBasicAccountingInformation,
+                &mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION as *mut c_void,
+                size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                null_mut(),
+            )
+        } == 0
+        {
+            return Err(last_error("QueryInformationJobObject(active processes)"));
+        }
+        if accounting.ActiveProcesses == 0 {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out draining {} Job processes",
+                accounting.ActiveProcesses
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 unsafe fn child_token_is_restricted(process: HANDLE) -> Result<bool, String> {

@@ -19,9 +19,10 @@ real `cmd.exe` and launcher children could not initialize reliably. It selected 
 the same runner proved default denial, admitted-root access, network denial, and atomic Job
 membership without elevation.
 
-The selected first slice uses a stable AppContainer SID, per-launch ACL grants recorded in a durable
-one-shot ledger, and an AppContainer token with no network capabilities. Stale grants are reconciled
-before the next launch. It does not claim resistance to an administrator, a compromised same-user
+The selected first slice uses a fresh request-derived AppContainer SID, per-launch ACL grants
+recorded in a durable one-shot ledger, and an AppContainer token with no network capabilities.
+Stale grants are reconciled before the next launch, but their identities are never reused. It does
+not claim resistance to an administrator, a compromised same-user
 host process, arbitrary power loss, or every adversarial path form listed in section 10.
 
 ## 2. Research basis
@@ -122,8 +123,8 @@ Lexical prefix checks are never authorization evidence.
 - Per-invocation temporary storage is removed only after the process tree drains.
 - NTFS/ReFS are capability-probed; filesystems that cannot enforce the required descriptors fail
   closed. FAT-family volumes are not supported for restricted profiles.
-- Maka-owned ACL changes are idempotent, attributed to a stable sandbox principal, recorded in a
-  versioned state file, applied new-before-revoke-old, and reconciled at startup.
+- Maka-owned ACL changes are attributed to a unique per-launch principal, record their actual
+  recursive/exact grant mode in a versioned state file, and are reconciled at startup.
 - Setup, upgrade, uninstall, or a changed profile cannot leave an unknown usable grant. Corrupt or
   missing ownership state fails readiness rather than guessing which ACE is safe to remove.
 - Canonical target and lexical alias are both considered when a reparse point exists.
@@ -132,7 +133,8 @@ Lexical prefix checks are never authorization evidence.
 
 - `network.restricted` cannot create outbound or inbound network channels.
 - Denial covers TCP, UDP, DNS, loopback, listeners, SMB/UNC, and inherited sockets.
-- Named pipes are denied by default except the exact broker protocol pipe, whose DACL admits only the
+- Named pipes are denied by default. The packaged one-shot path performs authorization in-process;
+  the standalone experimental broker pipe has a DACL that admits only the
   selected sandbox principal and broker.
 - If Windows reports that local firewall policy is ineffective, partially applied, or overridden by
   group policy, the offline backend is unavailable.
@@ -192,11 +194,13 @@ sequenceDiagram
 
 ### 7.1 Setup and durable state
 
-The first implementation needs no elevated setup. Windows derives or creates the stable Maka
-AppContainer profile, and the packaged native binary grants that SID only the roots admitted for the
-current launch. Before mutation it recursively rejects `FILE_ATTRIBUTE_REPARSE_POINT`, persists a
+The first implementation needs no elevated setup. Windows creates a request-derived Maka
+AppContainer profile, and the packaged native binary grants its unique SID only the roots admitted
+for the current launch. Before mutation it recursively rejects `FILE_ATTRIBUTE_REPARSE_POINT`, persists a
 versioned ledger with `create_new` and `sync_all`, and reconciles every stale ledger before accepting
-a new request. Normal settlement removes the SID ACE and then deletes the ledger.
+a new request. A global kernel mutex covers only ledger/ACL mutation; each launch holds a separate
+request-specific kernel lease through child settlement, so recovery skips live ledgers while disjoint
+launches execute concurrently. Normal settlement removes the SID ACE and then deletes the ledger.
 
 The ledger filename is a SHA-256 of the request identity, so request-controlled path characters
 cannot escape its directory. `icacls.exe` is resolved from absolute `%SystemRoot%\System32`, invoked
@@ -206,12 +210,12 @@ Crash/power-loss and concurrent replacement hardening remain release evidence, n
 
 ### 7.2 Broker and protocol
 
-The native component is not a resident privileged service. Each invocation creates a random local
-pipe protected to SYSTEM and the current user, serves exactly one bounded request, and exits after
-the AppContainer process settles and ACLs are restored. The server obtains the peer PID from the
-kernel, rejects remote clients, admits one profile digest, and rejects nonce replay.
+The native component is not a resident privileged service. The packaged `--broker-local` path
+consumes and deletes one manifest, binds it to its kernel process PID, authorizes it in-process, and
+exits after the AppContainer process settles and ACLs are restored. The standalone named-pipe modes
+remain transport evidence and are not traversed by the packaged path.
 
-The client consumes and deletes the manifest before connecting. Authorization recomputes the digest
+Authorization recomputes the digest
 from the complete canonical launch object, so changing executable, arguments, cwd, roots, network,
 or environment invalidates approval. Unknown fields, versions, outcomes, or oversized frames fail
 closed. The authorized path can call only the AppContainer atomic launcher.

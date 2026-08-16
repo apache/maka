@@ -85,6 +85,7 @@ export async function packageWindowsX64({
   await run('npm', ['run', 'clean']);
   await run('npm', ['run', 'build']);
   await run('cargo', ['build', '--manifest-path', sandboxManifestPath, '--release', '--locked']);
+  await run('npm', ['run', 'check:windows-cargo-notices']);
   await mkdir(sandboxResourceDirectory, { recursive: true });
   await copyFile(sandboxBinaryPath, sandboxResourcePath);
   await run('npm', ['run', 'prepare:bundled-git']);

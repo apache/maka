@@ -1,24 +1,27 @@
+use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::iter;
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::thread;
-use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, STILL_ACTIVE,
+    CloseHandle, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
+use windows_sys::Win32::Security::Isolation::DeleteAppContainerProfile;
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-};
+use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 
 use crate::protocol::LaunchRequest;
+use crate::windows_launcher::appcontainer_profile_name;
 
-pub(crate) const LEDGER_VERSION: u8 = 1;
+pub(crate) const LEDGER_VERSION: u8 = 2;
+const ACL_MUTEX_TIMEOUT_MS: u32 = 30_000;
+const ACL_MUTEX_NAME: &str = r"Local\Maka.WindowsSandbox.AclLedger.v2";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -33,7 +36,10 @@ pub(crate) struct Ledger {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct LedgerRoot {
     pub(crate) path: String,
-    pub(crate) recursive: bool,
+    pub(crate) read: bool,
+    pub(crate) write: bool,
+    pub(crate) read_recursive: bool,
+    pub(crate) write_recursive: bool,
     /// Absent in ledgers written before ACL backups existed; recovery then
     /// falls back to removing this ledger's AppContainer SID grants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -51,48 +57,6 @@ pub fn with_acl_grants<T>(
     let ledger_root = std::env::temp_dir().join("maka-sandbox-acl-ledgers");
     fs::create_dir_all(&ledger_root)
         .map_err(|error| format!("create ACL ledger directory failed: {error}"))?;
-    let lock_path = ledger_root.join(".active.lock");
-    // Concurrent launches serialize on this lock while each runs recursive
-    // icacls grants and removals, so the deadline covers a burst of launches,
-    // not a single one.
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut lock_file = loop {
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
-        {
-            Ok(file) => break file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                if lock_owner_is_stale(&lock_path)? {
-                    match fs::remove_file(&lock_path) {
-                        Ok(()) => continue,
-                        Err(remove_error)
-                            if remove_error.kind() == std::io::ErrorKind::NotFound =>
-                        {
-                            continue;
-                        }
-                        Err(remove_error) => {
-                            return Err(format!(
-                                "remove stale ACL ledger lock failed: {remove_error}"
-                            ));
-                        }
-                    }
-                }
-                if Instant::now() >= deadline {
-                    return Err(format!("acquire ACL ledger lock timed out: {error}"));
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(error) => return Err(format!("acquire ACL ledger lock failed: {error}")),
-        }
-    };
-    writeln!(lock_file, "{}", std::process::id())
-        .and_then(|()| lock_file.sync_all())
-        .map_err(|error| format!("persist ACL ledger lock owner failed: {error}"))?;
-    let _lock = LedgerLock { path: lock_path };
-    recover_stale(&ledger_root)?;
-
     let roots = collect_roots(request)?;
     let ledger = Ledger {
         version: LEDGER_VERSION,
@@ -102,18 +66,43 @@ pub fn with_acl_grants<T>(
     };
     let ledger_name = format!("{:x}.json", Sha256::digest(request.request_id.as_bytes()));
     let ledger_path = ledger_root.join(ledger_name);
-    write_ledger(&ledger_path, &ledger)?;
-
-    let grant_result = grant_roots(request, app_container_sid, &ledger.roots);
-    let launch_result = match grant_result {
-        Ok(()) => launch(),
-        Err(error) => Err(error),
-    };
-    let restore_result = remove_grants(&ledger);
-    if restore_result.is_ok() {
-        fs::remove_file(&ledger_path)
-            .map_err(|error| format!("remove completed ACL ledger failed: {error}"))?;
+    // The per-request lease stays owned through child execution and cleanup.
+    // Recovery can therefore distinguish a live ledger from one abandoned by
+    // a crashed process without serializing unrelated launches.
+    let _lease = LedgerLock::acquire(
+        &ledger_lease_name(&request.request_id),
+        ACL_MUTEX_TIMEOUT_MS,
+    )?;
+    {
+        // The OS owns mutex recovery: a crashed process abandons the mutex and
+        // the next waiter acquires it without parsing a PID file. It protects
+        // only ACL/ledger mutation, never the child lifetime, so independent
+        // per-launch AppContainer identities can execute concurrently.
+        let _lock = LedgerLock::acquire(ACL_MUTEX_NAME, ACL_MUTEX_TIMEOUT_MS)?;
+        recover_stale(&ledger_root)?;
+        write_ledger(&ledger_path, &ledger)?;
+        if let Err(error) = grant_roots(app_container_sid, &ledger.roots) {
+            let restore = remove_grants(&ledger);
+            if restore.is_ok() {
+                let _ = fs::remove_file(&ledger_path);
+            }
+            return match restore {
+                Ok(()) => Err(error),
+                Err(restore) => Err(format!("{error}; ACL cleanup also failed: {restore}")),
+            };
+        }
     }
+
+    let launch_result = launch();
+    let restore_result = {
+        let _lock = LedgerLock::acquire(ACL_MUTEX_NAME, ACL_MUTEX_TIMEOUT_MS)?;
+        let result = remove_grants(&ledger);
+        if result.is_ok() {
+            fs::remove_file(&ledger_path)
+                .map_err(|error| format!("remove completed ACL ledger failed: {error}"))?;
+        }
+        result
+    };
     match (launch_result, restore_result) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) => Err(error),
@@ -122,36 +111,46 @@ pub fn with_acl_grants<T>(
     }
 }
 
+struct LedgerLock {
+    handle: HANDLE,
+}
+
+impl LedgerLock {
+    fn acquire(name: &str, timeout_ms: u32) -> Result<Self, String> {
+        Self::try_acquire(name, timeout_ms)?.ok_or_else(|| {
+            if name == ACL_MUTEX_NAME {
+                "acquire ACL ledger mutex timed out".to_owned()
+            } else {
+                "acquire ACL ledger lease timed out".to_owned()
+            }
+        })
+    }
+
+    fn try_acquire(name: &str, timeout_ms: u32) -> Result<Option<Self>, String> {
+        let name = wide(name);
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+        if handle.is_null() {
+            return Err(last_error("CreateMutexW(ACL ledger mutex)"));
+        }
+        let wait = unsafe { WaitForSingleObject(handle, timeout_ms) };
+        if wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED {
+            return Ok(Some(Self { handle }));
+        }
+        unsafe { CloseHandle(handle) };
+        if wait == WAIT_TIMEOUT {
+            return Ok(None);
+        }
+        Err(last_error("WaitForSingleObject(ACL ledger mutex)"))
+    }
+}
+
 impl Drop for LedgerLock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        unsafe {
+            ReleaseMutex(self.handle);
+            CloseHandle(self.handle);
+        }
     }
-}
-
-struct LedgerLock {
-    path: PathBuf,
-}
-
-fn lock_owner_is_stale(path: &Path) -> Result<bool, String> {
-    let owner = match fs::read_to_string(path) {
-        Ok(value) => value.trim().parse::<u32>().ok(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
-        Err(error) => return Err(format!("read ACL ledger lock failed: {error}")),
-    };
-    let Some(owner) = owner else {
-        return Ok(false);
-    };
-    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, owner) };
-    if process.is_null() {
-        return Ok(unsafe { GetLastError() } == ERROR_INVALID_PARAMETER);
-    }
-    let mut exit_code = 0;
-    let queried = unsafe { GetExitCodeProcess(process, &mut exit_code) };
-    unsafe { CloseHandle(process) };
-    if queried == 0 {
-        return Ok(false);
-    }
-    Ok(exit_code != STILL_ACTIVE as u32)
 }
 
 fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, String> {
@@ -190,7 +189,10 @@ fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, String> {
         }
         roots.push(LedgerRoot {
             path: path.clone(),
-            recursive: metadata.is_dir(),
+            read: contains_path(&request.read_roots, path),
+            write: contains_path(&request.write_roots, path),
+            read_recursive: metadata.is_dir() && recursive_read,
+            write_recursive: metadata.is_dir() && recursive_write,
             backup_path: None,
         });
     }
@@ -257,15 +259,23 @@ pub(crate) fn recover_stale(root: &Path) -> Result<(), String> {
             )?;
             continue;
         }
+        let lease_name = ledger_lease_name(&ledger.request_id);
+        let Some(_stale_lease) = LedgerLock::try_acquire(&lease_name, 0)? else {
+            // The owner keeps this request-specific mutex for the entire child
+            // and cleanup lifetime. A busy lease means this is an active
+            // ledger, not stale recovery work.
+            continue;
+        };
         // A root the user could grant but cannot un-grant (e.g. an ACL-locked
-        // file deep in the tree) must not brick every future launch: keep the
-        // ledger as quarantined evidence and keep the failure loud instead of
-        // failing recovery forever. The leftover grants are bounded to the
-        // broker's own AppContainer SID.
+        // file deep in the tree) must not brick every future launch. This is
+        // safe only because every request has a fresh AppContainer identity:
+        // no later child can receive the quarantined ledger's SID.
         if let Err(error) = remove_grants(&ledger) {
             quarantine_ledger(&path, &format!("stale ACL ledger recovery failed: {error}"))?;
             continue;
         }
+        let profile_name = appcontainer_profile_name(&ledger.request_id);
+        unsafe { DeleteAppContainerProfile(profile_name.as_ptr()) };
         fs::remove_file(&path).map_err(|error| {
             format!("remove stale ACL ledger {} failed: {error}", path.display())
         })?;
@@ -273,42 +283,23 @@ pub(crate) fn recover_stale(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn grant_roots(
-    request: &LaunchRequest,
-    sid: &str,
-    ledger_roots: &[LedgerRoot],
-) -> Result<(), String> {
-    for root in &request.read_roots {
-        // Roots absent from the ledger were skipped by collect_roots (they do
-        // not exist); there is nothing to grant on them.
-        let Some(entry) = ledger_roots
-            .iter()
-            .find(|entry| entry.path.eq_ignore_ascii_case(root))
-        else {
-            continue;
-        };
-        let recursive = entry.recursive
-            && !request
-                .exact_read_roots
-                .iter()
-                .any(|path| path.eq_ignore_ascii_case(root));
-        grant(root, sid, "RX", recursive)?;
-    }
-    for root in &request.write_roots {
-        let Some(entry) = ledger_roots
-            .iter()
-            .find(|entry| entry.path.eq_ignore_ascii_case(root))
-        else {
-            continue;
-        };
-        let recursive = entry.recursive
-            && !request
-                .exact_write_roots
-                .iter()
-                .any(|path| path.eq_ignore_ascii_case(root));
-        grant(root, sid, "M", recursive)?;
+fn grant_roots(sid: &str, ledger_roots: &[LedgerRoot]) -> Result<(), String> {
+    for root in ledger_roots {
+        if root.read {
+            grant(&root.path, sid, "RX", root.read_recursive)?;
+        }
+        if root.write {
+            grant(&root.path, sid, "M", root.write_recursive)?;
+        }
     }
     Ok(())
+}
+
+fn ledger_lease_name(request_id: &str) -> String {
+    format!(
+        r"Local\Maka.WindowsSandbox.AclLease.{:x}",
+        Sha256::digest(request_id.as_bytes())
+    )
 }
 
 fn grant(path: &str, sid: &str, access: &str, recursive: bool) -> Result<(), String> {
@@ -339,7 +330,11 @@ fn remove_grants(ledger: &Ledger) -> Result<(), String> {
         if !Path::new(&root.path).exists() {
             continue;
         }
-        remove_sid_grants(&root.path, &ledger.app_container_sid, root.recursive)?;
+        remove_sid_grants(
+            &root.path,
+            &ledger.app_container_sid,
+            root.read_recursive || root.write_recursive,
+        )?;
     }
     Ok(())
 }
@@ -398,4 +393,15 @@ fn system_icacls() -> Result<PathBuf, String> {
         return Err(format!("system icacls is unavailable: {}", path.display()));
     }
     Ok(path)
+}
+
+fn wide(value: &str) -> Vec<u16> {
+    OsStr::new(value)
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect()
+}
+
+fn last_error(operation: &str) -> String {
+    format!("{operation} failed: {}", std::io::Error::last_os_error())
 }

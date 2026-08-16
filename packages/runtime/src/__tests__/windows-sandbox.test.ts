@@ -134,6 +134,27 @@ test('rejects a request id with characters that are unsafe in a manifest filenam
   }
 });
 
+test('rejects a request id whose derived launch id exceeds the native protocol bound', () => {
+  const backend = new WindowsBrokerSandboxBackend({
+    clientPath: String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`,
+    requestId: () => 'a'.repeat(122),
+    writeManifest: () => String.raw`C:\Users\user\AppData\Local\Temp\request.json`,
+  });
+  const result = backend.transform({
+    platform: 'win32',
+    command: {
+      program: String.raw`C:\Windows\System32\cmd.exe`,
+      args: [],
+      cwd: String.raw`C:\work\repo`,
+      env: {},
+      profile: createWorkspaceWritePermissionProfile(),
+      pathContext: { workspaceRoots: [String.raw`C:\work\repo`] },
+    },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.message ?? '', /request id/i);
+});
+
 test('honors a configured broker timeout and rejects out-of-range values', () => {
   let written: WindowsBrokerManifest | undefined;
   const backend = new WindowsBrokerSandboxBackend({

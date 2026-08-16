@@ -79,10 +79,16 @@ fn run() -> Result<u8, String> {
         return stdio_probe(sleep_seconds);
     }
     if first == "--appcontainer-sid" {
+        let request_id = args
+            .next()
+            .ok_or_else(|| "--appcontainer-sid requires a request id".to_owned())?;
         if args.next().is_some() {
-            return Err("--appcontainer-sid does not accept arguments".to_owned());
+            return Err("--appcontainer-sid accepts exactly one request id".to_owned());
         }
-        println!("{}", windows_launcher::appcontainer_sid_string()?);
+        println!(
+            "{}",
+            windows_launcher::appcontainer_sid_string(&request_id.to_string_lossy())?
+        );
         return Ok(0);
     }
     if first == "--boundary-probe" {

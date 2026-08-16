@@ -15,8 +15,9 @@ W0 选择 Maka 自有 Rust 实现，不直接引入其他产品的 setup 和协�
 restricted-token 候选：真实 `cmd.exe` 和 launcher child 无法稳定初始化；同一 runner 上的 AppContainer 则在
 无需提权的情况下证明了默认拒绝、允许目录访问、网络拒绝和原子 Job membership。
 
-首个切片使用稳定 AppContainer SID、带持久 one-shot ledger 的每次启动 ACL grant，以及不授予网络 capability
-的 AppContainer token。下一次启动前会 reconcile 遗留 grant。它不宣称抵抗管理员、已攻陷的同用户 host
+首个切片为每次启动使用 request-derived 独立 AppContainer SID、带持久 one-shot ledger 的 ACL grant，以及
+不授予网络 capability 的 AppContainer token。下一次启动前会 reconcile 遗留 grant，但不会复用旧 identity。
+它不宣称抵抗管理员、已攻陷的同用户 host
 process、任意断电，或第 10 节列出的全部路径攻击。
 
 ## 2. 调研依据
@@ -104,8 +105,8 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - runtime/executable root 最小化且只读；
 - 每次调用的 temp 只有在进程树 drain 后才能移除；
 - 对 NTFS/ReFS 做 capability probe；不能兑现 descriptor 合同的文件系统 fail closed，FAT 不支持 restricted；
-- Maka-owned ACL 必须幂等、归属于稳定 SID、写入版本化 state file，先 apply 新集合再 revoke 旧集合，并在
-  startup reconcile；
+- Maka-owned ACL 归属于每次 launch 的独立 SID，在版本化 state file 中记录实际 exact/recursive grant mode，
+  并在 startup reconcile；
 - setup、升级、卸载、profile 变化不得留下未知可用 grant；ownership state 损坏或缺失时 readiness fail，
   禁止猜测 ACE；
 - 路径存在 reparse point 时同时考虑 lexical alias 与 canonical target。
@@ -114,7 +115,8 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 
 - `network.restricted` 不能创建 inbound/outbound channel；
 - 覆盖 TCP、UDP、DNS、loopback、listener、SMB/UNC 与 inherited socket；
-- named pipe 默认拒绝，只有 exact broker protocol pipe 可用，DACL 仅允许选定 sandbox principal 与 broker；
+- named pipe 默认拒绝；打包 one-shot 路径在进程内完成 authorization，独立实验 pipe 的 DACL 仅允许选定
+  sandbox principal 与 broker；
 - Windows 报告 local firewall policy 无效、部分生效或被 group policy 覆盖时，offline backend 不可用；
 - 未来 domain allowlist 必须走 Maka-owned proxy，不把 DNS 结果编译成持久 direct-address allowlist。
 
@@ -164,10 +166,11 @@ sequenceDiagram
 
 ### 7.1 Setup 与持久状态
 
-首个实现不需要 elevated setup。Windows 派生或创建稳定的 Maka AppContainer profile，打包 native binary 只给
-当前 launch 允许的 root 授予该 SID。修改前递归拒绝 `FILE_ATTRIBUTE_REPARSE_POINT`，用 `create_new` 和
+首个实现不需要 elevated setup。Windows 为每次 launch 创建 request-derived Maka AppContainer profile，打包
+native binary 只给当前 launch 允许的 root 授予其独立 SID。修改前递归拒绝 `FILE_ATTRIBUTE_REPARSE_POINT`，用 `create_new` 和
 `sync_all` 持久化版本化 ledger，并在接收新请求前 reconcile 全部遗留 ledger。正常结束先移除 SID ACE，再
-删除 ledger。
+删除 ledger。全局 kernel mutex 只覆盖 ledger/ACL 修改；每个 launch 在 child settlement 完成前持有独立的
+request-specific kernel lease，因此 recovery 会跳过仍在使用的 ledger，同时不同 launch 仍可并发执行。
 
 ledger 文件名使用 request identity 的 SHA-256，请求控制的路径字符无法逃出目录。`icacls.exe` 从绝对
 `%SystemRoot%\System32` 解析，不经过 shell，并使用 `/L` 操作 link object 而非跟随目标。Windows CI smoke
@@ -176,11 +179,11 @@ ledger 文件名使用 request identity 的 SHA-256，请求控制的路径字�
 
 ### 7.2 Broker 与协议
 
-native component 不是常驻 privileged service。每次调用创建随机本地 pipe，只允许 SYSTEM 和当前用户，服务
-一个有界请求，并在 AppContainer process 结束和 ACL 恢复后退出。server 从内核取得 peer PID、拒绝远程
-client、只允许一个 profile digest，并拒绝 nonce replay。
+native component 不是常驻 privileged service。打包的 `--broker-local` 路径消费并删除一个 manifest，绑定
+当前内核 PID，在进程内完成 authorization，并在 AppContainer process 结束和 ACL 恢复后退出。独立 named-pipe
+模式只保留为 transport evidence，产品路径不再经过它。
 
-client 在连接前消费并删除 manifest。authorization 从完整 canonical launch object 重算 digest，所以修改
+authorization 从完整 canonical launch object 重算 digest，所以修改
 executable、arguments、cwd、roots、network 或 environment 都会使批准失效。未知 field/version/outcome 或超长
 frame 一律 fail closed；授权路径只能调用 AppContainer atomic launcher。
 

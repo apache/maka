@@ -40,6 +40,8 @@
     "check:stale": "node scripts/check-stale-dist.mjs",
     "generate:third-party-notices": "node scripts/generate-third-party-notices.mjs",
     "check:third-party-notices": "node scripts/generate-third-party-notices.mjs --check",
+    "generate:windows-cargo-notices": "node scripts/generate-windows-cargo-notices.mjs",
+    "check:windows-cargo-notices": "node scripts/generate-windows-cargo-notices.mjs --check",
     "check:release": "npm run check:stale && npm run check:third-party-notices",
     "package:macos-arm64": "node scripts/package-macos-arm64.mjs",
     "verify:macos-arm64": "node scripts/verify-macos-arm64-dmg.mjs",

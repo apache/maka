@@ -22,9 +22,13 @@ $ledgerRoot = Join-Path ([IO.Path]::GetTempPath()) 'maka-sandbox-acl-ledgers'
 $findstrExe = Join-Path $env:SystemRoot 'System32\findstr.exe'
 New-Item -ItemType Directory -Path $workRoot -Force | Out-Null
 
-$appContainerSid = (& $launcher --appcontainer-sid 2>&1) -join ''
-if ($LASTEXITCODE -ne 0 -or $appContainerSid -notmatch '^S-1-15-2-') {
-  throw "Unable to resolve AppContainer SID: $appContainerSid"
+function Get-AppContainerSid {
+  param([string]$RequestId)
+  $sid = (& $launcher --appcontainer-sid $RequestId 2>&1) -join ''
+  if ($LASTEXITCODE -ne 0 -or $sid -notmatch '^S-1-15-2-') {
+    throw "Unable to resolve AppContainer SID for ${RequestId}: $sid"
+  }
+  return $sid
 }
 # A fake AppContainer-shaped SID nothing else uses: pre-existing ACEs that
 # recovery and cleanup must leave untouched.
@@ -69,12 +73,14 @@ try {
 
   $subtree = New-LaunchRequest -Name 'subtree-read' `
     -Arguments @('/c:subtree-read', "$dataRoot\ok.txt") -ReadRoots @($dataRoot)
+  $subtreeSid = Get-AppContainerSid 'subtree-read'
   & $launcher --appcontainer $subtree *> $null
   if ($LASTEXITCODE -ne 0) { throw "subtree read launch failed: exit=$LASTEXITCODE" }
 
   $exact = New-LaunchRequest -Name 'exact-read' `
     -Arguments @('/c:subtree-read', "$dataRoot\ok.txt") `
     -ReadRoots @($dataRoot) -ExactReadRoots @($dataRoot)
+  $exactSid = Get-AppContainerSid 'exact-read'
   & $launcher --appcontainer $exact *> $null
   if ($LASTEXITCODE -eq 0) {
     throw 'exact-directory grant unexpectedly allowed reading a child file'
@@ -82,8 +88,10 @@ try {
 
   $dataAcl = Get-Acl-Text $dataRoot
   $childAcl = Get-Acl-Text (Join-Path $dataRoot 'ok.txt')
-  if ($dataAcl -match [regex]::Escape($appContainerSid) -or
-      $childAcl -match [regex]::Escape($appContainerSid)) {
+  if ($dataAcl -match [regex]::Escape($subtreeSid) -or
+      $childAcl -match [regex]::Escape($subtreeSid) -or
+      $dataAcl -match [regex]::Escape($exactSid) -or
+      $childAcl -match [regex]::Escape($exactSid)) {
     throw "AppContainer grants were not removed after launch: $dataAcl"
   }
   if ($dataAcl -notmatch [regex]::Escape($markerSid) -or
@@ -115,7 +123,7 @@ try {
     throw "Concurrent launches failed:`n$detail"
   }
   foreach ($root in $concurrentRoots) {
-    if ((Get-Acl-Text $root) -match [regex]::Escape($appContainerSid)) {
+    if ((Get-Acl-Text $root) -match 'S-1-15-2-') {
       throw "Concurrent launch left AppContainer grants on ${root}"
     }
   }
@@ -132,6 +140,7 @@ try {
   # without needing network or console features inside the AppContainer.
   $sleepRequest = New-LaunchRequest -Name 'kill-recovery' -Executable $launcher `
     -Arguments @('--stdio-probe', '--sleep', '50') -ReadRoots @($staleRoot) -TimeoutMs 120000
+  $killRecoverySid = Get-AppContainerSid 'kill-recovery'
   $emptyStdin = Join-Path $workRoot 'empty-stdin.bin'
   [IO.File]::WriteAllBytes($emptyStdin, @())
   $broker = Start-Process -FilePath $launcher -ArgumentList @('--appcontainer', $sleepRequest) `
@@ -141,10 +150,10 @@ try {
     -NoNewWindow -PassThru
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
   while ([DateTime]::UtcNow -lt $deadline -and
-         (Get-Acl-Text $staleRoot) -notmatch [regex]::Escape($appContainerSid)) {
+         (Get-Acl-Text $staleRoot) -notmatch [regex]::Escape($killRecoverySid)) {
     Start-Sleep -Milliseconds 200
   }
-  if ((Get-Acl-Text $staleRoot) -notmatch [regex]::Escape($appContainerSid)) {
+  if ((Get-Acl-Text $staleRoot) -notmatch [regex]::Escape($killRecoverySid)) {
     Stop-Process -Id $broker.Id -Force -ErrorAction SilentlyContinue
     throw 'Killed-broker scenario never observed the AppContainer grant'
   }
@@ -161,7 +170,7 @@ try {
     -Arguments @('/c:subtree-read', "$dataRoot\ok.txt") -ReadRoots @($dataRoot)
   & $launcher --appcontainer $recovery *> $null
   if ($LASTEXITCODE -ne 0) { throw "Recovery launch failed: exit=$LASTEXITCODE" }
-  if ((Get-Acl-Text $staleRoot) -match [regex]::Escape($appContainerSid)) {
+  if ((Get-Acl-Text $staleRoot) -match [regex]::Escape($killRecoverySid)) {
     throw 'Recovery did not remove the dead broker''s AppContainer grants'
   }
   $remaining = @(Get-ChildItem -LiteralPath $ledgerRoot -Filter '*.json' -ErrorAction SilentlyContinue)

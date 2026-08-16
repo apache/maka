@@ -31,17 +31,23 @@ $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
 New-Item -ItemType Directory -Path $allowedWriteRoot | Out-Null
 New-Item -ItemType Directory -Path $staleRoot | Out-Null
 New-Item -ItemType Directory -Path $ledgerRoot -Force | Out-Null
-$appContainerSid = (& $launcher --appcontainer-sid 2>&1) -join ''
-if ($LASTEXITCODE -ne 0 -or $appContainerSid -notmatch '^S-1-15-2-') {
-  throw "Unable to resolve AppContainer SID: $appContainerSid"
+$staleAppContainerSid = (& $launcher --appcontainer-sid 'stale-smoke' 2>&1) -join ''
+if ($LASTEXITCODE -ne 0 -or $staleAppContainerSid -notmatch '^S-1-15-2-') {
+  throw "Unable to resolve stale AppContainer SID: $staleAppContainerSid"
 }
-& icacls.exe $staleRoot /grant "*$appContainerSid`:(OI)(CI)RX" /T /Q | Out-Null
+& icacls.exe $staleRoot /grant "*$staleAppContainerSid`:(OI)(CI)RX" /T /Q | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Unable to prepare stale AppContainer ACL' }
 @{
-  version = 1
+  version = 2
   requestId = 'stale-smoke'
-  appContainerSid = $appContainerSid
-  roots = @(@{ path = $staleRoot; recursive = $true })
+  appContainerSid = $staleAppContainerSid
+  roots = @(@{
+    path = $staleRoot
+    read = $true
+    write = $false
+    readRecursive = $true
+    writeRecursive = $false
+  })
 } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $ledgerPath -Encoding utf8
 $request = @{
   version = 1
@@ -82,7 +88,7 @@ try {
     throw "AppContainer ACL was not restored after launch: read=$readAcl write=$writeAcl"
   }
   $staleAcl = (& icacls.exe $staleRoot 2>&1) -join "`n"
-  if ($staleAcl -match [regex]::Escape($appContainerSid) -or (Test-Path -LiteralPath $ledgerPath)) {
+  if ($staleAcl -match [regex]::Escape($staleAppContainerSid) -or (Test-Path -LiteralPath $ledgerPath)) {
     throw "Stale AppContainer ACL ledger was not recovered: $staleAcl"
   }
 

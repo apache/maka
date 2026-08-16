@@ -19,6 +19,9 @@ export function compileWindowsSandboxPolicy(command: SandboxCommand): WindowsSan
   if (profile.type !== 'managed' || profile.fileSystem.kind !== 'restricted') {
     throw new Error('Windows sandbox only accepts managed restricted profiles.');
   }
+  if (profile.network.kind !== 'restricted') {
+    throw new Error('Windows sandbox only implements restricted networking.');
+  }
 
   const unavailable = new Set(
     (pathContext.unavailableProfilePaths ?? []).map((path) => canonicalWindowsPath(path)),

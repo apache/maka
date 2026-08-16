@@ -52,6 +52,18 @@ mod tests {
     }
 
     #[test]
+    fn rejects_request_ids_that_cannot_safely_name_lifecycle_artifacts() {
+        for request_id in ["contains:stream", "contains/slash", "contains space"] {
+            let mut value = request();
+            value.launch.request_id = request_id.to_owned();
+            assert_eq!(
+                value.validate().unwrap_err(),
+                "requestId must use 1-128 safe ASCII characters"
+            );
+        }
+    }
+
+    #[test]
     fn launch_digest_is_unchanged_for_manifests_without_timeout() {
         // timeoutMs is optional and skipped when absent, so a pre-timeout
         // manifest must produce the exact digest it produced before the field

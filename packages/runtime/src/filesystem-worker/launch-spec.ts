@@ -94,7 +94,16 @@ async function resolveLaunchSpec(
       message: 'Filesystem worker runtime is unavailable.',
     };
   }
-  const runtimeRoot = await resolveReadableRoot(resolve(dirname(program), '..'));
+  const platform = input.platform ?? process.platform;
+  // A packaged Windows executable lives directly inside the product-owned app
+  // directory. Granting its parent would widen a normal install from
+  // `...\Programs\Maka` to every application under `...\Programs` (or from
+  // `C:\Program Files\Maka` to all of `C:\Program Files`). The executable's
+  // own directory contains the DLL/resource substrate it needs and is the
+  // narrowest recursive root that works for both installed and ZIP layouts.
+  const runtimeRootCandidate =
+    platform === 'win32' ? dirname(program) : resolve(dirname(program), '..');
+  const runtimeRoot = await resolveReadableRoot(runtimeRootCandidate);
   if (!runtimeRoot) {
     return {
       ok: false,
@@ -103,7 +112,6 @@ async function resolveLaunchSpec(
     };
   }
   const dependencyRoots = await resolveRuntimeDependencyRoots(program);
-  const platform = input.platform ?? process.platform;
   const grep = await resolveRipgrepExecutable(
     input.rgCandidates ?? defaultRipgrepCandidates(input.hostEnv ?? process.env, platform),
     platform,

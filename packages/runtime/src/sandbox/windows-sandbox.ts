@@ -25,6 +25,7 @@ import { compileWindowsSandboxPolicy } from './windows-profile.js';
 export const DEFAULT_WINDOWS_BROKER_TIMEOUT_MS = 130_000;
 const MIN_WINDOWS_BROKER_TIMEOUT_MS = 1_000;
 const MAX_WINDOWS_BROKER_TIMEOUT_MS = 600_000;
+const MAX_WINDOWS_BROKER_REQUEST_ID_LENGTH = 128 - '-launch'.length;
 
 export interface WindowsBrokerManifest {
   readonly version: 1;
@@ -94,7 +95,11 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
   }
 
   canEnforceProfile(profile: SandboxTransformRequest['command']['profile']): boolean {
-    return profile.type === 'managed' && profile.fileSystem.kind === 'restricted';
+    return (
+      profile.type === 'managed' &&
+      profile.fileSystem.kind === 'restricted' &&
+      profile.network.kind === 'restricted'
+    );
   }
 
   transform(request: SandboxTransformRequest): SandboxTransformResult {
@@ -138,7 +143,11 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
     // The request id is embedded in the manifest filename; NTFS treats ':'
     // as an alternate-data-stream separator, so only Windows-filename-safe
     // characters are accepted.
-    if (requestId.length === 0 || !/^[A-Za-z0-9._-]+$/u.test(requestId)) {
+    if (
+      requestId.length === 0 ||
+      requestId.length > MAX_WINDOWS_BROKER_REQUEST_ID_LENGTH ||
+      !/^[A-Za-z0-9._-]+$/u.test(requestId)
+    ) {
       return failure('invalid_request', 'Invalid Windows broker request id.', platform, preference);
     }
     if (!/^[a-f0-9]{32}$/iu.test(clientNonce)) {
@@ -225,7 +234,7 @@ function sortEnvironment(
 ): Readonly<Record<string, string>> {
   return Object.fromEntries(
     Object.entries(environment).sort(([left], [right]) =>
-      left < right ? -1 : left > right ? 1 : 0,
+      Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8')),
     ),
   );
 }

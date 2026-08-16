@@ -82,8 +82,14 @@ impl LaunchRequest {
         if self.version != 1 {
             return Err("unsupported protocol version".to_owned());
         }
-        if self.request_id.is_empty() {
-            return Err("requestId must be non-empty".to_owned());
+        if self.request_id.is_empty()
+            || self.request_id.len() > 128
+            || !self
+                .request_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            return Err("requestId must use 1-128 safe ASCII characters".to_owned());
         }
         validate_path(&self.executable, "executable")?;
         validate_path(&self.cwd, "cwd")?;
@@ -91,12 +97,12 @@ impl LaunchRequest {
         validate_roots(&self.write_roots, "writeRoots")?;
         validate_roots(&self.exact_read_roots, "exactReadRoots")?;
         validate_roots(&self.exact_write_roots, "exactWriteRoots")?;
-        if let Some(timeout_ms) = self.timeout_ms
-            && !(MIN_LAUNCH_TIMEOUT_MS..=MAX_LAUNCH_TIMEOUT_MS).contains(&timeout_ms)
-        {
-            return Err(format!(
-                "timeoutMs must be between {MIN_LAUNCH_TIMEOUT_MS} and {MAX_LAUNCH_TIMEOUT_MS}"
-            ));
+        if let Some(timeout_ms) = self.timeout_ms {
+            if !(MIN_LAUNCH_TIMEOUT_MS..=MAX_LAUNCH_TIMEOUT_MS).contains(&timeout_ms) {
+                return Err(format!(
+                    "timeoutMs must be between {MIN_LAUNCH_TIMEOUT_MS} and {MAX_LAUNCH_TIMEOUT_MS}"
+                ));
+            }
         }
         for (name, value) in &self.environment {
             // The CreateProcess environment block is `name=value\0...\0\0`, so
