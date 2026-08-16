@@ -7,7 +7,7 @@ import type { DesktopDiagnosticCopyResult } from '../preload/diagnostics-contrac
 import {
   requireDesktopTargetScope,
   type DesktopTargetScope,
-} from '../preload/runtime-host-identity.js';
+} from '../shared/runtime-host-identity.js';
 import {
   formatDesktopErrorDiagnosticReport,
   parseDesktopErrorDiagnosticInput,

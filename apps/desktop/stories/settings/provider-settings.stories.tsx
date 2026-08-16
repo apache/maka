@@ -8,6 +8,7 @@ import type {
   ModelDiscoveryResult,
   ProviderType,
 } from '@maka/core/llm-connections';
+import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import { ProvidersPanel, type ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import { SettingsPage } from '../../src/renderer/settings/settings-section';
 
@@ -129,14 +130,14 @@ function createBridge(input: {
   let defaultSlug: string | null = input.defaultSlug ?? connections[0]?.slug ?? null;
 
   return {
-    async list() {
-      if (input.loading) return new Promise<LlmConnection[]>(() => undefined);
+    async getSnapshot() {
+      if (input.loading) return new Promise<never>(() => undefined);
       if (input.failLoad) throw new Error('模型连接服务暂时不可用');
-      return connections;
-    },
-    async getDefault() {
-      if (input.loading) return new Promise<string | null>(() => undefined);
-      return defaultSlug;
+      return {
+        connections,
+        defaultConnection: defaultSlug,
+        chatModelChoices: buildChatModelChoices(connections),
+      };
     },
     async setDefault(slug) {
       defaultSlug = slug;

@@ -50,6 +50,7 @@ import {
   getSharedUiCopy,
   reconcileInteractions,
 } from '@maka/ui';
+import type { ConnectionEvent } from '@maka/core/connections';
 import { GitBranch, MessageCircleQuestion, Minimize2, Network } from '@maka/ui/icons';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
@@ -435,21 +436,44 @@ function AppShellContent({
     streamingSessionIds,
     activeLiveTurnSnapshot,
   } = useAppShellSessionUiReads(sessionUiController, activeId);
-  // PR-MEMORY-VISIBILITY-INDICATOR-0: session-context memory state (MEMORY.md
-  // injected into the system prompt). State and the fire-and-forget refresh
-  // live in `useShellMemoryPill`; recompute is triggered on mount (bootstrap
-  // subscriptions) and when Settings closes (closeSettings).
-  const { memoryActive, refreshMemoryActive } = useShellMemoryPill({ toastApi, uiLocale });
-  const {
-    connections,
-    defaultConnection,
-    setConnections,
-    setDefaultConnection,
-    refreshConnections,
-    handleConnectionEvent,
-  } = useShellConnections({ toastApi, uiLocale, activeSessionId: activeId });
-  useEffect(() => {
-    void refreshConnections(activeId);
+  // The chat surface follows the active Session's Host. Settings and global
+  // commands remain owned by the default Host.
+  const { memoryActive, refreshMemoryActive } = useShellMemoryPill({
+    toastApi,
+    uiLocale,
+    sessionId: activeId,
+  });
+  const defaultHostConnections = useShellConnections({ toastApi, uiLocale });
+  const sessionHostConnections = useShellConnections({
+    toastApi,
+    uiLocale,
+    activeSessionId: activeId,
+  });
+  const connections = activeId
+    ? sessionHostConnections.snapshot.connections
+    : defaultHostConnections.snapshot.connections;
+  const defaultConnection = activeId
+    ? sessionHostConnections.snapshot.defaultConnection
+    : defaultHostConnections.snapshot.defaultConnection;
+  const connectionModelChoices = activeId
+    ? sessionHostConnections.snapshot.chatModelChoices
+    : defaultHostConnections.snapshot.chatModelChoices;
+  const refreshConnections = activeId
+    ? () => sessionHostConnections.refreshConnections(activeId)
+    : () => defaultHostConnections.refreshConnections();
+  function refreshConnectionProjections(sessionId?: string): Promise<void> {
+    return Promise.all([
+      defaultHostConnections.refreshConnections(),
+      ...(sessionId ? [sessionHostConnections.refreshConnections(sessionId)] : []),
+    ]).then(() => undefined);
+  }
+  function handleConnectionEvent(event: ConnectionEvent): void {
+    defaultHostConnections.handleConnectionEvent(event);
+    if (activeId) sessionHostConnections.handleConnectionEvent(event);
+  }
+  useLayoutEffect(() => {
+    sessionHostConnections.clearConnections();
+    if (activeId) void sessionHostConnections.refreshConnections(activeId);
   }, [activeId]);
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   const onboardingState = onboarding.snapshot?.state;
@@ -692,13 +716,10 @@ function AppShellContent({
   const staleSessionIds = useMemo(
     () =>
       deriveStaleSessionIds({
-        sessions: sessions.filter(
-          (session) =>
-            (session as DesktopSessionSummary).profileKind !== 'remote',
-        ),
-        knownConnectionSlugs: new Set(connections.map((connection) => connection.slug)),
+        sessions,
+        sendOutcomes: onboarding.snapshot?.sessionSendOutcomes ?? {},
       }),
-    [sessions, connections],
+    [sessions, onboarding.snapshot?.sessionSendOutcomes],
   );
   // Status-grouped sidebar. The `chats`
   // filter shows sessions grouped by SessionStatus (Pinned →
@@ -791,7 +812,7 @@ function AppShellContent({
   } = useShellChatModel({
     uiLocale,
     connections,
-    snapshotChoices: onboarding.snapshot?.chatModelChoices,
+    chatModelChoices: connectionModelChoices,
     sessionSendOutcome: activeSessionSendOutcome,
     defaultConnection,
     activationCandidate: onboardingActivationCandidate,
@@ -1269,7 +1290,7 @@ function AppShellContent({
   const sessionStartPendingRef = useRef(false);
   // Seed sessions from the onboarding snapshot on first load — the snapshot
   // already fetches the session list + connections internally, so separate
-  // `sessions:list` / `connections:list` / `getDefault` IPCs are redundant.
+  // Session and connection snapshot IPCs are redundant.
   // This lets the UI show the sidebar + model picker immediately on first load.
   const initialSnapshotSeededRef = useRef(false);
   const mountedSnapshotSeededRef = useRef(false);
@@ -1291,7 +1312,7 @@ function AppShellContent({
     ) {
       bootstrapFallbackStartedRef.current = true;
       void bootstrapSessions();
-      void refreshConnections();
+      void defaultHostConnections.refreshConnections();
       return;
     }
     let snapshot: OnboardingSnapshot | null = null;
@@ -1316,9 +1337,12 @@ function AppShellContent({
     // refreshSessions() overwrites the seed.
     const next = seedSessions(snapshot.sessions);
     bootstrapSelectionLease.reconcile(collapseSessionRevisions(next));
-    // Seed connections — avoids separate connections:list + getDefault IPCs
-    setConnections(snapshot.connections);
-    setDefaultConnection(snapshot.defaultSlug);
+    // Seed the default Host while its live connection snapshot catches up.
+    defaultHostConnections.setSnapshot({
+      connections: snapshot.connections,
+      defaultConnection: snapshot.defaultSlug,
+      chatModelChoices: snapshot.chatModelChoices,
+    });
     if (releaseSelectionLease) bootstrapSelectionLease.release();
   }, [initialOnboardingSnapshot, onboarding.mountedSnapshotHandoff, onboarding.error]);
   // PR110c (@kenji review): suppress hero AND the fallback EmptyChatHero
@@ -2317,7 +2341,7 @@ function AppShellContent({
     projectPickerPendingRef,
     projectPickerRequestRef,
     refreshAppInfo,
-    refreshConnections,
+    refreshConnections: refreshConnectionProjections,
     refreshMemoryActive,
     refreshMessages,
     refreshScheduledTasks,
@@ -2582,6 +2606,7 @@ function AppShellContent({
     // session-context memory state — user may have just flipped the
     // agentReadEnabled switch.
     void refreshMemoryActive();
+    void defaultHostConnections.refreshConnections();
     // Settings pages own optimistic local drafts, so the shell does not see
     // every write live. Refresh its display mirrors on close (e.g. default
     // permission mode) without requiring an app restart.
@@ -2649,8 +2674,8 @@ function AppShellContent({
     clientPathsAccessible:
       projectCapabilities.viewClientPath &&
       (!activeId || activeDesktopSession?.profileKind === 'local'),
-    connections,
-    defaultConnection,
+    connections: defaultHostConnections.snapshot.connections,
+    defaultConnection: defaultHostConnections.snapshot.defaultConnection,
     dailyReviewBridge,
     messages,
     sessions,
@@ -2670,7 +2695,7 @@ function AppShellContent({
     openSettingsSection,
     openSkillsFolder,
     openWorkspaceFolder,
-    refreshConnections,
+    refreshConnections: defaultHostConnections.refreshConnections,
     saveDailyReviewMarkdown,
     setNavSelection,
     setPermissionMode,
@@ -3365,9 +3390,9 @@ function AppShellContent({
 
       <AppShellOverlays
         settingsOpen={settingsOpen}
-        connections={connections}
-        defaultConnection={defaultConnection}
-        refreshConnections={refreshConnections}
+        connections={defaultHostConnections.snapshot.connections}
+        defaultConnection={defaultHostConnections.snapshot.defaultConnection}
+        refreshConnections={defaultHostConnections.refreshConnections}
         closeSettings={closeSettings}
         themePref={themePref}
         setThemePref={setThemePref}

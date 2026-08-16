@@ -156,13 +156,15 @@ import {
   parseDesktopSessionKey,
   requireDesktopTargetScope,
   type DesktopTargetScope,
-} from './runtime-host-identity.js';
+} from '../shared/runtime-host-identity.js';
 import {
+  projectDesktopAttachmentRefs,
+  projectDesktopDailyReviewSummary,
   projectDesktopSessionEvent,
   projectDesktopSessionSummary,
   projectDesktopTurnRecord,
   type DesktopSessionSummary,
-} from './desktop-session-projection.js';
+} from '../shared/desktop-session-projection.js';
 
 type LocalMemoryMutationResult =
   | { ok: true; state: LocalMemoryState; entry?: LocalMemoryEntryPreview; proposal?: LocalMemoryEntryPreview }
@@ -319,6 +321,15 @@ async function invokeSessionRuntimeHost<T>(
 ): Promise<T> {
   const session = await runtimeHostSessionRef(sessionId);
   return ipcRenderer.invoke(channel, session.scope, session.sessionId, ...args) as Promise<T>;
+}
+
+async function invokeRuntimeHostForSession<T>(
+  channel: string,
+  sessionId: string,
+  ...args: unknown[]
+): Promise<T> {
+  const session = await runtimeHostSessionRef(sessionId);
+  return ipcRenderer.invoke(channel, session.scope, ...args) as Promise<T>;
 }
 
 async function invokeProjectedSessionRuntimeHost<T>(
@@ -1042,14 +1053,28 @@ const makaBridge = {
         }
     > {
       const session = await runtimeHostSessionRef(sessionId);
+      const send = async (input: SessionCommand | Record<string, unknown>) => {
+        const result = await ipcRenderer.invoke(
+          'sessions:send',
+          session.scope,
+          session.sessionId,
+          input,
+        ) as Awaited<ReturnType<MakaBridge['sessions']['send']>>;
+        return result.ok
+          ? {
+              ...result,
+              attachments: projectDesktopAttachmentRefs(session.scope, result.attachments),
+            }
+          : result;
+      };
       if (command.type === 'send' && 'attachmentItems' in command && command.attachmentItems) {
         const encoded = await encodeIngestItems(command.attachmentItems as RendererIngestInput[]);
-        return ipcRenderer.invoke('sessions:send', session.scope, session.sessionId, {
+        return send({
           ...command,
           attachmentItems: encoded,
         });
       }
-      return ipcRenderer.invoke('sessions:send', session.scope, session.sessionId, command);
+      return send(command);
     },
     compact(sessionId: string): Promise<void> {
       return invokeSessionRuntimeHost('sessions:compact', sessionId);
@@ -1561,15 +1586,10 @@ const makaBridge = {
     },
   },
   connections: {
-    list(sessionId?: string): Promise<LlmConnection[]> {
+    getSnapshot(sessionId?: string) {
       return sessionId
-        ? invokeSessionRuntimeHost('connections:list', sessionId)
-        : invokeActiveRuntimeHost('connections:list');
-    },
-    getDefault(sessionId?: string): Promise<string | null> {
-      return sessionId
-        ? invokeSessionRuntimeHost('connections:getDefault', sessionId)
-        : invokeActiveRuntimeHost('connections:getDefault');
+        ? invokeRuntimeHostForSession('connections:getSnapshot', sessionId)
+        : invokeActiveRuntimeHost('connections:getSnapshot');
     },
     setDefault(slug: string | null): Promise<void> {
       return invokeActiveRuntimeHost('connections:setDefault', slug);
@@ -1671,7 +1691,7 @@ const makaBridge = {
   taskReadiness: {
     getSnapshot(input?: DesktopTaskSubmissionReadinessRequest, sessionId?: string) {
       return sessionId
-        ? invokeSessionRuntimeHost('taskReadiness:getSnapshot', sessionId, input)
+        ? invokeRuntimeHostForSession('taskReadiness:getSnapshot', sessionId, input)
         : invokeActiveRuntimeHost('taskReadiness:getSnapshot', input);
     },
   },
@@ -1700,8 +1720,10 @@ const makaBridge = {
     },
   },
   memory: {
-    getState(): Promise<LocalMemoryState> {
-      return invokeActiveRuntimeHost('memory:getState');
+    getState(sessionId?: string): Promise<LocalMemoryState> {
+      return sessionId
+        ? invokeRuntimeHostForSession('memory:getState', sessionId)
+        : invokeActiveRuntimeHost('memory:getState');
     },
     listProposals(): Promise<ReadonlyArray<LocalMemoryEntryPreview>> {
       return invokeActiveRuntimeHost('memory:listProposals');
@@ -1992,10 +2014,7 @@ const makaBridge = {
       return subscribeActiveRuntimeHostEvent('scheduled-tasks:changed', handler);
     },
     subscribeDue(handler: (task: Pick<ScheduledTask, 'id' | 'title'>) => void): () => void {
-      return subscribeEveryRuntimeHostEvent(
-        'scheduled-tasks:fired',
-        (_scope, task: Pick<ScheduledTask, 'id' | 'title'>) => handler(task),
-      );
+      return subscribeActiveRuntimeHostEvent('scheduled-tasks:fired', handler);
     },
   },
   settings: {
@@ -2015,7 +2034,7 @@ const makaBridge = {
       return invokeActiveRuntimeHost('settings:testBotChannel', provider);
     },
     usageStats(range?: UsageRange): Promise<UsageStats> {
-      return invokeActiveRuntimeHost('settings:usageStats', range);
+      return ipcRenderer.invoke('settings:usageStats', range);
     },
     bots: {
       listStatuses(): Promise<Record<BotProvider, BotStatus>> {
@@ -2088,13 +2107,14 @@ const makaBridge = {
   dailyReview: {
     day(offsetDays: number, daySpan?: number): Promise<Result<DailyReviewSummary>> {
       return bridgeResult(async () => {
-        const result = await runtimeHost.query('daily-review.query', {
+        const scope = await activeRuntimeHostRef();
+        const result = await scopedRuntimeHost(scope).query('daily-review.query', {
           kind: 'summary',
           offsetDays: integer(offsetDays, 0),
           daySpan: Math.max(1, Math.min(30, integer(daySpan, 1))),
         });
         if (result.kind !== 'summary') throw new Error('Invalid Daily Review summary');
-        return result.summary;
+        return projectDesktopDailyReviewSummary(scope, result.summary);
       }, 'DAILY_REVIEW_DAY_FAILED');
     },
     async getConfig(): Promise<DailyReviewConfig> {

@@ -1,10 +1,11 @@
 import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
-import type { StorageRef, ToolResultContent } from '@maka/core/events';
 import type {
   DesktopTranscriptBatchPayload,
   DesktopTranscriptFragment,
   DesktopTranscriptHandle,
 } from '../preload/transcript-contract.js';
+import { projectDesktopStoredMessage } from '../shared/desktop-session-projection.js';
+import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 
 export interface DesktopTranscriptRangeController {
   readonly store: DesktopTranscriptRangeStore;
@@ -126,7 +127,7 @@ export class DesktopTranscriptRangeStore {
   readonly #durableWaiters = new Set<() => void>();
 
   constructor(sessionKey: string) {
-    const [hostId, sessionId] = parseSessionKey(sessionKey);
+    const { hostId, sessionId } = parseDesktopSessionKey(sessionKey);
     this.#sessionKey = sessionKey;
     this.#hostId = hostId;
     this.#expectedSessionId = sessionId;
@@ -286,8 +287,8 @@ export class DesktopTranscriptRangeStore {
     pending.receivedBytes += bytes.byteLength;
     if (pending.receivedBytes < pending.totalBytes) return false;
     const encoded = new TextDecoder('utf-8', { fatal: true }).decode(pending.bytes);
-    const message = projectStoredMessage(
-      this.#hostId,
+    const message = projectDesktopStoredMessage(
+      { hostId: this.#hostId },
       decodeStoredMessage(JSON.parse(encoded) as unknown),
     );
     const projected = JSON.stringify(message);
@@ -335,75 +336,5 @@ export class DesktopTranscriptRangeStore {
       this.#oldestSequence = Math.min(this.#oldestSequence ?? sequence, sequence);
       this.#newestSequence = Math.max(this.#newestSequence ?? sequence, sequence);
     }
-  }
-}
-
-function parseSessionKey(value: string): readonly [hostId: string, sessionId: string] {
-  const parsed: unknown = JSON.parse(value);
-  if (
-    !Array.isArray(parsed) ||
-    parsed.length !== 2 ||
-    typeof parsed[0] !== 'string' ||
-    !parsed[0] ||
-    typeof parsed[1] !== 'string' ||
-    !parsed[1]
-  ) {
-    throw new Error('Invalid Desktop Host Session key');
-  }
-  return [parsed[0], parsed[1]];
-}
-
-function sessionKey(hostId: string, sessionId: string): string {
-  return JSON.stringify([hostId, sessionId]);
-}
-
-function projectStorageRef(hostId: string, ref: StorageRef): StorageRef {
-  return ref.kind === 'session_file'
-    ? { ...ref, sessionId: sessionKey(hostId, ref.sessionId) }
-    : ref;
-}
-
-function projectToolResultContent(hostId: string, content: ToolResultContent): ToolResultContent {
-  switch (content.kind) {
-    case 'image':
-      return { ...content, ref: projectStorageRef(hostId, content.ref) };
-    case 'subagent':
-      return content.childSessionId
-        ? { ...content, childSessionId: sessionKey(hostId, content.childSessionId) }
-        : content;
-    case 'agent_swarm':
-      return {
-        ...content,
-        items: content.items.map((item) =>
-          item.childSessionId
-            ? { ...item, childSessionId: sessionKey(hostId, item.childSessionId) }
-            : item,
-        ),
-      };
-    default:
-      return content;
-  }
-}
-
-function projectStoredMessage(hostId: string, message: StoredMessage): StoredMessage {
-  switch (message.type) {
-    case 'user':
-      return message.attachments?.some((attachment) => attachment.ref.kind === 'session_file')
-        ? {
-            ...message,
-            attachments: message.attachments.map((attachment) => ({
-              ...attachment,
-              ref: projectStorageRef(hostId, attachment.ref),
-            })),
-          }
-        : message;
-    case 'tool_result':
-      return { ...message, content: projectToolResultContent(hostId, message.content) };
-    case 'turn_state':
-      return message.parentSessionId
-        ? { ...message, parentSessionId: sessionKey(hostId, message.parentSessionId) }
-        : message;
-    default:
-      return message;
   }
 }

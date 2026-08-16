@@ -40,10 +40,8 @@ import {
 
 import { projectSessionSendOutcome, type SessionSendProjection } from '@maka/core/session-send-projection';
 
-import { type ChatModelChoice } from '@maka/core/chat-model-choice';
-
 import { type SessionSummary } from '@maka/core/session';
-import { buildChatModelChoices } from '@maka/core/chat-model-choice';
+import { buildChatModelChoices, type ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { LlmConnection } from '@maka/core/llm-connections';
 
 export interface OnboardingSnapshot {
@@ -54,7 +52,7 @@ export interface OnboardingSnapshot {
    * without a separate `sessions:list` IPC.
    */
   sessions: SessionSummary[];
-  /** Connection list — bundled to avoid a separate `connections:list` + `getDefault` IPC. */
+  /** Default Host connection projection used to seed the shell. */
   connections: LlmConnection[];
   defaultSlug: string | null;
   chatModelChoices: ChatModelChoice[];

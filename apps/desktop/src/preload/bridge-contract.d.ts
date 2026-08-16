@@ -94,13 +94,9 @@ import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
-
-export interface DesktopSessionSummary extends SessionSummary {
-  readonly runtimeHostId: string;
-  readonly profileId: string;
-  readonly profileName: string;
-  readonly profileKind: 'local' | 'remote';
-}
+import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
+export type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
+import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
 import type {
   DesktopDiagnosticCopyResult,
   DesktopErrorDiagnosticInput,
@@ -589,8 +585,7 @@ export interface MakaBridge {
     clear(sessionId: string): Promise<void>;
   };
   connections: {
-    list(sessionId?: string): Promise<LlmConnection[]>;
-    getDefault(sessionId?: string): Promise<string | null>;
+    getSnapshot(sessionId?: string): Promise<DesktopConnectionSnapshot>;
     setDefault(slug: string | null): Promise<void>;
     setDefaultModel(input: { slug: string; model: string } | null): Promise<void>;
     create(input: CreateConnectionInput): Promise<LlmConnection>;
@@ -683,7 +678,7 @@ export interface MakaBridge {
     getSnapshot(): Promise<HealthSnapshot>;
   };
   memory: {
-    getState(): Promise<LocalMemoryState>;
+    getState(sessionId?: string): Promise<LocalMemoryState>;
     listProposals(): Promise<ReadonlyArray<LocalMemoryEntryPreview>>;
     propose(input: { title: string; content: string; scope?: 'workspace' | 'session'; sessionId?: string }): Promise<LocalMemoryMutationResult>;
     remember(input: { title: string; content: string; scope?: 'workspace' | 'session'; sessionId?: string }): Promise<LocalMemoryMutationResult>;

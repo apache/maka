@@ -250,7 +250,6 @@ export function useAppShellBootstrapSubscriptions(options: {
   const runDeferredStartupRefreshes = useEffectEvent(() => {
     void options.refreshSessions();
     void options.refreshAppInfo();
-    void options.refreshMemoryActive('load');
     void options.refreshSkills();
     void options.refreshManagedSkillSources();
     void options.refreshBundledSkillCatalog();

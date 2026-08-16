@@ -9,7 +9,7 @@ import {
   parseDesktopSessionResourceKey,
   requireDesktopTargetScope,
   type DesktopTargetScope,
-} from '../preload/runtime-host-identity.js';
+} from '../shared/runtime-host-identity.js';
 
 interface BrowserIpcDeps {
   mainWindowController: ReturnType<typeof createMainWindowController>;

@@ -22,6 +22,7 @@ import type { ExternalSessionSummary } from '@maka/core/external-session';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState } from '@maka/core/local-memory';
 import { buildHealthSnapshot } from '@maka/core/health';
 import { createDefaultSettings, mergeSettings } from '@maka/core/settings';
@@ -88,11 +89,12 @@ const connections: LlmConnection[] = [
 ];
 
 const connectionsBridge: ConnectionsBridge = {
-  async list() {
-    return connections;
-  },
-  async getDefault() {
-    return 'zai-live';
+  async getSnapshot() {
+    return {
+      connections,
+      defaultConnection: 'zai-live',
+      chatModelChoices: buildChatModelChoices(connections),
+    };
   },
   async setDefault() {
     /* noop */

@@ -14,7 +14,7 @@ import { isThemePreference, toNativeThemeSource } from './theme-source.js';
 import { createWindowRevealGate } from './window-reveal.js';
 import {
   parseDesktopSessionResourceKey,
-} from '../preload/runtime-host-identity.js';
+} from '../shared/runtime-host-identity.js';
 
 type SettingsReader = {
   get(): Promise<AppSettings>;

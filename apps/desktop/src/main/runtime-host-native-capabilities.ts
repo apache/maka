@@ -16,7 +16,7 @@ import type {
   ClientCapabilityServiceOffer,
 } from "@maka/runtime-host/protocol";
 import { toJSONSchema, z } from "zod";
-import type { DesktopTargetScope } from '../preload/runtime-host-identity.js';
+import type { DesktopTargetScope } from '../shared/runtime-host-identity.js';
 
 const CAPABILITY_VERSION = "0";
 const BROWSER_OFFER_ID = "desktop_browser";

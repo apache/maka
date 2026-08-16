@@ -1,13 +1,21 @@
+import type { DailyReviewSummary } from '@maka/core/daily-review';
 import type {
+  AttachmentRef,
   MessageContent,
   SessionEvent,
   StorageRef,
   ToolResultContent,
 } from '@maka/core/events';
-import type { SessionSummary, TurnRecord } from '@maka/core/session';
-import type { DesktopSessionSummary } from './bridge-contract.js';
-export type { DesktopSessionSummary } from './bridge-contract.js';
+import type { SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
+import type { UsageStats } from '@maka/core/settings';
 import { desktopSessionKey, type DesktopHostRef } from './runtime-host-identity.js';
+
+export interface DesktopSessionSummary extends SessionSummary {
+  readonly runtimeHostId: string;
+  readonly profileId: string;
+  readonly profileName: string;
+  readonly profileKind: 'local' | 'remote';
+}
 
 export interface DesktopSessionHost extends DesktopHostRef {
   readonly profileId: string;
@@ -19,10 +27,23 @@ function projectSessionId(host: DesktopHostRef, sessionId: string): string {
   return desktopSessionKey({ hostId: host.hostId, sessionId });
 }
 
-function projectStorageRef(host: DesktopHostRef, ref: StorageRef): StorageRef {
+export function projectDesktopStorageRef(
+  host: DesktopHostRef,
+  ref: StorageRef,
+): StorageRef {
   return ref.kind === 'session_file'
     ? { ...ref, sessionId: projectSessionId(host, ref.sessionId) }
     : ref;
+}
+
+export function projectDesktopAttachmentRefs(
+  host: DesktopHostRef,
+  attachments: readonly AttachmentRef[],
+): AttachmentRef[] {
+  return attachments.map((attachment) => ({
+    ...attachment,
+    ref: projectDesktopStorageRef(host, attachment.ref),
+  }));
 }
 
 function projectMessageContent<T extends MessageContent>(
@@ -34,20 +55,17 @@ function projectMessageContent<T extends MessageContent>(
   }
   return {
     ...content,
-    attachments: content.attachments.map((attachment) => ({
-      ...attachment,
-      ref: projectStorageRef(host, attachment.ref),
-    })),
+    attachments: projectDesktopAttachmentRefs(host, content.attachments),
   };
 }
 
-function projectToolResultContent(
+export function projectDesktopToolResultContent(
   host: DesktopHostRef,
   content: ToolResultContent,
 ): ToolResultContent {
   switch (content.kind) {
     case 'image':
-      return { ...content, ref: projectStorageRef(host, content.ref) };
+      return { ...content, ref: projectDesktopStorageRef(host, content.ref) };
     case 'subagent':
       return content.childSessionId
         ? { ...content, childSessionId: projectSessionId(host, content.childSessionId) }
@@ -63,6 +81,26 @@ function projectToolResultContent(
       };
     default:
       return content;
+  }
+}
+
+export function projectDesktopStoredMessage(
+  host: DesktopHostRef,
+  message: StoredMessage,
+): StoredMessage {
+  switch (message.type) {
+    case 'user':
+      return message.attachments?.some((attachment) => attachment.ref.kind === 'session_file')
+        ? { ...message, attachments: projectDesktopAttachmentRefs(host, message.attachments) }
+        : message;
+    case 'tool_result':
+      return { ...message, content: projectDesktopToolResultContent(host, message.content) };
+    case 'turn_state':
+      return message.parentSessionId
+        ? { ...message, parentSessionId: projectSessionId(host, message.parentSessionId) }
+        : message;
+    default:
+      return message;
   }
 }
 
@@ -82,7 +120,7 @@ export function projectDesktopSessionEvent(
         },
       };
     case 'tool_result':
-      return { ...event, content: projectToolResultContent(host, event.content) };
+      return { ...event, content: projectDesktopToolResultContent(host, event.content) };
     case 'steering_message':
       return { ...event, content: projectMessageContent(host, event.content) };
     default:
@@ -105,7 +143,7 @@ export function projectDesktopSessionSummary(
 ): DesktopSessionSummary {
   return {
     ...session,
-    id: desktopSessionKey({ hostId: host.hostId, sessionId: session.id }),
+    id: projectSessionId(host, session.id),
     ...(session.parentSessionId === undefined
       ? {}
       : { parentSessionId: projectSessionId(host, session.parentSessionId) }),
@@ -135,5 +173,31 @@ export function projectDesktopSessionSummary(
     profileId: host.profileId,
     profileName: host.profileName,
     profileKind: host.profileKind,
+  };
+}
+
+export function projectDesktopDailyReviewSummary(
+  host: DesktopHostRef,
+  summary: DailyReviewSummary,
+): DailyReviewSummary {
+  return {
+    ...summary,
+    sessions: summary.sessions.map((session) => ({
+      ...session,
+      id: projectSessionId(host, session.id),
+    })),
+  };
+}
+
+export function projectDesktopUsageStats(
+  host: DesktopHostRef,
+  stats: UsageStats,
+): UsageStats {
+  return {
+    ...stats,
+    logs: stats.logs.map((log) => ({
+      ...log,
+      sessionId: projectSessionId(host, log.sessionId),
+    })),
   };
 }

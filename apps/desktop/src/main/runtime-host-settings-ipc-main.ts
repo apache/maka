@@ -1,7 +1,6 @@
 import type {
   AppSettings,
   SettingsTestResult,
-  UsageRange,
   UpdateAppSettingsInput,
   UpdateAppSettingsResult,
 } from '@maka/core/settings';
@@ -57,9 +56,6 @@ export interface RuntimeHostSettingsIpcDeps {
 export function registerRuntimeHostSettingsIpc(
   deps: RuntimeHostSettingsIpcDeps,
 ): void {
-  deps.ipcMain.handle("settings:usageStats", (_event, range?: UsageRange) =>
-    deps.settingsStore.usageStats(range),
-  );
   handleReconnectableRead(deps.ipcMain, "settings:get", async () =>
     maskAppSettings(await loadRuntimeHostSettings(deps)),
   );

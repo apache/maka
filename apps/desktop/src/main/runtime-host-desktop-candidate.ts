@@ -56,7 +56,7 @@ import {
   desktopSessionResourceKey,
   requireDesktopTargetScope,
   type DesktopTargetScope,
-} from "../preload/runtime-host-identity.js";
+} from "../shared/runtime-host-identity.js";
 
 type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler">;
 

@@ -3,10 +3,14 @@ import test from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import {
+  projectDesktopAttachmentRefs,
+  projectDesktopDailyReviewSummary,
   projectDesktopSessionEvent,
   projectDesktopSessionSummary,
+  projectDesktopStoredMessage,
   projectDesktopTurnRecord,
-} from '../../preload/desktop-session-projection.js';
+  projectDesktopUsageStats,
+} from '../../shared/desktop-session-projection.js';
 
 test('keeps equal raw Session ids distinct across Runtime Hosts', () => {
   const raw = summary('same-session');
@@ -79,6 +83,82 @@ test('projects typed linked Session ids without rewriting opaque tool data', () 
       partialOutputRetained: false,
     }).parentSessionId,
     linkedSessionId,
+  );
+});
+
+test('projects Session ids at every Desktop data boundary', () => {
+  const host = { hostId: 'remote-root' };
+  const projectedId = JSON.stringify(['remote-root', 'session-1']);
+  const [attachment] = projectDesktopAttachmentRefs(host, [{
+    kind: 'image',
+    name: 'image.png',
+    mimeType: 'image/png',
+    bytes: 1,
+    ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'image.png' },
+  }]);
+
+  assert.equal(
+    attachment?.ref.kind === 'session_file' ? attachment.ref.sessionId : undefined,
+    projectedId,
+  );
+  const stored = projectDesktopStoredMessage(host, {
+    type: 'turn_state',
+    id: 'state-1',
+    turnId: 'turn-1',
+    ts: 1,
+    status: 'completed',
+    parentSessionId: 'session-1',
+    partialOutputRetained: false,
+  });
+  assert.equal(stored.type === 'turn_state' ? stored.parentSessionId : undefined, projectedId);
+  assert.equal(
+    projectDesktopDailyReviewSummary(host, {
+      day: { fromMs: 0, toMs: 1 },
+      totals: {
+        sessionCount: 1,
+        requestCount: 0,
+        totalTokens: 0,
+        costUsd: 0,
+        errorCount: 0,
+      },
+      sessions: [{ id: 'session-1', name: 'Session', lastMessageAt: 1 }],
+      topTools: [],
+      topModels: [],
+    }).sessions[0]?.id,
+    projectedId,
+  );
+  assert.equal(
+    projectDesktopUsageStats(host, {
+      summary: {
+        totalRequests: 1,
+        totalCostUsd: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheTokens: 0,
+        cacheMiss: 0,
+        cacheRead: 0,
+        cacheCreation: 0,
+        reasoning: 0,
+      },
+      logs: [{
+        id: 'log-1',
+        ts: 1,
+        kind: 'model',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        provider: 'openai',
+        model: 'model',
+        inputTokens: 0,
+        outputTokens: 0,
+        status: 'success',
+      }],
+      byProvider: [],
+      byModel: [],
+      byTool: [],
+      pricing: [],
+    }).logs[0]?.sessionId,
+    projectedId,
   );
 });
 

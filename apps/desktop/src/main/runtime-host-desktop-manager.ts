@@ -12,7 +12,7 @@ import {
   type RuntimeHostSshInteraction,
 } from '@maka/runtime-host/client';
 import type { HostRegistration } from '@maka/runtime-host/protocol';
-import type { DesktopTargetSessionRef } from '../preload/runtime-host-identity.js';
+import type { DesktopTargetSessionRef } from '../shared/runtime-host-identity.js';
 import {
   startDesktopRuntimeHostCandidate,
   type DesktopRuntimeHostCandidate,
