@@ -19,6 +19,9 @@ import type { OrchestrationMode, TurnOrchestration } from './orchestration.js';
 import type { SessionStartMode } from './explore-agent.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 import type { ToolMode } from './tool-mode.js';
+import type { TurnOrigin } from './turn-origin.js';
+
+export type { TurnOrigin } from './turn-origin.js';
 
 export type { TurnOrchestration } from './orchestration.js';
 
@@ -102,20 +105,6 @@ export interface UserMessageInput extends MessageContent {
   /** What triggered this turn, when it is not a direct user message. */
   origin?: TurnOrigin;
 }
-
-/** Non-user trigger source for a turn. */
-export type TurnOrigin =
-  | { kind: 'scheduled_task'; scheduledTaskId: string }
-  | { kind: 'legacy_automation'; automationId: string }
-  | { kind: 'goal'; goalId: string }
-  | {
-      kind: 'agent_graph';
-      graphId: string;
-      /** Durable, graph-snapshot-scoped idempotency key for this supervisor wake. */
-      wakeId: string;
-      /** Durable identity of one delivery attempt for the wake. */
-      attemptId: string;
-    };
 
 export interface AgentSpec {
   id: string;

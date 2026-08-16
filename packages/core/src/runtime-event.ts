@@ -22,7 +22,7 @@ import {
 } from './events.js';
 import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from './interaction.js';
 import type { PermissionRequestPayload, PermissionResponse } from './permission.js';
-import type { TurnOrigin } from './runtime-inputs.js';
+import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
 import type { UserQuestionRequest } from './user-question.js';
 import {
   defineObjectShape,
@@ -694,37 +694,6 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
 
 function isTurnOrigin(value: unknown): value is TurnOrigin {
   return decodeTurnOrigin(value) !== undefined;
-}
-
-function decodeTurnOrigin(value: unknown): TurnOrigin | undefined {
-  if (!isRecord(value)) return undefined;
-  if (value.kind === 'scheduled_task') {
-    return Object.keys(value).length === 2 && typeof value.scheduledTaskId === 'string'
-      ? { kind: 'scheduled_task', scheduledTaskId: value.scheduledTaskId }
-      : undefined;
-  }
-  if (value.kind === 'automation' || value.kind === 'legacy_automation') {
-    return Object.keys(value).length === 2 && typeof value.automationId === 'string'
-      ? { kind: 'legacy_automation', automationId: value.automationId }
-      : undefined;
-  }
-  if (value.kind === 'goal') {
-    return Object.keys(value).length === 2 && typeof value.goalId === 'string'
-      ? { kind: 'goal', goalId: value.goalId }
-      : undefined;
-  }
-  return value.kind === 'agent_graph' &&
-    Object.keys(value).length === 4 &&
-    typeof value.graphId === 'string' &&
-    typeof value.wakeId === 'string' &&
-    typeof value.attemptId === 'string'
-    ? {
-        kind: 'agent_graph',
-        graphId: value.graphId,
-        wakeId: value.wakeId,
-        attemptId: value.attemptId,
-      }
-    : undefined;
 }
 
 function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {

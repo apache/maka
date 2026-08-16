@@ -164,7 +164,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
   }
 
   async register(path: string): Promise<ProjectRecord> {
-    const resolved = await resolveProjectLocation({ path });
+    const resolved = await resolveUserSelectedProjectLocation(path);
     return this.upsertResolvedProject(resolved, this.now());
   }
 
@@ -271,27 +271,24 @@ class SqliteProjectCatalog implements ProjectCatalog {
   }
 
   async touch(projectId: string, path?: string): Promise<ProjectRecord> {
-    let resolved: Awaited<ReturnType<typeof resolveProjectLocation>> | undefined;
-    try {
-      resolved = path ? await resolveProjectLocation({ path }) : undefined;
-    } catch {
-      throw new ProjectUnavailableError(projectId);
+    let canonicalPath: string | undefined;
+    if (path) {
+      try {
+        canonicalPath = normalize(await realpath(resolve(path)));
+      } catch {
+        throw new ProjectUnavailableError(projectId);
+      }
     }
-    const resolvedPath = resolved
-      ? resolved.kind === 'git'
-        ? resolved.git!.worktreeRoot
-        : resolved.canonicalPath
-      : undefined;
     const touched = await this.mutate((file) => {
       const project = findProjectById(file.projects, projectId);
       if (!project) throw new ProjectNotFoundError(projectId);
-      const location = resolvedPath
-        ? project.locations.find((item) => item.path === resolvedPath)
+      const location = canonicalPath
+        ? project.locations.find((item) => item.path === canonicalPath)
         : [...project.locations].sort(
             (a, b) => b.lastUsedAt - a.lastUsedAt || a.path.localeCompare(b.path),
           )[0];
-      if (resolvedPath && !location) {
-        throw new ProjectPathMismatchError(projectId, resolvedPath);
+      if (canonicalPath && !location) {
+        throw new ProjectPathMismatchError(projectId, canonicalPath);
       }
       const timestamp = this.now();
       if (location) location.lastUsedAt = timestamp;
@@ -302,7 +299,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
   }
 
   async relink(projectId: string, path: string): Promise<ProjectRecord> {
-    const resolved = await resolveProjectLocation({ path });
+    const resolved = await resolveUserSelectedProjectLocation(path);
     const timestamp = this.now();
     const locationPath =
       resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
@@ -322,7 +319,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
     projectId: string,
     path: string,
   ): Promise<{ project: ProjectRecord; updatedSessionIds: readonly string[] }> {
-    const resolved = await resolveProjectLocation({ path });
+    const resolved = await resolveUserSelectedProjectLocation(path);
     const timestamp = this.now();
     const locationPath =
       resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
@@ -832,6 +829,30 @@ export async function resolveProjectLocation(input: {
     identity: `git:${git.commonDir}`,
     kind: 'git',
     git,
+  };
+}
+
+/**
+ * A directory the user picked in the add/relink chooser.
+ *
+ * `resolveProjectLocation` still walks to the enclosing Git worktree so a
+ * historical session cwd inside a repository stays on that repository.
+ * The chooser must not do that: selecting `repo/child` would otherwise
+ * silently become `repo` and reopen the parent project.
+ */
+async function resolveUserSelectedProjectLocation(path: string): Promise<ResolvedProjectLocation> {
+  const resolved = await resolveProjectLocation({ path });
+  if (
+    resolved.kind !== 'git' ||
+    !resolved.git ||
+    resolved.canonicalPath === resolved.git.worktreeRoot
+  ) {
+    return resolved;
+  }
+  return {
+    canonicalPath: resolved.canonicalPath,
+    identity: `folder:${resolved.canonicalPath}`,
+    kind: 'folder',
   };
 }
 

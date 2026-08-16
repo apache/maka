@@ -62,3 +62,29 @@ test('project navigation and actions remain adjacent keyboard controls', async (
   await page.getByRole('button', { name: '关闭', exact: true }).click();
   await expect(action).toBeFocused();
 });
+
+test('rail grouping survives a renderer reload', async ({ projectSidebarWindow: page }) => {
+  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();
+
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  const byTime = sidebar.getByRole('radio', { name: '按时间', exact: true });
+  const byProject = sidebar.getByRole('radio', { name: '按项目', exact: true });
+
+  await expect(byTime).toBeChecked();
+  await byProject.click();
+  await expect(byProject).toBeChecked();
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem('maka-chat-list-view-mode-v1')))
+    .toBe('project');
+
+  await page.reload();
+  await expect(page.locator('[data-maka-contract="search-modal"]')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();
+
+  await expect(sidebar.getByRole('radio', { name: '按项目', exact: true })).toBeChecked();
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem('maka-chat-list-view-mode-v1')))
+    .toBe('project');
+});

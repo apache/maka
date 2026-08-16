@@ -14,13 +14,13 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-framework = os.environ.get("MAKA_EVAL_FRAMEWORK")
+from eval_framework import selected
+
+framework = selected()
 if framework == "harbor":
     from harbor.agents.base import BaseAgent
-elif framework == "pier":
-    from pier.agents.base import BaseAgent
 else:
-    raise RuntimeError("MAKA_EVAL_FRAMEWORK must be harbor or pier")
+    from pier.agents.base import BaseAgent
 
 
 class RelayTransportClosed(RuntimeError):

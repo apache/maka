@@ -16,7 +16,9 @@ class BaseAgent:
 
 
 def load_relay():
-    os.environ["MAKA_EVAL_FRAMEWORK"] = "harbor"
+    from eval_framework import install
+
+    install("harbor")
     package = types.ModuleType("harbor")
     agents = types.ModuleType("harbor.agents")
     base = types.ModuleType("harbor.agents.base")

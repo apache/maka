@@ -356,7 +356,6 @@ async function startTrial(
   const relayPath = resolve(dirname(fileURLToPath(import.meta.url)), '../harbor');
   const executionEnvironment = egressExecutionEnvironment(options.egressProxy);
   const environment = preparationEnvironment(
-    framework,
     relayPath,
     [...subjectCredentialNames, ...cell.subject.credentials],
     options.preparationEnvironment,
@@ -588,7 +587,6 @@ function preparationCode(
 }
 
 function preparationEnvironment(
-  framework: Framework,
   relayPath: string,
   subjectCredentialNames: readonly string[],
   declared: readonly string[],
@@ -619,7 +617,6 @@ function preparationEnvironment(
   );
   return {
     ...inherited,
-    MAKA_EVAL_FRAMEWORK: framework,
     PYTHONPATH: [relayPath, inherited.PYTHONPATH].filter(Boolean).join(delimiter),
     ...(egressAllowedHost
       ? {
@@ -887,9 +884,6 @@ function decodeOptions(value: JsonObject, framework: Framework): HarnessOptions 
   ).map((name, index) => machinePathEnv(name, `preparationEnvironment[${index}]`));
   if (new Set(preparationEnvironment).size !== preparationEnvironment.length) {
     throw new Error('preparationEnvironment must contain unique names');
-  }
-  if (preparationEnvironment.includes('MAKA_EVAL_FRAMEWORK')) {
-    throw new Error('preparationEnvironment contains a reserved name');
   }
   const decoded: HarnessOptions = {
     frameworkVersion: text(options.frameworkVersion, 'frameworkVersion'),

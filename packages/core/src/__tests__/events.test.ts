@@ -1,5 +1,5 @@
 import { test } from 'node:test';
-import { expect } from '../test-helpers.js';
+import { expect } from './test-helpers.js';
 import { aggregateMessageContents } from '../events.js';
 
 test('aggregates inline references against the combined display text', () => {

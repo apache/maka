@@ -4,7 +4,7 @@ import {
   deriveTaskSubmissionReadiness,
   type DeriveTaskSubmissionReadinessInput,
 } from '../task-submission-readiness.js';
-import { expect } from '../test-helpers.js';
+import { expect } from './test-helpers.js';
 
 describe('task submission readiness', () => {
   test('reuses connection readiness and routes an invalid model to its connection', () => {

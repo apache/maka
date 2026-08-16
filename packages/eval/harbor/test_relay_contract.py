@@ -33,7 +33,9 @@ class Environment:
 
 
 def load_relay(framework="harbor"):
-    os.environ["MAKA_EVAL_FRAMEWORK"] = framework
+    from eval_framework import install
+
+    install(framework)
     package = types.ModuleType(framework)
     agents = types.ModuleType(f"{framework}.agents")
     base = types.ModuleType(f"{framework}.agents.base")
@@ -445,6 +447,19 @@ class SubjectCapabilityTest(unittest.IsolatedAsyncioTestCase):
             await relay._require_constrained_subject(environment)
         self.assertEqual(environment.commands, [])
         self.assertEqual(environment.services, [])
+
+
+class FrameworkSelectionTest(unittest.TestCase):
+    def test_relay_loads_harbor_and_pier_from_the_installed_selection(self):
+        for framework in ("harbor", "pier"):
+            with self.subTest(framework):
+                relay = load_relay(framework)
+                self.assertEqual(relay.framework, framework)
+
+    def test_relay_does_not_select_a_framework_from_the_environment(self):
+        os.environ["MAKA_EVAL_FRAMEWORK"] = "pier"
+        relay = load_relay("harbor")
+        self.assertEqual(relay.framework, "harbor")
 
 
 if __name__ == "__main__":

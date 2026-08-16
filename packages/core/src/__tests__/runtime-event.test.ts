@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { expect } from '../test-helpers.js';
+import { expect } from './test-helpers.js';
 import {
   decodeMessageContent,
   messageContentsEqual,
@@ -16,6 +16,7 @@ import {
   type RuntimeEventActions,
 } from '../runtime-event.js';
 import { decodeStoredMessage } from '../session.js';
+import { decodeTurnOrigin } from '../turn-origin.js';
 
 /** Minimal valid RuntimeEvent; callers spread overrides on top. */
 function baseEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
@@ -90,6 +91,20 @@ test('decodes released Automation origins as read-only legacy provenance', () =>
     kind: 'legacy_automation',
     automationId: 'automation-1',
   });
+});
+
+test('shares one decoder across all TurnOrigin variants', () => {
+  const origins = [
+    { kind: 'scheduled_task', scheduledTaskId: 'task-1' },
+    { kind: 'goal', goalId: 'goal-1' },
+    { kind: 'agent_graph', graphId: 'graph-1', wakeId: 'wake-1', attemptId: 'attempt-1' },
+  ] as const;
+  for (const origin of origins) assert.deepEqual(decodeTurnOrigin(origin), origin);
+  assert.deepEqual(decodeTurnOrigin({ kind: 'automation', automationId: 'automation-1' }), {
+    kind: 'legacy_automation',
+    automationId: 'automation-1',
+  });
+  assert.equal(decodeTurnOrigin({ kind: 'goal', goalId: 'goal-1', extra: true }), undefined);
 });
 
 describe('continuation-start protocol', () => {

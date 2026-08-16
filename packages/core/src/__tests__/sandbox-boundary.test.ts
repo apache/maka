@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { expect } from '../test-helpers.js';
+import { expect } from './test-helpers.js';
 import {
   applySandboxBoundaryExpansion,
   assessSandboxBoundaryExpansion,

@@ -1,5 +1,5 @@
 import { describe, test } from 'node:test';
-import { expect } from '../test-helpers.js';
+import { expect } from './test-helpers.js';
 import { pathWithinRoot } from '../absolute-path.js';
 import {
   canReadPath,

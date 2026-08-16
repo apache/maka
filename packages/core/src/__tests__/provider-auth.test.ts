@@ -1,5 +1,5 @@
 import { describe, test } from 'node:test';
-import { expect } from '../test-helpers.js';
+import { expect } from './test-helpers.js';
 import { deriveProviderAuthContract } from '../provider-auth.js';
 
 describe('ProviderAuth contract', () => {

@@ -9,13 +9,14 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { generalizedErrorMessageChinese } from '@maka/core/redaction';
 import { sessionExpectsEventStream } from '@maka/core/session-event-health';
 import { type ShellRunUpdate } from '@maka/core/events';
-import type { LiveTurnProjection, NavSelection } from '@maka/ui';
+import type { LiveTurnProjection, NavSelection, SessionViewMode } from '@maka/ui';
 import { messageReadErrorMessage } from './app-shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { applyTheme, applyThemePalette } from './theme';
 import { safeLocalStorageSet } from './browser-storage';
 import type { NavigationState } from './nav-selection.js';
+import { writeSessionListViewMode } from './session-list-layout.js';
 import {
   createSessionEventStreamSubscription,
   evaluateSessionEventStreamSnapshot,
@@ -118,6 +119,7 @@ export function useAppShellPersistenceEffects(options: {
   navigationState: NavigationState;
   sessionListCollapsed: boolean;
   sessionListWidth: number;
+  sessionListViewMode: SessionViewMode;
   workbarCollapsed: boolean;
   workbarWidth: number;
   bottomPanelOpen: boolean;
@@ -160,6 +162,10 @@ export function useAppShellPersistenceEffects(options: {
   useEffect(() => {
     safeLocalStorageSet('maka-chat-list-collapsed-v1', options.sessionListCollapsed ? 'true' : 'false');
   }, [options.sessionListCollapsed]);
+
+  useEffect(() => {
+    writeSessionListViewMode(options.sessionListViewMode);
+  }, [options.sessionListViewMode]);
 
   useEffect(() => {
     const handle = window.setTimeout(() => {

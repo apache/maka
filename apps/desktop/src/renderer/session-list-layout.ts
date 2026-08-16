@@ -1,8 +1,21 @@
-import { safeLocalStorageGet } from './browser-storage.js';
+import type { SessionViewMode } from '@maka/ui';
+import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage.js';
 
 export const SESSION_LIST_EXPANDED_DEFAULT_WIDTH = 260;
 export const SESSION_LIST_EXPANDED_MIN_WIDTH = 180;
 export const SESSION_LIST_EXPANDED_MAX_WIDTH = 480;
+
+const SESSION_LIST_VIEW_MODE_KEY = 'maka-chat-list-view-mode-v1';
+
+export function readSessionListViewMode(): SessionViewMode {
+  const stored = safeLocalStorageGet(SESSION_LIST_VIEW_MODE_KEY);
+  if (stored === 'project' || stored === 'conversation') return stored;
+  return 'conversation';
+}
+
+export function writeSessionListViewMode(mode: SessionViewMode): void {
+  safeLocalStorageSet(SESSION_LIST_VIEW_MODE_KEY, mode);
+}
 
 export function readSessionListWidth(): number {
   const stored = Number(safeLocalStorageGet('maka-chat-list-width-v1'));

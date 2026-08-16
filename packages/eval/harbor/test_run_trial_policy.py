@@ -1,5 +1,7 @@
+import asyncio
 import importlib.util
 import os
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +35,27 @@ class RunTrialPolicyTest(unittest.TestCase):
         with patch.dict(os.environ, {"MAKA_EVAL_EGRESS_REQUIRED": "1"}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "proxy host is unavailable"):
                 MODULE.apply_subject_egress_policy(task)
+
+    def test_invalid_framework_fails_before_framework_import(self) -> None:
+        with patch.object(MODULE.importlib, "import_module") as imported:
+            with self.assertRaisesRegex(RuntimeError, "harbor or pier"):
+                asyncio.run(MODULE.run_trial("other", "1.0.0", Path("missing.json")))
+        imported.assert_not_called()
+
+    def test_main_installs_the_argv_framework_before_the_trial(self) -> None:
+        import eval_framework
+
+        installed: list[str] = []
+
+        async def fake_trial(framework: str, expected_version: str, config_file: Path) -> None:
+            installed.append(eval_framework.selected())
+            self.assertEqual(framework, "pier")
+            self.assertEqual(expected_version, "1.2.3")
+
+        with patch.object(sys, "argv", ["run_trial.py", "pier", "1.2.3", "config.json"]):
+            with patch.object(MODULE, "run_trial", fake_trial):
+                asyncio.run(MODULE.main())
+        self.assertEqual(installed, ["pier"])
 
 
 if __name__ == "__main__":

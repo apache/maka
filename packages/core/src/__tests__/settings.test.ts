@@ -1,5 +1,5 @@
 import { describe, test } from 'node:test';
-import { expect } from '../test-helpers.js';
+import { expect } from './test-helpers.js';
 import { normalizeSettings } from '../settings.js';
 
 test('normalizes user-approved subagent presets without widening the catalog', () => {

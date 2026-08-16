@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 import { createProjectCatalog, type ProjectCatalog } from '@maka/storage';
 import {
   createProjectManagementService,
@@ -67,6 +71,49 @@ test('owns Project selection and reversible lifecycle actions in Desktop', async
   }
 });
 
+test('adding a nested folder selects that folder instead of the parent project', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-nested-add-'));
+  const parentPath = join(base, 'parent-project');
+  const childPath = join(parentPath, 'child-project');
+  await mkdir(childPath, { recursive: true });
+  await execFileAsync('git', ['init', '--quiet'], { cwd: parentPath });
+
+  const selected: string[] = [];
+  let nextDirectory = parentPath;
+  let nextId = 0;
+  const catalog = createProjectCatalog(join(base, 'storage'), {
+    now: () => 1_000,
+    createId: () => `project-${++nextId}`,
+  });
+  const service = createProjectManagementService({
+    capabilities: LOCAL_CAPABILITIES,
+    catalog: managementCatalog(catalog),
+    chooseDirectory: async () => nextDirectory,
+    selection: {
+      currentSelection: async () => ({ projectId: undefined, path: parentPath }),
+      setSelection: (_projectId, path) => selected.push(path),
+    },
+  });
+
+  try {
+    const parent = await service.add();
+    assert.equal(parent.ok, true);
+    if (!parent.ok) return;
+    assert.equal(parent.path, await realpath(parentPath));
+
+    nextDirectory = childPath;
+    const child = await service.add();
+    assert.equal(child.ok, true);
+    if (!child.ok) return;
+    assert.notEqual(child.project.id, parent.project.id);
+    assert.equal(child.path, await realpath(childPath));
+    assert.equal(selected.at(-1), await realpath(childPath));
+  } finally {
+    catalog.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('rejects malformed Project identities before catalog access', async () => {
   const service = createProjectManagementService({
     capabilities: LOCAL_CAPABILITIES,
@@ -117,9 +164,7 @@ test('does not silently replace a stale Project preference with another Project'
   const service = createProjectManagementService({
     capabilities: LOCAL_CAPABILITIES,
     catalog: {
-      list: async () => [
-        { id: 'other', name: 'Other', locations: [], available: true },
-      ],
+      list: async () => [{ id: 'other', name: 'Other', locations: [], available: true }],
       register: unexpected,
       relink: unexpected,
       rename: unexpected,

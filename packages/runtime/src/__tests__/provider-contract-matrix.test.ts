@@ -8,7 +8,7 @@ import {
   type ProviderContractRow,
   type ProviderContractGeneratedCell,
   type ProviderContractWire,
-} from '@maka/core/provider-contract-matrix';
+} from './provider-contract-matrix.js';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import { generateText, isStepCount, tool } from 'ai';
 import { z } from 'zod';

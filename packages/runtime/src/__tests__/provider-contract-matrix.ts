@@ -24,14 +24,14 @@
  * Pure: no IO, no network, no clock. Given the registry it is a total function.
  */
 
-import { lookupModelProviderOverride, openAiAdapterApiProtocol } from './model-metadata.js';
+import { lookupModelProviderOverride, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import {
   PROVIDER_REGISTRY,
   type ProviderDefaults,
   type ProviderModelDiscovery,
   type ProviderRuntimeAdapter,
   type ProviderType,
-} from './provider-registry.js';
+} from '@maka/core/provider-registry';
 
 export const PROVIDER_CONTRACT_DIMENSIONS = [
   'discovery',

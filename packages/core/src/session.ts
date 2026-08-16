@@ -25,6 +25,7 @@ import { isPermissionDecisionFields } from './interaction-record-schema.js';
 import { isTokenUsageFields, type TokenUsageFields } from './usage-record-schema.js';
 import { decodeCanonicalToolResultContent } from './tool-result-record-schema.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
+import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
 
 export { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from './explore-agent.js';
 
@@ -680,12 +681,8 @@ export interface UserMessage extends MessageContent {
   /** Canonical RuntimeEvent that materialized this mid-Turn steering projection. */
   steeringEventId?: string;
   /** Non-user trigger source. Lets the chat mark turns the user did not
-   * hand-type. Mirrors TurnOrigin in runtime-inputs. */
-  origin?:
-    | { kind: 'scheduled_task'; scheduledTaskId: string }
-    | { kind: 'legacy_automation'; automationId: string }
-    | { kind: 'goal'; goalId: string }
-    | { kind: 'agent_graph'; graphId: string; wakeId: string; attemptId: string };
+   * hand-type. */
+  origin?: TurnOrigin;
 }
 
 /** Prefer the human-facing view of a user message when one was stored. */
@@ -960,25 +957,6 @@ const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
   ['text'],
   ['signature', 'providerOptions', 'parts'],
 );
-type MessageOrigin = NonNullable<UserMessage['origin']>;
-type ScheduledTaskOrigin = Extract<MessageOrigin, { kind: 'scheduled_task' }>;
-type LegacyAutomationOrigin = Extract<MessageOrigin, { kind: 'legacy_automation' }>;
-type GoalOrigin = Extract<MessageOrigin, { kind: 'goal' }>;
-type AgentGraphOrigin = Extract<MessageOrigin, { kind: 'agent_graph' }>;
-const SCHEDULED_TASK_ORIGIN_SHAPE = defineObjectShape<ScheduledTaskOrigin>()(
-  ['kind', 'scheduledTaskId'],
-  [],
-);
-const LEGACY_AUTOMATION_ORIGIN_SHAPE = defineObjectShape<LegacyAutomationOrigin>()(
-  ['kind', 'automationId'],
-  [],
-);
-const GOAL_ORIGIN_SHAPE = defineObjectShape<GoalOrigin>()(['kind', 'goalId'], []);
-const AGENT_GRAPH_ORIGIN_SHAPE = defineObjectShape<AgentGraphOrigin>()(
-  ['kind', 'graphId', 'wakeId', 'attemptId'],
-  [],
-);
-
 const SYSTEM_NOTE_KINDS = new Set([
   'session_start',
   'session_resume',
@@ -999,10 +977,10 @@ export function decodeStoredMessage(value: unknown): StoredMessage {
       if (
         hasExactShape(message, USER_MESSAGE_SHAPE) &&
         hasMessageEnvelope(message, true) &&
-        (message.origin === undefined || decodeMessageOrigin(message.origin) !== undefined)
+        (message.origin === undefined || decodeTurnOrigin(message.origin) !== undefined)
       ) {
         const { displayText, attachments, quotes, inlineReferences, origin, ...envelope } = message;
-        const decodedOrigin = origin === undefined ? undefined : decodeMessageOrigin(origin);
+        const decodedOrigin = origin === undefined ? undefined : decodeTurnOrigin(origin);
         try {
           return {
             ...envelope,
@@ -1155,49 +1133,6 @@ function isAssistantThinking(value: unknown): value is AssistantThinking {
         value.parts.length > 0 &&
         value.parts.every(isAssistantThinkingPart)))
   );
-}
-
-function isGoalOrigin(value: unknown): value is GoalOrigin {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, GOAL_ORIGIN_SHAPE) &&
-    value.kind === 'goal' &&
-    typeof value.goalId === 'string'
-  );
-}
-
-function isAgentGraphOrigin(value: unknown): value is AgentGraphOrigin {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, AGENT_GRAPH_ORIGIN_SHAPE) &&
-    value.kind === 'agent_graph' &&
-    typeof value.graphId === 'string' &&
-    typeof value.wakeId === 'string' &&
-    typeof value.attemptId === 'string'
-  );
-}
-
-function isScheduledTaskOrigin(value: unknown): value is ScheduledTaskOrigin {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, SCHEDULED_TASK_ORIGIN_SHAPE) &&
-    value.kind === 'scheduled_task' &&
-    typeof value.scheduledTaskId === 'string'
-  );
-}
-
-function decodeMessageOrigin(value: unknown): MessageOrigin | undefined {
-  if (isScheduledTaskOrigin(value) || isGoalOrigin(value) || isAgentGraphOrigin(value))
-    return value;
-  if (
-    isRecord(value) &&
-    hasExactShape(value, LEGACY_AUTOMATION_ORIGIN_SHAPE) &&
-    (value.kind === 'automation' || value.kind === 'legacy_automation') &&
-    typeof value.automationId === 'string'
-  ) {
-    return { kind: 'legacy_automation', automationId: value.automationId };
-  }
-  return undefined;
 }
 
 function isOptionalFiniteDuration(value: unknown): boolean {

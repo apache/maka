@@ -100,9 +100,10 @@ def publish_ready_task(namespace: Path, target: Path) -> None:
 
 
 async def run_trial(framework: str, expected_version: str, config_file: Path) -> None:
-    distribution = {"harbor": "harbor", "pier": "datacurve-pier"}.get(framework)
-    if distribution is None:
-        raise RuntimeError("framework must be harbor or pier")
+    from eval_framework import install
+
+    install(framework)
+    distribution = {"harbor": "harbor", "pier": "datacurve-pier"}[framework]
     if importlib.metadata.version(distribution) != expected_version:
         raise FrameworkVersionMismatch
     try:
@@ -166,7 +167,10 @@ async def create_harbor_trial(trial_type: type, config: object) -> object:
 
 
 async def main() -> None:
+    from eval_framework import install
+
     framework, expected_version, config_path = sys.argv[1:]
+    install(framework)
     task = asyncio.current_task()
     assert task is not None
     loop = asyncio.get_running_loop()
