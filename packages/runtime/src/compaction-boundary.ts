@@ -10,7 +10,6 @@ export type CompactionBoundaryKind =
   | 'synthesisCache'
   | 'staleToolResultPrune'
   | 'activeToolResultPrune'
-  | 'activeFullCompact'
   | 'semanticCompact';
 export type CompactionDecisionKind = 'unchanged' | 'replaced' | 'failedOpen';
 

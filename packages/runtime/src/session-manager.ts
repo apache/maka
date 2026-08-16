@@ -157,7 +157,6 @@ import type {
 import { readLatestContextDiagnostics, type ContextDiagnostics } from './context-diagnostics.js';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { ShellRunProcessManager } from './shell-run-manager.js';
-import type { ActiveFullCompactBlock } from './active-full-compact.js';
 import type { SemanticCompactBlock } from './semantic-compact.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import type { AgentRunLineage, RuntimeContinuationFailpoint } from './agent-run.js';
@@ -764,7 +763,6 @@ export interface BackendFactoryContext {
   loadTurnRuntimeEvents?: (turnId: string) => Promise<RuntimeEvent[]>;
   /** Whether this activation may fold its run ledger into session-scoped history. */
   allowMidTurnHistoryCompaction?: boolean;
-  recordActiveFullCompactBlock?: (block: ActiveFullCompactBlock) => void;
   recordSemanticCompactBlock?: (block: SemanticCompactBlock) => void;
   shellRunContextSummary?: () => Promise<string | undefined>;
 }

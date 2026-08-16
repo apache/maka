@@ -1038,6 +1038,8 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
         latencyMs: 0.5,
       },
     });
+    // A legacy event from the retired active-full writer is treated like any
+    // other event this build cannot emit and is therefore not copied.
     await runStore.appendEvent('session-source', 'run-source', {
       type: 'active_full_compact_block_recorded',
       id: 'active-compact-source',
@@ -1046,7 +1048,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       turnId: 'turn-1',
       ts: 2.6,
       data: { blockId: 'active-source', block: { sourceOwnedHash: true } },
-    });
+    } as unknown as EmittedAgentRunEvent);
     await runStore.appendEvent('session-source', 'run-source', {
       type: 'semantic_compact_block_recorded',
       id: 'semantic-compact-source',

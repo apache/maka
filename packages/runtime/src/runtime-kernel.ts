@@ -2739,7 +2739,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     | 'loadHistoryCompactCheckpoint'
     | 'recordHistoryCompactCheckpoint'
     | 'loadTurnRuntimeEvents'
-    | 'recordActiveFullCompactBlock'
     | 'recordSemanticCompactBlock'
   > {
     const { resolveActive, sessionId } = input;
@@ -2793,9 +2792,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
             },
           }
         : {}),
-      recordActiveFullCompactBlock: (block) => {
-        runFor(block.turnId)?.recordActiveFullCompactBlock(block);
-      },
       recordSemanticCompactBlock: (block) => {
         runFor(block.turnId)?.recordSemanticCompactBlock(block);
       },

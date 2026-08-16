@@ -826,7 +826,7 @@ function isCopiedAgentRunEvent(event: AgentRunEvent): event is EmittedAgentRunEv
   // into the target with source identities intact. The ledger's `type` is open, so such an event
   // may predate a retired writer or postdate this build entirely (#1942).
   if (!isEmittedAgentRunEventType(event.type)) return false;
-  // Active/semantic blocks hash the exact provider-visible source. Rewriting
+  // Semantic blocks hash the exact provider-visible source. Rewriting
   // target-owned RuntimeEvent and Artifact references invalidates that
   // evidence, so a copied Session starts without these derived diagnostics.
   return (
@@ -834,7 +834,6 @@ function isCopiedAgentRunEvent(event: AgentRunEvent): event is EmittedAgentRunEv
     event.type !== 'run_failed' &&
     event.type !== 'run_cancelled' &&
     event.type !== 'event_corrupt' &&
-    event.type !== 'active_full_compact_block_recorded' &&
     event.type !== 'semantic_compact_block_recorded'
   );
 }

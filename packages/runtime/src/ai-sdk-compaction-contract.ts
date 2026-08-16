@@ -3,7 +3,6 @@ import type { HistoryCompactRoute } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
-import type { ActiveFullCompactBlock } from './active-full-compact.js';
 import type { ActiveToolResultArchiveCandidate } from './active-tool-result-prune.js';
 import type {
   ArchiveRetrievalMode,
@@ -145,9 +144,6 @@ export type HistoryCompactCheckpointRecorder = (
   checkpoint: HistoryCompactCheckpoint,
   turnId: string,
 ) => void | Promise<void>;
-export type ActiveFullCompactBlockRecorder = (
-  block: ActiveFullCompactBlock,
-) => void | Promise<void>;
 export type SemanticCompactBlockRecorder = (block: SemanticCompactBlock) => void | Promise<void>;
 
 /** Provider and persistence capabilities used by the compaction collaborator. */
@@ -192,8 +188,6 @@ export interface AiSdkCompactionCapabilities {
   loadTurnRuntimeEvents?: (turnId: string) => Promise<RuntimeEvent[]>;
   /** Explicit capability for folding current-run events into session-scoped history. */
   allowMidTurnHistoryCompaction?: boolean;
-  /** Optional best-effort durable recorder for accepted active full compact blocks. */
-  recordActiveFullCompactBlock?: ActiveFullCompactBlockRecorder;
   /** Optional best-effort durable recorder for accepted semantic compact blocks. */
   recordSemanticCompactBlock?: SemanticCompactBlockRecorder;
 }

@@ -64,11 +64,7 @@ import {
   type ActiveToolResultArchiveCandidate,
   type ActiveToolResultPruneDiagnosticPatch,
 } from './active-tool-result-prune.js';
-import {
-  rewriteActiveFullCompactInMessages,
-  type ActiveCompactionHeadAnchor,
-  type ActiveFullCompactBlock,
-} from './active-full-compact.js';
+import type { ActiveCompactionHeadAnchor } from './active-compaction-kernel.js';
 import {
   rewriteSemanticCompactInMessages,
   type SemanticCompactBlock,
@@ -1110,7 +1106,7 @@ export class AiSdkCompaction {
     const policy = this.input.contextBudget?.semanticCompact;
     if (policy?.enabled !== true || policy.mode === 'off' || !headAnchor) return undefined;
 
-    let acceptedProjection: ActiveFullCompactProjection | undefined;
+    let acceptedProjection: AcceptedActiveCompactionProjection | undefined;
     const controllerState: SemanticCompactControllerState = {
       consecutiveInvalidSummaries: 0,
       totalInvalidSummaries: 0,
@@ -1143,7 +1139,7 @@ export class AiSdkCompaction {
       const incomingMessages = options.messages;
       const projectedMessages = dryRun
         ? undefined
-        : projectAcceptedActiveFullCompactMessages(incomingMessages, acceptedProjection);
+        : projectAcceptedActiveCompactionMessages(incomingMessages, acceptedProjection);
       const messagesForRewrite = projectedMessages ?? incomingMessages;
       const summarizerModel = policy.summarizerModel
         ? this.input.modelFactory({
@@ -1200,65 +1196,7 @@ export class AiSdkCompaction {
         };
         return {
           messages: rewritten.messages,
-          makaSemanticCompactStatus: 'replaced',
-        } as ActiveCompactionProjectionResult;
-      }
-      return !dryRun && projectedMessages
-        ? ({
-            messages: projectedMessages,
-            makaSemanticCompactStatus: 'projected',
-          } as ActiveCompactionProjectionResult)
-        : undefined;
-    };
-  }
-
-  public buildActiveFullCompactProjection(
-    turnId: string,
-    runtimeEvents: readonly RuntimeEvent[] | undefined,
-    headAnchor: ActiveCompactionHeadAnchor | undefined,
-    requestShapeHashForMessages: (
-      messages: readonly ModelMessage[],
-      activeToolsForStep: readonly string[] | undefined,
-    ) => string,
-    onDiagnosticPatch?: (patch: Partial<ContextBudgetDiagnostic>) => void,
-  ): RequestProjectionStage | undefined {
-    const policy = this.input.contextBudget?.activeFullCompact;
-    if (policy?.enabled !== true || policy.mode === 'index_only' || policy.mode === 'off')
-      return undefined;
-
-    let acceptedProjection: ActiveFullCompactProjection | undefined;
-    return (options) => {
-      const activeToolsForStep = options.activeTools;
-      const dryRun = policy.mode === 'validate_only' || policy.mode === 'prepare_step_dry_run';
-      const incomingMessages = options.messages;
-      const projectedMessages = dryRun
-        ? undefined
-        : projectAcceptedActiveFullCompactMessages(incomingMessages, acceptedProjection);
-      const messagesForRewrite = projectedMessages ?? incomingMessages;
-      const rewritten = rewriteActiveFullCompactInMessages({
-        sessionId: this.sessionId,
-        turnId,
-        messages: messagesForRewrite,
-        policy,
-        runtimeEvents: runtimeEvents?.filter((event) => event.turnId === turnId),
-        stepNumber: options.stepNumber,
-        now: this.now(),
-        charsPerToken: this.input.contextBudget?.charsPerToken,
-        requestShapeHashForMessages: (messages) =>
-          requestShapeHashForMessages(messages, activeToolsForStep),
-        ...(headAnchor ? { headAnchor } : {}),
-        dryRun,
-        ...(dryRun ? { dryRunReason: policy.mode } : {}),
-      });
-      onDiagnosticPatch?.(rewritten.diagnosticPatch);
-      if (!dryRun && rewritten.decision === 'replaced') {
-        if (rewritten.block) this.recordActiveFullCompactBlock(rewritten.block);
-        acceptedProjection = {
-          sourceSignatures: incomingMessages.map(modelMessageSignature),
-          sourceSignatureMode: 'exact',
-          projectedMessages: rewritten.messages,
         };
-        return { messages: rewritten.messages };
       }
       return !dryRun && projectedMessages ? { messages: projectedMessages } : undefined;
     };
@@ -1277,23 +1215,6 @@ export class AiSdkCompaction {
       }
     } catch {
       // Semantic compact persistence is diagnostic/storage-only and must never
-      // perturb provider request projection or tool-loop progress.
-    }
-  }
-
-  private recordActiveFullCompactBlock(block: ActiveFullCompactBlock): void {
-    const recorder = this.input.recordActiveFullCompactBlock;
-    if (!recorder) return;
-    try {
-      const result = recorder(block);
-      if (result && typeof (result as PromiseLike<void>).then === 'function') {
-        void Promise.resolve(result).catch(() => {
-          // Active compact persistence is diagnostic/storage-only and must never
-          // perturb provider request projection or tool-loop progress.
-        });
-      }
-    } catch {
-      // Active compact persistence is diagnostic/storage-only and must never
       // perturb provider request projection or tool-loop progress.
     }
   }
@@ -1382,11 +1303,11 @@ export class AiSdkCompaction {
     const midTurn = compactPolicy.midTurn!;
     const charsPerToken = policy.charsPerToken ?? 4;
     const reserveTokens = midTurn.reserveTokens ?? 16_384;
-    let acceptedProjection: ActiveFullCompactProjection | undefined;
+    let acceptedProjection: AcceptedActiveCompactionProjection | undefined;
 
     return async (options) => {
       const incomingMessages = options.messages;
-      const projectedMessages = projectAcceptedActiveFullCompactMessages(
+      const projectedMessages = projectAcceptedActiveCompactionMessages(
         incomingMessages,
         acceptedProjection,
       );
@@ -2098,45 +2019,6 @@ function mergeCountsInto(
 
 // -- moved helpers (prepare-step / signature / prune) ------------------------
 
-type ActiveCompactionProjectionResult = RequestProjection & {
-  makaSemanticCompactStatus?: 'replaced' | 'projected';
-};
-
-export function composeActiveCompactionProjection(
-  attention: RequestProjectionStage | undefined,
-  capacity: RequestProjectionStage | undefined,
-): RequestProjectionStage | undefined {
-  if (!attention) return capacity;
-  if (!capacity) return attention;
-  return async (options) => {
-    const attentionResult = (await Promise.resolve(attention(options))) as
-      | ActiveCompactionProjectionResult
-      | undefined;
-    if (attentionResult?.makaSemanticCompactStatus === 'replaced') {
-      const { makaSemanticCompactStatus: _status, ...providerResult } = attentionResult;
-      return providerResult;
-    }
-    const capacityResult = await Promise.resolve(
-      capacity({
-        ...options,
-        messages: attentionResult?.messages ?? options.messages,
-        ...(attentionResult?.activeTools ? { activeTools: attentionResult.activeTools } : {}),
-      }),
-    );
-    if (!capacityResult) {
-      if (!attentionResult) return undefined;
-      const { makaSemanticCompactStatus: _status, ...providerResult } = attentionResult;
-      return providerResult;
-    }
-    return {
-      ...attentionResult,
-      ...capacityResult,
-      activeTools: capacityResult.activeTools ?? attentionResult?.activeTools,
-      messages: capacityResult.messages ?? attentionResult?.messages,
-    };
-  };
-}
-
 function activeToolResultArchiveKey(
   candidate: ActiveToolResultArchiveCandidate & { bodySha256: string },
 ): string {
@@ -2172,16 +2054,16 @@ function collectPrunableCompletedStepToolCallIds(
   return out;
 }
 
-interface ActiveFullCompactProjection {
+interface AcceptedActiveCompactionProjection {
   sourceSignatures: readonly string[];
   sourceSignatureMode: 'exact' | 'active_prune_lineage';
   projectedMessages: readonly ModelMessage[];
   semanticBlock?: SemanticCompactBlock;
 }
 
-function projectAcceptedActiveFullCompactMessages(
+function projectAcceptedActiveCompactionMessages(
   incomingMessages: readonly ModelMessage[],
-  acceptedProjection: ActiveFullCompactProjection | undefined,
+  acceptedProjection: AcceptedActiveCompactionProjection | undefined,
 ): ModelMessage[] | undefined {
   if (!acceptedProjection) return undefined;
   const sourceSignature =

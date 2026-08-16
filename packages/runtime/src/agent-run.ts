@@ -42,7 +42,6 @@ import type { SessionEvent } from '@maka/core/events';
 import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
 import type { RunTraceEvent } from './run-trace.js';
 import type { StopSessionInput } from './session-manager.js';
-import type { ActiveFullCompactBlock } from './active-full-compact.js';
 import type { SemanticCompactBlock } from './semantic-compact.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import { projectRuntimeEventsToStoredMessages } from './runtime-event-read-model.js';
@@ -489,27 +488,6 @@ export class AgentRun {
         // survive a metering write that failed (#2323).
         { durable: true, ...(latestContext ? { latestContext } : {}) },
       );
-    });
-  }
-
-  recordActiveFullCompactBlock(block: ActiveFullCompactBlock): void {
-    if (!this.input.runStore || !this.runStoreAvailable) return;
-    this.enqueueRunStore('append active full compact block', async () => {
-      await this.input.runStore?.appendEvent(this.sessionId, this.runId, {
-        type: 'active_full_compact_block_recorded',
-        id: this.input.newId(),
-        runId: this.runId,
-        sessionId: this.sessionId,
-        turnId: block.turnId || this.turnId,
-        ts: this.input.now(),
-        data: {
-          blockId: block.blockId,
-          highWaterName: block.highWaterName,
-          highWaterSeq: block.highWaterSeq,
-          boundaryKind: 'activeFullCompact',
-          block,
-        },
-      });
     });
   }
 
