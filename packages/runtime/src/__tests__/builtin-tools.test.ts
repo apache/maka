@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { applySandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import { SHELL_RUN_ID_MAX_CHARS } from '@maka/core/shell-run';
 import {
+  createDangerFullAccessPermissionProfile,
   createWorkspaceWritePermissionProfile,
   type PermissionProfile,
 } from '@maka/core/permission-profile';
@@ -26,6 +27,7 @@ import { buildBuiltinTools } from '../builtin-tools.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
 import { LinuxBubblewrapBackend } from '../sandbox/linux-sandbox.js';
 import { MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
+import { WindowsBrokerSandboxBackend } from '../sandbox/windows-sandbox.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
 import type { ShellRunLauncher } from '../shell-tools.js';
 import {
@@ -1138,6 +1140,119 @@ describe('builtin Bash streaming output', () => {
       assert.equal(profile.network.kind, 'restricted');
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  function windowsSandboxManager(): SandboxManager {
+    // The broker never runs in this test: sandboxCommand short-circuits on
+    // win32 before consulting the backend. A well-formed backend is included so
+    // the manager mirrors the real app's registration.
+    return new SandboxManager([
+      new WindowsBrokerSandboxBackend({
+        clientPath: String.raw`C:\resources\windows-sandbox\maka-windows-sandbox.exe`,
+        writeManifest: () => String.raw`C:\Temp\manifest.json`,
+        isAvailable: () => true,
+      }),
+    ]);
+  }
+
+  test('fails Windows Bash closed when the profile requires a command sandbox the broker cannot enforce', async () => {
+    // The Windows broker sandboxes the filesystem worker, not an arbitrary
+    // shell (cmd.exe/pwsh fail DLL init inside the AppContainer). A
+    // sandbox-requiring profile must fail closed with a clear error rather than
+    // handing the broker an unlaunchable `/bin/sh` manifest.
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-win-bash-closed-')));
+    try {
+      let called = false;
+      const executor = fakeExecutor({
+        exec: async () => {
+          called = true;
+          return { exitCode: 0, stdout: '', stderr: '', timedOut: false, aborted: false };
+        },
+      });
+      const bash = buildBuiltinTools({
+        executor,
+        permissionProfile: createWorkspaceWritePermissionProfile(),
+        sandboxManager: windowsSandboxManager(),
+        sandboxPlatform: 'win32',
+      }).find((candidate) => candidate.name === 'Bash');
+      if (!bash) throw new Error('Bash tool missing');
+
+      await assert.rejects(
+        async () => {
+          await bash.impl(
+            { command: 'echo hi' },
+            {
+              sessionId: 'session-1',
+              turnId: 'turn-1',
+              toolCallId: 'tool-1',
+              cwd,
+              permissionMode: 'execute',
+              abortSignal: new AbortController().signal,
+              emitOutput: () => {},
+              executionBoundary: {
+                kind: 'managed',
+                revision: 1,
+                profile: createWorkspaceWritePermissionProfile(),
+              },
+            },
+          );
+        },
+        (error: unknown) =>
+          error instanceof SandboxCommandError &&
+          error.reason === 'backend_not_available' &&
+          /unavailable on platform win32/.test(error.message),
+      );
+      assert.equal(called, false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('runs Windows Bash unsandboxed via the detected shell when the profile does not require a sandbox', async () => {
+    // A permissive profile does not require containment, so Bash must fall back
+    // to the raw command executed through the detected Windows shell (no argv
+    // override, no `/bin/sh`), exactly as an explicit bypass boundary does.
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-win-bash-open-')));
+    try {
+      let execInput: WorkspaceExecInput | undefined;
+      const executor = fakeExecutor({
+        exec: async (input) => {
+          execInput = input;
+          return { exitCode: 0, stdout: '', stderr: '', timedOut: false, aborted: false };
+        },
+      });
+      const bash = buildBuiltinTools({
+        executor,
+        permissionProfile: createDangerFullAccessPermissionProfile(),
+        sandboxManager: windowsSandboxManager(),
+        sandboxPlatform: 'win32',
+      }).find((candidate) => candidate.name === 'Bash');
+      if (!bash) throw new Error('Bash tool missing');
+
+      const result = await bash.impl(
+        { command: 'echo hi' },
+        {
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          toolCallId: 'tool-1',
+          cwd,
+          permissionMode: 'execute',
+          abortSignal: new AbortController().signal,
+          emitOutput: () => {},
+          executionBoundary: {
+            kind: 'managed',
+            revision: 1,
+            profile: createDangerFullAccessPermissionProfile(),
+          },
+        },
+      );
+
+      assert.ok(result);
+      assert.equal(execInput?.command, 'echo hi');
+      assert.equal(execInput?.argv, undefined);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
     }
   });
 

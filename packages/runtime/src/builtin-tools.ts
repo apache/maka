@@ -731,7 +731,20 @@ function sandboxCommand(
     }
     return undefined;
   }
-  if (!manager.canEnforce({ profile: effective.profile, platform })) {
+  // The Windows broker sandboxes the purpose-built filesystem worker (an
+  // AppContainer-compatible executable), but it cannot launch an arbitrary
+  // shell: cmd.exe/pwsh fail DLL initialization (STATUS_DLL_INIT_FAILED,
+  // 0xC0000142) inside a capability-less AppContainer, and the POSIX `/bin/sh`
+  // this path emits is not a launchable Windows executable at all. Bash command
+  // sandboxing is therefore unavailable on win32 in this milestone. Route it
+  // through the shared "command sandbox unavailable" contract rather than
+  // handing the broker an unlaunchable manifest: fail closed when the profile
+  // requires a sandbox, otherwise return undefined so the caller runs the
+  // command through the detected Windows shell (unsandboxed), exactly as an
+  // explicit bypass boundary already does.
+  const commandSandboxUnavailable =
+    platform === 'win32' || !manager.canEnforce({ profile: effective.profile, platform });
+  if (commandSandboxUnavailable) {
     if (profileRequiresSandbox(effective.profile)) {
       const selection = manager.selectInitial({
         profile: effective.profile,
