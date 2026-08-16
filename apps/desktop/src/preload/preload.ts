@@ -1051,6 +1051,7 @@ const makaBridge = {
       const result = await ipcRenderer.invoke(
         'projects:add',
         await newTaskHostScope(host),
+        { select: false },
       ) as
         | { ok: true; project: ProjectRecord; path: string }
         | { ok: false; reason: 'cancelled' };
@@ -1100,9 +1101,6 @@ const makaBridge = {
       query: string,
       options?: { limit?: number },
     ) {
-      if (target.projectId === null) {
-        return { ok: false as const, reason: 'no_project' as const };
-      }
       return ipcRenderer.invoke(
         'workspace:searchFiles',
         await newTaskHostScope(target),

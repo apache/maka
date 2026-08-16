@@ -170,6 +170,8 @@ export interface ComposerHandle {
   clearDraft(draftKey: string): void;
   /** Write a specific session draft before navigation changes the active key. */
   setDraft(draftKey: string, text: string): void;
+  /** Read a specific draft without changing the active input. */
+  getDraft(draftKey: string): string;
   /** Append to a specific session draft without replacing newer text. */
   appendDraft?(draftKey: string, text: string): void;
   /** Move focus to the input without changing its content. */
@@ -596,6 +598,7 @@ export const Composer = forwardRef<
     saveCurrentDraft,
     clearDraft,
     setDraft,
+    getDraft,
     appendDraft,
     activeDraftKey,
   } = useComposerDraft({
@@ -1010,6 +1013,9 @@ export const Composer = forwardRef<
         resetPromptHistoryNavigation();
         focusInput();
         textPort.setValue(nextText);
+      },
+      getDraft(draftKey: string) {
+        return getDraft(draftKey);
       },
       appendDraft(draftKey: string, nextText: string) {
         const next = appendDraft(draftKey, nextText);

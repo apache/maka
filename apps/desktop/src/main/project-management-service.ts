@@ -15,7 +15,7 @@ type SelectedDirectoryActionResult =
 export interface ProjectManagementService {
   current(): Promise<CurrentProjectSelection>;
   getSnapshot(): Promise<DesktopProjectSnapshot>;
-  add(): Promise<SelectedDirectoryActionResult>;
+  add(options?: { select?: boolean }): Promise<SelectedDirectoryActionResult>;
   select(
     projectId: unknown,
   ): Promise<{ project: ProjectRecord | null; path: string }>;
@@ -83,13 +83,15 @@ export function createProjectManagementService(deps: {
       };
     },
 
-    async add() {
+    async add(options) {
       requireLocalDirectoryActions(deps);
       const path = await deps.chooseDirectory();
       if (!path) return { ok: false, reason: 'cancelled' };
       const project = await deps.catalog.register(path);
       const selected = requireSelectableProject(project);
-      deps.selection.setSelection(selected.id, selected.preferredPath);
+      if (options?.select !== false) {
+        deps.selection.setSelection(selected.id, selected.preferredPath);
+      }
       return { ok: true, project: selected, path: selected.preferredPath };
     },
 

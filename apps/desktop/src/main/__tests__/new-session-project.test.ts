@@ -25,14 +25,23 @@ test('preserves an explicit no-Project directory as a Host-path target', async (
 });
 
 test('uses an explicit Project identity without trusting the Client directory', async () => {
+  const selected: unknown[] = [];
+  const projectSelection = {
+    ...selection(),
+    select: async (projectId: unknown) => {
+      selected.push(projectId);
+      return { project: { id: String(projectId) }, path: '/unexpected' };
+    },
+  };
   assert.deepEqual(
     await resolveDesktopSessionWorkspace(
       { cwd: '/stale/client/path', projectId: 'project-1' },
-      selection(),
+      projectSelection,
       { register: unexpected },
     ),
     { kind: 'project', projectId: 'project-1' },
   );
+  assert.deepEqual(selected, [], 'an explicit draft Project does not change Host selection');
 });
 
 test('uses the configured default before the current Project preference', async () => {

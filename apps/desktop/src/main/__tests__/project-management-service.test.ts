@@ -114,6 +114,37 @@ test('adding a nested folder selects that folder instead of the parent project',
   }
 });
 
+test('can register a draft Project without changing the Host selection', async () => {
+  let selected = false;
+  const service = createProjectManagementService({
+    capabilities: LOCAL_CAPABILITIES,
+    catalog: {
+      list: unexpected,
+      register: async (path) => ({
+        id: 'project-1',
+        name: 'Project',
+        locations: [{ path, available: true, isWorktree: false }],
+        preferredPath: path,
+        available: true,
+      }),
+      relink: unexpected,
+      rename: unexpected,
+      archive: unexpected,
+      restore: unexpected,
+    },
+    chooseDirectory: async () => '/workspace',
+    selection: {
+      currentSelection: async () => ({ projectId: undefined, path: '/current' }),
+      setSelection: () => {
+        selected = true;
+      },
+    },
+  });
+
+  assert.equal((await service.add({ select: false })).ok, true);
+  assert.equal(selected, false);
+});
+
 test('rejects malformed Project identities before catalog access', async () => {
   const service = createProjectManagementService({
     capabilities: LOCAL_CAPABILITIES,

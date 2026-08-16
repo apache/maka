@@ -35,6 +35,8 @@ export interface ComposerDraftApi {
   clearDraft(key: string | undefined): void;
   /** Persist text under an explicit session key before the host switches it. */
   setDraft(key: string | undefined, value: string): void;
+  /** Read one draft without changing which draft is active. */
+  getDraft(key: string | undefined): string;
   /** Append text under an explicit session key without overwriting its draft. */
   appendDraft(key: string | undefined, value: string): string;
   /** The key the current input content is persisted under. */
@@ -72,6 +74,12 @@ export function useComposerDraft(input: {
   function setDraft(key: string | undefined, value: string) {
     rememberComposerDraft(draftStoreRef.current, key, value);
     input.persistence?.write(key, value);
+  }
+
+  function getDraft(key: string | undefined) {
+    return activeDraftKeyRef.current === key
+      ? input.text.getValue()
+      : readComposerDraft(draftStoreRef.current, key);
   }
 
   function appendDraft(key: string | undefined, value: string) {
@@ -116,6 +124,7 @@ export function useComposerDraft(input: {
     saveCurrentDraft,
     clearDraft,
     setDraft,
+    getDraft,
     appendDraft,
     activeDraftKey,
   };

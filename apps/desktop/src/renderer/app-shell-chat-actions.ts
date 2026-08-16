@@ -380,8 +380,6 @@ export function createAppShellChatActions(deps: {
         if (!initialNewTaskTarget) return false;
         if (pending && pending.length > 0) preflightAttachmentItems(pending, uiLocale);
         const session = await window.maka.newTasks.create(initialNewTaskTarget, {
-          // Omit permissionMode so main.ts's sessions:create resolves the
-          // configured chatDefaults.permissionMode as the single authority.
           name: DEFAULT_SESSION_NAME,
           ...(newChatModel
             ? {

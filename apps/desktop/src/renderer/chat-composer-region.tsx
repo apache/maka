@@ -6,7 +6,7 @@ import {
   readNewTaskReloadIntent,
   UNRESOLVED_NEW_TASK_DRAFT_KEY,
   writeNewTaskReloadDraft,
-} from './new-task-reload-intent';
+} from './new-task-reload-intent.js';
 
 const newTaskDraftPersistence = {
   read(key: string | undefined): string | undefined {
@@ -94,7 +94,10 @@ export function ChatComposerRegion({
       reloadTarget === UNRESOLVED_NEW_TASK_DRAFT_KEY ||
       reloadTarget === newTaskDraftKey;
     if (!canCarryUnresolvedDraft) return;
-    const current = composer.getText();
+    // The catalog may settle after the user has opened an existing Session.
+    // Read the unresolved new-task slot itself instead of whichever draft is
+    // currently visible, so Session text can never become a new-task draft.
+    const current = composer.getDraft(UNRESOLVED_NEW_TASK_DRAFT_KEY);
     composer.setDraft(
       newTaskDraftKey,
       current.length > 0

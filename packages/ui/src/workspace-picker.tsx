@@ -63,18 +63,24 @@ export function WorkspacePicker({ workspacePicker: picker }: {
       }}
     >
       {picker.groups.length > 0 ? <div className="maka-workspace-picker-scroll">
-        {picker.groups.map((group) => (
-          <div
-            key={group.id}
-            role="group"
-            aria-label={group.label}
-            className="maka-workspace-picker-group"
-          >
-            <div className="maka-workspace-picker-group-label">
-              <span>{group.label}</span>
-              {group.status ? <span>{group.status}</span> : null}
-            </div>
-            {group.projects.map((project) => {
+        {picker.groups.map((group) => {
+          const projects = group.projects.filter(
+            (project) => project.archivedAt === undefined,
+          );
+          const emptyUnselectedGroup =
+            group.id !== picker.selectedGroupId && projects.length === 0;
+          return (
+            <div
+              key={group.id}
+              role="group"
+              aria-label={group.label}
+              className="maka-workspace-picker-group"
+            >
+              <div className="maka-workspace-picker-group-label">
+                <span>{group.label}</span>
+                {group.status ? <span>{group.status}</span> : null}
+              </div>
+              {projects.map((project) => {
               const missing = !project.available;
               return (
                 <DropdownMenuItem
@@ -105,9 +111,26 @@ export function WorkspacePicker({ workspacePicker: picker }: {
                   }
                 />
               );
-            })}
-          </div>
-        ))}
+              })}
+              {emptyUnselectedGroup && group.onAdd ? (
+                <DropdownMenuItem
+                  icon={<Plus size={ICON_SIZE.meta} aria-hidden="true" />}
+                  label={copy.addProject}
+                  isDisabled={locked || group.disabled}
+                  onClick={group.onAdd}
+                />
+              ) : null}
+              {emptyUnselectedGroup && group.onSelectNoProject ? (
+                <DropdownMenuItem
+                  icon={<X size={ICON_SIZE.meta} aria-hidden="true" />}
+                  label={copy.noProject}
+                  isDisabled={locked || group.disabled}
+                  onClick={group.onSelectNoProject}
+                />
+              ) : null}
+            </div>
+          );
+        })}
       </div> : null}
       {selectedGroup?.onAdd || selectedGroup?.onSelectNoProject || picker.retry ? (
         <div role="group" className="maka-workspace-picker-actions">

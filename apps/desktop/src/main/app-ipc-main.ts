@@ -113,7 +113,8 @@ export function registerAppIpc(
   handleReconnectableRead(targetIpc, 'projects:getSnapshot', () =>
     deps.projectManagement.getSnapshot(),
   );
-  targetIpc.handle('projects:add', () => deps.projectManagement.add());
+  targetIpc.handle('projects:add', (_event, options?: { select?: unknown }) =>
+    deps.projectManagement.add({ select: options?.select !== false }));
   targetIpc.handle('projects:select', (_event, projectId: unknown) =>
     deps.projectManagement.select(projectId));
   targetIpc.handle('projects:relink', (_event, projectId: unknown) =>

@@ -182,9 +182,9 @@ const baseComposerProps: ComposerProps = {
   // session owns it, so the active-session stories below carry it without
   // showing it.
   workspacePicker: {
-    label: 'maka-agent',
-    branch: 'opencode/storybook-surface-coverage',
-    selectedGroupId: 'local',
+    label: 'backend-service',
+    hostBadge: 'Lab server',
+    selectedGroupId: 'lab-server',
     groups: [
       {
         id: 'local',
@@ -195,6 +195,16 @@ const baseComposerProps: ComposerProps = {
         onSelectProject: noop,
         onRelink: noop,
         onSelectNoProject: noop,
+      },
+      {
+        id: 'lab-server',
+        label: 'Lab server',
+        projects: [
+          project({ id: 'project-backend', name: 'backend-service' }),
+          project({ id: 'project-infra', name: 'infrastructure' }),
+        ],
+        selectedProjectId: 'project-backend',
+        onSelectProject: noop,
       },
     ],
   },
@@ -588,6 +598,29 @@ export const NewChatComposer: Story = {
         newChatModel: { llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
         onPickNewChatModel: noop,
         onOpenModelSettings: noop,
+      }}
+    />
+  ),
+};
+
+// A ready Local Host with no registered Projects must still expose its two
+// bootstrap actions while another Host owns the draft.
+export const NewChatComposerEmptyLocalHost: Story = {
+  render: () => (
+    <ComposedShell
+      session={null}
+      chat={{ messages: [] }}
+      composer={{
+        newChatModel: { llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
+        onPickNewChatModel: noop,
+        onOpenModelSettings: noop,
+        workspacePicker: {
+          ...baseComposerProps.workspacePicker!,
+          groups: baseComposerProps.workspacePicker!.groups.map((group) =>
+            group.id === 'local'
+              ? { ...group, projects: [], selectedProjectId: undefined }
+              : group),
+        },
       }}
     />
   ),
