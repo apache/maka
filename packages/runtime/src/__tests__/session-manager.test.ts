@@ -10102,6 +10102,128 @@ describe('SessionManager permission mode updates', () => {
     ).toEqual([]);
   });
 
+  test('retryChildAgent fails closed without a complete continuation composition', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    let providerDispatches = 0;
+    backends.register('fake', (ctx) => ({
+      kind: 'fake' as const,
+      sessionId: ctx.sessionId,
+      async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+        providerDispatches += 1;
+        yield {
+          type: 'error',
+          id: `${input.turnId}-error`,
+          turnId: input.turnId,
+          ts: 1,
+          recoverable: true,
+          reason: 'RateLimit',
+          message: 'provider 429',
+        };
+        yield {
+          type: 'complete',
+          id: `${input.turnId}-complete`,
+          turnId: input.turnId,
+          ts: 2,
+          stopReason: 'error',
+        };
+      },
+      async stop(): Promise<void> {},
+      async respondToSandboxBoundary(): Promise<void> {},
+      async dispose(): Promise<void> {},
+    }));
+    const inspectContinuationSafety = async () => ({
+      workspaceIdentity: '/tmp/cwd',
+      backgroundOperationsSettled: true,
+      availableToolNames: [] as string[],
+    });
+    const composeManager = (options: {
+      runtimeEventStore?: RuntimeEventStore;
+      withSafetyInspector?: boolean;
+    }) =>
+      new SessionManager({
+        store,
+        runStore,
+        runtimeEventStore: options.runtimeEventStore ?? runStore,
+        backends,
+        childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+        ...(options.withSafetyInspector ? { inspectContinuationSafety } : {}),
+        newId: nextId(),
+        now: nextNow(6_845),
+        runtimeSource: 'test',
+      });
+    const eventStoreWithoutAuthority = new Proxy(runStore, {
+      get(target, property, receiver) {
+        if (property === 'continuationAuthorityCapability') return undefined;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    const seeder = composeManager({});
+    const session = await seeder.createSession(makeInput({ permissionMode: 'ask' }));
+    const parentRun = makeRunHeader({
+      sessionId: session.id,
+      runId: 'parent-run',
+      turnId: 'parent-turn',
+      status: 'completed',
+      createdAt: 100,
+      updatedAt: 110,
+      completedAt: 110,
+    });
+    await seedRuntimeRun(runStore, parentRun, [
+      runtimeEvent({
+        id: 'parent-complete',
+        sessionId: session.id,
+        runId: parentRun.runId,
+        turnId: parentRun.turnId,
+        ts: 110,
+        status: 'completed',
+        actions: { endInvocation: true },
+      }),
+    ]);
+    const first = await seeder.spawnChildAgent(session.id, {
+      turnId: 'child-rate-limited',
+      parentRunId: parentRun.runId,
+      spec: { id: LOCAL_READ_AGENT_ID, name: 'Reader', systemPrompt: 'read only' },
+      prompt: 'inspect auth',
+    });
+    expect(first.status).toBe('failed');
+    expect(first.failureClass).toBe('RateLimit');
+    if (!first.runId) throw new Error('rate-limited child run id was not recorded');
+    const runsBeforeRetries = await runStore.listSessionRuns(session.id);
+
+    const incompleteCompositions = [
+      {
+        label: 'continuation authority and safety inspector are both missing',
+        runtimeEventStore: eventStoreWithoutAuthority,
+        withSafetyInspector: false,
+      },
+      {
+        label: 'continuation authority is missing its safety inspector',
+        runtimeEventStore: runStore,
+        withSafetyInspector: false,
+      },
+      {
+        label: 'safety inspector is missing its continuation authority',
+        runtimeEventStore: eventStoreWithoutAuthority,
+        withSafetyInspector: true,
+      },
+    ];
+    for (const composition of incompleteCompositions) {
+      const manager = composeManager(composition);
+      await expectRejects(
+        manager.retryChildAgent(session.id, {
+          parentRunId: parentRun.runId,
+          sourceRunId: first.runId,
+        }),
+        /composition is incomplete/,
+      );
+    }
+    expect(providerDispatches).toBe(1);
+    expect(await runStore.listSessionRuns(session.id)).toHaveLength(runsBeforeRetries.length);
+  });
+
   test('parent and child runs can read their ledger while only parents may compact session history', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();

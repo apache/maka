@@ -350,21 +350,20 @@ B3（typed retry/reattach branch）仍然 defer，不进入本 PR。
 - authority-capable `SessionManager + SqliteRuntimeStore` 的协议与 production-shaped 路径已覆盖；
 - runtime-host 的 execution-store facade 当前仍以 file RuntimeEvent store 为主，尚未拥有 B2
   continuation authority；
-- 为保持 main 已有的 hosted child provider RateLimit retry，当前 continuation correctness
-  切片保留一条显式
-  `legacy_provider_retry` 兼容 lane：只有 continuation authority 与 safety inspector
-  **同时缺席**时才会在任何 claim/Run/T1 之前选择；它只读 immutable RuntimeEvent、执行前重验
-  immediate source，且不写 continuation claim/start。若两项 capability 只安装了一项，必须
-  fail closed，禁止静默 fallback；claim-repair abandonment 也绝不进入此 lane；
+- hosted child provider RateLimit retry 只保留 `durable_continuation` 单一准入：continuation
+  authority 与 safety inspector 任一缺席，都会在任何 claim/Run/T1 之前 fail closed，禁止
+  静默 fallback；早期的 `legacy_provider_retry` 兼容 lane 已在 host authority lifecycle
+  integration 完成后移除；
 - PR D 必须在同一 storage-root lease 下接入 SQLite authority，并锁定
   `claim repair → linked-child admission repair → generic ledger repair → planning` 的 owner 顺序；
 - SQLite canonical terminal 可幂等提交；文件型 AgentRun projection 当前是跨存储 saga。确定性
   event id 能让单恢复者重试收敛，但两个进程同时 repair 时还没有 append-if-absent/CAS；
   PR D 的 lease/fencing 或 projection CAS 是宣称跨进程 exactly-once 前的硬前置；
 - 在上述 composition/owner 测试完成前，不能把当前切片描述为 hosted auto-resume 已默认可用。
-  `legacy_provider_retry` 只维持升级前的 provider 429 重试能力，不具有 durable continuation、
-  跨进程 exactly-once 或 crash-resume 承诺；host authority lifecycle integration 完成 typed
-  authority composition 后应删除该兼容 lane。
+  `legacy_provider_retry` 兼容 lane（仅维持升级前的 provider 429 重试能力，不具有 durable
+  continuation、跨进程 exactly-once 或 crash-resume 承诺）已在 host authority lifecycle
+  integration 完成 typed authority composition 后移除；child provider retry 现在只走
+  durable continuation 准入，组合不完整即 fail closed。
 
 ### 8.4 明确不进入 PR B
 
