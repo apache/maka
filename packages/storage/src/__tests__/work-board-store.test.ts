@@ -231,6 +231,8 @@ describe('Work Board store', () => {
         }
         const inboxPage = await store.list({ limit: 1, scope: { kind: 'inbox' } });
         assert.ok(inboxPage.nextCursor);
+        const firstItem = inboxPage.items[0];
+        assert.ok(firstItem);
 
         await assert.rejects(
           store.list({
@@ -252,6 +254,9 @@ describe('Work Board store', () => {
           cursor: inboxPage.nextCursor,
         });
         assert.equal(secondPage.items.length, 1);
+        const secondItem = secondPage.items[0];
+        assert.ok(secondItem);
+        assert.notEqual(secondItem.id, firstItem.id);
       } finally {
         store.close();
       }
