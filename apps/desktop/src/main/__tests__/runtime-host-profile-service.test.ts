@@ -91,6 +91,38 @@ test("starts Local and preserves remote preferences when the profile catalog is 
   assert.match(startup.unavailable.get(PROFILE.id)?.message ?? "", /unreadable/);
 });
 
+test("does not overwrite Runtime Host preferences that were unreadable at startup", async () => {
+  const root = await clientRoot();
+  const preferencesPath = join(root, "runtime-host-profile-selection.json");
+  const savedPreferences = `${JSON.stringify({
+    schemaVersion: 2,
+    defaultProfileId: PROFILE.id,
+    enabledRemoteProfileIds: [PROFILE.id],
+  })}\n`;
+  await writeFile(preferencesPath, savedPreferences);
+  const startup = await resolveDesktopRuntimeHostStartup(root, {
+    readPreferences: async () => {
+      throw Object.assign(new Error("preferences are temporarily unavailable"), {
+        code: "EACCES",
+      });
+    },
+  });
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    states: () => [connectingLocal()],
+    enable: async () => assert.fail("an unreadable preference authority must not mutate"),
+    disable: async () => assert.fail("an unreadable preference authority must not mutate"),
+    setDefault: () => assert.fail("an unreadable preference authority must not mutate"),
+  });
+
+  await assert.rejects(
+    () => service.setDefault(LOCAL_RUNTIME_HOST_PROFILE.id),
+    /restart Maka before changing/,
+  );
+  assert.equal(await readFile(preferencesPath, "utf8"), savedPreferences);
+});
+
 test("keeps Local enabled while a new remote Host connects", async () => {
   const root = await clientRoot();
   const enabled: string[] = [];

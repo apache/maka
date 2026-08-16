@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import type { ConnectionEvent } from '@maka/core/connections';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
@@ -37,15 +37,16 @@ export function useShellConnections(options: {
     ? parseDesktopSessionKey(options.activeSessionId).hostId
     : DEFAULT_HOST_KEY;
   const currentKey = useRef(snapshotKey);
-  currentKey.current = snapshotKey;
+  useLayoutEffect(() => {
+    currentKey.current = snapshotKey;
+  }, [snapshotKey]);
   const [snapshots, setSnapshots] = useState(
     () => new Map<string, DesktopConnectionSnapshot>(),
   );
   const refreshSequence = useRef(new Map<string, number>());
 
   function setSnapshot(next: DesktopConnectionSnapshot) {
-    const key = currentKey.current;
-    setSnapshots((previous) => new Map(previous).set(key, next));
+    setSnapshots((previous) => new Map(previous).set(snapshotKey, next));
   }
 
   async function refreshConnections(sessionId?: string) {

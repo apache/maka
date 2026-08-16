@@ -31,6 +31,7 @@ export interface DesktopRuntimeHostPreferences {
 
 export interface DesktopRuntimeHostStartup {
   readonly preferences: DesktopRuntimeHostPreferences;
+  readonly preferencesReadFailure?: Error;
   readonly remotes: readonly ResolvedRuntimeHostProfile[];
   readonly unavailable: ReadonlyMap<string, Error>;
 }
@@ -54,13 +55,15 @@ export async function resolveDesktopRuntimeHostStartup(
 ): Promise<DesktopRuntimeHostStartup> {
   const preferencesPath = join(clientDataRoot, PREFERENCES_FILE);
   let preferences: DesktopRuntimeHostPreferences;
+  let preferencesReadFailure: Error | undefined;
   try {
     preferences = await (overrides.readPreferences?.() ??
       readRuntimeHostPreferences(preferencesPath));
   } catch (error) {
+    preferencesReadFailure = asError(error);
     console.error(
       "[runtime-host] preferences could not be read; using Local defaults:",
-      error,
+      preferencesReadFailure,
     );
     preferences = defaultPreferences();
   }
@@ -86,6 +89,7 @@ export async function resolveDesktopRuntimeHostStartup(
         ...preferences,
         defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
       },
+      ...(preferencesReadFailure ? { preferencesReadFailure } : {}),
       remotes: [],
       unavailable,
     };
@@ -124,7 +128,12 @@ export async function resolveDesktopRuntimeHostStartup(
       unavailable.set(profileId, asError(error));
     }
   }
-  return { preferences, remotes, unavailable };
+  return {
+    preferences,
+    ...(preferencesReadFailure ? { preferencesReadFailure } : {}),
+    remotes,
+    unavailable,
+  };
 }
 
 export function createDesktopRuntimeHostProfileService(input: {
@@ -151,6 +160,19 @@ export function createDesktopRuntimeHostProfileService(input: {
     );
     return pending;
   };
+
+  const mutateProfiles = <T>(operation: () => Promise<T>): Promise<T> =>
+    mutate(async () => {
+      // The Local fallback is effective startup state, not a replacement for
+      // preferences whose durable value is unknown.
+      if (input.startup.preferencesReadFailure) {
+        throw new Error(
+          "Saved Runtime Host settings could not be read; restart Maka before changing them",
+          { cause: input.startup.preferencesReadFailure },
+        );
+      }
+      return operation();
+    });
 
   const snapshot = async (): Promise<DesktopRuntimeHostProfileSnapshot> => {
     const document = await catalog.read();
@@ -214,7 +236,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     getSnapshot: () => mutate(snapshot),
     addAndEnable(value) {
       requireSaveInput(value);
-      return mutate(async () => {
+      return mutateProfiles(async () => {
         if (value.credential === undefined) {
           throw new Error("A Runtime Host access credential is required");
         }
@@ -228,7 +250,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       });
     },
     setEnabled(profileId, isEnabled) {
-      return mutate(async () => {
+      return mutateProfiles(async () => {
         if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
           if (!isEnabled) throw new Error("Local Runtime Host cannot be disabled");
           return snapshot();
@@ -248,7 +270,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       });
     },
     setDefault(profileId) {
-      return mutate(async () => {
+      return mutateProfiles(async () => {
         if (
           profileId !== LOCAL_RUNTIME_HOST_PROFILE.id &&
           !preferences.enabledRemoteProfileIds.includes(profileId)
@@ -262,7 +284,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       });
     },
     remove(profileId) {
-      return mutate(async () => {
+      return mutateProfiles(async () => {
         if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
           throw new Error("Local Runtime Host cannot be removed");
         }
