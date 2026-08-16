@@ -267,11 +267,10 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assert.notEqual(bindingFor(manager, 'first', 'echo'), bindingFor(manager, 'second', 'echo'));
     });
 
-    test('coalesces a refresh signal and publishes only the final attempt', async () => {
+    test('coalesces a refresh signal and keeps the latest valid snapshot', async () => {
       const fixture = await createRemoteFixture('streamable-http');
       const manager = createManager();
       await manager.sync(remoteConfig(fixture.url));
-      const before = manager.status('remote')?.tools;
       const listsBefore = countProtocolMethod(fixture, 'tools/list');
 
       fixture.setToolListMode('replacement');
@@ -290,7 +289,10 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       for (const result of settled) {
         if (result.status === 'rejected') assert.match(String(result.reason), /duplicate tool/u);
       }
-      assert.deepEqual(manager.status('remote')?.tools, before);
+      assert.deepEqual(
+        manager.status('remote')?.tools.map((tool) => tool.name),
+        ['replacement'],
+      );
       assert.equal(countProtocolMethod(fixture, 'tools/list') - listsBefore, 2);
     });
 
@@ -322,7 +324,7 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       let now = 0;
       const manager = createManager({ now: () => now });
       await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
-      fixture.setToolListClockAdvance(() => {
+      fixture.setToolListResponseClockAdvance(() => {
         now += 1_100;
       });
       fixture.setNotifyOnEveryToolList(true);
@@ -335,6 +337,23 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
 
       assert.equal(countProtocolMethod(fixture, 'tools/list') <= 4, true);
       assert.match(manager.status('remote')?.error ?? '', /changed too frequently/u);
+    });
+
+    test('publishes the latest valid snapshot before suppressing rediscovery', async () => {
+      const fixture = await createRemoteFixture('sse');
+      const manager = createManager();
+      await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
+      fixture.setToolListMode('replacement');
+      fixture.setNotifyOnEveryToolList(true);
+
+      await fixture.notifyToolListChanged();
+      await waitFor(() => /changed too frequently/u.test(manager.status('remote')?.error ?? ''));
+
+      assert.equal(countProtocolMethod(fixture, 'tools/list'), 4);
+      assert.deepEqual(
+        manager.status('remote')?.tools.map((tool) => tool.name),
+        ['replacement'],
+      );
     });
 
     test('coalesces a burst of legitimate list-changed notifications', async () => {
@@ -851,6 +870,7 @@ interface RemoteFixture {
   holdNextToolList(): { started: Promise<void>; release(): void };
   setNotifyOnEveryToolList(enabled: boolean): void;
   setToolListClockAdvance(advance: () => void): void;
+  setToolListResponseClockAdvance(advance: () => void): void;
   notifyToolListChanged(): Promise<void>;
   close(): Promise<void>;
 }
@@ -874,7 +894,16 @@ async function createRemoteFixture(
   let nextToolListGate: InternalToolListGate | undefined;
   let notifyOnEveryToolList = false;
   let toolListClockAdvance = () => {};
+  let toolListResponseClockAdvance = () => {};
   const sseTransports = new Map<string, { transport: SSEServerTransport; server: McpServer }>();
+  const beforeToolList = async () => {
+    toolListClockAdvance();
+    const gate = nextToolListGate;
+    if (!gate) return;
+    nextToolListGate = undefined;
+    gate.markStarted();
+    await gate.waitForRelease;
+  };
   const httpServer = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     const request: RemoteRequest = {
@@ -914,14 +943,8 @@ async function createRemoteFixture(
         const server = createProtocolServer({
           advertiseTools: true,
           toolListMode: () => toolListMode,
-          beforeToolList: async () => {
-            toolListClockAdvance();
-            const gate = nextToolListGate;
-            if (!gate) return;
-            nextToolListGate = undefined;
-            gate.markStarted();
-            await gate.waitForRelease;
-          },
+          beforeToolList,
+          afterToolList: () => toolListResponseClockAdvance(),
           notifyOnEveryToolList: () => notifyOnEveryToolList,
         });
         await server.connect(transport);
@@ -937,14 +960,8 @@ async function createRemoteFixture(
         const server = createProtocolServer({
           advertiseTools: options.advertiseTools !== false,
           toolListMode: () => toolListMode,
-          beforeToolList: async () => {
-            toolListClockAdvance();
-            const gate = nextToolListGate;
-            if (!gate) return;
-            nextToolListGate = undefined;
-            gate.markStarted();
-            await gate.waitForRelease;
-          },
+          beforeToolList,
+          afterToolList: () => toolListResponseClockAdvance(),
           notifyOnEveryToolList: () => notifyOnEveryToolList,
         });
         sseTransports.set(transport.sessionId, { transport, server });
@@ -1005,6 +1022,9 @@ async function createRemoteFixture(
     setToolListClockAdvance: (advance) => {
       toolListClockAdvance = advance;
     },
+    setToolListResponseClockAdvance: (advance) => {
+      toolListResponseClockAdvance = advance;
+    },
     notifyToolListChanged: async () => {
       const servers = [...sseTransports.values()].map(({ server }) => server);
       if (servers.length === 0) throw new Error('no persistent MCP server is connected');
@@ -1030,6 +1050,7 @@ function createProtocolServer(options: {
   advertiseTools: boolean;
   toolListMode: () => ToolListMode;
   beforeToolList: () => Promise<void>;
+  afterToolList: () => void;
   notifyOnEveryToolList: () => boolean;
 }): McpServer {
   const server = new McpServer(
@@ -1073,6 +1094,7 @@ function createProtocolServer(options: {
                       ]
                     : [remoteToolDefinition('echo'), remoteToolDefinition('invalid-output')],
     };
+    options.afterToolList();
     if (options.notifyOnEveryToolList()) {
       setTimeout(() => {
         void server.sendToolListChanged().catch(() => {});

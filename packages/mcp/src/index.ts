@@ -45,7 +45,6 @@ const STDERR_CONTINUATION = '[stderr continuation omitted]';
 const MAX_SUMMARIZED_ERROR_BLOCKS = 100;
 const OVERSIZED_TOOL_ERROR_CONTENT = 'server returned oversized error content';
 const MAX_TOOL_REFRESH_PASSES = 3;
-const TOOL_REFRESH_QUIET_PERIOD_MS = 1_000;
 
 export interface McpClientManagerOptions {
   clientName?: string;
@@ -82,7 +81,6 @@ interface ToolRefreshNotificationState {
   // This state intentionally outlives one refresh promise. A notification
   // sent just after every response must consume the same bounded pass budget.
   refreshPasses: number;
-  lastRefreshCompletedAt?: number;
   suppressed: boolean;
 }
 
@@ -284,12 +282,18 @@ export class McpClientManager {
     const client = entry.client;
     if (!client) throw new Error(`MCP server "${serverId}" is not connected`);
     const connectionGeneration = this.requireConnectionGeneration(serverId, entry);
-    entry.refreshNotificationState = {
-      client,
-      connectionGeneration,
-      refreshPasses: 0,
-      suppressed: false,
-    };
+    const activeRefresh = entry.refreshState;
+    const refreshIsActive =
+      activeRefresh?.client === client &&
+      activeRefresh.connectionGeneration === connectionGeneration;
+    if (!refreshIsActive) {
+      entry.refreshNotificationState = {
+        client,
+        connectionGeneration,
+        refreshPasses: 0,
+        suppressed: false,
+      };
+    }
     return this.startToolRefresh(serverId, entry, client, connectionGeneration);
   }
 
@@ -329,7 +333,6 @@ export class McpClientManager {
     client: Client,
     connectionGeneration: number,
   ): Promise<McpToolDescriptor[]> {
-    const now = this.now();
     let notificationState = entry.refreshNotificationState;
     if (
       notificationState?.client !== client ||
@@ -351,13 +354,6 @@ export class McpClientManager {
       activeRefresh.pending = true;
       activeRefresh.pendingNotification = true;
       return activeRefresh.promise;
-    }
-    if (
-      notificationState.lastRefreshCompletedAt !== undefined &&
-      now - notificationState.lastRefreshCompletedAt > TOOL_REFRESH_QUIET_PERIOD_MS
-    ) {
-      notificationState.refreshPasses = 0;
-      notificationState.suppressed = false;
     }
     if (notificationState.suppressed) {
       return Promise.reject(this.toolRefreshFrequencyError(serverId));
@@ -727,27 +723,20 @@ export class McpClientManager {
         throw safeMcpOperationError(serverId, 'connection changed during tool refresh', failure);
       }
       const notificationState = entry.refreshNotificationState;
-      if (
-        notificationPass &&
+      const notificationStateMatches =
         notificationState?.client === state.client &&
-        notificationState.connectionGeneration === state.connectionGeneration
-      ) {
-        notificationState.lastRefreshCompletedAt = this.now();
-      }
-      if (
-        notificationState?.client === state.client &&
-        notificationState.connectionGeneration === state.connectionGeneration &&
-        notificationState.suppressed
-      ) {
-        throw this.toolRefreshFrequencyError(serverId);
-      }
-      if (state.pending) {
-        continue;
-      }
+        notificationState.connectionGeneration === state.connectionGeneration;
+      const refreshSuppressed = notificationStateMatches && notificationState.suppressed;
       if (failure !== undefined) {
+        if (refreshSuppressed) throw this.toolRefreshFrequencyError(serverId);
+        if (state.pending) continue;
         throw safeMcpOperationError(serverId, 'tool refresh failed', failure);
       }
-      if (!definitions) throw new Error(`MCP server "${serverId}" returned no tool definitions`);
+      if (!definitions) {
+        if (refreshSuppressed) throw this.toolRefreshFrequencyError(serverId);
+        if (state.pending) continue;
+        throw new Error(`MCP server "${serverId}" returned no tool definitions`);
+      }
 
       const snapshot = createToolSnapshot(
         serverId,
@@ -764,6 +753,8 @@ export class McpClientManager {
         error: undefined,
         updatedAt: this.now(),
       });
+      if (refreshSuppressed) throw this.toolRefreshFrequencyError(serverId);
+      if (state.pending) continue;
       return snapshot.descriptors.map(cloneTool);
     }
   }
