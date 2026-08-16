@@ -1,6 +1,7 @@
 import {
   LONG_SIDEBAR_PROJECT_ID,
   LONG_SIDEBAR_PROJECT_NAME,
+  LONG_SIDEBAR_SESSION_PREFIX,
 } from '../src/main/e2e-fixture/seed-helpers';
 import { expect, test } from './fixtures';
 
@@ -61,6 +62,26 @@ test('project navigation and actions remain adjacent keyboard controls', async (
   await expect(page.getByRole('dialog', { name: '重命名项目' })).toBeVisible();
   await page.getByRole('button', { name: '关闭', exact: true }).click();
   await expect(action).toBeFocused();
+});
+
+test('task row action menu accepts pointer selection', async ({
+  projectSidebarWindow: page,
+}) => {
+  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();
+
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  const taskRow = sidebar.locator(
+    `[data-session-id="${LONG_SIDEBAR_SESSION_PREFIX}00"]`,
+  );
+  await taskRow.hover();
+  await taskRow.getByRole('button', { name: '任务操作', exact: true }).click();
+
+  const rename = page.getByRole('menuitem', { name: '重命名', exact: true });
+  await expect(rename).toBeVisible();
+  await rename.click();
+
+  await expect(page.getByRole('dialog', { name: '重命名任务' })).toBeVisible();
 });
 
 test('rail grouping survives a renderer reload', async ({ projectSidebarWindow: page }) => {

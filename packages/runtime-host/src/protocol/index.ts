@@ -42,7 +42,6 @@ import {
   type ResponseFrame,
 } from './operations.js';
 
-export { RuntimeHostProtocolError } from './errors.js';
 export * from './access-authority.js';
 export * from './agent-graph.js';
 export * from './interaction.js';

@@ -1,10 +1,7 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { TextDecoder } from 'node:util';
 import WebSocket, { type RawData } from 'ws';
-import {
-  RUNTIME_HOST_MAX_MESSAGE_BYTES,
-  RuntimeHostProtocolError,
-  type EncodedProtocolMessage,
-} from '../protocol/index.js';
+import { RUNTIME_HOST_MAX_MESSAGE_BYTES, type EncodedProtocolMessage } from '../protocol/index.js';
 import { RuntimeHostTransportError } from './framed-transport.js';
 import type { RuntimeHostMessageTransport } from './message-transport.js';
 

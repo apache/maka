@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  MODEL_CALL_DIAGNOSTIC_FIELD_MAX_LENGTH,
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
   decodeModelCallAttempt,
   groupModelCallAttempts,
@@ -39,6 +40,41 @@ function attempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttempt {
 }
 
 describe('ModelCallAttempt codec', () => {
+  test('accepts bounded provider failure diagnostics on history compaction calls', () => {
+    const decoded = decodeModelCallAttempt(
+      attempt({
+        callKind: 'history_compact',
+        historyCompactRoute: 'provider_native',
+        status: 'failed',
+        errorClass: 'RateLimit',
+        httpStatus: 429,
+        providerCode: 'rate_limit_exceeded',
+        providerRequestId: 'req-123',
+        retryable: true,
+      }),
+    );
+
+    assert.equal(decoded.historyCompactRoute, 'provider_native');
+    assert.equal(decoded.httpStatus, 429);
+    assert.equal(decoded.providerRequestId, 'req-123');
+  });
+
+  test('rejects invalid or unbounded provider failure diagnostics', () => {
+    assert.throws(() => decodeModelCallAttempt(attempt({ httpStatus: 99, status: 'failed' })));
+    assert.throws(() =>
+      decodeModelCallAttempt(
+        attempt({
+          status: 'failed',
+          providerCode: 'x'.repeat(MODEL_CALL_DIAGNOSTIC_FIELD_MAX_LENGTH + 1),
+        }),
+      ),
+    );
+    assert.throws(
+      () => decodeModelCallAttempt(attempt({ historyCompactRoute: 'text_summary' })),
+      /non-compaction call carries historyCompactRoute/,
+    );
+  });
+
   test('rejects an unpriced attempt that carries a cost', () => {
     assert.throws(
       () => decodeModelCallAttempt(attempt({ costBasis: 'unpriced', costUsd: 0 })),

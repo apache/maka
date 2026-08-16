@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
@@ -15,7 +16,6 @@ import {
   encodeArtifactQueryResult,
   encodeProtocolMessage,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
-  RuntimeHostProtocolError,
 } from '../protocol/index.js';
 import { encodeArtifactProjection } from '../protocol/artifact.js';
 

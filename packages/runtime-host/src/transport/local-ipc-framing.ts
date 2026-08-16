@@ -1,9 +1,6 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { TextDecoder } from 'node:util';
-import {
-  RUNTIME_HOST_MAX_MESSAGE_BYTES,
-  RuntimeHostProtocolError,
-  type EncodedProtocolMessage,
-} from '../protocol/index.js';
+import { RUNTIME_HOST_MAX_MESSAGE_BYTES, type EncodedProtocolMessage } from '../protocol/index.js';
 
 export function frameLocalIpcProtocolMessage(message: EncodedProtocolMessage): Buffer {
   return Buffer.concat([message, Buffer.from('\n')]);

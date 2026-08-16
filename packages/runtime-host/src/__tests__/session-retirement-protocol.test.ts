@@ -1,10 +1,10 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   decodeClientFrame,
   decodeHostFrame,
   HOST_OPERATION_SPECS,
-  RuntimeHostProtocolError,
   type SessionCatalogProjection,
 } from '../protocol/index.js';
 

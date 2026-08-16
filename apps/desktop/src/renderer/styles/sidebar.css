@@ -284,7 +284,10 @@
  * five things wide.
  *
  * :focus-within covers the keyboard: focus on the row's own button reveals the
- * menu, and focus moving into the menu keeps it revealed.
+ * menu. The native popover's own open state covers the pointer handoff into the
+ * top layer: once the pointer leaves the row, :hover drops before the item can
+ * receive its click, and pointer-events: none on this ancestor otherwise makes
+ * the page underneath the visible popover win hit testing.
  */
 .maka-session-row-time {
   display: inline-flex;
@@ -312,7 +315,8 @@
 }
 
 .maka-session-row:hover > .maka-session-row-action,
-.maka-session-row:focus-within > .maka-session-row-action {
+.maka-session-row:focus-within > .maka-session-row-action,
+.maka-session-row > .maka-session-row-action:has([popover]:popover-open) {
   opacity: 1;
   pointer-events: auto;
 }

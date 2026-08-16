@@ -3315,6 +3315,7 @@ export class AiSdkBackend implements AgentBackend {
     turnId: string;
     callKind: ModelCallKind;
     modelId: string;
+    historyCompactRoute?: ModelCallAttempt['historyCompactRoute'];
     /**
      * Stated by every caller, never defaulted: an unattributed provider request
      * is silently dropped by usage accounting, so the compiler has to be the
@@ -3326,6 +3327,7 @@ export class AiSdkBackend implements AgentBackend {
     const accounting = this.modelCallAccounting(input.callKind, {
       modelId: input.modelId,
       ...(input.runId ? { runId: input.runId } : {}),
+      ...(input.historyCompactRoute ? { historyCompactRoute: input.historyCompactRoute } : {}),
     });
     const runId = input.runId;
     const beforeRunProviderDispatch = this.input.beforeRunProviderDispatch;
@@ -3369,6 +3371,7 @@ export class AiSdkBackend implements AgentBackend {
       runId?: string;
       /** The model this call actually runs against; priced as that model. */
       modelId?: string;
+      historyCompactRoute?: ModelCallAttempt['historyCompactRoute'];
     },
   ): ModelCallAccountingInput | undefined {
     const record = this.input.recordModelCallAttempt;
@@ -3380,6 +3383,9 @@ export class AiSdkBackend implements AgentBackend {
       connectionSlug: this.input.connection.slug,
       providerId: this.input.connection.providerType,
       callKind,
+      ...(identity?.historyCompactRoute
+        ? { historyCompactRoute: identity.historyCompactRoute }
+        : {}),
       record,
       resolveCost: (usage: ProviderRequestUsage) => this.resolveModelCallCost(usage, modelId),
       ...(this.input.assertModelCallAccountingReady

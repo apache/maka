@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { waitForRuntimeHostReady } from '../client/index.js';
+import { waitForRuntimeHostReady } from '../client/wait-for-ready.js';
 
 test('stops a pending ready probe when its reconnect attempt is cancelled', async () => {
   const started = deferred();

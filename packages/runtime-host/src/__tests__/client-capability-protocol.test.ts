@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID } from '@maka/runtime/scheduled-task-tools';
@@ -8,7 +9,6 @@ import {
   decodeClientCapabilityResult,
   decodeClientFrame,
   decodeHostFrame,
-  RuntimeHostProtocolError,
 } from '../protocol/index.js';
 
 describe('Client Capability protocol', () => {

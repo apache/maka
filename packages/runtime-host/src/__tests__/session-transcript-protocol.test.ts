@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
@@ -7,7 +8,6 @@ import {
   encodeProtocolMessage,
   HOST_OPERATION_SPECS,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
-  RuntimeHostProtocolError,
   SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
 } from '../protocol/index.js';
 

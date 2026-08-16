@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { InteractionRecord, StoredInteractionRequest } from '@maka/storage/interaction-store';
@@ -8,7 +9,6 @@ import {
   decodeSessionInteractionProjection,
   HOST_OPERATION_SPECS,
   INTERACTION_MAX_PENDING_PER_SESSION,
-  RuntimeHostProtocolError,
 } from '../protocol/index.js';
 import {
   answerOutcome,

@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
@@ -6,7 +7,6 @@ import {
   decodeSessionCatalogItem,
   decodeSessionCatalogQueryResult,
   HOST_OPERATION_SPECS,
-  RuntimeHostProtocolError,
   SESSION_CATALOG_PAGE_MAX_ITEMS,
   type SessionCatalogProjection,
 } from '../protocol/index.js';

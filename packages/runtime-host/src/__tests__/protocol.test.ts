@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
@@ -25,7 +26,6 @@ import {
   TURN_MESSAGE_CONTENT_MAX_BYTES,
   TURN_MESSAGE_TEXT_MAX_BYTES,
   RUNTIME_POLICY_OPERATION_SPECS,
-  RuntimeHostProtocolError,
 } from '../protocol/index.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from '../protocol/host-status.js';
 import { composeOperationSpecMaps } from '../protocol/operation-spec.js';

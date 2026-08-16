@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
@@ -6,7 +7,6 @@ import {
   decodeOAuthPresentationRequest,
   decodeOAuthPresentationResult,
   OAUTH_PRESENTATION_AUTHORIZATION_CODE_MAX_LENGTH,
-  RuntimeHostProtocolError,
 } from '../protocol/index.js';
 
 test('OAuth login protocol binds attempt identity and closes terminal projections', () => {

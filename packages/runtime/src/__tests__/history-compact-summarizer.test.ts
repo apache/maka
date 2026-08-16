@@ -166,6 +166,248 @@ describe('buildLlmHistorySummarizer', () => {
     expect(toolPart.output).toEqual({ type: 'json', value: { name: 'maka' } });
   });
 
+  test('groups parallel tool calls into one assistant message for strict providers', async () => {
+    const seen: Array<{ messages: unknown[] }> = [];
+    const generateText: AiSdkGenerateTextLike = async (opts) => {
+      seen.push(opts);
+      return { text: '## Goal\nX' };
+    };
+    const summarize = buildLlmHistorySummarizer({ resolveModel: () => 'fake-model', generateText });
+
+    const events: RuntimeEvent[] = [
+      ev({ role: 'user', author: 'user', content: { kind: 'text', text: '并行读两个文件' } }),
+      ev({
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'fc1', name: 'read', args: { path: 'a.ts' } },
+      }),
+      ev({
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'fc2', name: 'read', args: { path: 'b.ts' } },
+      }),
+      ev({
+        role: 'tool',
+        author: 'tool',
+        content: { kind: 'function_response', id: 'fc1', name: 'read', result: 'A' },
+      }),
+      ev({
+        role: 'tool',
+        author: 'tool',
+        content: { kind: 'function_response', id: 'fc2', name: 'read', result: 'B' },
+      }),
+      ev({ role: 'model', author: 'agent', content: { kind: 'text', text: 'ok' } }),
+    ];
+
+    await summarize(inputWith(events));
+
+    const messages = seen[0]!.messages as Array<{
+      role: string;
+      content: Array<{ type: string; toolCallId?: string }>;
+    }>;
+    // Both calls of the parallel step share one assistant message; a second
+    // assistant message before the first's results is the strict-provider 400
+    // in #3030.
+    const assistantToolCallMessages = messages.filter(
+      (m) => m.role === 'assistant' && m.content.some((part) => part.type === 'tool-call'),
+    );
+    assert.equal(assistantToolCallMessages.length, 1);
+    assert.deepEqual(
+      assistantToolCallMessages[0]!.content.map((part) => part.toolCallId),
+      ['fc1', 'fc2'],
+    );
+    const shape = messages.map((m) => `${m.role}:${m.content.map((part) => part.type).join('+')}`);
+    assert.deepEqual(shape.slice(-4), [
+      'assistant:tool-call+tool-call',
+      'tool:tool-result',
+      'tool:tool-result',
+      'assistant:text',
+    ]);
+  });
+
+  test('keeps a step open across interleaved results until every call is settled', async () => {
+    // The production-legal ordering from the primary replay materializer's
+    // fixture: call A, call B, result A, call C, result B, result C. All
+    // three calls must share one assistant message with the results after it.
+    const seen: Array<{ messages: unknown[] }> = [];
+    const generateText: AiSdkGenerateTextLike = async (opts) => {
+      seen.push(opts);
+      return { text: '## Goal\nX' };
+    };
+    const summarize = buildLlmHistorySummarizer({ resolveModel: () => 'fake-model', generateText });
+
+    const events: RuntimeEvent[] = [
+      ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'inspect files' } }),
+      ev({
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'fc1', name: 'read', args: { path: 'a.ts' } },
+      }),
+      ev({
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'fc2', name: 'read', args: { path: 'b.ts' } },
+      }),
+      ev({
+        role: 'tool',
+        author: 'tool',
+        content: { kind: 'function_response', id: 'fc1', name: 'read', result: 'A' },
+      }),
+      ev({
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'fc3', name: 'glob', args: { pattern: '*' } },
+      }),
+      ev({
+        role: 'tool',
+        author: 'tool',
+        content: { kind: 'function_response', id: 'fc2', name: 'read', result: 'B' },
+      }),
+      ev({
+        role: 'tool',
+        author: 'tool',
+        content: { kind: 'function_response', id: 'fc3', name: 'glob', result: ['a.ts'] },
+      }),
+    ];
+
+    await summarize(inputWith(events));
+
+    const messages = seen[0]!.messages as Array<{
+      role: string;
+      content: Array<{ type: string; toolCallId?: string }>;
+    }>;
+    const shape = messages.map((m) => `${m.role}:${m.content.map((part) => part.type).join('+')}`);
+    assert.deepEqual(shape, [
+      'user:text',
+      'assistant:tool-call+tool-call+tool-call',
+      'tool:tool-result',
+      'tool:tool-result',
+      'tool:tool-result',
+    ]);
+    assert.deepEqual(
+      messages[1]!.content.map((part) => part.toolCallId),
+      ['fc1', 'fc2', 'fc3'],
+    );
+    assert.deepEqual(
+      messages.slice(2).map((m) => m.content[0]!.toolCallId),
+      ['fc1', 'fc2', 'fc3'],
+    );
+  });
+
+  test('does not merge distinct settled steps into one assistant message', async () => {
+    const seen: Array<{ messages: unknown[] }> = [];
+    const generateText: AiSdkGenerateTextLike = async (opts) => {
+      seen.push(opts);
+      return { text: '## Goal\nX' };
+    };
+    const summarize = buildLlmHistorySummarizer({ resolveModel: () => 'fake-model', generateText });
+
+    const events: RuntimeEvent[] = [
+      // Two sequential legacy steps (no stepId): the second call arrives only
+      // after the first is fully settled, so it opens its own message.
+      ev({
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'fc1', name: 'read', args: { path: 'a.ts' } },
+      }),
+      ev({
+        role: 'tool',
+        author: 'tool',
+        content: { kind: 'function_response', id: 'fc1', name: 'read', result: 'A' },
+      }),
+      ev({
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'fc2', name: 'read', args: { path: 'b.ts' } },
+      }),
+      ev({
+        role: 'tool',
+        author: 'tool',
+        content: { kind: 'function_response', id: 'fc2', name: 'read', result: 'B' },
+      }),
+    ];
+
+    await summarize(inputWith(events));
+
+    const messages = seen[0]!.messages as Array<{
+      role: string;
+      content: Array<{ type: string }>;
+    }>;
+    const shape = messages.map((m) => `${m.role}:${m.content.map((part) => part.type).join('+')}`);
+    assert.deepEqual(shape, [
+      'assistant:tool-call',
+      'tool:tool-result',
+      'assistant:tool-call',
+      'tool:tool-result',
+    ]);
+  });
+
+  test('stamped step ids decide membership over settledness', async () => {
+    const seen: Array<{ messages: unknown[] }> = [];
+    const generateText: AiSdkGenerateTextLike = async (opts) => {
+      seen.push(opts);
+      return { text: '## Goal\nX' };
+    };
+    const summarize = buildLlmHistorySummarizer({ resolveModel: () => 'fake-model', generateText });
+
+    const events: RuntimeEvent[] = [
+      // Same stamped step: joins even though fc1 settled before fc2 arrived.
+      ev({
+        role: 'model',
+        author: 'agent',
+        refs: { stepId: 'step-1' },
+        content: { kind: 'function_call', id: 'fc1', name: 'read', args: { path: 'a.ts' } },
+      }),
+      ev({
+        role: 'tool',
+        author: 'tool',
+        content: { kind: 'function_response', id: 'fc1', name: 'read', result: 'A' },
+      }),
+      ev({
+        role: 'model',
+        author: 'agent',
+        refs: { stepId: 'step-1' },
+        content: { kind: 'function_call', id: 'fc2', name: 'read', args: { path: 'b.ts' } },
+      }),
+      ev({
+        role: 'tool',
+        author: 'tool',
+        content: { kind: 'function_response', id: 'fc2', name: 'read', result: 'B' },
+      }),
+      // Different stamped step: never merged into the block above.
+      ev({
+        role: 'model',
+        author: 'agent',
+        refs: { stepId: 'step-2' },
+        content: { kind: 'function_call', id: 'fc3', name: 'glob', args: { pattern: '*' } },
+      }),
+      ev({
+        role: 'tool',
+        author: 'tool',
+        content: { kind: 'function_response', id: 'fc3', name: 'glob', result: [] },
+      }),
+    ];
+
+    await summarize(inputWith(events));
+
+    const messages = seen[0]!.messages as Array<{
+      role: string;
+      content: Array<{ type: string; toolCallId?: string }>;
+    }>;
+    const shape = messages.map((m) => `${m.role}:${m.content.map((part) => part.type).join('+')}`);
+    assert.deepEqual(shape, [
+      'assistant:tool-call+tool-call',
+      'tool:tool-result',
+      'tool:tool-result',
+      'assistant:tool-call',
+      'tool:tool-result',
+    ]);
+    assert.deepEqual(
+      messages[0]!.content.map((part) => part.toolCallId),
+      ['fc1', 'fc2'],
+    );
+  });
+
   test('surfaces provider failures so the runtime can report the real compact reason', async () => {
     const generateText: AiSdkGenerateTextLike = async () => {
       throw new Error('model down');

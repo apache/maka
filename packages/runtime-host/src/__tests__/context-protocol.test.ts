@@ -1,6 +1,7 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { decodeClientFrame, decodeHostFrame, RuntimeHostProtocolError } from '../protocol/index.js';
+import { decodeClientFrame, decodeHostFrame } from '../protocol/index.js';
 
 test('context operations preserve bounded exact wire values', () => {
   assert.deepEqual(

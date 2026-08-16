@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
@@ -6,7 +7,6 @@ import {
   decodeExternalSessionSourceQueryResult,
   EXTERNAL_SESSION_PAGE_MAX_ITEMS,
   HOST_OPERATION_SPECS,
-  RuntimeHostProtocolError,
 } from '../protocol/index.js';
 
 describe('external Session protocol', () => {

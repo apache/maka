@@ -23,6 +23,30 @@ type CatalogState = {
 const EMPTY_CATALOG: CatalogState = { sessions: [], nextCursor: null };
 
 /**
+ * One conversation this page has handed to Desktop Main.
+ *
+ * The record is carried rather than the row's id alone, because everything the
+ * page has to say about an import — which one is running, which one came back
+ * unconfirmed — has to stay true after the row is gone. The archived filter, a
+ * source switch and a retry each replace the catalog, so a bare id is a pointer
+ * into a list that is allowed to change underneath it. The adapter is part of
+ * the record because a source-native id is unique only within its own source.
+ */
+type ImportAttempt = {
+  adapterId: string;
+  sourceSessionId: string;
+  name: string;
+};
+
+function isSameAttempt(
+  attempt: ImportAttempt,
+  adapterId: string | null,
+  session: ExternalSessionSummary,
+): boolean {
+  return attempt.adapterId === adapterId && attempt.sourceSessionId === session.id;
+}
+
+/**
  * Settings · 活动 · 导入任务 — bring another local agent's conversations in as
  * Maka tasks.
  *
@@ -59,17 +83,22 @@ export function ImportTasksSettingsPage(props: {
   const [sourceResolved, setSourceResolved] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [importingId, setImportingId] = useState<string | null>(null);
+  /**
+   * At most one import at a time. Not because two conversions would collide —
+   * Desktop Main can take both — but because the first one to succeed calls
+   * `onImported`, which closes Settings and opens the new task, orphaning any
+   * other import on a page the user can no longer see.
+   */
+  const [activeImport, setActiveImport] = useState<ImportAttempt | null>(null);
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   /**
-   * Conversations whose import neither succeeded nor failed — Desktop Main
-   * could not confirm the outcome. Re-importing one is how you end up with two
-   * copies of the same conversation, so those rows stay disabled for the rest
-   * of this page's lifetime and the banner says where to look instead.
+   * Re-importing a conversation whose outcome is unknown is how you end up with
+   * two copies of it, so its row stays disabled for the rest of this page's
+   * lifetime and the banner names it as the one to go look for.
    */
-  const [uncertainIds, setUncertainIds] = useState<ReadonlySet<string>>(new Set());
+  const [uncertainImports, setUncertainImports] = useState<readonly ImportAttempt[]>([]);
   // Only the newest list request may write. Switching source or toggling the
   // archived filter while a page is in flight would otherwise land the old
   // source's rows under the new source's label.
@@ -155,14 +184,19 @@ export function ImportTasksSettingsPage(props: {
   );
 
   const importConversation = useCallback(
-    async (sourceSessionId: string) => {
-      if (adapterId === null || importingId !== null) return;
-      setImportingId(sourceSessionId);
+    async (session: ExternalSessionSummary) => {
+      if (adapterId === null || activeImport !== null) return;
+      const attempt: ImportAttempt = {
+        adapterId,
+        sourceSessionId: session.id,
+        name: session.name,
+      };
+      setActiveImport(attempt);
       setImportError(null);
       try {
         const outcome = await window.maka.externalSessions.import({
-          adapterId,
-          sourceSessionId,
+          adapterId: attempt.adapterId,
+          sourceSessionId: attempt.sourceSessionId,
         });
         // Navigating away from Settings unmounts this page while the import is
         // still in Desktop Main's hands. The conversion itself completes and is
@@ -170,7 +204,7 @@ export function ImportTasksSettingsPage(props: {
         // the user has left steering the shell somewhere they did not ask for.
         if (!mountedRef.current) return;
         if (!outcome.ok) {
-          setUncertainIds((current) => new Set(current).add(sourceSessionId));
+          setUncertainImports((current) => [...current, attempt]);
           return;
         }
         props.onImported(outcome.session);
@@ -178,10 +212,10 @@ export function ImportTasksSettingsPage(props: {
         if (!mountedRef.current) return;
         setImportError(localizedShellErrorMessage(error, copy.importFailedFallback, locale));
       } finally {
-        if (mountedRef.current) setImportingId(null);
+        if (mountedRef.current) setActiveImport(null);
       }
     },
-    [adapterId, copy.importFailedFallback, importingId, locale, mountedRef, props],
+    [activeImport, adapterId, copy.importFailedFallback, locale, mountedRef, props],
   );
 
   const noSource = sourceResolved && !sourceLoading && !sourceError && adapterIds.length === 0;
@@ -249,6 +283,7 @@ export function ImportTasksSettingsPage(props: {
               layout="fill"
               size="sm"
               onChange={setAdapterId}
+              isDisabled={catalogLoading}
             >
               {adapterIds.map((id) => (
                 <SegmentedControlItem key={id} value={id} label={sourceLabel(id, copy.codex)} />
@@ -259,7 +294,7 @@ export function ImportTasksSettingsPage(props: {
             label={copy.includeArchived}
             value={includeArchived}
             onChange={setIncludeArchived}
-            isDisabled={catalogLoading || importingId !== null}
+            isDisabled={catalogLoading}
           />
         </VStack>
       </SettingsSection>
@@ -288,11 +323,27 @@ export function ImportTasksSettingsPage(props: {
             <Banner status="error" title={copy.importFailedTitle} description={importError} />
           )}
 
-          {uncertainIds.size > 0 && (
+          {/* Named here rather than only on its row, because the catalog is
+              free to change while an import runs: filter it out, switch source,
+              retry a failed page, and the row is gone. This is also what tells
+              the user why every remaining 导入 is disabled. */}
+          {activeImport !== null && (
+            <div role="status" aria-live="polite">
+              <Banner
+                status="info"
+                title={copy.importInProgressTitle}
+                description={copy.importInProgressDescription(activeImport.name)}
+              />
+            </div>
+          )}
+
+          {uncertainImports.length > 0 && (
             <Banner
               status="warning"
               title={copy.importOutcomeUnknownTitle}
-              description={copy.importOutcomeUnknownDescription}
+              description={copy.importOutcomeUnknownDescription(
+                uncertainImports.map((entry) => entry.name),
+              )}
             />
           )}
 
@@ -325,6 +376,8 @@ export function ImportTasksSettingsPage(props: {
                 ]
                   .filter(Boolean)
                   .join(' · ');
+                const isImporting =
+                  activeImport !== null && isSameAttempt(activeImport, adapterId, session);
                 return (
                   <ListItem
                     key={session.id}
@@ -335,15 +388,23 @@ export function ImportTasksSettingsPage(props: {
                       <Button
                         variant="secondary"
                         size="sm"
-                        isLoading={importingId === session.id}
-                        isDisabled={importingId !== null || uncertainIds.has(session.id)}
-                        // Returned, not discarded: Astryx's Button awaits a
-                        // promise-returning `clickAction` and drops repeat
-                        // clicks until it settles. `void`-ing it gave that
-                        // guarantee nothing to await, leaving double-submit to
-                        // the `importingId` state alone -- one render behind.
-                        clickAction={() => importConversation(session.id)}
-                        label={importingId === session.id ? copy.importing : copy.import}
+                        isLoading={isImporting}
+                        isDisabled={
+                          activeImport !== null ||
+                          uncertainImports.some((entry) =>
+                            isSameAttempt(entry, adapterId, session),
+                          )
+                        }
+                        // `onClick`, not `clickAction`. Astryx runs
+                        // `clickAction` inside a React 19 async transition, and
+                        // React holds a transition's state updates until the
+                        // action settles, so `setActiveImport` landed only once
+                        // the import was already over and nothing on the page
+                        // could tell that one was running. `clickAction` buys
+                        // the clicked button its own pending state, and that is
+                        // all it buys; this is a page fact, so the page owns it.
+                        onClick={() => void importConversation(session)}
+                        label={isImporting ? copy.importing : copy.import}
                         // Every row's button reads 导入; only the accessible
                         // name can say which conversation it imports.
                         aria-label={copy.importTask(session.name)}
@@ -356,15 +417,19 @@ export function ImportTasksSettingsPage(props: {
           )}
 
           {catalog.nextCursor !== null && adapterId !== null && (
-            <HStack hAlign="center">
-              <Button
-                variant="ghost"
-                size="sm"
-                label={loadingMore ? copy.loadingMore : copy.loadMore}
-                isDisabled={loadingMore}
-                onClick={() => void loadCatalog(adapterId, catalog.nextCursor ?? undefined)}
-              />
-            </HStack>
+            /* Full width and `secondary`: as a centred ghost label this read as
+               a caption under the list rather than the control that extends it. */
+            <Button
+              variant="secondary"
+              size="sm"
+              width="100%"
+              label={loadingMore ? copy.loadingMore : copy.loadMore}
+              isDisabled={loadingMore}
+              // `onClick` for the same reason as the row buttons: inside
+              // `clickAction`'s transition `loadingMore` commits too late to
+              // disable anything or to say 正在加载….
+              onClick={() => void loadCatalog(adapterId, catalog.nextCursor ?? undefined)}
+            />
           )}
         </VStack>
       </SettingsSection>

@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
@@ -8,7 +9,6 @@ import {
   MEMORY_ENTRY_PAGE_MAX_ITEMS,
   MEMORY_RESULT_MAX_BYTES,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
-  RuntimeHostProtocolError,
 } from '../protocol/index.js';
 
 const revision = `sha256:${'a'.repeat(64)}` as const;

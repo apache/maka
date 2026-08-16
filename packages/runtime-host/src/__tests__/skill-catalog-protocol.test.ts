@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -17,7 +18,6 @@ import {
   type SkillCatalogPreviewUpdateResult,
   type SkillCatalogRevision,
 } from '../protocol/index.js';
-import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { SkillCatalogRepository } from '../server/skill-catalog-repository.js';
 
 const REVISION = `sha256:${'a'.repeat(64)}` as SkillCatalogRevision;

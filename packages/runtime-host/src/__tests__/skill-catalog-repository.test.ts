@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -9,11 +10,7 @@ import {
   buildStarterSkillTemplate,
   createManagedSkillLock,
 } from '@maka/runtime/skills';
-import {
-  decodeHostFrame,
-  isSkillCatalogProjectRootLexicallyAbsolute,
-  RuntimeHostProtocolError,
-} from '../protocol/index.js';
+import { decodeHostFrame, isSkillCatalogProjectRootLexicallyAbsolute } from '../protocol/index.js';
 import type {
   SkillCatalogGovernanceItem,
   SkillCatalogQueryResult,

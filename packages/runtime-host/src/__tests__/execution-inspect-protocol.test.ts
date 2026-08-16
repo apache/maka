@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { AgentRunInspectDocument, SessionInspectDocument } from '@maka/core/execution-inspect';
@@ -7,7 +8,6 @@ import {
   EXECUTION_INSPECT_CANDIDATE_MAX_ITEMS,
   EXECUTION_INSPECT_RESULT_MAX_BYTES,
   HOST_OPERATION_SPECS,
-  RuntimeHostProtocolError,
 } from '../protocol/index.js';
 
 describe('execution inspect protocol', () => {

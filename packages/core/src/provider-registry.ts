@@ -1000,7 +1000,6 @@ const providerRegistry = {
     modelDiscovery: {
       kind: 'protocol',
       auth: 'oauth-bearer',
-      filter: 'fallback-models',
     },
     category: 'oauth',
     catalogBadge: 'Account',

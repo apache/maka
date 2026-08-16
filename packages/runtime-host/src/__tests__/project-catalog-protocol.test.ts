@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
@@ -6,7 +7,6 @@ import {
   decodeProjectCatalogQueryResult,
   HOST_OPERATION_SPECS,
   PROJECT_CATALOG_PAGE_MAX_ITEMS,
-  RuntimeHostProtocolError,
 } from '../protocol/index.js';
 
 const projectPath = process.platform === 'win32' ? 'C:\\workspace' : '/workspace';

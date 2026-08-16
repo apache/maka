@@ -1,7 +1,7 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { decodeClientFrame, decodeHostFrame } from '../protocol/index.js';
-import { RuntimeHostProtocolError } from '../protocol/errors.js';
 
 const EXPECTED = {
   connectionId: '00000000-0000-4000-8000-000000000001',

@@ -10,6 +10,7 @@ import {
   type ModelCallAttempt,
 } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { isSessionTrace } from '@maka/core/session-trace';
 import { projectSessionTrace } from '../session-trace-projection.js';
 
 function attempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttempt {
@@ -55,6 +56,51 @@ function event(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
 }
 
 describe('session trace projection', () => {
+  test('preserves durable history-compaction route and provider failure facts', () => {
+    const trace = projectSessionTrace({
+      sessionId: 'session-1',
+      runtimeEvents: [],
+      modelCallAttempts: [
+        attempt({
+          callKind: 'history_compact',
+          historyCompactRoute: 'provider_native',
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+          errorClass: 'RequestRejected',
+          httpStatus: 400,
+          providerCode: 'invalid_request_error',
+          providerRequestId: 'req-compact-1',
+          retryable: false,
+        }),
+      ],
+    });
+
+    const step = trace.turns[0]?.steps[0];
+    assert.equal(step?.kind, 'model_call');
+    if (step?.kind !== 'model_call') return;
+    assert.equal(step.historyCompactRoute, 'provider_native');
+    assert.deepEqual(step.attempts[0], {
+      attemptId: 'attempt-1',
+      attempt: 0,
+      status: 'failed',
+      startedAt: 1_000,
+      completedAt: 1_500,
+      latencyMs: 500,
+      errorClass: 'RequestRejected',
+      httpStatus: 400,
+      providerCode: 'invalid_request_error',
+      providerRequestId: 'req-compact-1',
+      retryable: false,
+      costBasis: 'unpriced',
+      usageBasis: 'missing',
+    });
+    assert.equal(isSessionTrace(trace), true, 'the Host protocol accepts the projected trace');
+  });
+
   test('a session of entirely unpriced calls totals to no price, not to zero', () => {
     const trace = projectSessionTrace({
       sessionId: 'session-1',

@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
@@ -13,7 +14,6 @@ import {
   decodeHostFrame,
   type AgentGraphClientSnapshot,
   type AgentGraphOperatorInspection,
-  RuntimeHostProtocolError,
 } from '../protocol/index.js';
 
 const fingerprint = `sha256:${'a'.repeat(64)}` as const;

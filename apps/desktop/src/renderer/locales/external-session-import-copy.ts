@@ -28,10 +28,22 @@ type ExternalSessionImportCopy = {
   import: string;
   importTask: (name: string) => string;
   importing: string;
+  importInProgressTitle: string;
+  /**
+   * Named, for the same reason the unconfirmed banner names its conversations:
+   * the catalog is free to change while an import runs, so the row this started
+   * from may already be filtered or paged away.
+   */
+  importInProgressDescription: (name: string) => string;
   importFailedTitle: string;
   importFailedFallback: string;
   importOutcomeUnknownTitle: string;
-  importOutcomeUnknownDescription: string;
+  /**
+   * Takes the conversation names because this is the only place that can say
+   * which ones to go look for — the rows they came from may have been filtered
+   * or paged away by the time it renders.
+   */
+  importOutcomeUnknownDescription: (names: readonly string[]) => string;
 };
 
 const COPY = {
@@ -44,7 +56,12 @@ const COPY = {
     emptyTitle: '没有可导入的对话',
     emptyDescription: '当前来源中没有找到符合条件的根对话。',
     unavailableTitle: '没有检测到支持的 Agent',
-    unavailableDescription: 'Maka 会在本机读取 Codex 的对话目录，不会修改其中的文件。',
+    // The title already says nothing was detected, so this says what to do
+    // about it instead of saying it again. It names Codex because the renderer
+    // only ever learns which sources *were* detected — nothing but a copy
+    // string can tell someone with none what to go install. The second half is
+    // the promise that earns the permission to read another app's files.
+    unavailableDescription: '在本机使用过 Codex 后，它的对话会出现在这里。Maka 只读取这些文件，不会修改。',
     loadFailedTitle: '无法读取外部对话',
     loadFailedFallback: '外部对话目录暂时无法读取，请重试。',
     retry: '重试',
@@ -55,11 +72,13 @@ const COPY = {
     import: '导入',
     importTask: (name) => `导入「${name}」`,
     importing: '正在导入…',
+    importInProgressTitle: '正在导入',
+    importInProgressDescription: (name) => `正在导入「${name}」，完成后会直接打开这个任务。`,
     importFailedTitle: '导入失败',
     importFailedFallback: '该对话无法转换或保存。请检查来源后重试。',
     importOutcomeUnknownTitle: '需要确认导入结果',
-    importOutcomeUnknownDescription:
-      '导入结果暂时无法确认。请先在任务列表中查找这个对话；如果它已经出现，请不要再次导入。',
+    importOutcomeUnknownDescription: (names) =>
+      `以下对话的导入结果无法确认：${names.map((name) => `「${name}」`).join('、')}。请先在任务列表中查找，已经出现的不要再次导入。`,
   },
   en: {
     sourceLabel: 'Source',
@@ -70,7 +89,8 @@ const COPY = {
     emptyTitle: 'No conversations to import',
     emptyDescription: 'No matching root conversations were found in this source.',
     unavailableTitle: 'No supported Agent detected',
-    unavailableDescription: "Maka reads Codex's local session directory without modifying its files.",
+    unavailableDescription:
+      'Once Codex has been used on this machine, its conversations appear here. Maka only reads those files and never modifies them.',
     loadFailedTitle: 'Could not read external conversations',
     loadFailedFallback: 'The external session directory is temporarily unavailable. Try again.',
     retry: 'Retry',
@@ -81,11 +101,14 @@ const COPY = {
     import: 'Import',
     importTask: (name) => `Import ${name}`,
     importing: 'Importing…',
+    importInProgressTitle: 'Import in progress',
+    importInProgressDescription: (name) =>
+      `Importing “${name}”. Maka opens the task as soon as it lands.`,
     importFailedTitle: 'Import failed',
     importFailedFallback: 'This conversation could not be converted or saved. Check the source and try again.',
     importOutcomeUnknownTitle: 'Check the import result',
-    importOutcomeUnknownDescription:
-      'Maka could not confirm whether the import completed. Look for this conversation in the task list first; if it is already there, do not import it again.',
+    importOutcomeUnknownDescription: (names) =>
+      `Maka could not confirm the outcome of these imports: ${names.map((name) => `“${name}”`).join(', ')}. Look in the task list first, and do not import again anything that is already there.`,
   },
 } satisfies UiCatalog<ExternalSessionImportCopy>;
 

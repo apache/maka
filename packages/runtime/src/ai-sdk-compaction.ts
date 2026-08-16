@@ -85,7 +85,7 @@ import {
   type RuntimeEventModelReplayPlan,
 } from './model-history.js';
 import { toolSchemaCharsForDiagnostics } from './request-shape.js';
-import type { ModelCallKind } from '@maka/core/model-call-attempt';
+import type { ModelCallAttempt, ModelCallKind } from '@maka/core/model-call-attempt';
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
 import {
   estimateNextRequestTokens,
@@ -151,6 +151,7 @@ export interface AiSdkCompactionDeps {
     callKind: ModelCallKind;
     modelId: string;
     runId: string | undefined;
+    historyCompactRoute?: ModelCallAttempt['historyCompactRoute'];
   }) => ProviderRequestTracker | undefined;
   /**
    * Materialize a replay plan. The image budget belongs to the turn whose
@@ -179,6 +180,7 @@ export class AiSdkCompaction {
     callKind: ModelCallKind;
     modelId: string;
     runId: string | undefined;
+    historyCompactRoute?: ModelCallAttempt['historyCompactRoute'];
   }) => ProviderRequestTracker | undefined;
   private readonly materializeRuntimeReplayPlan: (
     plan: RuntimeEventModelReplayPlan,
@@ -467,6 +469,9 @@ export class AiSdkCompaction {
       callKind: 'history_compact',
       modelId: this.input.modelId,
       runId: input.runId,
+      ...(this.input.historyCompactRoute
+        ? { historyCompactRoute: this.input.historyCompactRoute }
+        : {}),
     });
     const foldedIds = new Set(input.draftBlock.coverage.runtimeEventIds);
     const foldedRuntimeEvents = input.priorRuntimeContext.filter((event) =>
@@ -1579,6 +1584,9 @@ export class AiSdkCompaction {
       callKind: 'history_compact',
       modelId: this.input.modelId,
       runId: input.origin.runId,
+      ...(this.input.historyCompactRoute
+        ? { historyCompactRoute: this.input.historyCompactRoute }
+        : {}),
     });
     const recorder = this.input.recordHistoryCompactCheckpoint!;
     const loadTurnRuntimeEvents = this.input.loadTurnRuntimeEvents!;

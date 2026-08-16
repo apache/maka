@@ -180,9 +180,15 @@ export function BotChatChannelDetail(props: {
             <h3>
               {providerPresentation.label}
               {/* Astryx convergence: readiness reads as the shared StatusDot +
-                  text idiom — "no decorative Badge" (astryx docs principles). */}
+                  text idiom — "no decorative Badge" (astryx docs principles).
+                  The adjacent text owns the heading's status name, so the dot
+                  is decorative here instead of announcing the same label. */}
               <span className="settingsStatus">
-                <StatusDot variant={dotForStatus(readinessCopy.tone)} label={readinessCopy.label} />
+                <StatusDot
+                  variant={dotForStatus(readinessCopy.tone)}
+                  label={readinessCopy.label}
+                  aria-hidden="true"
+                />
                 <span>{readinessCopy.label}</span>
               </span>
             </h3>

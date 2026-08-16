@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -27,7 +28,6 @@ import {
   encodeProtocolMessage,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  RuntimeHostProtocolError,
   type ClientFrame,
   type SessionCatalogItem,
   type SessionCatalogProjection,

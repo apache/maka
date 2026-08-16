@@ -1,9 +1,6 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import type { Socket } from 'node:net';
-import {
-  RUNTIME_HOST_MAX_MESSAGE_BYTES,
-  RuntimeHostProtocolError,
-  type EncodedProtocolMessage,
-} from '../protocol/index.js';
+import { RUNTIME_HOST_MAX_MESSAGE_BYTES, type EncodedProtocolMessage } from '../protocol/index.js';
 import { frameLocalIpcProtocolMessage, LocalIpcProtocolFrameDecoder } from './local-ipc-framing.js';
 import type { RuntimeHostMessageTransport } from './message-transport.js';
 
