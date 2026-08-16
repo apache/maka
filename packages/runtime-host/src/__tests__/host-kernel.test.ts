@@ -1041,6 +1041,54 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('rejects a resident Host that lacks the client required managed capability', async () => {
+    await withHostPaths(async (paths) => {
+      const candidate = await startTestRuntimeHostCandidate(paths, {
+        rootPath: paths.root,
+        idleGraceMs: 10_000,
+      });
+      assert.equal(candidate.kind, 'winner');
+      if (candidate.kind !== 'winner') return;
+      const resident = await retryConnect(paths, CURRENT_PROTOCOL, 'tui');
+      assert.equal(resident.kind, 'connected');
+      if (resident.kind !== 'connected') return;
+
+      const managedClient = await connectOrSpawnRuntimeHost({
+        rootPath: paths.root,
+        surface: 'desktop',
+        protocol: CURRENT_PROTOCOL,
+        compositionId: KERNEL_COMPOSITION.descriptor.id,
+        candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+        requiredHostCapabilities: ['managed_workspace_inspection_v1'],
+        electionDeadlineMs: 1_000,
+      });
+      assert.equal(managedClient.kind, 'incompatible');
+      if (managedClient.kind === 'incompatible') {
+        assert.equal(managedClient.handshake.replacement, 'blocked_by_residency');
+        assert.equal(managedClient.handshake.hostCapabilities, undefined);
+      }
+      await resident.connection.close();
+      await candidate.host.close();
+
+      const managedCandidate = await startTestRuntimeHostCandidate(paths, {
+        rootPath: paths.root,
+        idleGraceMs: 10_000,
+        hostCapabilities: ['managed_workspace_inspection_v1'],
+      });
+      assert.equal(managedCandidate.kind, 'winner');
+      if (managedCandidate.kind !== 'winner') return;
+      const connected = await connectRuntimeHost({
+        rootPath: paths.root,
+        surface: 'desktop',
+        protocol: CURRENT_PROTOCOL,
+        requiredHostCapabilities: ['managed_workspace_inspection_v1'],
+      });
+      assert.equal(connected.kind, 'connected');
+      if (connected.kind === 'connected') await connected.connection.close();
+      await managedCandidate.host.close();
+    });
+  });
+
   test('two independent Clients with different cache environments attach to one cold-start Host', async () => {
     await withHostPaths(async (paths) => {
       const first = spawnConnectClient(paths, 'desktop', 'a');

@@ -123,6 +123,37 @@ test('rejects a second authority for the same storage root in one process', asyn
   await first.close();
 });
 
+test('rejects a pre-aborted acquisition before invoking the producer', async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-pre-abort-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  let provisionCalls = 0;
+  const authority = await createManagedDependencyEnvironmentAuthority({
+    storageRoot,
+    producer: {
+      capability: FIXTURE_PRODUCER_CAPABILITY,
+      packageManagerName: 'npm',
+      packageManagerVersion: '11.12.1',
+      nodeRuntime: fixtureNodeRuntime(),
+      async provision() {
+        provisionCalls += 1;
+      },
+    },
+  });
+  const source = dependencySourceForName('pre-abort');
+  const abort = new AbortController();
+  abort.abort(new DOMException('Cancelled before acquisition', 'AbortError'));
+
+  await assert.rejects(
+    authority.acquire(computeManagedDependencyEnvironmentIdentity(source), {
+      ...source,
+      abortSignal: abort.signal,
+    }),
+    { name: 'AbortError' },
+  );
+  assert.equal(provisionCalls, 0);
+  await authority.close();
+});
+
 test('rejects a published environment whose dependency content was modified', async (t) => {
   const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-tamper-'));
   t.after(() => rm(storageRoot, { recursive: true, force: true }));
@@ -573,6 +604,128 @@ test('publishes one Maka-owned artifact for concurrent equivalent acquisitions',
   assert.equal(first.dependencyRoot, second.dependencyRoot);
   await first.release();
   await second.release();
+  await authority.close();
+});
+
+test('does not cancel shared provisioning while another acquisition still needs it', async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-shared-abort-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  let acknowledgeProvision!: () => void;
+  const provisionStarted = new Promise<void>((resolve) => {
+    acknowledgeProvision = resolve;
+  });
+  let finishProvision!: () => void;
+  const provisionAllowed = new Promise<void>((resolve) => {
+    finishProvision = resolve;
+  });
+  let producerSignal: AbortSignal | undefined;
+  const authority = await createManagedDependencyEnvironmentAuthority({
+    storageRoot,
+    producer: {
+      capability: FIXTURE_PRODUCER_CAPABILITY,
+      packageManagerName: 'npm',
+      packageManagerVersion: '11.12.1',
+      nodeRuntime: fixtureNodeRuntime(),
+      async provision(input) {
+        producerSignal = input.abortSignal;
+        acknowledgeProvision();
+        await Promise.race([
+          provisionAllowed,
+          new Promise<never>((_resolve, reject) => {
+            const abort = () =>
+              reject(
+                input.abortSignal?.reason ??
+                  new DOMException('Shared provision cancelled', 'AbortError'),
+              );
+            if (input.abortSignal?.aborted) abort();
+            else input.abortSignal?.addEventListener('abort', abort, { once: true });
+          }),
+        ]);
+        input.abortSignal?.throwIfAborted();
+        await writeFile(join(input.outputRoot, 'payload'), 'shared\n', 'utf8');
+      },
+    },
+  });
+  const source = dependencySourceForName('shared-abort');
+  const identity = computeManagedDependencyEnvironmentIdentity(source);
+  const firstAbort = new AbortController();
+  const first = authority.acquire(identity, { ...source, abortSignal: firstAbort.signal });
+  await provisionStarted;
+  const second = authority.acquire(identity, source);
+
+  firstAbort.abort(new DOMException('First waiter cancelled', 'AbortError'));
+
+  await assert.rejects(first, { name: 'AbortError' });
+  assert.equal(producerSignal?.aborted, false);
+  finishProvision();
+  const lease = await second;
+  assert.equal(await readFile(join(lease.dependencyRoot, 'payload'), 'utf8'), 'shared\n');
+  await lease.release();
+  await authority.close();
+});
+
+test('starts a fresh publication when a new caller arrives during aborted publication cleanup', async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-abort-handoff-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  let provisionCalls = 0;
+  let acknowledgeFirstStart!: () => void;
+  const firstStarted = new Promise<void>((resolve) => {
+    acknowledgeFirstStart = resolve;
+  });
+  let acknowledgeFirstAbort!: () => void;
+  const firstAborted = new Promise<void>((resolve) => {
+    acknowledgeFirstAbort = resolve;
+  });
+  let finishFirstCleanup!: () => void;
+  const firstCleanupAllowed = new Promise<void>((resolve) => {
+    finishFirstCleanup = resolve;
+  });
+  const authority = await createManagedDependencyEnvironmentAuthority({
+    storageRoot,
+    producer: {
+      capability: FIXTURE_PRODUCER_CAPABILITY,
+      packageManagerName: 'npm',
+      packageManagerVersion: '11.12.1',
+      nodeRuntime: fixtureNodeRuntime(),
+      async provision(input) {
+        provisionCalls += 1;
+        if (provisionCalls === 1) {
+          acknowledgeFirstStart();
+          await new Promise<void>((resolve) => {
+            const onAbort = () => {
+              acknowledgeFirstAbort();
+              resolve();
+            };
+            if (input.abortSignal?.aborted) onAbort();
+            else input.abortSignal?.addEventListener('abort', onAbort, { once: true });
+          });
+          await firstCleanupAllowed;
+          input.abortSignal?.throwIfAborted();
+        }
+        await writeFile(join(input.outputRoot, 'payload'), 'fresh\n', 'utf8');
+      },
+    },
+  });
+  t.after(() => authority.close().catch(() => undefined));
+  const source = dependencySourceForName('abort-handoff');
+  const identity = computeManagedDependencyEnvironmentIdentity(source);
+  const firstAbort = new AbortController();
+  const first = authority.acquire(identity, { ...source, abortSignal: firstAbort.signal });
+  await firstStarted;
+
+  firstAbort.abort(new DOMException('First caller cancelled', 'AbortError'));
+  await assert.rejects(first, { name: 'AbortError' });
+  await firstAborted;
+
+  const second = authority.acquire(identity, source);
+  await Promise.resolve();
+  assert.equal(provisionCalls, 1, 'fresh publication started before aborted cleanup settled');
+  finishFirstCleanup();
+
+  const lease = await second;
+  assert.equal(provisionCalls, 2);
+  assert.equal(await readFile(join(lease.dependencyRoot, 'payload'), 'utf8'), 'fresh\n');
+  await lease.release();
   await authority.close();
 });
 

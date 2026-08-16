@@ -74,6 +74,7 @@ import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import {
   openManagedWorkspaceOwner,
+  type ManagedDependencyEnvironmentProducer,
   type ManagedWorkspaceFilesystemWorker,
   type ManagedWorkspaceOwner,
   type VerifiedGitRuntimeInput,
@@ -132,6 +133,7 @@ import { hostedExecutionRunProfile } from './hosted-execution-tool-profile.js';
 import { HostMemoryCoordinator } from './memory-coordinator.js';
 import { HostMemoryExtractionCoordinator } from './memory-extraction-coordinator.js';
 import { MemoryExtractionSessionLane } from './memory-extraction-session-lane.js';
+import { createManagedWorkspaceInspectionTool } from './managed-workspace-inspection-tool.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from './message-coordinator.js';
 import { HostNetworkProxyCoordinator } from './network-proxy-coordinator.js';
 import { HostOAuthExecutionAuthority } from './oauth-execution-authority.js';
@@ -178,6 +180,8 @@ export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition 
 
 export interface CreateExecutionRuntimeHostCompositionOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
+  readonly managedWorkspaceDependencyProducer?: ManagedDependencyEnvironmentProducer;
+  readonly legacyConfigurationRoot?: string;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
 }
@@ -201,6 +205,12 @@ export async function createExecutionRuntimeHostComposition(
   options: CreateExecutionRuntimeHostCompositionOptions = {},
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<ExecutionRuntimeHostComposition> {
+  if (options.managedWorkspaceDependencyProducer && !options.managedWorkspaceGitRuntime) {
+    throw new RuntimeHostWorkspaceExecutionError(
+      'managed_workspace_profile_unavailable',
+      'Managed dependency provisioning requires managed workspace Git authority',
+    );
+  }
   const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
   await stores.sessionStore.ready();
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
@@ -334,9 +344,13 @@ export async function createExecutionRuntimeHostComposition(
         rootOwner: context.owner,
         gitRuntime: options.managedWorkspaceGitRuntime,
         filesystemWorker: managedFilesystemWorker,
+        ...(options.managedWorkspaceDependencyProducer
+          ? { dependencyEnvironmentProducer: options.managedWorkspaceDependencyProducer }
+          : {}),
       });
     }
     workspaceExecution = createRuntimeHostWorkspaceExecutionComposition({
+      executionStores: stores,
       ...(managedFilesystemWorker ? { filesystemWorker: managedFilesystemWorker } : {}),
       ...(managedWorkspaceOwner ? { managedOwner: managedWorkspaceOwner } : {}),
     });
@@ -385,6 +399,9 @@ export async function createExecutionRuntimeHostComposition(
     const hostTools = [
       createHostWebSearchToolFromService(webSearchService),
       createHostWebFetchToolFromService(webFetchService),
+      ...(managedWorkspaceOwner && options.managedWorkspaceDependencyProducer
+        ? [createManagedWorkspaceInspectionTool(requireWorkspaceExecution(workspaceExecution))]
+        : []),
       ...runtimePolicy.modelTools,
     ];
     const childAgentTools = createHostChildAgentToolComposition({

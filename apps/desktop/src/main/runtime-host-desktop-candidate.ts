@@ -7,6 +7,8 @@ import type { BotRegistry } from '@maka/runtime/bots';
 import {
   connectOrSpawnRuntimeHost,
   connectRemoteRuntimeHostProfile,
+  waitForRuntimeHostReady,
+  type DesktopPackagedCandidateAuthority,
   type RuntimeHostSshInteraction,
   type RuntimeHostSshTunnel,
   type RuntimeHostSshTunnelInput,
@@ -130,6 +132,7 @@ export interface DesktopRuntimeHostCandidateStartInput
   extends Omit<DesktopRuntimeHostCandidateDeps, "ipcMain"> {
   readonly ipcMain: CandidateIpcMain;
   readonly rootPath: string;
+  readonly packagedCandidateAuthority?: DesktopPackagedCandidateAuthority;
   readonly clientInstanceId?: string;
   readonly electionDeadlineMs?: number;
   readonly connectTimeoutMs?: number;
@@ -693,6 +696,12 @@ function connectInput(
       ? {}
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
+    ...(input.packagedCandidateAuthority === undefined
+      ? {}
+      : {
+          packagedCandidateAuthority: input.packagedCandidateAuthority,
+          requiredHostCapabilities: ['managed_workspace_inspection_v1'] as const,
+        }),
   };
 }
 

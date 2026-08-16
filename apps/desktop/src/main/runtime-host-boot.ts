@@ -479,11 +479,17 @@ const needsInteractiveSshStartup =
   runtimeHostAtOwnerStart.profile.kind === "remote" &&
   runtimeHostAtOwnerStart.profile.transport.kind === "ssh";
 if (needsInteractiveSshStartup) wireLifecycle();
+const packagedCandidateAuthority = app.isPackaged
+  ? await import('@maka/runtime-host/client').then(({ issueDesktopPackagedCandidateAuthority }) =>
+      issueDesktopPackagedCandidateAuthority(),
+     )
+   : undefined;
 owner = await startRuntimeHostDesktopOwner(
   {
     rootPath: workspaceRoot,
     clientInstanceId: runtimeHostClientInstanceId,
     generation: runtimeHostGeneration,
+    ...(packagedCandidateAuthority ? { packagedCandidateAuthority } : {}),
     ...(runtimeHostAtOwnerStart.profile.kind === "remote"
       ? {
           remote: {

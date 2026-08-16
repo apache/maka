@@ -183,6 +183,33 @@ describe('workspace version persistence authority', () => {
     }
   });
 
+  it('does not mistake mutated authority control rows for empty schema bootstrap state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-unbound-authority-state-'));
+    const dbPath = join(root, 'runtime.sqlite');
+    const store = createSqliteRuntimeStore(dbPath);
+    try {
+      const raw = new DatabaseSync(dbPath);
+      try {
+        raw.exec(`
+          CREATE TABLE automation_authority_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            revision INTEGER NOT NULL CHECK (revision >= 0)
+          );
+          INSERT INTO automation_authority_state(singleton, revision) VALUES (1, 1);
+        `);
+      } finally {
+        raw.close();
+      }
+      assert.throws(
+        () => bindWorkspaceBaselineAuthorityStoreRootInternal(store, TEST_STORAGE_ROOT_ID),
+        /unbound operational data require explicit storage-root adoption/iu,
+      );
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   for (const failpoint of [
     'after_workspace_epoch_event_insert',
     'after_workspace_version_event_insert',

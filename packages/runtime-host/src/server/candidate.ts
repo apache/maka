@@ -1,14 +1,17 @@
 import { resolveExistingStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
 import type { RuntimeHostCompositionSource } from './host-composition.js';
 import { RuntimeHostKernel } from './host-kernel.js';
+import type { RuntimeHostCapability } from '../protocol/index.js';
 
 export interface InteractiveRuntimeHostCandidateOptions {
   rootPath: string;
   expectedRootId: string;
   initialConnectionTimeoutMs?: number;
+  legacyConfigurationRoot?: string;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   generation?: string;
+  hostCapabilities?: readonly RuntimeHostCapability[];
 }
 
 export type InteractiveRuntimeHostCandidateResult =
@@ -34,6 +37,7 @@ export async function startInteractiveRuntimeHostCandidate(
     handshakeTimeoutMs: options.handshakeTimeoutMs,
     generation: options.generation,
     composition,
+    hostCapabilities: options.hostCapabilities,
   });
   return { kind: 'winner', host };
 }

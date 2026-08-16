@@ -55,6 +55,11 @@ import type {
   ToolCommitResult,
   ToolOperationRecord,
 } from './sqlite-runtime-store.js';
+import { registerExecutionStoresWorkspaceAuthorityInternal } from './execution-stores-workspace-authority-internal.js';
+import {
+  bindWorkspaceBaselineAuthorityStoreRootInternal,
+  WorkspaceStorageRootAdoptionRequiredError,
+} from './workspace-version-authority-internal.js';
 
 const executionStoresWriterBrand: unique symbol = Symbol('ExecutionStoresWriter');
 const executionStoresReaderBrand: unique symbol = Symbol('ExecutionStoresReader');
@@ -233,10 +238,28 @@ export function authenticateExecutionStoresReader<K extends StorageRootKind>(
 export async function openInteractiveExecutionStoresForWrite(
   lease: StorageRootLease<'interactive', 'write'>,
 ): Promise<ExecutionStoresWriter<'interactive'>> {
+  // Establish root identity before any other operational authority creates
+  // singleton control rows. Existing unbound logical data remain explicitly
+  // unadopted and therefore unavailable to managed workspace admission.
+  await initializeWorkspaceStorageRootBinding(lease);
   const interactionStore = await openSqliteInteractiveInteractionStoreForWrite(lease);
   return openExecutionStoresForWrite(lease, 'interactive', {
     interactionStore,
   });
+}
+
+async function initializeWorkspaceStorageRootBinding(
+  lease: StorageRootLease<'interactive', 'write'>,
+): Promise<void> {
+  await assertStorageRootLease(lease, 'interactive', 'write');
+  const persistence = await openRuntimeEventPersistence({ workspaceRoot: lease.canonicalPath });
+  try {
+    bindWorkspaceBaselineAuthorityStoreRootInternal(persistence.runtimeCommitStore, lease.rootId);
+  } catch (error) {
+    if (!(error instanceof WorkspaceStorageRootAdoptionRequiredError)) throw error;
+  } finally {
+    persistence.close();
+  }
 }
 
 async function openExecutionStoresForWrite<K extends StorageRootKind, E extends object>(
@@ -287,6 +310,22 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
     throw error;
   });
   const runtimeEventStore = runtimePersistence.runtimeEventStore;
+  try {
+    bindWorkspaceBaselineAuthorityStoreRootInternal(
+      runtimePersistence.runtimeCommitStore,
+      lease.rootId,
+    );
+  } catch (error) {
+    // Existing unbound workspaces require the explicit adoption flow. Keep
+    // attached execution available, but leave managed admission fail-closed.
+    if (!(error instanceof WorkspaceStorageRootAdoptionRequiredError)) {
+      await closeExecutionStorePersistence(sessionStore, runtimePersistence, {
+        agentRunStore,
+        interactionStore,
+      }).catch(() => {});
+      throw error;
+    }
+  }
   let conversationOperationalStateStore: ConversationOperationalStateStore;
   try {
     conversationOperationalStateStore = createConversationOperationalStateStore(
@@ -519,6 +558,7 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
     },
   };
   freezeExecutionStoresFacade(stores);
+  registerExecutionStoresWorkspaceAuthorityInternal(stores, runtimePersistence.runtimeCommitStore);
   executionStoresWriterKinds.set(stores, kind);
   executionStoresWritersByLease.set(lease, stores);
   return stores;

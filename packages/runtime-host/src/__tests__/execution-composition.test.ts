@@ -41,6 +41,17 @@ test('filesystem worker follows the candidate executable runtime', () => {
   assert.equal(runtimeHostFilesystemWorkerRuntime({}), 'node');
 });
 
+test('rejects a dependency producer without the managed Git authority', async () => {
+  await withCompositionRoot(async ({ owner }) => {
+    await assert.rejects(
+      createExecutionRuntimeHostComposition(compositionContext(owner), {
+        managedWorkspaceDependencyProducer: {} as never,
+      }),
+      /requires managed workspace Git authority/u,
+    );
+  });
+});
+
 test('production composition owns the long-term memory database lifecycle', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const databasePath = join(root, LONG_TERM_MEMORY_DATABASE_NAME);

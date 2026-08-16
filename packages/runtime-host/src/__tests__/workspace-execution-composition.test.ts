@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {
   ManagedWorkspaceExecutionHandle,
+  ManagedWorkspaceExecutionOptions,
   ManagedWorkspaceExecutionScope,
   ManagedWorkspaceOwner,
 } from '@maka/storage/managed-workspace-owner';
@@ -67,6 +68,64 @@ test('never falls back a managed profile to attached execution', async () => {
   await composition.close();
 });
 
+test('preserves explicit dependency provisioning through managed admission', async () => {
+  const calls: string[] = [];
+  const admissionOptions: unknown[] = [];
+  const handle = Object.freeze({ kind: 'managed_workspace_execution_handle_v1' as const });
+  const scope = Object.freeze({ kind: 'managed_workspace_execution_scope_v1' as const });
+  const managedOwner = fakeManagedOwner({ handle, scope, calls, admissionOptions });
+  const composition = createRuntimeHostWorkspaceExecutionComposition({ managedOwner });
+  const profile = createManagedWorkspaceExecutionProfile(handle, {
+    provisioning: 'dependency_environment_v1',
+  });
+  const abort = new AbortController();
+
+  await composition.executeReadOnly(
+    profile,
+    {
+      kind: 'read',
+      path: 'node_modules/fixture/index.js',
+    },
+    abort.signal,
+  );
+
+  assert.deepEqual(admissionOptions, [
+    { provisioning: 'dependency_environment_v1', abortSignal: abort.signal },
+  ]);
+  await composition.close();
+});
+
+test('opens a managed profile through the authenticated production stores', async () => {
+  const calls: string[] = [];
+  const handle = Object.freeze({ kind: 'managed_workspace_execution_handle_v1' as const });
+  const scope = Object.freeze({ kind: 'managed_workspace_execution_scope_v1' as const });
+  const managedOwner = fakeManagedOwner({ handle, scope, calls });
+  const executionStores = Object.freeze({}) as never;
+  const composition = createRuntimeHostWorkspaceExecutionComposition({
+    managedOwner,
+    executionStores,
+  });
+
+  const profile = await composition.openManagedWorkspace(
+    {
+      repositoryId: 'repository_11111111111111111111111111111111',
+      workspaceId: 'workspace_22222222222222222222222222222222',
+      workspaceEpochId: 'epoch_33333333333333333333333333333333',
+      workspaceInstanceId: 'instance_44444444444444444444444444444444',
+      sourceRoot: '/source',
+    },
+    { provisioning: 'dependency_environment_v1' },
+  );
+
+  assert.deepEqual(profile, {
+    kind: 'managed_worktree_v1',
+    executionHandle: handle,
+    provisioning: 'dependency_environment_v1',
+  });
+  assert.deepEqual(calls, ['managed:open']);
+  await composition.close();
+});
+
 test('rejects forged or malformed profiles before worker dispatch', async () => {
   let workerCalls = 0;
   const composition = createRuntimeHostWorkspaceExecutionComposition({
@@ -126,19 +185,146 @@ test('drains tool operations before closing the managed owner', async () => {
   assert.deepEqual(calls, ['managed:admit', 'managed:read', 'managed:close']);
 });
 
+test('caller cancellation releases a provisioning operation so drain can close', async () => {
+  const handle = Object.freeze({ kind: 'managed_workspace_execution_handle_v1' as const });
+  let acknowledgeProvision!: () => void;
+  const provisionStarted = new Promise<void>((resolve) => {
+    acknowledgeProvision = resolve;
+  });
+  let closed = false;
+  const managedOwner: ManagedWorkspaceOwner = {
+    state: 'ready',
+    async openManagedWorkspaceBaseline() {
+      throw new Error('not used');
+    },
+    async openManagedWorkspaceBaselineFromExecutionStores() {
+      throw new Error('not used');
+    },
+    async withManagedWorkspaceExecution<T>(
+      _handle: ManagedWorkspaceExecutionHandle,
+      _operation: (scope: ManagedWorkspaceExecutionScope) => Promise<T>,
+      options?: ManagedWorkspaceExecutionOptions,
+    ): Promise<T> {
+      acknowledgeProvision();
+      return await new Promise<never>((_resolve, reject) => {
+        const abort = () =>
+          reject(
+            options?.abortSignal?.reason ??
+              new DOMException('Managed execution cancelled', 'AbortError'),
+          );
+        if (options?.abortSignal?.aborted) abort();
+        else options?.abortSignal?.addEventListener('abort', abort, { once: true });
+      });
+    },
+    async executeReadOnlyFilesystemOperation() {
+      throw new Error('worker must not run while provisioning is pending');
+    },
+    async close() {
+      closed = true;
+    },
+  };
+  const composition = createRuntimeHostWorkspaceExecutionComposition({ managedOwner });
+  const profile = createManagedWorkspaceExecutionProfile(handle, {
+    provisioning: 'dependency_environment_v1',
+  });
+  const abort = new AbortController();
+  const execution = composition.executeReadOnly(
+    profile,
+    { kind: 'read', path: 'node_modules/fixture/index.js' },
+    abort.signal,
+  );
+  await provisionStarted;
+
+  composition.beginDrain();
+  const closing = composition.close();
+  abort.abort(new DOMException('User cancelled managed execution', 'AbortError'));
+
+  await assert.rejects(execution, { name: 'AbortError' });
+  await closing;
+  assert.equal(closed, true);
+});
+
+test('caller cancellation releases baseline admission so drain can close', async () => {
+  let acknowledgeAdmission!: () => void;
+  const admissionStarted = new Promise<void>((resolve) => {
+    acknowledgeAdmission = resolve;
+  });
+  let closed = false;
+  const managedOwner: ManagedWorkspaceOwner = {
+    state: 'ready',
+    async openManagedWorkspaceBaseline() {
+      throw new Error('not used');
+    },
+    async openManagedWorkspaceBaselineFromExecutionStores(_stores, _input, options) {
+      acknowledgeAdmission();
+      return await new Promise<never>((_resolve, reject) => {
+        const abort = () =>
+          reject(
+            options?.abortSignal?.reason ??
+              new DOMException('Managed baseline admission cancelled', 'AbortError'),
+          );
+        if (options?.abortSignal?.aborted) abort();
+        else options?.abortSignal?.addEventListener('abort', abort, { once: true });
+      });
+    },
+    async withManagedWorkspaceExecution() {
+      throw new Error('not used');
+    },
+    async executeReadOnlyFilesystemOperation() {
+      throw new Error('not used');
+    },
+    async close() {
+      closed = true;
+    },
+  };
+  const composition = createRuntimeHostWorkspaceExecutionComposition({
+    managedOwner,
+    executionStores: Object.freeze({}) as never,
+  });
+  const abort = new AbortController();
+  const admission = composition.openManagedWorkspace(
+    {
+      repositoryId: 'repository_11111111111111111111111111111111',
+      workspaceId: 'workspace_22222222222222222222222222222222',
+      workspaceEpochId: 'epoch_33333333333333333333333333333333',
+      workspaceInstanceId: 'instance_44444444444444444444444444444444',
+      sourceRoot: '/source',
+    },
+    { provisioning: 'dependency_environment_v1', abortSignal: abort.signal },
+  );
+  await admissionStarted;
+
+  const closing = composition.close();
+  abort.abort(new DOMException('User cancelled baseline admission', 'AbortError'));
+
+  await assert.rejects(admission, { name: 'AbortError' });
+  await closing;
+  assert.equal(closed, true);
+});
+
 function fakeManagedOwner(input: {
   handle: ManagedWorkspaceExecutionHandle;
   scope: ManagedWorkspaceExecutionScope;
   calls: string[];
   workerBlocked?: Promise<void>;
+  admissionOptions?: unknown[];
 }): ManagedWorkspaceOwner {
   return {
     state: 'ready',
     async openManagedWorkspaceBaseline() {
       throw new Error('not used');
     },
-    async withManagedWorkspaceExecution(handle, operation) {
+    async openManagedWorkspaceBaselineFromExecutionStores() {
+      input.calls.push('managed:open');
+      return {
+        created: true,
+        head: Object.freeze({}) as never,
+        executionHandle: input.handle,
+      };
+    },
+    async withManagedWorkspaceExecution(handle, operation, options) {
       assert.equal(handle, input.handle);
+      input.admissionOptions?.push(options);
       input.calls.push('managed:admit');
       return await operation(input.scope);
     },

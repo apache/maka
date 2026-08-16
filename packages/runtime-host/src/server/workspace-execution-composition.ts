@@ -1,12 +1,15 @@
 import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type {
+  OpenManagedWorkspaceBaselineInput,
   ManagedWorkspaceExecutionHandle,
+  ManagedWorkspaceExecutionOptions,
   ManagedWorkspaceFilesystemWorker,
   ManagedWorkspaceOwner,
   ManagedWorkspaceReadOnlyOperation,
   ManagedWorkspaceReadOnlyResult,
 } from '@maka/storage/managed-workspace-owner';
+import type { InteractiveExecutionStoresWriter } from '@maka/storage/execution-stores';
 
 export type RuntimeHostWorkspaceExecutionProfile =
   | {
@@ -16,6 +19,7 @@ export type RuntimeHostWorkspaceExecutionProfile =
   | {
       readonly kind: 'managed_worktree_v1';
       readonly executionHandle: ManagedWorkspaceExecutionHandle;
+      readonly provisioning: NonNullable<ManagedWorkspaceExecutionOptions['provisioning']>;
     };
 
 export type RuntimeHostWorkspaceExecutionErrorCode =
@@ -41,6 +45,10 @@ export interface RuntimeHostWorkspaceExecutionComposition {
     operation: ManagedWorkspaceReadOnlyOperation,
     abortSignal?: AbortSignal,
   ): Promise<ManagedWorkspaceReadOnlyResult>;
+  openManagedWorkspace(
+    input: OpenManagedWorkspaceBaselineInput,
+    options?: ManagedWorkspaceExecutionOptions,
+  ): Promise<RuntimeHostWorkspaceExecutionProfile>;
   beginDrain(): void;
   close(): Promise<void>;
 }
@@ -48,6 +56,7 @@ export interface RuntimeHostWorkspaceExecutionComposition {
 export interface CreateRuntimeHostWorkspaceExecutionCompositionInput {
   readonly filesystemWorker?: ManagedWorkspaceFilesystemWorker;
   readonly managedOwner?: ManagedWorkspaceOwner;
+  readonly executionStores?: InteractiveExecutionStoresWriter;
 }
 
 export function createAttachedWorkspaceExecutionProfile(
@@ -64,8 +73,13 @@ export function createAttachedWorkspaceExecutionProfile(
 
 export function createManagedWorkspaceExecutionProfile(
   executionHandle: ManagedWorkspaceExecutionHandle,
+  options: ManagedWorkspaceExecutionOptions = {},
 ): RuntimeHostWorkspaceExecutionProfile {
-  return Object.freeze({ kind: 'managed_worktree_v1', executionHandle });
+  return Object.freeze({
+    kind: 'managed_worktree_v1',
+    executionHandle,
+    provisioning: normalizeManagedProvisioning(options.provisioning),
+  });
 }
 
 export function createRuntimeHostWorkspaceExecutionComposition(
@@ -93,6 +107,32 @@ export function createRuntimeHostWorkspaceExecutionComposition(
   return {
     get state() {
       return state;
+    },
+    async openManagedWorkspace(baselineInput, options = {}) {
+      if (state !== 'ready') {
+        throw new RuntimeHostWorkspaceExecutionError(
+          'workspace_execution_draining',
+          'Runtime Host workspace execution is draining',
+        );
+      }
+      if (!input.managedOwner || !input.executionStores) {
+        throw new RuntimeHostWorkspaceExecutionError(
+          'managed_workspace_profile_unavailable',
+          'Managed workspace execution is not composed for this Runtime Host',
+        );
+      }
+      const provisioning = normalizeManagedProvisioning(options.provisioning);
+      activeOperations += 1;
+      try {
+        const opened = await input.managedOwner.openManagedWorkspaceBaselineFromExecutionStores(
+          input.executionStores,
+          baselineInput,
+          options.abortSignal ? { abortSignal: options.abortSignal } : undefined,
+        );
+        return createManagedWorkspaceExecutionProfile(opened.executionHandle, { provisioning });
+      } finally {
+        finishOperation();
+      }
     },
     async executeReadOnly(profile, operation, abortSignal) {
       if (state !== 'ready') {
@@ -126,6 +166,10 @@ export function createRuntimeHostWorkspaceExecutionComposition(
             profile.executionHandle,
             (scope) =>
               input.managedOwner!.executeReadOnlyFilesystemOperation(scope, operation, abortSignal),
+            {
+              provisioning: profile.provisioning,
+              ...(abortSignal ? { abortSignal } : {}),
+            },
           );
         }
         if (!input.filesystemWorker) {
@@ -157,6 +201,19 @@ export function createRuntimeHostWorkspaceExecutionComposition(
   };
 }
 
+function normalizeManagedProvisioning(
+  provisioning: ManagedWorkspaceExecutionOptions['provisioning'],
+): NonNullable<ManagedWorkspaceExecutionOptions['provisioning']> {
+  const value = provisioning ?? 'canonical_tree_only_v1';
+  if (value !== 'canonical_tree_only_v1' && value !== 'dependency_environment_v1') {
+    throw new RuntimeHostWorkspaceExecutionError(
+      'workspace_operation_denied',
+      'Managed workspace provisioning profile is invalid',
+    );
+  }
+  return value;
+}
+
 function isReadOnlyOperation(input: unknown): input is ManagedWorkspaceReadOnlyOperation {
   if (!input || typeof input !== 'object') return false;
   const kind = (input as { kind?: unknown }).kind;
@@ -171,12 +228,15 @@ function isWorkspaceExecutionProfile(
     kind?: unknown;
     cwd?: unknown;
     executionHandle?: { kind?: unknown };
+    provisioning?: unknown;
   };
   if (candidate.kind === 'attached_checkout_v1') {
     return typeof candidate.cwd === 'string' && candidate.cwd.length > 0;
   }
   return (
     candidate.kind === 'managed_worktree_v1' &&
-    candidate.executionHandle?.kind === 'managed_workspace_execution_handle_v1'
+    candidate.executionHandle?.kind === 'managed_workspace_execution_handle_v1' &&
+    (candidate.provisioning === 'canonical_tree_only_v1' ||
+      candidate.provisioning === 'dependency_environment_v1')
   );
 }

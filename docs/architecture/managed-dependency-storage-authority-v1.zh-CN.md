@@ -138,8 +138,8 @@ Windows 上只读 dependency file 是合法输入。authority 只在自己的 un
 后续平铺顺序固定为：
 
 1. PR 1：本文件定义的 storage authority；
-2. PR 2：producer boundary，必须证明 producer 进程树退出后 `provision()` 才 resolve，并包含真实 npm `.bin` symlink 的配额与取消/超时测试；
-3. PR 3：bundled npm runtime 供应链、发布审计与许可证材料；
+2. PR 2：producer boundary，必须证明 producer 进程树退出后 `provision()` 才 resolve，并用 npm 形态的 `.bin` symlink 覆盖配额与取消/超时语义；
+3. PR 3：bundled npm runtime 供应链、发布审计与许可证材料，并使用实际打包的 npm runtime 补齐真实 `.bin` production-shaped 测试；
 4. PR 4：唯一生产 consumer，把真实 baseline、environment lease 和 Read/Glob/Grep worker 串成闭环。
 
 PR 1–3 只是堆叠地基；PR 4 合并前不能把 M1.3 描述为用户可用。PR 2 不得通过拒绝所有 POSIX symlink 规避 `.bin`：producer inventory 应计量合法 link，最终 storage authority 与 worker 仍负责 target containment；Windows 继续拒绝 reparse point。

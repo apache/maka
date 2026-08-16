@@ -5,12 +5,19 @@ import {
   candidateStartupFailureForExitCode,
   type CandidateStartupFailure,
 } from '../candidate-startup-failure.js';
+import { encodePackagedCandidateBootstrap } from '../candidate-bootstrap.js';
+import {
+  requireDesktopPackagedCandidateAuthority,
+  type DesktopPackagedCandidateAuthority,
+} from './packaged-candidate-authority.js';
 
 export interface DetachedCandidateInput {
   rootPath: string;
   expectedRootId: string;
   generation?: string;
   initialConnectionTimeoutMs?: number;
+  packagedCandidateAuthority?: DesktopPackagedCandidateAuthority;
+  legacyConfigurationRoot?: string;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   executable?: string;
@@ -85,12 +92,19 @@ function spawnCandidate(input: DetachedCandidateInput, detached: boolean) {
   appendArgument(args, '--idle-grace-ms', input.idleGraceMs);
   appendArgument(args, '--handshake-timeout-ms', input.handshakeTimeoutMs);
   appendArgument(args, '--generation', input.generation);
+  appendArgument(args, '--legacy-configuration-root', input.legacyConfigurationRoot);
+  const packagedBootstrap = input.packagedCandidateAuthority
+    ? encodePackagedCandidateBootstrap(
+        requireDesktopPackagedCandidateAuthority(input.packagedCandidateAuthority),
+        process.pid,
+      )
+    : undefined;
 
   // spawn() commits the side effect synchronously; spawned only reports that commit's outcome.
   const child = spawn(executable, args, {
     cwd: dirname(isAbsolute(executable) ? executable : process.execPath),
     detached,
-    stdio: 'ignore',
+    stdio: packagedBootstrap ? ['ignore', 'ignore', 'ignore', 'pipe'] : 'ignore',
     windowsHide: true,
     env: {
       ...process.env,
@@ -98,6 +112,19 @@ function spawnCandidate(input: DetachedCandidateInput, detached: boolean) {
       ...input.env,
     },
   });
+  if (packagedBootstrap) {
+    const authorityChannel = child.stdio[3];
+    if (!authorityChannel || !('end' in authorityChannel)) {
+      child.kill();
+      throw new Error('Runtime Host candidate authority channel is unavailable');
+    }
+    // The managed capability handshake is the final delivery check. A child
+    // that exits before consuming the inherited channel may close this pipe;
+    // do not let that ordinary failed-candidate evidence become an unhandled
+    // stream error in the Desktop parent.
+    authorityChannel.on('error', () => undefined);
+    authorityChannel.end(packagedBootstrap);
+  }
   return child;
 }
 

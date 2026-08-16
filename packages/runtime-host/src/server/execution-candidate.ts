@@ -16,6 +16,8 @@ export interface ExecutionRuntimeHostCandidateOptions
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   /** Packaged resource root containing bundled-git.json and the Git toolchain. */
   readonly bundledGitResourcesRoot?: string;
+  /** Packaged resource root containing bundled-npm.json and the npm runtime. */
+  readonly bundledNpmResourcesRoot?: string;
 }
 
 export type ExecutionRuntimeHostCandidateDependencies = ExecutionRuntimeHostCompositionDependencies;
@@ -25,5 +27,13 @@ export async function startExecutionRuntimeHostCandidate(
   dependencies: ExecutionRuntimeHostCandidateDependencies = {},
 ): Promise<ExecutionRuntimeHostCandidateResult> {
   const composition = await createExecutionRuntimeHostCompositionSource(options, dependencies);
-  return startInteractiveRuntimeHostCandidate(options, composition);
+  return startInteractiveRuntimeHostCandidate(
+    {
+      ...options,
+      ...(options.bundledNpmResourcesRoot
+        ? { hostCapabilities: ['managed_workspace_inspection_v1'] as const }
+        : {}),
+    },
+    composition,
+  );
 }
