@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { selectCollaborationTools, type MakaToolContext } from '@maka/runtime';
+import { selectCollaborationTools } from '@maka/runtime/plan-mode';
+import type { MakaToolContext } from '@maka/runtime/tool-runtime';
 import {
   createManagedWorkspaceInspectionTool,
   type ManagedWorkspaceInspectionToolResult,

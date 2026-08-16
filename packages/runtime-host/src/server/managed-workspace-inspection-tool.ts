@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { z } from 'zod';
-import type { MakaTool } from '@maka/runtime';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import type {
   ManagedWorkspaceReadOnlyOperation,
   ManagedWorkspaceReadOnlyResult,

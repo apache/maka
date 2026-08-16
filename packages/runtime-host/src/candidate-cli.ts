@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path';
 import type { InteractiveRuntimeHostCandidateOptions } from './server/candidate.js';
 
 export function parseInteractiveRuntimeHostCandidateArguments(
@@ -39,7 +40,7 @@ export function parseInteractiveRuntimeHostCandidateArguments(
       ? {
           legacyConfigurationRoot: readOptionalAbsolutePath(values, 'legacy-configuration-root'),
         }
-         : {}),
+      : {}),
     idleGraceMs: readOptionalInteger(values, 'idle-grace-ms'),
     handshakeTimeoutMs: readOptionalInteger(values, 'handshake-timeout-ms'),
     ...(values.has('generation') ? { generation: readGeneration(values) } : {}),
@@ -49,6 +50,13 @@ export function parseInteractiveRuntimeHostCandidateArguments(
 function readGeneration(values: Map<string, string>): string {
   const value = values.get('generation');
   if (!value || value.length > 128) throw new Error('Invalid --generation');
+  return value;
+}
+
+function readOptionalAbsolutePath(values: Map<string, string>, key: string): string | undefined {
+  const value = values.get(key);
+  if (value === undefined) return undefined;
+  if (!isAbsolute(value)) throw new Error(`Invalid --${key}`);
   return value;
 }
 
