@@ -370,12 +370,17 @@ export function ImportTasksSettingsPage(props: {
                               entry.sourceSessionId === session.id,
                           )
                         }
-                        // Returned, not discarded: Astryx's Button awaits a
-                        // promise-returning `clickAction` and drops repeat
-                        // clicks until it settles. `void`-ing it gave that
-                        // guarantee nothing to await, leaving double-submit to
-                        // the `importingId` state alone -- one render behind.
-                        clickAction={() => importConversation(session)}
+                        // `onClick`, not `clickAction`. Astryx runs
+                        // `clickAction` inside a React 19 async transition,
+                        // and React holds a transition's state updates until
+                        // the action settles, so `setImportingId` landed only
+                        // once the import was already over: every control that
+                        // reads it -- this row's 正在导入…, the other rows, the
+                        // archived filter, the source switch -- stayed live for
+                        // the whole import. `clickAction` buys the clicked
+                        // button its own pending state, and that is all it
+                        // buys; this lock is a page fact, so the page owns it.
+                        onClick={() => void importConversation(session)}
                         label={importingId === session.id ? copy.importing : copy.import}
                         // Every row's button reads 导入; only the accessible
                         // name can say which conversation it imports.
@@ -397,7 +402,10 @@ export function ImportTasksSettingsPage(props: {
               width="100%"
               label={loadingMore ? copy.loadingMore : copy.loadMore}
               isDisabled={loadingMore}
-              clickAction={() => loadCatalog(adapterId, catalog.nextCursor ?? undefined)}
+              // `onClick` for the same reason as the row buttons: inside
+              // `clickAction`'s transition `loadingMore` commits too late to
+              // disable anything or to say 正在加载….
+              onClick={() => void loadCatalog(adapterId, catalog.nextCursor ?? undefined)}
             />
           )}
         </VStack>
