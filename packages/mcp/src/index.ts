@@ -44,7 +44,7 @@ const STDERR_OVERSIZED_LINE = '[stderr line omitted: exceeds diagnostic limit]';
 const STDERR_CONTINUATION = '[stderr continuation omitted]';
 const MAX_SUMMARIZED_ERROR_BLOCKS = 100;
 const OVERSIZED_TOOL_ERROR_CONTENT = 'server returned oversized error content';
-const MAX_CONSECUTIVE_TOOL_REFRESH_ATTEMPTS = 3;
+const MAX_TOOL_REFRESH_PASSES = 3;
 const TOOL_REFRESH_QUIET_PERIOD_MS = 1_000;
 
 export interface McpClientManagerOptions {
@@ -72,16 +72,17 @@ interface ToolRefreshState {
   readonly client: Client;
   readonly connectionGeneration: number;
   pending: boolean;
+  pendingNotification: boolean;
   promise: Promise<McpToolDescriptor[]>;
 }
 
 interface ToolRefreshNotificationState {
-  // This state intentionally outlives one refresh promise so a notification
-  // sent just after every response cannot reset the consecutive-signal bound.
   readonly client: Client;
   readonly connectionGeneration: number;
-  consecutiveSignals: number;
-  lastSignalAt: number;
+  // This state intentionally outlives one refresh promise. A notification
+  // sent just after every response must consume the same bounded pass budget.
+  refreshPasses: number;
+  lastRefreshCompletedAt?: number;
   suppressed: boolean;
 }
 
@@ -286,8 +287,7 @@ export class McpClientManager {
     entry.refreshNotificationState = {
       client,
       connectionGeneration,
-      consecutiveSignals: 0,
-      lastSignalAt: this.now(),
+      refreshPasses: 0,
       suppressed: false,
     };
     return this.startToolRefresh(serverId, entry, client, connectionGeneration);
@@ -298,12 +298,14 @@ export class McpClientManager {
     entry: Connection,
     client: Client,
     connectionGeneration: number,
+    notification = false,
   ): Promise<McpToolDescriptor[]> {
     if (
       entry.refreshState?.client === client &&
       entry.refreshState.connectionGeneration === connectionGeneration
     ) {
       entry.refreshState.pending = true;
+      entry.refreshState.pendingNotification ||= notification;
       return entry.refreshState.promise;
     }
 
@@ -311,6 +313,7 @@ export class McpClientManager {
       client,
       connectionGeneration,
       pending: false,
+      pendingNotification: notification,
       promise: Promise.resolve([]),
     };
     state.promise = this.refreshToolLoop(serverId, entry, state).finally(() => {
@@ -335,25 +338,35 @@ export class McpClientManager {
       notificationState = {
         client,
         connectionGeneration,
-        consecutiveSignals: 0,
-        lastSignalAt: now,
+        refreshPasses: 0,
         suppressed: false,
       };
       entry.refreshNotificationState = notificationState;
-    } else if (now - notificationState.lastSignalAt > TOOL_REFRESH_QUIET_PERIOD_MS) {
-      notificationState.consecutiveSignals = 0;
+    }
+    const activeRefresh = entry.refreshState;
+    if (
+      activeRefresh?.client === client &&
+      activeRefresh.connectionGeneration === connectionGeneration
+    ) {
+      activeRefresh.pending = true;
+      activeRefresh.pendingNotification = true;
+      return activeRefresh.promise;
+    }
+    if (
+      notificationState.lastRefreshCompletedAt !== undefined &&
+      now - notificationState.lastRefreshCompletedAt > TOOL_REFRESH_QUIET_PERIOD_MS
+    ) {
+      notificationState.refreshPasses = 0;
       notificationState.suppressed = false;
     }
-    notificationState.lastSignalAt = now;
     if (notificationState.suppressed) {
       return Promise.reject(this.toolRefreshFrequencyError(serverId));
     }
-    notificationState.consecutiveSignals += 1;
-    if (notificationState.consecutiveSignals >= MAX_CONSECUTIVE_TOOL_REFRESH_ATTEMPTS) {
+    if (notificationState.refreshPasses >= MAX_TOOL_REFRESH_PASSES) {
       notificationState.suppressed = true;
       return Promise.reject(this.toolRefreshFrequencyError(serverId));
     }
-    return this.startToolRefresh(serverId, entry, client, connectionGeneration);
+    return this.startToolRefresh(serverId, entry, client, connectionGeneration, true);
   }
 
   async callTool(
@@ -674,7 +687,30 @@ export class McpClientManager {
     state: ToolRefreshState,
   ): Promise<McpToolDescriptor[]> {
     while (true) {
+      const notificationPass = state.pendingNotification;
       state.pending = false;
+      state.pendingNotification = false;
+      if (notificationPass) {
+        const notificationState = entry.refreshNotificationState;
+        if (
+          notificationState?.client !== state.client ||
+          notificationState.connectionGeneration !== state.connectionGeneration
+        ) {
+          throw safeMcpOperationError(
+            serverId,
+            'connection changed during tool refresh',
+            undefined,
+          );
+        }
+        if (notificationState.suppressed) {
+          throw this.toolRefreshFrequencyError(serverId);
+        }
+        if (notificationState.refreshPasses >= MAX_TOOL_REFRESH_PASSES) {
+          notificationState.suppressed = true;
+          throw this.toolRefreshFrequencyError(serverId);
+        }
+        notificationState.refreshPasses += 1;
+      }
       let definitions: McpDiscoveredTool[] | undefined;
       let failure: unknown;
       try {
@@ -690,10 +726,18 @@ export class McpClientManager {
       ) {
         throw safeMcpOperationError(serverId, 'connection changed during tool refresh', failure);
       }
+      const notificationState = entry.refreshNotificationState;
       if (
-        entry.refreshNotificationState?.client === state.client &&
-        entry.refreshNotificationState.connectionGeneration === state.connectionGeneration &&
-        entry.refreshNotificationState.suppressed
+        notificationPass &&
+        notificationState?.client === state.client &&
+        notificationState.connectionGeneration === state.connectionGeneration
+      ) {
+        notificationState.lastRefreshCompletedAt = this.now();
+      }
+      if (
+        notificationState?.client === state.client &&
+        notificationState.connectionGeneration === state.connectionGeneration &&
+        notificationState.suppressed
       ) {
         throw this.toolRefreshFrequencyError(serverId);
       }
