@@ -21,7 +21,7 @@
 import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { resolveOverlayAssetDir } from '../overlay-assets.js';
 import { openSystemPermissionPane, requestPermissionAccess } from '../permissions-actions.js';
 import { loadNativeBundleIcon, resolveAppBundle } from './app-bundle.js';

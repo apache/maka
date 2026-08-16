@@ -1,15 +1,18 @@
 import {
   decodeAgentRunEvent as decodeCanonicalAgentRunEvent,
   decodeAgentRunHeader as decodeCanonicalAgentRunHeader,
-  decodeRuntimeEvent as decodeCanonicalRuntimeEvent,
-  decodeStoredMessageForRead,
-  decodeStoredMessageForRecovery,
   type AgentRunEvent,
   type AgentRunHeader,
-  type RuntimeEvent,
-} from '@maka/core';
+} from '@maka/core/agent-run';
 
-export { decodeStoredMessageForRead, decodeStoredMessageForRecovery };
+import {
+  decodeRuntimeEvent as decodeCanonicalRuntimeEvent,
+  type RuntimeEvent,
+} from '@maka/core/runtime-event';
+
+import { decodeStoredMessage } from '@maka/core/session';
+
+export { decodeStoredMessage };
 
 export function decodeAgentRunHeader(
   value: unknown,

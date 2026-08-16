@@ -1,10 +1,7 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { TextDecoder } from 'node:util';
 import WebSocket, { type RawData } from 'ws';
-import {
-  RUNTIME_HOST_MAX_MESSAGE_BYTES,
-  RuntimeHostProtocolError,
-  type EncodedProtocolMessage,
-} from '../protocol/index.js';
+import { RUNTIME_HOST_MAX_MESSAGE_BYTES, type EncodedProtocolMessage } from '../protocol/index.js';
 import { RuntimeHostTransportError } from './framed-transport.js';
 import type { RuntimeHostMessageTransport } from './message-transport.js';
 
@@ -42,7 +39,7 @@ export class WebSocketTransport implements RuntimeHostMessageTransport {
       this.#resolveClosed = resolve;
     });
     socket.on('message', (data, isBinary) => this.#receive(data, isBinary));
-    socket.once('error', (error) => this.#fail(error));
+    socket.once('error', (error) => this.#fail(transportFailure(error)));
     socket.once('close', () => {
       this.#endRead();
       this.#resolveClosed();
@@ -100,7 +97,7 @@ export class WebSocketTransport implements RuntimeHostMessageTransport {
       this.#socket.send(message, { binary: false, compress: false }, (error) => {
         this.#pendingWriteBytes -= message.byteLength;
         if (error) {
-          const failure = asError(error);
+          const failure = transportFailure(asError(error));
           this.#fail(failure);
           reject(failure);
           return;
@@ -220,4 +217,15 @@ function toBuffer(data: RawData): Buffer {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function transportFailure(error: Error): Error {
+  if (error instanceof RuntimeHostTransportError || error instanceof RuntimeHostProtocolError) {
+    return error;
+  }
+  return new RuntimeHostTransportError(
+    'closed',
+    `Runtime Host WebSocket transport failed: ${error.message}`,
+    { cause: error },
+  );
 }

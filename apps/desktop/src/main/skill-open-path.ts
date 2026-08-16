@@ -1,11 +1,8 @@
 import { realpath, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import {
-  isPathInside,
-  isSafeSkillId,
-  resolveSkillDiscoveryPaths,
-  scanSkillsWithDiagnostics,
-} from '@maka/runtime';
+import { isPathInside, isSafeSkillId } from '@maka/runtime/path-containment';
+
+import { resolveSkillDiscoveryPaths, scanSkillsWithDiagnostics } from '@maka/runtime/skills';
 
 export type SkillOpenTarget = 'file' | 'directory';
 

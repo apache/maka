@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { IpcMain } from 'electron';
-import type { QuotaSnapshot } from '@maka/core';
-import { isOAuthEnrollmentProviderEnabled } from '@maka/runtime';
+import type { QuotaSnapshot } from '@maka/core/oauth-subscription';
+import { isOAuthEnrollmentProviderEnabled } from '@maka/runtime/oauth-provider-contracts';
 import {
   OAUTH_LOGIN_PROVIDERS,
   type OAuthLoginProjection,
@@ -17,6 +16,10 @@ import {
   type RuntimeHostAccountConnectionClient,
 } from './runtime-host-account-connection.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
 import type {
   OAuthExternalPresentation,
   RuntimeHostOAuthPresentation,
@@ -32,20 +35,12 @@ const SHARED_OAUTH_IPC_OPERATIONS = [
   'refresh-tokens',
   'logout',
 ] as const;
-const ANTIGRAVITY_OAUTH_IPC_OPERATIONS = [
-  'is-experimental-enabled',
-  ...SHARED_OAUTH_IPC_OPERATIONS,
-] as const;
-
 export const RUNTIME_HOST_OAUTH_IPC_CHANNELS = Object.freeze([
   ...OAUTH_LOGIN_PROVIDERS.flatMap((provider) => [
     ...(provider === 'xai-oauth' ? [] : [`${provider}:is-experimental-enabled`]),
     ...SHARED_OAUTH_IPC_OPERATIONS.map((operation) => `${provider}:${operation}`),
     ...(provider === 'claude-subscription' ? [`${provider}:refresh-quota`] : []),
   ]),
-  ...ANTIGRAVITY_OAUTH_IPC_OPERATIONS.map(
-    (operation) => `antigravity-subscription:${operation}`,
-  ),
 ]);
 
 type OAuthClient = RuntimeHostAccountConnectionClient & Pick<
@@ -57,7 +52,7 @@ type OAuthClient = RuntimeHostAccountConnectionClient & Pick<
 >;
 
 export interface RuntimeHostOAuthIpcDeps {
-  readonly ipcMain: Pick<IpcMain, 'handle'>;
+  readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: OAuthClient;
   readonly presentation: RuntimeHostOAuthPresentation;
   readonly emitConnectionListChanged: () => void;
@@ -82,6 +77,9 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
     }
     deps.ipcMain.handle(channel('get-auth-url'), async () => {
       if (!providerEnabled(provider)) return providerDisabled();
+      // Drop any Desktop-tracked attempt for this provider so a re-click does
+      // not race a stale completeAuthorization waiter against a new start.
+      await cancelProviderAttempts(deps, activeAttempts, provider);
       const connection = await ensureRuntimeHostAccountConnection(deps.client, {
         providerType: provider,
         slug: INTERACTIVE_OAUTH_CONNECTION_SLUGS[provider],
@@ -100,7 +98,13 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
       } catch (error) {
         expectation.cancel(error);
         await deps.client.cancelOAuthLogin(attemptId).catch(() => undefined);
-        return actionFailure('Unable to start OAuth authorization');
+        // Prefer the host's message when present so "already in progress" is not
+        // flattened into a generic 鉴权失败 for the toast classifier.
+        const detail =
+          error instanceof Error && error.message.trim().length > 0
+            ? error.message
+            : 'Unable to start OAuth authorization';
+        return actionFailure(detail);
       }
     });
     deps.ipcMain.handle(channel('open-auth-url'), (_event, attemptId: unknown) => {
@@ -154,7 +158,7 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
       }
       return { ok: true as const };
     });
-    deps.ipcMain.handle(channel('get-account-state'), async () => {
+    handleReconnectableRead(deps.ipcMain, channel('get-account-state'), async () => {
       const connection = findRuntimeHostAccountConnection(
         await deps.client.loadConnectionCatalog(),
         provider,
@@ -215,28 +219,6 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
       return { ok: true as const };
     });
   }
-  registerUnavailableAntigravityIpc(deps.ipcMain);
-}
-
-function registerUnavailableAntigravityIpc(ipcMain: Pick<IpcMain, 'handle'>): void {
-  const prefix = 'antigravity-subscription';
-  const unavailable = () =>
-    actionFailure(
-      'Google Antigravity account access is not available in Runtime Host',
-      'experimental_disabled',
-    );
-  ipcMain.handle(`${prefix}:is-experimental-enabled`, async () => false);
-  ipcMain.handle(`${prefix}:get-auth-url`, unavailable);
-  ipcMain.handle(`${prefix}:open-auth-url`, unavailable);
-  ipcMain.handle(`${prefix}:complete-authorization`, unavailable);
-  ipcMain.handle(`${prefix}:cancel-authorization`, async () => ({ ok: true as const }));
-  ipcMain.handle(`${prefix}:get-account-state`, async () => ({
-    provider: prefix,
-    status: 'preview' as const,
-    runtimeState: 'not_logged_in' as const,
-  }));
-  ipcMain.handle(`${prefix}:refresh-tokens`, unavailable);
-  ipcMain.handle(`${prefix}:logout`, async () => ({ ok: true as const }));
 }
 
 async function waitForPresentation(

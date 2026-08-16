@@ -1,3 +1,0 @@
-{"id":"legacy-garbagetail-1","workspaceRoot":"/Users/fixture/Library/Application Support/Maka/workspaces/default","cwd":"/Users/fixture/work/garbage-project","createdAt":1783925000000,"lastUsedAt":1783925010000,"name":"Garbage Tail","isFlagged":false,"labels":[],"isArchived":false,"status":"active","statusUpdatedAt":1783925010000,"hasUnread":false,"backend":"ai-sdk","llmConnectionSlug":"openai-compatible","connectionLocked":true,"model":"demo-model","permissionMode":"ask","schemaVersion":1,"lastMessageAt":1783925010000}
-{"type":"user","id":"msg-user-garbage-1","turnId":"turn-garbage-1","ts":1783925005000,"text":"hello"}
-this is not json at all

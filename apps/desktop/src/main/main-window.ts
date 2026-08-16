@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, nativeTheme, screen, shell } from 'electron
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { AppSettings } from '@maka/core';
+import type { AppSettings } from '@maka/core/settings';
 import { isExternalUrl } from './external-link-guard.js';
 import { errorMessage } from './chat-readiness.js';
 import { readSavedBounds, writeSavedBounds, SAFE_MIN_HEIGHT, SAFE_MIN_WIDTH, type SavedBounds } from './window-state.js';
@@ -12,6 +12,9 @@ import type { E2eFixture } from './e2e-fixture.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
 import { isThemePreference, toNativeThemeSource } from './theme-source.js';
 import { createWindowRevealGate } from './window-reveal.js';
+import {
+  parseDesktopSessionResourceKey,
+} from '../shared/runtime-host-identity.js';
 
 type SettingsReader = {
   get(): Promise<AppSettings>;
@@ -129,6 +132,7 @@ const titleBarOverlayOptions = (
 
 export function createMainWindowController(deps: MainWindowControllerDeps): MainWindowController {
   const { workspaceRoot, e2eFixture, settingsStore, startHidden } = deps;
+  const liveBrowserScopes = new Map<string, { hostId: string; targetEpoch: string }>();
 
   // PR-SHOW-AFTER-FIRST-COMMIT: windows launched hidden (startHidden covers
   // e2e-fixture capture and E2E — see main.ts) must never be revealed;
@@ -157,10 +161,40 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         create: (sessionId) => {
           if (!mainWindow) throw new Error('Embedded browser used before the window is ready.');
           return new BrowserViewController(mainWindow, sessionId, (sid, state) => {
-            safeSendToRenderer('browser:state', { sessionId: sid, state });
+            const ref = parseDesktopSessionResourceKey(sid);
+            safeSendToRenderer(
+              'browser:state',
+              { hostId: ref.hostId, targetEpoch: ref.targetEpoch },
+              { sessionId: ref.sessionId, state },
+            );
           });
         },
-        onLiveChange: (sessionIds) => safeSendToRenderer('browser:live', { sessionIds }),
+        onLiveChange: (sessionIds) => {
+          const groups = new Map<string, ReturnType<typeof parseDesktopSessionResourceKey>[]>();
+          for (const sessionId of sessionIds) {
+            const ref = parseDesktopSessionResourceKey(sessionId);
+            const key = JSON.stringify([ref.targetEpoch, ref.hostId]);
+            const group = groups.get(key) ?? [];
+            group.push(ref);
+            groups.set(key, group);
+          }
+          const keys = new Set([...liveBrowserScopes.keys(), ...groups.keys()]);
+          for (const key of keys) {
+            const group = groups.get(key) ?? [];
+            const first = group[0];
+            const scope = first
+              ? { hostId: first.hostId, targetEpoch: first.targetEpoch }
+              : liveBrowserScopes.get(key);
+            if (!scope) continue;
+            safeSendToRenderer(
+              'browser:live',
+              scope,
+              { sessionIds: group.map(({ sessionId }) => sessionId) },
+            );
+            if (first) liveBrowserScopes.set(key, scope);
+            else liveBrowserScopes.delete(key);
+          }
+        },
       });
     }
     return browserViews;
@@ -532,11 +566,8 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
 function isTitleBarOverlayTheme(value: unknown): value is { isDark: boolean; backgroundColor: string } {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as { isDark?: unknown; backgroundColor?: unknown };
-  return (
-    typeof candidate.isDark === 'boolean' &&
-    typeof candidate.backgroundColor === 'string' &&
-    /^#[0-9a-f]{6}$/i.test(candidate.backgroundColor)
-  );
+  return (typeof candidate.isDark === 'boolean' &&
+  typeof candidate.backgroundColor === 'string' && /^#[0-9a-f]{6}$/i.test(candidate.backgroundColor));
 }
 
 /**

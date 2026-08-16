@@ -33,8 +33,7 @@ type ProviderRuntimeAdapterDefinition =
       supportsOpenAiResponses?: true;
       replayAssistantReasoningAs?: 'reasoning';
       replayAssistantReasoningDetails?: true;
-    }
-  | { kind: 'unavailable' };
+    };
 
 export type ProviderRuntimeAdapter = ProviderRuntimeAdapterDefinition & {
   /** Provider wire contract for ApplyPatch. Model support is resolved separately. */
@@ -1001,7 +1000,6 @@ const providerRegistry = {
     modelDiscovery: {
       kind: 'protocol',
       auth: 'oauth-bearer',
-      filter: 'fallback-models',
     },
     category: 'oauth',
     catalogBadge: 'Account',
@@ -1816,21 +1814,6 @@ const providerRegistry = {
     catalogBadge: 'Account',
     modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS.openai.id,
   },
-  'gemini-cli': {
-    label: 'Gemini CLI OAuth',
-    description: 'Google account path is tracked separately from ready API-key providers.',
-    baseUrl: '',
-    authKind: 'oauth_token',
-    backendKind: 'ai-sdk',
-    fallbackModels: ['gemini-2.5-pro', 'gemini-2.5-flash'],
-    status: 'phase3-experimental',
-    protocol: 'google',
-    runtimeAdapter: { kind: 'unavailable' },
-    modelDiscovery: { kind: 'protocol' },
-    category: 'oauth',
-    catalogBadge: 'Account',
-    modelsDevId: GENERATED_MODELS_DEV_PROVIDER_FACTS['gemini-cli'].id,
-  },
 } satisfies Record<string, ProviderDefaults>;
 
 export type ProviderType = keyof typeof providerRegistry;
@@ -1848,31 +1831,3 @@ function providerTypesByOrder(
 export const READY_PROVIDER_TYPES = providerTypesByOrder('readyOrder');
 export const CATALOG_PROVIDER_TYPES = providerTypesByOrder('catalogOrder');
 export const RECOMMENDED_PROVIDER_TYPES = providerTypesByOrder('recommendedOrder');
-
-/**
- * An OAuth provider is product-wired when its registry entry has both the
- * OAuth credential contract and a runnable model adapter. OAuth entries whose
- * adapter is unavailable remain preview-only.
- */
-export function isWiredOAuthProvider(providerType: ProviderType): boolean {
-  const provider = PROVIDER_REGISTRY[providerType];
-  return provider.authKind === 'oauth_token' && provider.runtimeAdapter.kind !== 'unavailable';
-}
-
-/**
- * Persisted providerType aliases renamed away in the current registry. Each
- * entry maps a legacy persisted id to its current id so connections stored
- * before a rename keep working without a destructive on-disk migration.
- *
- * The alias normalizes the `providerType` field only. Persisted connection
- * slugs and credential-store keys (e.g. the `codex-subscription` slug used by
- * the OpenAI Codex OAuth service) are intentionally left untouched so existing
- * OAuth tokens remain reachable.
- */
-const PROVIDER_TYPE_ALIASES: Readonly<Record<string, ProviderType>> = {
-  'codex-subscription': 'openai-codex',
-};
-
-export function normalizeProviderType(type: string): ProviderType {
-  return PROVIDER_TYPE_ALIASES[type] ?? (type as ProviderType);
-}

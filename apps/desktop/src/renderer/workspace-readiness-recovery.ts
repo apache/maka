@@ -1,4 +1,5 @@
-import type { OnboardingState, UiLocale } from '@maka/core';
+import type { OnboardingState } from '@maka/core/onboarding';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   getOnboardingHeroCopy,
   type OnboardingActionTarget,

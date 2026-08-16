@@ -1,4 +1,4 @@
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { McpConfigFile, McpServerConfig } from '@maka/core/mcp';
 import { getMcpCopy } from './locales/mcp-copy.js';
 

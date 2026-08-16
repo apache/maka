@@ -1,17 +1,9 @@
-import { isShellOutput, type UiLocale } from '@maka/core';
+import { isShellOutput } from '@maka/core/shell-run';
+import { type UiLocale } from '@maka/core/ui-locale';
 import type { ToolActivityItem } from '../materialize.js';
 import { formatQuietJsonValue } from './builtin-preview.js';
 import { isConnectorTool } from './display-name.js';
 import { getToolActivityCopy } from './copy.js';
-
-// Mirror of runtime's AUTOMATION_TOOL_NAME. @maka/ui must not depend on
-// @maka/runtime, so the unified Automation tool's name is duplicated here as
-// the single hook for its friendly card (same pattern as CONNECTOR_TOOL_NAMES).
-const AUTOMATION_TOOL_NAME = 'Automation';
-
-export function isAutomationTool(name: string): boolean {
-  return name === AUTOMATION_TOOL_NAME;
-}
 
 export function extractErrorText(result: ToolActivityItem['result'], locale: UiLocale): string {
   if (!result) return '';
@@ -54,7 +46,6 @@ export function isPermissionDeniedToolResult(result: ToolActivityItem['result'])
 export function resultOwnsOwnPanel(item: ToolActivityItem): boolean {
   const result = item.result;
   if (!result) return false;
-  if (isAutomationTool(item.toolName) && result.kind === 'text') return true;
   if (isConnectorTool(item.toolName) && result.kind === 'json') return true;
   switch (result.kind) {
     case 'terminal':

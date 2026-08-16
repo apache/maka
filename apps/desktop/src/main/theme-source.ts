@@ -1,4 +1,4 @@
-import type { ThemePreference } from '@maka/core';
+import type { ThemePreference } from '@maka/core/settings';
 
 export type NativeThemeSource = 'system' | 'light' | 'dark';
 

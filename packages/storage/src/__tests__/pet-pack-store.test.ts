@@ -48,24 +48,6 @@ function pngHeader(width: number, height: number): Buffer {
   return bytes;
 }
 
-function webpExtendedHeader(width: number, height: number): Buffer {
-  const bytes = Buffer.alloc(30);
-  bytes.write('RIFF', 0, 'ascii');
-  bytes.writeUInt32LE(bytes.length - 8, 4);
-  bytes.write('WEBP', 8, 'ascii');
-  bytes.write('VP8X', 12, 'ascii');
-  bytes.writeUInt32LE(10, 16);
-  writeUInt24LE(bytes, 24, width - 1);
-  writeUInt24LE(bytes, 27, height - 1);
-  return bytes;
-}
-
-function writeUInt24LE(bytes: Buffer, offset: number, value: number): void {
-  bytes[offset] = value & 0xff;
-  bytes[offset + 1] = (value >>> 8) & 0xff;
-  bytes[offset + 2] = (value >>> 16) & 0xff;
-}
-
 describe('PetPackStore', () => {
   test('atomically installs, lists, reads, and removes a custom pet', async () => {
     await withStore(async ({ root, store }) => {
@@ -99,28 +81,6 @@ describe('PetPackStore', () => {
       assert.equal(await store.remove('likun.maodie'), true);
       assert.equal(await store.remove('likun.maodie'), false);
       assert.deepEqual(await store.list(), []);
-    });
-  });
-
-  test('accepts a WebP sprite sheet whose header matches the manifest grid', async () => {
-    await withStore(async ({ store }) => {
-      const webpManifest = manifest({
-        id: 'likun.maodie-webp',
-        spriteSheet: {
-          path: 'maodie.webp',
-          format: 'webp',
-          frameWidth: 32,
-          frameHeight: 32,
-          columns: 2,
-          rows: 2,
-          frameCount: 4,
-        },
-      });
-      await store.install({
-        manifest: webpManifest,
-        spriteSheet: webpExtendedHeader(64, 64),
-      });
-      assert.equal((await store.readSpriteSheet('likun.maodie-webp'))?.format, 'webp');
     });
   });
 

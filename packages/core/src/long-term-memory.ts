@@ -151,6 +151,12 @@ export interface MemoryExtractionCursor {
   readonly updatedAt: number;
 }
 
+export interface MemoryCompactionPolicyDenial {
+  readonly sessionId: string;
+  readonly compactionCheckpointId: string;
+  readonly deniedAt: number;
+}
+
 export type MemoryExtractionFailureClass =
   | 'provider'
   | 'schema'
@@ -166,7 +172,9 @@ export interface PendingMemoryExtractionFailure {
   readonly coverageHash: string;
   readonly firstOperationId: string;
   /** Preserve the semantics of the failed range when a later trigger retries it. */
-  readonly firstTrigger: 'remember' | 'extract';
+  readonly firstTrigger: 'remember' | 'extract' | 'compaction';
+  /** Present for automatic Compaction so a later trigger can rebuild the original context. */
+  readonly compactionCheckpointId?: string;
   readonly firstFailureClass: MemoryExtractionFailureClass;
   readonly failedAt: number;
 }
@@ -178,7 +186,8 @@ export interface SettleMemoryExtractionFailureRequest {
   readonly failedThroughOrdinal: number;
   readonly coverageHash: string;
   readonly failureClass: MemoryExtractionFailureClass;
-  readonly trigger: 'remember' | 'extract';
+  readonly trigger: 'remember' | 'extract' | 'compaction';
+  readonly compactionCheckpointId?: string;
 }
 
 export type SettleMemoryExtractionFailureResult =
@@ -205,9 +214,11 @@ export interface MemoryExtractionDiscardedRange {
 export interface MemoryExtractionReceipt {
   readonly operationId: string;
   readonly sessionId: string;
-  readonly status: 'remembered' | 'not_applicable' | 'extracted' | 'discarded';
+  readonly status: 'remembered' | 'not_applicable' | 'extracted' | 'discarded' | 'skipped';
   readonly requestedItems: readonly MemoryExtractionRequestedItemResult[];
   readonly noOpReason?: 'sensitive_information';
+  /** Automatic Compaction coverage intentionally settled without model access. */
+  readonly skipReason?: 'policy_denied';
   readonly discardedRange?: MemoryExtractionDiscardedRange;
   readonly committedAt: number;
 }
@@ -232,7 +243,10 @@ export interface CommitMemoryExtractionRequest {
   readonly requestedItemIndexes: readonly number[];
   /** Explicit deterministic no-op for a user-requested batch rejected by policy. */
   readonly noOpReason?: 'sensitive_information';
-  readonly trigger: 'remember' | 'extract';
+  /** Set only when policy denies an automatic Compaction task after its durable checkpoint. */
+  readonly skipReason?: 'policy_denied';
+  readonly trigger: 'remember' | 'extract' | 'compaction';
+  readonly compactionCheckpointId?: string;
 }
 
 export type MemoryMutationOutcome = 'created' | 'updated' | 'archived' | 'restored' | 'noop';
@@ -286,6 +300,10 @@ export interface MemoryItemStore {
   readPendingExtractionFailure(
     sessionId: string,
   ): Promise<PendingMemoryExtractionFailure | undefined>;
+  recordCompactionPolicyDenial(
+    denial: MemoryCompactionPolicyDenial,
+  ): Promise<MemoryCompactionPolicyDenial>;
+  readCompactionPolicyDenials(sessionId: string): Promise<readonly MemoryCompactionPolicyDenial[]>;
   settleExtractionFailure(
     request: SettleMemoryExtractionFailureRequest,
   ): Promise<SettleMemoryExtractionFailureResult>;

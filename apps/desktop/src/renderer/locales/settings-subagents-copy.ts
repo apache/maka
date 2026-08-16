@@ -1,9 +1,8 @@
-import type {
-  SubagentProfile,
-  ThinkingLevel,
-  UiCatalog,
-  UiLocale,
-} from '@maka/core';
+import type { SubagentProfile } from '@maka/core/subagent-settings';
+
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type ProfileCopy = {
   label: string;
@@ -115,7 +114,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
       name: '显示名称',
       namePlaceholder: '快速代码阅读',
       id: 'subagent_id',
-      idDescription: '创建后保持不变，主 Agent 和历史会话会用它识别此配置。',
+      idDescription: '创建后保持不变，主 Agent 和历史任务会用它识别此配置。',
       idPlaceholder: 'fast-reader',
       description: '适用场景',
       descriptionPlaceholder: '适合快速、低成本地阅读大型仓库',
@@ -139,7 +138,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
     },
     remove: {
       title: (name) => `删除“${name}”？`,
-      description: '主 Agent 将不再看到这个配置。已创建的子会话不会被删除。',
+      description: '主 Agent 将不再看到这个配置。已创建的子任务不会被删除。',
       confirm: '删除',
       cancel: '取消',
     },
@@ -196,7 +195,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
       name: 'Display name',
       namePlaceholder: 'Fast code reader',
       id: 'subagent_id',
-      idDescription: 'Stable after creation. The main agent and session history use it to identify this preset.',
+      idDescription: 'Stable after creation. The main agent and task history use it to identify this preset.',
       idPlaceholder: 'fast-reader',
       description: 'When to use',
       descriptionPlaceholder: 'Fast, low-cost exploration of large repositories',
@@ -220,7 +219,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
     },
     remove: {
       title: (name) => `Remove “${name}”?`,
-      description: 'The main agent will no longer see this preset. Existing child sessions are not deleted.',
+      description: 'The main agent will no longer see this preset. Existing child tasks are not deleted.',
       confirm: 'Remove',
       cancel: 'Cancel',
     },

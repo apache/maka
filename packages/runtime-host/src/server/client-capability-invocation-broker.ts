@@ -7,6 +7,7 @@ import {
   type ClientCapabilityCallResult,
   type ClientCapabilityClientFrame,
   type ClientCapabilityHostFrame,
+  type ClientCapabilityHostPathAccess,
   type ClientCapabilityToolDescriptor,
 } from '../protocol/index.js';
 import type { ClientCapabilityConnectionSender } from './client-capability-service.js';
@@ -39,6 +40,7 @@ export interface ClientCapabilityInvocationRegistration {
 
 export interface ClientCapabilityInvocationBinding {
   readonly offerId: string;
+  readonly hostPathAccess: ClientCapabilityHostPathAccess;
   readonly descriptor: ClientCapabilityToolDescriptor;
 }
 
@@ -105,7 +107,7 @@ export class ClientCapabilityInvocationBroker<
       sessionId: context.sessionId,
       turnId: context.turnId,
       toolCallId: context.toolCallId,
-      cwd: context.cwd,
+      ...(binding.hostPathAccess === 'cwd' ? { cwd: context.cwd } : {}),
     }));
   }
 

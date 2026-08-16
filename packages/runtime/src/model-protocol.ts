@@ -46,7 +46,7 @@ export type ProviderOptions = Record<string, JSONObject>;
  * A mapping of provider names to provider-specific file identifiers. A
  * provider reference identifies a file across providers without re-uploading.
  * The `type?: never` constraint excludes any object that has a `type` property,
- * so a provider reference cannot be confused with a tagged file-data shape
+ * so a provider reference cannot be confused with a tagged `FileData` shape
  * (`{ type: 'data', data }` / `{ type: 'reference', reference }`) when both
  * appear in the same union.
  */
@@ -149,12 +149,7 @@ export type ToolApprovalResponse = {
 // Tool result output contract
 // ---------------------------------------------------------------------------
 
-/**
- * One part of a `content`-shaped tool result output. Includes the legacy
- * `file-data` / `file-url` / `file-id` / `file-reference` / `image-*` arms so
- * any provider-emitted tool result stays structurally compatible with the
- * Maka-owned union.
- */
+/** One part of a `content`-shaped tool result output. */
 export type ToolResultContentPart =
   | { type: 'text'; text: string; providerOptions?: ProviderOptions }
   | {
@@ -162,58 +157,6 @@ export type ToolResultContentPart =
       data: FileData;
       mediaType: string;
       filename?: string;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', data: { type: 'data', data } }` */
-      type: 'file-data';
-      data: string;
-      mediaType: string;
-      filename?: string;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', data: { type: 'url', url } }` */
-      type: 'file-url';
-      url: string;
-      mediaType?: string;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', data: { type: 'reference', reference } }` */
-      type: 'file-id';
-      fileId: string | Record<string, string>;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', data: { type: 'reference', reference } }` */
-      type: 'file-reference';
-      providerReference: ProviderReference;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', mediaType: 'image', data }` */
-      type: 'image-data';
-      data: string;
-      mediaType: string;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', mediaType: 'image', data: { type: 'url', url } }` */
-      type: 'image-url';
-      url: string;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', data: { type: 'reference', reference } }` */
-      type: 'image-file-id';
-      fileId: string | Record<string, string>;
-      providerOptions?: ProviderOptions;
-    }
-  | {
-      /** @deprecated use `{ type: 'file', data: { type: 'reference', reference } }` */
-      type: 'image-file-reference';
-      providerReference: ProviderReference;
       providerOptions?: ProviderOptions;
     }
   | { type: 'custom'; providerOptions?: ProviderOptions };
@@ -452,16 +395,24 @@ export type ModelStreamEvent =
   | { kind: 'finish'; finishReason?: ModelFinishReason }
   | { kind: 'error'; failure: ModelFailure };
 
-/**
- * Maka-owned result of a single `ModelAdapter.startStream` provider call. The
- * backend consumes `events` for streaming + step accounting, awaits `usage`
- * for the final billing-relevant token totals, `finishReason` for the terminal
- * stop reason, and `request` for the final Maka-owned message projection. All
- * four are normalized to Maka-owned types; no AI SDK type crosses this surface.
- */
+export type ModelStepOutcome =
+  | {
+      kind: 'completed';
+      finishReason: ModelFinishReason;
+      usage?: NormalizedUsage;
+      request: ModelRequestMetadata;
+      continuation: 'none' | 'pending';
+    }
+  | {
+      kind: 'truncated' | 'retryable-failure' | 'terminal-failure' | 'aborted';
+      failure: ModelFailure;
+      usage?: NormalizedUsage;
+      request: ModelRequestMetadata;
+      continuation: 'none';
+    };
+
+/** One physical provider request: live output plus one authoritative settlement. */
 export interface ModelStreamResult {
   events: AsyncIterable<ModelStreamEvent>;
-  usage: Promise<NormalizedUsage | undefined>;
-  finishReason: Promise<ModelFinishReason | undefined>;
-  request: Promise<ModelRequestMetadata | undefined>;
+  outcome: Promise<ModelStepOutcome>;
 }

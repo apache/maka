@@ -6,8 +6,9 @@ import type {
   DailyReviewRange,
   DailyReviewSectionKey,
   DailyReviewSummary,
-} from '@maka/core';
-import { DAILY_REVIEW_RANGES, DAILY_REVIEW_SECTION_KEYS, uiLocaleToIntlLocale } from '@maka/core';
+} from '@maka/core/daily-review';
+import { DAILY_REVIEW_RANGES, DAILY_REVIEW_SECTION_KEYS } from '@maka/core/daily-review';
+import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import {
   Banner,
   Button,
@@ -352,10 +353,10 @@ export function DailyReviewPanel(props: {
               /* Section-local absence (DESIGN.md §10 tier 1): the range
                  stepper above is a scope control, not a filter, so this stays
                  compact and actionless. */
-              <EmptyState
+              (<EmptyState
                 isCompact
                 title={resolvedView?.scope.offsetDays === 0 && resolvedView.scope.range === 1 ? copy.emptyOverview.todayTitle : copy.emptyOverview.rangeTitle(displayedRangeLabel)}
-              />
+              />)
             )}
           </VStack>
         </div>
@@ -451,11 +452,11 @@ function DailyReviewReport(props: {
       ) : (
         /* Panel empty (DESIGN.md §10 tier 2): the whole report body is empty,
            so it carries icon and description. */
-        <EmptyState
+        (<EmptyState
           icon={<CalendarDays size={ICON_SIZE.empty} />}
           title={copy.archive.noContent}
           description={copy.archive.noContentHelp}
-        />
+        />)
       )}
     </VStack>
   );

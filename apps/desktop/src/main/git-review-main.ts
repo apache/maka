@@ -3,16 +3,16 @@ import { createHash } from 'node:crypto';
 import { lstat, readFile, rm } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { countDiffLineStats } from '@maka/core/unified-diff';
 import {
-  countDiffLineStats,
   type GitReviewFile,
   type GitReviewFileStatus,
   type GitReviewMutationAction,
   type GitReviewMutationResult,
   type GitReviewReadResult,
   type GitReviewSource,
-} from '@maka/core';
-import { resolveProjectGitInfo, resolveProjectRoot } from '@maka/runtime';
+} from '@maka/core/git-review';
+import { resolveProjectGitInfo, resolveProjectRoot } from '@maka/runtime/system-prompt/project-context';
 
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 10_000;
@@ -56,10 +56,16 @@ export async function readGitReview(
         ? requestedBaseBranch ??
           (await resolveBaseBranch(repositoryRoot, currentBranch, runGit))
         : null;
+    const branchComparison =
+      source === 'branch' && baseBranch
+        ? cleanLine(
+            await runGit(repositoryRoot, ['merge-base', baseBranch, 'HEAD']),
+          )
+        : null;
     const tracked = await readTrackedChanges({
       repositoryRoot,
       source,
-      baseBranch,
+      branchComparison,
       hasHead,
       runGit,
     });
@@ -197,7 +203,7 @@ export async function mutateGitReview(input: {
 async function readTrackedChanges(input: {
   repositoryRoot: string;
   source: GitReviewSource;
-  baseBranch: string | null;
+  branchComparison: string | null;
   hasHead: boolean;
   runGit: GitReviewCommandRunner;
 }): Promise<{ files: GitReviewFile[]; diffChars: number; truncated: boolean }> {
@@ -206,8 +212,8 @@ async function readTrackedChanges(input: {
       ? [['--cached']]
       : input.source === 'unstaged'
         ? [[]]
-        : input.baseBranch
-          ? [[input.baseBranch]]
+        : input.branchComparison
+          ? [[input.branchComparison]]
           : [
               input.hasHead ? ['--cached'] : ['--cached', '--root'],
               [],
@@ -489,10 +495,7 @@ function cleanLine(value: string): string | null {
 }
 
 function isUnbornRepositoryError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    /unknown revision|bad revision|ambiguous argument|does not have any commits/i.test(
-      error.message,
-    )
-  );
+  return (error instanceof Error && /unknown revision|bad revision|ambiguous argument|does not have any commits/i.test(
+    error.message,
+  ));
 }

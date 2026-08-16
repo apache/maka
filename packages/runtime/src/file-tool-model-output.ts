@@ -1,4 +1,4 @@
-import { countDiffLineStats } from '@maka/core';
+import { countDiffLineStats } from '@maka/core/unified-diff';
 import type { ToolResultOutput } from './model-protocol.js';
 import { toolResultOutput } from './tool-result-output.js';
 

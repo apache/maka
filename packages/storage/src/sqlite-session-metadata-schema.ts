@@ -1,8 +1,11 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 22;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 24;
+export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
+export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
 export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
+  'agent_graph_epochs',
   'agent_graph_intent_claims',
   'agent_graph_schedule_updates',
   'agent_graph_operator_provisions',
@@ -850,6 +853,50 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       );
   `,
   ],
+  [
+    23,
+    `
+    CREATE TABLE session_message_payloads (
+      session_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK (sequence >= 0),
+      record_bytes INTEGER NOT NULL CHECK (record_bytes > ${SQLITE_SESSION_MESSAGE_CHUNK_BYTES}),
+      sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+      PRIMARY KEY(session_id, sequence),
+      FOREIGN KEY(session_id, sequence)
+        REFERENCES session_messages(session_id, sequence)
+        ON DELETE CASCADE
+    ) WITHOUT ROWID;
+
+    CREATE TABLE session_message_chunks (
+      session_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK (sequence >= 0),
+      chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
+      data BLOB NOT NULL CHECK (length(data) BETWEEN 1 AND ${SQLITE_SESSION_MESSAGE_CHUNK_BYTES}),
+      sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+      PRIMARY KEY(session_id, sequence, chunk_index),
+      FOREIGN KEY(session_id, sequence)
+        REFERENCES session_message_payloads(session_id, sequence)
+        ON DELETE CASCADE
+    ) WITHOUT ROWID;
+
+  `,
+  ],
+  [
+    24,
+    `
+    CREATE TABLE agent_graph_epochs (
+      root_session_id TEXT NOT NULL,
+      epoch INTEGER NOT NULL CHECK (epoch > 0),
+      graph_id TEXT NOT NULL UNIQUE,
+      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      created_at INTEGER NOT NULL CHECK (created_at >= 0),
+      PRIMARY KEY(root_session_id, epoch)
+    );
+
+    CREATE INDEX agent_graph_epochs_current
+      ON agent_graph_epochs(root_session_id, epoch DESC);
+  `,
+  ],
 ]);
 
 export function configureSqliteSessionMetadataDatabase(db: DatabaseSync): void {
@@ -859,14 +906,18 @@ export function configureSqliteSessionMetadataDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA foreign_keys = ON');
 }
 
-export function migrateSqliteSessionMetadataDatabase(db: DatabaseSync): void {
+export function migrateSqliteSessionMetadataDatabase(
+  db: DatabaseSync,
+  options: { transaction?: 'self' | 'caller' } = {},
+): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS session_metadata_schema (
       scope TEXT PRIMARY KEY,
       version INTEGER NOT NULL CHECK (version >= 0)
     )
   `);
-  db.exec('BEGIN IMMEDIATE');
+  const ownsTransaction = options.transaction !== 'caller';
+  if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
   try {
     const current = readSqliteSessionMetadataSchemaVersion(db);
     if (current > SQLITE_SESSION_METADATA_SCHEMA_VERSION) {
@@ -888,9 +939,9 @@ export function migrateSqliteSessionMetadataDatabase(db: DatabaseSync): void {
         ON CONFLICT(scope) DO UPDATE SET version = excluded.version
       `).run(version);
     }
-    db.exec('COMMIT');
+    if (ownsTransaction) db.exec('COMMIT');
   } catch (error) {
-    rollback(db);
+    if (ownsTransaction) rollback(db);
     throw error;
   }
 }

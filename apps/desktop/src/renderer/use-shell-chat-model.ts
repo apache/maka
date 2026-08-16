@@ -1,8 +1,13 @@
 import { useMemo, useState } from 'react';
-import type { ChatModelChoice, LlmConnection, SessionSendProjection, SessionSummary, SettingsSection, ThinkingLevel, UiLocale } from '@maka/core';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { SessionSendProjection } from '@maka/core/session-send-projection';
+import type { SessionSummary } from '@maka/core/session';
+import type { SettingsSection } from '@maka/core/settings';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   chatModelChoiceLabel,
-  normalizeActiveChatModel,
   pickNewChatModel,
   type NewChatModel,
 } from './shell-chat-model-selection';
@@ -27,18 +32,14 @@ export type SessionHealthNoticeView = {
  * sticky pick, the thinking-variant lists, and the hard-only session health
  * notice (#1032).
  *
- * Pure move out of AppShell — every memo keeps its exact dependency array (so
- * `chatModelChoices` / `activeThinkingLevels` / `newChatThinkingLevels` retain
- * their referential-stability behavior) and the sticky-pick validation still
- * drops a `pendingNewChatModel` that is no longer an offered choice. The
- * `openSettingsSection` jump is injected so `sessionHealthNotice` can wrap the
- * derived click target; its memo deliberately omits the injected handler from
- * the dep array (see the inline note).
+ * The model catalog is derived from the same Host-scoped connection list as
+ * the labels and selectors, so switching between Hosts cannot mix catalogs.
+ * Sticky picks still drop out when their model is no longer offered.
  */
 export function useShellChatModel(options: {
   uiLocale: UiLocale;
   connections: LlmConnection[];
-  snapshotChoices: ChatModelChoice[] | undefined;
+  chatModelChoices: ChatModelChoice[];
   sessionSendOutcome: SessionSendProjection | undefined;
   defaultConnection: string | null;
   activationCandidate?: NewChatModel;
@@ -75,7 +76,7 @@ export function useShellChatModel(options: {
   const activeConnection = activeSession
     ? connections.find((connection) => connection.slug === activeSession.llmConnectionSlug)
     : undefined;
-  const chatModelChoices = options.snapshotChoices ?? [];
+  const { chatModelChoices } = options;
   // Home / empty-state composer: which model the next NEW chat starts with.
   // An explicit pick stays sticky; otherwise onboarding's readiness-checked
   // candidate wins before the legacy catalog default and first offered choice.
@@ -117,7 +118,7 @@ export function useShellChatModel(options: {
     : activeConnection?.name ?? activeSession?.llmConnectionSlug;
   const activeModel = activeSession?.backend === 'fake'
     ? undefined
-    : normalizeActiveChatModel(activeSession, activeConnection, chatModelChoices);
+    : activeSession?.model || activeConnection?.defaultModel;
   const activeModelLabel = activeSession?.backend === 'fake'
     ? undefined
     : chatModelChoiceLabel(chatModelChoices, activeSession?.llmConnectionSlug, activeModel);

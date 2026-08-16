@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from '@ai-sdk/provider';
-import type { LlmConnection, SessionHeader } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
+
+import type { SessionHeader } from '@maka/core/session';
 
 import type { AiSdkBackend } from '../ai-sdk-backend.js';
 import {

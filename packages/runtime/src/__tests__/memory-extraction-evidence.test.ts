@@ -105,6 +105,25 @@ describe('Memory Extraction evidence planning', () => {
     assert.deepEqual(toolHits, []);
   });
 
+  test('does not localize across a policy-denied history barrier', () => {
+    const entries = withOrdinals([
+      textEvent('denied-user', 'user', 'PRIVATE_DENIED_HISTORY'),
+      textEvent('denied-agent', 'model', 'PRIVATE_DENIED_HISTORY interpretation'),
+      textEvent('allowed-user', 'user', 'PUBLIC_ALLOWED_HISTORY'),
+    ]);
+
+    assert.deepEqual(
+      searchSameSessionMemoryHistory(entries, 3, { terms: ['PRIVATE_DENIED_HISTORY'] }, 2),
+      [],
+    );
+    assert.deepEqual(
+      searchSameSessionMemoryHistory(entries, 3, { terms: ['PUBLIC_ALLOWED_HISTORY'] }, 2).map(
+        ({ ordinal }) => ordinal,
+      ),
+      [3],
+    );
+  });
+
   test('renders indexed Provider-prefix evidence without duplicating its text', () => {
     const event = textEvent('indexed-user', 'user', 'This text already exists in the prefix.');
     const evidence = projectMemoryExtractionEvidence([event]);

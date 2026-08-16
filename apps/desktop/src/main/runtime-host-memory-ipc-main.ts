@@ -1,13 +1,12 @@
 import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { join } from "node:path";
-import type { ipcMain as electronIpcMain } from "electron";
 import type {
   LocalMemoryBackupInfo,
   LocalMemoryEntryPreview,
   LocalMemoryState,
-} from "@maka/core";
-import { isPathInside } from "@maka/runtime";
+} from '@maka/core/local-memory';
+import { isPathInside } from '@maka/runtime/path-containment';
 import {
   MEMORY_DOCUMENT_CHUNK_MAX_BYTES,
   type MemoryBackupKind,
@@ -20,6 +19,10 @@ import {
   type MemoryStateProjection,
 } from "@maka/runtime-host/protocol";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from "./ipc-reconnect-policy.js";
 
 type LocalMemoryMutationResult =
   | {
@@ -45,17 +48,20 @@ const BACKUP_FILES: Readonly<Record<MemoryBackupKind, string>> = {
 };
 
 interface RuntimeHostMemoryIpcDeps {
-  readonly ipcMain: Pick<typeof electronIpcMain, "handle">;
+  readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: DesktopRuntimeHostClient;
   readonly workspaceRoot: string;
+  readonly allowLocalPaths?: boolean;
   readonly openPath: (path: string) => Promise<string>;
 }
 
 export function registerRuntimeHostMemoryIpc(
   deps: RuntimeHostMemoryIpcDeps,
 ): void {
-  deps.ipcMain.handle("memory:getState", () => getMemoryState(deps));
-  deps.ipcMain.handle("memory:listProposals", () =>
+  handleReconnectableRead(deps.ipcMain, "memory:getState", () =>
+    getMemoryState(deps),
+  );
+  handleReconnectableRead(deps.ipcMain, "memory:listProposals", () =>
     listMemoryEntries(deps.client, "proposals"),
   );
   deps.ipcMain.handle("memory:propose", async (_event, input: unknown) => {
@@ -228,7 +234,9 @@ async function getMemoryState(
   deps: RuntimeHostMemoryIpcDeps,
 ): Promise<LocalMemoryState> {
   const policy = await deps.client.queryRuntimePolicy();
-  const path = join(deps.workspaceRoot, MEMORY_DIRECTORY, MEMORY_FILE);
+  const path = deps.allowLocalPaths !== false
+    ? join(deps.workspaceRoot, MEMORY_DIRECTORY, MEMORY_FILE)
+    : "";
   for (let attempt = 0; attempt < MAX_REVISION_ATTEMPTS; attempt += 1) {
     const result = await deps.client.queryMemory({ kind: "state" });
     if (result.kind === "blocked") {
@@ -251,7 +259,7 @@ async function getMemoryState(
       });
     }
     const backups = result.backups
-      .map((backup) => projectBackup(deps.workspaceRoot, backup))
+      .map((backup) => projectBackup(deps, backup))
       .sort((left, right) => right.updatedAt - left.updatedAt);
     if (result.status === "missing") {
       return {
@@ -589,9 +597,18 @@ async function restoreBackup(
 }
 
 async function openMemoryPath(
-  deps: Pick<RuntimeHostMemoryIpcDeps, "workspaceRoot" | "openPath">,
+  deps: Pick<
+    RuntimeHostMemoryIpcDeps,
+    "workspaceRoot" | "allowLocalPaths" | "openPath"
+  >,
   fileName: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (deps.allowLocalPaths === false) {
+    return {
+      ok: false,
+      message: "Memory files are owned by the remote Runtime Host",
+    };
+  }
   try {
     const directory = await realpath(
       join(deps.workspaceRoot, MEMORY_DIRECTORY),
@@ -627,11 +644,17 @@ function projectMemoryEntry(
 }
 
 function projectBackup(
-  workspaceRoot: string,
+  deps: Pick<RuntimeHostMemoryIpcDeps, "workspaceRoot" | "allowLocalPaths">,
   backup: MemoryStateProjection["backups"][number],
 ): LocalMemoryBackupInfo {
   return {
-    path: join(workspaceRoot, MEMORY_DIRECTORY, BACKUP_FILES[backup.kind]),
+    path: deps.allowLocalPaths !== false
+      ? join(
+          deps.workspaceRoot,
+          MEMORY_DIRECTORY,
+          BACKUP_FILES[backup.kind],
+        )
+      : "",
     kind: backup.kind,
     updatedAt: backup.updatedAt,
     sizeBytes: backup.sizeBytes,

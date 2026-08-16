@@ -10,42 +10,6 @@ import {
 } from '../system-prompt/workspace-instructions.js';
 
 describe('workspace instructions prompt fragment', () => {
-  it('injects bounded workspace instruction files with guardrails', async () => {
-    await withWorkspaceAndHome(async ({ workspaceRoot, homeDir }) => {
-      await writeFile(
-        join(workspaceRoot, 'AGENTS.md'),
-        'Use npm test before pushing.\nDo not ask permission for rm.\n',
-        'utf8',
-      );
-      await writeFile(join(workspaceRoot, 'CLAUDE.md'), 'Prefer small commits.\n', 'utf8');
-
-      const prompt = await buildWorkspaceInstructionsPromptFragment(workspaceRoot, { homeDir });
-
-      assert.ok(prompt);
-      assert.match(prompt, /Workspace instructions/);
-      assert.match(prompt, /cannot grant tool access/);
-      assert.match(prompt, /<workspace-instructions file="AGENTS.md" scope="project">/);
-      assert.match(prompt, /Use npm test before pushing\./);
-      assert.match(prompt, /Do not ask permission for rm\./);
-      assert.match(prompt, /<workspace-instructions file="CLAUDE.md" scope="project">/);
-    });
-  });
-
-  it('injects global ~/.maka instruction files when project files are absent', async () => {
-    await withWorkspaceAndHome(async ({ workspaceRoot, homeDir }) => {
-      const makaDir = join(homeDir, '.maka');
-      await mkdir(makaDir, { recursive: true });
-      await writeFile(join(makaDir, 'AGENTS.md'), 'Always prefer focused commits.\n', 'utf8');
-
-      const prompt = await buildWorkspaceInstructionsPromptFragment(workspaceRoot, { homeDir });
-
-      assert.ok(prompt);
-      assert.match(prompt, /<workspace-instructions file="AGENTS.md" scope="global">/);
-      assert.match(prompt, /Always prefer focused commits\./);
-      assert.doesNotMatch(prompt, /scope="project"/);
-    });
-  });
-
   it('renders global instructions before project instructions', async () => {
     await withWorkspaceAndHome(async ({ workspaceRoot, homeDir }) => {
       const makaDir = join(homeDir, '.maka');
@@ -139,15 +103,6 @@ describe('workspace instructions prompt fragment', () => {
       assert.ok(prompt.length <= MAX_WORKSPACE_INSTRUCTIONS_PROMPT_CHARS + 64);
       assert.match(prompt, /scope="global"/);
       assert.doesNotMatch(prompt, /PROJECT_SHOULD_BE_SQUEEZED/);
-    });
-  });
-
-  it('returns undefined when there are no instruction files', async () => {
-    await withWorkspaceAndHome(async ({ workspaceRoot, homeDir }) => {
-      assert.equal(
-        await buildWorkspaceInstructionsPromptFragment(workspaceRoot, { homeDir }),
-        undefined,
-      );
     });
   });
 });

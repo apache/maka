@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { parseLocalMemoryMarkdown } from '@maka/core';
+import { parseLocalMemoryMarkdown } from '@maka/core/local-memory';
 import { openInteractiveMemoryBundleStoreForWrite } from '@maka/storage/memory-bundle-store';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
@@ -95,7 +95,10 @@ describe('Host Memory coordinator', () => {
         context,
       );
 
-      const promptA = await coordinator.readPromptProjection('session-a');
+      const promptA = await coordinator.readPromptProjection(
+        'session-a',
+        await policyStores.runtimePolicy.getSnapshot(),
+      );
       assert.match(promptA.body ?? '', /Workspace preference/);
       assert.match(promptA.body ?? '', /Session A preference/);
       assert.doesNotMatch(promptA.body ?? '', /Session B preference/);

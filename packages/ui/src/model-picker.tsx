@@ -15,7 +15,7 @@ import {
   SelectorOption,
   type SelectorOptionData,
 } from '@astryxdesign/core/Selector';
-import type { ProviderType } from '@maka/core';
+import type { ProviderType } from '@maka/core/llm-connections';
 import type { ModelMenuGroup } from './chat-model-helpers.js';
 import {
   buildModelPickerOptions,

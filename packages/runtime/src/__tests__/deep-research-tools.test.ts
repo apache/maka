@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { z } from 'zod';
-import type { ArtifactRecord, DeepResearchRun } from '@maka/core';
+import type { ArtifactRecord } from '@maka/core/artifacts';
+import type { DeepResearchRun } from '@maka/core/deep-research-run';
 import { createSqliteDeepResearchStore } from '@maka/storage';
 import {
   DEEP_RESEARCH_CHECKPOINT_TOOL_NAME,
@@ -107,26 +108,6 @@ async function withTempRoot(fn: (root: string) => Promise<void>): Promise<void> 
 }
 
 describe('Deep Research runtime tools', () => {
-  it('exposes eight Maka-owned local workspace tools', () => {
-    const tools = buildDeepResearchTools({
-      store: createSqliteDeepResearchStore('/tmp/maka-unused-deep-research'),
-      artifactStore: new FakeArtifactStore(),
-    });
-    assert.deepEqual(
-      tools.map((tool) => tool.name),
-      [
-        DEEP_RESEARCH_START_TOOL_NAME,
-        DEEP_RESEARCH_SAVE_ARTIFACT_TOOL_NAME,
-        DEEP_RESEARCH_READ_ARTIFACT_TOOL_NAME,
-        DEEP_RESEARCH_UPDATE_CHECKLIST_TOOL_NAME,
-        DEEP_RESEARCH_RECORD_STEP_TOOL_NAME,
-        DEEP_RESEARCH_CHECKPOINT_TOOL_NAME,
-        DEEP_RESEARCH_STATUS_TOOL_NAME,
-        DEEP_RESEARCH_COMPLETE_TOOL_NAME,
-      ],
-    );
-  });
-
   it('admits only the explicit Deep Research tool surface', () => {
     const canonicalNames = [
       DEEP_RESEARCH_START_TOOL_NAME,

@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IpcMain } from 'electron';
-import {
-  projectDeepResearchClientProgress,
-  type DeepResearchRun,
-  type PlanSessionState,
-  type ShellRunUpdate,
-} from '@maka/core';
+import { projectDeepResearchClientProgress } from '@maka/core/deep-research-client-progress';
+import { type DeepResearchRun } from '@maka/core/deep-research-run';
+import { type PlanSessionState } from '@maka/core/plan';
+import { type ShellRunUpdate } from '@maka/core/events';
 import { encodeDeepResearchSnapshot } from '@maka/runtime-host/protocol';
 import {
   projectEmbeddedDeepResearch,
@@ -575,6 +573,31 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
     {
       channel: 'shell-runs:update',
       payload: update,
+    },
+  ]);
+
+  sent.length = 0;
+  handle.sessionSubscriptionRecovered('session-1');
+  assert.deepEqual(sent, [
+    {
+      channel: 'tasks:changed',
+      payload: { sessionId: 'session-1', taskIds: [], at: 12 },
+    },
+    {
+      channel: 'deepResearch:changed',
+      payload: { sessionId: 'session-1', ts: 12 },
+    },
+    {
+      channel: 'plan-mode:changed',
+      payload: { sessionId: 'session-1' },
+    },
+    {
+      channel: 'graphs:resync',
+      payload: { rootSessionId: 'session-1' },
+    },
+    {
+      channel: 'shell-runs:resync',
+      payload: { sessionId: 'session-1' },
     },
   ]);
 });

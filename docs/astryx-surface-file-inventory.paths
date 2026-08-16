@@ -15,7 +15,6 @@ apps/desktop/src/renderer/chat-workbar.tsx
 apps/desktop/src/renderer/command-palette.tsx
 apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
-apps/desktop/src/renderer/external-session-import-dialog.tsx
 apps/desktop/src/renderer/keyboard-help.tsx
 apps/desktop/src/renderer/live-turn-reconciler.tsx
 apps/desktop/src/renderer/maka-tokens.css
@@ -43,6 +42,7 @@ apps/desktop/src/renderer/settings/daily-review-settings-page.tsx
 apps/desktop/src/renderer/settings/data-settings-page.tsx
 apps/desktop/src/renderer/settings/general-settings-page.tsx
 apps/desktop/src/renderer/settings/health-center-page.tsx
+apps/desktop/src/renderer/settings/import-tasks-settings-page.tsx
 apps/desktop/src/renderer/settings/memory-entry-list.tsx
 apps/desktop/src/renderer/settings/memory-settings-page.tsx
 apps/desktop/src/renderer/settings/memory-settings-sections.tsx
@@ -59,6 +59,8 @@ apps/desktop/src/renderer/settings/provider-enabled-model-manager.tsx
 apps/desktop/src/renderer/settings/provider-oauth-section.tsx
 apps/desktop/src/renderer/settings/providers-panel.tsx
 apps/desktop/src/renderer/settings/request-customization-editor.tsx
+apps/desktop/src/renderer/settings/runtime-host-profiles-section.tsx
+apps/desktop/src/renderer/settings/runtime-host-ssh-terminal-dialog.tsx
 apps/desktop/src/renderer/settings/settings-expandable-row.tsx
 apps/desktop/src/renderer/settings/settings-metric-card.tsx
 apps/desktop/src/renderer/settings/settings-modal.tsx
@@ -68,6 +70,7 @@ apps/desktop/src/renderer/settings/settings-section.tsx
 apps/desktop/src/renderer/settings/settings-skeleton.tsx
 apps/desktop/src/renderer/settings/settings-surface.tsx
 apps/desktop/src/renderer/settings/subagent-settings-page.tsx
+apps/desktop/src/renderer/settings/tasks-settings-page.tsx
 apps/desktop/src/renderer/settings/usage-settings-page.tsx
 apps/desktop/src/renderer/settings/web-search-settings-page.tsx
 apps/desktop/src/renderer/side-chat-close-confirmation.tsx
@@ -84,7 +87,6 @@ apps/desktop/src/renderer/styles/custom-pet-companion.css
 apps/desktop/src/renderer/styles/daily-review.css
 apps/desktop/src/renderer/styles/deep-research.css
 apps/desktop/src/renderer/styles/error.css
-apps/desktop/src/renderer/styles/external-session-import.css
 apps/desktop/src/renderer/styles/help.css
 apps/desktop/src/renderer/styles/hero.css
 apps/desktop/src/renderer/styles/interaction-prompts.css
@@ -93,7 +95,7 @@ apps/desktop/src/renderer/styles/module-pages.css
 apps/desktop/src/renderer/styles/module-pages/capability-audit.css
 apps/desktop/src/renderer/styles/module-pages/mcp.css
 apps/desktop/src/renderer/styles/module-pages/module-shell.css
-apps/desktop/src/renderer/styles/module-pages/plan-reminders.css
+apps/desktop/src/renderer/styles/module-pages/scheduled-tasks.css
 apps/desktop/src/renderer/styles/module-pages/skills.css
 apps/desktop/src/renderer/styles/native-cursor.css
 apps/desktop/src/renderer/styles/onboarding.css
@@ -116,6 +118,7 @@ apps/desktop/src/renderer/styles/settings/permission.css
 apps/desktop/src/renderer/styles/settings/provider-editor.css
 apps/desktop/src/renderer/styles/settings/route.css
 apps/desktop/src/renderer/styles/settings/rows.css
+apps/desktop/src/renderer/styles/settings/runtime-host.css
 apps/desktop/src/renderer/styles/settings/select.css
 apps/desktop/src/renderer/styles/settings/theme-preview.css
 apps/desktop/src/renderer/styles/settings/usage.css
@@ -150,9 +153,6 @@ packages/ui/src/model-picker.tsx
 packages/ui/src/module-hub-selector.tsx
 packages/ui/src/module-pages.tsx
 packages/ui/src/permission-mode-menu.tsx
-packages/ui/src/plan-reminder-form-dialog.tsx
-packages/ui/src/plan-reminder-inspector.tsx
-packages/ui/src/plan-reminder-panel.tsx
 packages/ui/src/primitives/chat.tsx
 packages/ui/src/primitives/module-page.tsx
 packages/ui/src/primitives/page-header.tsx
@@ -161,6 +161,9 @@ packages/ui/src/prompt-anchor-rail.tsx
 packages/ui/src/quote-ref-chip.tsx
 packages/ui/src/relative-time.tsx
 packages/ui/src/sandbox-boundary-prompt.tsx
+packages/ui/src/scheduled-task-form-dialog.tsx
+packages/ui/src/scheduled-task-inspector.tsx
+packages/ui/src/scheduled-task-panel.tsx
 packages/ui/src/search-modal.tsx
 packages/ui/src/session-context-layer.tsx
 packages/ui/src/session-history-list.tsx

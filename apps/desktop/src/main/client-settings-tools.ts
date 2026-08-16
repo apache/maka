@@ -1,10 +1,6 @@
-import {
-  THEME_PALETTES,
-  UI_LOCALE_PREFERENCES,
-  type AppSettings,
-  type UpdateAppSettingsInput,
-} from '@maka/core';
-import type { MakaTool } from '@maka/runtime';
+import { THEME_PALETTES, type AppSettings, type UpdateAppSettingsInput } from '@maka/core/settings';
+import { UI_LOCALE_PREFERENCES } from '@maka/core/ui-locale';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { z } from 'zod';
 
 const patchSchema = z

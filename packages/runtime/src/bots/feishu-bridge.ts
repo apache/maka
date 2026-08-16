@@ -5,7 +5,7 @@ import {
   type LarkChannel,
   type NormalizedMessage,
 } from '@larksuiteoapi/node-sdk';
-import type { BotChannelSettings } from '@maka/core';
+import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import type { BotSendOptions, BotStatus, SendCapable } from './types.js';

@@ -70,11 +70,15 @@ export type MessageOperationKey = Extract<
 export type InteractionOperationKey = Extract<OperationKey, `interaction.${string}`>;
 export type GoalOperationKey = Extract<OperationKey, `goal.${string}`>;
 export type ExecutionInspectOperationKey = Extract<OperationKey, `execution.inspect.${string}`>;
+export type HostedExecutionOperationKey = Extract<OperationKey, `hosted.execution.${string}`>;
 export type ExternalSessionOperationKey = Extract<OperationKey, `external-session.${string}`>;
 export type AgentGraphOperationKey = Extract<OperationKey, `agent.graph.${string}`>;
 export type SessionContinuityOperationKey = Extract<
   OperationKey,
-  'subscription.open' | 'subscription.close' | 'session.transcript.query'
+  | 'subscription.open'
+  | 'subscription.close'
+  | 'session.transcript.page'
+  | 'session.transcript.overlay.release'
 >;
 export type SessionRevisionOperationKey = Extract<
   OperationKey,
@@ -100,7 +104,7 @@ export type MemoryOperationKey = Extract<OperationKey, `memory.${string}`>;
 export type OAuthOperationKey = Extract<OperationKey, `oauth.${string}`>;
 export type RuntimeResourceOperationKey = Extract<OperationKey, `runtime.resource.${string}`>;
 export type ClientCapabilityOperationKey = Extract<OperationKey, `client.capability.${string}`>;
-export type AutomationOperationKey = Extract<OperationKey, `automation.${string}`>;
+export type ScheduledTaskOperationKey = Extract<OperationKey, `scheduled-task.${string}`>;
 export type PlanOperationKey = Extract<OperationKey, `plan.${string}`>;
 export type ProjectCatalogOperationKey = Extract<OperationKey, `project.catalog.${string}`>;
 export type DeepResearchOperationKey = Extract<OperationKey, `deep-research.${string}`>;
@@ -122,6 +126,10 @@ export type GoalOperationHandlerMap = Pick<OperationHandlerMap, GoalOperationKey
 export type ExecutionInspectOperationHandlerMap = Pick<
   OperationHandlerMap,
   ExecutionInspectOperationKey
+>;
+export type HostedExecutionOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  HostedExecutionOperationKey
 >;
 export type ExternalSessionOperationHandlerMap = Pick<
   OperationHandlerMap,
@@ -159,7 +167,7 @@ export type ClientCapabilityOperationHandlerMap = Pick<
   OperationHandlerMap,
   ClientCapabilityOperationKey
 >;
-export type AutomationOperationHandlerMap = Pick<OperationHandlerMap, AutomationOperationKey>;
+export type ScheduledTaskOperationHandlerMap = Pick<OperationHandlerMap, ScheduledTaskOperationKey>;
 export type PlanOperationHandlerMap = Pick<OperationHandlerMap, PlanOperationKey>;
 export type ProjectCatalogOperationHandlerMap = Pick<
   OperationHandlerMap,

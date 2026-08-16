@@ -1,87 +1,44 @@
-import assert from 'node:assert/strict';
-import test from 'node:test';
-import { registerRuntimeHostSkillsIpc } from '../runtime-host-skills-ipc-main.js';
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import type { IpcHandler } from "../ipc-reconnect-policy.js";
+import type { DesktopRuntimeHostClient } from "../runtime-host-client.js";
+import { registerRuntimeHostSkillsIpc } from "../runtime-host-skills-ipc-main.js";
 
-test('keeps a resolved Skill mutation on one project root', async () => {
-  const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  const catalogContexts: string[] = [];
-  const mutationContexts: string[] = [];
-  let rootReads = 0;
-  let mutationAttempts = 0;
+test("projects an empty Skill surface until a remote Project is selected", async () => {
+  const handlers = new Map<string, IpcHandler>();
   registerRuntimeHostSkillsIpc({
     ipcMain: {
-      handle: (channel, handler) => {
-        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      handle: (channel, listener) => {
+        handlers.set(channel, listener);
+      },
+      handleReconnectableRead: (channel, listener) => {
+        handlers.set(channel, listener);
       },
     },
-    client: {
-      loadSkillCatalog: async ({ projectRoot }: { projectRoot: string }) => {
-        catalogContexts.push(projectRoot);
-        return {
-          revision: `sha256:${'a'.repeat(64)}`,
-          view: 'governance',
-          items: [{ kind: 'skill', id: 'writer', ref: 'project:writer' }],
-        };
+    client: new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("Skill reads must not reach the Host without a Project");
+        },
       },
-      mutateSkillCatalog: async ({ context }: { context: { projectRoot: string } }) => {
-        mutationContexts.push(context.projectRoot);
-        mutationAttempts += 1;
-        if (mutationAttempts === 1) return { kind: 'revision_conflict' };
-        return { kind: 'rejected', reason: 'not_found' };
-      },
-    } as never,
-    workspaceRoot: '/tmp/maka-runtime-host-skills-workspace',
+    ) as DesktopRuntimeHostClient,
+    workspaceRoot: "/client-workspace",
     mainWindowController: {} as never,
-    getCurrentProjectRoot: async () => {
-      rootReads += 1;
-      return rootReads === 1 ? '/tmp/project-a' : '/tmp/project-b';
-    },
-    getDefaultPermissionMode: async () => 'ask',
-    openPath: async () => '',
+    getSelectedWorkspaceTarget: async () => undefined,
+    getDefaultPermissionMode: async () => "ask",
+    openPath: async () => "",
+    allowLocalPaths: false,
   });
 
-  await handlers.get('skills:setEnabled')?.({}, 'writer', true);
-
-  assert.equal(rootReads, 1);
-  assert.deepEqual(catalogContexts, ['/tmp/project-a', '/tmp/project-a']);
-  assert.deepEqual(mutationContexts, ['/tmp/project-a', '/tmp/project-a']);
-});
-
-test('requests the Host-owned invocable projection for existing and new Sessions', async () => {
-  const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  const targets: unknown[] = [];
-  registerRuntimeHostSkillsIpc({
-    ipcMain: {
-      handle: (channel, handler) => {
-        handlers.set(channel, handler as (...args: unknown[]) => unknown);
-      },
-    },
-    client: {
-      listInvocableSkills: async (target: unknown) => {
-        targets.push(target);
-        return [{ ref: 'project:review', id: 'review', name: 'Review', description: 'Review code' }];
-      },
-    } as never,
-    workspaceRoot: '/tmp/maka-runtime-host-skills-workspace',
-    mainWindowController: {} as never,
-    getCurrentProjectRoot: async () => '/tmp/project-a',
-    getDefaultPermissionMode: async () => 'bypass',
-    openPath: async () => '',
-  });
-
-  const list = handlers.get('skills:listInvocable');
-  assert.ok(list);
-  assert.deepEqual(await list({}, 'session-1'), [
-    { ref: 'project:review', id: 'review', name: 'Review', description: 'Review code' },
-  ]);
-  await list({}, undefined, { collaborationMode: 'plan', model: 'ignored-model' });
-  assert.deepEqual(targets, [
-    { kind: 'session', sessionId: 'session-1' },
-    {
-      kind: 'new_session',
-      context: { projectRoot: '/tmp/project-a' },
-      collaborationMode: 'plan',
-      permissionMode: 'bypass',
-    },
-  ]);
+  for (const channel of [
+    "skills:list",
+    "skills:listInvocable",
+    "skills:catalog:list",
+    "skills:sources:list",
+  ]) {
+    const handler = handlers.get(channel);
+    assert.ok(handler, `missing ${channel} handler`);
+    assert.deepEqual(await handler({} as never), []);
+  }
 });

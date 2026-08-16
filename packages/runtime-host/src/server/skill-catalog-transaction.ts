@@ -11,7 +11,9 @@ import {
   unlink,
 } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
-import { isPathInside, isSafeSkillId, MANAGED_SKILL_BASELINE_RELATIVE_PATH } from '@maka/runtime';
+import { isPathInside, isSafeSkillId } from '@maka/runtime/path-containment';
+
+import { MANAGED_SKILL_BASELINE_RELATIVE_PATH } from '@maka/runtime/skills';
 
 const TRANSACTION_DIRECTORY = join('.maka', 'skill-transactions');
 const INTENT_FILE = 'intent.json';

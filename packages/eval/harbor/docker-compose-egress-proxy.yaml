@@ -1,0 +1,39 @@
+services:
+  harbor-docker-egress-control-sidecar:
+    volumes:
+      - type: bind
+        source: ${MAKA_EVAL_NETWORK_POLICY_PATH}
+        target: /usr/local/bin/network-policy
+        read_only: true
+
+  main:
+    depends_on:
+      maka-eval-mitmproxy:
+        condition: service_healthy
+    # An AF_PACKET socket writes below the IP output hooks the policy installs,
+    # so no nftables rule can constrain it. NET_RAW is what gates that socket.
+    # A task's own compose can add the capability back, which this cannot
+    # prevent — the relay refuses to start the subject when that happens.
+    cap_drop:
+      - NET_RAW
+    volumes:
+      - maka-eval-egress-ca:/opt/maka-egress:ro
+
+  maka-eval-mitmproxy:
+    image: maka-eval-egress-proxy:12.2.3
+    networks:
+      - default
+    volumes:
+      - maka-eval-egress-ca:/opt/maka-egress
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import pathlib,socket; assert pathlib.Path('/opt/maka-egress/mitmproxy-ca-cert.pem').is_file(); socket.create_connection(('127.0.0.1',8080),2).close()"
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  maka-eval-egress-ca:

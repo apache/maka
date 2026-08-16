@@ -1,4 +1,4 @@
-import type { SessionHeader } from '@maka/core';
+import type { SessionHeader } from '@maka/core/session';
 
 export function isDiscardableConversationCopy(header: SessionHeader): boolean {
   const copy = header.conversationCopy;

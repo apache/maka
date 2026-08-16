@@ -5,10 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { IpcMain } from "electron";
-import {
-  SIDE_CONVERSATION_SESSION_LABEL,
-  type AttachmentRef,
-} from "@maka/core";
+import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
+import { type AttachmentRef } from '@maka/core/events';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type { SessionCatalogProjection } from "@maka/runtime-host/protocol";
 import { createAttachmentApprovalRegistry } from "../attachment-approval.js";
 import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
@@ -17,62 +16,7 @@ import {
   type RuntimeHostSessionExecutionIpcDeps,
 } from "../runtime-host-session-execution-ipc-main.js";
 import { RuntimeHostSessionObserver } from "../runtime-host-session-observer.js";
-
-test("advances the Host read marker through the last visible message", async () => {
-  const readMarkers: unknown[] = [];
-  const observer = observerWithTranscript([
-    {
-      type: "user",
-      id: "user-1",
-      turnId: "turn-1",
-      ts: 1,
-      text: "Hello",
-    },
-    {
-      type: "assistant",
-      id: "assistant-1",
-      turnId: "turn-1",
-      ts: 2,
-      text: "Hi",
-      modelId: "test-model",
-    },
-    {
-      type: "system_note",
-      id: "internal-tail",
-      turnId: "turn-1",
-      ts: 3,
-      kind: "session_resume",
-    },
-  ]);
-  const ipc = ipcHarness();
-  registerExecutionIpc(
-    {
-      client: executionClient({
-        setSessionReadMarker: async (sessionId, readThroughMessageId) => {
-          readMarkers.push({ sessionId, readThroughMessageId });
-          return session();
-        },
-      }),
-      observer,
-      attachmentApprovals: createAttachmentApprovalRegistry(),
-      emitSessionsChanged() {},
-      stat: async () => ({ size: 0 }),
-      resizeImage: async (bytes) => bytes,
-      beforeStop() {},
-    },
-    ipc,
-  );
-
-  assert.equal(
-    ((await ipc.invoke("sessions:readMessages", "session-1")) as unknown[])
-      .length,
-    3,
-  );
-  assert.deepEqual(readMarkers, [
-    { sessionId: "session-1", readThroughMessageId: "assistant-1" },
-  ]);
-  await observer.close();
-});
+import { runtimeHostSessionFixture } from "./runtime-host-session-test-fixture.js";
 
 test("keeps synthetic E2E interactions visible through Host hydration and retires their answer", async () => {
   const observer = observerWithSnapshot();
@@ -160,7 +104,11 @@ test("retries committed Branch and Revision copies with the renderer-owned ident
           });
           let copy = committed.get(input.targetSessionId);
           if (!copy) {
-            copy = { ...session(), id: input.targetSessionId, name: input.targetSessionId };
+            copy = {
+              ...session(),
+              id: input.targetSessionId,
+              name: input.targetSessionId,
+            };
             committed.set(input.targetSessionId, copy);
           }
           if (lostResponses.delete(input.targetSessionId)) {
@@ -546,6 +494,169 @@ test("forwards explicit Skill invocation to the Host-owned Turn admission", asyn
   });
 });
 
+test("queues a mid-turn send as steering when the Host reports the session busy", async () => {
+  const submits: unknown[] = [];
+  const changes: unknown[] = [];
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        startTurn: async () => {
+          throw new RuntimeHostOperationError(
+            "turn.start",
+            "session_busy",
+            "Session already has an active root Turn",
+          );
+        },
+        submitMessage: async (input) => {
+          submits.push(input);
+          return { disposition: "steering", queueRevision: 1 };
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged: (reason, sessionId, extra) =>
+        changes.push({ reason, sessionId, ...extra }),
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => "id-1",
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke("sessions:send", "session-1", {
+    type: "send",
+    turnId: "turn-1",
+    text: "also check the tests",
+  });
+
+  assert.deepEqual(submits, [
+    {
+      sessionId: "session-1",
+      messageId: "id-1",
+      content: { text: "also check the tests", inlineReferences: [] },
+      placement: "current_turn",
+    },
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    steered: true,
+    turnId: "turn-1",
+    attachments: [],
+    inlineReferences: [],
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
+  });
+  assert.deepEqual(changes, [
+    { reason: "status-change", sessionId: "session-1" },
+  ]);
+});
+
+test("starts the turn from the queued message when the busy race resolves idle", async () => {
+  const changes: unknown[] = [];
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        startTurn: async () => {
+          throw new RuntimeHostOperationError(
+            "turn.start",
+            "session_busy",
+            "Session already has an active root Turn",
+          );
+        },
+        submitMessage: async () => ({
+          disposition: "turn_started",
+          turnId: "turn-9",
+        }),
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged: (reason, sessionId, extra) =>
+        changes.push({ reason, sessionId, ...extra }),
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => "id-1",
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke("sessions:send", "session-1", {
+    type: "send",
+    turnId: "turn-1",
+    text: "also check the tests",
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    turnId: "turn-9",
+    attachments: [],
+    inlineReferences: [],
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
+  });
+  assert.deepEqual(changes, [
+    { reason: "status-change", sessionId: "session-1", turnId: "turn-9" },
+  ]);
+});
+
+test("keeps the busy failure for a Skill send instead of degrading it to steering", async () => {
+  const submits: unknown[] = [];
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        startTurn: async () => {
+          throw new RuntimeHostOperationError(
+            "turn.start",
+            "session_busy",
+            "Session already has an active root Turn",
+          );
+        },
+        submitMessage: async (input) => {
+          submits.push(input);
+          return { disposition: "steering", queueRevision: 1 };
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => "id-1",
+    },
+    ipc,
+  );
+
+  // The Desktop composer carries Skills as canonical /skill: tokens in the
+  // text; explicit skillIds is the protocol-level variant.
+  await assert.rejects(
+    ipc.invoke("sessions:send", "session-1", {
+      type: "send",
+      turnId: "turn-1",
+      text: "/skill:review explain the tests",
+    }),
+    (error: unknown) =>
+      error instanceof RuntimeHostOperationError && error.code === "session_busy",
+  );
+  await assert.rejects(
+    ipc.invoke("sessions:send", "session-1", {
+      type: "send",
+      turnId: "turn-1",
+      text: "",
+      displayText: "/skill:review",
+      skillIds: ["review"],
+    }),
+    (error: unknown) =>
+      error instanceof RuntimeHostOperationError && error.code === "session_busy",
+  );
+  assert.deepEqual(submits, []);
+});
+
 test("binds steer and stop to Host-owned queue and active Turn identities", async () => {
   const submits: unknown[] = [];
   const interrupts: unknown[] = [];
@@ -632,6 +743,8 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     getSession: unavailable,
     ingestAttachment: unavailable,
     interruptTurn: unavailable,
+    listSessionTurnLandmarks: unavailable,
+    listSessionTurns: unavailable,
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
     regenerateTurn: unavailable,
@@ -661,7 +774,7 @@ function observerWithSnapshot(): RuntimeHostSessionObserver {
 }
 
 function observerWithTranscript(
-  transcript: readonly import("@maka/core").StoredMessage[],
+  transcript: readonly import('@maka/core/session').StoredMessage[],
 ): RuntimeHostSessionObserver {
   let finishEvents!: () => void;
   const eventsFinished = new Promise<void>((resolve) => {
@@ -669,7 +782,7 @@ function observerWithTranscript(
   });
   return new RuntimeHostSessionObserver({
     client: {
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: {
           schemaVersion: 3,
           session: {
@@ -696,6 +809,7 @@ function observerWithTranscript(
           },
           interactions: { pending: [] },
         },
+        activeAssistantStreams: [],
         transcript: Promise.resolve([...transcript]),
         events: waitForEnd(eventsFinished),
         async close() {
@@ -707,8 +821,6 @@ function observerWithTranscript(
   });
 }
 
-async function* emptyEvents(): AsyncIterable<never> {}
-
 async function* waitForEnd(done: Promise<void>): AsyncIterable<never> {
   await done;
 }
@@ -717,7 +829,7 @@ type IpcHandler = Parameters<Pick<IpcMain, "handle">["handle"]>[1];
 
 function ipcHarness() {
   const handlers = new Map<string, IpcHandler>();
-  const sender = Object.assign(new EventEmitter(), { id: 9 });
+  const sender = Object.assign(new EventEmitter(), { id: 9, send() {} });
   return {
     handle(channel: string, handler: IpcHandler) {
       assert.equal(
@@ -742,15 +854,22 @@ function ipcHarness() {
 }
 
 function registerExecutionIpc(
-  deps: Omit<RuntimeHostSessionExecutionIpcDeps, 'sessionCopyCleanup' | 'onBackgroundError'> &
+  deps: Omit<
+    RuntimeHostSessionExecutionIpcDeps,
+    'sessionCopyCleanup' | 'onBackgroundError' | 'observations'
+  > &
     Partial<
-      Pick<RuntimeHostSessionExecutionIpcDeps, 'sessionCopyCleanup' | 'onBackgroundError'>
+      Pick<
+        RuntimeHostSessionExecutionIpcDeps,
+        'sessionCopyCleanup' | 'onBackgroundError' | 'observations'
+      >
     >,
   ipcMain: Pick<IpcMain, 'handle'>,
 ): (sessionId: string) => Promise<void> {
   return registerRuntimeHostSessionExecutionIpc(
     {
       ...deps,
+      observations: deps.observations ?? deps.observer,
       sessionCopyCleanup: deps.sessionCopyCleanup ?? unusedSessionCopyCleanup(),
       onBackgroundError: deps.onBackgroundError ?? (() => undefined),
     },
@@ -774,7 +893,10 @@ function session(cwd = "/workspace"): SessionCatalogProjection {
   return {
     id: "session-1",
     revision: 1,
-    cwd,
+    workspace: {
+      target: { kind: 'host_path', path: cwd },
+      hostCwd: cwd,
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: "Session",

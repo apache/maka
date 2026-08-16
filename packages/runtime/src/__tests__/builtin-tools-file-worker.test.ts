@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node
 import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
-import { createManagedExecutionBoundary, createWorkspaceWritePermissionProfile } from '@maka/core';
+import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 
 import { buildBuiltinTools } from '../builtin-tools.js';
@@ -28,14 +29,6 @@ describe('builtin file tools use the sandboxed worker', () => {
         (error as Error & { domain?: string; reason?: string }).domain === 'filesystem' &&
         (error as Error & { reason?: string }).reason === 'requires_bypass',
     );
-  });
-
-  test('uses a sandboxed worker without one-call permission metadata', () => {
-    const linuxTools = buildBuiltinTools({
-      filesystemWorker: { execute: async () => ({ kind: 'read', content: '' }) },
-      sandboxPlatform: 'linux',
-    });
-    assert.ok(linuxTools.find((tool) => tool.name === 'Write'));
   });
 
   for (const kind of ['bypass', 'external'] as const) {

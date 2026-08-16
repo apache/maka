@@ -713,7 +713,7 @@ Layer responsibilities:
 - `packages/runtime`: T1/T2 sequence, Resolver, planning, revalidation, lineage, startup repair;
 - Desktop main, CLI, and runtime-host: concrete stores, tool catalog, background state, entry points, lifecycle;
 - renderer and TUI: trigger and display only;
-- Headless/Harbor: add workspace checkpoints and new Attempt semantics to Runtime high-water.
+- Eval: treats Runtime continuation as internal Runtime Host behavior, never as an experiment retry.
 
 ## Current host entry points
 
@@ -748,18 +748,9 @@ The workspace plane now has a storage-owned execution-admission foundation, but 
 
 M1.2 adds the owner-bound storage worker bridge and its runtime-host lifecycle composition in one delivery. It limits managed execution to Read/Glob/Grep, demotes unchecked scope inspection to explicit test support, rejects reentrant owner close, keeps attached and managed profiles structurally distinct, and orders shutdown as tool operations → managed owner → root owner. Desktop and CLI do not enable it by default in this slice; Write/Edit/Format/Bash/unknown tools fail closed, and managed mode never silently falls back to the attached checkout. See [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md) for the detailed contract.
 
-### Headless / Harbor
+### Eval
 
-Runtime provides immutable history high-water and replay gates, but Attempt resume additionally needs:
-
-- Task/Attempt identity;
-- compaction summary ref;
-- Git-managed workspace ref;
-- lease/worktree identity;
-- dirty/include policy;
-- durable budget.
-
-Without these, the system should record an explicit fallback to a new attempt-level retry, not call it workspace resume.
+Eval does not resume or reconstruct Runtime execution. It asks Runtime Host to execute a Maka subject. Infrastructure replacement appends a new attempt to the same experiment cell; Runtime continuation stays inside that subject and is not observable as a repetition or retry.
 
 ## The complete execution and recovery flow
 
@@ -937,7 +928,6 @@ The two most important follow-ups are:
 - [RecoveryResolver ADR](./runtime-recovery-resolver-adr.zh-CN.md)
 - [Runtime Resume Phase 3–4 implementation route](./runtime-resume-phase3-phase4-workspace-checkpoint-design.zh-CN.md)
 - [Runtime Resume extraction ledger](./runtime-resume-extraction-ledger.zh-CN.md)
-- [Runtime Resume and Tool Journal design draft](../runtime-resume-tool-journal-design-draft.zh-CN.md)
 - [Chapter 1: Log Is the Runtime](./runtime-core-architecture-draft.md)
 
 ## Summary

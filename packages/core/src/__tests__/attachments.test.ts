@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { formatAttachmentResourceRef, parseAttachmentResourceRef } from '../index.js';
+import { formatAttachmentResourceRef, parseAttachmentResourceRef } from '../attachments.js';
 
 describe('attachment resource refs', () => {
   test('round-trips one canonical Session Artifact without embedding Session authority', () => {

@@ -13,7 +13,8 @@
  *       UserMessage / AssistantMessage / ToolCallMessage / ToolResultMessage.
  *     Excluded: SystemNoteMessage / TokenUsageMessage / TurnStateMessage /
  *     PermissionDecisionMessage.
- *   - Excludes sessions with `backend === 'fake'` (e2e-fixture fixtures).
+ *   - Excludes sessions with `backend === 'fake'` (e2e-fixture fixtures) and
+ *     archived sessions (managed in Settings › 活动 › 已归档任务).
  *   - Snippets are redacted via `@maka/core/redaction.redactSecrets()`.
  *   - `ToolResultMessage.content` is JSON-serialized for scan and capped to
  *     the first `TOOL_RESULT_SCAN_CAP_BYTES` bytes (worst-case bound).
@@ -34,19 +35,16 @@
  *   - No `maka://session` URI construction.
  */
 
-import {
-  collapseSessionRevisions,
-  normalizeSearchLimit,
-  normalizeSearchQuery,
-  redactSecrets,
-  validateWorkspacePrivacyContext,
-} from '@maka/core';
-import type {
-  SearchErrorReason,
-  SearchResult,
-  SessionSummary,
-  StoredMessage,
-} from '@maka/core';
+import { collapseSessionRevisions } from '@maka/core/session-revisions';
+
+import { normalizeSearchLimit, normalizeSearchQuery } from '@maka/core/search';
+
+import { redactSecrets } from '@maka/core/redaction';
+
+import { validateWorkspacePrivacyContext } from '@maka/core/incognito';
+import type { SearchErrorReason, SearchResult } from '@maka/core/search';
+
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
 
 /** Max scan bytes per ToolResultMessage.content (JSON-serialized). */
 export const TOOL_RESULT_SCAN_CAP_BYTES = 10_240;
@@ -80,7 +78,7 @@ export const THREAD_SOURCE = 'thread' as const;
  */
 export interface ThreadSearchDeps {
   listSessions(): Promise<SessionSummary[]>;
-  readMessages(sessionId: string): Promise<StoredMessage[]>;
+  readMessages(sessionId: string): Promise<StoredMessage[] | null>;
   /**
    * Main-authority workspace privacy snapshot. Returned as `unknown`
    * deliberately — the helper validates the payload with
@@ -97,8 +95,9 @@ export interface ThreadSearchDeps {
  *
  * Accepts `unknown` because the IPC payload crosses a process boundary —
  * TypeScript's `SearchRequest` annotation in the handler is compile-time
- * only. A renderer can send anything; we must fail closed with an error
- * envelope, never throw. Same defense pattern as PR-MEMORY-1
+ * only. A renderer can send anything; malformed input must fail closed
+ * with an error envelope. Dependency adapters project ordinary I/O
+ * failures before calling this function. Same defense pattern as PR-MEMORY-1
  * `validateMemoryWriteRequest` and PR-UI-IPC-1 baseUrl normalize
  * (@xuan msg `2f1aba55` fixup).
  */
@@ -163,7 +162,13 @@ export async function runThreadSearch(
   const sessions = collapseSessionRevisions(await deps.listSessions())
     // Exclude fake-backend sessions — e2e-fixture fixtures and
     // similar dev-only state should not surface as real chat hits.
-    .filter((session) => session.backend !== 'fake')
+    //
+    // Archived tasks are excluded for the same reason the command palette
+    // skips them: archiving a task says it is out of the working set, and a
+    // result you cannot land on anywhere but Settings is not a chat hit. They
+    // also stop consuming the `MAX_SESSIONS_SCANNED` budget, which they shared
+    // with active tasks while being unreachable from the rail.
+    .filter((session) => session.backend !== 'fake' && !session.isArchived)
     // Newest first by lastMessageAt; secondary by id for determinism.
     .sort((a, b) => {
       const ts = (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0);
@@ -197,7 +202,7 @@ export async function runThreadSearch(
       results.push({
         source: THREAD_SOURCE,
         title: session.name,
-        summary: '会话标题',
+        summary: '任务标题',
         snippet,
         target: {
           kind: 'thread',
@@ -210,16 +215,10 @@ export async function runThreadSearch(
       }
     }
 
-    let messages: StoredMessage[];
-    try {
-      messages = await deps.readMessages(session.id);
-    } catch {
-      // Skip unreadable sessions silently — they shouldn't break the
-      // whole search. Generalized error never leaks into a result.
-      continue;
-    }
+    const messages = await deps.readMessages(session.id);
+    if (!messages) continue;
 
-    for (const message of messages) {
+    for (const [sequence, message] of messages.entries()) {
       if (results.length >= maxResults) {
         truncated = true;
         break;
@@ -256,6 +255,7 @@ export async function runThreadSearch(
           kind: 'thread',
           sessionId: session.id,
           ...(turnId ? { turnId } : {}),
+          sequence,
         },
       });
     }

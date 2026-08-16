@@ -18,6 +18,7 @@ import {
 } from './record-schema.js';
 import type { AgentGraphIntentClaim } from './agent-graph-control.js';
 import { isToolMode, type ToolMode } from './tool-mode.js';
+import { decodeRunCompositionSnapshot, type RunCompositionSnapshot } from './run-composition.js';
 
 export const AGENT_RUN_STATUSES = [
   'created',
@@ -57,7 +58,8 @@ export type RootExecutionDescriptor =
     }
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }
-  | { kind: 'automation'; automationId: string }
+  | { kind: 'scheduled_task'; scheduledTaskId: string }
+  | { kind: 'legacy_automation'; automationId: string }
   | { kind: 'goal'; goalId: string }
   | {
       kind: 'agent_graph_supervisor_wake';
@@ -144,6 +146,8 @@ export interface AgentRunHeader {
   agentSwarmAuthorization?: AgentSwarmAuthorizationSource;
   /** Effective tool protocol for this run. Optional on legacy runs. */
   toolMode?: ToolMode;
+  /** Immutable composer-owned prompt and tool-surface snapshot committed before provider dispatch. */
+  runComposition?: RunCompositionSnapshot;
   createdAt: number;
   updatedAt: number;
   completedAt?: number;
@@ -161,8 +165,10 @@ export interface AgentRunHeader {
   parentSessionId?: string;
   /** Durable claim that this run is the continuation child for one source boundary. */
   continuationSource?: AgentRunContinuationSource;
-  /** Non-user trigger for this run (e.g. a scheduled automation fire). */
-  automationId?: string;
+  /** ScheduledTask that triggered this host-authored Run. */
+  scheduledTaskId?: string;
+  /** Removed Automation authority that triggered this historical Run. */
+  legacyAutomationId?: string;
   /** Host-owned Goal generation that triggered this continuation Run. */
   goalId?: string;
   /** Durable graph milestone that caused this host-authored supervisor turn. */
@@ -183,7 +189,8 @@ type HostedRootExecutionDescriptor = Extract<
     kind:
       | 'regenerate'
       | 'context_compact'
-      | 'automation'
+      | 'scheduled_task'
+      | 'legacy_automation'
       | 'goal'
       | 'agent_graph_supervisor_wake'
       | 'safe_boundary_continuation';
@@ -208,7 +215,8 @@ export function agentRunMatchesHostedRootExecution(
       run.branchOfTurnId === undefined &&
       run.parentSessionId === undefined &&
       run.continuationSource === undefined &&
-      run.automationId === undefined &&
+      run.scheduledTaskId === undefined &&
+      run.legacyAutomationId === undefined &&
       run.goalId === undefined &&
       run.agentGraphWakeId === undefined &&
       run.agentGraphWakeAttemptId === undefined
@@ -228,7 +236,8 @@ export function agentRunMatchesHostedRootExecution(
       run.branchOfTurnId === undefined &&
       run.parentSessionId === undefined &&
       run.continuationSource === undefined &&
-      run.automationId === undefined &&
+      run.scheduledTaskId === undefined &&
+      run.legacyAutomationId === undefined &&
       run.goalId === undefined &&
       run.agentGraphWakeId === undefined &&
       run.agentGraphWakeAttemptId === undefined
@@ -258,7 +267,8 @@ export function agentRunMatchesHostedRootExecution(
       run.regeneratedFromTurnId === undefined &&
       run.branchOfTurnId === undefined &&
       run.parentSessionId === undefined &&
-      run.automationId === undefined &&
+      run.scheduledTaskId === undefined &&
+      run.legacyAutomationId === undefined &&
       run.goalId === undefined &&
       run.agentGraphWakeId === undefined &&
       run.agentGraphWakeAttemptId === undefined
@@ -289,9 +299,18 @@ function hostedRootAuthorityMatches(
   >,
 ): boolean {
   switch (execution.kind) {
-    case 'automation':
+    case 'scheduled_task':
       return (
-        run.automationId === execution.automationId &&
+        run.scheduledTaskId === execution.scheduledTaskId &&
+        run.legacyAutomationId === undefined &&
+        run.goalId === undefined &&
+        run.agentGraphWakeId === undefined &&
+        run.agentGraphWakeAttemptId === undefined
+      );
+    case 'legacy_automation':
+      return (
+        run.legacyAutomationId === execution.automationId &&
+        run.scheduledTaskId === undefined &&
         run.goalId === undefined &&
         run.agentGraphWakeId === undefined &&
         run.agentGraphWakeAttemptId === undefined
@@ -299,7 +318,8 @@ function hostedRootAuthorityMatches(
     case 'goal':
       return (
         run.goalId === execution.goalId &&
-        run.automationId === undefined &&
+        run.scheduledTaskId === undefined &&
+        run.legacyAutomationId === undefined &&
         run.agentGraphWakeId === undefined &&
         run.agentGraphWakeAttemptId === undefined
       );
@@ -311,7 +331,8 @@ function hostedRootAuthorityMatches(
         run.orchestrationMode === 'graph' &&
         run.orchestrationSource === 'turn_override' &&
         run.agentSwarmAuthorization === 'none' &&
-        run.automationId === undefined &&
+        run.scheduledTaskId === undefined &&
+        run.legacyAutomationId === undefined &&
         run.goalId === undefined
       );
   }
@@ -382,6 +403,93 @@ export const AGENT_RUN_EVENT_TYPES = [
 export type AgentRunEventType = (typeof AGENT_RUN_EVENT_TYPES)[number];
 
 /**
+ * Derived state committed with the event that authorises it (#2323).
+ *
+ * `latestContext` rides the canonical completed-main attempt append so the two
+ * cannot disagree: there is one durable commit for the request, and the
+ * projection is a product of it rather than a second record racing it. A store
+ * without projections ignores this; the projection is rebuildable either way.
+ */
+export interface AgentRunAppendOptions {
+  durable?: boolean;
+  latestContext?: LatestContextProjectionInput;
+}
+
+/**
+ * The projection key. Deliberately NOT an emitted event type: nothing appends
+ * a record under this name. It names one derived row per session, written by
+ * the transaction that commits the canonical attempt and rebuildable from the
+ * ledger at any time.
+ */
+export const LATEST_CONTEXT_PROJECTION_TYPE = 'latest_context';
+
+/**
+ * What a projection may be keyed by: usually an event type, but not always.
+ *
+ * Named once so every layer that passes a key declares the same thing. A store
+ * whose parameter says `AgentRunEventType` while the interface it implements
+ * says otherwise only pushes the mismatch out to its callers as a cast.
+ */
+export type AgentRunProjectionKey = AgentRunEventType | typeof LATEST_CONTEXT_PROJECTION_TYPE;
+
+/**
+ * Everything one settled provider request commits, as one value (#2323).
+ *
+ * Deliberately an object rather than positional arguments: a layer that
+ * forwards only the attempt used to be a silent drop — JavaScript discards the
+ * extra argument and TypeScript accepts the narrower callback — so the derived
+ * row never reached storage in production. Passing one object makes an
+ * incomplete forward a type error instead of a missing feature.
+ */
+export interface ModelCallCommit<TAttempt> {
+  attempt: TAttempt;
+  latestContext?: LatestContextProjectionInput;
+}
+
+/**
+ * The facts a latest-context projection freezes, all bound to one request.
+ *
+ * `orderedAt` is what makes the projection monotonic: overlapping turns append
+ * on independent queues, so arrival order is not completion order, and a later
+ * arrival must not move the answer backwards.
+ */
+export interface LatestContextProjectionInput {
+  attemptId: string;
+  orderedAt: number;
+  snapshot: Record<string, unknown>;
+}
+
+/** How two candidate latest-context rows compare. */
+export interface LatestContextOrder {
+  completedAt: number;
+  attemptId: string;
+}
+
+/**
+ * The one ordering rule for the latest-context row.
+ *
+ * Lives here because two independent writers must agree on it: the storage
+ * transaction deciding whether an arriving commit supersedes the stored row,
+ * and the cold rebuild deciding which record of a whole ledger is the newest.
+ * A warm read and a rebuild of the same session that disagreed about which
+ * request is "latest" would be indistinguishable from data loss.
+ *
+ * Completion time, never arrival — overlapping turns append on independent
+ * queues. Ties break on `attemptId` rather than on arrival, so the answer does
+ * not depend on which writer got there first.
+ */
+export function supersedesLatestContext(
+  candidate: LatestContextOrder,
+  incumbent: LatestContextOrder | undefined,
+): boolean {
+  if (!incumbent) return true;
+  if (candidate.completedAt !== incumbent.completedAt) {
+    return candidate.completedAt > incumbent.completedAt;
+  }
+  return candidate.attemptId > incumbent.attemptId;
+}
+
+/**
  * A decoded ledger record. The ledger is append-only and outlives any single build, so `type` is
  * an open string: a reader must accept a type another version wrote, whether that version retired
  * the writer or has not shipped yet (#1942). The envelope around `type` is still validated, so
@@ -443,7 +551,8 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
     'parentSessionId',
     'workspaceIdentity',
     'continuationSource',
-    'automationId',
+    'scheduledTaskId',
+    'legacyAutomationId',
     'goalId',
     'agentGraphWakeId',
     'agentGraphWakeAttemptId',
@@ -457,6 +566,7 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
     'orchestrationSource',
     'agentSwarmAuthorization',
     'toolMode',
+    'runComposition',
   ],
 );
 
@@ -466,6 +576,14 @@ const AGENT_RUN_EVENT_SHAPE = defineObjectShape<AgentRunEvent>()(
 );
 
 export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
+  if (
+    isRecord(value) &&
+    value.automationId !== undefined &&
+    value.legacyAutomationId === undefined
+  ) {
+    const { automationId, ...current } = value;
+    value = { ...current, legacyAutomationId: automationId };
+  }
   if (!isRecord(value) || !hasExactShape(value, AGENT_RUN_HEADER_SHAPE)) {
     throw new Error('Invalid AgentRun header schema');
   }
@@ -488,8 +606,13 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
     (value.agentSwarmAuthorization === undefined ||
       isAgentSwarmAuthorizationSource(value.agentSwarmAuthorization)) &&
     (value.rootExecutionKind === undefined || value.rootExecutionKind === 'context_compact') &&
-    !(value.automationId !== undefined && value.goalId !== undefined) &&
+    Number(value.scheduledTaskId !== undefined) +
+      Number(value.legacyAutomationId !== undefined) +
+      Number(value.goalId !== undefined) +
+      Number(value.agentGraphWakeId !== undefined) <=
+      1 &&
     (value.toolMode === undefined || isToolMode(value.toolMode)) &&
+    (value.runComposition === undefined || isRunCompositionSnapshot(value.runComposition)) &&
     isFiniteNumber(value.createdAt) &&
     isFiniteNumber(value.updatedAt) &&
     isOptionalString(value.invocationId) &&
@@ -506,7 +629,8 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       value.branchOfTurnId,
       value.parentSessionId,
       value.workspaceIdentity,
-      value.automationId,
+      value.scheduledTaskId,
+      value.legacyAutomationId,
       value.goalId,
       value.agentGraphWakeId,
       value.agentGraphWakeAttemptId,
@@ -520,6 +644,15 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
   if (!valid) throw new Error('Invalid AgentRun header schema');
   if (status !== value.status) return { ...value, status } as unknown as AgentRunHeader;
   return value as unknown as AgentRunHeader;
+}
+
+function isRunCompositionSnapshot(value: unknown): value is RunCompositionSnapshot {
+  try {
+    decodeRunCompositionSnapshot(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isAgentRunContinuationSource(value: unknown): value is AgentRunContinuationSource {
@@ -577,7 +710,7 @@ export function decodeAgentRunEvent(value: unknown): AgentRunEvent {
 }
 
 function isBackendKind(value: unknown): value is BackendKind {
-  return value === 'ai-sdk' || value === 'fake' || value === 'pi-agent';
+  return value === 'ai-sdk' || value === 'fake';
 }
 
 export interface AgentRunStore {
@@ -594,18 +727,23 @@ export interface AgentRunStore {
     sessionId: string,
     runId: string,
     event: EmittedAgentRunEvent,
-    options?: { durable?: boolean },
+    options?: AgentRunAppendOptions,
   ): Promise<void>;
   readEvents(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
-  /** `undefined` means uninitialized; `null` is an initialized empty projection. */
+  /**
+   * `undefined` means uninitialized; `null` is an initialized empty projection.
+   *
+   * The key is a projection name, which is usually an event type but need not
+   * be: `latest_context` names a derived row nothing appends under (#2323).
+   */
   readEventProjection?(
     sessionId: string,
-    type: AgentRunEventType,
+    type: AgentRunProjectionKey,
   ): Promise<AgentRunEvent | null | undefined>;
   /** Rewrites derived state after the canonical event ledger repairs an absent or damaged projection. */
   repairEventProjection?(
     sessionId: string,
-    type: AgentRunEventType,
+    type: AgentRunProjectionKey,
     event: AgentRunEvent | null,
     options?: { replaceEventId?: string },
   ): Promise<void>;

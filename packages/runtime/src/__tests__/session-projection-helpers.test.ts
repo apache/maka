@@ -5,7 +5,6 @@ import {
   buildStatusPatch,
   buildTurnStateMessage,
   isTerminalRunStatus,
-  normalizeStopSessionSource,
   statusFromEvent,
   turnStatusFromEvent,
   turnHasRetainedOutput,
@@ -97,19 +96,6 @@ describe('session projection helpers', () => {
     expect(turnHasRetainedOutput(messages, 'turn-3')).toBe(true);
   });
 
-  test('normalizeStopSessionSource maps renderer stop button source', () => {
-    expect(normalizeStopSessionSource('stop_button')).toBe('renderer.stop_button');
-    expect(normalizeStopSessionSource(undefined)).toBeUndefined();
-  });
-
-  test('normalizeStopSessionSource preserves benchmark deadline provenance', () => {
-    expect(normalizeStopSessionSource('benchmark_deadline')).toBe('benchmark.deadline');
-  });
-
-  test('normalizeStopSessionSource preserves graph supervisor provenance', () => {
-    expect(normalizeStopSessionSource('graph_supervisor')).toBe('graph.supervisor');
-  });
-
   test('projects terminal run statuses and session terminal events', () => {
     expect(isTerminalRunStatus('completed')).toBe(true);
     expect(isTerminalRunStatus('failed')).toBe(true);
@@ -146,15 +132,6 @@ describe('session projection helpers', () => {
     expect(statusFromEvent({ type: 'complete', ts: 1, stopReason: 'user_stop' } as never)).toEqual({
       status: 'aborted',
     });
-  });
-
-  test('only resumes a sandbox boundary projection when authority permits it', () => {
-    const decision = { type: 'sandbox_boundary_decision_ack', ts: 1 } as never;
-
-    expect(statusFromEvent(decision, { allowInteractionResume: true })).toEqual({
-      status: 'running',
-    });
-    expect(statusFromEvent(decision, { allowInteractionResume: false })).toBeUndefined();
   });
 
   test('projects turn terminal events without changing failure classes', () => {

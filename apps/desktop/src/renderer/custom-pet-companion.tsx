@@ -3,7 +3,7 @@ import {
   resolvePetAnimationFallback,
   resolvePetAnimationState,
   type PetActivityState,
-} from '@maka/core';
+} from '@maka/core/pet';
 import { useMountedRef } from '@maka/ui';
 import {
   loadSelectedPetCompanion,

@@ -3,9 +3,9 @@ import type {
   DailyReviewArchiveSummary,
   DailyReviewRange,
   DailyReviewSummary,
-  PlanReminderDeliveryTarget,
-  PlanReminderRecurrence,
-} from '@maka/core';
+} from '@maka/core/daily-review';
+
+import type { CreateScheduledTaskInput, ScheduledTaskEffect, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
 
 export interface SkillEntry {
   kind?: 'skill' | 'discovery_diagnostic';
@@ -127,24 +127,17 @@ export interface BundledSkillCatalogEntry {
   installed: boolean;
 }
 
-export type PlanReminderDraftInput = {
-  title: string;
-  note?: string;
-  runAt: number;
-  recurrence?: PlanReminderRecurrence;
-  cronExpression?: string;
-  delivery?: PlanReminderDeliveryTarget;
-};
-
-export type PlanReminderUpdatePatch = {
-  title?: string;
-  note?: string;
-  runAt?: number;
-  recurrence?: PlanReminderRecurrence;
-  cronExpression?: string;
-  delivery?: PlanReminderDeliveryTarget;
-  enabled?: boolean;
-};
+export type ScheduledTaskDraftInput = Omit<CreateScheduledTaskInput, 'createdBy'>;
+export type ScheduledTaskUpdatePatch = UpdateScheduledTaskInput;
+export type ScheduledTaskRecurrence =
+  | 'none'
+  | 'interval'
+  | 'daily'
+  | 'weekly'
+  | 'monthly'
+  | 'cron';
+export type ScheduledTaskDelivery = Extract<ScheduledTaskEffect, { kind: 'notify' }>;
+export type ScheduledTaskDeliveryMethod = ScheduledTaskDelivery['channel'] | 'agent_run';
 
 /**
  * PR-DAILY-REVIEW-MVP-0: bridge handed in by `main.tsx`. Keeps

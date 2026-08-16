@@ -1,14 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type {
-  SearchErrorReason,
-  SearchRequest,
-  SearchResult,
-  UiLocale,
-} from '@maka/core';
-import {
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-} from '@maka/core';
+import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
 import {
   CommandPalette as AstryxCommandPalette,
   CommandPaletteFooter,
@@ -130,7 +123,7 @@ function searchModalThrownErrorMessage(
 export function SearchModal(props: {
   isOpen: boolean;
   onOpenChange(isOpen: boolean): void;
-  onNavigateToSession?(sessionId: string, turnId?: string): void;
+  onNavigateToSession?(sessionId: string, turnId?: string, sequence?: number): void;
   deps?: SearchModalDeps;
 }) {
   const locale = useUiLocale();
@@ -150,6 +143,7 @@ export function SearchModal(props: {
   const pendingNavigationRef = useRef<{
     sessionId: string;
     turnId?: string;
+    sequence?: number;
   } | null>(null);
 
   useEffect(() => {
@@ -158,7 +152,11 @@ export function SearchModal(props: {
     pendingNavigationRef.current = null;
     if (!navigation || !props.onNavigateToSession) return;
     const frame = window.requestAnimationFrame(() => {
-      props.onNavigateToSession?.(navigation.sessionId, navigation.turnId);
+      props.onNavigateToSession?.(
+        navigation.sessionId,
+        navigation.turnId,
+        navigation.sequence,
+      );
     });
     return () => window.cancelAnimationFrame(frame);
   }, [props.isOpen, props.onNavigateToSession]);
@@ -230,6 +228,7 @@ export function SearchModal(props: {
           pendingNavigationRef.current = {
             sessionId: result.target.sessionId,
             turnId: result.target.turnId,
+            sequence: result.target.sequence,
           };
         }}
         renderItem={(item) => {

@@ -1,9 +1,8 @@
-import type {
-  SessionSendProjection,
-  TaskSubmissionReadinessDimension,
-  TaskSubmissionReadinessSnapshot,
-  UiLocale,
-} from '@maka/core';
+import type { SessionSendProjection } from '@maka/core/session-send-projection';
+
+import type { TaskSubmissionReadinessDimension, TaskSubmissionReadinessSnapshot } from '@maka/core/task-submission-readiness';
+
+import type { UiLocale } from '@maka/core/ui-locale';
 
 export function resolveTaskReadinessModelTarget(
   session: { llmConnectionSlug: string; model: string } | undefined,
@@ -11,11 +10,21 @@ export function resolveTaskReadinessModelTarget(
   newTaskTarget: { llmConnectionSlug: string; model: string } | undefined,
 ): { connectionSlug?: string; model?: string } {
   if (session && sendOutcome?.kind === 'rebind') {
-    return { connectionSlug: sendOutcome.connectionSlug, model: sendOutcome.model };
+    return optionalModelTarget(sendOutcome.connectionSlug, sendOutcome.model);
   }
+  return optionalModelTarget(
+    session?.llmConnectionSlug ?? newTaskTarget?.llmConnectionSlug,
+    session?.model ?? newTaskTarget?.model,
+  );
+}
+
+function optionalModelTarget(
+  connectionSlug: string | undefined,
+  model: string | undefined,
+): { connectionSlug?: string; model?: string } {
   return {
-    connectionSlug: session?.llmConnectionSlug ?? newTaskTarget?.llmConnectionSlug,
-    model: session?.model ?? newTaskTarget?.model,
+    ...(connectionSlug?.trim() ? { connectionSlug: connectionSlug.trim() } : {}),
+    ...(model?.trim() ? { model: model.trim() } : {}),
   };
 }
 

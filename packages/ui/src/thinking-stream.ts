@@ -30,7 +30,14 @@
  */
 
 import { redactSecrets } from './redact.js';
-import type { UiLocale } from '@maka/core';
+import {
+  appendStreamingDisplayRedaction,
+  createStreamingDisplayRedactionState,
+  truncateStreamingDisplayAppend,
+  truncateStreamingDisplayTail,
+  type StreamingDisplayRedactionState,
+} from './streaming-display-redaction.js';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
 /**
@@ -52,6 +59,8 @@ export interface ApplyThinkingOptions {
   maxTotalChars?: number;
   /** Resolved UI locale for user-visible truncation markers. */
   locale?: UiLocale;
+  /** Differential-safe state returned by the preceding delta. */
+  redactionState?: StreamingDisplayRedactionState;
 }
 
 export interface ApplyThinkingResult {
@@ -61,18 +70,17 @@ export interface ApplyThinkingResult {
   redacted: boolean;
   /** True if any drop / truncation happened during this call. */
   truncated: boolean;
+  /** Bounded state needed to keep later prefixes oracle-equivalent. */
+  redactionState?: StreamingDisplayRedactionState;
 }
 
 /**
  * Apply a single `thinking_delta` to the prior accumulated text.
  * Pure: no React state, no DOM, no IPC.
  *
- *   1. `redactSecrets(rawDelta)` — secondary mask BEFORE state.
- *   2. If the delta alone is over `maxDeltaChars`, tail-keep it
- *      with a head truncation marker. (A single multi-MB delta is
- *      a runtime misbehavior; renderer must not echo it raw.)
- *   3. Append to `prev`.
- *   4. If the result exceeds `maxTotalChars`, tail-keep the most
+ *   1. Append through the differential-safe line/suffix redactor.
+ *   2. If the delta alone is oversized, cap the already-safe mutable suffix.
+ *   3. If the result exceeds `maxTotalChars`, tail-keep the most
  *      recent `maxTotalChars` characters with a head marker.
  *      Thinking is sequential reasoning; the user is looking at
  *      the CURRENT chain of thought, not the start.
@@ -87,43 +95,68 @@ export function applyThinkingDelta(
   const copy = getSharedUiCopy(options.locale ?? 'zh').stream;
   const truncatedHeadMarker = copy.thinkingHeadTruncated;
   const truncatedChunkMarker = copy.thinkingChunkTruncated;
+  const previousText = prev ?? '';
 
   // Defensive guard: a non-string `rawDelta` is a runtime contract
   // violation. Drop it silently rather than coerce to '' and claim
   // redaction happened.
   if (typeof rawDelta !== 'string') {
-    return { text: prev ?? '', redacted: false, truncated: false };
+    return {
+      text: prev ?? '',
+      redacted: false,
+      truncated: false,
+      ...(options.redactionState === undefined
+        ? {}
+        : { redactionState: options.redactionState }),
+    };
   }
 
-  // L1: secondary redaction.
+  const redactionState = options.redactionState ?? appendStreamingDisplayRedaction(
+    '',
+    previousText,
+    createStreamingDisplayRedactionState({
+      maxRecoveryChars: maxTotal + 1,
+      recovery: 'tail',
+    }),
+  ).state;
+
+  // Oversize deltas retain redact-before-truncate. Normal deltas remain raw
+  // until the line-aware append so every streamed prefix can match the oracle.
   const redactedDelta = redactSecrets(rawDelta);
   const redactionHappened = redactedDelta !== rawDelta;
 
   // L2: per-delta cap. Tail-keep with marker prepended.
-  let delta = redactedDelta;
   let deltaTruncated = false;
-  if (delta.length > maxDelta) {
-    const keep = maxDelta - truncatedChunkMarker.length;
-    delta = truncatedChunkMarker + delta.slice(delta.length - keep);
-    deltaTruncated = true;
-  }
-
-  // L3: append.
-  const appended = (prev ?? '') + delta;
+  const rawAppended = appendStreamingDisplayRedaction(
+    previousText,
+    rawDelta,
+    redactionState,
+  );
+  const appended = redactedDelta.length > maxDelta
+    ? truncateStreamingDisplayAppend(
+        previousText,
+        rawAppended,
+        maxDelta,
+        truncatedChunkMarker,
+      )
+    : rawAppended;
+  deltaTruncated = appended !== rawAppended;
 
   // L4: per-session total cap. Tail-keep most recent.
-  let result = appended;
+  let result = appended.text;
   let totalTruncated = false;
+  let capped = appended;
   if (result.length > maxTotal) {
-    const keep = maxTotal - truncatedHeadMarker.length;
-    result = truncatedHeadMarker + result.slice(result.length - keep);
+    capped = truncateStreamingDisplayTail(appended, maxTotal, truncatedHeadMarker);
+    result = capped.text;
     totalTruncated = true;
   }
 
   return {
     text: result,
-    redacted: redactionHappened,
+    redacted: redactionHappened || appended.redacted,
     truncated: deltaTruncated || totalTruncated,
+    redactionState: capped.state,
   };
 }
 

@@ -17,7 +17,7 @@ import { ICON_SIZE, ChevronRight, Cpu } from '@maka/ui/icons';
 import {
   type LlmConnection,
   type ProviderType,
-} from '@maka/core';
+} from '@maka/core/llm-connections';
 import { useMountedRef, useUiLocale, useToast , dotForStatus } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { connectionChipStatus } from './provider-connection-status';
@@ -70,15 +70,13 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   bridge: ConnectionsBridge;
   initialPage?: 'connections' | 'catalog';
   /**
-   * When set, open this connection's detail once the list has loaded. Used by
-   * the `oauth-relogin` e2e fixture so the re-login affordance is captured; a
-   * real user reaches the same page by clicking the connection row.
+   * When set, open this connection's detail once the list has loaded.
    */
   initialConnectionSlug?: string;
   /**
    * When set, land straight on this provider's setup once the panel has
-   * loaded — the first-run hero's path. One-shot: the caller retires the
-   * request via onInitialCreateProviderConsumed.
+   * loaded. One-shot: the caller retires the request via
+   * onInitialCreateProviderConsumed.
    */
   initialCreateProviderType?: ProviderType;
   /** Called once the setup level has been entered. */
@@ -107,13 +105,10 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   async function reload(): Promise<boolean> {
     const ticket = ++providersReloadTicketRef.current;
     try {
-      const [list, defaultConnection] = await Promise.all([
-        bridge.list(),
-        bridge.getDefault(),
-      ]);
+      const snapshot = await bridge.getSnapshot();
       if (!providersPanelMountedRef.current || providersReloadTicketRef.current !== ticket) return false;
-      setConnections(list);
-      setDefaultSlug(defaultConnection);
+      setConnections(snapshot.connections);
+      setDefaultSlug(snapshot.defaultConnection);
       setLoadError(null);
       setLoading(false);
       return true;
@@ -243,7 +238,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
         // tabIndex -1 so a route change can land focus on the level itself —
         // the standard SPA answer to "where does focus go when the page
         // swaps", and it draws no ring.
-        <VStack gap={5} tabIndex={-1} role="region" aria-labelledby={detailTitleId} className="settingsRouteLevel" data-maka-contract="connection-detail">
+        (<VStack gap={5} tabIndex={-1} role="region" aria-labelledby={detailTitleId} className="settingsRouteLevel" data-maka-contract="connection-detail">
           <SettingsRouteHeader
             onBack={goToList}
             backLabel={copy.backToList}
@@ -301,7 +296,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               goToList();
             }}
           />
-        </VStack>
+        </VStack>)
       ) : level === 'catalog' ? (
         <VStack gap={5}>
           <SettingsRouteHeader

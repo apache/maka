@@ -1,38 +1,24 @@
 /**
- * Pure presentation helpers for SessionStatus + SessionBlockedReason
- * used by the sidebar and chat header.
+ * Renderer-side presentation rules that only Desktop has: which blocked reasons
+ * are worth acting on, and what to offer after a turn fails.
  *
- * Separated from the React component layer so the copy + tone mapping
- * can be unit-tested without a DOM, mirroring `session-health-notice.ts`
- * pattern.
+ * Separated from the React component layer so the rules can be unit-tested
+ * without a DOM, mirroring the `session-health-notice.ts` pattern.
  *
- * Two contracts enforced here:
- *
- *  1. **Generalized blocked-reason copy** (@kenji review): UI labels
- *     never expose the raw `SessionBlockedReason` enum string. The
- *     mapping below is the canonical translation. New blocked reasons
- *     must extend the core enum AND this matrix together, or the
- *     `unknown` fallback applies.
- *
- *  2. **Status tone matrix**: each SessionStatus has a single visual
- *     tone (`accent / warning / destructive / info / success / muted`)
- *     consumed by both the SessionStatusIcon and the chat-header
- *     status badge. Aligns with the existing session-health-notice tone
- *     vocabulary.
+ * Turning a `SessionStatus` into a label and a dot, and a `SessionBlockedReason`
+ * into copy, is NOT here — both live in `@maka/ui`'s file of the same name,
+ * which is also where the contract that a UI label never shows a raw enum
+ * identifier is stated and enforced. This file used to re-export those and
+ * document a tone matrix "consumed by both the SessionStatusIcon and the
+ * chat-header status badge", naming two consumers that do not exist; the tone
+ * layer and the re-exports are gone (#2984).
  */
 
-import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core';
-import type { SessionBlockedReason, SessionStatus, SessionSummary, UiLocale } from '@maka/core';
-import {
-  describeBlockedReason,
-  presentSessionStatus,
-  type SessionStatusPresentation,
-  type SessionStatusTone,
-} from '@maka/ui';
+import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core/sandbox-boundary';
+import type { SessionBlockedReason, SessionSummary } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { describeSessionErrorReason } from './session-error-presentation.js';
-export { presentSessionStatus } from '@maka/ui';
-export { describeBlockedReason } from '@maka/ui';
 
 /**
  * Session-level "blocked" is only worth interrupting the user when
@@ -61,44 +47,17 @@ export function isActionableBlocked(reason: SessionBlockedReason | undefined): b
  * each consumer re-implementing the rule. Everything else passes through
  * unchanged.
  */
-export function normalizeSessionSummaryForDisplay(session: SessionSummary): SessionSummary {
+export function normalizeSessionSummaryForDisplay<T extends SessionSummary>(session: T): T {
   if (session.status !== 'blocked' || isActionableBlocked(session.blockedReason)) return session;
   const { blockedReason: _blockedReason, ...rest } = session;
   void _blockedReason;
-  return { ...rest, status: 'active' };
-}
-
-/**
- * Status tone vocabulary — extends the session-health-notice tone set
- * (`info | warning | destructive`) with `accent` for active in-flight
- * work, `success` for completed work, and `muted` for terminal /
- * dormant buckets. Tones map to semantic color tokens in CSS
- * (`[data-status-tone="..."]`).
- */
-/**
- * Generalized phrasing for a blocked session. Surfaces a user-readable
- * cause without exposing the underlying enum identifier (per @kenji
- * review: UI must not leak `NO_REAL_CONNECTION` etc. directly).
- *
- * Returned text is suitable for `aria-label`, `title`, and inline
- * tooltip slots — short phrase, sentence-cased Chinese, no period.
- */
-/**
- * Compose a single-line aria-label / tooltip for a blocked session,
- * combining the status label and the cause. Example:
- *   "需要处理 · 等待配置可用模型连接"
- *
- * Non-blocked sessions return just the status label.
- */
-export function sessionStatusAriaLabel(status: SessionStatus, blockedReason?: SessionBlockedReason, locale: UiLocale = 'zh'): string {
-  const presentation = presentSessionStatus(status, locale);
-  if (status !== 'blocked') return presentation.label;
-  return `${presentation.label} · ${describeBlockedReason(blockedReason, locale)}`;
+  return { ...rest, status: 'active' } as T;
 }
 
 /**
  * Generalized Chinese phrasing for a failed turn's `errorClass`
- * Mirrors `describeBlockedReason()`; UI must never display the raw enum identifier.
+ * Mirrors `describeBlockedReason()` in `@maka/ui`, under the same rule: a UI
+ * label must never display the raw enum identifier.
  *
  * Recognized classes are written by the runtime via `classifyError()`,
  * `classifyHttpStatus()`, and `event.reason` / `event.code`. The set is

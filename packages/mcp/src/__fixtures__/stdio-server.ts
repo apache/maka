@@ -10,6 +10,21 @@ if (process.argv.includes('--crash-secret-tail')) {
   process.stderr.write('token=sk-live-secret-token-value');
   process.exit(24);
 }
+if (process.argv.includes('--crash-hostile-stderr')) {
+  process.stderr.write(`${'x'.repeat(1_998)}sk`);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  process.stderr.write('-live-secret-token-value\r\u2028\u206a\n');
+  process.stderr.write(`${'z'.repeat(10_000)}\n`);
+  process.stderr.write('after\u2029line\n');
+  process.stderr.write('sk-live-\u001b12345678\n');
+  process.stderr.write('AWS_SECRET_ACCESS_KEY\\\n=environment-secret\n');
+  process.stderr.write('aws configure set aws_secret_access_key \\\ncontinued-secret\n');
+  process.exit(25);
+}
+if (process.argv.includes('--crash-many-stderr-lines')) {
+  process.stderr.write('x\n'.repeat(1_000));
+  process.exit(26);
+}
 if (process.argv.includes('--slow-start')) {
   await new Promise((resolve) => setTimeout(resolve, 30_000));
 }
@@ -22,7 +37,13 @@ const server = new Server(
 server.setRequestHandler(ListToolsRequestSchema, async ({ params }) => {
   if (!params?.cursor) {
     return {
-      tools: [tool('echo', 'Echo text', true), tool('rich', 'Return rich content', true)],
+      tools: [
+        tool('echo', 'Echo text', true),
+        tool('rich', 'Return rich content', true),
+        ...(process.argv.includes('--environment')
+          ? [tool('environment', 'Read selected environment variables', true)]
+          : []),
+      ],
       nextCursor: 'page-2',
     };
   }
@@ -66,6 +87,23 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
   if (params.name === 'slow') {
     await new Promise((resolve) => setTimeout(resolve, 30_000));
     return { content: [{ type: 'text', text: 'too late' }] };
+  }
+  if (params.name === 'environment') {
+    const names = Array.isArray(params.arguments?.names) ? params.arguments.names : [];
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            Object.fromEntries(
+              names
+                .filter((name): name is string => typeof name === 'string')
+                .map((name) => [name, process.env[name] ?? null]),
+            ),
+          ),
+        },
+      ],
+    };
   }
   return { isError: true, content: [{ type: 'text', text: 'unknown tool' }] };
 });

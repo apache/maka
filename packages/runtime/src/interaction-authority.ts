@@ -10,8 +10,8 @@ import type {
   InteractionCanonicalPermissionOutcome,
   InteractionClosureReason,
   InteractionPermissionRequest,
-  SandboxBoundarySettlement,
-} from '@maka/core';
+} from '@maka/core/interaction';
+import type { SandboxBoundarySettlement } from '@maka/core/sandbox-boundary';
 import type {
   HostedInteractionBridge,
   HostedSandboxBoundarySettlement,

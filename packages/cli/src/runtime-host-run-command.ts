@@ -1,11 +1,15 @@
-import { type SessionEvent, type StoredMessage } from '@maka/core';
+import { type SessionEvent } from '@maka/core/events';
+import { findProjectByIdentity } from '@maka/core/project';
+import { type StoredMessage } from '@maka/core/session';
 import type { CreateSessionInput, UserMessageInput } from '@maka/core/runtime-inputs';
 import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
 import type { SessionSummary } from '@maka/core/session';
 import {
   readRuntimeHostSessions,
+  readRuntimeHostProjects,
   RuntimeHostOperationError,
   type RuntimeHostConnection,
+  type RuntimeHostProfile,
 } from '@maka/runtime-host/client';
 import type { InteractionPendingSnapshot, SessionCatalogItem } from '@maka/runtime-host/protocol';
 import {
@@ -33,17 +37,28 @@ import {
   isRuntimeHostCliTaskBlocked,
   readRuntimeHostCliTaskReadiness,
 } from './runtime-host-task-readiness.js';
+import { resolveMakaClientDataRoot } from './workspace-root.js';
 
 const GRAPH_POLL_INTERVAL_MS = 25;
 
 export interface RuntimeHostRunCommandDeps {
-  connect(rootPath: string): Promise<RuntimeHostCliConnectionContext>;
+  connect(
+    rootPath: string,
+    hostProfileId: string | undefined,
+    clientDataRoot: string,
+  ): Promise<RuntimeHostCliConnectionContext>;
   createContext(
     connection: RuntimeHostConnection,
     catalog: RuntimeHostCliConnectionContext['catalog'],
     input: Parameters<MakaRunDeps['createContext']>[0],
+    profile: RuntimeHostProfile,
   ): MakaRunContext | Promise<MakaRunContext>;
   run: typeof runMakaTextCliCore;
+}
+
+export interface RuntimeHostTextCliOptions {
+  readonly cliCommand: string;
+  readonly clientDataRoot: string;
 }
 
 export interface RuntimeHostRunContextDeps {
@@ -56,28 +71,46 @@ export async function runRuntimeHostTextCli(
   argv: readonly string[],
   overrides: Partial<MakaRunEnvironmentDeps> = {},
   commandOverrides: Partial<RuntimeHostRunCommandDeps> = {},
+  options: RuntimeHostTextCliOptions = {
+    cliCommand: 'maka',
+    clientDataRoot: resolveMakaClientDataRoot(),
+  },
 ): Promise<number> {
   const commandDeps = { ...defaultRuntimeHostRunCommandDeps(), ...commandOverrides };
   let connected: RuntimeHostCliConnectionContext | undefined;
-  const connect = async (rootPath: string): Promise<RuntimeHostCliConnectionContext> => {
-    connected ??= await commandDeps.connect(rootPath);
+  const connect = async (
+    rootPath: string,
+    hostProfileId?: string,
+  ): Promise<RuntimeHostCliConnectionContext> => {
+    connected ??= await commandDeps.connect(rootPath, hostProfileId, options.clientDataRoot);
     return connected;
   };
   try {
     return await commandDeps.run(
       argv,
       {
-        listSessions: async (rootPath) =>
+        listSessions: async (rootPath, hostProfileId) =>
           runtimeHostSessionSummaries(
-            await readRuntimeHostSessions((await connect(rootPath)).connection),
+            await readRuntimeHostSessions((await connect(rootPath, hostProfileId)).connection),
           ),
         createContext: async (input) => {
-          const context = await connect(input.workspaceRoot);
-          await assertRuntimeHostRunReady(context.connection, context.catalog, input);
-          return commandDeps.createContext(context.connection, context.catalog, input);
+          const context = await connect(input.workspaceRoot, input.hostProfileId);
+          const preparedInput = await prepareRuntimeHostRunInput(
+            context.connection,
+            context.catalog,
+            context.profile,
+            input,
+            options.cliCommand,
+          );
+          return commandDeps.createContext(
+            context.connection,
+            context.catalog,
+            preparedInput,
+            context.profile,
+          );
         },
       },
-      overrides,
+      { ...overrides, cliCommand: () => options.cliCommand },
     );
   } finally {
     await connected?.close().catch(() => undefined);
@@ -86,8 +119,15 @@ export async function runRuntimeHostTextCli(
 
 function defaultRuntimeHostRunCommandDeps(): RuntimeHostRunCommandDeps {
   return {
-    connect: (rootPath) => connectRuntimeHostCli({ rootPath, surface: 'run' }),
-    createContext: createRuntimeHostRunContext,
+    connect: (rootPath, hostProfileId, clientDataRoot) =>
+      connectRuntimeHostCli({
+        rootPath,
+        surface: 'run',
+        ...(hostProfileId ? { profileId: hostProfileId } : {}),
+        clientDataRoot,
+      }),
+    createContext: (connection, catalog, input) =>
+      createRuntimeHostRunContext(connection, catalog, input),
     run: runMakaTextCliCore,
   };
 }
@@ -112,6 +152,11 @@ export function createRuntimeHostRunContext(
     llmConnectionSlug: target.connection.slug,
     model: target.model,
     permissionMode: 'ask',
+    executionLocation:
+      !input.hostProfileId || input.hostProfileId === 'local'
+        ? { kind: 'client_path' }
+        : { kind: 'host' },
+    ...(input.projectId ? { workspace: { kind: 'project', projectId: input.projectId } } : {}),
   });
   const runtime = new RuntimeHostRunRuntime(
     connection,
@@ -136,21 +181,41 @@ export function createRuntimeHostRunContext(
   };
 }
 
-async function assertRuntimeHostRunReady(
+async function prepareRuntimeHostRunInput(
   connection: RuntimeHostConnection,
   catalog: RuntimeHostCliConnectionContext['catalog'],
+  profile: RuntimeHostProfile,
   input: Parameters<MakaRunDeps['createContext']>[0],
-): Promise<void> {
+  cliCommand: string,
+): Promise<Parameters<MakaRunDeps['createContext']>[0]> {
+  let projectId = input.projectId;
+  if (profile.kind === 'remote' && !input.resumeSessionId) {
+    if (!projectId) {
+      throw new Error(`Runtime Host profile ${profile.id} requires --project for a new Session`);
+    }
+    const project = findProjectByIdentity(await readRuntimeHostProjects(connection), projectId);
+    if (!project || project.archivedAt !== null || !project.available) {
+      throw new Error(`Runtime Host Project is unavailable: ${projectId}`);
+    }
+    projectId = project.id;
+  }
+  const preparedInput = projectId === input.projectId ? input : { ...input, projectId };
   const snapshot = await readRuntimeHostCliTaskReadiness({
     connection,
     catalog,
-    cwd: input.cwd,
-    ...(input.requestedConnectionSlug ? { connectionSlug: input.requestedConnectionSlug } : {}),
-    ...(input.requestedModel ? { model: input.requestedModel } : {}),
+    cwd: preparedInput.cwd,
+    ...(profile.kind === 'remote' ? { workspaceState: 'ready' as const } : {}),
+    ...(preparedInput.requestedConnectionSlug
+      ? { connectionSlug: preparedInput.requestedConnectionSlug }
+      : {}),
+    ...(preparedInput.requestedModel ? { model: preparedInput.requestedModel } : {}),
   });
   if (isRuntimeHostCliTaskBlocked(snapshot)) {
-    throw new Error(`Task is not ready:\n${formatRuntimeHostCliTaskBlockers(snapshot)}`);
+    throw new Error(
+      `Task is not ready:\n${formatRuntimeHostCliTaskBlockers(snapshot, cliCommand)}`,
+    );
   }
+  return preparedInput;
 }
 
 class RuntimeHostRunRuntime implements MakaRunRuntime {
@@ -329,7 +394,11 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       this.#sessionCwdOverride?.sessionId === sessionId &&
       switched.summary.cwd !== this.#sessionCwdOverride.cwd
     ) {
-      const moved = await this.#driver.moveSession(this.#sessionCwdOverride.cwd);
+      const moveSession = this.#driver.moveSession;
+      if (!moveSession) {
+        throw new Error('The selected Runtime Host does not allow Client path relocation');
+      }
+      const moved = await moveSession(this.#sessionCwdOverride.cwd);
       if (moved.cwd !== this.#sessionCwdOverride.cwd) {
         throw new Error(
           `Runtime Host cannot resume Session ${sessionId}: its working directory could not be canonicalized`,

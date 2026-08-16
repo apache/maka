@@ -1,4 +1,6 @@
-import type { SettingsTestResult, UiCatalog, UiLocale } from "@maka/core";
+import type { SettingsTestResult } from '@maka/core/settings';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type SettingsTestResultCopy = {
   proxy: {

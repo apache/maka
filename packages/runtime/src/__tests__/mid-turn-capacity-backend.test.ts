@@ -1,9 +1,11 @@
+import type { ModelCallCommit } from '@maka/core/agent-run';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { setImmediate as flushMacrotask } from 'node:timers/promises';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
-import type { LlmConnection, SessionHeader } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { SessionHeader } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
@@ -18,11 +20,19 @@ import {
 import type { InvocationContext } from '../invocation-context.js';
 import { applyRuntimeEventContextBudget } from '../context-budget.js';
 import { evaluateHistoryCompactCheckpointReplay } from '../history-compact.js';
-import type { HistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
+import type {
+  HistoryCompactCheckpoint,
+  HistoryCompactProviderState,
+} from '../history-compact-checkpoint.js';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { HistoryCompactSummarizerError } from '../history-compact-error.js';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
+import type { MemoryExtractionSourceSnapshot } from '../memory-extraction.js';
+import {
+  LATEST_CONTEXT_PROJECTION_TYPE,
+  readLatestContextSnapshot,
+} from '../latest-context-snapshot.js';
 import {
   createTestAiSdkBackend,
   testToolResultArchive,
@@ -48,6 +58,11 @@ interface MidTurnFixture {
   ledger: RuntimeEvent[];
   /** Canonical accounting records settled during the turn (#1679). */
   modelCalls: ModelCallAttempt[];
+  /**
+   * The same settlements as whole commits, so a test can read the derived
+   * latest-context row the attempt authorised rather than only the attempt.
+   */
+  commits: ModelCallCommit<ModelCallAttempt>[];
   ledgerReads: number;
   events: SessionEvent[];
   messages: unknown[];
@@ -61,6 +76,7 @@ interface MidTurnFixture {
   }>;
   /** JSON of each summarizer call's folded runtime events (coverage evidence). */
   summarizedSources: string[];
+  memorySnapshots: MemoryExtractionSourceSnapshot[];
   persist: (event: SessionEvent) => void;
 }
 
@@ -77,7 +93,13 @@ interface MidTurnFixtureOptions {
   historyCompactOff?: boolean;
   historyBudgetTokens?: number;
   reserveTokens?: number;
-  summarize?: () => Promise<string | undefined> | string | undefined;
+  summarize?: () =>
+    | Promise<string | HistoryCompactProviderState | undefined>
+    | string
+    | HistoryCompactProviderState
+    | undefined;
+  /** Return and replay a Codex subscription V2 provider checkpoint. */
+  providerNative?: boolean;
   branch?: string;
   /** Omit the prior turns so the compaction pool has no safe completed span. */
   withoutPriorTurns?: boolean;
@@ -112,6 +134,11 @@ interface MidTurnFixtureOptions {
   volatileTurnTail?: boolean;
   /** System prompt size sent through the provider's separate system field. */
   systemPromptChars?: number;
+  /** Enable and capture automatic Memory extraction without allowing it to settle. */
+  captureMemoryExtraction?: boolean;
+  memoryGate?:
+    | { readonly allowed: true }
+    | { readonly allowed: false; readonly reason: 'disabled' | 'incognito' | 'unavailable' };
 }
 
 /**
@@ -139,6 +166,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     contextBudget?: ContextBudgetDiagnostic;
   }> = [];
   const summarizedSources: string[] = [];
+  const memorySnapshots: MemoryExtractionSourceSnapshot[] = [];
   let recordedAtThirdRequest = false;
   const fixture = { summarizerCalls: 0, ledgerReads: 0 };
   const usage = (input: number, output: number) => ({
@@ -284,6 +312,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
   };
 
   const modelCalls: ModelCallAttempt[] = [];
+  const commits: ModelCallCommit<ModelCallAttempt>[] = [];
   const summarizerModel = new MockLanguageModelV4({
     doGenerate: {
       content: [{ type: 'text', text: 'MID_TURN_SUMMARY_SENTINEL' }],
@@ -308,6 +337,9 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     },
     connection: {
       ...connection(),
+      ...(options.providerNative
+        ? { slug: 'codex-subscription', providerType: 'openai-codex' as const }
+        : {}),
       models: [{ id: 'mock-model-id', ...(options.withoutContextWindow ? {} : { contextWindow }) }],
     },
     apiKey: 'sk-test',
@@ -410,14 +442,25 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       // The real summarizer is what carries the accounting the backend hands
       // it, so the metered case must go through it rather than a stub.
       if (options.meteredSummarizer) return await meteredSummarize(input);
-      const summary = options.summarize ? await options.summarize() : 'MID_TURN_SUMMARY_SENTINEL';
+      const summary = options.providerNative
+        ? ({
+            kind: 'openai_codex_remote_v2',
+            connectionSlug: 'codex-subscription',
+            modelId: 'mock-model-id',
+            itemId: 'cmp_mid_turn',
+            encryptedContent: 'MID_TURN_ENCRYPTED_STATE',
+          } satisfies HistoryCompactProviderState)
+        : options.summarize
+          ? await options.summarize()
+          : 'MID_TURN_SUMMARY_SENTINEL';
       return summary;
     },
     ...(options.meteredSummarizer
       ? {
           recordProviderRequestCapture: async () => ({ artifactId: 'artifact-mid-turn-capture' }),
-          recordModelCallAttempt: (attempt: ModelCallAttempt) => {
-            modelCalls.push(attempt);
+          recordModelCallAttempt: (commit: ModelCallCommit<ModelCallAttempt>) => {
+            commits.push(commit);
+            modelCalls.push(commit.attempt);
           },
         }
       : {}),
@@ -433,6 +476,19 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       return ledger.filter((event) => event.turnId === turnId);
     },
     allowMidTurnHistoryCompaction: true,
+    ...(options.captureMemoryExtraction
+      ? {
+          memoryExtraction: {
+            gate: async () => options.memoryGate ?? { allowed: true as const },
+            automaticGate: () => options.memoryGate ?? { allowed: true as const },
+            remember: async () => ({ status: 'unavailable' as const, requestedItems: [] }),
+            extract: (snapshot: MemoryExtractionSourceSnapshot) => {
+              memorySnapshots.push(snapshot);
+              return new Promise<void>(() => {});
+            },
+          },
+        }
+      : {}),
     // The send-level record is gone (#1679); its diagnostics moved to the run
     // trace, which is what these assertions observe now.
     recordRunTrace: (event) => {
@@ -464,10 +520,12 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     anchor,
     ledger,
     modelCalls,
+    commits,
     events,
     messages,
     llmCalls,
     summarizedSources,
+    memorySnapshots,
     persist,
   };
 }
@@ -573,6 +631,21 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(fit.fits, true);
   });
 
+  test('replays a Codex V2 mid-turn checkpoint as native provider state', async () => {
+    const fixture = buildFixture({ providerNative: true });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]?.version, 3);
+    const thirdPrompt = promptJson(fixture, 2);
+    assert.match(thirdPrompt, /MID_TURN_ENCRYPTED_STATE/);
+    assert.match(thirdPrompt, /cmp_mid_turn/);
+    assert.doesNotMatch(thirdPrompt, /Provider-native OpenAI Codex compaction checkpoint/);
+    assert.doesNotMatch(thirdPrompt, /RAW_SPAN_ONE_|PRIOR_FACT/);
+    assert.match(thirdPrompt, /RAW_SPAN_TWO_/);
+    assert.match(thirdPrompt, new RegExp(ANCHOR_TEXT));
+  });
+
   test('a mid-turn compaction settles a canonical record for the run it interrupts', async () => {
     // End-to-end over the backend glue, not the summarizer in isolation: the
     // accounting identity is built inside `AiSdkCompaction` from the backend's
@@ -603,6 +676,44 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       attempts.some((attempt) => attempt.callKind === 'main'),
       true,
       'and the send it interrupts still records its own',
+    );
+  });
+
+  test('each request seals the fold its own prompt was built under, not the send’s last one', async () => {
+    // The boundary is the one fact in the snapshot that moves DURING a send.
+    // Read from session state at settlement it would be the newest fold for
+    // every request of the send, including the two dispatched before the fold
+    // existed — a request reporting a compaction its prompt never saw. So this
+    // asserts the difference between requests of ONE send, which is the only
+    // assertion a per-tracker value could not also satisfy (#2323).
+    const fixture = buildFixture({ meteredSummarizer: true });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(fixture.recorded.length, 1, 'one mid-turn fold in this send');
+    const checkpoint = fixture.recorded[0]!;
+    const mainCommits = fixture.commits
+      .filter((commit) => decodeModelCallAttempt(commit.attempt).callKind === 'main')
+      .sort((a, b) => a.attempt.step - b.attempt.step);
+    assert.equal(mainCommits.length, 3, 'three physical requests, three sealed rows');
+
+    const boundaryOf = (commit: (typeof mainCommits)[number]) =>
+      readLatestContextSnapshot({
+        type: LATEST_CONTEXT_PROJECTION_TYPE,
+        data: commit.latestContext?.snapshot,
+      })?.compaction;
+
+    assert.equal(boundaryOf(mainCommits[0]!), undefined, 'nothing was folded yet');
+    assert.equal(boundaryOf(mainCommits[1]!), undefined, 'still nothing at the second request');
+    assert.deepEqual(
+      boundaryOf(mainCommits[2]!),
+      {
+        kind: 'history',
+        phase: 'mid_turn',
+        eventCount: checkpoint.coverage.eventCount,
+        turnCount: checkpoint.coverage.turnCount,
+        estimatedTokens: checkpoint.estimatedTokens,
+      },
+      'the request built after the fold reports that fold, in the checkpoint’s own numbers',
     );
   });
 
@@ -715,47 +826,6 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(complete.contextBudgetExhaustedDetail, 'head_anchor_exceeds_capacity');
     // The fold itself was valid and durable; it just could not rescue.
     assert.equal(fixture.recorded.length, 1);
-  });
-
-  test('fails open under the window when the summarizer fails, with a diagnostic', async () => {
-    const fixture = buildFixture({ summarize: () => undefined });
-    await runFixtureTurn(fixture, consumer);
-
-    // The turn still completes; the third request keeps the raw span.
-    assert.equal(fixture.model.doStreamCalls.length, 3);
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
-    assert.equal(fixture.recorded.length, 0);
-    const thirdPrompt = promptJson(fixture, 2);
-    assert.equal(thirdPrompt.includes('RAW_SPAN_ONE_'), true);
-    assert.equal(thirdPrompt.includes('maka_history_compact_checkpoint'), false);
-
-    const failedOpen = compactionDecisions(fixture).find(
-      (decision) => decision.phase === 'mid_turn' && decision.decision === 'failedOpen',
-    );
-    assert.equal(failedOpen?.failOpenReason, 'summarizer_failed');
-    // The recorder was never reached, so the diagnostics claim no write.
-    const usageEvent = fixture.events.find((event) => event.type === 'token_usage') as
-      | { contextBudget?: ContextBudgetDiagnostic }
-      | undefined;
-    assert.equal(usageEvent?.contextBudget?.historyCompactWritesAttempted, undefined);
-    assert.equal(usageEvent?.contextBudget?.historyCompactWriteFailures, undefined);
-  });
-
-  test('preserves the typed summarizer failure in mid-turn diagnostics', async () => {
-    const fixture = buildFixture({
-      summarize: () => {
-        throw new HistoryCompactSummarizerError('provider_error');
-      },
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(fixture.recorded.length, 0);
-    const failedOpen = compactionDecisions(fixture).find(
-      (decision) => decision.phase === 'mid_turn' && decision.decision === 'failedOpen',
-    );
-    assert.equal(failedOpen?.failOpenReason, 'provider_error');
-    assert.equal(failedOpen?.skippedReasonCounts?.provider_error, 1);
   });
 
   test('fails open with write_failed diagnostics when the checkpoint write fails under the window', async () => {
@@ -1134,22 +1204,6 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(fixture.recorded.length, 0);
   });
 
-  test('persists a complete summary above the legacy block cap when the full replay shrinks and fits', async () => {
-    const fixture = buildFixture({
-      priorChars: 10_000,
-      summarize: () => 'S'.repeat(5_000),
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(fixture.recorded.length, 1);
-    assert.equal(fixture.model.doStreamCalls.length, 3);
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
-    const thirdPrompt = promptJson(fixture, 2);
-    assert.equal(thirdPrompt.includes('PRIOR_FACT'), false);
-    assert.equal(thirdPrompt.includes('maka_history_compact_checkpoint'), true);
-  });
-
   test('the cold-start estimate covers the FULL provider input including the system prompt (review round-5 finding 2)', async () => {
     // The system prompt travels in the separate `system` field, not in
     // messages. With usage missing, a cold-start estimate over messages+tools
@@ -1230,6 +1284,45 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
 
 describe('mid-turn capacity compaction in the streaming backend', () => {
   defineMidTurnSuite('immediate');
+
+  test('dispatches a mid-turn Compaction recipe after persistence without awaiting it', async () => {
+    const fixture = buildFixture({ captureMemoryExtraction: true, systemPromptChars: 32 });
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.memorySnapshots.length, 1);
+    const checkpoint = fixture.recorded[0]!;
+    const snapshot = fixture.memorySnapshots[0]!;
+    assert.equal(snapshot.trigger, 'compaction');
+    assert.equal(snapshot.compactionCheckpointId, checkpoint.checkpointId);
+    assert.equal(
+      snapshot.compactionBoundaryEventId,
+      checkpoint.memoryExtractionBoundary?.runtimeEventId,
+    );
+    assert.ok(
+      fixture.ledger.some((event) => event.id === snapshot.compactionBoundaryEventId),
+      'the frozen boundary must be durable before dispatch',
+    );
+    assert.deepEqual(snapshot.sourceMessages, []);
+    assert.equal(snapshot.rebuildSourceContextFromCompactionCheckpoint, true);
+    assert.equal(snapshot.sourceSystemPrompt, undefined);
+    assert.deepEqual(snapshot.sourceTools, {});
+    assert.deepEqual(snapshot.sourceActiveTools, []);
+    assert.equal(fixture.model.doStreamCalls.length, 3, 'the unresolved extraction must not block');
+  });
+
+  test('persists a denied marker without dispatching mid-turn Memory extraction', async () => {
+    const fixture = buildFixture({
+      captureMemoryExtraction: true,
+      memoryGate: { allowed: false, reason: 'disabled' },
+    });
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]?.memoryExtractionBoundary?.disposition, 'policy_denied');
+    assert.equal(fixture.memorySnapshots.length, 0);
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+  });
 });
 
 describe('mid-turn capacity compaction with a slow ledger consumer', () => {

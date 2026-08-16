@@ -12,14 +12,11 @@ import {
   getBundledSkillSource,
   gateSkillsByHostCapabilities,
   invalidSkillLockStatus,
-  isPathInside,
-  isSafeSkillId,
   isSkillPreferenceReviewPending,
   MANAGED_SKILL_BASELINE_RELATIVE_PATH,
   migrateSkillRuntimePreferences,
   missingSkillLockStatus,
   patchSkillRuntimePreference,
-  readContainedRegularFile,
   readManagedSkillSource,
   readManagedSkillSources,
   resolveManagedSkillSourcesRoot,
@@ -40,7 +37,12 @@ import {
   type SkillScanResult,
   type SkillManifest,
   type SkillPreferenceMigration,
-} from '@maka/runtime';
+} from '@maka/runtime/skills';
+import {
+  isPathInside,
+  isSafeSkillId,
+  readContainedRegularFile,
+} from '@maka/runtime/path-containment';
 import {
   SKILL_CATALOG_PAGE_MAX_BYTES,
   SKILL_CATALOG_PAGE_MAX_ITEMS,
@@ -56,23 +58,47 @@ import {
   type SkillCatalogBundledItem,
   type SkillCatalogGovernanceItem,
   type SkillCatalogInvocableItem,
-  type SkillCatalogInvocableQueryInput,
   type SkillCatalogInvocableQueryResult,
-  type SkillCatalogLocalContext,
   type SkillCatalogManagedSourceItem,
   type SkillCatalogMutateInput,
-  type SkillCatalogMutateResult,
+  type SkillCatalogMutationOutcome,
   type SkillCatalogMutation,
   type SkillCatalogMutationRejectedReason,
   type SkillCatalogPageItem,
   type SkillCatalogPreviewUpdateInput,
-  type SkillCatalogPreviewUpdateResult,
-  type SkillCatalogQueryInput,
-  type SkillCatalogQueryResult,
+  type SkillCatalogPreviewUpdateOutcome,
+  type SkillCatalogQueryProjection,
   type SkillCatalogRevision,
   type SkillCatalogValidationCode,
   type SkillCatalogView,
 } from '../protocol/index.js';
+
+export interface SkillCatalogLocalContext {
+  readonly projectRoot: string;
+}
+
+export type SkillCatalogRepositoryQueryInput =
+  | { readonly kind: 'start'; readonly view: SkillCatalogView }
+  | {
+      readonly kind: 'continue';
+      readonly view: SkillCatalogView;
+      readonly revision: SkillCatalogRevision;
+      readonly cursor: string;
+    };
+
+export type SkillCatalogRepositoryInvocableQueryInput =
+  | { readonly kind: 'start' }
+  | {
+      readonly kind: 'continue';
+      readonly revision: SkillCatalogRevision;
+      readonly cursor: string;
+    };
+
+export type SkillCatalogRepositoryMutateInput = Omit<SkillCatalogMutateInput, 'context'>;
+export type SkillCatalogRepositoryPreviewUpdateInput = Omit<
+  SkillCatalogPreviewUpdateInput,
+  'context'
+>;
 import {
   SkillCatalogTransactionError,
   SkillCatalogTransactionWriter,
@@ -217,8 +243,11 @@ export class SkillCatalogRepository {
     }
   }
 
-  async query(input: SkillCatalogQueryInput): Promise<SkillCatalogQueryResult> {
-    const snapshot = await this.#freshSnapshot(input.context);
+  async query(
+    input: SkillCatalogRepositoryQueryInput,
+    context: SkillCatalogLocalContext,
+  ): Promise<SkillCatalogQueryProjection> {
+    const snapshot = await this.#freshSnapshot(context);
     if (input.kind === 'continue' && input.revision !== snapshot.revision) {
       return {
         kind: 'revision_changed',
@@ -239,7 +268,7 @@ export class SkillCatalogRepository {
   }
 
   async queryInvocable(
-    input: SkillCatalogInvocableQueryInput,
+    input: SkillCatalogRepositoryInvocableQueryInput,
     context: SkillCatalogLocalContext,
     host: HostCapabilities,
   ): Promise<SkillCatalogInvocableQueryResult> {
@@ -271,8 +300,11 @@ export class SkillCatalogRepository {
     return createInvocablePage(revision, items, offset);
   }
 
-  async mutate(input: SkillCatalogMutateInput): Promise<SkillCatalogMutateResult> {
-    const current = await this.#freshSnapshot(input.context);
+  async mutate(
+    input: SkillCatalogRepositoryMutateInput,
+    context: SkillCatalogLocalContext,
+  ): Promise<SkillCatalogMutationOutcome> {
+    const current = await this.#freshSnapshot(context);
     if (current.revision !== input.expectedRevision) {
       return revisionConflict(input.expectedRevision, current.revision);
     }
@@ -297,7 +329,7 @@ export class SkillCatalogRepository {
 
     let committed: RepositorySnapshot;
     try {
-      committed = await this.#freshSnapshot(input.context);
+      committed = await this.#freshSnapshot(context);
     } catch (error) {
       throw commitOutcomeUnknown(
         'Skill catalog committed but its new projection is unavailable',
@@ -315,9 +347,10 @@ export class SkillCatalogRepository {
   }
 
   async previewUpdate(
-    input: SkillCatalogPreviewUpdateInput,
-  ): Promise<SkillCatalogPreviewUpdateResult> {
-    const snapshot = await this.#freshSnapshot(input.context);
+    input: SkillCatalogRepositoryPreviewUpdateInput,
+    context: SkillCatalogLocalContext,
+  ): Promise<SkillCatalogPreviewUpdateOutcome> {
+    const snapshot = await this.#freshSnapshot(context);
     if (snapshot.revision !== input.expectedRevision) {
       return revisionConflict(input.expectedRevision, snapshot.revision);
     }
@@ -358,7 +391,7 @@ export class SkillCatalogRepository {
 
     const currentSnippet = boundedSnippet(current.content);
     const sourceSnippet = boundedSnippet(source.content);
-    const result: SkillCatalogPreviewUpdateResult = {
+    const result: SkillCatalogPreviewUpdateOutcome = {
       kind: 'preview',
       revision: snapshot.revision,
       currentSnippet: currentSnippet.text,
@@ -1354,7 +1387,7 @@ function createPage(
   view: SkillCatalogView,
   items: readonly SkillCatalogPageItem[],
   offset: number,
-): SkillCatalogQueryResult {
+): SkillCatalogQueryProjection {
   const pageItems: SkillCatalogPageItem[] = [];
   let cursor = offset;
   while (cursor < items.length && pageItems.length < SKILL_CATALOG_PAGE_MAX_ITEMS) {
@@ -1866,8 +1899,8 @@ function boundedSnippet(content: string): { text: string; truncated: boolean } {
 }
 
 function shrinkPreview(
-  result: Extract<SkillCatalogPreviewUpdateResult, { kind: 'preview' }>,
-): SkillCatalogPreviewUpdateResult {
+  result: Extract<SkillCatalogPreviewUpdateOutcome, { kind: 'preview' }>,
+): SkillCatalogPreviewUpdateOutcome {
   let currentSnippet = result.currentSnippet;
   let sourceSnippet = result.sourceSnippet;
   while (
@@ -1931,7 +1964,7 @@ function canonicalJson(value: unknown): string {
 function revisionConflict(
   expectedRevision: SkillCatalogRevision,
   actualRevision: SkillCatalogRevision,
-): SkillCatalogMutateResult & SkillCatalogPreviewUpdateResult {
+): Extract<SkillCatalogMutationOutcome, { kind: 'revision_conflict' }> {
   return { kind: 'revision_conflict', expectedRevision, actualRevision };
 }
 

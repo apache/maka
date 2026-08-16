@@ -129,7 +129,7 @@ decoy mutation:        0 -> 0
 The test command is:
 
 ```bash
-npm run e2e:computer-use-process-restart
+npm run computer-use -- real-ax --scenario restart-recovery
 ```
 
 ## Current AX-Only Result

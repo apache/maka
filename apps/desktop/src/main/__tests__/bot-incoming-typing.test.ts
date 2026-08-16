@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
-import type { BotIncomingMessage, BotRegistry } from '@maka/runtime';
+import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
@@ -92,4 +92,67 @@ test('the bot typing loop owns only its active abort listener', async (t) => {
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(typingAttempts, 4, 'abort must not allow a later typing attempt');
   assert.deepEqual(replies, ['Bot reply']);
+});
+
+test('streams reply snapshots and persists the final reply through one channel stream', async () => {
+  const updates: string[] = [];
+  const finals: string[] = [];
+  let fallbackSends = 0;
+  const service = createBotIncomingMainService({
+    botRegistry: {
+      startReplyStream(
+        _platform: string,
+        _chatId: string,
+        options: { isGroup: boolean; streamId: string },
+      ) {
+        assert.equal(options.isGroup, false);
+        assert.match(options.streamId, /^[0-9a-f-]{36}$/);
+        return {
+          update(text: string) {
+            updates.push(text);
+          },
+          async finish(text: string) {
+            finals.push(text);
+            return 'bot-message';
+          },
+          async abort() {},
+        };
+      },
+      async sendMessage() {
+        fallbackSends += 1;
+        return 'fallback-message';
+      },
+      async sendTypingIndicator() {
+        return true;
+      },
+    } as unknown as BotRegistry,
+    sessions: {
+      async createSession() {
+        return 'bot-session';
+      },
+      async prepareSession() {
+        return 'ready';
+      },
+      async runTurn(input) {
+        input.onReplySnapshot?.('Hello');
+        input.onReplySnapshot?.('Hello world');
+        return { kind: 'completed', text: 'Hello world' };
+      },
+    },
+  });
+
+  await service.handleBotIncomingMessage({
+    platform: 'telegram',
+    userId: 'user',
+    userName: 'User',
+    chatId: 'chat',
+    isGroup: false,
+    text: 'hello',
+    sourceMessageId: 'source',
+    receivedAt: Date.now(),
+  } as BotIncomingMessage);
+
+  assert.deepEqual(updates, ['Hello', 'Hello world']);
+  assert.deepEqual(finals, ['Hello world']);
+  assert.equal(fallbackSends, 0);
 });

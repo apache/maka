@@ -317,28 +317,6 @@ describe('active full compact PR1 foundation', () => {
     assert.equal(selection.reason, 'tool_pair_split');
   });
 
-  test('helper calls leave provider request shape unchanged', () => {
-    const messages = fixtureMessages();
-    const before = JSON.stringify(messages);
-    const index = buildActiveFullCompactSourceIndex({
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      messages,
-      runtimeEvents: fixtureRuntimeEvents(),
-    });
-    const block = buildActiveFullCompactBlockFromSummary({
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      entries: index.entries,
-      summary: fixtureSummary(index.entries.map((entry) => entry.sourceId)),
-      now: 100,
-    });
-    validateActiveFullCompactBlockForSourceIndex(block, index);
-    activeFullCompactBlockToCompactionBoundary(block);
-
-    assert.equal(JSON.stringify(messages), before);
-  });
-
   test('active archive refs and diagnostics coexist with active prune fields', () => {
     const placeholder = activePlaceholder();
     const messages: ModelMessage[] = [
@@ -455,6 +433,47 @@ describe('active full compact PR1 foundation', () => {
     assert.equal(summary.schemaVersion, 1);
     assert.ok(summary.text.length <= 60);
     assert.equal(summary.text.includes('RAW_SELECTED_PAYLOAD'), false);
+  });
+
+  test('deterministic summary preserves paths that only resemble deleted Eval layouts', () => {
+    const messages = textMessages([
+      'Created /workspace/result.json with the final user-requested report.',
+      'Created /workspace/runs/sessions/report.json for the user.',
+      'Created /workspace/events.jsonl for the user-requested export.',
+      'Created /workspace/runtime-events.jsonl for the user-requested export.',
+      'recent anchor',
+    ]);
+    const index = buildActiveFullCompactSourceIndex({
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      messages,
+      stepNumber: 2,
+      charsPerToken: 1,
+    });
+    const selection = selectActiveFullCompactCoveredSpan(index, {
+      enabled: true,
+      minStepNumber: 1,
+      minRecentMessages: 1,
+      maxActiveEstimatedTokens: 1,
+      highWaterRatio: 0.1,
+      maxSummaryEstimatedTokens: 512,
+    });
+    assert.equal(selection.decision, 'selected');
+    if (selection.decision !== 'selected') assert.fail('expected selected');
+
+    const summary = buildDeterministicActiveFullCompactSummary({
+      selection,
+      messages,
+      maxSummaryEstimatedTokens: 512,
+      charsPerToken: 1,
+    });
+
+    assert.deepEqual(summary.artifactPaths, [
+      '/workspace/events.jsonl',
+      '/workspace/result.json',
+      '/workspace/runs/sessions/report.json',
+      '/workspace/runtime-events.jsonl',
+    ]);
   });
 
   test('rewrite helper replaces a safe completed span with one compact block', () => {
@@ -695,41 +714,6 @@ describe('active full compact PR1 foundation', () => {
         (command) => command.command.includes('qemu-system-x86_64') && command.sourceIds?.length,
       ),
     );
-  });
-
-  test('QEMU summary drops task-run metadata while keeping operational facts', () => {
-    const rewritten = rewriteActiveFullCompactInMessages({
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      runId: 'run-1',
-      invocationId: 'inv-1',
-      messages: qemuStyleMessages(),
-      runtimeEvents: qemuStyleRuntimeEventsWithTaskRunMetadata(),
-      policy: {
-        enabled: true,
-        minStepNumber: 1,
-        minRecentMessages: 1,
-        maxActiveEstimatedTokens: 1,
-        highWaterRatio: 0.1,
-        maxSummaryEstimatedTokens: 1200,
-      },
-      stepNumber: 4,
-      now: 100,
-      charsPerToken: 4,
-    });
-
-    assert.equal(rewritten.decision, 'replaced');
-    assert.ok(rewritten.block);
-    const replacementJson = JSON.stringify(rewritten.messages);
-    assert.match(replacementJson, /qemu-system-x86_64/);
-    assert.match(replacementJson, /guest reached login prompt/);
-    assert.match(replacementJson, /\/app\/alpine\.iso/);
-    assert.match(replacementJson, /\/boot\/vmlinuz-lts/);
-    assert.doesNotMatch(replacementJson, /task_run_created/);
-    assert.doesNotMatch(replacementJson, /taskRunId/);
-    assert.doesNotMatch(replacementJson, /sessionId/);
-    assert.doesNotMatch(replacementJson, /runtime-events\.jsonl/);
-    assert.doesNotMatch(replacementJson, /maka-task-run/);
   });
 
   test('QEMU/source-ref cliff validates visible replacement while retaining audit metadata', () => {
@@ -1124,26 +1108,6 @@ function qemuStyleRuntimeEvents(): RuntimeEvent[] {
       ].join('\n'),
     }),
   ];
-}
-
-function qemuStyleRuntimeEventsWithTaskRunMetadata(): RuntimeEvent[] {
-  return qemuStyleRuntimeEvents().map((event) => {
-    if (event.id !== 'event-qemu-boot-result' || event.content?.kind !== 'function_response')
-      return event;
-    return {
-      ...event,
-      content: {
-        ...event.content,
-        result: [
-          '{"event":"task_run_created","taskRunId":"task-run-1","sessionId":"session-1","runId":"run-1","status":"queued"}',
-          '{"event":"task_run_queued","taskRunId":"task-run-1","invocationId":"inv-1","status":"queued"}',
-          '/Users/likun/work/agent/maka-task-run/runs/sessions/session-1/runs/run-1/runtime-events.jsonl',
-          'qemu-system-x86_64 direct kernel boot used /app/alpine.iso and /boot/vmlinuz-lts',
-          String(event.content.result),
-        ].join('\n'),
-      },
-    };
-  });
 }
 
 function fixtureSummary(sourceIds: string[]): ActiveFullCompactSummary {

@@ -23,7 +23,26 @@ export type ContextCompactResult = TurnSnapshot;
 export interface ContextDiagnosticsSegment {
   readonly kind: 'system_instructions' | 'tool_definitions' | 'messages' | 'other';
   readonly bytes: number;
-  readonly estimatedTokens: number;
+}
+
+/** One tool's schema, sized on its own, so a reader knows which to remove. */
+export interface ContextDiagnosticsTool {
+  readonly name: string;
+  readonly bytes: number;
+}
+
+/**
+ * What the latest request was made of, in bytes of serialized request (#2323).
+ *
+ * Bytes cross the wire; `bytes / 4` does not. The estimate is a display rule,
+ * made and labelled `≈` where it is shown — a figure rounded into this frame
+ * could no longer be labelled at all.
+ */
+export interface ContextDiagnosticsComposition {
+  readonly segments: readonly ContextDiagnosticsSegment[];
+  readonly tools?: readonly ContextDiagnosticsTool[];
+  readonly remainingTools?: { readonly count: number; readonly bytes: number };
+  readonly unlabelledToolBytes?: number;
 }
 
 export type ContextDiagnosticsResult =
@@ -37,8 +56,15 @@ export type ContextDiagnosticsResult =
       readonly modelId: string;
       readonly completedAt: number;
       readonly inputTokens?: number;
+      /** Provider-reported cache read for the same request, when it counted one. */
+      readonly cacheReadInputTokens?: number;
       readonly contextWindow?: number;
-      readonly segments: readonly ContextDiagnosticsSegment[];
+      /**
+       * Absent when the durable metering record has no matching capture — a
+       * request that cannot explain itself says nothing rather than wearing an
+       * older request's breakdown.
+       */
+      readonly composition?: ContextDiagnosticsComposition;
       readonly compaction?: {
         readonly kind: 'history';
         readonly phase: 'pre_turn' | 'mid_turn';
@@ -102,8 +128,9 @@ function decodeContextDiagnosticsResult(value: unknown): ContextDiagnosticsResul
       'modelId',
       'completedAt',
       'inputTokens',
+      'cacheReadInputTokens',
       'contextWindow',
-      'segments',
+      'composition',
       'compaction',
     ],
   );
@@ -126,12 +153,9 @@ function decodeContextDiagnosticsResult(value: unknown): ContextDiagnosticsResul
   const available = requireShapedRecord(
     record,
     'Available context diagnostics',
-    ['status', 'providerId', 'modelId', 'completedAt', 'segments'],
-    ['inputTokens', 'contextWindow', 'compaction'],
+    ['status', 'providerId', 'modelId', 'completedAt'],
+    ['inputTokens', 'cacheReadInputTokens', 'contextWindow', 'composition', 'compaction'],
   );
-  if (!Array.isArray(available.segments) || available.segments.length > 4) {
-    throw invalidProtocolFrame('Invalid context diagnostics segments');
-  }
   return {
     status: 'available',
     providerId: requireString(available.providerId, 'providerId', 512),
@@ -140,22 +164,86 @@ function decodeContextDiagnosticsResult(value: unknown): ContextDiagnosticsResul
     ...(available.inputTokens === undefined
       ? {}
       : { inputTokens: requireCount(available.inputTokens, 'inputTokens') }),
+    ...(available.cacheReadInputTokens === undefined
+      ? {}
+      : {
+          cacheReadInputTokens: requireCount(
+            available.cacheReadInputTokens,
+            'cacheReadInputTokens',
+          ),
+        }),
     ...(available.contextWindow === undefined
       ? {}
       : { contextWindow: requirePositiveCount(available.contextWindow, 'contextWindow') }),
-    segments: available.segments.map(decodeContextDiagnosticsSegment),
+    ...(available.composition === undefined
+      ? {}
+      : { composition: decodeContextDiagnosticsComposition(available.composition) }),
     ...(available.compaction === undefined
       ? {}
       : { compaction: decodeContextDiagnosticsCompaction(available.compaction) }),
   };
 }
 
-function decodeContextDiagnosticsSegment(value: unknown): ContextDiagnosticsSegment {
-  const segment = requireExactRecord(value, 'Context diagnostics segment', [
-    'kind',
+/**
+ * The tool list is bounded on the wire for the same reason the evidence reads
+ * are: a Host answer is built in memory, and a registry that grew without limit
+ * would be a frame nobody sized.
+ */
+const MAX_COMPOSITION_TOOLS = 256;
+
+function decodeContextDiagnosticsComposition(value: unknown): ContextDiagnosticsComposition {
+  const composition = requireShapedRecord(
+    value,
+    'Context diagnostics composition',
+    ['segments'],
+    ['tools', 'remainingTools', 'unlabelledToolBytes'],
+  );
+  if (!Array.isArray(composition.segments) || composition.segments.length > 4) {
+    throw invalidProtocolFrame('Invalid context diagnostics segments');
+  }
+  if (
+    composition.tools !== undefined &&
+    (!Array.isArray(composition.tools) || composition.tools.length > MAX_COMPOSITION_TOOLS)
+  ) {
+    throw invalidProtocolFrame('Invalid context diagnostics tools');
+  }
+  return {
+    segments: composition.segments.map(decodeContextDiagnosticsSegment),
+    ...(composition.tools === undefined
+      ? {}
+      : { tools: composition.tools.map(decodeContextDiagnosticsTool) }),
+    ...(composition.remainingTools === undefined
+      ? {}
+      : { remainingTools: decodeContextDiagnosticsRemainder(composition.remainingTools) }),
+    ...(composition.unlabelledToolBytes === undefined
+      ? {}
+      : {
+          unlabelledToolBytes: requireCount(composition.unlabelledToolBytes, 'unlabelledToolBytes'),
+        }),
+  };
+}
+
+function decodeContextDiagnosticsRemainder(value: unknown): { count: number; bytes: number } {
+  const remainder = requireExactRecord(value, 'Context diagnostics tool remainder', [
+    'count',
     'bytes',
-    'estimatedTokens',
   ]);
+  return {
+    count: requireCount(remainder.count, 'count'),
+    bytes: requireCount(remainder.bytes, 'bytes'),
+  };
+}
+
+function decodeContextDiagnosticsTool(value: unknown): ContextDiagnosticsTool {
+  const tool = requireExactRecord(value, 'Context diagnostics tool', ['name', 'bytes']);
+  return {
+    name: requireString(tool.name, 'name', 512),
+    bytes: requireCount(tool.bytes, 'bytes'),
+  };
+}
+
+function decodeContextDiagnosticsSegment(value: unknown): ContextDiagnosticsSegment {
+  const segment = requireExactRecord(value, 'Context diagnostics segment', ['kind', 'bytes']);
   if (
     segment.kind !== 'system_instructions' &&
     segment.kind !== 'tool_definitions' &&
@@ -164,11 +252,7 @@ function decodeContextDiagnosticsSegment(value: unknown): ContextDiagnosticsSegm
   ) {
     throw invalidProtocolFrame('Invalid context diagnostics segment kind');
   }
-  return {
-    kind: segment.kind,
-    bytes: requireCount(segment.bytes, 'bytes'),
-    estimatedTokens: requireCount(segment.estimatedTokens, 'estimatedTokens'),
-  };
+  return { kind: segment.kind, bytes: requireCount(segment.bytes, 'bytes') };
 }
 
 function decodeContextDiagnosticsCompaction(

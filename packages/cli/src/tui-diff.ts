@@ -1,4 +1,4 @@
-import { parseUnifiedDiffRows, type UnifiedDiffRow } from '@maka/core';
+import { parseUnifiedDiffRows, type UnifiedDiffRow } from '@maka/core/unified-diff';
 import { ansi } from './tui-ansi.js';
 
 /**

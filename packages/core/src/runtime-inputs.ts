@@ -7,6 +7,7 @@ import type {
   BackendKind,
   SessionBlockedReason,
   SessionStatus,
+  SessionToolProfile,
   SubagentSessionParent,
   SubagentSessionRuntime,
   SubagentSessionSpawn,
@@ -18,6 +19,9 @@ import type { OrchestrationMode, TurnOrchestration } from './orchestration.js';
 import type { SessionStartMode } from './explore-agent.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 import type { ToolMode } from './tool-mode.js';
+import type { TurnOrigin } from './turn-origin.js';
+
+export type { TurnOrigin } from './turn-origin.js';
 
 export type { TurnOrchestration } from './orchestration.js';
 
@@ -37,6 +41,8 @@ export interface CreateSessionInput {
   model?: string;
   /** Per-model reasoning-depth variant; `undefined` = model default. */
   thinkingLevel?: ThinkingLevel;
+  /** Immutable versioned prompt/tool contract for this Session. */
+  toolProfile?: SessionToolProfile;
   permissionMode: PermissionMode;
   /** Defaults to `agent`. */
   collaborationMode?: CollaborationMode;
@@ -96,23 +102,9 @@ export interface UserMessageInput extends MessageContent {
   regeneratedFromTurnId?: string;
   branchOfTurnId?: string;
   parentSessionId?: string;
-  /** What triggered this turn, when it is not a direct user message. Lets trace
-   *  distinguish an automation-triggered run from a hand-typed one. */
+  /** What triggered this turn, when it is not a direct user message. */
   origin?: TurnOrigin;
 }
-
-/** Non-user trigger source for a turn. */
-export type TurnOrigin =
-  | { kind: 'automation'; automationId: string }
-  | { kind: 'goal'; goalId: string }
-  | {
-      kind: 'agent_graph';
-      graphId: string;
-      /** Durable, graph-snapshot-scoped idempotency key for this supervisor wake. */
-      wakeId: string;
-      /** Durable identity of one delivery attempt for the wake. */
-      attemptId: string;
-    };
 
 export interface AgentSpec {
   id: string;

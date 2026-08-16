@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { BackendKind, SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
+import type { BackendKind, SessionHeader, StoredMessage } from '@maka/core/session';
+import type { SessionEvent } from '@maka/core/events';
 import { FIRST_VERIFIED_RESULT_E2E_PROMPT } from '@maka/core/e2e-fixture';
 import type {
   AgentBackend,
@@ -26,6 +27,10 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export const FAKE_ASK_USER_QUESTION_PROMPT = '__e2e_ask_user_question__';
 export const FAKE_ASK_SANDBOX_BOUNDARY_PROMPT = '__e2e_ask_sandbox_boundary__';
 export const FAKE_WAIT_FOR_STEERING_PROMPT = '__e2e_wait_for_steering__';
+export const FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT =
+  '__e2e_wait_for_steering_large_response__';
+export const FAKE_HOLD_OPEN_PROMPT = '__e2e_hold_open__';
+export const FAKE_HOLD_OPEN_REWRITE_PROMPT = '__e2e_hold_open_rewrite__';
 export const FAKE_MERMAID_PROMPT = '__e2e_mermaid__';
 export const FAKE_MERMAID_HOSTILE_PROMPT = '__e2e_mermaid_hostile__';
 export const FAKE_ERROR_PROMPT_PREFIX = '__e2e_error__:';
@@ -85,8 +90,12 @@ export class FakeBackend implements AgentBackend {
     const messageId = randomUUID();
     const attNames = (input.attachments ?? []).map((a) => a.name);
     const attLine = attNames.length > 0 ? `\nAttachments received: ${attNames.join(', ')}` : '';
-    let text =
-      input.text === FAKE_MERMAID_PROMPT
+    const isLargeSteeringResponse = input.text === FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT;
+    const isSteeringScenario =
+      input.text === FAKE_WAIT_FOR_STEERING_PROMPT || isLargeSteeringResponse;
+    let text = isLargeSteeringResponse
+      ? `${'Detailed response. '.repeat(1_400)}Large response complete.`
+      : input.text === FAKE_MERMAID_PROMPT
         ? [
             'Fake backend Mermaid fixture:',
             '',
@@ -132,7 +141,9 @@ export class FakeBackend implements AgentBackend {
           : `Fake backend received: ${input.text}${attLine}\n\nThis proves the session stream, SQLite storage, and renderer loop are connected.`;
     // Every delta must concatenate to text_complete; `.` would silently drop
     // line terminators and make structured Markdown reflow only at completion.
-    const chunks = text.match(/[\s\S]{1,9}/g) ?? [text];
+    const chunks = text.match(isLargeSteeringResponse ? /[\s\S]{1,1024}/g : /[\s\S]{1,9}/g) ?? [
+      text,
+    ];
 
     // Mid-turn steering: drain the caller's pending steering at each step
     // boundary (here, between streamed chunks), echoing every message as a
@@ -178,7 +189,55 @@ export class FakeBackend implements AgentBackend {
     };
 
     try {
-      if (input.text === FAKE_WAIT_FOR_STEERING_PROMPT) {
+      if (input.text === FAKE_HOLD_OPEN_PROMPT || input.text === FAKE_HOLD_OPEN_REWRITE_PROMPT) {
+        const rewriteTarget = input.text === FAKE_HOLD_OPEN_REWRITE_PROMPT;
+        const waitingPrefix = rewriteTarget
+          ? 'prefix sk-123456789012345'
+          : 'Fake backend waiting for the test to stop the Turn.';
+        let waitingText = waitingPrefix;
+        yield {
+          type: 'text_delta',
+          id: randomUUID(),
+          turnId,
+          ts: Date.now(),
+          messageId,
+          text: waitingText,
+        };
+        while (!this.stopped) {
+          const pending = drainSteering();
+          for (const { leaseId, event } of pending) {
+            yield event;
+            settleOutstanding(leaseId);
+          }
+          if (pending.length > 0) {
+            const nextText = rewriteTarget
+              ? `${waitingPrefix}6 NEW streamed after the remount`
+              : `${waitingPrefix}\n\nAcknowledged steering: ${steered.join(' | ')}`;
+            const delta = nextText.slice(waitingText.length);
+            waitingText = nextText;
+            yield {
+              type: 'text_delta',
+              id: randomUUID(),
+              turnId,
+              ts: Date.now(),
+              messageId,
+              text: delta,
+            };
+          }
+          await sleep(5);
+        }
+        yield { type: 'abort', id: randomUUID(), turnId, ts: Date.now(), reason: 'user_stop' };
+        yield {
+          type: 'complete',
+          id: randomUUID(),
+          turnId,
+          ts: Date.now(),
+          stopReason: 'user_stop',
+        };
+        return;
+      }
+
+      if (isSteeringScenario) {
         let pending = drainSteering();
         while (pending.length === 0 && !this.stopped) {
           await sleep(5);
@@ -202,7 +261,7 @@ export class FakeBackend implements AgentBackend {
           };
           return;
         }
-        if (input.text !== FAKE_WAIT_FOR_STEERING_PROMPT) await sleep(45);
+        if (!isSteeringScenario) await sleep(45);
         for (const { leaseId, event } of drainSteering()) {
           yield event;
           settleOutstanding(leaseId);
@@ -252,18 +311,6 @@ export class FakeBackend implements AgentBackend {
       yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'end_turn' };
     } finally {
       if (outstanding.length > 0) input.nackSteering?.(outstanding.splice(0));
-    }
-  }
-
-  async stop(): Promise<void> {
-    this.stopped = true;
-    if (this.pendingQuestion && !this.pendingQuestion.hosted) {
-      this.pendingQuestion.resolve(null);
-      this.pendingQuestion = undefined;
-    }
-    if (this.pendingSandboxBoundary && !this.pendingSandboxBoundary.hosted) {
-      this.pendingSandboxBoundary.resolve(null);
-      this.pendingSandboxBoundary = undefined;
     }
   }
 
@@ -395,6 +442,18 @@ export class FakeBackend implements AgentBackend {
     });
     yield { type: 'text_complete', id: randomUUID(), turnId, ts, messageId, text };
     yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'end_turn' };
+  }
+
+  async stop(): Promise<void> {
+    this.stopped = true;
+    if (this.pendingQuestion && !this.pendingQuestion.hosted) {
+      this.pendingQuestion.resolve(null);
+      this.pendingQuestion = undefined;
+    }
+    if (this.pendingSandboxBoundary && !this.pendingSandboxBoundary.hosted) {
+      this.pendingSandboxBoundary.resolve(null);
+      this.pendingSandboxBoundary = undefined;
+    }
   }
 
   async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}

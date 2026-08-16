@@ -19,29 +19,29 @@
  *      normalizeSettings on read)
  *   5. `deriveOnboardingState()` from @maka/core
  *
- * The service NEVER throws credential errors to the renderer; a
- * failed credential lookup is treated as "no credential" with a
- * generalized dev-safe log line.
+ * Credential adapters project ordinary read failures to `false` and
+ * propagate connection failures before they reach this service.
  *
  * Milestone input validation lives here too: setMilestone arguments
  * are checked against the closed enum + status union before reaching
  * the SettingsStore.
  */
 
+import { collapseSessionRevisions } from '@maka/core/session-revisions';
+
 import {
-  collapseSessionRevisions,
   deriveOnboardingState,
   hasSettledInitialOnboarding,
   ONBOARDING_MILESTONE_IDS,
-  projectSessionSendOutcome,
-  type ChatModelChoice,
   type OnboardingMilestone,
   type OnboardingMilestoneId,
   type OnboardingState,
-  type SessionSummary,
-  type SessionSendProjection,
-} from '@maka/core';
-import { buildChatModelChoices } from '@maka/core/chat-model-choice';
+} from '@maka/core/onboarding';
+
+import { projectSessionSendOutcome, type SessionSendProjection } from '@maka/core/session-send-projection';
+
+import { type SessionSummary } from '@maka/core/session';
+import { buildChatModelChoices, type ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { LlmConnection } from '@maka/core/llm-connections';
 
 export interface OnboardingSnapshot {
@@ -52,7 +52,7 @@ export interface OnboardingSnapshot {
    * without a separate `sessions:list` IPC.
    */
   sessions: SessionSummary[];
-  /** Connection list — bundled to avoid a separate `connections:list` + `getDefault` IPC. */
+  /** Default Host connection projection used to seed the shell. */
   connections: LlmConnection[];
   defaultSlug: string | null;
   chatModelChoices: ChatModelChoice[];
@@ -109,21 +109,8 @@ export function createOnboardingService(deps: OnboardingServiceDeps): Onboarding
       // latency on cold open.
       const secretEntries = await Promise.all(
         connections.map(async (connection) => {
-          try {
-            const hasSecret = await deps.hasCredential(connection);
-            return [connection.slug, hasSecret] as const;
-          } catch (error) {
-            // @kenji + @xuan PR110b gate: credential errors must NOT
-            // leak to the renderer. Log a generalized dev-safe line
-            // and treat the connection as having no secret. The user
-            // ends up on `needs_connection_credentials` for that
-            // slug, which is the right user-facing fix path anyway.
-            console.warn(
-              `[onboarding] failed to read credential for ${connection.slug}; treating as missing.`,
-              describeErrorClass(error),
-            );
-            return [connection.slug, false] as const;
-          }
+          const hasSecret = await deps.hasCredential(connection);
+          return [connection.slug, hasSecret] as const;
         }),
       );
       const secrets: Record<string, boolean> = Object.fromEntries(secretEntries);
@@ -250,59 +237,4 @@ function buildSnapshot(
 
 function isOnboardingMilestoneId(value: string): value is OnboardingMilestoneId {
   return (ONBOARDING_MILESTONE_IDS as readonly string[]).includes(value);
-}
-
-/**
- * Return a generalized error class string ('error_name' or 'unknown')
- * suitable for dev logs. We never log the underlying error message
- * because it might contain credential bytes / paths / etc.
- */
-function describeErrorClass(error: unknown): string {
-  if (error instanceof Error && error.name) return error.name;
-  return 'unknown';
-}
-
-/**
- * Bind helpers that wire the live `SettingsStore` + `ConnectionStore`
- * + credential store to `OnboardingServiceDeps`. Exposed separately so
- * tests can mix-and-match: real settings store + fake credential store,
- * etc.
- */
-export function bindOnboardingDeps(input: {
-  settingsStore: {
-    get(): Promise<{ onboarding: { milestones: OnboardingMilestone[] } }>;
-    upsertOnboardingMilestone(
-      id: OnboardingMilestoneId,
-      status: 'completed' | 'skipped',
-    ): Promise<OnboardingMilestone[]>;
-    clearOnboardingMilestone(id: OnboardingMilestoneId): Promise<OnboardingMilestone[]>;
-  };
-  connectionStore: {
-    list(): Promise<LlmConnection[]>;
-    getDefault(): Promise<string | null>;
-  };
-  /**
-   * Read-only credential-presence check, covering both API-key
-   * connections (credential store) and OAuth-subscription connections
-   * (claude-subscription / openai-codex stored tokens). Callers
-   * must pass a resolver that NEVER refreshes an OAuth token or
-   * otherwise mutates credential state — see `hasConnectionSecret` in
-   * main.ts, which deliberately does not reuse the send-path's
-   * refreshing `resolveConnectionSecret`. A resolver that only checks
-   * the API-key credential store makes every OAuth-subscription
-   * connection look like it's missing credentials, even when it's the
-   * verified default.
-   */
-  hasCredential(connection: LlmConnection): Promise<boolean>;
-  listSessions(): Promise<SessionSummary[]>;
-}): OnboardingServiceDeps {
-  return {
-    listConnections: () => input.connectionStore.list(),
-    getDefaultSlug: () => input.connectionStore.getDefault(),
-    listSessions: () => input.listSessions(),
-    getMilestones: async () => (await input.settingsStore.get()).onboarding.milestones,
-    upsertMilestone: (id, status) => input.settingsStore.upsertOnboardingMilestone(id, status),
-    clearMilestone: (id) => input.settingsStore.clearOnboardingMilestone(id),
-    hasCredential: (connection) => input.hasCredential(connection),
-  };
 }

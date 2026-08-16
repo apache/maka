@@ -1,4 +1,5 @@
-import type { PlanReminder, SessionSummary } from '@maka/core';
+import type { ScheduledTask } from '@maka/core/scheduled-task';
+import type { SessionSummary } from '@maka/core/session';
 import {
   SegmentedControl,
   SegmentedControlItem,
@@ -12,7 +13,6 @@ import {
   type SessionRowActions,
 } from './session-history-list.js';
 import { SessionSidebarFooter, SessionSidebarNav, type SidebarUpdateReminder } from './session-sidebar-nav.js';
-import { ICON_SIZE, Clock, FolderOpen } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import type { Ref } from 'react';
@@ -36,11 +36,12 @@ export function SessionListPanel(props: {
   selection: NavSelection;
   sessions: SessionSummary[];
   activeId?: string;
-  planReminders?: PlanReminder[];
+  scheduledTasks?: ScheduledTask[];
   streamingSessionIds?: Set<string>;
   staleSessionIds?: Set<string>;
   groups?: ReadonlyArray<SessionHistoryGroup>;
   worktreeSessionIds?: ReadonlySet<string>;
+  sessionMeta?(session: SessionSummary): string | undefined;
   projectActions?: ProjectRowActions;
   viewMode?: SessionViewMode;
   onViewModeChange?: (mode: SessionViewMode) => void;
@@ -51,7 +52,6 @@ export function SessionListPanel(props: {
   updateReminder?: SidebarUpdateReminder;
   onOpenUpdate?(): void;
   onNew(): void;
-  onImport?(): void;
   rowActions?: SessionRowActions;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
@@ -69,30 +69,35 @@ export function SessionListPanel(props: {
 
   // A view switch, not a command: two exclusive ways to read the same list.
   // Astryx spends a SegmentedControl on exactly this — see its own file-explorer
-  // and ide templates, where the view mode sits inline as icon-only segments.
-  // Both axes stay on screen and the current one is visible without opening
-  // anything, where the dropdown cost a click to answer "which grouping am I
-  // in?" and then answered it with a radio dot.
-  const groupingSwitch = onViewModeChange ? (
-    <SegmentedControl
-      value={viewMode}
-      onChange={(mode) => onViewModeChange(mode as SessionViewMode)}
-      label={copy.groupingAriaLabel}
-      size="sm"
-    >
-      <SegmentedControlItem
-        value="conversation"
-        label={copy.groupByTime}
-        icon={<Clock size={ICON_SIZE.control} aria-hidden="true" />}
-        isLabelHidden
-      />
-      <SegmentedControlItem
-        value="project"
-        label={copy.groupByProject}
-        icon={<FolderOpen size={ICON_SIZE.control} aria-hidden="true" />}
-        isLabelHidden
-      />
-    </SegmentedControl>
+  // and ide templates. Both axes stay on screen and the current one is visible
+  // without opening anything, where the dropdown cost a click to answer "which
+  // grouping am I in?" and then answered it with a radio dot.
+  //
+  // Text labels, not icons: a clock and a folder are two icons the rail has to
+  // teach, and it never had anywhere to teach them — 按时间 / 按项目 is the
+  // whole vocabulary and it fits. The control spans the rail's full width so
+  // the two segments are one object with a visible current half, rather than a
+  // pair of small buttons floating beside a title.
+  //
+  // It lives here, in the sticky top region, and NOT as a list heading's
+  // endContent: the heading is gone (the rail landmark already names the panel,
+  // so "会话" was a label for a list that is the only thing under it), and a
+  // switch that scrolls away with the list it switches is a switch you have to
+  // scroll back up to find. Collapsed at 48px there is no room for either
+  // segment's label, and the list it governs is not rendered at all.
+  const groupingSwitch = onViewModeChange && !collapsed ? (
+    <div className="maka-session-grouping-switch">
+      <SegmentedControl
+        value={viewMode}
+        onChange={(mode) => onViewModeChange(mode as SessionViewMode)}
+        label={copy.groupingAriaLabel}
+        size="sm"
+        layout="fill"
+      >
+        <SegmentedControlItem value="conversation" label={copy.groupByTime} />
+        <SegmentedControlItem value="project" label={copy.groupByProject} />
+      </SegmentedControl>
+    </div>
   ) : undefined;
 
   return (
@@ -133,14 +138,16 @@ export function SessionListPanel(props: {
         // the rows' rhythm; its title is hidden because the rail landmark
         // already names the panel on screen, and stays for assistive tech.
         topContent={
-          <SessionSidebarNav
-            selection={props.selection}
-            planReminders={props.planReminders}
-            moduleMemory={props.moduleMemory}
-            onSelect={props.onSelect}
-            onNew={props.onNew}
-            onImport={props.onImport}
-          />
+          <>
+            <SessionSidebarNav
+              selection={props.selection}
+              scheduledTasks={props.scheduledTasks}
+              moduleMemory={props.moduleMemory}
+              onSelect={props.onSelect}
+              onNew={props.onNew}
+            />
+            {groupingSwitch}
+          </>
         }
         footer={
           <SessionSidebarFooter
@@ -159,16 +166,10 @@ export function SessionListPanel(props: {
             groupVariant={viewMode}
             groups={groups}
             worktreeSessionIds={props.worktreeSessionIds}
+            sessionMeta={props.sessionMeta}
             projectActions={props.projectActions}
             onSelectSession={props.onSelectSession}
             rowActions={props.rowActions}
-            /* The group-header trigger is the SAME creation path as the rail's
-               新任务 row: one handler, two proximity entries (decision D1-a:
-               a session created from the Pinned header is an ordinary new
-               session, nothing auto-pinned). */
-            onNewTask={props.onNew}
-            heading={onViewModeChange ? copy.title : undefined}
-            headingEnd={groupingSwitch}
           />
         ) : null}
       </SideNav>

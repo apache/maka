@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { DailyReviewArchive } from '@maka/core';
+import type { DailyReviewArchive } from '@maka/core/daily-review';
 import {
   authenticateInteractiveDailyReviewAuthorityWriter,
   openInteractiveDailyReviewAuthorityForWrite,

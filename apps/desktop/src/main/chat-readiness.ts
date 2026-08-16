@@ -1,21 +1,27 @@
 import {
   isConnectionReady,
-  NO_REAL_CONNECTION_CODE,
   normalizeOpenAiCodexConnection,
-  normalizeRequestedModelForReadiness,
+  type ChatConfigurationReason,
+} from '@maka/core/connection-readiness';
+import { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
+import {
   projectSessionSendOutcome,
   sessionOwnConnectionBlockReason,
   shouldRebindSessionToDefault,
-  type ChatConfigurationReason,
-  type LlmConnection,
-  type SessionHeader,
-} from '@maka/core';
+} from '@maka/core/session-send-projection';
+import { type LlmConnection } from '@maka/core/llm-connections';
+import { type SessionHeader } from '@maka/core/session';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 
 // The rebind-eligibility taxonomy moved to `@maka/core/session-send-projection`
 // (#1038) so the send gate and the renderer health notice share one
 // decision source. Re-exported here for back-compat.
-export { NO_REAL_CONNECTION_CODE, shouldRebindSessionToDefault } from '@maka/core';
+export { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
+
+// The rebind-eligibility taxonomy moved to `@maka/core/session-send-projection`
+// (#1038) so the send gate and the renderer health notice share one
+// decision source. Re-exported here for back-compat.
+export { shouldRebindSessionToDefault } from '@maka/core/session-send-projection';
 
 // `ChatConfigurationReason` moved to `@maka/core/connection-readiness`
 // (PR110a) so the same taxonomy is shared between the send path and
@@ -78,16 +84,15 @@ export async function requireReadyConnection(
   // copy, (3) the throw-error API the rest of main.ts expects.
   const normalizedConnection = normalizeOpenAiCodexConnection(connection);
   const apiKey = await deps.getApiKey(normalizedConnection.slug);
-  const normalizedRequestedModel = normalizeRequestedModelForReadiness(connection, requestedModel);
   const verdict = isConnectionReady({
     connection: normalizedConnection,
     hasSecret: typeof apiKey === 'string' && apiKey.length > 0,
-    requestedModel: normalizedRequestedModel,
+    requestedModel,
   });
 
   if (verdict.ready === false) {
     throw chatConfigurationError(
-      messageForReason(verdict.reason, normalizedConnection, normalizedRequestedModel),
+      messageForReason(verdict.reason, normalizedConnection, requestedModel),
       verdict.reason,
     );
   }
@@ -101,6 +106,16 @@ export async function requireReadyConnection(
  * so the copy stays close to its existing semantics (PR110a refactor
  * is behavior-preserving — only the judgment moved to core).
  */
+/**
+ * Two paths reach `fake_backend`: the reason table below, and the header check
+ * in `assertSessionCanSend`, which never gets far enough to look a connection
+ * up. They are the same sentence to the user, so they are the same string here
+ * — the rename that moved 会话 to 任务 had to be applied twice, which is what a
+ * second copy costs.
+ */
+const FAKE_BACKEND_MESSAGE =
+  '当前任务来自旧的本地模拟连接，不能直接发送。请到 设置 · 模型 添加真实模型后新建任务。';
+
 function messageForReason(
   reason: ChatConfigurationReason,
   connection: LlmConnection,
@@ -126,10 +141,8 @@ function messageForReason(
       const model = requestedModel || connection.defaultModel;
       return `模型 "${model}" 不能用于聊天。请到 设置 · 模型 选择支持聊天的模型。`;
     }
-    case 'oauth_subscription_not_wired':
-      return `订阅连接 "${connection.name}" 只用于账号状态查看，当前不能作为聊天模型。请先选择 API key 模型连接。`;
     case 'fake_backend':
-      return '当前会话来自旧的本地模拟连接，不能直接发送。请到 设置 · 模型 添加真实模型后新建会话。';
+      return FAKE_BACKEND_MESSAGE;
     case 'missing_default_connection':
     case 'connection_missing':
       // These reasons are handled before we reach isConnectionReady,
@@ -143,10 +156,7 @@ export async function assertSessionCanSend(
   deps: ReadyConnectionDeps,
 ): Promise<void> {
   if (header.backend === 'fake') {
-    throw chatConfigurationError(
-      '当前会话来自旧的本地模拟连接，不能直接发送。请到 设置 · 模型 添加真实模型后新建会话。',
-      'fake_backend',
-    );
+    throw chatConfigurationError(FAKE_BACKEND_MESSAGE, 'fake_backend');
   }
   await requireReadyConnection(header.llmConnectionSlug, deps, header.model);
 }

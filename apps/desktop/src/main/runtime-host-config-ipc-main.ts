@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import type { IpcMain } from 'electron';
-import type { AppSettings, LlmConnection, UpdateAppSettingsInput } from '@maka/core';
+import type { AppSettings, UpdateAppSettingsInput } from '@maka/core/settings';
+import type { LlmConnection } from '@maka/core/llm-connections';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import type {
   ConnectionCatalogEntry,

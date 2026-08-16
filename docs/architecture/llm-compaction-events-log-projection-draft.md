@@ -7,7 +7,7 @@ counterpart: ./llm-compaction-events-log-projection-draft.zh-CN.md
 implementation_status: current
 document_status: draft
 translation_status: synced
-last_verified: 2026-07-12
+last_verified: 2026-08-14
 owners:
   - maka-backend
 ---
@@ -16,11 +16,11 @@ owners:
 
 > This chapter answers one question: when the complete Agent history no longer fits in the model context, how can Maka reduce what the LLM sees without damaging the fact space needed for replay, audit, and future projections? The answer is not “replace the log with a summary.” It is: **define compaction as a lossy projection of the Runtime Events Log. The log preserves facts, a checkpoint preserves a continuation view with an explicit coverage boundary, and each provider request consumes only the projection appropriate at that moment.**
 
-This chapter builds on Chapter 1's log-first Runtime and Chapter 2's distinction between compressing context and compressing evidence. It is for Runtime engineers changing history compaction, context budgets, checkpoint persistence, or recovery. The first half establishes the mental model. The complete chapter should let a reader locate V2 checkpoint generation, validation, rolling updates, replay, and failure recovery.
+This chapter builds on Chapter 1's log-first Runtime and Chapter 2's distinction between compressing context and compressing evidence. It is for Runtime engineers changing history compaction, context budgets, checkpoint persistence, or recovery. The first half establishes the mental model. The complete chapter should let a reader locate text-summary and provider-native checkpoint generation, validation, rolling updates, replay, and failure recovery.
 
-The primary subject is **prior-history LLM compaction**: an LLM generates `HistoryCompactCheckpoint.summary`, the checkpoint covers a prefix of older RuntimeEvents, and later requests use it in place of that prefix. The chapter does not fully cover active or stale pruning of individual Tool Results, and it does not treat current-Turn `semanticCompact` as the same mechanism. Both reduce provider messages, but their durable sources, lifecycles, and safety boundaries differ. A later section makes that distinction explicit.
+The primary subject is **prior-history LLM compaction**: a compactor produces either a continuation summary or provider-native compact state, the checkpoint covers a prefix of older RuntimeEvents, and later requests use that projection in place of the prefix. The chapter does not fully cover active or stale pruning of individual Tool Results, and it does not treat current-Turn `semanticCompact` as the same mechanism. Both reduce provider messages, but their durable sources, lifecycles, and safety boundaries differ. A later section makes that distinction explicit.
 
-This chapter describes the implementation current as of 2026-07-12. The V1 artifact-backed `HistoryCompactBlock` remains as a read-only compatibility path. The V2 ledger-backed `HistoryCompactCheckpoint` is the preferred main path.
+This chapter describes the implementation current as of 2026-08-14. The V1 artifact-backed `HistoryCompactBlock` remains as a read-only compatibility path. Ledger-backed checkpoints use schema V2 for text summaries and schema V3 for provider-native state. OpenAI Codex subscription models use Codex remote compaction V2 by default; other providers retain text-summary behavior.
 
 ## Start with a long-running Session
 
@@ -80,7 +80,7 @@ These are three different objects:
 | Layer | What it preserves | Source of truth? | May lose detail? |
 |---|---|---|---|
 | Runtime Events Log | Semantic facts produced by the user, model, tools, and Runtime | Yes | No |
-| History Compact Checkpoint | A continuation summary plus coverage for a validated event prefix | No; it is a durable projection | Yes |
+| History Compact Checkpoint | A continuation summary or provider-native state, plus coverage for a validated event prefix | No; it is a durable projection | Yes |
 | Provider Request Messages | The working context consumed by this LLM call | No; it is an ephemeral projection | Yes |
 
 ```mermaid
@@ -127,14 +127,15 @@ HistoryCompactCheckpoint
     through { runId, turnId, runtimeEventId }
     sourceDigest
   projection
-    summary
+    V2: summary
+    V3: providerState { kind, connectionSlug, modelId, itemId, encryptedContent }
     limitations
     estimatedTokens
   lineage
     previousCheckpointId?
 ```
 
-The model primarily sees `summary`, but `coverage` determines whether the checkpoint is allowed to replace history. A summary without coverage is only a note. A summary without a source digest cannot establish that it still corresponds to the current log. A summary without a replay-budget check may be less suitable for the current request than the working set it replaces.
+For V2, the model sees `summary`. For V3, the provider sees its own opaque compact item and never the checkpoint's diagnostic text. In both cases, `coverage` determines whether the checkpoint may replace history. A projection without coverage is only a note; without a source digest it cannot establish that it still corresponds to the current log; without a replay-budget check it may be less suitable than the working set it replaces.
 
 ## Current: every request still begins with RuntimeEvents
 
@@ -142,12 +143,12 @@ The prior-history path for a normal Send begins in `AiSdkBackend.buildPriorMessa
 
 1. Exclude the current `turnId` to obtain the prior Runtime context.
 2. Prepare the context-budget policy.
-3. Load the latest V2 checkpoint, falling back to V1 blocks only when needed.
+3. Load the latest ledger-backed checkpoint, falling back to V1 blocks only when needed.
 4. Handle stale oversized Tool Results first.
 5. Calculate the history-compaction high water and retained tail.
 6. Validate whether an existing checkpoint exactly matches the source prefix.
 7. If the old checkpoint does not cover the new fold, call an LLM to create a rolling successor.
-8. Materialize the checkpoint as a synthetic RuntimeEvent and append the uncovered raw tail.
+8. Project a V2 checkpoint as a synthetic text RuntimeEvent, or carry a V3 checkpoint as explicit projection metadata, then append the uncovered raw tail.
 9. Apply history search, archive retrieval, or synthesis cache when configured.
 10. Build the provider replay plan and only then materialize `ModelMessage[]`.
 
@@ -155,7 +156,7 @@ The ordering reveals two properties.
 
 First, compaction happens inside **model-history projection**, not inside the RuntimeEvent append path. Events already produced by the model and tools do not change when a later context budget changes.
 
-Second, the checkpoint is not itself a final provider message. Maka first turns it into a synthetic RuntimeEvent with `role=user, author=system`, then passes it through the same replay planning and provider capability gates as other projected events. The synthetic event exists only in the current projection. It is not written back to the RuntimeEvent ledger as though it were an original interaction fact.
+Second, the checkpoint is not itself a canonical RuntimeEvent. Coverage and tail selection return the selected checkpoint explicitly alongside the projected RuntimeEvents. A V2 checkpoint also materializes as the familiar system-authored text block so ordinary replay planning can consume it. A compatible V3 checkpoint creates no synthetic text: the provider materializer prepends its assistant `openai.compaction` custom part directly. Neither representation is written back to the RuntimeEvent ledger as though it were an original interaction fact.
 
 ## Triggering: high water decides when to project
 
@@ -207,11 +208,25 @@ Deterministic Runtime code owns all of those decisions.
 
 The LLM is therefore the generator of the projection value, not the projection authority. It decides how to summarize. Runtime decides what was summarized, whether the result may be used, and when it is invalid.
 
+## Codex subscription remote compaction V2
+
+When the selected connection has `providerType: openai-codex`, Maka uses Codex's server-side compactor by default instead of asking the model for a text summary. The provider request is still built from the validated RuntimeEvent prefix. The dedicated compactor sets `providerOptions.openai.compactionTrigger: true`, which appends one terminal `{ "type": "compaction_trigger" }` input item. The compactor uses the streaming Responses path and consumes the full stream because a compaction-only response has no ordinary generated-text result. Ordinary Codex requests do not set this option and are unchanged.
+
+Compaction input preserves assistant-step chronology. Because the Responses converter cannot resend provider-executed tool results under `store:false`, a settled hosted call/result is lowered only for this compaction request into a paired ordinary function call and output, followed by the grounded assistant text. This keeps the available tool evidence in the request without producing an orphan output.
+
+The compaction call receives the active history-input budget. If its RuntimeEvent projection exceeds that estimate, Maka replaces older Tool Result payloads with a fixed omission marker while retaining every call/result pair and all later grounded text. If the remaining non-tool history still cannot fit, Runtime does not dispatch an already over-capacity compaction request and follows the normal fail-open path.
+
+This is deliberately a history-only contract. Maka does not send the current system prompt or tool catalog to the remote compactor, unlike the Codex CLI's whole-request assembly. Those values are neither part of checkpoint source coverage nor frozen into the checkpoint; the subsequent model request always applies its current system prompt and tools. This keeps provider-native and text-summary compactors behind the same small contract, at the cost of not giving the compactor that extra request-shape context.
+
+Maka accepts exactly one `openai.compaction` output with both `itemId` and `encryptedContent`, then persists it in a schema-V3 checkpoint. The state is bound to the connection slug and model ID. A different provider, connection, or model rejects that checkpoint and reprojects from raw RuntimeEvents. Matching checkpoints replay as provider custom parts across pre-Turn compaction, mid-Turn capacity compaction, and reactive overflow retry.
+
+The V3 schema is a compatibility boundary: older binaries that only understand schema V2 reject it and fall back to raw history. Provider state is redacted from request-capture telemetry and omitted from conversation copies; copied Sessions retain raw RuntimeEvents and may compact them again. The explicit trigger is an observed Codex subscription protocol used by the Codex client, not a claim about the public Responses API contract.
+
 ## Rolling checkpoints: do not repeatedly summarize the entire world
 
 A long-lived Session crosses high water more than once. Resending all older events to the summarizer every time would make compaction itself increasingly expensive and repeatedly rewrite the interpretation of old facts.
 
-V2 uses rolling checkpoints:
+Schema V2 text checkpoints use rolling checkpoints:
 
 ```text
 Checkpoint N
@@ -225,7 +240,9 @@ Checkpoint N+1
   previousCheckpointId = Checkpoint N.checkpointId
 ```
 
-The summarizer receives only the previous summary and newly folded events. Raw events already covered by the previous checkpoint are not sent to the LLM again. The new checkpoint nevertheless recalculates coverage and `sourceDigest` over the complete covered prefix.
+Schema V3 uses the same coverage and predecessor rules. The remote compactor receives the prior provider state plus only `events[k+1..m]`, and returns one successor provider state.
+
+For schema V2, the summarizer receives only the previous summary and newly folded events. Raw events already covered by the previous checkpoint are not sent to the LLM again. Both schemas recalculate coverage and `sourceDigest` over the complete covered prefix.
 
 ```mermaid
 sequenceDiagram
@@ -328,7 +345,7 @@ A checkpoint that was once valid is not guaranteed to fit every future request. 
 
 A projection may replay only when both source matching and current-policy fit succeed.
 
-During replay, the covered raw prefix does not enter the provider request. Uncovered folded events and retained recent events remain raw RuntimeEvents. The model sees:
+During replay, the covered raw prefix does not enter the provider request. Uncovered folded events and retained recent events remain raw RuntimeEvents. A V2 text checkpoint produces:
 
 ```text
 <maka_history_compact_checkpoint ...>
@@ -344,6 +361,8 @@ During replay, the covered raw prefix does not enter the provider request. Uncov
 
 The checkpoint's `limitations` state that it is only a replay-time summary of a covered RuntimeEvent prefix and that exact wording remains in the RuntimeEvent ledger.
 
+A compatible V3 checkpoint instead produces an assistant `openai.compaction` custom part followed by the same raw tail and current Turn. Its opaque fields are never rendered as user/system text. If identity, source coverage, shape, or current-policy fit fails, Runtime keeps or recompresses the raw source-derived projection.
+
 ## Failure semantics: less context is safer than false history
 
 Compaction crosses token estimation, an LLM call, schema construction, durable append, source matching, and provider replay. Failure is a normal path, not an edge-case fantasy.
@@ -352,6 +371,8 @@ Compaction crosses token estimation, an LLM call, schema construction, durable a
 |---|---|---|
 | Below high water | Keep the existing projection or apply ordinary budget selection | Create an unsourced summary as a speculative optimization |
 | LLM returns an empty summary | Record no new checkpoint; on the first compact, retain only a safe raw tail | Treat an empty projection as covered history |
+| Codex returns no unique valid compact item | Record no new checkpoint and use the same fail-open path | Persist partial or ambiguous provider state |
+| Compaction input cannot fit after bounded Tool Result omission | Do not dispatch the compaction request; use the same fail-open path | Ask the provider to compact an already over-capacity request |
 | Rolling summarizer fails | Reuse the old checkpoint if it still matches and fits, then add the newest complete raw Turns that fit | Pretend the old checkpoint covers newly evicted events |
 | Durable checkpoint append fails | Do not use the candidate; fall back to the old checkpoint or safe tail | Put an uncommitted projection into the model and later claim it is recoverable |
 | Prefix or digest mismatch | Reject the checkpoint | Replace canonical events through approximate matching |
@@ -380,17 +401,19 @@ Desktop `sessions:compact` does not silently rewrite a database. It creates a Tu
 
 The manual policy lowers high water to almost zero and reduces the retained-tail target so even a small history can produce a projection. It changes the trigger, not source, coverage, durability, or replay invariants.
 
-## V1 to V2: from per-source artifact fan-out to a bounded checkpoint
+## V1, V2, and V3: bounded checkpoints with two projection values
 
 The older V1 `HistoryCompactBlock` stores a `sourceRef` for every folded RuntimeEvent and may create a separate artifact for each source event. Its provenance is explicit, but in real long Sessions the block JSON grows linearly with event count and can reach multiple megabytes. The projection itself is no longer bounded.
 
 V2 `HistoryCompactCheckpoint` replaces that fan-out with fixed-size prefix metadata: Event/Turn counts, a through boundary, and one digest over the complete ordered prefix. The canonical ledger already preserves the original RuntimeEvents; a second fan-out JSON copy is not required to prove source identity.
 
+V3 keeps the same bounded source, coverage, lineage, durability, and replay checks. It changes only the projection value from a text summary to a closed provider-state variant. The union currently contains one variant, `openai_codex_remote_v2`; adding another provider requires a concrete validated variant, not an arbitrary JSON registry.
+
 The current state is:
 
-- V2 checkpoints load first from the AgentRun ledger and its bounded projection;
+- schema V2 and V3 checkpoints load first from the AgentRun ledger and its bounded projection;
 - V1 artifact blocks are read only as a compatibility fallback;
-- after a V2 checkpoint validates coverage over the same prefix, Runtime may validate and reclaim the corresponding legacy block/source artifacts;
+- after a ledger-backed checkpoint validates coverage over the same prefix, Runtime may validate and reclaim the corresponding legacy block/source artifacts;
 - cleanup is reclaim-only and cannot affect replay on failure.
 
 This evolution does not reduce provenance. It puts provenance at the correct layer: the RuntimeEvent ledger preserves source facts, while the checkpoint preserves only the bounded identity required to validate a source prefix.
@@ -401,7 +424,7 @@ Maka currently has at least three context-reduction mechanisms:
 
 | Mechanism | Source | When it runs | Durable result | Role in this chapter |
 |---|---|---|---|---|
-| History LLM compaction | Older RuntimeEvent prefix | Between Turns, while building prior history | V2 checkpoint recorded in the AgentRun event ledger | Primary subject |
+| History LLM compaction | Older RuntimeEvent prefix | Between Turns, while building prior history | Schema V2 or V3 checkpoint recorded in the AgentRun event ledger | Primary subject |
 | Active Tool Result Prune | Provider-visible Tool Result in the current Turn | Before the next step in the same Turn | Raw result is archived first; placeholder changes only current messages | Primary subject of Chapter 2 |
 | `semanticCompact` | The completed middle span after the current-user head anchor and before the open protocol tail, plus available Turn RuntimeEvent refs | During `prepareStep` | V2 `SemanticCompactBlock` is a best-effort diagnostic record; accepted messages live in the current backend projection | Attention shaping; adjacent, not equivalent to V2 checkpoint |
 
@@ -449,7 +472,7 @@ Any history-compaction change must preserve these invariants:
 
 1. **Source immutability**: compaction does not modify or delete canonical RuntimeEvents.
 2. **Projection coverage**: every checkpoint binds to an ordered source prefix, through boundary, and digest.
-3. **No durability, no replacement**: a new V2 checkpoint cannot replay as the accepted replacement before durable append.
+3. **No durability, no replacement**: a new checkpoint cannot replay as the accepted replacement before durable append.
 4. **Monotonic high water**: a new checkpoint normally covers more events; an equal-coverage rewrite must be an explicit successor.
 5. **Current-policy validation**: historical validity does not imply fitness for the current request.
 6. **Raw recent tail**: the model retains the newest source-derived raw context allowed by the budget.
@@ -479,7 +502,7 @@ Fifth, rolling summaries can accumulate lossy error. The original log still allo
 Read the current implementation from these locations:
 
 1. `packages/runtime/src/context-budget.ts`: high water, prefix/tail selection, checkpoint replay, and policy gates;
-2. `packages/runtime/src/history-compact-checkpoint.ts`: V2 schema, digest, prefix match, lineage, and synthetic RuntimeEvent;
+2. `packages/runtime/src/history-compact-checkpoint.ts`: V2/V3 schemas, provider identity, digest, prefix match, lineage, and replay materialization;
 3. `packages/runtime/src/history-compact-summarizer.ts`: LLM continuation-summary prompt and rolling input;
 4. `packages/runtime/src/ai-sdk-backend.ts`: request-projection pipeline, manual compaction, writes, and fallback semantics;
 5. `packages/runtime/src/agent-run.ts`: durable `history_compact_checkpoint_recorded` event;
@@ -489,14 +512,15 @@ Read the current implementation from these locations:
 9. `packages/runtime/src/history-compact-artifacts.ts`: V1 artifact-backed compatibility path;
 10. `packages/runtime/src/history-compact-cleanup.ts`: legacy reclaim after V2 coverage validation;
 11. `packages/runtime/src/context-budget-policy.ts`: default budgets, environment controls, and the manual lookup overlay;
-12. `apps/desktop/src/main/main.ts`: Desktop model/summarizer and IPC wiring.
+12. `packages/runtime/src/openai-codex-history-compactor.ts`: Codex compact-output validation and rolling provider-state input;
+13. `packages/runtime-host/src/server/execution-model-composition.ts`: default provider-specific compactor selection.
 
 Important tests include:
 
 - `history-compact-checkpoint.test.ts`: bounded 10K-event coverage, prefix digest, ledger recovery, and policy replay;
 - `history-compact-summarizer.test.ts`: Tool-bearing summarizer input, failure, and rolling updates;
 - `context-budget.test.ts`: high water, tail cap, Tool pair preservation, archive gates, and loaded blocks;
-- `ai-sdk-backend.test.ts`: same-request replacement, V2 reuse, fail-open, manual compaction, and V1 fallback;
+- `ai-sdk-backend.test.ts`: same-request replacement, checkpoint reuse, fail-open, manual compaction, and V1 fallback;
 - `session-manager.test.ts`: manual-compaction Run lifecycle, stop, and concurrency;
 - `agent-run-store.test.ts`: atomic ordering and repair safety for canonical events and bounded projections.
 

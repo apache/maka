@@ -1,16 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
-  buildComputerUseTools,
-  type ComputerUseToolSet,
-  type CuDispatchBackend,
-  type MakaTool,
-  type MakaToolContext,
-} from '@maka/runtime';
+import { buildComputerUseTools, type ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import { type CuDispatchBackend } from '@maka/runtime/computer-use-types';
+import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
 import {
   decodeClientCapabilityReplaceInput,
   type ClientCapabilityCallFrame,
+  type ClientCapabilityServiceCallFrame,
 } from '@maka/runtime-host/protocol';
 import { z } from 'zod';
 import { buildClientSettingsTools } from '../client-settings-tools.js';
@@ -59,6 +56,32 @@ test('publishes self-described session-affine Browser and Computer Use offers', 
       registrationId: 'registration-1',
       offers: provider.offers(),
     }),
+  );
+});
+
+test('remote providers do not request Host paths and use a Client-owned cwd', async () => {
+  let invokedCwd: string | undefined;
+  const provider = createDesktopNativeCapabilityProvider(
+    {
+      browserTools: [
+        tool('browser_navigate', z.object({ url: z.string() }), async (_args, context) => {
+          invokedCwd = context.cwd;
+          return 'ok';
+        }),
+      ],
+      releaseBrowserSession() {},
+      computerUseTools: computerTools(),
+      releaseComputerUseSession() {},
+    },
+    { hostPathAccess: 'none', clientCwd: '/client/runtime-host' },
+  );
+
+  assert.equal(provider.offers()[0]?.hostPathAccess, 'none');
+  await call(provider, capabilityFrame({ cwd: undefined }));
+  assert.equal(invokedCwd, '/client/runtime-host');
+  await assert.rejects(
+    () => call(provider, capabilityFrame({ cwd: '/srv/host-project' })),
+    /does not accept a Host path/,
   );
 });
 
@@ -124,6 +147,40 @@ test('publishes every production Desktop-owned tool schema through the protocol'
   );
 });
 
+test('publishes and admits additional Desktop native-effect services', async () => {
+  let admitted = false;
+  const provider = createDesktopNativeCapabilityProvider(
+    {
+      browserTools: [],
+      releaseBrowserSession() {},
+      computerUseTools: computerTools(),
+      releaseComputerUseSession() {},
+      additionalServices: (scope) => [
+        {
+          serviceId: 'maka_scheduled_task_native_effect',
+          version: '1',
+          async call(method, input) {
+            return { method, id: input.id, hostId: scope.hostId };
+          },
+        },
+      ],
+    },
+    { targetScope: { hostId: 'host-1', targetEpoch: 'epoch-1' } },
+  );
+  assert.deepEqual(provider.services?.(), [
+    { serviceId: 'maka_scheduled_task_native_effect', version: '1' },
+  ]);
+  assert.ok(provider.callService);
+  const result = await provider.callService(serviceFrame(), {
+    signal: new AbortController().signal,
+    accept: async () => {
+      admitted = true;
+    },
+  });
+  assert.equal(admitted, true);
+  assert.deepEqual(result, { method: 'notify_local', id: 'task-1', hostId: 'host-1' });
+});
+
 test('validates before admission and invokes the exact offered tool with Host context', async () => {
   let admitted = false;
   let invoked = false;
@@ -133,27 +190,30 @@ test('validates before admission and invokes the exact offered tool with Host co
         context: Pick<MakaToolContext, 'sessionId' | 'turnId' | 'cwd' | 'toolCallId'>;
       }
     | undefined;
-  const provider = createDesktopNativeCapabilityProvider({
-    browserTools: [
-      tool('browser_navigate', z.object({ url: z.string().url() }), async (args, context) => {
-        assert.equal(admitted, true);
-        invoked = true;
-        received = {
-          args,
-          context: {
-            sessionId: context.sessionId,
-            turnId: context.turnId,
-            cwd: context.cwd,
-            toolCallId: context.toolCallId,
-          },
-        };
-        return 'Loaded';
-      }),
-    ],
-    releaseBrowserSession() {},
-    computerUseTools: computerTools(),
-    releaseComputerUseSession() {},
-  });
+  const provider = createDesktopNativeCapabilityProvider(
+    {
+      browserTools: [
+        tool('browser_navigate', z.object({ url: z.string().url() }), async (args, context) => {
+          assert.equal(admitted, true);
+          invoked = true;
+          received = {
+            args,
+            context: {
+              sessionId: context.sessionId,
+              turnId: context.turnId,
+              cwd: context.cwd,
+              toolCallId: context.toolCallId,
+            },
+          };
+          return 'Loaded';
+        }),
+      ],
+      releaseBrowserSession() {},
+      computerUseTools: computerTools(),
+      releaseComputerUseSession() {},
+    },
+    { nativeSessionId: (sessionId) => `host-a:${sessionId}` },
+  );
 
   await assert.rejects(
     () => call(provider, capabilityFrame({ arguments: { url: 'not a url' } }), () => undefined),
@@ -169,7 +229,7 @@ test('validates before admission and invokes the exact offered tool with Host co
   assert.deepEqual(received, {
     args: { url: 'https://example.com' },
     context: {
-      sessionId: 'session-1',
+      sessionId: 'host-a:session-1',
       turnId: 'turn-1',
       cwd: '/workspace',
       toolCallId: 'tool-call-1',
@@ -180,17 +240,22 @@ test('validates before admission and invokes the exact offered tool with Host co
 test('watches Computer Use turns without widening Browser lifecycle', async () => {
   const usedSessions: string[] = [];
   const computerUseTurns: Array<[string, string]> = [];
+  let computerUseSessionId: string | undefined;
   const provider = createDesktopNativeCapabilityProvider(
     {
       browserTools: [tool('browser_snapshot', z.object({}), async () => 'snapshot')],
       releaseBrowserSession() {},
-      computerUseTools: computerTools(async () => ({ text: 'observed' })),
+      computerUseTools: computerTools(async (_args, context) => {
+        computerUseSessionId = context.sessionId;
+        return { text: 'observed' };
+      }),
       releaseComputerUseSession() {},
     },
     {
       onSessionUsed: (sessionId) => usedSessions.push(sessionId),
       onComputerUseTurnUsed: (sessionId, turnId) =>
         computerUseTurns.push([sessionId, turnId]),
+      nativeSessionId: (sessionId) => `host-a:${sessionId}`,
     },
   );
 
@@ -207,6 +272,7 @@ test('watches Computer Use turns without widening Browser lifecycle', async () =
   );
   assert.deepEqual(usedSessions, ['session-1', 'session-2']);
   assert.deepEqual(computerUseTurns, [['session-2', 'turn-2']]);
+  assert.equal(computerUseSessionId, 'host-a:session-2');
 });
 
 test('projects Computer Use screenshots and releases all native resources for a Session', async () => {
@@ -458,6 +524,18 @@ function tool<P, R>(
     description: `${name} description`,
     parameters,
     impl,
+  };
+}
+
+function serviceFrame(): ClientCapabilityServiceCallFrame {
+  return {
+    kind: 'client.capability.service_call',
+    invocationId: 'invocation-service-1',
+    registrationId: 'registration-1',
+    serviceId: 'maka_scheduled_task_native_effect',
+    version: '1',
+    method: 'notify_local',
+    input: { id: 'task-1' },
   };
 }
 

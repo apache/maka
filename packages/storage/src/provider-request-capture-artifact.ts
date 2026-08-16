@@ -1,4 +1,4 @@
-import type { ArtifactRecord } from '@maka/core';
+import type { ArtifactRecord } from '@maka/core/artifacts';
 
 import type { ArtifactStore } from './artifact-store.js';
 

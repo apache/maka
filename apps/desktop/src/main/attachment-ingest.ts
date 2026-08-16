@@ -1,8 +1,14 @@
 import { Buffer } from 'node:buffer';
 import { open, realpath as fsRealpath } from 'node:fs/promises';
 import { basename, relative, sep } from 'node:path';
-import { attachmentKindFromMimeType, guessMimeFromName, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core';
-import type { ArtifactKind, ArtifactSource, AttachmentRef } from '@maka/core';
+import {
+  attachmentKindFromMimeType,
+  guessMimeFromName,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_COUNT,
+} from '@maka/core/attachments';
+import type { ArtifactKind, ArtifactSource } from '@maka/core/artifacts';
+import type { AttachmentRef } from '@maka/core/events';
 import type { ArtifactStore } from '@maka/storage';
 import type { AttachmentApprovalRegistry } from './attachment-approval.js';
 

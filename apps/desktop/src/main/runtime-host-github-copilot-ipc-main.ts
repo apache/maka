@@ -1,5 +1,9 @@
-import type { IpcMain } from 'electron';
-import type { ModelInfo, SubscriptionActionResult } from '@maka/core';
+import type { ModelInfo } from '@maka/core/llm-connections';
+import type { SubscriptionActionResult } from '@maka/core/oauth-subscription';
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
 import { GitHubCopilotSubscriptionService } from './oauth/github-copilot-subscription-service.js';
 import {
   disableRuntimeHostAccountConnection,
@@ -26,7 +30,7 @@ interface ImportedGitHubCopilotCredential {
 }
 
 export interface RuntimeHostGitHubCopilotIpcDeps {
-  readonly ipcMain: Pick<IpcMain, 'handle'>;
+  readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: GitHubCopilotClient;
   readonly emitConnectionListChanged: () => void;
   readonly importExistingLogin?: () => Promise<ImportedGitHubCopilotCredential>;
@@ -59,7 +63,7 @@ export function registerRuntimeHostGitHubCopilotIpc(
     }
   });
 
-  deps.ipcMain.handle('github-copilot:get-account-state', async () => {
+  handleReconnectableRead(deps.ipcMain, 'github-copilot:get-account-state', async () => {
     const connection = findRuntimeHostAccountConnection(
       await deps.client.loadConnectionCatalog(),
       PROVIDER,

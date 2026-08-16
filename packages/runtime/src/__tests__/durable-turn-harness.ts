@@ -1,4 +1,5 @@
-import type { BackendSendInput, SessionEvent } from '@maka/core';
+import type { BackendSendInput } from '@maka/core/backend-types';
+import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
 import type { InvocationContext } from '../invocation-context.js';

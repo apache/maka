@@ -1,5 +1,5 @@
 import { createDecipheriv, randomBytes } from 'node:crypto';
-import { proxiedFetch } from '@maka/runtime';
+import { proxiedFetch } from '@maka/runtime/bots';
 
 const QQ_BIND_BASE_URL = 'https://q.qq.com';
 const REQUEST_TIMEOUT_MS = 10_000;

@@ -1,12 +1,9 @@
 import { useEffect, useRef, type ReactNode } from 'react';
-import {
-  isShellOutput,
-  normalizeSearchUrl,
-  ptyHumanTerminalText,
-  readWriteStdinInputPreview,
-  type ShellOutput,
-  type ToolResultContent,
-} from '@maka/core';
+import { isShellOutput, type ShellOutput } from '@maka/core/shell-run';
+import { normalizeSearchUrl } from '@maka/core/search';
+import { ptyHumanTerminalText } from '@maka/core/pty-output-view';
+import { readWriteStdinInputPreview } from '@maka/core/tool-activity-args';
+import { type ToolResultContent } from '@maka/core/events';
 import { Button as UiButton, Link } from '@astryxdesign/core';
 import { ICON_SIZE, AlertCircle, Ban, Check, Clock, Copy, GitBranch, Loader2, Plug, ShieldAlert } from '../icons.js';
 import { redactSecrets } from '../redact.js';
@@ -654,7 +651,7 @@ function isCancelledStatus(status: string | undefined): boolean {
   return status === 'cancelled';
 }
 
-function shellRunStatusLabel(status: string, locale: import('@maka/core').UiLocale): string {
+function shellRunStatusLabel(status: string, locale: import('@maka/core/ui-locale').UiLocale): string {
   const copy = getToolActivityCopy(locale).result;
   const label = (copy.backgroundStatus as Readonly<Record<string, string>>)[status];
   return label ?? copy.backgroundUnknown(status);

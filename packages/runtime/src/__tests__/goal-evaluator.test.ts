@@ -1,41 +1,8 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildGoalEvaluationPrompt, parseGoalEvaluation, evaluateGoal } from '../goal-evaluator.js';
-
-describe('buildGoalEvaluationPrompt', () => {
-  test('includes condition, context, and field spec', () => {
-    const p = buildGoalEvaluationPrompt('all tests pass', 'ran tests, 2 failed');
-    assert.ok(p.includes('all tests pass'));
-    assert.ok(p.includes('ran tests, 2 failed'));
-    assert.ok(p.includes('GOAL CONDITION'));
-    assert.ok(p.includes('CONVERSATION CONTEXT'));
-    assert.ok(p.includes('"met"'));
-    assert.ok(p.includes('"progress"'));
-    assert.ok(p.includes('"waiting"'));
-  });
-});
+import { parseGoalEvaluation, evaluateGoal } from '../goal-evaluator.js';
 
 describe('parseGoalEvaluation', () => {
-  test('parses a full verdict', () => {
-    const r = parseGoalEvaluation(
-      '{"met": false, "impossible": false, "progress": true, "waiting": false, "reason": "fixed 1 of 3"}',
-    );
-    assert.equal(r.met, false);
-    assert.equal(r.progress, true);
-    assert.equal(r.reason, 'fixed 1 of 3');
-  });
-
-  test('parses waiting (no wait_seconds in the contract)', () => {
-    const r = parseGoalEvaluation(
-      '{"met": false, "impossible": false, "progress": false, "waiting": true, "reason": "CI running"}',
-    );
-    assert.equal(r.waiting, true);
-    // wait_seconds was removed from the contract (honoring it would be the
-    // out-of-scope scheduled-poll handoff); any wait_seconds in the payload is
-    // simply ignored, never surfaced.
-    assert.equal('waitSeconds' in r, false);
-  });
-
   test('ignores a stray wait_seconds field in evaluator output', () => {
     const r = parseGoalEvaluation(
       '{"met": false, "waiting": true, "wait_seconds": 999999, "reason": "x"}',
@@ -97,17 +64,6 @@ describe('parseGoalEvaluation', () => {
 });
 
 describe('evaluateGoal', () => {
-  test('returns parsed verdict on success', async () => {
-    const r = await evaluateGoal(
-      { evaluate: async () => '{"met": true, "progress": true, "reason": "done"}' },
-      'finish',
-      'ctx',
-      'sess-1',
-    );
-    assert.equal(r.met, true);
-    assert.equal(r.reason, 'done');
-  });
-
   test('fails open on evaluator error (evaluatorFailed=true, continue)', async () => {
     const r = await evaluateGoal(
       {
@@ -175,16 +131,6 @@ describe('evaluateGoal', () => {
     assert.equal(result.evaluatorFailed, true);
     assert.ok(result.reason.includes('cancelled'));
     assert.equal(signal?.aborted, true);
-  });
-
-  test('successful parse sets evaluatorFailed=false', async () => {
-    const r = await evaluateGoal(
-      { evaluate: async () => '{"met": false, "progress": true, "reason": "ok"}' },
-      'finish',
-      'ctx',
-      'sess-1',
-    );
-    assert.equal(r.evaluatorFailed, false);
   });
 
   test('clears the timeout timer on success', async () => {

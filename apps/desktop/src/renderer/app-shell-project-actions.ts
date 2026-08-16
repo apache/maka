@@ -1,5 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react';
-import type { ProjectRecord, UiLocale } from '@maka/core';
+import type { ProjectRecord } from '@maka/core/project';
+import type { UiLocale } from '@maka/core/ui-locale';
+import type { DesktopProjectCapabilities } from '../preload/bridge-contract.js';
 import { openPathActionErrorMessage } from './app-shell-copy';
 import { openPathActionLabel, openPathFailureCopy } from './open-path';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
@@ -23,7 +25,6 @@ type ToastApi = {
 };
 
 export interface AppShellProjectActions {
-  refreshAppInfo(): Promise<void>;
   refreshProjects(): Promise<ProjectRecord[]>;
   addProject(): Promise<ProjectRecord | null>;
   selectProject(projectId: string): Promise<boolean>;
@@ -44,14 +45,11 @@ export function createAppShellProjectActions(deps: {
   projectPickerPendingRef: RefBox<boolean>;
   projectPickerRequestRef: RefBox<number>;
   rendererMountedRef: RefBox<boolean>;
-  setAppInfo: Dispatch<SetStateAction<RendererAppInfo | null>>;
-  setSessionProjectInfo: Dispatch<SetStateAction<SessionProjectInfoState | null>>;
   setProjectPickerPending: Dispatch<SetStateAction<boolean>>;
-  setProjects: Dispatch<SetStateAction<ProjectRecord[]>>;
-  setSelectedProjectId: Dispatch<SetStateAction<string | null | undefined>>;
+  refreshDefaultProjectState(): Promise<ProjectRecord[]>;
   selectedProjectId: string | null | undefined;
   projects: readonly ProjectRecord[];
-  projectInfo: RendererAppInfo | null;
+  projectCapabilities: DesktopProjectCapabilities;
   sessionId?: string;
   onProjectSelected(ownerSessionId?: string): void;
   toastApi: ToastApi;
@@ -61,50 +59,19 @@ export function createAppShellProjectActions(deps: {
     projectPickerPendingRef,
     projectPickerRequestRef,
     rendererMountedRef,
-    setAppInfo,
-    setSessionProjectInfo,
     setProjectPickerPending,
-    setProjects,
-    setSelectedProjectId,
+    refreshDefaultProjectState,
     selectedProjectId,
     projects,
-    projectInfo,
+    projectCapabilities,
     sessionId,
     onProjectSelected,
     toastApi,
   } = deps;
   const copy = getShellCopy(uiLocale).projectActions;
 
-  async function refreshAppInfo() {
-    try {
-      const next = await window.maka.app.info();
-      setAppInfo({
-        projectId: next.projectId,
-        projectPath: next.projectPath,
-        projectGit: next.projectGit,
-      });
-      setSelectedProjectId(next.projectId);
-    } catch (error) {
-      toastApi.error(
-        copy.readPathFailedTitle,
-        localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale),
-      );
-    }
-  }
-
   async function refreshProjects(): Promise<ProjectRecord[]> {
-    const [projects, info] = await Promise.all([
-      window.maka.projects.list(),
-      window.maka.app.info(),
-    ]);
-    setProjects(projects);
-    setAppInfo({
-      projectId: info.projectId,
-      projectPath: info.projectPath,
-      projectGit: info.projectGit,
-    });
-    setSelectedProjectId(info.projectId);
-    return projects;
+    return refreshDefaultProjectState();
   }
 
   async function applySelectedProject(
@@ -112,14 +79,10 @@ export function createAppShellProjectActions(deps: {
     path: string,
     notify: boolean,
   ): Promise<boolean> {
-    const info = await window.maka.app.resolveProjectGitInfo(path);
-    if (!info.ok) throw new Error(copy.selectedPathUnreadable);
-    setAppInfo({
-      projectId: project.id,
-      projectPath: info.projectPath,
-      projectGit: info.projectGit,
-    });
-    setSelectedProjectId(project.id);
+    if (project.preferredPath) {
+      const info = await window.maka.app.resolveProjectGitInfo(path);
+      if (!info.ok) throw new Error(copy.selectedPathUnreadable);
+    }
     await refreshProjects();
     if (notify) {
       onProjectSelected(sessionId);
@@ -136,6 +99,7 @@ export function createAppShellProjectActions(deps: {
   }
 
   async function addProject(): Promise<ProjectRecord | null> {
+    if (!projectCapabilities.chooseClientDirectory) return null;
     if (projectPickerPendingRef.current) return null;
     const requestId = projectPickerRequestRef.current + 1;
     projectPickerRequestRef.current = requestId;
@@ -177,14 +141,10 @@ export function createAppShellProjectActions(deps: {
   }
 
   async function selectNoProject(): Promise<void> {
+    if (!projectCapabilities.selectNoProject) return;
     try {
-      const selection = await window.maka.projects.select(null);
-      setSelectedProjectId(null);
-      setAppInfo((current) =>
-        current
-          ? { ...current, projectId: null, projectPath: selection.path }
-          : current,
-      );
+      await window.maka.projects.select(null);
+      await refreshProjects();
       onProjectSelected(sessionId);
     } catch (error) {
       toastApi.error(
@@ -206,12 +166,13 @@ export function createAppShellProjectActions(deps: {
 
   async function prepareDefaultProject(): Promise<boolean> {
     try {
-      if (selectedProjectId === null) return true;
+      if (selectedProjectId === null && projectCapabilities.selectNoProject) return true;
       const candidates = projects.length > 0 ? projects : await refreshProjects();
       const project = candidates.find(
         (candidate) => candidate.archivedAt === undefined && candidate.available,
       );
       if (!project) {
+        if (!projectCapabilities.selectNoProject) return false;
         await selectNoProject();
         return true;
       }
@@ -226,22 +187,12 @@ export function createAppShellProjectActions(deps: {
   }
 
   async function relinkProject(projectId: string, selectAfter = false): Promise<ProjectRecord | null> {
+    if (!projectCapabilities.chooseClientDirectory) return null;
     try {
       const result = await window.maka.projects.relink(projectId);
       if (!result.ok) return null;
       if (selectAfter) await selectProjectRecord(result.project, true);
-      else {
-        if (
-          selectedProjectId !== null &&
-          (selectedProjectId === projectId ||
-            result.project.locations.some(
-              (location) => location.path === projectInfo?.projectPath,
-            ))
-        ) {
-          setSelectedProjectId(result.project.id);
-        }
-        await refreshProjects();
-      }
+      else await refreshProjects();
       return result.project;
     } catch (error) {
       toastApi.error(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
@@ -341,7 +292,6 @@ export function createAppShellProjectActions(deps: {
   }
 
   return {
-    refreshAppInfo,
     refreshProjects,
     addProject,
     selectProject,

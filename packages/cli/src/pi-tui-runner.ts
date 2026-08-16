@@ -22,19 +22,26 @@ import {
 import { type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
+import { projectRevisionLinkedSessionTree } from '@maka/core/session-revisions';
 import {
-  projectRevisionLinkedSessionTree,
-  type QueueEnqueueOutcome,
+  slashCommandsForSurface,
+  type SlashCommandIdForSurface,
+} from '@maka/core/slash-command-catalog';
+import { type QueueEnqueueOutcome, type ShellRunUpdate } from '@maka/core/events';
+import {
+  deriveModelSwitchTranscript,
   type SessionSummary,
-  type ShellRunUpdate,
-} from '@maka/core';
+  type StoredMessage,
+} from '@maka/core/session';
 import {
   buildForeignSessionHandoffMessage,
   foreignSessionHandoffDisplayText,
   foreignSourceLabel,
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
-import type { ContextDiagnostics, GoalTurnOutcome, SessionActivityLease } from '@maka/runtime';
+import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
+import type { GoalTurnOutcome } from '@maka/runtime/goal-continuation';
+import type { SessionActivityLease } from '@maka/runtime/goal-turn-lifecycle';
 import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
 import type {
   MakaForeignSessionReader,
@@ -45,14 +52,10 @@ import type {
   SessionRecapGenerator,
 } from './pi-tui-contracts.js';
 import { AUTO_RECAP_DISPLAY_LIMIT_BYTES, shouldAutoRecap } from './session-recap.js';
-import type { InvocableSkillEntry } from '@maka/runtime';
+import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import { MakaSkillHighlightEditor } from './skill-highlight-editor.js';
-import {
-  parseGraphCommand,
-  parseSwarmCommand,
-  type ParsedGraphCommand,
-  type ParsedSwarmCommand,
-} from '@maka/core';
+import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-command';
+import { parseSwarmCommand, type ParsedSwarmCommand } from '@maka/core/swarm-command';
 import {
   inspectSessionResumeAvailability,
   type MakaAttachedSessionTurn,
@@ -99,6 +102,7 @@ import {
 import {
   MakaAutocompleteProvider,
   DirectoryPickerOverlay,
+  MODEL_SWITCH_CACHE_WARNING,
   ModelSearchOverlay,
   OnboardingWizard,
   PickerOverlay,
@@ -109,8 +113,11 @@ import {
   thinkingLevelPickerItems,
   type MakaSlashCommand,
 } from './pi-tui-pickers.js';
+import { formatMakaResumeCommand } from './cli-invocation.js';
 
 export interface MakaPiTuiInput {
+  /** Launcher command used in resume and recovery instructions. */
+  cliCommand?: string;
   title: string;
   driver: MakaSessionDriver;
   cwd: string;
@@ -129,6 +136,13 @@ export interface MakaPiTuiInput {
   /** Maximum context tokens for the active model, for the statusline ctx segment. */
   modelContextWindow?: number;
   terminal?: Terminal;
+  /**
+   * Whether turns and control actions publish terminal taskbar progress.
+   * Defaults off on native Windows and Windows Terminal sessions because its
+   * OSC 9;4 keepalive can make Explorer's taskbar unresponsive. Injectable so
+   * tests cross the same policy seam without depending on their host platform.
+   */
+  taskbarProgress?: boolean;
   /** Starts the CLI process-exit deadline after terminal restore, before outer cleanup. */
   onProcessExit?: (exitCode: number, error?: Error) => void;
   /**
@@ -180,6 +194,8 @@ export interface MakaPiTuiInput {
    * The Session driver owns validation and durable relocation.
    */
   resumeCwd?: string;
+  /** Whether a failed startup resume may continue with a fresh Session. */
+  resumeFailure?: 'start_fresh' | 'exit';
   /**
    * Read-only store of sessions from other coding agents (Claude Code,
    * Codex). When present, the session picker lists foreign sessions for the
@@ -187,12 +203,46 @@ export interface MakaPiTuiInput {
    * fresh Maka session seeded with it. Omitting it hides the feature.
    */
   foreignSessions?: MakaForeignSessionReader;
+  /** Initial Session picker scope when Session paths are not Client-local. */
+  sessionListScope?: 'current' | 'all';
+  /** Whether editor path completion may inspect the Client filesystem. */
+  clientPathAuthority?: 'local' | 'none';
+}
+
+interface TaskbarProgressEnvironment {
+  readonly platform: NodeJS.Platform;
+  readonly override?: string;
+  readonly windowsTerminalSession?: string;
+}
+
+export function resolveTaskbarProgress(
+  setting: boolean | undefined,
+  environment: TaskbarProgressEnvironment = {
+    platform: process.platform,
+    override: process.env.MAKA_TASKBAR_PROGRESS,
+    windowsTerminalSession: process.env.WT_SESSION,
+  },
+): boolean {
+  if (setting !== undefined) return setting;
+  const forced = environment.override?.trim().toLowerCase();
+  if (forced === '1' || forced === 'true') return true;
+  if (forced === '0' || forced === 'false') return false;
+  return environment.platform !== 'win32' && environment.windowsTerminalSession === undefined;
 }
 
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const terminal = input.terminal ?? new ProcessTerminal();
+  const taskbarProgress = resolveTaskbarProgress(input.taskbarProgress);
+  const setTaskbarProgress = (active: boolean): void => {
+    if (taskbarProgress) terminal.setProgress(active);
+  };
   const tui = new TUI(terminal);
   const state = createMakaPiTranscriptState();
+  let transcriptMessages: readonly StoredMessage[] = [];
+  const replaceTranscript = (messages: readonly StoredMessage[]): void => {
+    transcriptMessages = messages;
+    replaceTranscriptWithStoredMessages(state, messages);
+  };
   let cwd = input.cwd;
   let model = input.model;
   let connectionSlug = input.connectionSlug;
@@ -211,7 +261,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     input.modelChoices?.find(
       (choice) => choice.connectionSlug === connectionSlug && choice.model === model,
     )?.thinkingLevels ?? (providerType ? thinkingVariantsForModel(providerType, model) : []);
-  let sessionListScope: 'current' | 'all' = 'current';
+  let sessionListScope: 'current' | 'all' = input.sessionListScope ?? 'current';
   let busy = false;
   let closed = false;
   let currentActivityCompletion: Promise<void> | undefined;
@@ -370,8 +420,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       requestRender();
     }) ?? (() => {});
   const unsubscribeTranscriptReplacements =
-    input.driver.subscribeTranscriptReplacements?.((sessionId, turnId, messages) => {
+    input.driver.subscribeTranscriptReplacements?.((sessionId, turnId, messages, reason) => {
       if (closed || input.driver.getSessionId() !== sessionId) return;
+      if (reason === 'reconnect') {
+        replaceTranscript(messages);
+        shellRunElapsedTicker.sync();
+        requestRender();
+        return;
+      }
+      transcriptMessages = messages;
       if (reconcileToolsWithStoredMessages(state, turnId, messages)) {
         shellRunElapsedTicker.sync();
         requestRender();
@@ -509,7 +566,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     busy = true;
     const activity = beginActivity();
     editor.disableSubmit = true;
-    terminal.setProgress(true);
+    setTaskbarProgress(true);
     attention.controlStarted();
     requestRender();
     let sessionActivity: SessionActivityLease | undefined;
@@ -525,7 +582,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       busy = false;
       activity.finish();
       editor.disableSubmit = false;
-      terminal.setProgress(false);
+      setTaskbarProgress(false);
       attention.controlEnded();
       requestRender();
       startPendingAttachedTurn();
@@ -550,7 +607,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     shellRunElapsedTicker.dispose();
     stopTurnElapsedTicker();
     stopFallbackRetry();
-    terminal.setProgress(false);
+    setTaskbarProgress(false);
     // Drop the busy / attention title marker so the tab is not handed back to
     // the shell still marked busy when the session exits.
     attention.reset();
@@ -977,7 +1034,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     interruptRequested = false;
     lastTurnEscapeAt = 0;
     editor.disableSubmit = false;
-    terminal.setProgress(true);
+    setTaskbarProgress(true);
     attention.promptTurnStarted();
     requestRender();
 
@@ -989,7 +1046,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       stopTurnElapsedTicker();
       interruptRequested = false;
       editor.disableSubmit = false;
-      terminal.setProgress(false);
+      setTaskbarProgress(false);
       attention.promptTurnEnded();
       // A turn ending is activity too — resets the idle clock the next
       // submission's auto-recap check measures against.
@@ -1014,7 +1071,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       onPrepared: async (turn) => {
         if (authoritativeAttachedTurn) {
           adoptSessionMetadata(authoritativeAttachedTurn.summary);
-          replaceTranscriptWithStoredMessages(state, authoritativeAttachedTurn.messages);
+          replaceTranscript(authoritativeAttachedTurn.messages);
           shellRunHydration.reset();
           if (input.listShellRunUpdates) {
             await shellRunHydration.hydrate(authoritativeAttachedTurn.sessionId);
@@ -1213,6 +1270,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const setModel = async (nextModel: string) => {
+    if (nextModel === model) return;
+    const previousModel = deriveModelSwitchTranscript(transcriptMessages).lastUsedModel ?? model;
     await input.driver.setModel(nextModel);
     model = nextModel;
     // Same-connection switch: scope the choice lookup to the live connection
@@ -1229,7 +1288,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: `Model: ${nextModel}`,
+      text: `Model changed: ${previousModel} → ${nextModel}`,
     });
     requestRender();
   };
@@ -1237,6 +1296,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Cross-connection /model: rebind the session to the chosen connection + model.
   // Updates the provider (and thus the thinking variants) and the status line.
   const setModelChoice = async (choice: ModelChoice) => {
+    if (choice.model === model && choice.connectionSlug === connectionSlug) return;
+    const previousModel = deriveModelSwitchTranscript(transcriptMessages).lastUsedModel ?? model;
+    const previousConnectionSlug = connectionSlug;
+    const previousChoice = modelChoices?.find(
+      (candidate) =>
+        candidate.model === previousModel && candidate.connectionSlug === previousConnectionSlug,
+    );
     await input.driver.setModel(choice.model, choice.connectionSlug);
     model = choice.model;
     connectionSlug = choice.connectionSlug;
@@ -1248,7 +1314,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: `Model: ${choice.model} (${choice.connectionName || choice.connectionSlug})`,
+      text:
+        previousConnectionSlug === choice.connectionSlug
+          ? `Model changed: ${previousModel} → ${choice.model}`
+          : `Model changed: ${previousModel} (${previousChoice?.connectionName || previousConnectionSlug}) → ${choice.model} (${choice.connectionName || choice.connectionSlug})`,
     });
     requestRender();
   };
@@ -1273,7 +1342,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     activeTurn,
   }: MakaSessionSwitchResult): Promise<void> => {
     adoptSessionMetadata(summary);
-    replaceTranscriptWithStoredMessages(state, messages);
+    replaceTranscript(messages);
     shellRunHydration.reset();
     if (input.listShellRunUpdates) {
       await shellRunHydration.hydrate(summary.id);
@@ -1328,7 +1397,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: '已回退到该轮之前（分支为新会话，原会话保留），该轮 prompt 已回填输入框，可修改后重新发送。',
+      text: '已回退到该轮之前（分支为新任务，原任务保留），该轮 prompt 已回填输入框，可修改后重新发送。',
     });
     requestRender();
   };
@@ -1430,6 +1499,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       maxPrimaryColumnWidth: number;
       selectedIndex?: number;
       hint?: string;
+      notice?: string;
       onCancel?: () => void;
     },
   ): void => {
@@ -1438,7 +1508,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       maxPrimaryColumnWidth: options.maxPrimaryColumnWidth,
     });
     if (options.selectedIndex !== undefined) list.setSelectedIndex(options.selectedIndex);
-    const picker = new PickerOverlay(list, { title, rightLabel, hint: options.hint });
+    const picker = new PickerOverlay(list, {
+      title,
+      rightLabel,
+      hint: options.hint,
+      notice: options.notice,
+    });
     let overlay: OverlayHandle | undefined;
     list.onSelect = (item) => {
       overlay?.hide();
@@ -1805,7 +1880,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text: `读取外部会话失败：${detail}`,
+        text: `读取外部对话失败：${detail}`,
       });
     } else {
       for (const summary of foreignScan.summaries) {
@@ -1919,7 +1994,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // same welcome block as a cold start — the welcome block is the "fresh
     // session, send a prompt to begin" cue. A notice here would make entries
     // non-empty and suppress it.
-    replaceTranscriptWithStoredMessages(state, []);
+    replaceTranscript([]);
     shellRunElapsedTicker.sync();
     requestRender();
   };
@@ -1996,6 +2071,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showModelList = () => {
     const choices = modelChoices;
+    const hasConversationHistory = state.entries.some(
+      (entry) => entry.kind === 'user' || entry.kind === 'assistant',
+    );
     // Cross-connection picker when the caller supplied choices across all ready
     // connections; otherwise the single-connection list (typed /model, tests).
     if (choices && choices.length > 0) {
@@ -2003,6 +2081,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       const picker = new ModelSearchOverlay(tui, {
         choices,
         current: { model, connectionSlug },
+        showCacheWarning: hasConversationHistory,
         onSelect: (choice) => {
           overlay?.hide();
           void runControl(() => setModelChoice(choice));
@@ -2019,7 +2098,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       (item) => {
         void runControl(() => setModel(item.value));
       },
-      { minPrimaryColumnWidth: 24, maxPrimaryColumnWidth: 48 },
+      {
+        minPrimaryColumnWidth: 24,
+        maxPrimaryColumnWidth: 48,
+        notice: hasConversationHistory ? MODEL_SWITCH_CACHE_WARNING : undefined,
+      },
     );
   };
 
@@ -2305,9 +2388,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
   };
 
-  const slashCommands: MakaSlashCommand[] = [
-    {
-      name: 'context',
+  type TuiSlashCommandId = SlashCommandIdForSurface<'tui'>;
+  type TuiSlashCommandHandler = Omit<MakaSlashCommand, 'name' | 'aliases'>;
+
+  const slashCommandHandlers = {
+    context: {
       description: 'Show latest request context usage',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
@@ -2332,8 +2417,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         });
       },
     },
-    {
-      name: 'compact',
+    compact: {
       description: 'Compact session context',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
@@ -2348,30 +2432,25 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void runControl(compactSession);
       },
     },
-    {
-      name: 'exit',
+    exit: {
       description: 'Exit Maka',
-      aliases: ['quit'],
       run: () => {
         beginGracefulClose();
       },
     },
-    {
-      name: 'help',
+    help: {
       description: 'Show commands and keybindings',
       run: () => {
         void runControl(async () => showHelp());
       },
     },
-    {
-      name: 'new',
+    new: {
       description: 'Start a new session',
       run: () => {
         void runControl(async () => newSession());
       },
     },
-    {
-      name: 'skill',
+    skill: {
       description: 'Invoke a skill (or type /skill:<name> inline)',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
@@ -2386,8 +2465,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void showSkillList();
       },
     },
-    {
-      name: 'setup',
+    setup: {
       description: 'Set up a model provider (API key)',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
@@ -2402,8 +2480,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void showSetupWizard();
       },
     },
-    {
-      name: 'model',
+    model: {
       description: 'Select model',
       run: (parts: string[]) => {
         if (parts.length === 1) {
@@ -2423,8 +2500,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void runControl(() => setModel(nextModel));
       },
     },
-    {
-      name: 'move',
+    move: {
       description: 'Move current session to another directory',
       run: (parts: string[], rawTail?: string) => {
         const targetCwd = (rawTail ?? parts.slice(1).join(' ')).trim();
@@ -2435,8 +2511,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         showMovePicker();
       },
     },
-    {
-      name: 'thinking',
+    thinking: {
       description: 'Set thinking level',
       run: (parts: string[]) => {
         if (parts.length === 1) {
@@ -2474,8 +2549,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void runControl(() => setThinkingLevel(level));
       },
     },
-    {
-      name: 'permissions',
+    permissions: {
       description: 'Set session permissions',
       run: (parts: string[]) => {
         if (parts.length === 1) {
@@ -2495,15 +2569,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         requestSandboxBoundaryMode(mode);
       },
     },
-    {
-      name: 'recap',
+    recap: {
       description: 'One-sentence recap of the session so far',
       run: () => {
         void runRecap('manual');
       },
     },
-    {
-      name: 'rename',
+    rename: {
       description: 'Rename current session',
       run: (parts: string[]) => {
         const name = parts.slice(1).join(' ').trim();
@@ -2528,8 +2600,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         });
       },
     },
-    {
-      name: 'resume',
+    resume: {
       description: 'Resume latest interrupted run at a safe boundary',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
@@ -2544,15 +2615,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void runControl(resumeSession);
       },
     },
-    {
-      name: 'rewind',
+    rewind: {
       description: 'Rewind to an earlier turn',
       run: () => {
         void runControl(showRewindPicker);
       },
     },
-    {
-      name: 'session',
+    session: {
       description: 'Resume session',
       run: (parts: string[]) => {
         if (parts.length === 1) {
@@ -2572,23 +2641,27 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void runControl(() => switchSession(sessionId));
       },
     },
-    {
-      name: 'graph',
+    graph: {
       description: 'Show, enable, disable, or run one Graph turn',
       run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
         const parsed = parseGraphCommand(`/graph${rawTail ? ` ${rawTail}` : ''}`);
         if (parsed) runGraphCommand(parsed, context.idleMs);
       },
     },
-    {
-      name: 'swarm',
+    swarm: {
       description: 'Show, enable, disable, or run one Swarm turn',
       run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
         const parsed = parseSwarmCommand(`/swarm${rawTail ? ` ${rawTail}` : ''}`);
         if (parsed) runSwarmCommand(parsed, context.idleMs);
       },
     },
-  ].sort((left, right) => left.name.localeCompare(right.name));
+  } satisfies Record<TuiSlashCommandId, TuiSlashCommandHandler>;
+
+  const slashCommands: MakaSlashCommand[] = slashCommandsForSurface('tui').map((spec) => ({
+    name: spec.id,
+    ...('aliases' in spec ? { aliases: spec.aliases } : {}),
+    ...slashCommandHandlers[spec.id],
+  }));
 
   const handleSlashCommand = (prompt: string, idleMs: number): boolean => {
     const trimmed = prompt.trim();
@@ -2606,7 +2679,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   refreshEditorCwd = (nextCwd) => {
     editor.setAutocompleteProvider(
-      new MakaAutocompleteProvider(nextCwd, slashCommands, () => listSkillsCached()),
+      new MakaAutocompleteProvider(
+        input.clientPathAuthority === 'none' ? undefined : nextCwd,
+        slashCommands,
+        () => listSkillsCached(),
+      ),
     );
   };
   refreshEditorCwd(cwd);
@@ -2800,9 +2877,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         await switchSession(input.resumeSessionId!, input.resumeCwd);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (input.resumeFailure === 'exit') {
+          handleProcessExit(
+            1,
+            new Error(`Could not resume session ${input.resumeSessionId}: ${message}`),
+          );
+          return;
+        }
         const recoveryHint =
           input.resumeCwd === undefined && message.startsWith('Session cwd no longer exists:')
-            ? ` Retry with: maka --resume ${input.resumeSessionId} --cwd <new-path>.`
+            ? ` Retry with: ${formatMakaResumeCommand(
+                input.cliCommand ?? 'maka',
+                input.resumeSessionId!,
+                { cwd: '<new-path>' },
+              )}.`
             : '';
         state.entries.push({
           kind: 'notice',
@@ -2824,7 +2912,7 @@ const BOTTOM_PICKER_MARGIN_ROWS = 4;
 // silently clipping the last command.
 const EDITOR_AUTOCOMPLETE_MAX_VISIBLE = 24;
 
-function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
+export function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
   if (diagnostics.status === 'unavailable') {
     return diagnostics.reason === 'no_completed_request'
       ? 'Context unavailable\nNo completed provider request exists for this session.'
@@ -2869,18 +2957,42 @@ function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
   }
 
   lines.push('', 'Estimated breakdown');
-  if (diagnostics.segments.length === 0) {
-    lines.push('  Unavailable', '    no captured request segments');
+  const composition = diagnostics.composition;
+  if (!composition) {
+    // The metering record named this request; no capture explained it. Said
+    // plainly, because a silent "0 tokens" would read as an empty prompt.
+    lines.push('  Unavailable', '    this request left no composition on record');
   } else {
-    const labels: Record<(typeof diagnostics.segments)[number]['kind'], string> = {
+    const labels: Record<(typeof composition.segments)[number]['kind'], string> = {
       system_instructions: 'System instructions',
       tool_definitions: 'Tool definitions',
       messages: 'Messages',
       other: 'Other options',
     };
-    for (const segment of diagnostics.segments) {
+    for (const segment of composition.segments) {
       lines.push(
-        `  ${labels[segment.kind]}: ≈${formatContextCount(segment.estimatedTokens)} tokens`,
+        `  ${labels[segment.kind]}: ≈${formatContextCount(estimateContextTokens(segment.bytes))} tokens`,
+      );
+    }
+    // Per tool, because that is the only row a reader can act on: "tool
+    // definitions ≈ 40%" names nothing to remove (#2323).
+    if (composition.tools && composition.tools.length > 0) {
+      lines.push('', 'By tool');
+      for (const tool of composition.tools) {
+        lines.push(
+          `  ${tool.name}: ≈${formatContextCount(estimateContextTokens(tool.bytes))} tokens`,
+        );
+      }
+      if (composition.remainingTools) {
+        const remainder = composition.remainingTools;
+        lines.push(
+          `  ${remainder.count} more tool${remainder.count === 1 ? '' : 's'}: ≈${formatContextCount(estimateContextTokens(remainder.bytes))} tokens`,
+        );
+      }
+    }
+    if (composition.unlabelledToolBytes !== undefined) {
+      lines.push(
+        `  Unnamed tools: ≈${formatContextCount(estimateContextTokens(composition.unlabelledToolBytes))} tokens`,
       );
     }
   }
@@ -2897,6 +3009,16 @@ function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
     lines.push('', 'History compaction', '  Unavailable for this request');
   }
   return lines.join('\n');
+}
+
+/**
+ * The estimate lives here, at the surface that shows it, and prints with a `≈`
+ * every time. The Host reports measured bytes; four-bytes-per-token is a rule
+ * of thumb over serialized JSON, and one that is wrong for an attachment's
+ * base64 in a direction nobody downstream can correct (#2323).
+ */
+function estimateContextTokens(bytes: number): number {
+  return Math.ceil(bytes / 4);
 }
 
 function formatContextCount(value: number): string {

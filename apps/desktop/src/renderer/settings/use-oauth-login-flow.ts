@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets, type UiLocale } from '@maka/core';
+import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
+import { type UiLocale } from '@maka/core/ui-locale';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { createOneShotActionGuard, teardownPendingAuthorization } from './oauth-login-flow-guard';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
@@ -9,7 +10,7 @@ import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 // polling / loopback PKCE depending on the provider).
 //
 // Extracted from the SubscriptionLoginModal `startLogin` flow so BOTH the
-// OAuth catalog login modals (Codex / xAI / Antigravity) AND the model
+// OAuth catalog login modals (Codex / xAI) AND the model
 // connection detail sheet's 重新登录 affordance drive the same
 // getAuthUrl -> openAuthUrl -> refresh -> completeAuthorization sequence with
 // one authRequestId lifecycle, one synchronous pending-action guard, and
@@ -36,7 +37,6 @@ export interface SubscriptionSnapshot {
     | 'provider_rejected';
   email?: string;
   plan?: string;
-  status?: 'preview';
   errorMessage?: string;
 }
 
@@ -327,6 +327,19 @@ export function subscriptionActionErrorMessage(error: unknown, locale: UiLocale 
 export function subscriptionResultMessage(message: string | undefined, fallback: string, locale: UiLocale = 'zh'): string {
   const raw = redactSecrets(message ?? '').trim();
   if (!raw) return fallback;
+  // Host conflict / supersede copy before the coarse keyword classifier turns
+  // "authorization" into a generic 鉴权失败 that does not tell the user what to do.
+  // This is error-path copy: do not claim a new login already started.
+  if (/already in progress|superseded by a new attempt/i.test(raw)) {
+    return locale === 'zh'
+      ? '上一轮浏览器登录仍在进行或已切换，请再点一次登录，或稍后再试。'
+      : 'A previous browser login is still running or was superseded. Try logging in again shortly.';
+  }
+  if (/did not present OAuth|no matching OAuth presentation/i.test(raw)) {
+    return locale === 'zh'
+      ? '无法打开系统浏览器完成登录，请检查是否拦截了弹窗后重试。'
+      : 'Could not open the system browser for login. Check popup blockers and try again.';
+  }
   const classified = locale === 'zh'
     ? generalizedErrorMessageChinese(new Error(raw), '')
     : generalizedErrorMessage(new Error(raw), '');

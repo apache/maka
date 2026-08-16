@@ -3,6 +3,7 @@ import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type {
   SessionCatalogProjection,
   SubscriptionFrame,
+  WorkspaceTarget,
 } from '@maka/runtime-host/protocol';
 import type {
   BotSessionAdapter,
@@ -25,8 +26,7 @@ type RuntimeHostBotSessionClient = Pick<
 >;
 
 export interface RuntimeHostBotSessionCreateTarget {
-  readonly cwd: string;
-  readonly projectId?: string | null;
+  readonly workspace: WorkspaceTarget;
 }
 
 export interface RuntimeHostBotSessionAdapterDeps {
@@ -53,8 +53,7 @@ export function createRuntimeHostBotSessionAdapter(
       try {
         session = await deps.client.createSession({
           sessionId,
-          cwd: target.cwd,
-          ...(target.projectId === undefined ? {} : { projectId: target.projectId }),
+          workspace: target.workspace,
           name: input.name,
           labels: [...input.labels],
           modelTarget: { kind: 'default' },
@@ -105,7 +104,7 @@ export function createRuntimeHostBotSessionAdapter(
       return 'ready';
     },
 
-    async runTurn({ sessionId, turnId, text }) {
+    async runTurn({ sessionId, turnId, text, onReplySnapshot }) {
       let session;
       try {
         session = await deps.client.openSession(sessionId);
@@ -114,7 +113,11 @@ export function createRuntimeHostBotSessionAdapter(
         throw error;
       }
 
-      const completion = collectRuntimeHostBotTurn(session.events, turnId);
+      const completion = collectRuntimeHostBotTurn(
+        session.events,
+        turnId,
+        onReplySnapshot,
+      );
       void completion.catch(() => undefined);
       try {
         try {
@@ -153,9 +156,11 @@ export function createRuntimeHostBotSessionAdapter(
 async function collectRuntimeHostBotTurn(
   events: AsyncIterable<SubscriptionFrame>,
   turnId: string,
+  onReplySnapshot?: (text: string) => void,
 ): Promise<BotSessionTurnResult> {
   const assistantText = new Map<string, string>();
   let latestMessageId: string | undefined;
+  let publishedSnapshot: string | undefined;
 
   for await (const frame of events) {
     if (frame.kind === 'subscription.closed') {
@@ -165,10 +170,20 @@ async function collectRuntimeHostBotTurn(
       if (frame.delta.turnId !== turnId || frame.delta.kind !== 'text') continue;
       latestMessageId = frame.delta.messageId;
       const folded = foldRuntimeHostAssistantDelta(
-        assistantText.get(latestMessageId) ?? '',
+        frame.delta.reset ? '' : (assistantText.get(latestMessageId) ?? ''),
         frame.delta,
       );
       assistantText.set(latestMessageId, folded.text);
+      if (folded.text !== publishedSnapshot) {
+        publishedSnapshot = folded.text;
+        try {
+          onReplySnapshot?.(folded.text);
+        } catch {
+          // Reply streaming is a best-effort projection. A channel-specific
+          // delivery failure must not stop subscription draining or change the
+          // authoritative Runtime Host Turn outcome.
+        }
+      }
       continue;
     }
     if (frame.kind !== 'subscription.session_projection') continue;

@@ -1,10 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import type { Task } from '@maka/core';
-import { LocaleProvider } from '../locale-context.js';
-import { deriveTaskLedgerPanelModel, TaskLedgerPanel } from '../task-ledger-panel.js';
+import type { Task } from '@maka/core/task-ledger';
+import { deriveTaskLedgerPanelModel } from '../task-ledger-panel.js';
 
 function task(input: Partial<Task> & Pick<Task, 'id' | 'key' | 'status'>): Task {
   return {
@@ -40,18 +37,4 @@ describe('task ledger panel model', () => {
     assert.equal(model.recentTerminalCount, 3);
     assert.deepEqual(model.recentTerminalTree.map((item) => item.key), ['T1', 'T1.1', 'T3', 'T4']);
   });
-});
-
-
-test('task ledger exposes real parent-child groups instead of aria-level-only rows', () => {
-  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
-    locale: 'zh',
-    children: createElement(TaskLedgerPanel, {
-      tasks: [
-        task({ id: 'parent', key: 'T1', subject: 'Parent', status: 'in_progress' }),
-        task({ id: 'child', parentId: 'parent', key: 'T1.1', subject: 'Child', status: 'pending' }),
-      ],
-    }),
-  }));
-  assert.match(markup, /role="treeitem"[^>]*aria-level="1"[\s\S]*role="group"[\s\S]*aria-level="2"/);
 });

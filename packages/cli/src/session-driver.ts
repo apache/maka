@@ -7,7 +7,7 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UserQuestionResponse } from '@maka/core/user-question';
-import type { ContextDiagnostics } from '@maka/runtime';
+import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 
 export interface MakaSessionMoveResult {
@@ -100,7 +100,12 @@ export interface MakaSessionDriver {
     listener: (sessionId: string, requestId: string) => void,
   ): () => void;
   subscribeTranscriptReplacements?(
-    listener: (sessionId: string, turnId: string, messages: StoredMessage[]) => void,
+    listener: (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void,
   ): () => void;
   startNewSession(): void;
   stop(): Promise<void>;
@@ -109,6 +114,8 @@ export interface MakaSessionDriver {
   getOrchestrationMode?(): OrchestrationMode;
   getPermissionMode?(): PermissionMode;
 }
+
+export type MakaTranscriptReplacementReason = 'terminal' | 'reconnect';
 
 export type SessionResumeAvailability = { available: true } | { available: false; reason: string };
 

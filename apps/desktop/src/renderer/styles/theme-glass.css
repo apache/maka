@@ -77,7 +77,7 @@ html[data-os="darwin"] .maka-session-panel-footer {
 
 .maka-session-panel,
   .maka-session-panel-footer,
-  .maka-plan-heading,
+  .maka-scheduled-task-heading,
   .maka-titlebar-action {
     -webkit-user-select: none;
     user-select: none;

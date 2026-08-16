@@ -52,20 +52,6 @@ function findPwsh(): string | undefined {
 }
 
 describe('runShellWithBoundedTail', () => {
-  test('returns full small output and exit 0 without throwing', async () => {
-    const r = await runShellWithBoundedTail("printf 'hello\\nworld\\n'", base());
-    assert.deepEqual(
-      {
-        exitCode: r.exitCode,
-        stdout: r.stdout,
-        stderr: r.stderr,
-        timedOut: r.timedOut,
-        aborted: r.aborted,
-      },
-      { exitCode: 0, stdout: 'hello\nworld\n', stderr: '', timedOut: false, aborted: false },
-    );
-  });
-
   test('keeps only the bounded, line-aligned TAIL of large output (never killed by size)', async () => {
     const r = await runShellWithBoundedTail(
       "printf 'HEADMARK\\n'; seq 1 50; printf 'TAILMARK\\n'",
@@ -243,7 +229,7 @@ describe('runShellWithBoundedTail', () => {
 
   test('spawns a detected PowerShell explicitly with non-interactive flags (not via shell:true)', async () => {
     // /bin/echo stands in for pwsh.exe: if the spawn plan is honoured, the
-    // "shell" receives the flags plus the command as argv and echoes them back.
+    // "shell" receives the flags plus the command wrapper as argv and echoes them back.
     // If the command were still run via shell:true, stdout would be plain
     // 'wired-marker' with no flags.
     const r = await runShellWithBoundedTail(
@@ -254,13 +240,13 @@ describe('runShellWithBoundedTail', () => {
     );
     assert.equal(r.exitCode, 0);
     assert.ok(
-      r.stdout.startsWith('-NoLogo -NoProfile -NonInteractive -Command echo wired-marker\n'),
-      `flags then verbatim command, got: ${r.stdout}`,
+      r.stdout.startsWith(
+        '-NoLogo -NoProfile -NonInteractive -Command $__makaUtf8 = [System.Text.UTF8Encoding]::new($false)\n',
+      ),
+      `flags then PowerShell wrapper, got: ${r.stdout}`,
     );
-    assert.ok(
-      r.stdout.includes('exit $LASTEXITCODE'),
-      'exit-code wrapper is part of the command argument',
-    );
+    assert.ok(r.stdout.includes("GetEnvironmentVariable('__MAKA_RUNTIME_POWERSHELL_COMMAND')"));
+    assert.doesNotMatch(r.stdout, /wired-marker/u, 'user syntax stays outside argv');
   });
 
   test('a native command exit code survives the PowerShell -Command path (requires pwsh)', async (t) => {

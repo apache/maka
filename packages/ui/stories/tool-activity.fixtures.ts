@@ -1,4 +1,4 @@
-import type { ToolResultContent } from '@maka/core';
+import type { ToolResultContent } from '@maka/core/events';
 import type { ToolActivityItem, ToolOutputChunk } from '../src/materialize.js';
 
 const NOW = 1_735_689_600_000;
@@ -17,13 +17,13 @@ const terminalResult = {
 const terminalFailureResult = {
   kind: 'terminal',
   cwd: '/Users/yuhan/workspace/oss/maka-agent',
-  cmd: 'npm run -w @maka/headless test',
+  cmd: 'npm run -w @maka/eval test',
   status: 'failed',
   exitCode: 1,
-  output: pipeOutput('running headless tests\n', [
-      'Error: expected verifier to receive task-run.json',
-      'at packages/headless/src/verifier.ts:42:11',
-    ].join('\n')),
+  output: pipeOutput(
+    'running eval tests\n',
+    ['Error: expected earliest valid attempt', 'at packages/eval/src/result.ts:42:11'].join('\n'),
+  ),
 } satisfies ToolResultContent;
 
 function pipeOutput(stdout = '', stderr = '') {
@@ -149,9 +149,9 @@ export const statusOverviewItems = [
   toolItem({
     toolUseId: 'status-errored',
     toolName: 'bash',
-    displayName: 'Headless test',
+    displayName: 'Eval test',
     status: 'errored',
-    args: { cmd: 'npm run -w @maka/headless test' },
+    args: { cmd: 'npm run -w @maka/eval test' },
     result: terminalFailureResult,
     durationMs: 2_480,
   }),

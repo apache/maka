@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
+import { buildHistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
 import {
   bindProviderVisibleEvidence,
   projectMemoryExtractionEvidence,
 } from '../memory-extraction-evidence.js';
 import {
+  buildMemoryCompactionSourceContext,
   buildMemoryExtractionTriggerTools,
   MEMORY_EXTRACT_TOOL_NAME,
   MEMORY_REMEMBER_TOOL_NAME,
@@ -18,6 +20,192 @@ import {
 } from '../memory-extraction-proposal.js';
 
 describe('bounded Memory Extraction', () => {
+  test('freezes an attachment-free Compaction context at the exact RuntimeEvent boundary', () => {
+    const source = buildMemoryCompactionSourceContext(
+      [
+        event('user-before', 'user', { kind: 'text', text: 'Durable user preference.' }),
+        event('thinking-before', 'model', { kind: 'thinking', text: 'private reasoning' }),
+        event('call-before', 'model', {
+          kind: 'function_call',
+          id: 'call-1',
+          name: 'Read',
+          args: { path: 'README.md' },
+        }),
+        event('result-boundary', 'tool', {
+          kind: 'function_response',
+          id: 'call-1',
+          name: 'Read',
+          result: { text: 'tool context' },
+        }),
+        event('user-after', 'user', { kind: 'text', text: 'Must stay outside.' }),
+      ],
+      'result-boundary',
+    );
+
+    assert.ok(source);
+    const serialized = JSON.stringify(source.messages);
+    assert.match(serialized, /Durable user preference/);
+    assert.doesNotMatch(serialized, /README\.md|tool context/);
+    assert.doesNotMatch(serialized, /private reasoning|Must stay outside/);
+    assert.deepEqual(source.eventMessagePositions?.['user-before'], [0]);
+    assert.equal(source.eventMessagePositions?.['user-after'], undefined);
+  });
+
+  test('excludes attachments, quotes, and Tool context from Compaction interpretation text', () => {
+    const source = buildMemoryCompactionSourceContext(
+      [
+        event('user-attachment', 'user', {
+          kind: 'text',
+          text: 'Remember the visible sentence.',
+          attachments: [
+            {
+              kind: 'image',
+              name: 'private-chart.png',
+              mimeType: 'image/png',
+              bytes: 123,
+              ref: {
+                kind: 'session_file',
+                sessionId: 'session-1',
+                relativePath: 'attachments/private-chart.png',
+              },
+            },
+          ],
+          quotes: [{ text: 'quoted durable detail' }],
+        }),
+        event('image-call', 'model', {
+          kind: 'function_call',
+          id: 'image-call',
+          name: 'Read',
+          args: { ref: 'session-resource' },
+        }),
+        event('image-result', 'tool', {
+          kind: 'function_response',
+          id: 'image-call',
+          name: 'Read',
+          result: {
+            kind: 'image',
+            mimeType: 'image/png',
+            bytes: 456,
+            ref: { kind: 'session_file', relativePath: 'secret-result.png' },
+          },
+        }),
+      ],
+      'image-result',
+    );
+
+    assert.ok(source);
+    const serialized = JSON.stringify(source.messages);
+    assert.match(serialized, /Remember the visible sentence/);
+    assert.doesNotMatch(
+      serialized,
+      /quoted durable detail|<attachment>|private-chart|secret-result|image\/png|session_file|session-resource/,
+    );
+  });
+
+  test('keeps Assistant text while excluding parallel Tool and provider-native semantics', () => {
+    const stepText = {
+      ...event('assistant-step', 'model', { kind: 'text', text: 'Checking both sources.' }),
+      refs: { storedMessageId: 'step-1' },
+    };
+    const firstCall = {
+      ...event('call-a', 'model', {
+        kind: 'function_call',
+        id: 'call-a',
+        name: 'Read',
+        args: { path: 'a.md' },
+        providerOptions: { anthropic: { opaque: 'secret-provider-metadata' } },
+      }),
+      refs: { stepId: 'step-1' },
+    };
+    const secondCall = {
+      ...event('call-b', 'model', {
+        kind: 'function_call',
+        id: 'call-b',
+        name: 'Read',
+        args: { path: 'b.md' },
+      }),
+      refs: { stepId: 'step-1' },
+    };
+    const source = buildMemoryCompactionSourceContext(
+      [
+        stepText,
+        {
+          ...event('thinking-step', 'model', {
+            kind: 'thinking',
+            text: 'private step reasoning',
+            signature: 'signed-thinking',
+          }),
+          refs: { stepId: 'step-1' },
+        },
+        firstCall,
+        secondCall,
+        event('result-a', 'tool', {
+          kind: 'function_response',
+          id: 'call-a',
+          name: 'Read',
+          result: { text: 'A' },
+        }),
+        event('result-b', 'tool', {
+          kind: 'function_response',
+          id: 'call-b',
+          name: 'Read',
+          result: { text: 'B' },
+        }),
+      ],
+      'result-b',
+    );
+
+    assert.ok(source);
+    assert.equal(source.messages.length, 1);
+    assert.equal(source.messages[0]?.role, 'assistant');
+    const assistant = source.messages[0] as Extract<
+      (typeof source.messages)[number],
+      { role: 'assistant' }
+    >;
+    assert.ok(Array.isArray(assistant.content));
+    assert.deepEqual(
+      assistant.content.map((part) => part.type),
+      ['text'],
+    );
+    assert.equal(source.eventMessagePositions?.['call-a'], undefined);
+    assert.equal(source.eventMessagePositions?.['result-a'], undefined);
+    const serialized = JSON.stringify(source.messages);
+    assert.match(serialized, /Checking both sources/);
+    assert.doesNotMatch(
+      serialized,
+      /tool_call|tool_result|a\.md|b\.md|secret-provider-metadata|signed-thinking|private step reasoning/,
+    );
+  });
+
+  test('rebuilds only the post-Cursor Event slice behind the previous Compaction summary', () => {
+    const compacted = event('compacted-user', 'user', {
+      kind: 'text',
+      text: 'Raw text already represented by the old summary.',
+    });
+    const previousCheckpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [compacted],
+      summary: 'The old summary remains interpretation context.',
+    });
+    const source = buildMemoryCompactionSourceContext(
+      [
+        compacted,
+        event('cursor-event', 'model', { kind: 'text', text: 'Already processed response.' }),
+        event('new-user', 'user', { kind: 'text', text: 'Only this new user text is pending.' }),
+      ],
+      'new-user',
+      { afterEventId: 'cursor-event', previousCheckpoint },
+    );
+
+    assert.ok(source);
+    const serialized = JSON.stringify(source.messages);
+    assert.match(serialized, /old summary remains interpretation context/);
+    assert.match(serialized, /Only this new user text is pending/);
+    assert.doesNotMatch(serialized, /Raw text already represented|Already processed response/);
+    assert.deepEqual(source.eventMessagePositions?.['new-user'], [1]);
+    assert.equal(source.eventMessagePositions?.['cursor-event'], undefined);
+  });
+
   test('projects only user text, excluding Assistant, Thinking, and every Tool event', () => {
     const evidence = projectMemoryExtractionEvidence([
       event('user-1', 'user', { kind: 'text', text: 'Use concise Chinese answers.' }),

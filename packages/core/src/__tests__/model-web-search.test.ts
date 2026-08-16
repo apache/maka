@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { lookupModelMetadata } from '../model-metadata.js';
 import { resolveHostedWebSearchCapability } from '../model-web-search.js';
 
 describe('hosted web search capability', () => {
   it('enables the implemented Responses path only for declared model families', () => {
     assert.deepEqual(resolveHostedWebSearchCapability('deepseek', undefined, 'deepseek-v4-flash'), {
+      adapter: 'openai-responses',
+      implemented: true,
+    });
+    assert.deepEqual(resolveHostedWebSearchCapability('deepseek', undefined, 'deepseek-v4-pro'), {
       adapter: 'openai-responses',
       implemented: true,
     });
@@ -127,5 +132,14 @@ describe('hosted web search capability', () => {
       ),
       null,
     );
+  });
+
+  it('publishes native search for both first-party DeepSeek V4 models', () => {
+    assert.equal(
+      lookupModelMetadata('deepseek', 'deepseek-v4-flash').capabilities?.webSearch,
+      true,
+    );
+    assert.equal(lookupModelMetadata('deepseek', 'deepseek-v4-pro').capabilities?.webSearch, true);
+    assert.equal(lookupModelMetadata('deepseek', 'deepseek-v4-pro').lastUpdated, '2026-08-13');
   });
 });

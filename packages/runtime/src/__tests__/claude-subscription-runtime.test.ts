@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core';
+import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
 import { buildProviderOptions } from '../model-factory.js';
 import { openAiCodexHeaders } from '../subscription-auth.js';
 import { testConnection } from '../test-connection.js';

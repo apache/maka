@@ -87,7 +87,6 @@ describe('InteractiveUsageStores', () => {
       root_not_found: false,
       root_unmarked: true,
       invalid_marker: true,
-      root_kind_mismatch: true,
       root_identity_collision: true,
       root_identity_changed: true,
       invalid_repair: false,
@@ -167,7 +166,7 @@ describe('InteractiveUsageStores', () => {
 
   test('classifies poisoned live root markers as draining persistence failures', async () => {
     const scenarios: ReadonlyArray<{
-      code: 'root_unmarked' | 'invalid_marker' | 'root_kind_mismatch';
+      code: 'root_unmarked' | 'invalid_marker';
       poison(markerPath: string): Promise<void>;
     }> = [
       {
@@ -179,10 +178,10 @@ describe('InteractiveUsageStores', () => {
         poison: (markerPath) => writeFile(markerPath, '{'),
       },
       {
-        code: 'root_kind_mismatch',
+        code: 'invalid_marker',
         poison: async (markerPath) => {
           const marker = JSON.parse(await readFile(markerPath, 'utf8')) as { kind: string };
-          marker.kind = 'headless';
+          marker.kind = 'retired_kind';
           await writeFile(markerPath, `${JSON.stringify(marker)}\n`);
         },
       },

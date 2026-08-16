@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { resolveHostedWebSearchCapability } from '@maka/core/model-web-search';
 import type { HostedWebSearchAdapter } from '@maka/core/model-web-search';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
-import type { WebSearchSettings } from '@maka/core';
+import type { WebSearchSettings } from '@maka/core/web-search';
 import type { MakaTool } from './tool-runtime.js';
 
 export const NATIVE_WEB_SEARCH_TOOL_NAME = 'WebSearch';

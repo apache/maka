@@ -3,7 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { AgentRunHeader, EmittedAgentRunEvent } from '@maka/core';
+import type { AgentRunHeader, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import { MODEL_CALL_ATTEMPT_SCHEMA_VERSION } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
@@ -14,6 +15,77 @@ import {
 import { HostExecutionInspectCoordinator } from '../server/execution-inspect-coordinator.js';
 
 describe('HostExecutionInspectCoordinator', () => {
+  test('projects persisted history-compaction failure facts into the Session trace', async () => {
+    await withCoordinator(async ({ stores, coordinator }) => {
+      const session = await stores.sessionStore.create(sessionInput('Compaction diagnostics'));
+      const runId = 'compact-run';
+      const turnId = `turn-${runId}`;
+      await stores.agentRunStore.createRun(runHeader(session.id, runId, 1));
+      await stores.agentRunStore.appendEvent(session.id, runId, {
+        type: 'model_call_attempt_recorded',
+        id: 'attempt-compact-1',
+        sessionId: session.id,
+        runId,
+        turnId,
+        ts: 10,
+        data: {
+          schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+          logicalCallId: 'call-compact-1',
+          attemptId: 'attempt-compact-1',
+          traceId: 'trace-compact-1',
+          sessionId: session.id,
+          runId,
+          turnId,
+          step: 0,
+          attempt: 0,
+          callKind: 'history_compact',
+          historyCompactRoute: 'provider_native',
+          connectionSlug: 'codex-subscription',
+          providerId: 'openai-codex',
+          modelId: 'gpt-5.6-luna',
+          startedAt: 1,
+          completedAt: 10,
+          latencyMs: 9,
+          status: 'failed',
+          errorClass: 'RequestRejected',
+          httpStatus: 400,
+          providerCode: 'invalid_request_error',
+          providerRequestId: 'req-compact-1',
+          retryable: false,
+          usageBasis: 'missing',
+          costBasis: 'unpriced',
+        },
+      });
+
+      const result = await coordinator.handlers['execution.inspect.query'](
+        { kind: 'session_trace_start', sessionId: session.id },
+        connectionContext(),
+      );
+
+      assert.equal(result.ok, true);
+      if (!result.ok || result.result.kind !== 'session_trace_page') return;
+      const step = result.result.turns[0]?.steps[0];
+      assert.equal(step?.kind, 'model_call');
+      if (step?.kind !== 'model_call') return;
+      assert.equal(step.historyCompactRoute, 'provider_native');
+      assert.deepEqual(step.attempts[0], {
+        attemptId: 'attempt-compact-1',
+        attempt: 0,
+        status: 'failed',
+        startedAt: 1,
+        completedAt: 10,
+        latencyMs: 9,
+        errorClass: 'RequestRejected',
+        httpStatus: 400,
+        providerCode: 'invalid_request_error',
+        providerRequestId: 'req-compact-1',
+        retryable: false,
+        costBasis: 'unpriced',
+        usageBasis: 'missing',
+      });
+    });
+  });
+
   test('resolves duplicate AgentRun identities and returns canonical evidence documents', async () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const first = await stores.sessionStore.create(sessionInput('First'));
@@ -138,6 +210,50 @@ describe('HostExecutionInspectCoordinator', () => {
       assert.equal(missing.ok, false);
       if (missing.ok) return;
       assert.equal(missing.error.code, 'not_found');
+    });
+  });
+
+  test('reads one Turn trace without charging unrelated Session runs', async () => {
+    await withCoordinator(async ({ stores, coordinator }) => {
+      const session = await stores.sessionStore.create(sessionInput('Target Turn'));
+      for (let index = 0; index <= EXECUTION_INSPECT_SESSION_MAX_RUNS; index += 1) {
+        await stores.agentRunStore.createRun(runHeader(session.id, `unrelated-${index}`, index));
+      }
+      const runId = 'target-run';
+      const turnId = `turn-${runId}`;
+      await stores.agentRunStore.admitRootTurn({
+        sessionId: session.id,
+        turnId,
+        proposedRunId: runId,
+        proposedUserMessageId: 'target-user-message',
+        execution: { kind: 'external_message' },
+        previousRootTurnId: null,
+        normalizedInput: { text: 'diagnose this' },
+        sourceMessages: [],
+        admittedAt: 100,
+      });
+      await stores.agentRunStore.createRun(runHeader(session.id, runId, 100));
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        runId,
+        runtimeEvent(session.id, runId, 101),
+      );
+
+      const sessionTrace = await coordinator.handlers['execution.inspect.query'](
+        { kind: 'session_trace_start', sessionId: session.id },
+        connectionContext(),
+      );
+      assert.equal(sessionTrace.ok, false);
+
+      const target = await coordinator.handlers['execution.inspect.query'](
+        { kind: 'turn_trace', sessionId: session.id, turnId },
+        connectionContext(),
+      );
+      assert.equal(target.ok, true);
+      if (!target.ok || target.result.kind !== 'turn_trace') return;
+      assert.equal(target.result.turn.turnId, turnId);
+      assert.equal(target.result.turn.runId, runId);
+      assert.equal(target.result.turn.failure?.message, 'fixture failure');
     });
   });
 

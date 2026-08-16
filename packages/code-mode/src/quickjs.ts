@@ -111,8 +111,21 @@ async function drainHostToolOperations(operations: ReadonlySet<Promise<unknown>>
 
 function normalizeQuickJsError(error: unknown): CodeModeDiagnostic {
   const message = error instanceof Error ? error.message : String(error);
-  if (error instanceof SyntaxError) {
+  const isRunError =
+    error instanceof Error && (error as Error & { code?: unknown }).code === 'RUN_ERROR';
+  const isSourceSyntaxRunError =
+    isRunError &&
+    error.name === 'SyntaxError' &&
+    /\n\s+at code-mode\.js:\d+:\d+\s*$/.test(error.stack ?? '');
+  if (error instanceof SyntaxError || isSourceSyntaxRunError) {
     return { kind: 'parse_error', message };
+  }
+  if (
+    isRunError &&
+    error.name === 'InternalError' &&
+    (/^interrupted$/i.test(message) || /out of memory|stack (?:size|overflow)/i.test(message))
+  ) {
+    return { kind: 'limit_exceeded', message };
   }
   if (error instanceof CodeModeError) {
     if (

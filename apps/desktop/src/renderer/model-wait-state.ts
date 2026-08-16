@@ -56,7 +56,7 @@ export type TurnPhase = 'waiting' | 'streamed';
  * `runningTurnIds` is read only for turns OTHER than the arm's. For the arm's
  * own turn the local projection knows more — it sees the terminal event first —
  * so a snapshot taken before that event must not light Stop back up. For any
- * other turn (another client, an automation, one still running across a reload)
+ * other turn (another client, a scheduled task, one still running across a reload)
  * it is the only witness there is. It is a set because a session can run
  * concurrent turns, and the arm's own turn lingering in it must not hide a
  * sibling that is genuinely still running.

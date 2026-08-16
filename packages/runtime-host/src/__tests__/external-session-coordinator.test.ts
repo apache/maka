@@ -3,10 +3,9 @@ import { test } from 'node:test';
 import {
   ExternalSessionAdapterRegistry,
   type ExternalSessionAdapter,
-  type SessionHeader,
-  type StoredMessage,
-} from '@maka/core';
-import { headerToSummary } from '@maka/runtime';
+} from '@maka/core/external-session';
+import { type SessionHeader, type StoredMessage } from '@maka/core/session';
+import { headerToSummary } from '@maka/runtime/session-manager';
 import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
 import { EXTERNAL_SESSION_RESULT_MAX_BYTES } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
@@ -49,6 +48,28 @@ test('discovers detected adapters and pages bounded source summaries', async () 
   if (!second.ok) assert.fail('Expected the second catalog page');
   assert.equal(second.result.sessions.length, 4);
   assert.equal(second.result.nextCursor, null);
+});
+
+test('resolves a Project filter before calling the Host adapter', async () => {
+  const adapter = adapterFixture();
+  const filters: unknown[] = [];
+  adapter.listSessions = async (input) => {
+    filters.push(input);
+    return [];
+  };
+  const fixture = coordinatorFixture([adapter]);
+
+  const result = await fixture.coordinator.handlers['external-session.catalog.query'](
+    {
+      adapterId: 'codex',
+      workspace: { kind: 'project', projectId: 'project-1' },
+      includeArchived: true,
+    },
+    context,
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(filters, [{ cwd: '/resolved-project', includeArchived: true }]);
 });
 
 test('stops catalog pages before the encoded result limit', async () => {
@@ -105,6 +126,48 @@ test('imports through the generic importer and treats repeats as independent cop
     ],
   );
   assert.equal(fixture.drainRequests(), 0);
+});
+
+test('coalesces a repeat import issued while the first is still running', async () => {
+  // The surface that asks cannot enforce this. 导入任务 is a Settings page the
+  // user is free to leave mid-import — the import deliberately continues here —
+  // and the page's in-flight state dies with it, so coming back and pressing
+  // 导入 again used to land a second task for one intent. A second window or
+  // the CLI would have done the same. Nothing is awaited between the two calls
+  // below, which is exactly that: two requests for one source, both live.
+  const fixture = coordinatorFixture([adapterFixture()]);
+
+  const [first, second] = await Promise.all([
+    fixture.coordinator.handlers['external-session.import'](
+      { adapterId: 'codex', sourceSessionId: 'source-0' },
+      context,
+    ),
+    fixture.coordinator.handlers['external-session.import'](
+      { adapterId: 'codex', sourceSessionId: 'source-0' },
+      context,
+    ),
+  ]);
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  if (!first.ok || !second.ok) assert.fail('Expected the coalesced import to commit');
+  // Same task, and only one of them was ever created. Both callers are told
+  // about it, so the one that clicked twice still gets taken to the result.
+  assert.equal(first.result.session.id, second.result.session.id);
+  assert.equal(fixture.creates.length, 1);
+  assert.equal(fixture.drainRequests(), 0);
+
+  // Only concurrent repeats collapse. Once the first has settled the source is
+  // importable again, which is the deliberate second-copy behaviour pinned by
+  // the test above.
+  const later = await fixture.coordinator.handlers['external-session.import'](
+    { adapterId: 'codex', sourceSessionId: 'source-0' },
+    context,
+  );
+  assert.equal(later.ok, true);
+  if (!later.ok) assert.fail('Expected a later repeat to commit its own copy');
+  assert.notEqual(later.result.session.id, first.result.session.id);
+  assert.equal(fixture.creates.length, 2);
 });
 
 test('reports conversion errors before persistence and store uncertainty after entry', async () => {
@@ -296,6 +359,23 @@ function coordinatorFixture(
       adapters: new ExternalSessionAdapterRegistry(adapters),
       admission,
       sessions: store,
+      workspaceResolver: {
+        resolve: async (target) =>
+          target.kind === 'host_path'
+            ? { target, cwd: target.path, projectId: null }
+            : {
+                target,
+                cwd: '/resolved-project',
+                projectId: target.projectId,
+                project: {
+                  id: target.projectId,
+                  name: 'Project',
+                  locations: [{ path: '/resolved-project', isWorktree: false }],
+                  available: true,
+                  preferredPath: '/resolved-project',
+                },
+              },
+      },
       resolveTarget: async () => ({
         backend: 'ai-sdk',
         llmConnectionSlug: 'default',

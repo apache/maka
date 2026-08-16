@@ -1,11 +1,10 @@
 import { stat } from 'node:fs/promises';
 import {
   deriveTaskSubmissionReadiness,
-  PROVIDER_DEFAULTS,
-  type LlmConnection,
   type TaskSubmissionReadinessDimension,
   type TaskSubmissionReadinessSnapshot,
-} from '@maka/core';
+} from '@maka/core/task-submission-readiness';
+import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core/llm-connections';
 import { providerAuthRequiresSecret } from '@maka/core/llm-connections';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import type { RuntimeHostConnection } from '@maka/runtime-host/client';
@@ -16,6 +15,7 @@ export interface RuntimeHostCliTaskReadinessInput {
   readonly cwd: string;
   readonly connectionSlug?: string;
   readonly model?: string;
+  readonly workspaceState?: 'ready' | 'missing' | 'unavailable' | 'unknown';
 }
 
 export async function readRuntimeHostCliTaskReadiness(
@@ -40,7 +40,7 @@ export async function readRuntimeHostCliTaskReadiness(
     checkedAt,
     runtime: { state: 'ready', checkedAt },
     modelTarget,
-    workspace: { state: await inspectWorkspace(input.cwd), checkedAt },
+    workspace: { state: input.workspaceState ?? (await inspectWorkspace(input.cwd)), checkedAt },
   });
 }
 
@@ -50,10 +50,11 @@ export function isRuntimeHostCliTaskBlocked(snapshot: TaskSubmissionReadinessSna
 
 export function formatRuntimeHostCliTaskBlockers(
   snapshot: TaskSubmissionReadinessSnapshot,
+  cliCommand = 'maka',
 ): string {
   return snapshot.blockers
     .filter((blocker) => blocker.state !== 'unknown')
-    .map((blocker) => `${blocker.blockerCode ?? blocker.id}: ${repairHint(blocker)}`)
+    .map((blocker) => `${blocker.blockerCode ?? blocker.id}: ${repairHint(blocker, cliCommand)}`)
     .join('\n');
 }
 
@@ -126,14 +127,14 @@ async function inspectWorkspace(
   }
 }
 
-function repairHint(blocker: TaskSubmissionReadinessDimension): string {
+function repairHint(blocker: TaskSubmissionReadinessDimension, cliCommand: string): string {
   const target = blocker.repairTarget;
   if (!target) return 'retry the command';
   switch (target.kind) {
     case 'provider_catalog':
-      return 'run `maka` to configure a model provider';
+      return `run \`${cliCommand}\` to configure a model provider`;
     case 'connection':
-      return `repair connection "${target.connectionSlug}" in \`maka\``;
+      return `repair connection "${target.connectionSlug}" in \`${cliCommand}\``;
     case 'models':
       return 'choose an available connection with `--connection`';
     case 'runtime_restart':

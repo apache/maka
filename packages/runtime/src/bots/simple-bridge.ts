@@ -1,7 +1,15 @@
-import type { BotAttachmentKind, BotChannelSettings } from '@maka/core';
+import type { BotAttachmentKind } from '@maka/core/bot-events';
+import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
-import type { BotPlatform, BotSendOptions, BotStatus, SendCapable } from './types.js';
+import type {
+  BotPlatform,
+  BotReplyStream,
+  BotReplyStreamOptions,
+  BotSendOptions,
+  BotStatus,
+  SendCapable,
+} from './types.js';
 import { proxiedFetch } from './proxied-fetch.js';
 
 const TELEGRAM_POLL_TIMEOUT_S = 15;
@@ -20,6 +28,9 @@ const FEISHU_REQUEST_TIMEOUT_MS = 10_000;
  * inside the cap on the producer side without re-measuring.
  */
 const TELEGRAM_MAX_UTF16_PER_MESSAGE = 4000;
+const TELEGRAM_DRAFT_UPDATE_INTERVAL_MS = 250;
+const TELEGRAM_DRAFT_KEEPALIVE_MS = 20_000;
+const TELEGRAM_DRAFT_ID_MAX = 2_147_483_647;
 
 /** Count UTF-16 code units in `s` (surrogate pairs count as 2). */
 function utf16Len(s: string): number {
@@ -105,6 +116,13 @@ function buildTelegramSendBody(
 
 function normalizeTelegramReplyToMessageId(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) return undefined;
+  const numeric = Number(trimmed);
+  return Number.isSafeInteger(numeric) ? numeric : undefined;
+}
+
+function normalizeTelegramPrivateChatId(value: string): number | undefined {
   const trimmed = value.trim();
   if (!/^[1-9]\d*$/.test(trimmed)) return undefined;
   const numeric = Number(trimmed);
@@ -224,14 +242,11 @@ export const __TEST__ = {
   splitForTelegram,
   buildTelegramSendBody,
   normalizeTelegramReplyToMessageId,
+  normalizeTelegramPrivateChatId,
   isAllowedUser,
   classifyTelegramSendResponse,
-  TELEGRAM_RETRY_MIN_MS,
-  TELEGRAM_RETRY_MAX_MS,
-  ephemeralDelayFromOptions,
-  EPHEMERAL_REPLY_MIN_MS,
-  EPHEMERAL_REPLY_MAX_MS,
-  telegramAttachmentKind,
+  createTelegramReplyStream,
+  telegramDraftId,
 };
 
 export class SimpleBotBridge extends BaseBotAdapter implements SendCapable {
@@ -344,6 +359,27 @@ export class SimpleBotBridge extends BaseBotAdapter implements SendCapable {
       }, ephemeralDelay).unref?.();
     }
     return lastMessageId;
+  }
+
+  startReplyStream(chatId: string, options: BotReplyStreamOptions): BotReplyStream | null {
+    if (this.platform !== 'telegram' || !this.running || options.isGroup) return null;
+    const privateChatId = normalizeTelegramPrivateChatId(chatId);
+    if (privateChatId === undefined) return null;
+    const token = this.settings.token;
+    return createTelegramReplyStream({
+      chatId,
+      streamId: options.streamId,
+      prepareDraftText: (text) => prefixWithinUtf16(text, TELEGRAM_MAX_UTF16_PER_MESSAGE),
+      sendDraft: async (draftId, text) => {
+        const response = await telegramApi(token, 'sendMessageDraft', {
+          chat_id: privateChatId,
+          draft_id: draftId,
+          text,
+        });
+        return response?.ok === true;
+      },
+      sendFinal: (text) => this.sendMessage(chatId, text, options),
+    });
   }
 
   /**
@@ -499,6 +535,144 @@ export class SimpleBotBridge extends BaseBotAdapter implements SendCapable {
     if (this.platform === 'discord' || this.platform === 'feishu') return 'gateway';
     return 'none';
   }
+}
+
+interface TelegramReplyStreamDeps {
+  readonly chatId: string;
+  readonly streamId: string;
+  readonly prepareDraftText?: (text: string) => string;
+  readonly sendDraft: (draftId: number, text: string) => Promise<boolean>;
+  readonly sendFinal: (text: string) => Promise<string | null>;
+  readonly now?: () => number;
+  readonly setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout | number;
+  readonly clearTimer?: (timer: NodeJS.Timeout | number) => void;
+}
+
+function createTelegramReplyStream(deps: TelegramReplyStreamDeps): BotReplyStream {
+  const now = deps.now ?? Date.now;
+  const setTimer = deps.setTimer ?? setTimeout;
+  const clearTimer = deps.clearTimer ?? clearTimeout;
+  const prepareDraftText = deps.prepareDraftText ?? ((text: string) => text);
+  const draftId = telegramDraftId(deps.chatId, deps.streamId);
+  let latestText = '';
+  let deliveredText: string | undefined;
+  let lastAttemptAt = Number.NEGATIVE_INFINITY;
+  let updateTimer: NodeJS.Timeout | number | undefined;
+  let keepaliveTimer: NodeJS.Timeout | number | undefined;
+  let closed = false;
+  let nativeDraftAvailable = true;
+  let inFlight: Promise<void> | undefined;
+  let finishTask: Promise<string | null> | undefined;
+
+  const cancelKeepalive = (): void => {
+    if (keepaliveTimer === undefined) return;
+    clearTimer(keepaliveTimer);
+    keepaliveTimer = undefined;
+  };
+
+  const scheduleKeepalive = (): void => {
+    if (
+      closed ||
+      !nativeDraftAvailable ||
+      deliveredText === undefined ||
+      keepaliveTimer !== undefined
+    )
+      return;
+    keepaliveTimer = setTimer(() => {
+      keepaliveTimer = undefined;
+      sendLatestDraft(true);
+    }, TELEGRAM_DRAFT_KEEPALIVE_MS);
+    if (typeof keepaliveTimer !== 'number') keepaliveTimer.unref?.();
+  };
+
+  const sendLatestDraft = (force = false): void => {
+    if (closed || !nativeDraftAvailable || inFlight || (!force && latestText === deliveredText)) {
+      return;
+    }
+    const text = latestText;
+    lastAttemptAt = now();
+    inFlight = (async () => {
+      try {
+        if (!(await deps.sendDraft(draftId, text))) {
+          nativeDraftAvailable = false;
+          return;
+        }
+        deliveredText = text;
+      } catch {
+        nativeDraftAvailable = false;
+      } finally {
+        inFlight = undefined;
+        if (latestText !== deliveredText) scheduleDraft();
+        else scheduleKeepalive();
+      }
+    })();
+  };
+
+  const scheduleDraft = (): void => {
+    if (
+      closed ||
+      !nativeDraftAvailable ||
+      inFlight ||
+      latestText === deliveredText ||
+      updateTimer !== undefined
+    ) {
+      return;
+    }
+    const remaining = Math.max(0, TELEGRAM_DRAFT_UPDATE_INTERVAL_MS - (now() - lastAttemptAt));
+    if (remaining === 0) {
+      sendLatestDraft();
+      return;
+    }
+    updateTimer = setTimer(() => {
+      updateTimer = undefined;
+      sendLatestDraft();
+    }, remaining);
+    if (typeof updateTimer !== 'number') updateTimer.unref?.();
+  };
+
+  return {
+    update(text) {
+      const prepared = prepareDraftText(text);
+      if (closed || prepared === latestText) return;
+      latestText = prepared;
+      cancelKeepalive();
+      scheduleDraft();
+    },
+    async finish(finalText) {
+      if (finishTask) return finishTask;
+      if (!closed) {
+        closed = true;
+        if (updateTimer !== undefined) clearTimer(updateTimer);
+        updateTimer = undefined;
+        cancelKeepalive();
+      }
+      finishTask = (async () => {
+        await inFlight;
+        return deps.sendFinal(finalText);
+      })();
+      return finishTask;
+    },
+    async abort() {
+      if (finishTask) {
+        await finishTask.catch(() => undefined);
+        return;
+      }
+      if (closed) return;
+      closed = true;
+      if (updateTimer !== undefined) clearTimer(updateTimer);
+      updateTimer = undefined;
+      cancelKeepalive();
+      await inFlight;
+    },
+  };
+}
+
+function telegramDraftId(chatId: string, streamId: string): number {
+  let hash = 2_166_136_261;
+  for (const unit of `${chatId}\0${streamId}`) {
+    hash = Math.imul(hash ^ unit.charCodeAt(0), 16_777_619);
+  }
+  return ((hash >>> 0) % TELEGRAM_DRAFT_ID_MAX) + 1;
 }
 
 async function telegramApi(

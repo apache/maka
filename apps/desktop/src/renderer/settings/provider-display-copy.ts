@@ -1,4 +1,6 @@
-import type { ProviderType, UiCatalog, UiLocale } from '@maka/core';
+import type { ProviderType } from '@maka/core/llm-connections';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 /**
  * Pure-data provider introduction copy, localized zh / en.
@@ -269,10 +271,6 @@ export const PROVIDER_DISPLAY_COPY = {
   'xai-oauth': {
     zh: { name: 'xAI OAuth', description: '使用 SuperGrok 或 X Premium 账号登录。', badge: 'Account' },
     en: { name: 'xAI OAuth', description: 'Sign in with SuperGrok or X Premium.', badge: 'Account' },
-  },
-  'gemini-cli': {
-    zh: { name: 'Gemini CLI', description: 'Google 账号登录暂未接入聊天发送。' },
-    en: { name: 'Gemini CLI', description: 'Google account sign-in is not yet wired to chat.' },
   },
 } satisfies Record<ProviderType, UiCatalog<ProviderCopy>>;
 

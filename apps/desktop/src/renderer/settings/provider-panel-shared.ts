@@ -1,7 +1,5 @@
+import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
 import {
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-  redactSecrets,
   type ConnectionTestResult,
   type CreateConnectionInput,
   type LlmConnection,
@@ -10,15 +8,15 @@ import {
   type SavedRequestHeaders,
   type ProviderCategory,
   type ProviderType,
-  type UiLocale,
   type UpdateConnectionInput,
-} from '@maka/core';
+} from '@maka/core/llm-connections';
+import { type UiLocale } from '@maka/core/ui-locale';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
 import { cleanErrorMessage } from '../model-connection-errors.js';
+import type { DesktopConnectionSnapshot } from '../../shared/desktop-connection-snapshot.js';
 
 export interface ConnectionsBridge {
-  list(): Promise<LlmConnection[]>;
-  getDefault(): Promise<string | null>;
+  getSnapshot(): Promise<DesktopConnectionSnapshot>;
   setDefault(slug: string | null): Promise<void>;
   create(input: CreateConnectionInput): Promise<LlmConnection>;
   update(slug: string, patch: UpdateConnectionInput): Promise<LlmConnection>;
@@ -48,6 +46,11 @@ export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale
   // Main-process handlers throw display-ready Chinese copy; keep it instead
   // of flattening it into a coarser classification or the generic fallback.
   if (/[\u3400-\u9fff]/.test(cleaned)) return cleaned;
+  if (/connection_stale|Unable to delete Connection: connection_stale/i.test(cleaned)) {
+    return locale === 'zh'
+      ? '连接状态已更新，请刷新列表后再删除。'
+      : 'The connection changed while deleting. Refresh the list and try again.';
+  }
   const classified = locale === 'zh'
     ? generalizedErrorMessageChinese(new Error(cleaned), '')
     : generalizedErrorMessage(new Error(cleaned), '');

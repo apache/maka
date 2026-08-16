@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ComputerUseToolSet, MakaTool } from '@maka/runtime';
+import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   applyComputerUseRealModelPolicy,
   parseComputerUseRealModelPolicy,

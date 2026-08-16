@@ -4,7 +4,7 @@ import {
   useLayoutEffect,
   type ReactNode,
 } from 'react';
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 
 const UiLocaleContext = createContext<UiLocale | undefined>(undefined);
 

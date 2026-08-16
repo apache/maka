@@ -1,23 +1,21 @@
-import type {
-  AgentRunHeader,
-  AssistantStepContentKind,
-  RuntimeEvent,
-  RuntimeEventStatus,
-  StoredMessage,
-  ToolActivityKind,
-  ToolResultContent,
-  TurnStatus,
-} from '@maka/core';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { AssistantStepContentKind, StoredMessage, TurnStatus } from '@maka/core/session';
+import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
+import type { ToolActivityKind, ToolResultContent } from '@maka/core/events';
 import {
   SANDBOX_BOUNDARY_REQUEST_STATUSES,
-  TOOL_ACTIVITY_KINDS,
+  validateSandboxBoundaryExpansion,
+} from '@maka/core/sandbox-boundary';
+
+import { TOOL_ACTIVITY_KINDS, normalizeMessageContent } from '@maka/core/events';
+
+import {
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
   isTerminalRuntimeEventStatus,
-  normalizeMessageContent,
-  normalizeToolResultContentForRead,
-  validateSandboxBoundaryExpansion,
-} from '@maka/core';
+} from '@maka/core/runtime-event';
+
+import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 
 /** The statuses a settled boundary decision can carry — every status but `pending`. */
 type SettledSandboxBoundaryStatus = Exclude<
@@ -78,6 +76,22 @@ export function isContinuationStartRuntimeEvent(event: RuntimeEvent): boolean {
   return (
     event.actions?.stateDelta?.continuationStart === true ||
     event.actions?.continuationStart !== undefined
+  );
+}
+
+/**
+ * Whether the event can affect the StoredMessage projection or the state needed
+ * to construct one. Pure control-plane facts are intentionally absent so a
+ * transcript reader can stream past them without retaining the whole ledger.
+ */
+export function affectsRuntimeEventStoredMessageProjection(event: RuntimeEvent): boolean {
+  return (
+    event.content !== undefined ||
+    isTerminalRuntimeEvent(event) ||
+    event.actions?.permissionRequest !== undefined ||
+    event.actions?.permissionDecision !== undefined ||
+    event.actions?.permissionAnswerAccepted !== undefined ||
+    event.actions?.tokenUsage !== undefined
   );
 }
 
@@ -816,7 +830,7 @@ function projectFunctionResponse(
   let normalizedResult: ToolResultContent | undefined;
   if (!archivedPlaceholder) {
     try {
-      normalizedResult = normalizeToolResultContentForRead(compatibleResult);
+      normalizedResult = decodeCanonicalToolResultContent(compatibleResult);
     } catch (error) {
       diagnostic(
         state,

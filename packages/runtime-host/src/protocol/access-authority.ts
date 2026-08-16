@@ -5,6 +5,8 @@ import type { OperationKey } from './operations.js';
 
 export const ACCESS_CREDENTIAL_MAX_GRANTS = 256;
 
+export type AccessCredentialPrincipalKind = 'remote_owner' | 'capability_provider';
+
 const ACCESS_ERRORS = [
   'host_not_ready',
   'host_draining',
@@ -15,6 +17,7 @@ const ACCESS_ERRORS = [
 ] as const;
 
 export interface AccessCredentialIssueInput {
+  readonly principalKind: AccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
@@ -24,6 +27,7 @@ export interface AccessCredentialIssueInput {
 export interface AccessCredentialIssueResult {
   readonly credentialId: string;
   readonly deliveryId: string;
+  readonly principalKind: AccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
@@ -66,12 +70,14 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
 
 export function decodeAccessCredentialIssueInput(value: unknown): AccessCredentialIssueInput {
   const record = requireExactRecord(value, 'access credential issue input', [
+    'principalKind',
     'principalId',
     'operationGrants',
     'canPublishClientCapabilities',
     'canUseHostPaths',
   ]);
   return {
+    principalKind: principalKind(record.principalKind),
     principalId: principalId(record.principalId),
     operationGrants: operationGrants(record.operationGrants),
     canPublishClientCapabilities: boolean(
@@ -86,6 +92,7 @@ export function decodeAccessCredentialIssueResult(value: unknown): AccessCredent
   const record = requireExactRecord(value, 'access credential issue result', [
     'credentialId',
     'deliveryId',
+    'principalKind',
     'principalId',
     'operationGrants',
     'canPublishClientCapabilities',
@@ -94,6 +101,7 @@ export function decodeAccessCredentialIssueResult(value: unknown): AccessCredent
   return {
     credentialId: requireId(record.credentialId, 'credentialId'),
     deliveryId: requireId(record.deliveryId, 'deliveryId'),
+    principalKind: principalKind(record.principalKind),
     principalId: principalId(record.principalId),
     operationGrants: operationGrants(record.operationGrants),
     canPublishClientCapabilities: boolean(
@@ -102,6 +110,13 @@ export function decodeAccessCredentialIssueResult(value: unknown): AccessCredent
     ),
     canUseHostPaths: boolean(record.canUseHostPaths, 'canUseHostPaths'),
   };
+}
+
+function principalKind(value: unknown): AccessCredentialPrincipalKind {
+  if (value !== 'remote_owner' && value !== 'capability_provider') {
+    throw invalidProtocolFrame('Invalid access credential principalKind');
+  }
+  return value;
 }
 
 export function decodeAccessCredentialRevokeInput(value: unknown): AccessCredentialRevokeInput {

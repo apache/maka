@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { QuoteRef } from '@maka/core';
+import type { QuoteRef } from '@maka/core/events';
 import {
   consumeCompanionQuoteSnapshot,
   consumeCompanionInitialPrompt,

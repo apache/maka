@@ -1,5 +1,5 @@
 import { MultiSelector } from '@astryxdesign/core';
-import type { ModelCatalogEntry } from '@maka/core';
+import type { ModelCatalogEntry } from '@maka/core/model-catalog';
 import { useUiLocale } from '@maka/ui';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 

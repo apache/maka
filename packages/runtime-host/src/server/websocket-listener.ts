@@ -22,6 +22,7 @@ export interface StartRuntimeHostWebSocketListenerOptions {
   readonly port: number;
   readonly path?: string;
   readonly tls?: RuntimeHostWebSocketTls;
+  readonly allowInsecureRemote?: boolean;
   readonly allowedOrigins?: readonly string[];
   readonly accessAuthority: RuntimeHostAccessAuthority;
   readonly isReady: () => boolean;
@@ -61,12 +62,16 @@ export async function startRuntimeHostWebSocketListener(
       return;
     }
     const credential = readBearerCredential(request.headers.authorization);
-    const authority = credential ? options.accessAuthority.authenticate(credential) : undefined;
-    if (!authority) {
+    if (!credential || !options.accessAuthority.authenticate(credential)) {
       rejectUpgrade(socket, 401, 'Unauthorized');
       return;
     }
     webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+      const authority = options.accessAuthority.authenticate(credential);
+      if (!authority) {
+        webSocket.terminate();
+        return;
+      }
       const transport = new WebSocketTransport(webSocket);
       transports.add(transport);
       void transport.closed.then(() => transports.delete(transport));
@@ -209,7 +214,15 @@ function validateWebSocketListenerOptions(options: StartRuntimeHostWebSocketList
   if (!path.startsWith('/') || path.includes('?') || path.includes('#')) {
     throw new Error('Runtime Host WebSocket path must be an absolute URL path');
   }
-  if (!options.tls && options.host !== '127.0.0.1' && options.host !== '::1') {
+  if (options.tls && options.allowInsecureRemote === true) {
+    throw new Error('Insecure Runtime Host listener opt-in cannot be combined with TLS');
+  }
+  if (
+    !options.tls &&
+    options.allowInsecureRemote !== true &&
+    options.host !== '127.0.0.1' &&
+    options.host !== '::1'
+  ) {
     throw new Error('Plain Runtime Host WebSocket listeners must bind to loopback');
   }
   if (

@@ -1,5 +1,5 @@
 // Session-scoped task ledger primitive for the main agent. The model manages a
-// flat task list via TaskCreate/TaskUpdate; each turn tail re-injects the
+// flat task list via task_create/task_update; each turn tail re-injects the
 // current list. The durable contract is intentionally narrow: task status,
 // compact evidence/reason fields, append-only task events, and conservative
 // resume trust diagnostics. Priority, dependencies, and assignee fields remain
@@ -209,7 +209,7 @@ export function isResumeTrust(value: unknown): value is ResumeTrust {
  * emits the id bare), no whitespace (would break the list-line structure), no
  * huge length (would bloat every turn tail), and redaction-stable (a renderer
  * that runs redactSecrets must not turn the id into [redacted] while the store
- * keeps the real id -- a later TaskUpdate would miss). The whitelist
+ * keeps the real id -- a later task_update would miss). The whitelist
  * (alphanumeric plus . _ : -, 1-64 chars) plus redactSecrets(id) === id enforces
  * these constraints without coupling to the UUID format.
  */
@@ -218,7 +218,7 @@ export function isSafeTaskId(value: unknown): value is string {
   // the id is rendered verbatim, so a secret-shaped id (ghp_..., sk-..., a
   // 40-char hex, AIza...) must be rejected -- otherwise a renderer that does
   // run redactSecrets would turn it into [redacted] while the store keeps the
-  // real id, and a later TaskUpdate would miss.
+  // real id, and a later task_update would miss.
   return (
     typeof value === 'string' &&
     /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(value) &&
@@ -652,7 +652,7 @@ function validateTaskLedgerEventType(
  *   - the canonical id is rendered verbatim, and the subject is a safe
  *     (redacted, tag-stripped) rendered payload of what the store holds; and
  *   - the model can unambiguously recover each task's id from what it sees, so
- *     a later TaskUpdate hits the right task.
+ *     a later task_update hits the right task.
  *
  * Rendering is per-task and fielded, not a free-text bullet: each line is
  * `id=<id> status=<status> subject=<JSON-stringified safe subject>`. The
@@ -660,7 +660,7 @@ function validateTaskLedgerEventType(
  * `id=` field or any other id-like span past it -- any id-like text in the subject stays
  * inside the quoted JSON payload. The id is emitted verbatim: it is a
  * redaction-stable stable token validated on write and read, so scrubbing it
- * could only deform it (and break TaskUpdate); it must not be redacted or
+ * could only deform it (and break task_update); it must not be redacted or
  * tag-stripped. Each subject is redacted (secrets) and tag-stripped (complete
  * `<task-ledger ...>` / `</task-ledger ...>` tags on a single line, so a
  * model-authored subject cannot open or close the <task-ledger> data envelope)

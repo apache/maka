@@ -1,8 +1,9 @@
 import {
   SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS,
   isSandboxBoundaryRestartClosure,
-} from '@maka/core';
-import type { AgentRunEvent, AgentRunHeader, SandboxBoundaryRequest } from '@maka/core';
+} from '@maka/core/sandbox-boundary';
+import type { AgentRunEvent, AgentRunHeader } from '@maka/core/agent-run';
+import type { SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
 
 export interface AgentRunRecoveryDecision {

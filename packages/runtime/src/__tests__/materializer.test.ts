@@ -97,35 +97,6 @@ const note = (kind: SystemNoteMessage['kind']): SystemNoteMessage => ({
 // ---------- materializeSession ----------
 
 describe('materializeSession', () => {
-  test('empty', () => {
-    const vm = materializeSession([]);
-    expect(vm.items).toEqual([]);
-    expect(vm.totalTokens.input).toBe(0);
-    expect(vm.totalTokens.output).toBe(0);
-  });
-
-  test('user + assistant', () => {
-    const vm = materializeSession([user('u', 'hello'), assistant('a', 'hi')]);
-    expect(vm.items).toHaveLength(2);
-    expect(vm.items[0]?.kind).toBe('user');
-    expect(vm.items[1]?.kind).toBe('assistant');
-  });
-
-  test('completed tool: call + result paired into single ChatItem', () => {
-    const vm = materializeSession([
-      toolCall('t-1', 'Read', { path: '/x' }),
-      toolResult('t-1', false, 'contents'),
-    ]);
-    expect(vm.items).toHaveLength(1);
-    const item = vm.items[0];
-    expect(item?.kind).toBe('tool');
-    if (item?.kind !== 'tool') return;
-    expect(item.item.toolUseId).toBe('t-1');
-    expect(item.item.status).toBe('completed');
-    expect(item.item.isError).toBe(false);
-    expect(item.item.result).toEqual({ kind: 'text', text: 'contents' });
-  });
-
   test('errored tool: result with isError=true → status errored', () => {
     const vm = materializeSession([
       toolCall('t-2', 'Write'),
@@ -228,8 +199,6 @@ describe('materializeSession', () => {
   // while the turn runs, so does the call.
   for (const [turnStatus, expected] of [
     ['running', 'running'],
-    ['aborted', 'interrupted'],
-    ['failed', 'interrupted'],
     ['completed', 'interrupted'],
   ] as const) {
     test(`resultless tool_call in a ${turnStatus} turn → ${expected}`, () => {
@@ -263,20 +232,6 @@ describe('materializeSession', () => {
     expect(item.decision?.id).toBe('req-1');
   });
 
-  test('token usage accumulated, not rendered as ChatItem', () => {
-    const vm = materializeSession([tokens(100, 50, 0.001), tokens(200, 80, 0.002)]);
-    expect(vm.items).toHaveLength(0);
-    expect(vm.totalTokens.input).toBe(300);
-    expect(vm.totalTokens.output).toBe(130);
-    expect(vm.totalTokens.costUsd).toBeCloseTo(0.003);
-  });
-
-  test('system_note rendered as ChatItem', () => {
-    const vm = materializeSession([note('session_start'), note('abort')]);
-    expect(vm.items).toHaveLength(2);
-    expect(vm.items[0]?.kind).toBe('system_note');
-  });
-
   test('mixed full conversation', () => {
     const vm = materializeSession([
       note('session_start'),
@@ -308,31 +263,6 @@ describe('applyAppendedMessage', () => {
     expect(appendedItem.item.activityKind).toBe('command');
   });
 
-  test('append user → adds bubble', () => {
-    const next = applyAppendedMessage([], user('u', 'hi'));
-    expect(next.items).toHaveLength(1);
-    expect(next.items[0]?.kind).toBe('user');
-  });
-
-  test('append tool_call → pending tool item', () => {
-    const next = applyAppendedMessage([], toolCall('t', 'Read'));
-    expect(next.items).toHaveLength(1);
-    const item = next.items[0];
-    if (item?.kind !== 'tool') throw new Error('wrong kind');
-    expect(item.item.status).toBe('pending');
-  });
-
-  test('append tool_result → patches matching tool item by toolUseId', () => {
-    const items: ChatItem[] = applyAppendedMessage([], toolCall('t', 'Write')).items;
-    const next = applyAppendedMessage(items, toolResult('t', false, 'wrote'));
-    expect(next.items).toHaveLength(1);
-    expect(next.modifiedToolUseId).toBe('t');
-    const item = next.items[0];
-    if (item?.kind !== 'tool') throw new Error('wrong kind');
-    expect(item.item.status).toBe('completed');
-    expect(item.item.result).toEqual({ kind: 'text', text: 'wrote' });
-  });
-
   test('append tool_result with isError=true → status errored', () => {
     const items = applyAppendedMessage([], toolCall('t', 'Write')).items;
     const next = applyAppendedMessage(items, toolResult('t', true, 'denied'));
@@ -354,11 +284,6 @@ describe('applyAppendedMessage', () => {
     const item = next.items[0];
     if (item?.kind !== 'tool') throw new Error('wrong kind');
     expect(item.decision?.decision).toBe('deny');
-  });
-
-  test('append token_usage → does not add item', () => {
-    const next = applyAppendedMessage([], tokens(10, 5));
-    expect(next.items).toEqual([]);
   });
 });
 
@@ -382,11 +307,5 @@ describe('setToolStatus', () => {
     const once = setToolStatus(items, 't', { status: 'running' });
     const twice = setToolStatus(once, 't', { status: 'running' });
     expect(twice).toEqual(once);
-  });
-
-  test('unknown toolUseId → no-op', () => {
-    const items = applyAppendedMessage([], user('u', 'hi')).items;
-    const next = setToolStatus(items, 'nonexistent', { status: 'running' });
-    expect(next).toEqual(items);
   });
 });

@@ -1,8 +1,8 @@
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import type { Menu as MenuType, Tray } from 'electron';
-import { resolveSystemUiLocale, type UiCatalog, type UiLocale } from '@maka/core';
-import type { CuOverlayHook } from '@maka/runtime';
+import { resolveSystemUiLocale, type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
+import type { CuOverlayHook } from '@maka/runtime/computer-use-types';
 
 // Electron is CommonJS, and named imports from it fail outside a main process.
 // Deferring the require keeps this module loadable under plain `node --test`,
@@ -114,7 +114,7 @@ const COPY: UiCatalog<StatusItemCopy> = {
   zh: {
     stopUsing: (appName) => `停止操作 ${appName}`,
     stopUnnamed: '停止 Computer Use',
-    empty: '没有正在进行的会话',
+    empty: '没有正在进行的任务',
   },
   en: {
     stopUsing: (appName) => `Stop Using ${appName}`,

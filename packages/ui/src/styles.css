@@ -57,7 +57,6 @@
    type lives on `.maka-quote-chip-text`, which is why the derived scan needed
    two arms rather than three to see it at all. */
 .maka-quote-chip-collapsed { height: var(--h-control-sm); max-width: 240px; align-items: center; padding-block: 2px; border-radius: var(--radius-pill); }
-.maka-composer-running-actions { display: inline-flex; align-items: center; gap: var(--space-1); }
 .maka-quote-chip-removable { padding-right: 2px; }
 .maka-quote-chip-readonly { padding-right: 8px; }
 .maka-quote-chip-icon { width: var(--icon-meta); height: var(--icon-meta); flex: 0 0 auto; color: var(--muted-foreground); }
@@ -133,6 +132,15 @@
 }
 .maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
+.maka-subagent-session-label,
+.maka-subagent-session-end {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.maka-subagent-session-label { width: 100%; min-width: 0; }
+.maka-subagent-session-summary { min-width: 0; flex: 1 1 auto; }
+.maka-subagent-session-end { color: var(--muted-foreground); }
 .maka-live-turn-footer-placeholder { height: 32px; margin-top: 2px; }
 .maka-turn-processing,
 .maka-turn-status {
@@ -143,6 +151,7 @@
    (they sit on the column's own 8px). Hugging the last tool card read as part
    of that card. */
 .maka-turn-processing { margin-top: 8px; }
+.maka-turn-provider-retry { margin-top: 8px; }
 .maka-turn-indicator-text { display: inline-flex; min-width: 0; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Duration must match `WORKING_PHRASE_FADE_MS` in chat-turn.tsx: the swap is a
    fade out, then a text change, then a fade in, and the JS timer is what waits
@@ -515,13 +524,12 @@
  }
 .maka-sandbox-blocked-copy { align-self: start; }
 .maka-sandbox-blocked-copy[data-pending="true"] { cursor: progress; }
-.maka-sandbox-blocked-copy[data-copy-feedback="copied"] { border-color: oklch(from var(--link) l c h / 0.35); color: var(--link); }
+.maka-sandbox-blocked-copy[data-copy-feedback="copied"] { border-color: oklch(from var(--accent) l c h / 0.35); color: var(--link); }
 .maka-sandbox-blocked-copy[data-copy-feedback="failed"] { border-color: oklch(from var(--destructive) l c h / 0.35); color: var(--destructive); }
-.maka-automation-result-icon { display: inline; margin-right: 4px; vertical-align: text-bottom; }
 .maka-turn-status-icon { flex: 0 0 auto; }
 
 .maka-turn-aborted-marker,
-.maka-turn-automation-origin,
+.maka-turn-host-origin,
 .maka-turn-failed-banner {
   font: var(--maka-text-supporting);
   display: inline-flex;
@@ -542,7 +550,7 @@
 
 .maka-turn-aborted-marker em { font-style: italic; }
 
-.maka-turn-automation-origin {
+.maka-turn-host-origin {
   align-self: flex-end;
   gap: var(--space-1);
   margin-bottom: var(--space-1);
@@ -730,7 +738,7 @@
 .maka-tool-diff-line[data-line="del"] { background: oklch(from var(--destructive) l c h / 0.1); color: var(--destructive); }
 .maka-tool-diff-line[data-line="hunk"] {
   font: var(--maka-text-heading-5);
- background: oklch(from var(--link) l c h / 0.08); color: var(--foreground-secondary); }
+ background: oklch(from var(--accent) l c h / 0.08); color: var(--foreground-secondary); }
 .maka-tool-diff-line[data-line="meta"] { color: var(--muted-foreground); }
 .maka-tool-diff-line[data-line="ctx"] { color: var(--foreground-secondary); }
 .maka-tool-terminal-cwd { color: var(--muted-foreground); background: transparent; }
@@ -741,11 +749,7 @@
    `.maka-tool-terminal-*` family is currently unreachable:
    `previewVariants({part: 'terminal-*'})` has no call site — `TerminalPreview`
    renders `maka-tool-output-stack` / `ShellOutputBody` / `ToolCodeBlock`
-   instead — and `check-dead-css` cannot see that because the literals still
-   exist in `previewVariants`. The alternative is an exemption whose reason is
-   "nothing renders this", which is a fact about call sites recorded in a
-   stylesheet and would outlive the day someone wires the family back up.
-   Deleting the family is its own change. */
+   instead. Deleting the family is its own change. */
 .maka-tool-terminal-exit {
   font: var(--maka-text-heading-5);
  height: var(--h-control-sm); display: inline-flex; align-items: center; white-space: nowrap; padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--foreground-secondary); letter-spacing: var(--tracking-wide); }
@@ -812,7 +816,7 @@
 .maka-agent-preview-section span {
   font: var(--maka-text-supporting);
  margin: 0; color: var(--foreground-secondary); white-space: pre-wrap; word-break: break-word; }
-.maka-agent-preview-copy[data-copied="true"] { border-color: oklch(from var(--link) l c h / 0.35); color: var(--link); }
+.maka-agent-preview-copy[data-copied="true"] { border-color: oklch(from var(--accent) l c h / 0.35); color: var(--link); }
 
 .maka-web-search-preview { display: grid; gap: var(--space-2); padding: var(--space-2-5) var(--space-3); border: 1px solid var(--foreground-10); border-radius: var(--radius-surface); background: var(--foreground-3); }
 .maka-web-search-preview > header { display: flex; flex-direction: column; gap: var(--space-0-5); padding-bottom: var(--space-1-5); border-bottom: 1px solid var(--foreground-10); }

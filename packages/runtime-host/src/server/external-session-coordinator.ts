@@ -3,7 +3,8 @@ import type {
   ExternalSessionAdapterRegistry,
   ExternalSessionSummary,
 } from '@maka/core/external-session';
-import type { CreateSessionInput, SessionHeader, StoredMessage } from '@maka/core';
+import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
 import { ExternalSessionImporter } from '@maka/storage/external-sessions';
 import {
@@ -13,6 +14,7 @@ import {
   EXTERNAL_SESSION_RESULT_MAX_BYTES,
   EXTERNAL_SESSION_SOURCE_MAX_ITEMS,
   EXTERNAL_SESSION_SOURCE_SESSION_ID_MAX_BYTES,
+  type ExternalSessionCatalogItem,
   type ExternalSessionCatalogQueryInput,
   type ExternalSessionImportInput,
   type OperationError,
@@ -24,6 +26,7 @@ import {
   SessionOperationFailure,
 } from './session-catalog-coordinator.js';
 import type { SessionAdmissionGate } from './session-admission-gate.js';
+import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
 
 type ExternalSessionStore = {
   createImportedSession(
@@ -38,6 +41,7 @@ export interface HostExternalSessionCoordinatorOptions {
   readonly adapters: ExternalSessionAdapterRegistry;
   readonly admission: SessionAdmissionGate;
   readonly sessions: ExternalSessionStore;
+  readonly workspaceResolver: Pick<HostWorkspaceResolver, 'resolve'>;
   readonly resolveTarget: () => Promise<Omit<CreateSessionInput, 'cwd' | 'name'>>;
   readonly prepareImportedSessionHistory: (sessionId: string) => Promise<void>;
   readonly discardImportedSession: (sessionId: string) => Promise<void>;
@@ -55,15 +59,40 @@ export class HostExternalSessionCoordinator {
   readonly #adapters: ExternalSessionAdapterRegistry;
   readonly #admission: SessionAdmissionGate;
   readonly #sessions: ExternalSessionStore;
+  readonly #workspaceResolver: Pick<HostWorkspaceResolver, 'resolve'>;
   readonly #resolveTarget: HostExternalSessionCoordinatorOptions['resolveTarget'];
   readonly #prepareImportedSessionHistory: HostExternalSessionCoordinatorOptions['prepareImportedSessionHistory'];
   readonly #discardImportedSession: HostExternalSessionCoordinatorOptions['discardImportedSession'];
   readonly #requestDrain: () => void;
 
+  /**
+   * One import per source at a time, keyed by adapter + source session.
+   *
+   * A repeat import is a legitimate request — it makes an independent copy, and
+   * a test below pins that. A repeat while the first is still running is not:
+   * it is one intent counted twice, and it lands two tasks the user has to tell
+   * apart and clean up.
+   *
+   * The guard has to be here rather than on the surface that asked. Import is a
+   * Host operation and the Host is what knows one is running; a client only
+   * knows about its own. The Settings page that replaced the import dialog can
+   * be unmounted mid-import by design, and its in-flight state goes with it —
+   * as would a second window's, or the CLI's.
+   *
+   * Coalesced, not rejected: the second caller gets the first one's outcome,
+   * success or failure, because it is the same operation. Entries are keyed on
+   * a JSON pair so no separator can be forged out of the ids themselves.
+   */
+  readonly #importsInFlight = new Map<
+    string,
+    Promise<OperationOutcome<'external-session.import'>>
+  >();
+
   constructor(options: HostExternalSessionCoordinatorOptions) {
     this.#adapters = options.adapters;
     this.#admission = options.admission;
     this.#sessions = options.sessions;
+    this.#workspaceResolver = options.workspaceResolver;
     this.#resolveTarget = options.resolveTarget;
     this.#prepareImportedSessionHistory = options.prepareImportedSessionHistory;
     this.#discardImportedSession = options.discardImportedSession;
@@ -108,17 +137,20 @@ export class HostExternalSessionCoordinator {
       return queryFailure('operation_unavailable', 'External Session source is unavailable');
     }
     try {
+      const cwd = input.workspace
+        ? (await this.#workspaceResolver.resolve(input.workspace)).cwd
+        : undefined;
       const offset = input.cursor === undefined ? 0 : Number(input.cursor);
       const sessions = (
         await adapter.listSessions({
-          ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+          ...(cwd === undefined ? {} : { cwd }),
           ...(input.includeArchived === undefined
             ? {}
             : { includeArchived: input.includeArchived }),
         })
       )
         .map(toWireSummary)
-        .filter((summary): summary is ExternalSessionSummary => summary !== undefined);
+        .filter((summary): summary is ExternalSessionCatalogItem => summary !== undefined);
       const page = boundedCatalogPage(sessions, offset);
       const nextOffset = offset + page.length;
       return {
@@ -128,12 +160,30 @@ export class HostExternalSessionCoordinator {
           nextCursor: nextOffset < sessions.length ? String(nextOffset) : null,
         },
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof WorkspaceResolutionError) {
+        return queryFailure('invalid_request', error.message);
+      }
       return queryFailure('persistence_failed', 'External Session catalog could not be read');
     }
   }
 
   async importSession(
+    input: ExternalSessionImportInput,
+  ): Promise<OperationOutcome<'external-session.import'>> {
+    const key = JSON.stringify([input.adapterId, input.sourceSessionId]);
+    const running = this.#importsInFlight.get(key);
+    if (running) return running;
+    const attempt = this.#importSession(input);
+    this.#importsInFlight.set(key, attempt);
+    try {
+      return await attempt;
+    } finally {
+      this.#importsInFlight.delete(key);
+    }
+  }
+
+  async #importSession(
     input: ExternalSessionImportInput,
   ): Promise<OperationOutcome<'external-session.import'>> {
     const adapter = this.#adapters.get(input.adapterId);
@@ -229,7 +279,7 @@ export class HostExternalSessionCoordinator {
   }
 }
 
-function toWireSummary(summary: ExternalSessionSummary): ExternalSessionSummary | undefined {
+function toWireSummary(summary: ExternalSessionSummary): ExternalSessionCatalogItem | undefined {
   if (
     !wireSourceSessionId(summary.id) ||
     typeof summary.name !== 'string' ||
@@ -244,7 +294,7 @@ function toWireSummary(summary: ExternalSessionSummary): ExternalSessionSummary 
   return {
     id: summary.id,
     name,
-    cwd: truncateUtf8(summary.cwd, EXTERNAL_SESSION_CWD_MAX_BYTES),
+    hostCwd: truncateUtf8(summary.cwd, EXTERNAL_SESSION_CWD_MAX_BYTES),
     ...(createdAt === undefined ? {} : { createdAt }),
     ...(updatedAt === undefined ? {} : { updatedAt }),
     ...(typeof summary.archived === 'boolean' ? { archived: summary.archived } : {}),
@@ -252,10 +302,10 @@ function toWireSummary(summary: ExternalSessionSummary): ExternalSessionSummary 
 }
 
 function boundedCatalogPage(
-  sessions: readonly ExternalSessionSummary[],
+  sessions: readonly ExternalSessionCatalogItem[],
   offset: number,
-): ExternalSessionSummary[] {
-  const page: ExternalSessionSummary[] = [];
+): ExternalSessionCatalogItem[] {
+  const page: ExternalSessionCatalogItem[] = [];
   const end = Math.min(sessions.length, offset + EXTERNAL_SESSION_PAGE_MAX_ITEMS);
   for (let index = offset; index < end; index += 1) {
     const candidate = sessions[index];

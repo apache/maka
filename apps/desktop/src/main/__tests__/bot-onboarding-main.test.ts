@@ -5,8 +5,8 @@ import {
   mergeSettings,
   type AppSettings,
   type UpdateAppSettingsInput,
-} from '@maka/core';
-import type { BotRegistry } from '@maka/runtime';
+} from '@maka/core/settings';
+import type { BotRegistry } from '@maka/runtime/bots';
 import type { SettingsStore } from '@maka/storage';
 import {
   BotOnboardingService,
@@ -490,21 +490,6 @@ describe('BotOnboardingService', () => {
     test.advance(5_000);
     const result = await test.service.poll(started.sessionId);
     assert.equal(result.state, 'error');
-  });
-
-  it('categorizes a fatal provider error into specific Chinese copy', async () => {
-    // PR1197 review (P2-11): 鉴权/网络/超时 categories must survive to the user
-    // instead of collapsing to one generic line.
-    const adapter: BotOnboardingProviderAdapter = {
-      async start() { return startResult(); },
-      async poll() { throw new Error('auth failed: invalid client credentials'); },
-    };
-    const test = harness(adapter);
-    const started = await test.service.start({ provider: 'dingtalk' });
-    test.advance(5_000);
-    const result = await test.service.poll(started.sessionId);
-    assert.equal(result.state, 'error');
-    assert.equal(result.error, '鉴权失败');
   });
 
   it('expires locally without polling after the provider TTL', async () => {

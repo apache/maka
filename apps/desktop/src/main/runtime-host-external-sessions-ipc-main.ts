@@ -1,5 +1,4 @@
-import type { IpcMain } from 'electron';
-import type { SessionChangedReason } from '@maka/core';
+import type { SessionChangedReason } from '@maka/core/session';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type {
   ExternalSessionCatalogQueryInput,
@@ -12,6 +11,10 @@ import {
   decodeExternalSessionImportInput,
 } from '@maka/runtime-host/protocol';
 import type { ExternalSessionImportIpcResult } from '../preload/external-session-import-result.js';
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
 import { toDesktopHostSessionSummary } from './runtime-host-session-catalog-ipc-main.js';
 
 type ExternalSessionClient = {
@@ -32,12 +35,23 @@ export interface RuntimeHostExternalSessionsIpcDeps {
 
 export function registerRuntimeHostExternalSessionsIpc(
   deps: RuntimeHostExternalSessionsIpcDeps,
-  ipcMain: Pick<IpcMain, 'handle'>,
+  ipcMain: ReconnectableReadIpcMain,
 ): void {
-  ipcMain.handle('external-sessions:listSources', () => deps.client.listExternalSessionSources());
-  ipcMain.handle('external-sessions:list', (_event, input: unknown) =>
-    deps.client.listExternalSessions(decodeExternalSessionCatalogQueryInput(input)),
+  handleReconnectableRead(ipcMain, 'external-sessions:listSources', () =>
+    deps.client.listExternalSessionSources(),
   );
+  handleReconnectableRead(ipcMain, 'external-sessions:list', async (_event, input: unknown) => {
+    const result = await deps.client.listExternalSessions(
+      decodeExternalSessionCatalogQueryInput(input),
+    );
+    return {
+      ...result,
+      sessions: result.sessions.map(({ hostCwd, ...session }) => ({
+        ...session,
+        cwd: hostCwd,
+      })),
+    };
+  });
   ipcMain.handle('external-sessions:import', async (_event, input: unknown) => {
     try {
       const session = await deps.client.importExternalSession(
@@ -54,6 +68,13 @@ export function registerRuntimeHostExternalSessionsIpc(
         error.operation === 'external-session.import' &&
         error.code === 'commit_outcome_unknown'
       ) {
+        // "Unknown" means the task may well be in the catalog, so tell the
+        // shell to read it again. Without this, the only trace of a maybe-
+        // committed import is the banner on the page, and the page is gone the
+        // moment the user leaves Settings -- which is exactly when they come
+        // back and import the same conversation a second time. No id: the
+        // whole point is that we do not know which task, if any, landed.
+        deps.emitSessionsChanged('created');
         return {
           ok: false,
           reason: 'commit_outcome_unknown',

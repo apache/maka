@@ -1,2 +1,0 @@
-This fixture file makes `test -f marker.txt` pass, so the demo spec shows a
-green run on the fake backend without a model or API key.

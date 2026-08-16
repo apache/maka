@@ -2,7 +2,7 @@ import type { Dirent } from 'node:fs';
 import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
-import type { StoredMessage } from '@maka/core';
+import type { StoredMessage } from '@maka/core/session';
 import { sanitizeForeignTitle } from '@maka/core/foreign-session';
 import type {
   ExternalMakaSession,

@@ -13,7 +13,7 @@
  */
 
 import assert from 'node:assert/strict';
-import type { LlmConnection } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
 import { generateText, isStepCount, streamText, tool } from 'ai';
 import { z } from 'zod';
 import { fetchProviderModels } from '../model-fetcher.js';

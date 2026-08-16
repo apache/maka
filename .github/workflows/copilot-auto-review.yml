@@ -1,0 +1,42 @@
+name: Copilot auto review
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: copilot-auto-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  request-review:
+    if: >-
+      github.event.pull_request.draft == false &&
+      !endsWith(github.event.pull_request.user.login, '[bot]') &&
+      !contains(github.event.pull_request.labels.*.name, 'copilot-skip')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      # pull_request_target supplies a writable token for fork PRs. Do not
+      # checkout or execute code from the untrusted pull request in this job.
+      - name: Request GitHub Copilot review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if gh api \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers" \
+            --jq '.users[].login' | \
+            grep -Fxq 'copilot-pull-request-reviewer[bot]'; then
+            exit 0
+          fi
+
+          gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers" \
+            -f 'reviewers[]=copilot-pull-request-reviewer[bot]'

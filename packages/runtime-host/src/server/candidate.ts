@@ -1,36 +1,39 @@
-import {
-  resolveExistingStorageRoot,
-  tryAcquireInteractiveRootOwner,
-} from '@maka/storage/root-authority';
+import { resolveExistingStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
+import type { RuntimeHostCompositionSource } from './host-composition.js';
 import { RuntimeHostKernel } from './host-kernel.js';
 
-export interface RuntimeHostCandidateOptions {
+export interface InteractiveRuntimeHostCandidateOptions {
   rootPath: string;
   expectedRootId: string;
-  legacyConfigurationRoot?: string;
+  initialConnectionTimeoutMs?: number;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
+  generation?: string;
 }
 
-export type RuntimeHostCandidateResult =
+export type InteractiveRuntimeHostCandidateResult =
   | { kind: 'loser' }
   | { kind: 'winner'; host: RuntimeHostKernel };
 
-export async function startRuntimeHostCandidate(
-  options: RuntimeHostCandidateOptions,
-): Promise<RuntimeHostCandidateResult> {
+export async function startInteractiveRuntimeHostCandidate(
+  options: InteractiveRuntimeHostCandidateOptions,
+  composition: RuntimeHostCompositionSource,
+): Promise<InteractiveRuntimeHostCandidateResult> {
   const capability = await resolveExistingStorageRoot({
     path: options.rootPath,
     kind: 'interactive',
     expectedRootId: options.expectedRootId,
   });
-  const owner = await tryAcquireInteractiveRootOwner(capability);
+  const owner = await tryAcquireStateRootOwner(capability);
   if (!owner) return { kind: 'loser' };
   const host = await RuntimeHostKernel.start({
     owner,
     lifecycleMode: 'ephemeral',
+    initialConnectionTimeoutMs: options.initialConnectionTimeoutMs,
     idleGraceMs: options.idleGraceMs,
     handshakeTimeoutMs: options.handshakeTimeoutMs,
+    generation: options.generation,
+    composition,
   });
   return { kind: 'winner', host };
 }

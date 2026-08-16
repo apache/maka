@@ -155,7 +155,7 @@ Maka 并不是在进程内实现了 Kafka，也没有声称 RuntimeEventStore �
 
 ## 围绕 Event Log 运转的执行主链
 
-当前交互式与通用 Headless 路径共用下面这条核心主链：
+所有 hosted execution 路径共用下面这条 Runtime 主链：
 
 ```mermaid
 flowchart LR
@@ -179,7 +179,7 @@ flowchart LR
 
 `SessionManager.sendMessage()` 是外部调用者看到的门面。它现在很薄：读取和管理 Session 的公共能力保留在这里，而真正的执行直接委托给 `RuntimeKernel.startTurn()`。
 
-这个边界让桌面端、CLI、Bot 和 Headless 调用者不必理解 Run ledger、Flow 或 terminal fact。Runtime 内部可以演进，外部仍然只需要表达“给这个 Session 发送一条用户消息”。
+这个边界让桌面端、CLI、Bot 和 Eval 调用者通过 Runtime Host 工作，不必理解 Run ledger、Flow 或 terminal fact。Runtime 内部可以在 Host 协议后演进。
 
 ### `RuntimeKernel`：活跃执行的控制面
 
@@ -376,7 +376,7 @@ Maka 当前保护的核心不变量是：
 - UI 事件与模型可重放事实被明确区分；
 - 用户停止、权限和工具副作用进入可诊断的控制流；
 - 崩溃后可以依据 durable facts 收敛状态；
-- Headless、子 Agent 和未来调度可以复用同一执行核心。
+- Runtime Host client、子 Agent 和调度器复用同一执行核心。
 
 ### 当前代价
 

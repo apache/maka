@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { CuAction } from '@maka/core';
+import type { CuAction } from '@maka/core/computer-use';
+import { buildComputerUseTools } from '@maka/runtime/computer-use-tools';
 import {
-  buildComputerUseTools,
   type CuDispatchBackend,
   type CuObservation,
   type CuRunContext,
-} from '@maka/runtime';
+} from '@maka/runtime/computer-use-types';
 import { parseObservationText } from '@maka/runtime/test-only/observation-text-reader';
 import {
   createComputerUseOverlayHook,

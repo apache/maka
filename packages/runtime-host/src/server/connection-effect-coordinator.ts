@@ -12,17 +12,19 @@ import {
 } from '@maka/core/llm-connections';
 import {
   createConnectionEffectFetchTransport,
-  createRequestCustomizationFetch,
-  isOAuthSubscriptionProvider,
-  runConnectionModelDiscoveryEffect,
-  runConnectionTestEffect,
-  type ConnectionEffectErrorKind,
-  type ConnectionEffectFetchDependency,
   type ConnectionEffectFetchTransport,
   type ConnectionEffectProxySnapshot,
+} from '@maka/runtime/network/scoped-fetch-transport';
+import { createRequestCustomizationFetch } from '@maka/runtime/request-customization-fetch';
+import { isOAuthSubscriptionProvider } from '@maka/runtime/subscription-credentials';
+import { runConnectionModelDiscoveryEffect } from '@maka/runtime/model-fetcher';
+import { runConnectionTestEffect } from '@maka/runtime/test-connection';
+import {
+  type ConnectionEffectErrorKind,
   type ConnectionModelDiscoveryEffectOutcome,
   type ConnectionTestEffectOutcome,
-} from '@maka/runtime';
+} from '@maka/runtime/connection-effect-outcome';
+import { type ConnectionEffectFetchDependency } from '@maka/runtime/connection-effect-fetch';
 import {
   authenticateRuntimePolicyStoresWriter,
   RuntimePolicyStoreError,

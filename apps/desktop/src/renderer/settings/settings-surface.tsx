@@ -17,16 +17,16 @@ import { ICON_SIZE, ArrowLeft } from '@maka/ui/icons';
 import type {
   AppSettings,
   ChatDefaultPermissionMode,
-  LlmConnection,
-  ProviderType,
   SettingsSection,
   ThemePalette,
   ThemePreference,
-  UiLocalePreference,
   UpdateAppSettingsResult,
   UsageRange,
   UsageStats,
-} from '@maka/core';
+} from '@maka/core/settings';
+import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
+import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { createDefaultSettings } from '@maka/core/settings';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { ProvidersPanel } from './providers-panel';
@@ -48,6 +48,8 @@ import { getSettingsNavigationCopy } from '../locales/settings-navigation-copy.j
 import { SettingRow } from './settings-rows';
 import { SettingsPage } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
+import { ImportTasksSettingsPage } from './import-tasks-settings-page';
+import { TasksSettingsPage, type ArchivedTasksBridge } from './tasks-settings-page';
 import { UsageSettingsPage } from './usage-settings-page';
 import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
@@ -76,6 +78,8 @@ export function SettingsSurface(props: {
   onOpenDailyReview?(): void;
   onOpenKeyboardHelp?(): void;
   onOpenSession?(sessionId: string): void;
+  archivedTasks: ArchivedTasksBridge;
+  onTaskImported(session: DesktopSessionSummary): void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
@@ -365,6 +369,8 @@ export function SettingsSurface(props: {
                       onOpenDailyReview={props.onOpenDailyReview}
                       onOpenKeyboardHelp={props.onOpenKeyboardHelp}
                       onOpenSession={props.onOpenSession}
+                      archivedTasks={props.archivedTasks}
+                      onTaskImported={props.onTaskImported}
                       openProviderCatalog={providerCatalogRequested}
                       initialConnectionSlug={props.initialConnectionSlug}
                       initialCreateProviderType={createProviderRequest}
@@ -398,6 +404,8 @@ function SettingsPageBody(props: {
   onOpenDailyReview?(): void;
   onOpenKeyboardHelp?(): void;
   onOpenSession?(sessionId: string): void;
+  archivedTasks: ArchivedTasksBridge;
+  onTaskImported(session: DesktopSessionSummary): void;
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -476,6 +484,10 @@ function SettingsPageBody(props: {
           onThemePaletteChange={props.onThemePaletteChange}
         />
       );
+    case 'archived-tasks':
+      return <TasksSettingsPage {...props.archivedTasks} />;
+    case 'import-tasks':
+      return <ImportTasksSettingsPage onImported={props.onTaskImported} />;
     case 'data':
       return <DataSettingsPage />;
     case 'permissions':

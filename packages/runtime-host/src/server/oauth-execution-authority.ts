@@ -1,16 +1,16 @@
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { CredentialLocator } from '@maka/core/runtime-policy';
+import { buildSubscriptionModelFetch } from '@maka/runtime/subscription-model-fetch';
 import {
-  buildSubscriptionModelFetch,
   isOAuthSubscriptionProvider,
-  openAiCodexHeaders,
   refreshAndPersistOAuthSubscriptionTokens,
   resolveAndPersistOAuthSubscriptionTokens,
   type OAuthSubscriptionCredentialStore,
   type OAuthSubscriptionProvider,
   type OAuthSubscriptionTokens,
-  type ProxiedFetchTransport,
-} from '@maka/runtime';
+} from '@maka/runtime/subscription-credentials';
+import { openAiCodexHeaders } from '@maka/runtime/subscription-auth';
+import { type ProxiedFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
 import {
   authenticateRuntimePolicyStoresWriter,
   RuntimePolicyStoreError,

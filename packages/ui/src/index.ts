@@ -12,7 +12,7 @@ export * from './conversation-copy.js';
 export * from './shared-ui-copy.js';
 export * from './skills-copy.js';
 export * from './daily-review-copy.js';
-export * from './plan-reminder-copy.js';
+export * from './scheduled-task-copy.js';
 export * from './tool-activity/copy.js';
 export * from './tool-activity/sandbox-denial.js';
 export * from './chat-input-behavior.js';
@@ -87,7 +87,7 @@ export { ModulePage, type ModulePageProps } from './primitives/module-page.js';
 // word looks like — see status-vocabulary.ts for why there is no `info`.
 export { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
 // One tab stop per module-page row list; the MCP page (renderer-owned) uses
-// the same hook the skills and plan-reminder panels do.
+// the same hook the skills and scheduled-task panels do.
 export { useRovingRowFocus, type RovingRowFocusProps } from './use-roving-row-focus.js';
 // #1565 PR 2: Astryx i18n adapter — appended, never reordered (barrel freeze).
 export * from './astryx-i18n.js';

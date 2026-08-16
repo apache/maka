@@ -272,9 +272,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   // a per-connection URL. So the row exists only where the address is genuinely
   // the user's: a service with no published endpoint (the *-compatible ones), or
   // a local runtime whose port is a convention rather than a fact. A derived
-  // endpoint (Cloudflare builds one from the account id) is nobody's to type,
-  // and neither is an account-authorized one — `gemini-cli` is OAuth with an
-  // empty baseUrl, so keying off "OAuth with a fixed URL" let it slip through.
+  // endpoint (Cloudflare builds one from the account id) is nobody's to type.
   const showsEndpoint = !needsOAuth
     && !defaults.baseUrlTemplate
     && (!defaults.baseUrl || defaults.category === 'local');

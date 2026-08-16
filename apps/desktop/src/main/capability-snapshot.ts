@@ -1,10 +1,8 @@
 import { Notification, systemPreferences } from 'electron';
+import { BOT_PROVIDERS, type BotProvider } from '@maka/core/bot-chat-settings';
 import {
-  BOT_PROVIDERS,
   deriveCapabilityReadiness,
   runtimeProbeFromBotReadiness,
-  type AppSettings,
-  type BotProvider,
   type CapabilityActionApprovalSignal,
   type CapabilityConfigurationSignal,
   type CapabilityFeatureSignal,
@@ -16,9 +14,10 @@ import {
   type OsPermissionId,
   type OsPermissionSnapshot,
   type PermissionSnapshot,
-} from '@maka/core';
+} from '@maka/core/capabilities';
+import { type AppSettings } from '@maka/core/settings';
 import type { CuBackendId } from '@maka/computer-use';
-import type { BotStatus } from '@maka/runtime';
+import type { BotStatus } from '@maka/runtime/bots';
 import type { computerUseServiceHealth } from './computer-use-host.js';
 import {
   mapMediaAccessStatus,
@@ -62,7 +61,7 @@ export function buildCapabilitySnapshotCollection(input: {
       feature: {
         state: 'partial',
         source: 'runtime',
-        reason: 'Daily Review 已聚合本地会话 / 工具 / 模型活动；当前不包含屏幕与应用级录制',
+        reason: 'Daily Review 已聚合本地任务 / 工具 / 模型活动；当前不包含屏幕与应用级录制',
       },
       requiredPermissions: [
         { id: 'screen_recording', required: false, status: permissions.screen_recording.status },

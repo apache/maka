@@ -7,13 +7,17 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import type { RuntimeEvent } from '@maka/core';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { scanToolLedger } from '@maka/core/tool-ledger-scanner';
 import {
   SQLITE_RUNTIME_SCHEMA_VERSION,
   createSqliteRuntimeStore,
 } from '../sqlite-runtime-store.js';
+import {
+  acquireOperationalStateDatabase,
+  inspectOperationalStateSchema,
+} from '../operational-state-store.js';
 import { bindWorkspaceBaselineAuthorityStoreRootInternal } from '../workspace-version-authority-internal.js';
 
 const WORKER_READY_TIMEOUT_MS = 15_000;
@@ -265,18 +269,24 @@ describe('SQLite recovery authority multi-process races', () => {
     });
   });
 
-  it('serializes concurrent schema 6 to the current runtime schema', async () => {
-    await withPreparedDatabase(async ({ dbPath, startPath }) => {
+  it('serializes concurrent operational runtime migration', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-operational-migration-race-'));
+    const dbPath = join(root, 'runtime.sqlite');
+    const startPath = join(root, 'start');
+    try {
+      acquireOperationalStateDatabase(root).close();
       const db = new DatabaseSync(dbPath);
       try {
-        db.exec(
-          "DROP TABLE runtime_session_event_ordinals; DROP TABLE runtime_partial_segments; DROP TABLE runtime_storage_root_binding; DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DROP TABLE headless_task_run_events; DELETE FROM runtime_capabilities WHERE capability = 'runtime_workspace_version_authority'; PRAGMA user_version = 6;",
-        );
+        db.exec(`
+          DROP TABLE runtime_session_event_ordinals;
+          PRAGMA user_version = 10;
+          UPDATE operational_schema_migrations SET version = 10 WHERE scope = 'runtime';
+        `);
       } finally {
         db.close();
       }
 
-      const results = await runOpenWorkers(dbPath, startPath);
+      const results = await runOpenWorkers(dbPath, startPath, 'operational_open_only');
       assert.deepEqual(
         results.map(({ code }) => code),
         [0, 0],
@@ -288,7 +298,15 @@ describe('SQLite recovery authority multi-process races', () => {
       } finally {
         upgraded.close();
       }
-    });
+      const current = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        assert.equal(inspectOperationalStateSchema(current).status, 'current');
+      } finally {
+        current.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('captures a fast worker initialization failure after releasing the barrier', async () => {
@@ -495,10 +513,11 @@ async function stopWorkers(workers: readonly WorkerHandle[]): Promise<void> {
       child.kill('SIGKILL');
     }
   }
-  await Promise.race([
+  await withTimeout(
     Promise.allSettled(workers.map(({ result }) => result)),
-    new Promise<void>((resolve) => setTimeout(resolve, WORKER_SHUTDOWN_TIMEOUT_MS)),
-  ]);
+    WORKER_SHUTDOWN_TIMEOUT_MS,
+    'workers to stop',
+  ).catch(() => {});
 }
 
 function formatWorkerDiagnostics(worker: WorkerHandle): string {

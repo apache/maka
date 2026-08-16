@@ -95,9 +95,9 @@ export function matching(
 /**
  * Knobs the shipped rendering does not turn.
  *
- * They exist for `scripts/cu-prune-eval.mjs`, which measures what a rendering
- * change would cost and save against recorded trajectories before anyone tries
- * it on a real machine. The evaluator has to run the real renderer — the two
+ * They exist for offline evaluation of what a rendering change would cost and
+ * save against recorded trajectories before anyone tries it on a real machine.
+ * The evaluator has to run the real renderer — the two
  * previous attempts at this elsewhere both reached a *reversed* conclusion
  * because the evaluator carried its own copy of the policy and the copy was
  * subtly wrong. So the policy stays here, in one place, and the offline harness
@@ -134,6 +134,35 @@ export function renderObservationText(
   const query = observation.query ?? '';
   const shown = query ? matching(window, query) : window;
   const lines: string[] = [header(observation, window.length, query, shown.length)];
+  if (
+    observation.renderDifference === true &&
+    observation.difference &&
+    observation.difference.presentation !== 'full'
+  ) {
+    const difference = observation.difference;
+    if (difference.presentation === 'no-change') {
+      lines.push(
+        `no_change=true(the window has no effective accessibility changes since ${difference.baseObservationId})`,
+      );
+      return lines.join('\n');
+    }
+    if (difference.removedStableIdRanges.length > 0) {
+      lines.push(
+        `removed_element_ids=${difference.removedStableIdRanges
+          .map(({ start, end }) => (start === end ? String(start) : `${start}-${end}`))
+          .join(',')}`,
+      );
+    }
+    const byId = new Map(observation.elements.map((element) => [element.elementId, element]));
+    for (const change of difference.changes) {
+      if (change.kind === 'remove' || change.elementId === undefined) continue;
+      const element = byId.get(change.elementId);
+      if (!element) continue;
+      const depth = Math.max(0, change.path.length - 1);
+      lines.push(`${'\t'.repeat(depth)}change=${change.kind} ${elementLine(element)}`);
+    }
+    return lines.join('\n');
+  }
   for (const [element, depth] of walk(collapseStructuralWrappers(shown, options))) {
     lines.push(`${'\t'.repeat(depth)}${elementLine(element)}`);
   }
@@ -289,8 +318,8 @@ const STRUCTURAL_ROLES = new Set([
  *
  * The clause that went was "exactly one child". The argument for it — that
  * holding several children is a statement that they belong together — sounded
- * right and did not survive being measured: `scripts/cu-prune-eval.mjs` replays
- * both forms over 76 recorded observations and the relaxed one keeps every
+ * right and did not survive being measured: replaying both forms over 76
+ * recorded observations shows the relaxed one keeps every
  * operated element and every named ancestor that identifies one, at 87% of the
  * tokens. It cannot do otherwise, because lifting a child into its parent is
  * not a deletion; what it erases is a line, and that line said nothing.

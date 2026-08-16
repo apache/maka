@@ -5,7 +5,7 @@
    layout shell and the shared page bar. */
 
 /* ── Astryx Layout page shell ──────────────────────────────────────────
-   计划提醒 / 每日回顾 render an Astryx `Layout` (header / content / end
+   定时任务 / 每日回顾 render an Astryx `Layout` (header / content / end
    panel) instead of the grid this file used to hand-roll, following the
    vendor's `incident-console` page template. Layout owns the zones, the
    padding collapse and the scroll containment, so the module main is

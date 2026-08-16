@@ -1,11 +1,11 @@
-import type { IpcMain } from 'electron';
 import type {
   ConnectionTestResult,
   CreateConnectionInput,
   LlmConnection,
   SavedRequestHeaders,
   UpdateConnectionInput,
-} from '@maka/core';
+} from '@maka/core/llm-connections';
+import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import {
   connectionEnabledModelIds,
   defaultEnabledModelIdsWhenOmitted,
@@ -22,11 +22,16 @@ import { normalizeRequestHeaderUpdates } from '@maka/core/runtime-policy';
 import type { ConnectionTestRunResult } from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
+import {
   normalizeConnectionBaseUrlForIpc,
   normalizeConnectionPatchSecretsForIpc,
   normalizeConnectionSlugForIpc,
   normalizeCreateConnectionInputForIpc,
 } from './connections-ipc-validation.js';
+import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
 
 type HostConnectionsClient = Pick<
   DesktopRuntimeHostClient,
@@ -45,7 +50,7 @@ type HostConnectionsClient = Pick<
 >;
 
 export interface RuntimeHostConnectionsIpcDeps {
-  readonly ipcMain: Pick<IpcMain, 'handle'>;
+  readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: HostConnectionsClient;
   readonly emitConnectionListChanged: () => void;
 }
@@ -54,14 +59,17 @@ export function registerRuntimeHostConnectionsIpc(
   deps: RuntimeHostConnectionsIpcDeps,
 ): void {
   const snapshot = () => deps.client.loadConnectionCatalog();
-  const projected = async () => projectHostConnections(await snapshot());
 
-  deps.ipcMain.handle('connections:list', projected);
-  deps.ipcMain.handle('connections:getDefault', async () => {
+  handleReconnectableRead(deps.ipcMain, 'connections:getSnapshot', async () => {
     const catalog = await snapshot();
-    return defaultConnection(catalog)?.slug ?? null;
+    const connections = projectHostConnections(catalog);
+    return {
+      connections,
+      defaultConnection: defaultConnection(catalog)?.slug ?? null,
+      chatModelChoices: buildChatModelChoices(connections),
+    } satisfies DesktopConnectionSnapshot;
   });
-  deps.ipcMain.handle('connections:hasSecret', async (_event, slug: unknown) => {
+  handleReconnectableRead(deps.ipcMain, 'connections:hasSecret', async (_event, slug: unknown) => {
     const catalog = await snapshot();
     const connection = requireConnection(catalog, slug);
     if (!providerAuthRequiresSecret(connection.providerType)) return true;
@@ -70,12 +78,16 @@ export function registerRuntimeHostConnectionsIpc(
         ?.configured === true
     );
   });
-  deps.ipcMain.handle('connections:getRequestHeaders', async (_event, slug: unknown) => {
-    const connection = requireConnection(await snapshot(), slug);
-    const result = await deps.client.getConnectionRequestHeaders(connection.connectionId);
-    if (result.kind !== 'found') throw new Error('Connection no longer exists');
-    return { names: result.names } satisfies SavedRequestHeaders;
-  });
+  handleReconnectableRead(
+    deps.ipcMain,
+    'connections:getRequestHeaders',
+    async (_event, slug: unknown) => {
+      const connection = requireConnection(await snapshot(), slug);
+      const result = await deps.client.getConnectionRequestHeaders(connection.connectionId);
+      if (result.kind !== 'found') throw new Error('Connection no longer exists');
+      return { names: result.names } satisfies SavedRequestHeaders;
+    },
+  );
   deps.ipcMain.handle(
     'connections:setRequestHeaders',
     async (_event, slug: unknown, rawUpdates: unknown) => {
@@ -210,16 +222,38 @@ export function registerRuntimeHostConnectionsIpc(
     return requireProjectedConnection(await snapshot(), current.slug);
   });
   deps.ipcMain.handle('connections:delete', async (_event, slug: unknown) => {
-    const catalog = await snapshot();
-    const current = requireConnection(catalog, slug);
-    requireCommitted(
-      await deps.client.removeConnection({
+    // OAuth/model-fetch can bump the connection revision under the UI. Retry
+    // on connection_stale with a fresh snapshot so delete does not fail with a
+    // opaque "service unavailable" after the user already confirmed.
+    const maxAttempts = 6;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const catalog = await snapshot();
+      let current: ReturnType<typeof requireConnection>;
+      try {
+        current = requireConnection(catalog, slug);
+      } catch (error) {
+        // Only treat a missing slug as success. Invalid input must still fail.
+        if (error instanceof Error && error.message.startsWith('No such Connection:')) {
+          deps.emitConnectionListChanged();
+          return;
+        }
+        throw error;
+      }
+      const result = await deps.client.removeConnection({
         connectionId: current.connectionId,
         revision: current.revision,
-      }),
-      'delete Connection',
-    );
-    deps.emitConnectionListChanged();
+      });
+      // RemoveCatalogConnectionResult is only committed | connection_stale.
+      if (result.kind === 'committed') {
+        deps.emitConnectionListChanged();
+        return;
+      }
+      if (attempt < maxAttempts - 1) {
+        continue;
+      }
+      // English so renderer locale mapping (provider-panel-shared) can choose zh/en.
+      throw new Error('Unable to delete Connection: connection_stale');
+    }
   });
   deps.ipcMain.handle('connections:fetchModels', async (_event, slug: unknown) => {
     const current = requireConnection(await snapshot(), slug);

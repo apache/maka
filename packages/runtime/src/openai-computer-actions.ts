@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { CuAction, CuPoint } from '@maka/core';
+import type { CuAction, CuPoint } from '@maka/core/computer-use';
 
 const pointSchema = z
   .object({

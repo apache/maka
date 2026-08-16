@@ -1,9 +1,5 @@
-import {
-  buildComputerUseTools,
-  type CuOverlayHook,
-  type ComputerUseToolSet,
-  type CuDispatchBackend,
-} from '@maka/runtime';
+import { buildComputerUseTools, type ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import { type CuOverlayHook, type CuDispatchBackend } from '@maka/runtime/computer-use-types';
 import { createMakaCuBackend } from './maka-cu-backend.js';
 import type { MakaCuBackendOptions } from './maka-cu-backend.js';
 import type { MakaCuServiceSnapshot } from './maka-cu-service.js';

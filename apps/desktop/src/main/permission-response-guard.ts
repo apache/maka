@@ -1,17 +1,15 @@
 import type {
   BranchFromTurnInput,
-  QuoteRef,
   RegenerateTurnInput,
   ReviseBeforeTurnInput,
   TurnOrchestration,
-  UserQuestionResponse,
-} from '@maka/core';
+} from '@maka/core/runtime-inputs';
+import type { QuoteRef } from '@maka/core/events';
+import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import {
-  isCanonicalStorageRef,
-  isOrchestrationMode,
-  isTurnOrchestrationSource,
-} from '@maka/core';
+import { isCanonicalStorageRef } from '@maka/core/events';
+
+import { isOrchestrationMode, isTurnOrchestrationSource } from '@maka/core/orchestration';
 
 const MAX_PERMISSION_REQUEST_ID_LENGTH = 128;
 const MAX_TURN_ID_LENGTH = 128;

@@ -1,18 +1,28 @@
 import type {
   OperationOutcome,
   SkillCatalogInvocableQueryInput,
-  SkillCatalogLocalContext,
   SkillCatalogMutateInput,
   SkillCatalogPreviewUpdateInput,
   SkillCatalogQueryInput,
+  WorkspaceProjection,
 } from '../protocol/index.js';
 import type { ConnectionContext, SkillCatalogOperationHandlerMap } from './operation-dispatcher.js';
-import type { HostCapabilities } from '@maka/runtime';
+import type { HostCapabilities } from '@maka/runtime/skills';
 import {
   SkillCatalogRepository,
   SkillCatalogRepositoryError,
   type CanonicalSkillInventorySnapshot,
+  type SkillCatalogLocalContext,
+  type SkillCatalogRepositoryInvocableQueryInput,
+  type SkillCatalogRepositoryMutateInput,
+  type SkillCatalogRepositoryPreviewUpdateInput,
+  type SkillCatalogRepositoryQueryInput,
 } from './skill-catalog-repository.js';
+import {
+  type HostWorkspaceResolver,
+  type ResolvedWorkspace,
+  WorkspaceResolutionError,
+} from './workspace-resolver.js';
 
 type CatalogOperation =
   | 'skill.catalog.query'
@@ -40,6 +50,7 @@ export class HostSkillCatalogCoordinator {
   };
 
   readonly #repository: SkillCatalogRepository;
+  readonly #workspaceResolver: Pick<HostWorkspaceResolver, 'run'>;
   readonly #resolveInvocableContext: SkillCatalogInvocableContextResolver | undefined;
   #accepting = true;
   #tail: Promise<void> = Promise.resolve();
@@ -47,9 +58,11 @@ export class HostSkillCatalogCoordinator {
 
   constructor(
     repository: SkillCatalogRepository,
+    workspaceResolver: Pick<HostWorkspaceResolver, 'run'>,
     resolveInvocableContext?: SkillCatalogInvocableContextResolver,
   ) {
     this.#repository = repository;
+    this.#workspaceResolver = workspaceResolver;
     this.#resolveInvocableContext = resolveInvocableContext;
   }
 
@@ -58,7 +71,16 @@ export class HostSkillCatalogCoordinator {
   }
 
   query(input: SkillCatalogQueryInput): Promise<OperationOutcome<'skill.catalog.query'>> {
-    return this.#admitProtocolOperation('skill.catalog.query', () => this.#repository.query(input));
+    return this.#admitProtocolOperation('skill.catalog.query', () =>
+      this.#workspaceResolver.run(input.context.workspace, async (workspace) =>
+        withResolvedWorkspace(
+          await this.#repository.query(repositoryQueryInput(input), {
+            projectRoot: workspace.cwd,
+          }),
+          workspace,
+        ),
+      ),
+    );
   }
 
   queryInvocable(
@@ -77,7 +99,7 @@ export class HostSkillCatalogCoordinator {
     return this.#admitProtocolOperation('skill.catalog.invocable.query', async () => {
       const resolved = await this.#resolveInvocableContext!(input, context);
       return this.#repository.queryInvocable(
-        input,
+        repositoryInvocableQueryInput(input),
         { projectRoot: resolved.projectRoot },
         resolved.host,
       );
@@ -86,7 +108,14 @@ export class HostSkillCatalogCoordinator {
 
   mutate(input: SkillCatalogMutateInput): Promise<OperationOutcome<'skill.catalog.mutate'>> {
     return this.#admitProtocolOperation('skill.catalog.mutate', () =>
-      this.#repository.mutate(input),
+      this.#workspaceResolver.run(input.context.workspace, async (workspace) =>
+        withResolvedWorkspace(
+          await this.#repository.mutate(repositoryMutateInput(input), {
+            projectRoot: workspace.cwd,
+          }),
+          workspace,
+        ),
+      ),
     );
   }
 
@@ -94,7 +123,14 @@ export class HostSkillCatalogCoordinator {
     input: SkillCatalogPreviewUpdateInput,
   ): Promise<OperationOutcome<'skill.catalog.preview-update'>> {
     return this.#admitProtocolOperation('skill.catalog.preview-update', () =>
-      this.#repository.previewUpdate(input),
+      this.#workspaceResolver.run(input.context.workspace, async (workspace) =>
+        withResolvedWorkspace(
+          await this.#repository.previewUpdate(repositoryPreviewInput(input), {
+            projectRoot: workspace.cwd,
+          }),
+          workspace,
+        ),
+      ),
     );
   }
 
@@ -155,11 +191,62 @@ export class HostSkillCatalogCoordinator {
   }
 }
 
+function withResolvedWorkspace<Result extends object>(
+  result: Result,
+  workspace: ResolvedWorkspace,
+): Result & { readonly resolvedWorkspace: WorkspaceProjection } {
+  return {
+    ...result,
+    resolvedWorkspace: { target: workspace.target, hostCwd: workspace.cwd },
+  };
+}
+
+function repositoryQueryInput(input: SkillCatalogQueryInput): SkillCatalogRepositoryQueryInput {
+  return input.kind === 'start'
+    ? { kind: 'start', view: input.view }
+    : {
+        kind: 'continue',
+        view: input.view,
+        revision: input.revision,
+        cursor: input.cursor,
+      };
+}
+
+function repositoryInvocableQueryInput(
+  input: SkillCatalogInvocableQueryInput,
+): SkillCatalogRepositoryInvocableQueryInput {
+  return input.kind === 'start'
+    ? { kind: 'start' }
+    : { kind: 'continue', revision: input.revision, cursor: input.cursor };
+}
+
+function repositoryMutateInput(input: SkillCatalogMutateInput): SkillCatalogRepositoryMutateInput {
+  return {
+    expectedRevision: input.expectedRevision,
+    mutation: input.mutation,
+  };
+}
+
+function repositoryPreviewInput(
+  input: SkillCatalogPreviewUpdateInput,
+): SkillCatalogRepositoryPreviewUpdateInput {
+  return {
+    expectedRevision: input.expectedRevision,
+    ref: input.ref,
+  };
+}
+
 function repositoryFailure<K extends CatalogOperation>(
   operation: K,
   error: unknown,
 ): OperationOutcome<K> {
   if (!(error instanceof SkillCatalogRepositoryError)) {
+    if (error instanceof WorkspaceResolutionError) {
+      return {
+        ok: false,
+        error: { code: 'invalid_request', message: error.message },
+      } as OperationOutcome<K>;
+    }
     return {
       ok: false,
       error: { code: 'internal_failure', message: 'Skill catalog operation failed' },

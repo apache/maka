@@ -1,9 +1,18 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { convertArrayToReadableStream, MockLanguageModelV4 } from 'ai/test';
-import { APICallError } from '@ai-sdk/provider';
+import {
+  APICallError,
+  type LanguageModelV4StreamPart,
+  type LanguageModelV4Usage,
+} from '@ai-sdk/provider';
 
-import { ModelAdapter } from '../model-adapter.js';
+import { ModelAdapter, settleModelStepOutcome } from '../model-adapter.js';
+
+const ZERO_USAGE: LanguageModelV4Usage = {
+  inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+  outputTokens: { total: 0, text: 0, reasoning: 0 },
+};
 
 function newAdapter(): ModelAdapter {
   return new ModelAdapter({
@@ -15,6 +24,29 @@ function newAdapter(): ModelAdapter {
     now: () => 0,
   });
 }
+
+describe('settleModelStepOutcome', () => {
+  test('explicit stream failure takes precedence over finish metadata', () => {
+    const failure = {
+      type: 'model_failure' as const,
+      kind: 'rate_limit' as const,
+      message: 'Rate limit exceeded',
+      retryable: true,
+    };
+
+    const outcome = settleModelStepOutcome({
+      aborted: false,
+      failure,
+      sawFinish: true,
+      finishReason: 'content-filter',
+      request: {},
+    });
+
+    assert.equal(outcome.kind, 'retryable-failure');
+    if (outcome.kind !== 'retryable-failure') return;
+    assert.equal(outcome.failure, failure);
+  });
+});
 
 describe('ModelAdapter.startStream onError', () => {
   test('normalizes provider retry eligibility and Retry-After at the adapter boundary', async () => {
@@ -48,11 +80,18 @@ describe('ModelAdapter.startStream onError', () => {
       {
         type: 'model_failure',
         kind: 'rate_limit',
+        code: '429',
         message: 'Rate limit exceeded',
         retryable: true,
         retryAfterMs: 2500,
       },
     ]);
+    assert.deepEqual(await result.outcome, {
+      kind: 'retryable-failure',
+      failure: failures[0],
+      request: { messages: [{ role: 'user', content: 'hi' }] },
+      continuation: 'none',
+    });
   });
 
   test('does not hide provider retries inside one adapter call', async () => {
@@ -117,9 +156,88 @@ describe('ModelAdapter.startStream onError', () => {
       void _event;
     }
 
-    assert.deepEqual(await result.request, {
-      messages: [{ role: 'user', content: 'hi' }],
+    assert.deepEqual(await result.outcome, {
+      kind: 'completed',
+      finishReason: 'stop',
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheHitInputTokens: 0,
+        cacheMissInputTokens: 1,
+        cacheMissInputSource: 'explicit',
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 2,
+        rawFinishReason: 'stop',
+      },
+      request: { messages: [{ role: 'user', content: 'hi' }] },
+      continuation: 'none',
     });
+  });
+
+  test('settles a stream without a finish frame as truncated', async () => {
+    const outcome = await settle([
+      { type: 'stream-start', warnings: [] },
+      { type: 'text-start', id: 'text-1' },
+      { type: 'text-delta', id: 'text-1', delta: 'partial' },
+    ]);
+
+    assert.equal(outcome.kind, 'truncated');
+    if (outcome.kind !== 'truncated') return;
+    assert.equal(outcome.failure.message, 'Provider stream ended without finishing (other)');
+    assert.equal(outcome.continuation, 'none');
+  });
+
+  test('preserves a provider reason hidden by the SDK other bucket', async () => {
+    const outcome = await settle([
+      { type: 'stream-start', warnings: [] },
+      {
+        type: 'finish',
+        finishReason: { unified: 'other', raw: 'eos_token' },
+        usage: ZERO_USAGE,
+      },
+    ]);
+
+    assert.equal(outcome.kind, 'completed');
+    if (outcome.kind !== 'completed') return;
+    assert.equal(outcome.finishReason, 'eos_token');
+    assert.equal(outcome.usage?.rawFinishReason, 'eos_token');
+  });
+
+  test('settles a content filter as a terminal failure', async () => {
+    const outcome = await settle([
+      { type: 'stream-start', warnings: [] },
+      {
+        type: 'finish',
+        finishReason: { unified: 'content-filter', raw: 'content_filter' },
+        usage: ZERO_USAGE,
+      },
+    ]);
+
+    assert.equal(outcome.kind, 'terminal-failure');
+    if (outcome.kind !== 'terminal-failure') return;
+    assert.equal(outcome.failure.kind, 'unknown');
+    assert.equal(outcome.failure.message, 'Provider stopped the stream on a content filter');
+  });
+
+  test('settles an aborted request as aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const outcome = await settle(
+      [
+        { type: 'stream-start', warnings: [] },
+        {
+          type: 'finish',
+          finishReason: { unified: 'stop', raw: 'stop' },
+          usage: ZERO_USAGE,
+        },
+      ],
+      controller.signal,
+    );
+
+    assert.equal(outcome.kind, 'aborted');
   });
 
   // streamText's default onError is `console.error(error)`, which dumps the
@@ -175,3 +293,23 @@ describe('ModelAdapter.startStream onError', () => {
     );
   });
 });
+
+async function settle(
+  chunks: LanguageModelV4StreamPart[],
+  abortSignal = new AbortController().signal,
+) {
+  const model = new MockLanguageModelV4({
+    doStream: async () => ({ stream: convertArrayToReadableStream(chunks) }),
+  });
+  const result = await newAdapter().startStream({
+    model,
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: {},
+    activeTools: [],
+    onStreamActivity: () => {},
+    abortSignal,
+    repairToolCall: async () => null,
+  });
+  for await (const _event of result.events) void _event;
+  return await result.outcome;
+}

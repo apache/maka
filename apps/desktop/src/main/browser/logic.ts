@@ -3,7 +3,7 @@
  * by plain unit tests. The electron-bound view lives in controller.ts.
  */
 
-import { normalizeBrowserAddressInput, type BrowserState, type BrowserViewRect } from '@maka/core';
+import { normalizeBrowserAddressInput, type BrowserState, type BrowserViewRect } from '@maka/core/browser';
 
 export type { BrowserState, BrowserViewRect };
 

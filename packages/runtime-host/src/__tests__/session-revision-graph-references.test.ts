@@ -2,10 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
-import {
-  agentGraphIdForRootSession,
-  collectConversationCopyLinkedChildReferences,
-} from '@maka/runtime';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
+import { collectConversationCopyLinkedChildReferences } from '@maka/runtime/conversation-copy';
 import {
   agentGraphRevisionAdmissionSessionIds,
   prepareAgentGraphRevisionReferences,
@@ -263,6 +261,12 @@ async function prepare(overrides: PrepareOverrides = {}) {
       },
       graph: {
         readSessionState: async () => overrides.graphState ?? 'terminal',
+        readGraphState: async (_rootSessionId, graphId) => {
+          if (graphId !== agentGraphIdForRootSession(ROOT_SESSION_ID)) {
+            throw new Error('Graph is not bound to this root Session');
+          }
+          return overrides.graphState ?? 'terminal';
+        },
       },
       isSessionActive: () => overrides.childActive ?? false,
     },

@@ -87,6 +87,7 @@ export async function verifyPackagedWindowsApp(
     readMachine = readPeMachine,
     smokeRenderer = smokePackagedRenderer,
     workingDirectory = appDirectory,
+    expectedVersion,
   } = {},
 ) {
   const desktopManifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
@@ -110,7 +111,7 @@ export async function verifyPackagedWindowsApp(
     run,
     `(Get-Item -LiteralPath ${powerShellLiteral(executable)}).VersionInfo.ProductVersion`,
   );
-  assertWindowsProductVersion(stdout, desktopManifest.version);
+  assertWindowsProductVersion(stdout, expectedVersion ?? desktopManifest.version);
 
   step('smoking node-pty through conpty');
   await run(executable, ['-e', ptyProbe, join(appAsar, 'package.json')], {

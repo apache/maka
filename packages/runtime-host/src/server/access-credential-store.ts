@@ -1,10 +1,25 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, open, rename, rm, type FileHandle } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { HOST_OPERATION_SPECS, type OperationKey } from '../protocol/index.js';
+import {
+  type AccessCredentialPrincipalKind,
+  HOST_OPERATION_SPECS,
+  operationAllowsRemoteOwner,
+  type OperationKey,
+} from '../protocol/index.js';
 
 const ACCESS_FILE_SCHEMA_VERSION = 1;
 const ACCESS_FILE_MAX_BYTES = 512 * 1024;
+const LEGACY_TRANSCRIPT_QUERY_GRANT = 'session.transcript.query';
+const TRANSCRIPT_QUERY_REPLACEMENT_GRANTS = [
+  'session.transcript.page',
+  'session.transcript.overlay.release',
+] as const satisfies readonly OperationKey[];
+const TURN_QUERY_GRANT = 'session.turns.query';
+const TURN_QUERY_REPLACEMENT_GRANTS = [
+  TURN_QUERY_GRANT,
+  'session.turn_landmarks.query',
+] as const satisfies readonly OperationKey[];
 
 export const ACCESS_FILE_NAME = 'runtime-host-access.json';
 
@@ -12,6 +27,7 @@ export interface StoredAccessCredential {
   readonly credentialId: string;
   readonly credentialHash: string;
   readonly principalId: string;
+  readonly principalKind: AccessCredentialPrincipalKind;
   readonly status: 'active' | 'revoked';
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
@@ -46,7 +62,7 @@ export function createAccessCredentialFile(
 }
 
 export function issuedAccessGrants(grants: readonly OperationKey[]): readonly OperationKey[] {
-  return validateGrants([...new Set<OperationKey>(['host.status', ...grants])]);
+  return validateIssuedGrants([...new Set<OperationKey>(['host.status', ...grants])]);
 }
 
 export function assertAccessCredentialFileCapacity(file: AccessCredentialFile): void {
@@ -138,15 +154,23 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
   if (!/^[a-f0-9]{64}$/u.test(credentialHash)) throw new Error('Invalid credentialHash');
   const principalId = requireStoredString(value.principalId, 'principalId');
   if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(principalId)) throw new Error('Invalid principalId');
+  const principalKind = value.principalKind === undefined ? 'remote_owner' : value.principalKind;
+  if (principalKind !== 'remote_owner' && principalKind !== 'capability_provider') {
+    throw new Error('Invalid principalKind');
+  }
   if (value.status !== 'active' && value.status !== 'revoked') throw new Error('Invalid status');
   if (!Array.isArray(value.operationGrants)) throw new Error('Invalid operationGrants');
-  const rawOperationGrants = value.operationGrants.map((grant) =>
+  const storedOperationGrants = value.operationGrants.map((grant) =>
     requireStoredString(grant, 'operationGrant'),
-  ) as OperationKey[];
-  if (new Set(rawOperationGrants).size !== rawOperationGrants.length) {
+  );
+  if (new Set(storedOperationGrants).size !== storedOperationGrants.length) {
     throw new Error('Duplicate Runtime Host access operation grant');
   }
-  const operationGrants = validateGrants(rawOperationGrants);
+  const operationGrants = Object.freeze(
+    validateStoredGrants(migrateStoredOperationGrants(storedOperationGrants)).filter(
+      operationAllowsRemoteOwner,
+    ),
+  );
   if (!operationGrants.includes('host.status')) {
     throw new Error('Runtime Host access credential lacks its liveness grant');
   }
@@ -165,6 +189,7 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
     credentialId,
     credentialHash,
     principalId,
+    principalKind,
     status: value.status,
     operationGrants,
     canPublishClientCapabilities: value.canPublishClientCapabilities,
@@ -174,13 +199,39 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
   };
 }
 
-function validateGrants(grants: readonly OperationKey[]): readonly OperationKey[] {
+function migrateStoredOperationGrants(grants: readonly string[]): readonly string[] {
+  const migrated: string[] = [];
+  const seen = new Set<string>();
+  for (const stored of grants) {
+    const replacements =
+      stored === LEGACY_TRANSCRIPT_QUERY_GRANT
+        ? TRANSCRIPT_QUERY_REPLACEMENT_GRANTS
+        : stored === TURN_QUERY_GRANT
+          ? TURN_QUERY_REPLACEMENT_GRANTS
+          : [stored];
+    for (const replacement of replacements) {
+      if (seen.has(replacement)) continue;
+      seen.add(replacement);
+      migrated.push(replacement);
+    }
+  }
+  return migrated;
+}
+
+function validateStoredGrants(grants: readonly string[]): readonly OperationKey[] {
   for (const grant of grants) {
     if (!Object.hasOwn(HOST_OPERATION_SPECS, grant)) {
       throw new RuntimeHostAccessInputError(`Unknown Runtime Host operation grant: ${grant}`);
     }
-    if (grant === 'access.credential.issue' || grant === 'access.credential.revoke') {
-      throw new RuntimeHostAccessInputError('Access credential administration is local-owner only');
+  }
+  return Object.freeze([...grants] as OperationKey[]);
+}
+
+function validateIssuedGrants(grants: readonly OperationKey[]): readonly OperationKey[] {
+  validateStoredGrants(grants);
+  for (const grant of grants) {
+    if (!operationAllowsRemoteOwner(grant)) {
+      throw new RuntimeHostAccessInputError(`Runtime Host operation ${grant} is local-owner only`);
     }
   }
   return Object.freeze([...grants]);

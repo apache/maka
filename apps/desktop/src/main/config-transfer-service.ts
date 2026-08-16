@@ -1,4 +1,4 @@
-import type { AppSettings, UpdateAppSettingsInput } from '@maka/core';
+import type { AppSettings, UpdateAppSettingsInput } from '@maka/core/settings';
 import {
   reconcileConnectionAfterEnabledModelsChange,
   type LlmConnection,

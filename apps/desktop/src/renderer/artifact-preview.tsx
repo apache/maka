@@ -35,7 +35,7 @@ import type {
   ArtifactBinaryReadResult,
   ArtifactDescriptor,
   ArtifactTextReadResult,
-} from '@maka/core';
+} from '@maka/core/artifacts';
 import {
   Button,
   DiffCodePreview,

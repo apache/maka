@@ -1,4 +1,4 @@
-import type { PetPackManifestV1 } from '@maka/core';
+import type { PetPackManifestV1 } from '@maka/core/pet';
 
 export interface CustomPetLibrarySnapshot {
   readonly pets: readonly PetPackManifestV1[];

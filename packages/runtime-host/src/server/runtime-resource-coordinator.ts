@@ -7,13 +7,13 @@ import {
   type PtyControlWriter,
   type RuntimeResourceReader,
   type ShellRunBashInput,
-  type ShellRunLauncher,
   type ShellRunPtySnapshot,
   type ShellRunWriteInput,
   ShellRunPtyControlClosedError,
-  defaultShellPlan,
   isShellRunResourceRef,
-} from '@maka/runtime';
+} from '@maka/runtime/shell-run-contract';
+import { type ShellRunLauncher } from '@maka/runtime/shell-tools';
+import { defaultShellPlan } from '@maka/runtime/shell-detect';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import {
   decodeRuntimeResourceControllerAcquireResult,

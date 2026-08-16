@@ -1,42 +1,88 @@
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { StoredMessage } from '@maka/core/session';
 import {
+  affectsRuntimeEventStoredMessageProjection,
   isHardRuntimeEventReadModelDiagnostic,
   projectRuntimeEventsToStoredMessages,
+} from '@maka/runtime/runtime-event-read-model';
+import {
   type CanonicalPermissionOutcomeReader,
   type CanonicalPermissionOutcomeRecord,
-} from '@maka/runtime';
-import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
-import type { TurnSnapshot } from '../protocol/index.js';
-import type { ReadSessionTranscript } from './session-continuity-coordinator.js';
+} from '@maka/runtime/interaction-authority';
+import type {
+  ExecutionStoresWriter,
+  SessionTranscriptMessageLookupRequest,
+  SessionTranscriptPageRequest,
+  SessionTranscriptStoragePage,
+} from '@maka/storage/execution-stores';
+import { SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES, type TurnSnapshot } from '../protocol/index.js';
 
 const PERMISSION_OUTCOME_READ_CONCURRENCY = 8;
+export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES = SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES;
+export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES = 16 * 1024 * 1024;
+const ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS = ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES * 2;
+const ACTIVE_TRANSCRIPT_SCAN_BATCH_MAX_BYTES = 256 * 1024;
 
 export function createSessionTranscriptReader(input: {
   stores: ExecutionStoresWriter<'interactive'>;
   canonicalPermissionOutcomes: CanonicalPermissionOutcomeReader;
-}): ReadSessionTranscript {
-  return async (sessionId, rootTurn) => {
-    const stored = await input.stores.sessionStore.readMessagesSnapshot(sessionId);
-    if (!rootTurn || isTerminalTurn(rootTurn)) return stored;
+}): SessionTranscriptReader {
+  return {
+    readDurableHighWater: (sessionId) =>
+      input.stores.sessionStore.readTranscriptHighWaterSnapshot(sessionId),
+    readDurablePage: (sessionId, request) =>
+      input.stores.sessionStore.readTranscriptPageSnapshot(sessionId, request),
+    readDurableMessagesById: (sessionId, request) =>
+      input.stores.sessionStore.readTranscriptMessagesSnapshot(sessionId, request),
+    readActiveOverlay: async (sessionId, rootTurn) => {
+      if (!rootTurn || isTerminalTurn(rootTurn)) return [];
 
-    const [run, events] = await Promise.all([
-      input.stores.agentRunStore.readRun(sessionId, rootTurn.runId),
-      input.stores.runtimeEventStore.readRuntimeEvents(sessionId, rootTurn.runId),
-    ]);
-    const canonicalPermissionOutcomes = await readCanonicalPermissionOutcomes(
-      events,
-      input.canonicalPermissionOutcomes,
-    );
-    const projected = projectRuntimeEventsToStoredMessages(activePresentationEvents(events), {
-      runHeaders: [run],
-      canonicalPermissionOutcomes,
-    });
-    if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
-      throw new Error('Active RuntimeEvent transcript projection is incomplete');
-    }
-    return mergeMessageUpserts(stored, projected.messages);
+      const run = await input.stores.agentRunStore.readRun(sessionId, rootTurn.runId);
+      const events = await readActiveProjectionEvents(input.stores, sessionId, rootTurn.runId);
+      const canonicalPermissionOutcomes = await readCanonicalPermissionOutcomes(
+        events,
+        input.canonicalPermissionOutcomes,
+      );
+      const projected = projectRuntimeEventsToStoredMessages(activePresentationEvents(events), {
+        runHeaders: [run],
+        canonicalPermissionOutcomes,
+      });
+      if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
+        throw new Error('Active RuntimeEvent transcript projection is incomplete');
+      }
+      assertActiveOverlayBounded(projected.messages);
+      return projected.messages;
+    },
   };
+}
+
+export interface SessionTranscriptReader {
+  readDurableHighWater(sessionId: string): Promise<number | null>;
+  readDurablePage(
+    sessionId: string,
+    request: SessionTranscriptPageRequest,
+  ): Promise<SessionTranscriptStoragePage>;
+  readDurableMessagesById(
+    sessionId: string,
+    request: SessionTranscriptMessageLookupRequest,
+  ): Promise<readonly StoredMessage[]>;
+  readActiveOverlay(
+    sessionId: string,
+    rootTurn: TurnSnapshot | null,
+  ): Promise<readonly StoredMessage[]>;
+}
+
+function assertActiveOverlayBounded(messages: readonly StoredMessage[]): void {
+  if (messages.length > ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES) {
+    throw new Error('Active Session transcript overlay exceeds its message limit');
+  }
+  let encodedBytes = 0;
+  for (const message of messages) {
+    encodedBytes += Buffer.byteLength(JSON.stringify(message), 'utf8');
+    if (encodedBytes > ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES) {
+      throw new Error('Active Session transcript overlay exceeds its byte limit');
+    }
+  }
 }
 
 async function readCanonicalPermissionOutcomes(
@@ -51,6 +97,7 @@ async function readCanonicalPermissionOutcomes(
   );
   const outcomes = new Map<string, CanonicalPermissionOutcomeRecord>();
   const ids = [...requestIds];
+  let encodedBytes = 0;
   for (let index = 0; index < ids.length; index += PERMISSION_OUTCOME_READ_CONCURRENCY) {
     const batch = await Promise.all(
       ids.slice(index, index + PERMISSION_OUTCOME_READ_CONCURRENCY).map(async (requestId) => ({
@@ -59,7 +106,12 @@ async function readCanonicalPermissionOutcomes(
       })),
     );
     for (const item of batch) {
-      if (item.outcome) outcomes.set(item.requestId, item.outcome);
+      if (!item.outcome) continue;
+      encodedBytes += Buffer.byteLength(JSON.stringify(item.outcome), 'utf8');
+      if (encodedBytes > ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES) {
+        throw new Error('Active Session permission outcomes exceed the transcript byte limit');
+      }
+      outcomes.set(item.requestId, item.outcome);
     }
   }
   return outcomes;
@@ -96,6 +148,46 @@ function activePresentationEvents(events: readonly RuntimeEvent[]): RuntimeEvent
   return presented;
 }
 
+async function readActiveProjectionEvents(
+  stores: ExecutionStoresWriter<'interactive'>,
+  sessionId: string,
+  runId: string,
+): Promise<RuntimeEvent[]> {
+  const events: RuntimeEvent[] = [];
+  let retainedEvents = 0;
+  let retainedBytes = 0;
+  const result = await stores.runtimeEventStore.scanRuntimeEvents(
+    sessionId,
+    runId,
+    {
+      maxBatchBytes: ACTIVE_TRANSCRIPT_SCAN_BATCH_MAX_BYTES,
+      maxRecordBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+      maxImmutableRecords: ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS,
+      maxImmutableBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+      maxPartialRecords: ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS,
+      maxPartialBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+    },
+    (batch) => {
+      const relevant = batch.filter(affectsRuntimeEventStoredMessageProjection);
+      for (const event of relevant) {
+        retainedEvents += 1;
+        retainedBytes += Buffer.byteLength(JSON.stringify(event), 'utf8');
+        if (retainedEvents > ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS) {
+          throw new Error('Active RuntimeEvent transcript exceeds its event limit');
+        }
+        if (retainedBytes > ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES) {
+          throw new Error('Active RuntimeEvent transcript exceeds its byte limit');
+        }
+      }
+      events.push(...relevant);
+    },
+  );
+  if (result.status === 'limit_exceeded') {
+    throw new Error('Active RuntimeEvent transcript exceeds its storage scan limit');
+  }
+  return events;
+}
+
 function activeMessageKey(event: RuntimeEvent): string {
   const messageId = event.refs?.providerEventId ?? event.refs?.storedMessageId ?? event.id;
   return `${event.runId}\0${messageId}`;
@@ -117,24 +209,6 @@ function emptyAssistantText(thinking: RuntimeEvent): RuntimeEvent {
     partial: false,
     content: { kind: 'text', text: '' },
   };
-}
-
-function mergeMessageUpserts(
-  stored: readonly StoredMessage[],
-  active: readonly StoredMessage[],
-): StoredMessage[] {
-  const merged = stored.map((message) => structuredClone(message));
-  const indices = new Map(merged.map((message, index) => [message.id, index]));
-  for (const message of active) {
-    const index = indices.get(message.id);
-    if (index === undefined) {
-      indices.set(message.id, merged.length);
-      merged.push(structuredClone(message));
-    } else {
-      merged[index] = structuredClone(message);
-    }
-  }
-  return merged;
 }
 
 function isTerminalTurn(turn: TurnSnapshot): boolean {

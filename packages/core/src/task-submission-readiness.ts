@@ -1,7 +1,6 @@
 import {
   isConnectionReady,
   normalizeOpenAiCodexConnection,
-  normalizeRequestedModelForReadiness,
   type ChatConfigurationReason,
 } from './connection-readiness.js';
 import type { LlmConnection } from './llm-connections.js';
@@ -157,7 +156,7 @@ function modelTargetDimension(
   const verdict = isConnectionReady({
     connection: normalizedConnection,
     hasSecret: target.hasSecret === true,
-    requestedModel: normalizeRequestedModelForReadiness(target.connection, target.requestedModel),
+    requestedModel: target.requestedModel,
   });
   if (verdict.ready) {
     return dimension('model_target', 'ready', 'connection_readiness', target.checkedAt);
@@ -253,7 +252,6 @@ function modelRepairTarget(
       return { kind: 'connection', connectionSlug };
     case 'connection_disabled':
     case 'missing_api_key':
-    case 'oauth_subscription_not_wired':
       return { kind: 'connection', connectionSlug };
   }
 }

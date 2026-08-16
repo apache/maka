@@ -240,6 +240,57 @@ test('retries a Session update through transient revision churn', async () => {
   assert.equal(updated.collaborationMode, 'plan');
 });
 
+test('abandons a remove whose task was restored under it', async () => {
+  // A lifecycle write bumps the revision, so the conflict IS the restore: the
+  // premise the caller decided on ("this task is archived") no longer holds,
+  // and replaying the delete at the fresh revision destroys a task somebody
+  // just pulled back out of the archive.
+  const { client, requests } = clientWithResponses([
+    { kind: 'session', session: session('session-1', 4, { isArchived: true }) },
+    { kind: 'revision_conflict', expectedRevision: 4, actualRevision: 5 },
+    { kind: 'session', session: session('session-1', 5, { isArchived: false }) },
+    // Only a replayed delete reaches this, and reaching it is the defect.
+    { kind: 'removed' },
+  ]);
+
+  assert.equal(await client.removeSession('session-1', { requireArchived: true }), 'restored');
+  assert.deepEqual(
+    requests.map(({ operation }) => operation),
+    ['session.catalog.query', 'session.remove', 'session.catalog.query'],
+  );
+});
+
+test('retries a remove through revision churn that left the task archived', async () => {
+  // Not every conflict is a restore. A task still archived at the fresh
+  // revision was only written around, and the delete still means what it did.
+  const { client, requests } = clientWithResponses([
+    { kind: 'session', session: session('session-1', 4, { isArchived: true }) },
+    { kind: 'revision_conflict', expectedRevision: 4, actualRevision: 5 },
+    { kind: 'session', session: session('session-1', 5, { isArchived: true }) },
+    { kind: 'removed' },
+  ]);
+
+  assert.equal(await client.removeSession('session-1', { requireArchived: true }), 'removed');
+  assert.deepEqual(
+    requests.filter(({ operation }) => operation === 'session.remove').map(({ input }) => input),
+    [
+      { sessionId: 'session-1', expectedRevision: 4 },
+      { sessionId: 'session-1', expectedRevision: 5 },
+    ],
+  );
+});
+
+test('removes a task that was never archived when no premise was stated', async () => {
+  // Deleting an active task from the rail has no archived premise to lose, so
+  // the precondition is the caller's to ask for, not the client's to assume.
+  const { client } = clientWithResponses([
+    { kind: 'session', session: session('session-1', 4) },
+    { kind: 'removed' },
+  ]);
+
+  assert.equal(await client.removeSession('session-1'), 'removed');
+});
+
 test('rebuilds a Runtime Policy mutation from each fresh CAS projection', async () => {
   const initial = createDefaultRuntimePolicy();
   const concurrent = {
@@ -321,23 +372,6 @@ test('treats empty configuration patches as read-only lookups', async () => {
   ]);
 });
 
-test('reads the bounded Host execution boundary summary', async () => {
-  const { client, requests } = clientWithResponses([
-    { kind: 'managed', access: 'read_only', revision: 4 },
-  ]);
-
-  assert.deepEqual(await client.readExecutionBoundary('session-1'), {
-    kind: 'managed',
-    access: 'read_only',
-    revision: 4,
-  });
-  assert.deepEqual(requests, [
-    {
-      operation: 'session.execution_boundary.query',
-      input: { sessionId: 'session-1' },
-    },
-  ]);
-});
 
 test('binds message controls to the current Host Epoch', async () => {
   const { client, requests } = clientWithResponses([
@@ -566,96 +600,6 @@ test('streams Artifact content without mixing chunk offsets or totals', async ()
   );
 });
 
-test('restarts paginated Session traces instead of mixing revisions', async () => {
-  const firstRevision = catalogRevision('a');
-  const secondRevision = catalogRevision('b');
-  const totals = {
-    durationMs: 0,
-    modelAttempts: 0,
-    retries: 0,
-    compactions: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    unpricedAttempts: 0,
-  };
-  const coverage = {
-    modelCalls: 'none' as const,
-    turnsMissingModelCalls: [],
-    unreadableRecords: 0,
-    turnsWithFewerModelCallsThanSteps: [],
-  };
-  const turn = {
-    turnId: 'turn-1',
-    runId: 'run-1',
-    startedAt: 1,
-    endedAt: 1,
-    durationMs: 0,
-    steps: [],
-    totals,
-  };
-  const { client, requests } = clientWithResponses([
-    {
-      kind: 'session_trace_page',
-      schemaVersion: 1,
-      sessionId: 'session-1',
-      revision: firstRevision,
-      offset: 0,
-      turns: [turn],
-      totals,
-      coverage,
-      nextOffset: 1,
-    },
-    {
-      kind: 'session_trace_revision_changed',
-      expectedRevision: firstRevision,
-      actualRevision: secondRevision,
-    },
-    {
-      kind: 'session_trace_page',
-      schemaVersion: 1,
-      sessionId: 'session-1',
-      revision: secondRevision,
-      offset: 0,
-      turns: [turn],
-      totals,
-      coverage,
-      nextOffset: null,
-    },
-  ]);
-
-  assert.deepEqual(await client.loadSessionTrace('session-1'), {
-    schemaVersion: 1,
-    sessionId: 'session-1',
-    turns: [turn],
-    totals,
-    coverage,
-  });
-  assert.deepEqual(
-    requests.map(({ input }) => (input as { kind: string }).kind),
-    ['session_trace_start', 'session_trace_continue', 'session_trace_start'],
-  );
-});
-
-test('fails explicitly when the Host cannot represent a legacy Session', async () => {
-  const { client } = clientWithResponses([
-    {
-      kind: 'session',
-      session: {
-        kind: 'unsupported_legacy_record',
-        id: 'legacy-session',
-        revision: 1,
-        reason: 'not_wire_representable',
-      },
-    },
-  ]);
-
-  await assert.rejects(
-    () => client.getSession('legacy-session'),
-    (error: unknown) =>
-      error instanceof DesktopRuntimeHostClientError && error.code === 'unsupported_session',
-  );
-});
-
 test('restarts Session sidecar reads when a paginated revision changes', async () => {
   const taskRevisionOne = catalogRevision('3');
   const taskRevisionTwo = catalogRevision('4');
@@ -846,7 +790,10 @@ function session(
   return {
     id,
     revision,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: id,

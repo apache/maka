@@ -165,6 +165,173 @@ describe('maka-cu readers refuse rather than default', () => {
     assert.equal(readElement('observe', element({ value: '' })).value, '');
   });
 
+  it('reads stable element ids and a declared observation difference', () => {
+    const parsed = readSnapshot(
+      'observe',
+      snapshot({
+        elements: [element({ stableId: 17 }), element({ token: 'el_3', stableId: 18 })],
+        difference: {
+          baseSnapshotId: 'snap_0',
+          presentation: 'difference',
+          changes: [
+            { kind: 'remove', path: [0, 1], stableId: 4, token: null },
+            { kind: 'insert', path: [0, 2], stableId: 17, token: 'el_2' },
+            { kind: 'update', path: [0, 3], stableId: 18, token: 'el_3' },
+          ],
+          removedStableIdRanges: [
+            { start: 4, end: 6 },
+            { start: 9, end: 9 },
+          ],
+        },
+      }),
+    );
+
+    assert.equal(parsed.elements[0]?.stableId, 17);
+    assert.deepEqual(parsed.difference, {
+      baseSnapshotId: 'snap_0',
+      presentation: 'difference',
+      changes: [
+        { kind: 'remove', path: [0, 1], stableId: 4 },
+        { kind: 'insert', path: [0, 2], stableId: 17, token: 'el_2' },
+        { kind: 'update', path: [0, 3], stableId: 18, token: 'el_3' },
+      ],
+      removedStableIdRanges: [
+        { start: 4, end: 6 },
+        { start: 9, end: 9 },
+      ],
+    });
+  });
+
+  it('refuses malformed stable ids and difference fields', () => {
+    for (const stableId of [-1, 1.5, '7']) {
+      assert.throws(
+        () => readElement('observe', element({ stableId })),
+        MakaCuProtocolViolation,
+        `stableId=${String(stableId)}`,
+      );
+    }
+
+    const valid = {
+      baseSnapshotId: 'snap_0',
+      presentation: 'difference',
+      changes: [{ kind: 'update', path: [0, 1], stableId: 17, token: 'el_2' }],
+      removedStableIdRanges: [{ start: 4, end: 6 }],
+    };
+    const malformed = [
+      { ...valid, presentation: 'delta' },
+      { ...valid, changes: [{ ...valid.changes[0], kind: 'move' }] },
+      { ...valid, changes: [{ ...valid.changes[0], path: [] }] },
+      { ...valid, changes: [{ ...valid.changes[0], path: [0, -1] }] },
+      { ...valid, changes: [{ ...valid.changes[0], path: [0, 1.5] }] },
+      { ...valid, changes: [{ ...valid.changes[0], stableId: -1 }] },
+      { ...valid, changes: [{ ...valid.changes[0], token: null }] },
+      {
+        ...valid,
+        changes: [{ kind: 'remove', path: [0, 1], stableId: 17, token: 'el_2' }],
+      },
+      { ...valid, removedStableIdRanges: [{ start: 6, end: 4 }] },
+      { ...valid, presentation: 'no-change' },
+      { ...valid, presentation: 'full' },
+      {
+        ...valid,
+        presentation: 'difference',
+        changes: [],
+        removedStableIdRanges: [],
+      },
+    ];
+    for (const difference of malformed) {
+      assert.throws(
+        () =>
+          readSnapshot('observe', snapshot({ elements: [element({ stableId: 17 })], difference })),
+        MakaCuProtocolViolation,
+        JSON.stringify(difference),
+      );
+    }
+  });
+
+  it('refuses inconsistent stable ids and changes that do not name the current element', () => {
+    assert.throws(
+      () =>
+        readSnapshot(
+          'observe',
+          snapshot({
+            elements: [
+              element({ token: 'el_1', stableId: 1 }),
+              element({ token: 'el_2', stableId: null }),
+            ],
+          }),
+        ),
+      MakaCuProtocolViolation,
+    );
+    assert.throws(
+      () =>
+        readSnapshot(
+          'observe',
+          snapshot({
+            elements: [
+              element({ token: 'el_1', stableId: 1 }),
+              element({ token: 'el_2', stableId: 1 }),
+            ],
+          }),
+        ),
+      MakaCuProtocolViolation,
+    );
+
+    const difference = {
+      baseSnapshotId: 'snap_0',
+      presentation: 'difference',
+      changes: [{ kind: 'update', path: [0], stableId: 17, token: 'el_2' }],
+      removedStableIdRanges: [{ start: 4, end: 6 }],
+    };
+    assert.throws(
+      () => readSnapshot('observe', snapshot({ difference })),
+      MakaCuProtocolViolation,
+      'difference without stable ids',
+    );
+    assert.throws(
+      () =>
+        readSnapshot(
+          'observe',
+          snapshot({
+            elements: [element({ stableId: 18 })],
+            difference,
+          }),
+        ),
+      MakaCuProtocolViolation,
+      'change stable id disagrees with the current element',
+    );
+    assert.throws(
+      () =>
+        readSnapshot(
+          'observe',
+          snapshot({
+            elements: [element({ stableId: 17 })],
+            difference: {
+              ...difference,
+              changes: [{ kind: 'update', path: [0], stableId: 17, token: 'el_missing' }],
+            },
+          }),
+        ),
+      MakaCuProtocolViolation,
+      'change token is absent from the current tree',
+    );
+    assert.throws(
+      () =>
+        readSnapshot(
+          'observe',
+          snapshot({
+            elements: [element({ stableId: 17 })],
+            difference: {
+              ...difference,
+              removedStableIdRanges: [{ start: 17, end: 20 }],
+            },
+          }),
+        ),
+      MakaCuProtocolViolation,
+      'removed range includes a current stable id',
+    );
+  });
+
   it('refuses a window entry missing a field the host sorts on (§5.4)', () => {
     const window = {
       pid: 4711,

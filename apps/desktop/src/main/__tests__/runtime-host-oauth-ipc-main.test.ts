@@ -194,18 +194,6 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
     assert.equal(handlers.has(`${prefix}:get-account-state`), true);
     assert.equal(handlers.has(`${prefix}:logout`), true);
   }
-  assert.equal(
-    await invoke(handlers, 'antigravity-subscription:is-experimental-enabled'),
-    false,
-  );
-  assert.deepEqual(
-    await invoke(handlers, 'antigravity-subscription:get-account-state'),
-    {
-      provider: 'antigravity-subscription',
-      status: 'preview',
-      runtimeState: 'not_logged_in',
-    },
-  );
   const authorization = await invoke(handlers, 'claude-subscription:get-auth-url');
   assert.deepEqual(authorization, { authRequestId: attemptId, stateHint: 'STATE-HINT' });
   assert.deepEqual(opened, ['https://claude.example/authorize']);

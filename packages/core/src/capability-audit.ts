@@ -1,4 +1,4 @@
-import type { PlanReminder, PlanReminderRunStatus } from './plan-reminders.js';
+import type { ScheduledTask, ScheduledTaskRunOutcome } from './scheduled-task.js';
 
 export const SOURCE_RECORD_TYPES = ['mcp', 'api', 'local'] as const;
 export type SourceRecordType = (typeof SOURCE_RECORD_TYPES)[number];
@@ -12,11 +12,8 @@ export type SourceRecordStatus = (typeof SOURCE_RECORD_STATUSES)[number];
 export const CAPABILITY_AUDIT_PERMISSION_MODES = ['explore', 'ask', 'execute'] as const;
 export type CapabilityAuditPermissionMode = (typeof CAPABILITY_AUDIT_PERMISSION_MODES)[number];
 
-export const AUTOMATION_RECORD_TRIGGERS = ['manual', 'schedule', 'event'] as const;
-export type AutomationRecordTrigger = (typeof AUTOMATION_RECORD_TRIGGERS)[number];
-
-export const AUTOMATION_LAST_RUN_STATUSES = ['ok', 'error', 'skipped'] as const;
-export type AutomationLastRunStatus = (typeof AUTOMATION_LAST_RUN_STATUSES)[number];
+export const SCHEDULED_TASK_LAST_RUN_STATUSES = ['ok', 'error', 'skipped'] as const;
+export type ScheduledTaskLastRunStatus = (typeof SCHEDULED_TASK_LAST_RUN_STATUSES)[number];
 
 export const LOCAL_SKILL_SOURCE_SLUG = 'workspace-skills';
 
@@ -51,14 +48,13 @@ export interface SkillAuditRecord {
   permissionMode: Exclude<CapabilityAuditPermissionMode, 'execute'>;
 }
 
-export interface AutomationRecord {
+export interface ScheduledTaskAuditRecord {
   id: string;
   name: string;
   enabled: boolean;
-  trigger: AutomationRecordTrigger;
   permissionMode: CapabilityAuditPermissionMode;
   lastRunAt?: number;
-  lastRunStatus?: AutomationLastRunStatus;
+  lastRunStatus?: ScheduledTaskLastRunStatus;
 }
 
 export interface CapabilityAuditSummary {
@@ -71,18 +67,18 @@ export interface CapabilityAuditSummary {
   enabledSkillCount: number;
   skillsWithDeclaredTools: number;
   declaredToolKindCount: number;
-  automationCount: number;
-  enabledAutomationCount: number;
-  executableAutomationCount: number;
-  failedAutomationCount: number;
-  skippedAutomationCount: number;
+  scheduledTaskCount: number;
+  enabledScheduledTaskCount: number;
+  executableScheduledTaskCount: number;
+  failedScheduledTaskCount: number;
+  skippedScheduledTaskCount: number;
 }
 
 export interface CapabilityAuditReport {
   checkedAt: number;
   sources: SourceRecord[];
   skills: SkillAuditRecord[];
-  automations: AutomationRecord[];
+  scheduledTasks: ScheduledTaskAuditRecord[];
   summary: CapabilityAuditSummary;
 }
 
@@ -90,7 +86,7 @@ export interface DeriveCapabilityAuditReportInput {
   now?: number;
   sources?: readonly SourceRecord[];
   skills?: readonly CapabilityAuditSkillInput[];
-  planReminders?: readonly PlanReminder[];
+  scheduledTasks?: readonly ScheduledTask[];
 }
 
 export function deriveCapabilityAuditReport(
@@ -106,14 +102,14 @@ export function deriveCapabilityAuditReport(
     needsLocalSkillSource && !sources.some((source) => source.slug === LOCAL_SKILL_SOURCE_SLUG)
       ? [localSkillSource(skills.length, declaredToolKindCount, now), ...sources]
       : sources;
-  const automations = (input.planReminders ?? []).map(planReminderToAutomationRecord);
+  const scheduledTasks = (input.scheduledTasks ?? []).map(scheduledTaskToAuditRecord);
 
   return {
     checkedAt: now,
     sources: allSources,
     skills,
-    automations,
-    summary: summarizeCapabilityAudit(allSources, skills, automations),
+    scheduledTasks,
+    summary: summarizeCapabilityAudit(allSources, skills, scheduledTasks),
   };
 }
 
@@ -172,36 +168,34 @@ function localSkillSource(
   };
 }
 
-function planReminderToAutomationRecord(reminder: PlanReminder): AutomationRecord {
+function scheduledTaskToAuditRecord(task: ScheduledTask): ScheduledTaskAuditRecord {
+  const lastRun = task.runs[0];
   return {
-    id: reminder.id,
-    name: reminder.title,
-    enabled: reminder.enabled && reminder.status === 'scheduled',
-    trigger: 'schedule',
-    permissionMode: planReminderPermissionMode(reminder),
-    ...(typeof reminder.lastRun?.at === 'number' ? { lastRunAt: reminder.lastRun.at } : {}),
-    ...(reminder.lastRun
-      ? { lastRunStatus: mapPlanReminderRunStatus(reminder.lastRun.status) }
-      : {}),
+    id: task.id,
+    name: task.title,
+    enabled: task.status === 'active',
+    permissionMode: scheduledTaskPermissionMode(task),
+    ...(lastRun ? { lastRunAt: lastRun.at } : {}),
+    ...(lastRun ? { lastRunStatus: mapScheduledTaskRunOutcome(lastRun.outcome) } : {}),
   };
 }
 
-function planReminderPermissionMode(reminder: PlanReminder): CapabilityAuditPermissionMode {
-  if (reminder.status === 'completed') return 'explore';
-  if (!reminder.enabled || reminder.status === 'paused') return 'ask';
+function scheduledTaskPermissionMode(task: ScheduledTask): CapabilityAuditPermissionMode {
+  if (task.status === 'completed' || task.status === 'expired') return 'explore';
+  if (task.status === 'paused') return 'ask';
   return 'execute';
 }
 
-function mapPlanReminderRunStatus(status: PlanReminderRunStatus): AutomationLastRunStatus {
-  if (status === 'triggered') return 'ok';
-  if (status === 'blocked') return 'skipped';
+function mapScheduledTaskRunOutcome(outcome: ScheduledTaskRunOutcome): ScheduledTaskLastRunStatus {
+  if (outcome === 'ok') return 'ok';
+  if (outcome === 'blocked') return 'skipped';
   return 'error';
 }
 
 function summarizeCapabilityAudit(
   sources: readonly SourceRecord[],
   skills: readonly SkillAuditRecord[],
-  automations: readonly AutomationRecord[],
+  scheduledTasks: readonly ScheduledTaskAuditRecord[],
 ): CapabilityAuditSummary {
   return {
     sourceCount: sources.length,
@@ -213,16 +207,14 @@ function summarizeCapabilityAudit(
     enabledSkillCount: skills.filter((skill) => skill.enabled).length,
     skillsWithDeclaredTools: skills.filter((skill) => skill.declaredTools.length > 0).length,
     declaredToolKindCount: distinctDeclaredToolKinds(skills).length,
-    automationCount: automations.length,
-    enabledAutomationCount: automations.filter((automation) => automation.enabled).length,
-    executableAutomationCount: automations.filter(
-      (automation) => automation.permissionMode === 'execute',
-    ).length,
-    failedAutomationCount: automations.filter((automation) => automation.lastRunStatus === 'error')
+    scheduledTaskCount: scheduledTasks.length,
+    enabledScheduledTaskCount: scheduledTasks.filter((task) => task.enabled).length,
+    executableScheduledTaskCount: scheduledTasks.filter((task) => task.permissionMode === 'execute')
       .length,
-    skippedAutomationCount: automations.filter(
-      (automation) => automation.lastRunStatus === 'skipped',
-    ).length,
+    failedScheduledTaskCount: scheduledTasks.filter((task) => task.lastRunStatus === 'error')
+      .length,
+    skippedScheduledTaskCount: scheduledTasks.filter((task) => task.lastRunStatus === 'skipped')
+      .length,
   };
 }
 

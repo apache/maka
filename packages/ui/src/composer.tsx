@@ -47,12 +47,16 @@ import {
   fileTransferContainsFiles,
   isChatInputComposing,
   mentionQueryMatches,
+  slashCommandQuery,
   skillMentionQuery,
   type ChatInputActionOwner,
   type ComposerTextPort,
 } from './chat-input-behavior.js';
-import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core';
-import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
+import type { AttachmentRef, QuoteRef } from '@maka/core/events';
+import type { PermissionMode } from '@maka/core/permission';
+import type { ProviderType } from '@maka/core/llm-connections';
+import type { SessionSummary } from '@maka/core/session';
 import {
   Button as UiButton,
   ChatComposer as AstryxChatComposer,
@@ -100,12 +104,11 @@ export interface ComposerSlashCommandOption {
   description?: string;
   keywords?: readonly string[];
   Icon?: LucideIcon;
-  onSelect(): void;
 }
 
 type ComposerSlashSuggestion =
-  | { kind: 'command'; command: ComposerSlashCommandOption }
-  | { kind: 'skill'; skill: ComposerSkillOption };
+  | { kind: 'command'; command: ComposerSlashCommandOption; group: string }
+  | { kind: 'skill'; skill: ComposerSkillOption; group: string };
 
 /**
  * The draft text a chosen Skill becomes. This is the product-wide invocation
@@ -191,10 +194,10 @@ export const Composer = forwardRef<
     hidden?: boolean;
     /**
      * When true, a turn is in flight — live output OR the pre-first-token wait.
-     * Send becomes Stop. The ＋ menu and permission control stay reachable
-     * (#1444); the model and thinking menus stay mounted but lock with an
-     * explanatory tooltip, so the footer row never reflows mid-turn; import
-     * stays blocked mid-turn.
+     * Send becomes Stop while the draft is empty. The ＋ menu and permission
+     * control stay reachable (#1444); the model and thinking menus stay
+     * mounted but lock with an explanatory tooltip, so the footer row never
+     * reflows mid-turn; import stays blocked mid-turn.
      */
     streaming?: boolean;
     /**
@@ -213,12 +216,12 @@ export const Composer = forwardRef<
     draftKey?: string;
     /** Optional host persistence for reload-safe draft scopes. */
     draftPersistence?: ComposerDraftPersistence;
+    /**
+     * The composer's one submit. Mid-turn the host decides what handing the
+     * draft over means there — steering, a control command — because that is a
+     * reading of the same action, not a second control on this surface.
+     */
     onSend(
-      text: string,
-      metadata?: ComposerSendMetadata,
-    ): boolean | void | Promise<boolean | void>;
-    /** Insert a text-only instruction into the active turn at its next step boundary. */
-    onSteer?(
       text: string,
       metadata?: ComposerSendMetadata,
     ): boolean | void | Promise<boolean | void>;
@@ -252,23 +255,24 @@ export const Composer = forwardRef<
     onPasteAsQuote?(input: { text: string; label?: string }): void;
     modelLabel?: string;
     activeSession?: SessionSummary;
-    activeConnectionLabel?: string;
     activeModel?: string;
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
     modelChoices?: ChatModelChoice[];
+    /** Whether this Session already has conversation history whose provider prompt cache may be rebuilt by a switch. */
+    modelSwitchHasHistory?: boolean;
     /** Renders the provider brand mark beside each model option;
      *  injected by the desktop app to keep the provider SVG library out of @maka/ui. */
     renderProviderMark?(type: ProviderType): ReactNode;
     modelChangePending?: boolean;
     onModelChange?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
     /** Per-model thinking-level variants for the active model; empty/undefined hides the switcher. */
-    activeThinkingLevels?: readonly import('@maka/core').ThinkingLevel[];
-    activeThinkingLevel?: import('@maka/core').ThinkingLevel;
-    onThinkingLevelChange?(level: import('@maka/core').ThinkingLevel | undefined): void | Promise<void>;
-    newChatThinkingLevels?: readonly import('@maka/core').ThinkingLevel[];
-    newChatThinkingLevel?: import('@maka/core').ThinkingLevel;
-    onNewChatThinkingLevelChange?(level: import('@maka/core').ThinkingLevel | undefined): void | Promise<void>;
+    activeThinkingLevels?: readonly import('@maka/core/model-thinking').ThinkingLevel[];
+    activeThinkingLevel?: import('@maka/core/model-thinking').ThinkingLevel;
+    onThinkingLevelChange?(level: import('@maka/core/model-thinking').ThinkingLevel | undefined): void | Promise<void>;
+    newChatThinkingLevels?: readonly import('@maka/core/model-thinking').ThinkingLevel[];
+    newChatThinkingLevel?: import('@maka/core/model-thinking').ThinkingLevel;
+    onNewChatThinkingLevelChange?(level: import('@maka/core/model-thinking').ThinkingLevel | undefined): void | Promise<void>;
     /**
      * Home / empty-state composer only (no active session yet): the model
      * the next new chat will start with, and the picker callback. When set,
@@ -684,14 +688,16 @@ export const Composer = forwardRef<
     mentionSkills: props.mentionSkills,
     slashCommands: props.slashCommands,
     onSearchMentionFiles: props.onSearchMentionFiles,
+    commandsGroup: mentionCopy.commandsGroup,
+    skillsGroup: mentionCopy.skillsGroup,
   });
-  useEffect(() => {
-    mentionSourceRef.current = {
-      mentionSkills: props.mentionSkills,
-      slashCommands: props.slashCommands,
-      onSearchMentionFiles: props.onSearchMentionFiles,
-    };
-  });
+  mentionSourceRef.current = {
+    mentionSkills: props.mentionSkills,
+    slashCommands: props.slashCommands,
+    onSearchMentionFiles: props.onSearchMentionFiles,
+    commandsGroup: mentionCopy.commandsGroup,
+    skillsGroup: mentionCopy.skillsGroup,
+  };
 
   const searchSourcesRef = useRef<{ files: SearchSource; skills: SearchSource }>(null);
   if (!searchSourcesRef.current) {
@@ -706,21 +712,45 @@ export const Composer = forwardRef<
     };
     const files = createTriggerSearchSource<SearchableItem>(runFileSearch);
     const listSlashSuggestions = (rawQuery: string): SearchableItem[] => {
-      const skills = mentionSourceRef.current.mentionSkills ?? [];
-      const commands = mentionSourceRef.current.slashCommands ?? [];
+      const source = mentionSourceRef.current;
+      const skills = source.mentionSkills ?? [];
+      const editable = editableNode();
+      const selection = document.getSelection();
+      let textBeforeCaret = textPort.getValue();
+      let textAfterCaret = '';
+      if (
+        editable &&
+        selection?.focusNode &&
+        editable.contains(selection.focusNode)
+      ) {
+        const range = document.createRange();
+        range.selectNodeContents(editable);
+        range.setEnd(selection.focusNode, selection.focusOffset);
+        textBeforeCaret = range.toString();
+        range.selectNodeContents(editable);
+        range.setStart(selection.focusNode, selection.focusOffset);
+        textAfterCaret = range.toString();
+      }
+      const commandQuery = slashCommandQuery(textBeforeCaret, textAfterCaret, rawQuery);
       const query = skillMentionQuery(rawQuery);
-      const commandItems = commands
-        .filter((command) =>
-          mentionQueryMatches(
-            query,
-            `${command.id} ${command.name} ${command.description ?? ''} ${(command.keywords ?? []).join(' ')}`,
-          ),
-        )
-        .map((command) => ({
-          id: `command:${command.id}`,
-          label: command.name,
-          auxiliaryData: { kind: 'command', command } satisfies ComposerSlashSuggestion,
-        }));
+      const commandItems = commandQuery === null
+        ? []
+        : (source.slashCommands ?? [])
+            .filter((command) =>
+              mentionQueryMatches(
+                commandQuery,
+                `${command.id} ${command.name} ${command.description ?? ''} ${(command.keywords ?? []).join(' ')}`,
+              ),
+            )
+            .map((command) => ({
+              id: `command:${command.id}`,
+              label: command.name,
+              auxiliaryData: {
+                kind: 'command',
+                command,
+                group: source.commandsGroup,
+              } satisfies ComposerSlashSuggestion,
+            }));
       const skillItems = skills
         .filter((skill) =>
           mentionQueryMatches(query, `${skill.id} ${skill.name} ${skill.description ?? ''}`),
@@ -728,7 +758,11 @@ export const Composer = forwardRef<
         .map((skill) => ({
           id: `skill:${skill.id}`,
           label: skill.name,
-          auxiliaryData: { kind: 'skill', skill } satisfies ComposerSlashSuggestion,
+          auxiliaryData: {
+            kind: 'skill',
+            skill,
+            group: source.skillsGroup,
+          } satisfies ComposerSlashSuggestion,
         }));
       return [...commandItems, ...skillItems].slice(0, 50);
     };
@@ -821,7 +855,10 @@ export const Composer = forwardRef<
                   />
                 ) : null}
                 <span className="maka-composer-mention-text">
-                  <span className="maka-composer-mention-name">{command.name}</span>
+                  <span className="maka-composer-mention-name">
+                    {command.name}
+                    <span className="maka-composer-command-token">/{command.id}</span>
+                  </span>
                   <span className="maka-composer-mention-secondary">
                     {command.description}
                   </span>
@@ -858,8 +895,7 @@ export const Composer = forwardRef<
         onSelect: (item): string | ChatComposerToken => {
           const suggestion = item.auxiliaryData as ComposerSlashSuggestion;
           if (suggestion.kind === 'command') {
-            suggestion.command.onSelect();
-            return '';
+            return `/${suggestion.command.id} `;
           }
           return inlineReferenceToken({
             kind: 'skill',
@@ -890,7 +926,7 @@ export const Composer = forwardRef<
     const editable = editableNode();
     if (editable?.getAttribute('aria-expanded') !== 'true') return;
     editable.dispatchEvent(new Event('input', { bubbles: true }));
-  }, [props.mentionSkills, props.slashCommands]);
+  }, [locale, props.mentionSkills, props.slashCommands]);
 
   /**
    * An open menu must follow the caret, not just the text. `useTriggerMenu`
@@ -1006,8 +1042,7 @@ export const Composer = forwardRef<
     setSendPending(true);
     let sent: boolean | void;
     try {
-      const submit = props.streaming && props.onSteer ? props.onSteer : props.onSend;
-      sent = await submit(
+      sent = await props.onSend(
         text,
         workspaceFileReferences.length > 0 ? { workspaceFileReferences } : undefined,
       );
@@ -1183,6 +1218,12 @@ export const Composer = forwardRef<
   // The disabled Send is explanatory only in the no-model dead-end; other
   // disabled reasons (empty draft, in-flight import) keep the neutral label.
   const sendTitle = noModelConnection && !props.disabled ? copy.noModelSendTitle : copy.sendLabel;
+  // One slot, one button, two states — Astryx's send/stop toggle. Mid-turn an
+  // empty draft has nothing to submit, so the slot is Stop; the moment there is
+  // a draft, handing it over is the only meaningful action there and the button
+  // returns to Send (the host reads that as steering). Stop is not lost in that
+  // window: Esc interrupts from the input, which is where the hands already are.
+  const stopShown = props.streaming === true && !text.trim();
   const modelChipLabel = props.modelLabel?.trim() || copy.selectModel;
   // Mid-turn the model and thinking menus stay mounted but locked, each
   // carrying the reason in its own words (model vs thinking level) — the
@@ -1637,10 +1678,10 @@ export const Composer = forwardRef<
                   <ChatModelSwitcher
                     activeSession={props.activeSession}
                     activeModel={props.activeModel}
-                    activeConnectionLabel={props.activeConnectionLabel}
                     activeModelLabel={props.activeModelLabel}
                     currentProviderType={props.activeProviderType}
                     choices={props.modelChoices ?? []}
+                    hasConversationHistory={props.modelSwitchHasHistory}
                     pending={props.modelChangePending}
                     disabledReason={modelSwitcherDisabledReason}
                     renderProviderMark={props.renderProviderMark}
@@ -1732,53 +1773,30 @@ export const Composer = forwardRef<
           sendActions={(
             <div className="maka-composer-right-controls" />
           )}
-          sendButton={props.streaming && props.onSteer ? (
-            <div className="maka-composer-running-actions">
-              <IconButton
-                variant="ghost"
-                type="button"
-                isDisabled={props.stopPending}
-                label={props.stopPending ? copy.stopping : copy.stopLabel}
-                aria-busy={props.stopPending ? 'true' : undefined}
-                data-pending={props.stopPending ? 'true' : undefined}
-                onClick={() => {
-                  if (props.stopPending) return;
-                  void props.onStop();
-                }}
-                icon={<Square size={ICON_SIZE.control} aria-hidden="true" />}
-              />
-              <IconButton
-                variant="primary"
-                type="submit"
-                isDisabled={sendDisabled}
-                label={copy.steerLabel}
-                aria-busy={sendPending ? 'true' : undefined}
-                data-pending={sendPending ? 'true' : undefined}
-                tooltip={copy.steerLabel}
-                icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
-              />
-            </div>
-          ) : props.streaming ? (
-            <UiButton
-              variant="primary"
+          sendButton={stopShown ? (
+            <IconButton
+              variant="secondary"
+              type="button"
               isDisabled={props.stopPending}
+              label={props.stopPending ? copy.stopping : copy.stopLabel}
+              aria-busy={props.stopPending ? 'true' : undefined}
+              data-pending={props.stopPending ? 'true' : undefined}
+              tooltip={props.stopPending ? copy.stopping : copy.stopLabel}
               onClick={() => {
                 if (props.stopPending) return;
                 void props.onStop();
               }}
-              aria-busy={props.stopPending ? 'true' : undefined}
-              data-pending={props.stopPending ? 'true' : undefined}
-              label={props.stopPending ? copy.stopping : copy.stopLabel}
+              icon={<Square size={ICON_SIZE.control} aria-hidden="true" />}
             />
           ) : (
             <IconButton
               variant="primary"
               type="submit"
               isDisabled={sendDisabled}
-              label={copy.sendLabel}
+              label={props.streaming ? copy.steerLabel : copy.sendLabel}
               aria-busy={sendPending ? 'true' : undefined}
               data-pending={sendPending ? 'true' : undefined}
-              tooltip={sendTitle}
+              tooltip={props.streaming ? copy.steerLabel : sendTitle}
               icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
             />
           )}

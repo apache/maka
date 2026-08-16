@@ -4,19 +4,20 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { AgentRunHeader } from '@maka/core';
-import {
-  BackendRegistry,
-  FakeBackend,
-  GOAL_SET_TOOL_NAME,
-  goalCheckpoint,
-  SessionManager,
-  type RuntimeHostedRootAuthority,
-} from '@maka/runtime';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import { BackendRegistry, SessionManager } from '@maka/runtime/session-manager';
+import { FakeBackend } from '@maka/runtime/fake-backend';
+import { GOAL_SET_TOOL_NAME } from '@maka/runtime/goal-tools';
+import { goalCheckpoint } from '@maka/runtime/goal-state';
+import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
 import {
   openInteractiveExecutionStoresForWrite,
   type InteractiveExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
+import {
+  openInteractiveGoalAuthorityForWrite,
+  type InteractiveGoalAuthorityWriter,
+} from '@maka/storage/goal-authority';
 import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
@@ -27,6 +28,8 @@ import { CanonicalSessionProjectionReader } from '../server/canonical-session-pr
 import type { RuntimeHostResidency } from '../server/host-kernel.js';
 import { HostInteractionCoordinator } from '../server/interaction-coordinator.js';
 import { HostGoalCoordinator } from '../server/goal-coordinator.js';
+import { HostGoalExecutionCoordinator } from '../server/goal-execution-coordinator.js';
+import { executeHostedExecutionToSettlement } from '../server/hosted-execution-wait.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from '../server/message-coordinator.js';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
@@ -42,11 +45,11 @@ test('Goal continuation uses the canonical root admission and durable origin', {
     const controlLease = fixture.goal.manager.getControlLease(fixture.sessionId);
     assert.ok(controlLease);
     if (!controlLease) return;
-    const admission = fixture.coordinator.admitGoalTurn(
+    const admission = fixture.goalExecutions.admitTurn(
       fixture.sessionId,
+      'Continue the Goal',
       goalCheckpoint(created),
       controlLease,
-      'Continue the Goal',
     );
     assert.equal(admission.kind, 'prepared');
     if (admission.kind !== 'prepared') return;
@@ -100,11 +103,11 @@ test('queued Goal control revokes a prepared root before durable admission', asy
     const controlLease = fixture.goal.manager.getControlLease(fixture.sessionId);
     assert.ok(controlLease);
     if (!controlLease) return;
-    const admission = fixture.coordinator.admitGoalTurn(
+    const admission = fixture.goalExecutions.admitTurn(
       fixture.sessionId,
+      'This stale continuation must never run',
       goalCheckpoint(created),
       controlLease,
-      'This stale continuation must never run',
     );
     assert.equal(admission.kind, 'prepared');
     if (admission.kind !== 'prepared') return;
@@ -157,20 +160,20 @@ test('queued Goal control revokes a prepared root before durable admission', asy
   }
 });
 
-test('Goal continuation cannot overtake a pending Automation admission', async () => {
+test('Goal continuation cannot overtake a pending ScheduledTask admission', async () => {
   const fixture = await createFixture();
   const admissionEntered = deferred();
   const releaseAdmission = deferred();
   try {
-    const automationTurnId = randomUUID();
-    const automationRunId = randomUUID();
-    const automationId = 'automation-reservation';
-    const automation = fixture.coordinator.executeRoot({
+    const scheduledTaskTurnId = randomUUID();
+    const scheduledTaskRunId = randomUUID();
+    const scheduledTaskId = 'scheduled-task-reservation';
+    const scheduledTask = executeHostedExecutionToSettlement(fixture.coordinator, {
       sessionId: fixture.sessionId,
-      turnId: automationTurnId,
-      runId: automationRunId,
+      turnId: scheduledTaskTurnId,
+      runId: scheduledTaskRunId,
       userMessageId: randomUUID(),
-      execution: { kind: 'automation', automationId },
+      execution: { kind: 'scheduled_task', scheduledTaskId },
       content: { text: 'Hold the shared root reservation.' },
       admitExecution: async () => {
         admissionEntered.resolve();
@@ -181,9 +184,9 @@ test('Goal continuation cannot overtake a pending Automation admission', async (
         fixture.manager.sendMessage(
           fixture.sessionId,
           {
-            turnId: automationTurnId,
+            turnId: scheduledTaskTurnId,
             text: 'Hold the shared root reservation.',
-            origin: { kind: 'automation', automationId },
+            origin: { kind: 'scheduled_task', scheduledTaskId },
           },
           {
             runId,
@@ -195,28 +198,28 @@ test('Goal continuation cannot overtake a pending Automation admission', async (
     });
     await admissionEntered.promise;
 
-    const overtakingGoal = fixture.coordinator.admitGoalTurn(
+    const overtakingGoal = fixture.goalExecutions.admitTurn(
       fixture.sessionId,
+      'Do not overtake the ScheduledTask admission.',
       { goalId: 'goal-pending', revision: 1 },
-      { goalId: 'goal-pending' },
-      'Do not overtake the Automation admission.',
+      { goalId: 'goal-pending', generation: 0 },
     );
     assert.equal(overtakingGoal.kind, 'busy');
     assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), { kind: 'reserved' });
 
     releaseAdmission.resolve();
-    await automation;
+    await scheduledTask;
     if (overtakingGoal.kind === 'busy') await overtakingGoal.whenIdle;
 
-    const goal = fixture.goal.manager.create(fixture.sessionId, 'Run after Automation').goal;
+    const goal = fixture.goal.manager.create(fixture.sessionId, 'Run after ScheduledTask').goal;
     const controlLease = fixture.goal.manager.getControlLease(fixture.sessionId);
     assert.ok(controlLease);
     if (!controlLease) return;
-    const goalAdmission = fixture.coordinator.admitGoalTurn(
+    const goalAdmission = fixture.goalExecutions.admitTurn(
       fixture.sessionId,
+      'Continue after ScheduledTask.',
       goalCheckpoint(goal),
       controlLease,
-      'Continue after Automation.',
     );
     assert.equal(goalAdmission.kind, 'prepared');
     if (goalAdmission.kind !== 'prepared') return;
@@ -229,7 +232,7 @@ test('Goal continuation cannot overtake a pending Automation admission', async (
       fixture.sessionId,
       goalAdmission.turnId,
     );
-    assert.equal(durableGoal?.previousRootTurnId, automationTurnId);
+    assert.equal(durableGoal?.previousRootTurnId, scheduledTaskTurnId);
     assert.equal(fixture.drainRequested(), false);
   } finally {
     releaseAdmission.resolve();
@@ -237,19 +240,19 @@ test('Goal continuation cannot overtake a pending Automation admission', async (
   }
 });
 
-test('drain revokes pending Automation before durable root admission', async () => {
+test('drain revokes pending ScheduledTask before durable root admission', async () => {
   const fixture = await createFixture();
   const admissionEntered = deferred();
   const releaseAdmission = deferred();
   const turnId = randomUUID();
   const runId = randomUUID();
   try {
-    const automation = fixture.coordinator.executeRoot({
+    const scheduledTask = executeHostedExecutionToSettlement(fixture.coordinator, {
       sessionId: fixture.sessionId,
       turnId,
       runId,
       userMessageId: randomUUID(),
-      execution: { kind: 'automation', automationId: 'draining-automation' },
+      execution: { kind: 'scheduled_task', scheduledTaskId: 'draining-scheduled-task' },
       content: { text: 'Do not admit after drain.' },
       admitExecution: async () => {
         admissionEntered.resolve();
@@ -262,7 +265,7 @@ test('drain revokes pending Automation before durable root admission', async () 
           {
             turnId,
             text: 'Do not admit after drain.',
-            origin: { kind: 'automation', automationId: 'draining-automation' },
+            origin: { kind: 'scheduled_task', scheduledTaskId: 'draining-scheduled-task' },
           },
           {
             runId: admittedRunId,
@@ -277,7 +280,7 @@ test('drain revokes pending Automation before durable root admission', async () 
     fixture.coordinator.beginDrain();
     releaseAdmission.resolve();
 
-    await assert.rejects(automation, /lost its pending reservation/);
+    await assert.rejects(scheduledTask, /lost its pending reservation/);
     assert.equal(
       await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, turnId),
       undefined,
@@ -294,57 +297,58 @@ test('drain revokes pending Automation before durable root admission', async () 
   }
 });
 
-test('Automation turns can use Goal tools and contribute evaluation evidence', async () => {
+test('ScheduledTask turns can use Goal tools and contribute evaluation evidence', async () => {
   const fixture = await createFixture();
   try {
-    const automationId = 'automation-goal-tool';
+    const scheduledTaskId = 'scheduled-task-goal-tool';
     const turnId = randomUUID();
     const runId = randomUUID();
     const goalSet = fixture.goal.tools.find((tool) => tool.name === GOAL_SET_TOOL_NAME);
     assert.ok(goalSet);
     if (!goalSet) return;
 
-    await fixture.coordinator.executeRoot({
+    await executeHostedExecutionToSettlement(fixture.coordinator, {
       sessionId: fixture.sessionId,
       turnId,
       runId,
       userMessageId: randomUUID(),
-      execution: { kind: 'automation', automationId },
+      execution: { kind: 'scheduled_task', scheduledTaskId },
       content: { text: 'Set and verify a Goal.' },
-      start: ({ runId: admittedRunId, userMessageId, onRunStarted }) => {
-        const result = goalSet.impl(
-          { condition: 'Automation Goal completes' },
-          {
-            sessionId: fixture.sessionId,
-            runId: admittedRunId,
-            turnId,
-            cwd: fixture.base,
-            toolCallId: 'goal-set-from-automation',
-            abortSignal: new AbortController().signal,
-            emitOutput: () => {},
-          },
-        );
-        assert.equal(typeof result, 'string');
-        assert.match(result as string, /Goal set/);
-        return fixture.manager.sendMessage(
-          fixture.sessionId,
-          {
-            turnId,
-            text: 'Set and verify a Goal.',
-            origin: { kind: 'automation', automationId },
-          },
-          {
-            runId: admittedRunId,
-            userMessageId: userMessageId ?? undefined,
-            durability: 'required',
-            onRunStarted,
-          },
-        );
-      },
+      start: ({ runId: admittedRunId, userMessageId, onRunStarted }) =>
+        (async function* () {
+          const result = await goalSet.impl(
+            { condition: 'ScheduledTask Goal completes' },
+            {
+              sessionId: fixture.sessionId,
+              runId: admittedRunId,
+              turnId,
+              cwd: fixture.base,
+              toolCallId: 'goal-set-from-scheduled-task',
+              abortSignal: new AbortController().signal,
+              emitOutput: () => {},
+            },
+          );
+          assert.equal(typeof result, 'string');
+          assert.match(result as string, /Goal set/);
+          yield* fixture.manager.sendMessage(
+            fixture.sessionId,
+            {
+              turnId,
+              text: 'Set and verify a Goal.',
+              origin: { kind: 'scheduled_task', scheduledTaskId },
+            },
+            {
+              runId: admittedRunId,
+              userMessageId: userMessageId ?? undefined,
+              durability: 'required',
+              onRunStarted,
+            },
+          );
+        })(),
     });
 
     const goal = await fixture.waitForGoalStatus('achieved');
-    assert.equal(goal.condition, 'Automation Goal completes');
+    assert.equal(goal.condition, 'ScheduledTask Goal completes');
     assert.equal(goal.lastReason, 'verified');
     assert.equal(fixture.drainRequested(), false);
   } finally {
@@ -490,10 +494,12 @@ interface Fixture {
   readonly owner: InteractiveRootOwner;
   readonly base: string;
   readonly stores: InteractiveExecutionStoresWriter;
+  readonly goalStore: InteractiveGoalAuthorityWriter;
   readonly sessionId: string;
   readonly rootAdmissions: RootAdmissionOwner;
   readonly coordinator: RootTurnCoordinator;
   readonly goal: HostGoalCoordinator;
+  readonly goalExecutions: HostGoalExecutionCoordinator;
   readonly manager: SessionManager;
   readonly messages: HostMessageCoordinator;
   readonly sessionAdmission: SessionAdmissionGate;
@@ -512,6 +518,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   assert.ok(owner);
   if (!owner) throw new Error('Unable to acquire test root');
   const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
   const session = await stores.sessionStore.create({
     cwd: capability.canonicalPath,
     backend: 'fake',
@@ -595,7 +602,8 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   backends.register('fake', (context) => new FakeBackend(context));
   const authority: RuntimeHostedRootAuthority = {
     bindRun: (identity) => messages.bindRun(identity),
-    executeRoot: (input) => requireCoordinator(coordinator).executeRoot(input),
+    executeRoot: (input) =>
+      executeHostedExecutionToSettlement(requireCoordinator(coordinator), input),
     stopRoot: (identity, input) => requireCoordinator(coordinator).stopRoot(identity, input),
     stopSession: (sessionId, input) =>
       requireCoordinator(coordinator).stopSession(sessionId, input),
@@ -629,8 +637,17 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     () => requireGoal(goal),
   );
   const rootCoordinator = coordinator;
+  const goalExecutions = new HostGoalExecutionCoordinator({
+    executions: rootCoordinator,
+    runtime: manager,
+    matchesActive: (sessionId, checkpoint, controlLease) =>
+      requireGoal(goal).matchesActive(sessionId, checkpoint, controlLease),
+    newId: randomUUID,
+  });
   goal = new HostGoalCoordinator({
+    store: goalStore,
     stores,
+    executions: rootCoordinator,
     sessionAdmission: admission,
     evaluator: {
       evaluate: async () =>
@@ -638,24 +655,30 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
       close: async () => {},
     },
     admitTurn: (sessionId, text, checkpoint, controlLease) =>
-      rootCoordinator.admitGoalTurn(sessionId, checkpoint, controlLease, text),
+      goalExecutions.admitTurn(sessionId, text, checkpoint, controlLease),
     listActionableTaskKeys: async () => [],
     acquireResidency,
     onProjectionChanged: (sessionId) => {
       requireContinuity(continuity).enqueueCanonicalRefresh(sessionId);
       for (const listener of goalChangeListeners) listener();
     },
+    requestDrain: () => {
+      requestedDrain = true;
+    },
   });
+  await goal.prepareRecovery();
   const goalCoordinator = goal;
 
   return {
     owner,
     base,
     stores,
+    goalStore,
     sessionId: session.id,
     rootAdmissions,
     coordinator: rootCoordinator,
     goal: goalCoordinator,
+    goalExecutions,
     manager,
     messages,
     sessionAdmission: admission,
@@ -678,6 +701,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
         check();
       }),
     async close() {
+      goalExecutions.beginDrain();
       goalCoordinator.beginDrain();
       rootCoordinator.beginDrain();
       await goalCoordinator.close();
@@ -685,6 +709,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
       await messages.close();
       await interactions.close();
       continuity?.close();
+      await goalStore.close();
       await stores.sessionStore.close?.();
       await owner.close();
       await rm(base, { recursive: true, force: true });

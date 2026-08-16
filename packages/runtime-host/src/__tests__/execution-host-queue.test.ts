@@ -16,7 +16,7 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
+import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
@@ -25,16 +25,17 @@ import type { StoredMessage } from '@maka/core/session';
 import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
 import {
-  buildTaskLedgerTools,
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
+} from '@maka/runtime/terminal-run-commit';
+import {
   FAKE_ASK_USER_QUESTION_PROMPT,
   FAKE_WAIT_FOR_STEERING_PROMPT,
-  type MakaTool,
-  type MakaToolContext,
-} from '@maka/runtime';
+} from '@maka/runtime/fake-backend';
+import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
@@ -101,8 +102,12 @@ test('subscribed Clients share one canonical queue and ordered root handoff', as
     const tui = await connectClient(fixture.root, 'tui');
     const desktopSubscription = await desktop.openSessionSubscription({
       sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
     });
-    const tuiSubscription = await tui.openSessionSubscription({ sessionId: fixture.sessionId });
+    const tuiSubscription = await tui.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
     const desktopProbe = new SubscriptionProbe(desktopSubscription);
     const tuiProbe = new SubscriptionProbe(tuiSubscription);
     for (const subscription of [desktopSubscription, tuiSubscription]) {
@@ -275,6 +280,7 @@ test('a killed Host is recovered exactly once before its successor becomes ready
     const first = await connectClient(fixture.root, 'desktop');
     const firstSubscription = await first.openSessionSubscription({
       sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
     });
     const firstProbe = new SubscriptionProbe(firstSubscription);
     const turnId = randomUUID();
@@ -306,6 +312,7 @@ test('a killed Host is recovered exactly once before its successor becomes ready
     const second = await connectClient(fixture.root, 'tui');
     const recoveredSubscription = await second.openSessionSubscription({
       sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
     });
     const recovered = await second.queryTurn({
       sessionId: fixture.sessionId,

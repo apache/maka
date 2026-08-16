@@ -3,7 +3,7 @@ import { realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
-import type { SessionSummary } from '@maka/core';
+import type { SessionSummary } from '@maka/core/session';
 
 const execFileAsync = promisify(execFile);
 

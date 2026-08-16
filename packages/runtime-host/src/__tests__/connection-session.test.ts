@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { connect, createServer, type Server, type Socket } from 'node:net';
@@ -10,7 +11,11 @@ import {
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
 import { readHostRegistration } from '../control/registration.js';
-import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.js';
+import {
+  connectRuntimeHost,
+  RuntimeHostRequestInterruptedError,
+  type RuntimeHostConnection,
+} from '../client/index.js';
 import {
   decodeHostFrame,
   encodeProtocolMessage,
@@ -105,6 +110,109 @@ test('concurrent responses remain framed and correlated in reverse completion or
       }
     },
   );
+});
+
+test('transcript pages are serialized per connection before their responses are retained', async () => {
+  const pair = await openTransportPair();
+  const entered = Array.from({ length: 3 }, () => deferred());
+  const release = Array.from({ length: 3 }, () => deferred());
+  let calls = 0;
+  let active = 0;
+  let maxActive = 0;
+  const handlers: OperationHandlerMap = {
+    'host.status': async () => ({
+      ok: true,
+      result: {
+        hostEpoch: 'host-epoch',
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+        connections: 1,
+        activeOperations: 1,
+        activeResidencies: 0,
+      },
+    }),
+    ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createHandlers(async (input) => ({
+      ok: true,
+      result: runningSnapshot(input.sessionId, input.turnId),
+    })),
+    'session.transcript.page': async (input) => {
+      const index = calls;
+      calls += 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      entered[index]?.resolve();
+      await release[index]?.promise;
+      active -= 1;
+      return {
+        ok: true,
+        result: {
+          kind: 'page',
+          sessionId: 'session-1',
+          source: input.source,
+          direction: input.direction,
+          throughSequence: input.throughSequence,
+          rawBytes: 0,
+          fragments: [],
+          nextCursor: null,
+        },
+      };
+    },
+  };
+  const session = new RuntimeHostConnectionSession({
+    transport: pair.serverTransport,
+    connection: acceptedConnection('serialized-transcript-pages'),
+    resolveHandlers: () => handlers,
+    resolveContinuity: () => undefined,
+    beginOperation: async () => ({
+      acquireResidency: () => ({ release() {} }),
+      seal() {},
+      finish() {},
+    }),
+    onTeardown() {},
+  });
+  const run = session.run();
+  try {
+    for (let index = 0; index < 3; index += 1) {
+      await writeProtocolFrame(pair.clientTransport, {
+        requestId: `transcript-page-${index}`,
+        operation: 'session.transcript.page',
+        input: {
+          subscriptionId: 'subscription-1',
+          source: 'durable',
+          direction: 'older',
+          throughSequence: null,
+          cursor: null,
+          anchorSequence: null,
+          maxBytes: 512 * 1024,
+        },
+      });
+    }
+    await withTimeout(entered[0]!.promise, 1_000, 'first transcript page was not admitted');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls, 1);
+
+    for (let index = 0; index < 3; index += 1) {
+      release[index]!.resolve();
+      const response = decodeHostFrame(await pair.clientTransport.read(1_000));
+      assert.equal('kind' in response, false);
+      if (!('kind' in response)) assert.equal(response.requestId, `transcript-page-${index}`);
+      if (index < 2) {
+        await withTimeout(
+          entered[index + 1]!.promise,
+          1_000,
+          `transcript page ${index + 1} was not admitted`,
+        );
+      }
+    }
+    assert.equal(maxActive, 1);
+  } finally {
+    for (const gate of release) gate.resolve();
+    pair.clientTransport.abort();
+    await Promise.allSettled([run, pair.close()]);
+  }
 });
 
 test('the Client backpressures a healthy request burst at the Host connection limit', async () => {
@@ -284,7 +392,7 @@ test('a connection accepted before composition exists resolves ready handlers wi
   const hostTask = RuntimeHostKernel.start({
     owner,
     idleGraceMs: 10_000,
-    compositionFactory: async () => {
+    composition: defineInteractiveRuntimeHostComposition(async () => {
       factoryEntered.resolve();
       await releaseFactory.promise;
       return {
@@ -296,7 +404,7 @@ test('a connection accepted before composition exists resolves ready handlers wi
         async recover() {},
         async close() {},
       };
-    },
+    }),
   });
   let transport: FramedTransport | undefined;
   let host: RuntimeHostKernel | undefined;
@@ -355,6 +463,8 @@ test('connection reset while operation admission is pending does not execute the
       ok: true,
       result: {
         hostEpoch: 'host-epoch',
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
         state: 'ready',
         connections: 1,
         activeOperations: 1,
@@ -419,6 +529,8 @@ test('a ready composition attaches the authenticated Client identity once', asyn
   const attached: ClientCapabilityConnectionIdentity[] = [];
   let serviceAvailable = false;
   let closeCalls = 0;
+  const closeStarted = deferred();
+  const releaseClose = deferred();
   const service: ClientCapabilityService = {
     attachConnection(identity) {
       attached.push(identity);
@@ -426,6 +538,8 @@ test('a ready composition attaches the authenticated Client identity once', asyn
         accept() {},
         async close() {
           closeCalls += 1;
+          closeStarted.resolve();
+          await releaseClose.promise;
         },
       };
     },
@@ -438,6 +552,8 @@ test('a ready composition attaches the authenticated Client identity once', asyn
         ok: true,
         result: {
           hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
           state: 'ready',
           connections: 1,
           activeOperations: 1,
@@ -458,6 +574,10 @@ test('a ready composition attaches the authenticated Client identity once', asyn
     onTeardown() {},
   });
   const run = session.run();
+  let runSettled = false;
+  void run.then(() => {
+    runSettled = true;
+  });
   try {
     await writeProtocolFrame(pair.clientTransport, {
       requestId: 'before-composition',
@@ -481,12 +601,18 @@ test('a ready composition attaches the authenticated Client identity once', asyn
         connectionId: 'stable-provider-connection',
         principalId: 'local_os_user',
         clientInstanceId: 'test-client',
+        principalKind: 'local_owner',
       },
     ]);
   } finally {
     pair.clientTransport.abort();
+    await closeStarted.promise;
+    await Promise.resolve();
+    assert.equal(runSettled, false);
+    releaseClose.resolve();
     await Promise.allSettled([run, pair.close()]);
   }
+  assert.equal(runSettled, true);
   assert.equal(closeCalls, 1);
 });
 
@@ -540,6 +666,55 @@ test('an admitted operation settles without connection or residency leakage afte
         await client.close().catch(() => undefined);
         await Promise.allSettled([requestFailure]);
       }
+    },
+  );
+});
+
+test('an admitted command reports an unknown outcome when its connection closes', async () => {
+  const commandEntered = deferred();
+  const releaseCommand = deferred();
+  await withRuntimeHost(
+    async (input) => ({
+      ok: true,
+      result: runningSnapshot(input.sessionId, input.turnId),
+    }),
+    async ({ connectClient }) => {
+      const client = await connectClient();
+      const command = client.startTurn({
+        sessionId: 'session',
+        turnId: 'interrupted-command',
+        content: { text: 'start' },
+      });
+      try {
+        await withTimeout(commandEntered.promise, 1_000, 'command was not admitted');
+        await client.close();
+        await assert.rejects(
+          command,
+          (error: unknown) =>
+            error instanceof RuntimeHostRequestInterruptedError &&
+            error.mode === 'command' &&
+            error.dispatch === 'dispatched' &&
+            error.reason === 'connection_lost' &&
+            !error.retryable,
+        );
+      } finally {
+        releaseCommand.resolve();
+        await Promise.allSettled([command]);
+      }
+    },
+    {
+      'turn.start': async (input) => {
+        commandEntered.resolve();
+        await releaseCommand.promise;
+        return {
+          ok: true,
+          result: {
+            kind: 'started',
+            turn: runningSnapshot(input.sessionId, input.turnId),
+            skillInvocation: { loaded: [], failed: [], receipts: [] },
+          },
+        };
+      },
     },
   );
 });
@@ -674,6 +849,8 @@ test('an in-flight status does not consume the final domain request slot', async
         ok: true,
         result: {
           hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
           state: 'ready',
           connections: 1,
           activeOperations: 65,
@@ -771,6 +948,8 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
       ok: true,
       result: {
         hostEpoch: 'host-epoch',
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
         state: 'ready',
         connections: 1,
         activeOperations: 1,
@@ -879,6 +1058,7 @@ interface RuntimeHostTestFixture {
 async function withRuntimeHost(
   queryTurn: TurnQueryHandler,
   run: (fixture: RuntimeHostTestFixture) => Promise<void>,
+  handlerOverrides: Partial<RuntimeHostComposition['handlers']> = {},
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-continuity-'));
   const root = join(base, 'root');
@@ -892,12 +1072,12 @@ async function withRuntimeHost(
   const host = await RuntimeHostKernel.start({
     owner,
     idleGraceMs: 10_000,
-    compositionFactory: async () => ({
-      handlers: createHandlers(queryTurn),
+    composition: defineInteractiveRuntimeHostComposition(async () => ({
+      handlers: { ...createHandlers(queryTurn), ...handlerOverrides },
       beginDrain() {},
       async recover() {},
       async close() {},
-    }),
+    })),
   });
   try {
     await run({
@@ -941,6 +1121,7 @@ async function openAcceptedTransport(
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+    compositionId: 'maka.interactive',
   });
   const handshake = decodeHostFrame(await transport.read(1_000));
   assert.ok('kind' in handshake);
@@ -1005,6 +1186,8 @@ async function openHalfClosedDispatchedSession(
         ok: true,
         result: {
           hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
           state: 'ready',
           connections: 1,
           activeOperations: 1,
@@ -1147,6 +1330,8 @@ function statusResponse(requestId: string): ResponseFrame {
     ok: true,
     result: {
       hostEpoch: 'host-epoch',
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
       state: 'ready',
       connections: 1,
       activeOperations: 0,
@@ -1155,8 +1340,15 @@ function statusResponse(requestId: string): ResponseFrame {
   };
 }
 
-const UNUSED_HOST_DIAGNOSTICS_HANDLER: Pick<OperationHandlerMap, 'host.diagnostics.query'> = {
+const UNUSED_HOST_DIAGNOSTICS_HANDLER: Pick<
+  OperationHandlerMap,
+  'host.diagnostics.query' | 'host.upgrade.prepare'
+> = {
   'host.diagnostics.query': async () => ({
+    ok: false,
+    error: { code: 'internal_failure', message: 'not used' },
+  }),
+  'host.upgrade.prepare': async () => ({
     ok: false,
     error: { code: 'internal_failure', message: 'not used' },
   }),
@@ -1187,7 +1379,7 @@ async function openSubscription(transport: FramedTransport, sessionId: string, r
   await writeProtocolFrame(transport, {
     requestId,
     operation: 'subscription.open',
-    input: { sessionId },
+    input: { sessionId, transcript: { kind: 'none' } },
   });
   const response = decodeHostFrame(await transport.read(1_000));
   if ('kind' in response || response.operation !== 'subscription.open' || !response.ok) {

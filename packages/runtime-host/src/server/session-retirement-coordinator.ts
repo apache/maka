@@ -11,7 +11,7 @@ import {
   type ExecutionSessionWriter,
   type SessionHeaderSnapshot,
 } from '@maka/storage/execution-stores';
-import { agentGraphIdForRootSession, type SessionManager } from '@maka/runtime';
+import { type SessionManager } from '@maka/runtime/session-manager';
 import type { InteractiveTaskLedgerWriter } from '@maka/storage/task-ledger-authority';
 import {
   type OperationOutcome,
@@ -21,9 +21,9 @@ import {
   type SessionRemoveResult,
 } from '../protocol/index.js';
 import {
-  HostAutomationSessionBusyError,
-  type HostAutomationSessionRetirement,
-} from './automation-coordinator.js';
+  HostScheduledTaskSessionBusyError,
+  type HostScheduledTaskSessionRetirement,
+} from './scheduled-task-coordinator.js';
 import type { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import type { HostGoalCoordinator, HostGoalSessionRetirement } from './goal-coordinator.js';
 import type { HostInteractionCoordinator } from './interaction-coordinator.js';
@@ -65,6 +65,7 @@ type RetirementSessionEffects = {
 };
 type RetirementGraph = {
   hasLiveSessionState(sessionId: string): Promise<boolean>;
+  listGraphIds(sessionId: string): Promise<readonly string[]>;
 };
 type RetirementGraphWake = {
   hasLiveSessionState(sessionId: string): boolean;
@@ -87,8 +88,10 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly messages: RetirementMessages;
   readonly interactions: RetirementInteractions;
   readonly goals: RetirementGoals;
-  readonly automation: {
-    beginSessionRetirement(sessionIds: readonly string[]): Promise<HostAutomationSessionRetirement>;
+  readonly scheduledTasks: {
+    beginSessionRetirement(
+      sessionIds: readonly string[],
+    ): Promise<HostScheduledTaskSessionRetirement>;
   };
   readonly resources: RetirementResources;
   readonly sessionEffects: RetirementSessionEffects;
@@ -114,7 +117,7 @@ interface StableFamily {
 
 interface RetirementHandles {
   readonly goal: HostGoalSessionRetirement;
-  readonly automation: HostAutomationSessionRetirement;
+  readonly scheduledTasks: HostScheduledTaskSessionRetirement;
 }
 
 class RetryFamilyResolution extends Error {
@@ -142,7 +145,7 @@ export class HostSessionRetirementCoordinator {
   readonly #messages: RetirementMessages;
   readonly #interactions: RetirementInteractions;
   readonly #goals: RetirementGoals;
-  readonly #automation: HostSessionRetirementCoordinatorOptions['automation'];
+  readonly #scheduledTasks: HostSessionRetirementCoordinatorOptions['scheduledTasks'];
   readonly #resources: RetirementResources;
   readonly #sessionEffects: RetirementSessionEffects;
   readonly #graph: RetirementGraph;
@@ -169,7 +172,7 @@ export class HostSessionRetirementCoordinator {
     this.#messages = options.messages;
     this.#interactions = options.interactions;
     this.#goals = options.goals;
-    this.#automation = options.automation;
+    this.#scheduledTasks = options.scheduledTasks;
     this.#resources = options.resources;
     this.#sessionEffects = options.sessionEffects;
     this.#graph = options.graph;
@@ -243,7 +246,7 @@ export class HostSessionRetirementCoordinator {
           );
           committed = true;
           handles.goal.commit();
-          handles.automation.commit();
+          handles.scheduledTasks.commit();
           await this.#graphWake.retireSessions(family.sessionIds);
           this.#capabilities.retireSessions(family.sessionIds);
           this.#messages.retireSessions(family.sessionIds);
@@ -254,7 +257,7 @@ export class HostSessionRetirementCoordinator {
         } catch (error) {
           if (committed) return this.#uncertainLifecycle('archive');
           handles?.goal.rollback();
-          handles?.automation.rollback();
+          handles?.scheduledTasks.rollback();
           throw error;
         }
       });
@@ -305,7 +308,7 @@ export class HostSessionRetirementCoordinator {
           );
           committed = true;
           handles.goal.commit();
-          handles.automation.commit();
+          handles.scheduledTasks.commit();
           await this.#graphWake.retireSessions(family.sessionIds);
           this.#rememberRetiredWorktrees(committable, removedSessionIds);
           this.#scheduleCleanup(removedSessionIds);
@@ -316,7 +319,7 @@ export class HostSessionRetirementCoordinator {
         } catch (error) {
           if (committed) return this.#uncertainRemove();
           handles?.goal.rollback();
-          handles?.automation.rollback();
+          handles?.scheduledTasks.rollback();
           throw error;
         }
       });
@@ -375,7 +378,11 @@ export class HostSessionRetirementCoordinator {
         sessionRevisionFamilyId(header) === familyId,
     );
     const graphRoots = new Map(
-      roots.map((header) => [header.id, agentGraphIdForRootSession(header.id)]),
+      await Promise.all(
+        roots.map(
+          async (header) => [header.id, await this.#graph.listGraphIds(header.id)] as const,
+        ),
+      ),
     );
     const members = headers
       .filter((header) => {
@@ -384,7 +391,7 @@ export class HostSessionRetirementCoordinator {
         const parent = header.subagentParent;
         return (
           parent?.graph !== undefined &&
-          parent.graph.graphId === graphRoots.get(parent.parentSessionId)
+          graphRoots.get(parent.parentSessionId)?.includes(parent.graph.graphId) === true
         );
       })
       .map((header) => header.id);
@@ -424,12 +431,12 @@ export class HostSessionRetirementCoordinator {
       }
     }
 
-    const automation = await this.#automation.beginSessionRetirement(family.sessionIds);
+    const scheduledTasks = await this.#scheduledTasks.beginSessionRetirement(family.sessionIds);
     try {
-      const goal = this.#goals.beginSessionRetirement(family.sessionIds, kind);
-      return { goal, automation };
+      const goal = await this.#goals.beginSessionRetirement(family.sessionIds, kind);
+      return { goal, scheduledTasks };
     } catch (error) {
-      automation.rollback();
+      scheduledTasks.rollback();
       throw error;
     }
   }
@@ -465,7 +472,7 @@ export class HostSessionRetirementCoordinator {
   }
 
   async #drainCleanup(): Promise<void> {
-    while (!this.#closing && this.#cleanupQueue.size > 0) {
+    while (this.#cleanupQueue.size > 0) {
       const batch = [...this.#cleanupQueue];
       this.#cleanupQueue.clear();
       await Promise.allSettled(batch.map((sessionId) => this.#cleanupRetiredSession(sessionId)));
@@ -539,7 +546,7 @@ export class HostSessionRetirementCoordinator {
     }
     if (
       error instanceof SessionRetirementBusyError ||
-      error instanceof HostAutomationSessionBusyError
+      error instanceof HostScheduledTaskSessionBusyError
     ) {
       return lifecycleFailure('session_busy', error.message);
     }
@@ -568,7 +575,7 @@ export class HostSessionRetirementCoordinator {
     }
     if (
       error instanceof SessionRetirementBusyError ||
-      error instanceof HostAutomationSessionBusyError
+      error instanceof HostScheduledTaskSessionBusyError
     ) {
       return removeFailure('session_busy', error.message);
     }

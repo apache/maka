@@ -3,14 +3,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { ShellRunRecord } from '@maka/core';
+import type { ShellRunRecord } from '@maka/core/shell-run';
 import {
   authenticateInteractiveShellRunWriter,
   openInteractiveShellRunStoreForWrite,
   type InteractiveShellRunWriter,
 } from '../shell-run-authority.js';
 import {
-  createHeadlessRootLease,
   resolveStorageRoot,
   StorageRootAuthorityError,
   tryAcquireInteractiveRootOwner,
@@ -78,23 +77,11 @@ describe('interactive ShellRun authority', () => {
     });
   });
 
-  test('rejects headless leases and forged writer facades', async () => {
-    await withTempDir(async (base) => {
-      const headless = await resolveStorageRoot({
-        path: join(base, 'headless'),
-        kind: 'headless',
-      });
-      await assert.rejects(
-        () =>
-          openInteractiveShellRunStoreForWrite(
-            createHeadlessRootLease(headless, 'write') as unknown as StorageRootLease<
-              'interactive',
-              'write'
-            >,
-          ),
-        isInvalidLease,
-      );
-    });
+  test('rejects forged leases and forged writer facades', async () => {
+    await assert.rejects(
+      () => openInteractiveShellRunStoreForWrite({} as StorageRootLease<'interactive', 'write'>),
+      isInvalidLease,
+    );
 
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);

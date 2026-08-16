@@ -1,4 +1,8 @@
-import type { ClientCapabilityClientFrame, ClientCapabilityHostFrame } from '../protocol/index.js';
+import type {
+  AccessCredentialPrincipalKind,
+  ClientCapabilityClientFrame,
+  ClientCapabilityHostFrame,
+} from '../protocol/index.js';
 
 export interface ClientCapabilityConnectionSender {
   send(frame: ClientCapabilityHostFrame): Promise<void>;
@@ -8,6 +12,7 @@ export interface ClientCapabilityConnectionIdentity {
   readonly connectionId: string;
   readonly principalId: string;
   readonly clientInstanceId: string;
+  readonly principalKind: 'local_owner' | AccessCredentialPrincipalKind;
 }
 
 export interface ClientCapabilityConnection {

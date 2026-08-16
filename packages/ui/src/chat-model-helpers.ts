@@ -20,9 +20,13 @@
  * harness (URI-encoded delimiters, malformed input fall-through).
  */
 
-import type { ChatModelChoice, ProviderType, UiLocale } from '@maka/core';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+
+import type { ProviderType } from '@maka/core/llm-connections';
+
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getSharedUiCopy } from './shared-ui-copy.js';
-export type { ChatModelChoice } from '@maka/core';
+export type { ChatModelChoice } from '@maka/core/chat-model-choice';
 
 export function modelChoiceDescription(
   choice: Pick<ChatModelChoice, 'description' | 'knowledgeCutoff'>,
@@ -60,7 +64,7 @@ export interface ModelMenuGroup {
  * the SAME provider are present and neither supplied a name (e.g. two OpenAI
  * keys) — the slug is a safe `[a-z0-9-]` identifier, never the OAuth
  * account email `connection.name` carries for `claude-subscription` /
- * `openai-codex` / `gemini-cli`.
+ * `openai-codex`.
  */
 export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale = 'zh'): ModelMenuGroup[] {
   const copy = getSharedUiCopy(locale).providers;

@@ -21,7 +21,7 @@ import {
   type RuntimeInteractionRunOwner,
   type RuntimeSandboxBoundaryContinuation,
   type RuntimeUserQuestionContinuation,
-} from '@maka/runtime';
+} from '@maka/runtime/interaction-authority';
 import type { ExecutionSessionWriter } from '@maka/storage/execution-stores';
 import {
   authenticateInteractionStoreWriter,

@@ -123,51 +123,6 @@ describe('interactive Memory bundle storage authority', () => {
     });
   });
 
-  test('publishes legacy backup candidates without changing the bundle revision', async () => {
-    await withInteractiveOwner(async ({ root, owner }) => {
-      const store = await openInteractiveMemoryBundleStoreForWrite(owner.lease);
-      const initial = await store.read();
-      const first = Buffer.from('# First memory\n');
-      const pending = Buffer.from('# Pending remains\n');
-      const firstCommit = await store.commit({
-        expectedRevision: initial.revision,
-        memory: first,
-        pending,
-      });
-      const second = Buffer.from('# Second memory\n');
-      const secondCommit = await store.commit({
-        expectedRevision: firstCommit.snapshot.revision,
-        memory: second,
-        pending,
-        backup: 'save',
-      });
-
-      assert.deepEqual(await readFile(join(memoryDirectory(root), 'MEMORY.md.bak')), first);
-      assert.equal((await store.read()).revision, secondCommit.snapshot.revision);
-      const backups = await store.listBackups();
-      assert.equal(backups.length, 1);
-      assert.equal(backups[0]?.kind, 'save');
-      assert.equal(backups[0]?.document.kind, 'document');
-      assert.equal(backups[0]?.revision, revision(first));
-      if (backups[0]?.document.kind === 'document') {
-        assert.deepEqual(Buffer.from(backups[0].document.bytes), first);
-      }
-
-      const reset = Buffer.from('# Reset memory\n');
-      await store.commit({
-        expectedRevision: secondCommit.snapshot.revision,
-        memory: reset,
-        pending,
-        backup: 'reset',
-      });
-      assert.deepEqual(await readFile(join(memoryDirectory(root), 'MEMORY.md.reset.bak')), second);
-      assert.deepEqual(
-        new Set((await store.listBackups()).map((backup) => backup.kind)),
-        new Set(['save', 'reset']),
-      );
-    });
-  });
-
   test('restores a selected backup, preserves PENDING.md, and rotates restore undo history', async () => {
     await withInteractiveOwner(async ({ root, owner }) => {
       const store = await openInteractiveMemoryBundleStoreForWrite(owner.lease);

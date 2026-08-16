@@ -17,10 +17,10 @@
  * Composer places it immediately after the model control in the left footer.
  */
 
-import { type ReactNode, useMemo } from 'react';
+import { type ReactNode, useMemo, useState } from 'react';
 import { Button as UiButton } from '@astryxdesign/core';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
-import { ICON_SIZE, Check, Settings } from './icons.js';
+import { ICON_SIZE, AlertTriangle, Check, Settings } from './icons.js';
 import {
   type ChatModelChoice,
   type ModelMenuGroup,
@@ -28,7 +28,9 @@ import {
   modelMenuGroups,
   modelChoiceValue,
 } from './chat-model-helpers.js';
-import { type ProviderType, type SessionSummary, type ThinkingLevel } from '@maka/core';
+import { type ProviderType } from '@maka/core/llm-connections';
+import { type SessionSummary } from '@maka/core/session';
+import { type ThinkingLevel } from '@maka/core/model-thinking';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
@@ -171,10 +173,10 @@ export function ThinkingLevelSelector(props: {
 export function ChatModelSwitcher(props: {
   activeSession: SessionSummary;
   activeModel?: string;
-  activeConnectionLabel?: string;
   activeModelLabel?: string;
   currentProviderType?: ProviderType;
   choices: ChatModelChoice[];
+  hasConversationHistory?: boolean;
   pending?: boolean;
   disabledReason?: string;
   renderProviderMark?(type: ProviderType): ReactNode;
@@ -185,53 +187,69 @@ export function ChatModelSwitcher(props: {
   const currentModel = props.activeModel ?? props.activeSession.model;
   const currentValue = modelChoiceValue(props.activeSession.llmConnectionSlug, currentModel);
   const pending = Boolean(props.pending);
+  const [menuOpen, setMenuOpen] = useState(false);
   const disabled = pending || Boolean(props.disabledReason) || !props.onChange || props.choices.length === 0;
   const grouped = modelMenuGroups(props.choices, locale);
   const currentKnownChoice = props.choices.some((choice) => modelChoiceValue(choice.connectionSlug, choice.model) === currentValue);
   const displayLabel = props.activeModelLabel ?? currentModel;
-  const currentSessionModelTitle = props.activeConnectionLabel && props.activeModelLabel
-    ? copy.pinnedSession(props.activeConnectionLabel, props.activeModelLabel)
-    : copy.switchSession;
   const title = pending
     ? `${copy.switching}…`
-    : props.disabledReason ?? copy.switchTitle(currentSessionModelTitle);
+    : props.disabledReason ?? copy.switchAriaLabel;
+  const announceWarning = menuOpen && props.hasConversationHistory === true;
 
   return (
-    <DropdownMenu
-      placement="above"
-      hasChevron={false}
-      className="maka-composer-quiet-menu"
-      button={{
-        label: displayLabel,
-        icon: providerMarkIcon(props.currentProviderType, props.renderProviderMark),
-        variant: 'ghost',
-        size: 'sm',
-        isDisabled: disabled,
-        isLoading: pending,
-        tooltip: title,
-        className: 'maka-model-switcher-trigger',
-        'aria-label': copy.switchAriaLabel,
-      }}
-    >
-      <ModelMenuItems
-        groups={grouped}
-        currentValue={currentValue}
-        leadingOption={!currentKnownChoice ? { label: displayLabel, providerType: props.currentProviderType } : undefined}
-        renderProviderMark={props.renderProviderMark}
-        disabled={disabled}
-        onPick={async (next) => {
-          if (
-            next.llmConnectionSlug === props.activeSession.llmConnectionSlug &&
-            next.model === currentModel
-          ) return;
-          try {
-            await props.onChange?.(next);
-          } catch {
-            // The AppShell action owner reports the visible model-switch failure.
-          }
+    <>
+      <DropdownMenu
+        placement="above"
+        hasChevron={false}
+        className="maka-composer-quiet-menu"
+        onOpenChange={setMenuOpen}
+        button={{
+          label: displayLabel,
+          icon: providerMarkIcon(props.currentProviderType, props.renderProviderMark),
+          variant: 'ghost',
+          size: 'sm',
+          isDisabled: disabled,
+          isLoading: pending,
+          tooltip: title,
+          className: 'maka-model-switcher-trigger',
+          'aria-label': copy.switchAriaLabel,
         }}
-      />
-    </DropdownMenu>
+      >
+        {announceWarning ? (
+          <div className="maka-model-switch-notice" aria-hidden="true">
+            <AlertTriangle size={ICON_SIZE.meta} />
+            <span>{copy.switchWarning}</span>
+          </div>
+        ) : null}
+        <ModelMenuItems
+          groups={grouped}
+          currentValue={currentValue}
+          leadingOption={!currentKnownChoice ? { label: displayLabel, providerType: props.currentProviderType } : undefined}
+          renderProviderMark={props.renderProviderMark}
+          disabled={disabled}
+          onPick={async (next) => {
+            if (
+              next.llmConnectionSlug === props.activeSession.llmConnectionSlug &&
+              next.model === currentModel
+            ) return;
+            try {
+              await props.onChange?.(next);
+            } catch {
+              // The AppShell action owner reports the visible model-switch failure.
+            }
+          }}
+        />
+      </DropdownMenu>
+      <span
+        className="maka-visually-hidden maka-model-switch-announcement"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {announceWarning ? copy.switchWarning : ''}
+      </span>
+    </>
   );
 }
 

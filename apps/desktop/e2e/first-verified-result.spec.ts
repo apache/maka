@@ -18,18 +18,14 @@ test('a ready user submits work, sees validation, and reviews the real project c
   await validationToolRow.press('Enter');
   await expect(page.getByText(/validation: 1 passed, 0 failed/)).toBeVisible();
 
-  await page.getByRole('button', { name: 'Open workbar tools' }).click();
-  const visibleReviewLauncher = page
-    .locator('.maka-session-workbar:not([data-collapsed]) .maka-workbar-launcher-row')
-    .filter({ hasText: 'Review' });
-  await expect(visibleReviewLauncher).toHaveCount(1);
-  await visibleReviewLauncher.click();
+  await page.getByRole('button', { name: '展开任务工作栏' }).click();
+  await page.getByRole('button', { name: /变更.*查看当前 Git 工作区变化/ }).click();
 
-  const review = page.getByRole('region', { name: 'Conversation review' });
+  const review = page.getByRole('region', { name: 'Git 变更' });
   await expect(review).toBeVisible();
-  await review.getByRole('radio', { name: 'Unstaged' }).click();
-  await expect(review.getByText('verified-result.txt')).toBeVisible();
-  await expect(review.getByText(/1 file · \+1 · -0/)).toBeVisible();
+  await expect(review.getByRole('button', { name: /^verified-result\.txt/ })).toBeVisible();
+  await expect(review.getByText('1 个文件有变更')).toBeVisible();
+  await expect(review.getByText('新增 1 行')).toBeVisible();
 
   const elapsedMs = Date.now() - startedAt;
   testInfo.annotations.push({

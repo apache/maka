@@ -4,6 +4,7 @@ import {
   requireEncodedByteLimit,
   requireExactRecord,
   requireId,
+  requireRecord,
   requireString,
   requireUtf8String,
 } from './codec.js';
@@ -12,6 +13,21 @@ import { defineOperation } from './operation-spec.js';
 export type HostLifecycleState = 'starting' | 'containing' | 'recovering' | 'ready' | 'draining';
 export type HostStatusInput = Record<string, never>;
 export type HostDiagnosticsInput = Record<string, never>;
+export interface HostActivitySnapshot {
+  readonly connections: number;
+  readonly activeOperations: number;
+  readonly processUptimeSeconds: number;
+  readonly residencies: readonly { readonly label: string; readonly count: number }[];
+}
+
+export interface HostUpgradePrepareInput {
+  readonly expectedHostEpoch: string;
+  readonly allowInterruptActiveTasks: boolean;
+}
+
+export type HostUpgradePrepareResult =
+  | { readonly kind: 'active_tasks' }
+  | { readonly kind: 'prepared'; readonly pid: number };
 
 export const HOST_DIAGNOSTICS_RESULT_MAX_BYTES = 72 * 1024;
 export const HOST_DIAGNOSTIC_LOG_MAX_ENTRIES = 256;
@@ -19,6 +35,8 @@ export const HOST_DIAGNOSTIC_LOG_MAX_ENTRY_BYTES = 10 * 1024;
 
 export interface HostStatusResult {
   hostEpoch: string;
+  compositionId: string;
+  compositionRevision: string;
   state: HostLifecycleState;
   connections: number;
   activeOperations: number;
@@ -26,6 +44,8 @@ export interface HostStatusResult {
 }
 
 export interface HostDiagnosticsResult extends HostStatusResult {
+  compositionModules: readonly string[];
+  residencies: readonly { label: string; count: number }[];
   protocolVersion: number;
   compatibilityEpoch: number;
   pid: number;
@@ -52,6 +72,13 @@ export const HOST_BOOTSTRAP_OPERATION_SPECS = {
     decodeInput: (value) => decodeEmptyHostInput(value, 'host.diagnostics.query input'),
     decodeOutput: decodeHostDiagnosticsResult,
   }),
+  'host.upgrade.prepare': defineOperation({
+    mode: 'command',
+    availability: 'ready',
+    errors: ['operation_conflict', 'operation_unavailable', 'internal_failure'] as const,
+    decodeInput: decodeHostUpgradePrepareInput,
+    decodeOutput: decodeHostUpgradePrepareResult,
+  }),
 } as const;
 
 function decodeEmptyHostInput(value: unknown, label: string): HostStatusInput {
@@ -62,6 +89,8 @@ function decodeEmptyHostInput(value: unknown, label: string): HostStatusInput {
 function decodeHostStatusResult(value: unknown): HostStatusResult {
   const record = requireExactRecord(value, 'host.status result', [
     'hostEpoch',
+    'compositionId',
+    'compositionRevision',
     'state',
     'connections',
     'activeOperations',
@@ -78,10 +107,14 @@ function decodeHostDiagnosticsResult(value: unknown): HostDiagnosticsResult {
   );
   const record = requireExactRecord(value, 'host.diagnostics.query result', [
     'hostEpoch',
+    'compositionId',
+    'compositionRevision',
     'state',
     'connections',
     'activeOperations',
     'activeResidencies',
+    'compositionModules',
+    'residencies',
     'protocolVersion',
     'compatibilityEpoch',
     'pid',
@@ -95,8 +128,24 @@ function decodeHostDiagnosticsResult(value: unknown): HostDiagnosticsResult {
   if (!Array.isArray(record.logs) || record.logs.length > HOST_DIAGNOSTIC_LOG_MAX_ENTRIES) {
     throw invalidProtocolFrame('Invalid Runtime Host diagnostic logs');
   }
+  if (!Array.isArray(record.compositionModules) || record.compositionModules.length > 64) {
+    throw invalidProtocolFrame('Invalid Runtime Host composition modules');
+  }
+  if (!Array.isArray(record.residencies) || record.residencies.length > 128) {
+    throw invalidProtocolFrame('Invalid Runtime Host residencies');
+  }
   return {
     ...decodeHostStatusFields(record),
+    compositionModules: record.compositionModules.map((moduleId) =>
+      requireString(moduleId, 'Runtime Host composition module id', 64),
+    ),
+    residencies: record.residencies.map((value) => {
+      const residency = requireExactRecord(value, 'Runtime Host residency', ['label', 'count']);
+      return {
+        label: requireString(residency.label, 'Runtime Host residency label', 128),
+        count: requireCount(residency.count, 'Runtime Host residency count'),
+      };
+    }),
     protocolVersion: requireCount(record.protocolVersion, 'Runtime Host protocol version'),
     compatibilityEpoch: requireCount(record.compatibilityEpoch, 'Runtime Host compatibility epoch'),
     pid: requireCount(record.pid, 'Runtime Host pid'),
@@ -115,9 +164,81 @@ function decodeHostDiagnosticsResult(value: unknown): HostDiagnosticsResult {
   };
 }
 
+export function decodeHostActivitySnapshot(value: unknown): HostActivitySnapshot {
+  const record = requireExactRecord(value, 'Runtime Host activity', [
+    'connections',
+    'activeOperations',
+    'processUptimeSeconds',
+    'residencies',
+  ]);
+  if (!Array.isArray(record.residencies) || record.residencies.length > 128) {
+    throw invalidProtocolFrame('Invalid Runtime Host activity residencies');
+  }
+  return {
+    connections: requireCount(record.connections, 'Runtime Host activity connections'),
+    activeOperations: requireCount(
+      record.activeOperations,
+      'Runtime Host activity active operations',
+    ),
+    processUptimeSeconds: requireCount(
+      record.processUptimeSeconds,
+      'Runtime Host activity process uptime',
+    ),
+    residencies: record.residencies.map((value) => {
+      const residency = requireExactRecord(value, 'Runtime Host activity residency', [
+        'label',
+        'count',
+      ]);
+      return {
+        label: requireString(residency.label, 'Runtime Host activity residency label', 128),
+        count: requireCount(residency.count, 'Runtime Host activity residency count'),
+      };
+    }),
+  };
+}
+
+function decodeHostUpgradePrepareInput(value: unknown): HostUpgradePrepareInput {
+  const record = requireExactRecord(value, 'Runtime Host upgrade prepare input', [
+    'expectedHostEpoch',
+    'allowInterruptActiveTasks',
+  ]);
+  return {
+    expectedHostEpoch: requireId(record.expectedHostEpoch, 'Runtime Host expected Host Epoch'),
+    allowInterruptActiveTasks: requireBoolean(
+      record.allowInterruptActiveTasks,
+      'Runtime Host upgrade interrupt authority',
+    ),
+  };
+}
+
+function requireBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== 'boolean') throw invalidProtocolFrame(`Invalid ${label}`);
+  return value;
+}
+
+function decodeHostUpgradePrepareResult(value: unknown): HostUpgradePrepareResult {
+  const result = requireRecord(value, 'Runtime Host upgrade prepare result');
+  if (result.kind === 'active_tasks') {
+    requireExactRecord(value, 'Runtime Host upgrade prepare result', ['kind']);
+    return { kind: 'active_tasks' };
+  }
+  if (result.kind !== 'prepared')
+    throw invalidProtocolFrame('Invalid Runtime Host upgrade prepare result kind');
+  const record = requireExactRecord(value, 'Runtime Host upgrade prepare result', ['kind', 'pid']);
+  const pid = requireCount(record.pid, 'Runtime Host upgrade process id');
+  if (pid === 0) throw invalidProtocolFrame('Invalid Runtime Host upgrade process id');
+  return { kind: 'prepared', pid };
+}
+
 function decodeHostStatusFields(record: Record<string, unknown>): HostStatusResult {
   return {
     hostEpoch: requireId(record.hostEpoch, 'hostEpoch'),
+    compositionId: requireString(record.compositionId, 'Runtime Host composition id', 128),
+    compositionRevision: requireString(
+      record.compositionRevision,
+      'Runtime Host composition revision',
+      128,
+    ),
     state: requireHostLifecycleState(record.state),
     connections: requireCount(record.connections, 'connections'),
     activeOperations: requireCount(record.activeOperations, 'activeOperations'),

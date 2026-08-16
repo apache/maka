@@ -7,7 +7,7 @@
 // crashed early just left the user staring at an empty viewport).
 
 import { Component, type ErrorInfo, type ReactNode } from 'react';
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { ICON_SIZE, AlertTriangle, Check, Clipboard, RotateCw } from '@maka/ui/icons';
 import { Button as UiButton, Card, redactSecrets } from '@maka/ui';
 import { getShellCopy } from './locales/shell-copy.js';

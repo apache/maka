@@ -4,9 +4,9 @@ import type {
   CapabilitySnapshot,
   OsPermissionId,
   OsPermissionState,
-  UiCatalog,
-  UiLocale,
-} from '@maka/core';
+} from '@maka/core/capabilities';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type Tone = StatusSemantic;
 type StatusCopy = { label: string; tone: Tone };
@@ -116,7 +116,7 @@ const PERMISSION_CENTER_COPY = {
       aria: (label) => `${label}能力状态明细`, feature: '功能开关', configuration: '配置', approval: '操作审批', memory: '记忆写入', runtime: '运行态探测',
       featureStates: { enabled: '已开启', partial: '部分可用', disabled: '已关闭', not_available: '未开放' },
       configurationStates: { not_required: '不需要配置', missing: '等待补齐配置', present: '已填写' },
-      approvalStates: { not_required: '不需要审批', required_per_action: '每次调用都需审批', required_scoped_lease: '按目标与动作类别授权', pending: '审批挂起', approved: '当前会话已批准', denied: '当前会话已拒绝' },
+      approvalStates: { not_required: '不需要审批', required_per_action: '每次调用都需审批', required_scoped_lease: '按目标与动作类别授权', pending: '审批挂起', approved: '当前任务已批准', denied: '当前任务已拒绝' },
       memoryStates: { not_applicable: '不涉及记忆写入', disabled: '记忆写入已关闭', draft_required: '需要先草拟 memory 协议', accepted: '记忆写入已接受' },
       runtimeStates: { not_available: '尚无运行态探测', not_run: '探测未运行', healthy: '探测通过', degraded: '探测降级' },
     },
@@ -163,7 +163,7 @@ const PERMISSION_CENTER_COPY = {
       aria: (label) => `${label} capability state details`, feature: 'Feature toggle', configuration: 'Configuration', approval: 'Action approval', memory: 'Memory writes', runtime: 'Runtime probe',
       featureStates: { enabled: 'Enabled', partial: 'Partially available', disabled: 'Disabled', not_available: 'Unavailable' },
       configurationStates: { not_required: 'No configuration needed', missing: 'Configuration required', present: 'Configured' },
-      approvalStates: { not_required: 'No approval needed', required_per_action: 'Approval required for every call', required_scoped_lease: 'Authorized by target and action category', pending: 'Approval pending', approved: 'Approved for this session', denied: 'Denied for this session' },
+      approvalStates: { not_required: 'No approval needed', required_per_action: 'Approval required for every call', required_scoped_lease: 'Authorized by target and action category', pending: 'Approval pending', approved: 'Approved for this task', denied: 'Denied for this task' },
       memoryStates: { not_applicable: 'No memory writes', disabled: 'Memory writes disabled', draft_required: 'Draft a memory protocol first', accepted: 'Memory writes accepted' },
       runtimeStates: { not_available: 'No runtime probe available', not_run: 'Probe not run', healthy: 'Probe passed', degraded: 'Probe degraded' },
     },

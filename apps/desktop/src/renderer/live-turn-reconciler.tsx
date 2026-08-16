@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import type { StoredMessage } from '@maka/core';
+import type { StoredMessage } from '@maka/core/session';
 import type { AppShellSessionUiStateController } from './app-shell-session-ui-state';
 import { selectLiveTurn } from './use-app-shell-session-ui-reads';
 import { useAppShellSessionUiSelector } from './use-app-shell-session-ui-selector';

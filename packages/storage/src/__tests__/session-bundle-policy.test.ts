@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import type { CreateSessionInput, RuntimeEvent } from '@maka/core';
+import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionStore } from '../session-store.js';
 import { exportSessionBundleState } from '../session-bundle-policy.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
@@ -127,7 +128,7 @@ test('retains only the selected Session partial stream segments', async () => {
           .prepare('SELECT text_content FROM runtime_partial_segments ORDER BY segment_seq')
           .all()
           .map((row) => (row as { text_content: string }).text_content),
-        ['a', 'b'],
+        ['ab'],
       );
     } finally {
       bundledDatabase.close();

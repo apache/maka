@@ -9,11 +9,9 @@ import type {
   AgentGraphIntentClaimRequest,
 } from '@maka/core/agent-graph-control';
 import type { ShellRunRecord } from '@maka/core/shell-run';
-import {
-  FAKE_ASK_USER_QUESTION_PROMPT,
-  LOCAL_READ_AGENT_DEFINITION,
-  SessionManager,
-} from '@maka/runtime';
+import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '@maka/runtime/fake-backend';
+import { LOCAL_READ_AGENT_DEFINITION } from '@maka/runtime/agent-catalog';
+import { SessionManager } from '@maka/runtime/session-manager';
 import { fingerprintAgentGraphRunnableIntent } from '@maka/runtime/stream-graph-admission';
 import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readiness';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -29,6 +27,8 @@ import {
 } from '@maka/storage/root-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import { HostResidencyRegistry } from '../server/host-residency-registry.js';
 import {
   createExecutionRuntimeHostComposition,
   runtimeHostFilesystemWorkerRuntime,
@@ -115,6 +115,99 @@ test('production composition closes long-term memory after a later startup failu
   });
 });
 
+test('production recovery preserves legacy Automation history and closes an orphaned admission', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const historical = await stores.sessionStore.create({
+      cwd: root,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const pending = await stores.sessionStore.create({
+      cwd: root,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const admitted = await stores.agentRunStore.admitRootTurn({
+      sessionId: pending.id,
+      turnId: 'legacy-automation-turn',
+      proposedRunId: 'legacy-automation-run',
+      proposedUserMessageId: 'legacy-automation-message',
+      execution: { kind: 'scheduled_task', scheduledTaskId: 'legacy-automation' },
+      previousRootTurnId: null,
+      normalizedInput: { text: 'Run the legacy Automation' },
+      sourceMessages: [],
+      admittedAt: 1,
+    });
+    assert.equal(admitted.kind, 'admitted');
+
+    const Database = (require('node:sqlite') as typeof import('node:sqlite')).DatabaseSync;
+    const database = new Database(join(root, 'runtime.sqlite'));
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      database
+        .prepare(`
+          INSERT INTO session_messages(
+            session_id, sequence, message_id, message_type, message_ts, record_json
+          ) VALUES (?, 0, ?, 'user', 1, ?)
+        `)
+        .run(
+          historical.id,
+          'historical-automation-message',
+          JSON.stringify({
+            type: 'user',
+            id: 'historical-automation-message',
+            turnId: 'historical-automation-turn',
+            ts: 1,
+            text: 'Historical Automation prompt',
+            origin: { kind: 'automation', automationId: 'historical-automation' },
+          }),
+        );
+      const row = database
+        .prepare(`
+          SELECT record_json
+          FROM core_root_turn_admissions
+          WHERE session_id = ? AND turn_id = 'legacy-automation-turn'
+        `)
+        .get(pending.id) as { record_json: string };
+      const record = JSON.parse(row.record_json) as Record<string, unknown>;
+      record.execution = { kind: 'automation', automationId: 'legacy-automation' };
+      database
+        .prepare(`
+          UPDATE core_root_turn_admissions
+          SET record_json = ?
+          WHERE session_id = ? AND turn_id = 'legacy-automation-turn'
+        `)
+        .run(JSON.stringify(record), pending.id);
+      database.exec('COMMIT');
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
+    }
+    database.close();
+
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      await composition.recover();
+      const history = await stores.sessionStore.readMessages(historical.id);
+      assert.deepEqual(history[0]?.type === 'user' ? history[0].origin : undefined, {
+        kind: 'legacy_automation',
+        automationId: 'historical-automation',
+      });
+      const recoveredRun = await stores.agentRunStore.readRun(pending.id, 'legacy-automation-run');
+      assert.equal(recoveredRun.status, 'failed');
+      assert.equal(recoveredRun.legacyAutomationId, 'legacy-automation');
+      assert.equal(recoveredRun.failureClass, 'app_restarted');
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
 test('composition drain preserves usage admission until active Runtime work settles', async () => {
   await withCompositionRoot(async ({ owner }) => {
     const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
@@ -129,6 +222,123 @@ test('composition drain preserves usage admission until active Runtime work sett
     );
 
     await composition.close();
+  });
+});
+
+test('hosted execution settles while its tracked environment resource remains verifiable', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'hosted-fake',
+        name: 'Hosted fake',
+        providerType: 'ollama',
+        enabled: true,
+        enabledModelIds: ['fake-model'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    const fetch = await policy.operations.beginModelFetch(connection.connectionId);
+    assert.equal(fetch.kind, 'ready');
+    if (fetch.kind !== 'ready') return;
+    const fetched = await policy.operations.completeModelFetch(fetch.ticket, {
+      models: [{ id: 'fake-model' }],
+      source: 'fetched',
+      fetchedAt: Date.now(),
+    });
+    assert.equal(fetched.kind, 'committed');
+    if (fetched.kind !== 'committed') return;
+    const defaultTarget = await policy.connectionCatalog.setDefaultTarget({
+      expectedCatalogRevision: fetched.snapshot.revision,
+      target: { connectionId: connection.connectionId, modelId: 'fake-model' },
+    });
+    assert.equal(defaultTarget.kind, 'committed');
+
+    const residencies = new HostResidencyRegistry();
+    let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>;
+    const operationContext = {
+      hostEpoch: 'hosted-environment-test',
+      connectionId: 'hosted-environment-test',
+      surface: 'run' as const,
+      principal: 'runtime_host' as const,
+      acquireResidency: () => ({ release() {} }),
+    };
+    composition = await createExecutionRuntimeHostComposition(
+      {
+        owner,
+        hostEpoch: operationContext.hostEpoch,
+        acquireResidency: (label) => residencies.acquire(label),
+        retainUntilProcessExit: () => undefined,
+        requestDrain: () => composition?.beginDrain(),
+        waitForResidencies: () => residencies.waitForEmpty(),
+        waitForResidenciesExcept: (label) => residencies.waitForEmptyExcept(label),
+      },
+      { bootstrapRuntimePolicy: false },
+      {
+        primaryBackendFactory: (backendContext) => {
+          const backend = new FakeBackend(backendContext);
+          const send = backend.send.bind(backend);
+          backend.send = async function* (input) {
+            if (input.text === 'leave the environment ready for verification') {
+              const started = await composition.handlers['runtime.resource.start'](
+                { sessionId: backendContext.sessionId, launchId: input.turnId },
+                operationContext,
+              );
+              assert.equal(started.ok, true);
+            }
+            yield* send(input);
+          };
+          return backend;
+        },
+      },
+    );
+    try {
+      await composition.recover();
+      const executionId = '00000000-0000-4000-8000-000000000111';
+      const execution = composition.handlers['hosted.execution.start'](
+        {
+          executionId,
+          session: {
+            workspace: { kind: 'host_path', path: root },
+            modelTarget: { kind: 'default' },
+            name: 'Hosted environment test',
+          },
+          content: { text: 'leave the environment ready for verification' },
+        },
+        operationContext,
+      );
+      let settled = false;
+      void execution.then(() => {
+        settled = true;
+      });
+      try {
+        await waitFor(async () => settled, 5_000);
+      } catch {
+        assert.fail(`Hosted execution did not settle: ${JSON.stringify(residencies.snapshot())}`);
+      }
+      const result = await execution;
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+      if (result.result.kind !== 'settled') assert.fail(result.result.failureReason);
+
+      const resources = await composition.handlers['runtime.resource.query'](
+        { kind: 'list_start', sessionId: executionId },
+        operationContext,
+      );
+      assert.equal(resources.ok, true);
+      if (!resources.ok || resources.result.kind !== 'page') return;
+      assert.equal(
+        resources.result.resources.some((item) => item.result.status === 'running'),
+        true,
+      );
+    } finally {
+      composition.beginDrain();
+      await composition.close();
+    }
   });
 });
 
@@ -290,7 +500,7 @@ test('new Full Access Plan Skill previews use the mutating tool surface', async 
             kind: 'start',
             target: {
               kind: 'new_session',
-              context: { projectRoot: root },
+              context: { workspace: { kind: 'host_path', path: root } },
               collaborationMode: 'plan',
               permissionMode,
             },
@@ -319,7 +529,7 @@ test('new Full Access Plan Skill previews use the mutating tool surface', async 
   });
 });
 
-test('production execution composition owns claimed graph activation retry and exact abort', async () => {
+test('production composition validates graph stop before aborting a claimed child', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const claims = createAgentGraphControlStore(root);
@@ -416,6 +626,30 @@ test('production execution composition owns claimed graph activation retry and e
         onReady: ready,
       });
       await started;
+      const clientContext = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'graph-stop-client',
+        surface: 'tui' as const,
+        principal: 'local_os_user' as const,
+        acquireResidency: () => ({ release() {} }),
+      };
+      const invalidStop = await composition.handlers['agent.graph.stop'](
+        { rootSessionId: abortedClaim.targetSessionId },
+        clientContext,
+      );
+      assert.equal(invalidStop.ok, false);
+      if (invalidStop.ok) return;
+      assert.equal(invalidStop.error.code, 'operation_conflict');
+      const stillActive = await composition.handlers['turn.query'](
+        {
+          sessionId: abortedClaim.targetSessionId,
+          turnId: abortedClaim.targetTurnId,
+        },
+        clientContext,
+      );
+      assert.equal(stillActive.ok, true);
+      if (!stillActive.ok) return;
+      assert.equal(['completed', 'failed', 'cancelled'].includes(stillActive.result.status), false);
       abort.abort();
       const aborted = await aborting;
       assert.equal(aborted.status, 'cancelled');

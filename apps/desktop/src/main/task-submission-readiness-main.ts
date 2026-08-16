@@ -1,10 +1,10 @@
 import { stat } from 'node:fs/promises';
-import type { ipcMain as electronIpcMain } from 'electron';
+import { deriveTaskSubmissionReadiness, type TaskSubmissionReadinessSnapshot } from '@maka/core/task-submission-readiness';
+import { type LlmConnection } from '@maka/core/llm-connections';
 import {
-  deriveTaskSubmissionReadiness,
-  type LlmConnection,
-  type TaskSubmissionReadinessSnapshot,
-} from '@maka/core';
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
 
 export interface DesktopTaskSubmissionReadinessRequest {
   connectionSlug?: string;
@@ -49,9 +49,7 @@ export function createDesktopTaskSubmissionReadinessService(
     async getSnapshot(input: unknown): Promise<TaskSubmissionReadinessSnapshot> {
       const request = normalizeRequest(input);
       const checkedAt = deps.now?.() ?? Date.now();
-      const modelTarget = await deps.resolveModelTarget(request.connectionSlug).catch(
-        (): DesktopModelTargetResolution => ({ kind: 'unknown' }),
-      );
+      const modelTarget = await deps.resolveModelTarget(request.connectionSlug);
       const cwd = request.cwd ?? deps.workspaceRoot;
       const workspaceState = await (deps.inspectWorkspace ?? inspectWorkspace)(cwd);
 
@@ -70,9 +68,9 @@ export function createDesktopTaskSubmissionReadinessService(
 
 export function registerTaskSubmissionReadinessIpc(
   service: ReturnType<typeof createDesktopTaskSubmissionReadinessService>,
-  target: Pick<typeof electronIpcMain, 'handle'>,
+  target: ReconnectableReadIpcMain,
 ): void {
-  target.handle('taskReadiness:getSnapshot', (_event, input: unknown) =>
+  handleReconnectableRead(target, 'taskReadiness:getSnapshot', (_event, input: unknown) =>
     service.getSnapshot(input),
   );
 }

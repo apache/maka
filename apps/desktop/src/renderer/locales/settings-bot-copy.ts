@@ -1,5 +1,7 @@
 import type { StatusSemantic } from '@maka/ui';
-import type { BotProvider, BotReadinessState, UiCatalog, UiLocale } from '@maka/core';
+import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-settings';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type WidenCopy<T> = T extends string
   ? string
@@ -26,7 +28,7 @@ const zhCopy = {
     operational: { label: '运行可用', detail: '最近一次真实运行探测成功。', tone: 'success' },
     degraded: { label: '运行降级', detail: '之前可用，但最近运行态探测失败。', tone: 'error' },
   } satisfies Record<BotReadinessState, { label: string; detail: string; tone: StatusSemantic }>,
-  planned: { label: '未开放', detail: '该平台当前不会保存为远程接入渠道或计划提醒投递目标。', tone: 'neutral' as const },
+  planned: { label: '未开放', detail: '该平台当前不会保存为远程接入渠道或定时任务投递目标。', tone: 'neutral' as const },
   status: {
     disabled: '开关关闭', noToken: '等待填写 Bot Token', missingFeishuCredentials: '等待填写飞书 App ID 或 App Secret',
     feishuDomainRequired: '飞书凭据有效，等待填写事件订阅域名', feishuEventsNotConnected: '飞书凭据有效，等待事件回调接入',
@@ -57,7 +59,7 @@ const zhCopy = {
     quickQqTitle: '使用手机 QQ 扫码创建并绑定机器人', quickQqDetail: '确认后，QQ 会安全返回 AppID 与 AppSecret，Maka 在本机保存凭据并启动 Gateway。',
     telegramOfficialFlow: 'Telegram 官方目前仅支持通过 @BotFather 获取 Bot Token，不提供扫码创建 Bot 并回传 Token 的 API。',
     quickDetail: '扫码确认后，Maka 会在 main process 内保存凭据并启动消息连接。', feishuRegionAria: '选择飞书账号区域', feishu: '飞书',
-    beginQuickBind: '开始快捷绑定', scanWith: (name: string) => `使用${name}扫码接入`, planned: '这个平台当前只作为平台清单展示，不会进入可用渠道，也不会保存为计划提醒投递目标。',
+    beginQuickBind: '开始快捷绑定', scanWith: (name: string) => `使用${name}扫码接入`, planned: '这个平台当前只作为平台清单展示，不会进入可用渠道，也不会保存为定时任务投递目标。',
     credentialsSaved: (name: string) => `${name}凭据已保存`, scanComplete: (name: string) => `${name}已完成扫码接入`, savedAndConnected: '凭据已安全保存并开始连接',
     proxy: '代理地址', chinaRequired: '（国内网络必填）', authOnly: '（仅用于 Bot 鉴权）', telegramProxyAria: 'Telegram 代理地址',
     telegramNotice: '请打开网络的 TUN 模式后重启应用，以便完成 Telegram Bot 设置', feishuCredentialId: '飞书凭据 ID', feishuSecret: '飞书 App Secret',

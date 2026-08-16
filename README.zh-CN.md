@@ -8,7 +8,7 @@
 
 **一个为真实工作而生的本地优先 Agent 工作台。**
 
-Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具、生成产物，并把模型消息、工具调用和长程任务进度保存为可恢复的运行事实。桌面应用、终端 TUI 和非交互 CLI 共享每个工作区唯一的 Runtime Host；Headless 使用独立的任务 Runtime 承载持久评测和自动化工作负载。
+Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具、生成产物，并把模型消息和工具调用保存为可恢复的运行事实。桌面应用、终端 TUI、非交互 CLI 和 Maka 评测 subject 都通过 Runtime Host 执行。
 
 > [!IMPORTANT]
 > Maka 仍在活跃开发中。macOS Apple Silicon 桌面版是首个早期公开版本，数据格式、CLI 和实验能力仍可能变化。
@@ -18,8 +18,7 @@ Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具
 - **本地优先，而不是云端托管优先**：会话、设置和运行记录默认保存在本机；模型连接由你配置，可以使用云 API、本地模型或兼容网关。
 - **Log is the Runtime**：模型消息、Tool Call、Tool Result 和终止事实进入 Runtime Event Log，Session、UI、模型上下文和恢复逻辑从日志生成投影。
 - **上下文不是历史本身**：Tool Result prune 和 LLM Compaction 只改变下一次推理看到什么，不把已记录的证据当作上下文垃圾删除。
-- **任务可以长于一个 Turn**：Headless 使用 TaskRun、Task Event Log、预算和 continuation 机制推进可中断、可检查的长程任务。
-- **反馈不等于事实 authority**：Self-check 可以产生证据和一次受限修复机会，但不能把“我检查过了”变成系统事实。
+- **唯一执行 authority**：Runtime Host 拥有 Session、Turn、agent lifecycle、continuation、tools 和 events；Eval 只拥有实验语义与结果。
 
 完整设计见 [Maka Backend Architecture](./ARCHITECTURE.zh-CN.md)。
 
@@ -29,7 +28,7 @@ Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具
 |---|---|---|
 | **Desktop** | 日常交互、文件与 Artifact 工作流、模型和权限配置 | Electron + React，支持流式会话、工具时间线、分支、搜索和恢复 |
 | **TUI / CLI** | 在当前工程目录中使用 Maka，或执行单次非交互 Turn | `maka`、`maka run`，复用 Desktop 的 workspace 和模型连接 |
-| **Headless** | 长程任务、可恢复 TaskRun、实验和评估 | `maka eval`，支持任务日志、导出、恢复和对比 |
+| **Eval** | Maka 与外部 subject 的可复现实验 | `maka eval run <spec> --out <directory>` |
 
 ## 当前能力
 
@@ -47,12 +46,12 @@ Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具
 - 本地记忆、联网搜索和机器人入口；
 - 不同集成需要单独配置，并非所有实验入口默认可用。
 
-### Durable Tasks and Evolution
+### Evaluation
 
-- Append-only Task Event Log 与 TaskRun projection；
-- 预算、权限暂停、continuation、结果导出和失败任务重试；
-- 有计划、source-guarded、次数受限的 Heavy-task Self-check；
-- AHE target protocol 与 evidence export；完整自动自迭代仍属于外部/实验流程。
+- 声明式多臂 Experiment 展开为 task × repetition × subject cell；
+- 每个 cell 使用 immutable attempt，基础设施失败只替换该 cell，并选择最早有效 attempt；
+- 通用结果只包含 score、normalized usage、可归因 cost、duration、status/failure reason 与 artifacts；
+- Maka subject 只通过 Runtime Host 执行，外部竞品使用 generic external subject adapter。
 
 ## 快速开始
 
@@ -67,9 +66,16 @@ Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具
 
 首个公开版本不包含 Computer Use，暂不支持 Intel Mac、Windows 和 Linux 安装包。
 
+### Windows x64 预览版
+
+Windows 目前仍是未签名预览版，不属于正式支持的平台。当某个 release 包含 Windows 资产时，
+请先阅读 [Windows 预览版安装与校验指南](docs/windows-support.md#安装-windows-x64-预览版)，再运行
+`Maka-<version>-win-x64.exe`。SmartScreen 会将安装包显示为未知发布者；只有从同一 release 下载
+并确认 SHA-256 与发布的校验文件一致后，才应选择绕过该提示。
+
 ### 环境要求
 
-- Node.js 22（当前 CI 基线）；
+- Node.js 22.19 或更高（CI 使用 Node.js 24）；
 - npm（仓库 lockfile 和 scripts 以 npm 为准，`packageManager` 当前为 npm 11）；
 - Git；
 - `ripgrep`，供 Runtime 的 `Grep` 工具使用。
@@ -117,10 +123,10 @@ npm run build
 然后可以启动 TUI 或执行单次 Turn：
 
 ```sh
-npm --workspace maka-agent exec -- maka
-npm --workspace maka-agent exec -- maka run "总结当前仓库并指出最重要的风险"
-npm --workspace maka-agent exec -- maka run --graph "并行实现两个切片，完成集成，然后独立审查"
-npm --workspace maka-agent exec -- maka --help
+npm run cli:dev
+npm run cli:dev -- run "总结当前仓库并指出最重要的风险"
+npm run cli:dev -- run --graph "并行实现两个切片，完成集成，然后独立审查"
+npm run cli:dev -- --help
 ```
 
 TUI 同时支持 `/graph on`、`/graph off` 和 `/graph <任务>`。非交互
@@ -128,7 +134,8 @@ TUI 同时支持 `/graph on`、`/graph off` 和 `/graph <任务>`。非交互
 Graph 的 implementation operator 使用隔离的 Git worktree，因此源项目必须是干净的
 Git worktree。
 
-CLI 读取 Desktop 写入的同一份模型连接和 workspace 配置。Headless 的完整命令与 trust posture 见 [`packages/headless/README.md`](./packages/headless/README.md)。
+仓库 CLI 使用与开发版 Desktop 构建相同的 `Maka Dev` profile；发布版 `maka` 二进制仍使用
+`Maka` profile，二者不会自动复制或同步。评测 spec 和 adapter 位于 [`packages/eval`](./packages/eval)。
 
 ## 架构
 
@@ -141,7 +148,9 @@ Desktop / TUI / CLI → Runtime Host → SessionManager → AgentRun
                                              ↓
                               Context / Session / UI projections
 
-Headless / Eval → Task Event Log → TaskRun → Self-check / AHE evidence
+Experiment → Cells → Attempts → Results
+                    ↓
+       Runtime Host 执行 Maka subjects
 ```
 
 从 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md) 开始阅读。它提供总体架构图、代码边界、按问题组织的阅读路径，以及六篇中英双语深度文章。
@@ -152,9 +161,9 @@ Headless / Eval → Task Event Log → TaskRun → Self-check / AHE evidence
 apps/desktop/       Electron main / preload / React renderer
 
 packages/core/      Session、Event、Permission、Connection 等纯 contracts
-packages/storage/   File-backed stores 与 run ledgers
+packages/storage/   SQLite 运行状态、配置与 payload stores
 packages/runtime/   AgentRun、模型适配、工具、上下文和恢复
-packages/headless/  TaskRun、Autonomous Loop、Self-check、eval 与 AHE
+packages/eval/      Experiment cell、attempt、result 与 executor/subject adapter
 packages/cli/       TUI 和非交互 CLI
 packages/ui/        共享对话、Markdown、Artifact 与 UI primitives
 
@@ -168,39 +177,61 @@ Maka 默认把 workspace 数据放在 Electron `userData` 下：
 
 ```text
 <Electron userData>/workspaces/default/
-  llm-connections.json
-  credentials.json
+  runtime.sqlite
+  connection-catalog.json
+  credential-vault.json
   settings.json
-  sessions/
+  artifacts/
 ```
 
 需要明确的当前边界：
 
-- 会话和连接元数据保存在本地文件系统；
-- API key、bot token、proxy password 等运行凭据当前保存在本地 plaintext `credentials.json`，依赖 OS 账号边界，并在 POSIX 上强制目录 `0700`、文件 `0600`；
-- 订阅 OAuth token（Claude、Codex、GitHub Copilot、xAI 以及 Antigravity preview）统一存放在同一份 `credentials.json`，它是 desktop、TUI、headless 的唯一凭据权威；历史 Electron `safeStorage` 凭据/token 文件不会被导入，仅保留这些历史副本的用户需要重新登录；
+- 当前连接配置文件为 `connection-catalog.json`；已有的 `llm-connections.json` 不会被导入；
+- 会话、消息、执行 ledger、workflow、usage、Automations 和 Daily Review 都保存在 `runtime.sqlite`；
+- Runtime Policy 凭据（包括 Connection API/OAuth 信息、请求头、Web Search key 和代理密码）保存在本地 plaintext `credential-vault.json`，依赖 OS 账号边界，并在 POSIX 上强制目录 `0700`、文件 `0600`；
+- Runtime Host client profile 的访问凭据单独保存在 `<Electron userData>/runtime-host-client/credentials.json`；历史 Electron `safeStorage` 凭据/token 文件不会被导入，仅保留这些历史副本的用户需要重新登录；
 - Renderer 不接收明文凭据；文件写入、Shell 和危险工具调用需要经过 permission engine；
-- Headless real-model eval 默认 fail closed，要求调用方显式提供外部隔离边界。
+- Eval 不构造 Runtime，也不读取 Runtime storage；Maka subject 连接已有 Runtime Host。
 
 安全问题请阅读 [SECURITY.md](./SECURITY.md)，当前隐私和 sandbox contract 见 [docs/README.md](./docs/README.md)。
 
-## 实验性 Runtime 恢复开关
+## 运行时存储与恢复
 
-RuntimeEvent 现在始终以 `runtime.sqlite` 为 canonical store。首次写入时，Maka
-会批量、幂等导入 legacy RuntimeEvent JSONL，且不会改写旧文件；在首次写入前，
-仅包含 legacy 数据的 workspace 仍可由只读检查路径读取。
+`runtime.sqlite` 是唯一的运行 authority。它拥有 RuntimeEvents、
+session 元数据和消息历史、Agent Graph 控制、核心执行状态、
+workflow 状态、usage 与定价、Artifact 元数据、Automations、Daily Review
+以及 Runtime continuation 记录。Artifact 的 payload 字节仍是 `artifacts/` 下的普通文件；
+connections、credentials、settings、MCP 配置、skills
+和 device identity 仍是配置文件。
 
-Runtime continuation 仍需显式开启：
+本存储代次不会导入更早的 File/JSONL authority。升级时，
+legacy session 标题仍可能通过当前元数据被发现，但仅存在于 legacy transcript
+文件中的会话历史不会被复制进 `session_messages`，打开时会显示为空会话。同样，
+pre-version 或 `safeStorage` 加密的 credential/token 文件不会被迁移；
+仅保留这些副本的用户必须重新认证。这一数据丢失边界是本版本的有意设计，
+升级既有 workspace 之前必须仔细考虑。
 
-- `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` 会开启 Desktop 中断横幅的“安全恢复”按钮、
-  CLI/TUI 的 `/resume` 命令和 Desktop 启动时自动续跑。这些路径都可能调用已配置的模型 provider 并消耗 token，
+完整运维备份使用数据库 owner 的 online SQLite backup API，并在 Artifact
+writer 锁下复制 canonical Artifact payload。其 manifest 以 size 和 SHA-256
+绑定每个文件。校验会在 restore 之前检查独立 SQLite snapshot 的完整性、
+foreign keys、schema registry 与必需表，解码 canonical session-message
+和 Artifact 记录，并对照 SQLite 元数据核对 Artifact payload 大小。备份与恢复
+使用 owner-only 文件权限、文件与目录同步、staging 以及原子发布。
+
+Runtime continuation 仍为显式开启：
+
+- `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` 会开启 Desktop 中断回合的
+  **安全恢复**（Safe resume）操作、CLI/TUI 的 `/resume` 以及 Desktop 启动时自动续跑。
+  这些路径都可能调用已配置的模型 provider 并消耗 token，
   只应在你明确需要这一行为时开启。
 
-Phase 2 交付的是 durable 写侧边界和 fail-closed 的 safe-boundary continuation。
-Phase 3 针对不确定工具副作用的 reconcile 尚未实现；结果不明的工具调用会 park，
+Phase 2 交付 durable 的写侧边界和 fail-closed 的 safe-boundary continuation。
+Phase 3 针对不确定工具副作用的 reconcile 尚未实现；结果不明的工具结果仍保持 park，
 不会被盲目重试。
 
 ## 开发与验证
+
+提交改动前请先阅读 [CONTRIBUTING.zh-CN.md](./CONTRIBUTING.zh-CN.md)。
 
 常用仓库级命令：
 
@@ -215,7 +246,7 @@ npm run check:release
 
 ```sh
 npm --workspace @maka/runtime test
-npm --workspace @maka/headless test
+npm --workspace @maka/eval test
 npm --workspace @maka/desktop test
 ```
 
@@ -223,7 +254,6 @@ npm --workspace @maka/desktop test
 
 ```sh
 npm run sync:model-metadata
-npm run test:scripts
 npm --workspace @maka/core test
 ```
 

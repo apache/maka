@@ -11,6 +11,13 @@ import {
   type PreparedRequestSegment,
 } from './request-shape.js';
 import { rawFinishReasonString } from './model-protocol.js';
+import {
+  providerFailureDiagnostic,
+  type ProviderFailureDiagnostic,
+} from './provider-error-classification.js';
+import { latestContextProjectionInput } from './latest-context-snapshot.js';
+import type { ContextDiagnosticsCompaction } from './context-diagnostics.js';
+import type { ModelCallCommit } from '@maka/core/agent-run';
 
 export type ProviderRequestCacheValueSource = 'provider' | 'derived';
 
@@ -29,7 +36,12 @@ export interface ProviderRequestUsage {
 export interface ProviderRequestUsageLike {
   inputTokens?:
     | number
-    | { total?: number; noCache?: number; cacheRead?: number; cacheWrite?: number };
+    | {
+        total?: number;
+        noCache?: number;
+        cacheRead?: number;
+        cacheWrite?: number;
+      };
   outputTokens?: number | { total?: number; text?: number; reasoning?: number };
   raw?: Record<string, unknown>;
 }
@@ -80,6 +92,7 @@ export interface ProviderRequestAttemptRecord extends ProviderRequestUsage {
   completedAt: number;
   status: ProviderRequestAttemptStatus;
   finishReason?: string;
+  failure?: ProviderFailureDiagnostic;
   latencyMs: number;
   timeToFirstTokenMs?: number;
 }
@@ -110,6 +123,12 @@ export interface ProviderRequestTrackerInput {
     capture: ProviderRequestCaptureRecord,
   ) => Promise<Pick<ProviderRequestCaptureRef, 'artifactId'>>;
   recordAttempt: (attempt: ProviderRequestAttemptRecord) => void | Promise<void>;
+  /**
+   * Durable run metadata that must exist before any physical provider call.
+   * Kept outside accounting because a dispatch gate is an execution contract,
+   * not a metering concern.
+   */
+  beforeDispatch?: () => void | Promise<void>;
 
   /**
    * Canonical metering. Present as a unit or not at all: a `ModelCallAttempt`
@@ -138,7 +157,13 @@ export interface ModelCallAccountingInput {
    */
   providerId?: string;
   callKind: ModelCallKind;
-  record: (attempt: ModelCallAttempt) => void | Promise<void>;
+  historyCompactRoute?: ModelCallAttempt['historyCompactRoute'];
+  /**
+   * Commits the attempt, and with it the derived latest-context row when this
+   * request is one that answers "what is the context made of" (#2323). One
+   * call, so the two cannot fail or arrive independently.
+   */
+  record: (commit: ModelCallCommit<ModelCallAttempt>) => void | Promise<void>;
   /** Resolves cost at settlement time; absent means the price is unknown. */
   resolveCost?: (usage: ProviderRequestUsage) => ResolvedModelCallCost | undefined;
   /**
@@ -163,11 +188,23 @@ export interface TrackProviderStreamInput {
   params: Record<string, unknown>;
   abortSignal?: AbortSignal;
   doStream: () => PromiseLike<ProviderStreamResult>;
+  /**
+   * The compaction boundary THIS request's prompt was built from (#2323).
+   *
+   * Per request rather than per tracker: one tracker spans every physical
+   * request of a send, and mid-turn compaction or overflow recovery can
+   * prepare the next request against a different boundary. Read at settlement
+   * it would be whatever the session holds by then — a boundary this prompt
+   * may never have seen.
+   */
+  historyCompactBoundary?: ContextDiagnosticsCompaction;
 }
 
 export interface TrackProviderGenerateInput {
   providerId: string;
   modelId: string;
+  /** As `TrackProviderStreamInput.historyCompactBoundary`. */
+  historyCompactBoundary?: ContextDiagnosticsCompaction;
   params: Record<string, unknown>;
   abortSignal?: AbortSignal;
   doGenerate: () => PromiseLike<ProviderGenerateResult>;
@@ -175,6 +212,12 @@ export interface TrackProviderGenerateInput {
 
 interface ProviderMiddlewareGenerateInput {
   doGenerate: () => PromiseLike<ProviderGenerateResult>;
+  params: Record<string, unknown> & { abortSignal?: AbortSignal };
+  model: { provider: string; modelId: string };
+}
+
+interface ProviderMiddlewareStreamInput {
+  doStream: () => PromiseLike<ProviderStreamResult>;
   params: Record<string, unknown> & { abortSignal?: AbortSignal };
   model: { provider: string; modelId: string };
 }
@@ -204,6 +247,28 @@ export function withProviderGenerateTracking(input: {
           params,
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
           doGenerate,
+        }),
+    },
+  });
+}
+
+/** Wraps a language model so its single streaming call is tracked. */
+export function withProviderStreamTracking(input: {
+  model: unknown;
+  wrapLanguageModel: (input: Record<string, unknown>) => unknown;
+  tracker: ProviderRequestTracker;
+  abortSignal?: AbortSignal;
+}): unknown {
+  return input.wrapLanguageModel({
+    model: input.model,
+    middleware: {
+      wrapStream: async ({ doStream, params, model }: ProviderMiddlewareStreamInput) =>
+        await input.tracker.trackStream({
+          providerId: model.provider,
+          modelId: model.modelId,
+          params,
+          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+          doStream,
         }),
     },
   });
@@ -298,6 +363,8 @@ export class ProviderRequestTracker {
 
   async trackStream(input: TrackProviderStreamInput): Promise<ProviderStreamResult> {
     throwIfAbortedBeforeDispatch(input.abortSignal);
+    await this.input.beforeDispatch?.();
+    throwIfAbortedBeforeDispatch(input.abortSignal);
     this.input.accounting?.assertReady?.();
     const step = this.step;
     const capture = await this.capture(step, input);
@@ -309,7 +376,7 @@ export class ProviderRequestTracker {
     try {
       result = await input.doStream();
     } catch (error) {
-      await attempt.finalize(abortStatus(input.abortSignal, error));
+      await attempt.finalize(abortStatus(input.abortSignal, error), { error });
       throw error;
     }
 
@@ -336,6 +403,7 @@ export class ProviderRequestTracker {
           } else if (part?.type === 'error') {
             await attempt.finalize(
               input.abortSignal?.aborted ? 'aborted' : sawOutput ? 'interrupted' : 'failed',
+              { error: part.error },
             );
           }
           controller.enqueue(next.value);
@@ -346,6 +414,7 @@ export class ProviderRequestTracker {
               : sawOutput
                 ? 'interrupted'
                 : abortStatus(input.abortSignal, error),
+            { error },
           );
           controller.error(error);
         }
@@ -363,6 +432,8 @@ export class ProviderRequestTracker {
 
   async trackGenerate(input: TrackProviderGenerateInput): Promise<ProviderGenerateResult> {
     throwIfAbortedBeforeDispatch(input.abortSignal);
+    await this.input.beforeDispatch?.();
+    throwIfAbortedBeforeDispatch(input.abortSignal);
     this.input.accounting?.assertReady?.();
     const step = this.step;
     const capture = await this.capture(step, input);
@@ -376,7 +447,7 @@ export class ProviderRequestTracker {
       });
       return result;
     } catch (error) {
-      await attempt.finalize(abortStatus(input.abortSignal, error));
+      await attempt.finalize(abortStatus(input.abortSignal, error), { error });
       throw error;
     }
   }
@@ -386,13 +457,13 @@ export class ProviderRequestTracker {
     capture: StoredCapture,
     input: Pick<
       TrackProviderStreamInput | TrackProviderGenerateInput,
-      'providerId' | 'modelId' | 'abortSignal'
+      'providerId' | 'modelId' | 'abortSignal' | 'historyCompactBoundary'
     >,
   ): {
     observeOutput(): void;
     finalize(
       status: ProviderRequestAttemptStatus,
-      finish?: { reason?: string; usage?: ProviderRequestUsageLike },
+      finish?: { reason?: string; usage?: ProviderRequestUsageLike; error?: unknown },
     ): Promise<void>;
   } {
     const attempt = (this.attemptsByStep.get(step) ?? 0) + 1;
@@ -413,10 +484,11 @@ export class ProviderRequestTracker {
     // frozen as a permanently token-less, cost-less record.
     let settled = false;
     let provisionallyRecorded = false;
+    let accountingSettlement = Promise.resolve();
     let abortListener: (() => void) | undefined;
     const finalize = async (
       status: ProviderRequestAttemptStatus,
-      finish?: { reason?: string; usage?: ProviderRequestUsageLike },
+      finish?: { reason?: string; usage?: ProviderRequestUsageLike; error?: unknown },
     ): Promise<void> => {
       if (settled) return;
       const provisional = status === 'aborted' && finish?.usage === undefined;
@@ -429,6 +501,8 @@ export class ProviderRequestTracker {
       const completedAt = this.input.now();
       const usage = strictProviderRequestUsage(finish?.usage);
       const contextWindow = positiveInteger(this.input.contextWindow);
+      const failure =
+        finish?.error !== undefined ? providerFailureDiagnostic(finish.error) : undefined;
       const record: ProviderRequestAttemptRecord = {
         traceId: this.input.traceId,
         attemptId,
@@ -436,7 +510,10 @@ export class ProviderRequestTracker {
         step,
         attempt,
         ...(capture.ref
-          ? { captureId: capture.ref.captureId, captureArtifactId: capture.ref.artifactId }
+          ? {
+              captureId: capture.ref.captureId,
+              captureArtifactId: capture.ref.artifactId,
+            }
           : {}),
         providerId: input.providerId,
         modelId: input.modelId,
@@ -448,20 +525,28 @@ export class ProviderRequestTracker {
         completedAt,
         status,
         ...(finish?.reason !== undefined ? { finishReason: finish.reason } : {}),
+        ...(failure !== undefined ? { failure } : {}),
         latencyMs: Math.max(0, completedAt - startedAt),
         ...(timeToFirstTokenMs !== undefined ? { timeToFirstTokenMs } : {}),
         ...(usage ?? {}),
       };
-      try {
-        await this.input.recordAttempt(record);
-      } catch {
-        // Attempt telemetry is diagnostic. The provider outcome remains authoritative.
-      }
-      await this.emitModelCallAttempt(record, {
-        logicalCallId,
-        usage,
-        contextWindow,
+      accountingSettlement = accountingSettlement.then(async () => {
+        try {
+          await this.input.recordAttempt(record);
+        } catch {
+          // Attempt telemetry is diagnostic. The provider outcome remains authoritative.
+        }
+        await this.emitModelCallAttempt(record, {
+          logicalCallId,
+          usage,
+          contextWindow,
+          // Frozen when THIS request was prepared, so a checkpoint published
+          // mid-flight by another turn cannot be sealed into a prompt built
+          // before it existed.
+          historyCompactBoundary: input.historyCompactBoundary,
+        });
       });
+      await accountingSettlement;
     };
     const observeOutput = () => {
       if (timeToFirstTokenMs === undefined) {
@@ -473,7 +558,10 @@ export class ProviderRequestTracker {
         void finalize('aborted');
       };
       if (input.abortSignal.aborted) void finalize('aborted');
-      else input.abortSignal.addEventListener('abort', abortListener, { once: true });
+      else
+        input.abortSignal.addEventListener('abort', abortListener, {
+          once: true,
+        });
     }
     return { observeOutput, finalize };
   }
@@ -493,6 +581,7 @@ export class ProviderRequestTracker {
       logicalCallId: string;
       usage: ProviderRequestUsage | undefined;
       contextWindow: number | undefined;
+      historyCompactBoundary: ContextDiagnosticsCompaction | undefined;
     },
   ): Promise<void> {
     const accounting = this.input.accounting;
@@ -521,6 +610,9 @@ export class ProviderRequestTracker {
       step: Math.max(0, record.step),
       attempt: Math.max(0, record.attempt - 1),
       callKind: accounting.callKind,
+      ...(accounting.historyCompactRoute !== undefined
+        ? { historyCompactRoute: accounting.historyCompactRoute }
+        : {}),
       providerId: accounting.providerId ?? record.providerId,
       modelId: record.modelId,
       ...(context.contextWindow !== undefined ? { contextWindow: context.contextWindow } : {}),
@@ -535,6 +627,7 @@ export class ProviderRequestTracker {
         : {}),
       status: record.status,
       ...(record.finishReason !== undefined ? { finishReason: record.finishReason } : {}),
+      ...(record.failure ?? {}),
       usageBasis,
       ...(usageBasis === 'missing' ? {} : modelCallUsageFields(usage)),
       costBasis: priced ? 'priced' : 'unpriced',
@@ -549,8 +642,16 @@ export class ProviderRequestTracker {
         : {}),
     };
 
+    // Only a completed MAIN call describes the conversation's own context, so
+    // only that one carries the derived row. A failed, aborted or compaction
+    // call commits its metering alone and leaves the last answer standing.
+    const latestContext =
+      attempt.callKind === 'main' && attempt.status === 'completed'
+        ? latestContextProjectionInput(attempt, record.segments, context.historyCompactBoundary)
+        : undefined;
+
     try {
-      await accounting.record(attempt);
+      await accounting.record({ attempt, ...(latestContext ? { latestContext } : {}) });
     } catch {
       // Reported through the run's accounting-incomplete signal by the sink
       // itself. Settlement must not fail the turn the call already completed.
@@ -630,7 +731,35 @@ function preparedCapture(
 
 function secretFreeParams(params: Record<string, unknown>): Record<string, unknown> {
   const { abortSignal: _abortSignal, headers: _headers, ...safe } = params;
-  return safe;
+  if (!Array.isArray(safe.prompt)) return safe;
+  return { ...safe, prompt: safe.prompt.map(redactPromptCompactionState) };
+}
+
+function redactPromptCompactionState(value: unknown): unknown {
+  if (!isPlainRecord(value) || !Array.isArray(value.content)) return value;
+  return { ...value, content: value.content.map(redactCompactionContentPart) };
+}
+
+function redactCompactionContentPart(value: unknown): unknown {
+  if (!isPlainRecord(value) || value.type !== 'custom' || value.kind !== 'openai.compaction') {
+    return value;
+  }
+  const providerOptions = isPlainRecord(value.providerOptions) ? value.providerOptions : undefined;
+  const openai = isPlainRecord(providerOptions?.openai) ? providerOptions.openai : undefined;
+  const { itemId: _itemId, encryptedContent: _encryptedContent, ...safeOpenai } = openai ?? {};
+  return {
+    ...value,
+    providerOptions: {
+      ...(providerOptions ?? {}),
+      openai: { ...safeOpenai, redacted: true },
+    },
+  };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object') return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function abortStatus(signal: AbortSignal | undefined, error: unknown): 'failed' | 'aborted' {

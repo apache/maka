@@ -1,4 +1,4 @@
-import type { DailyReviewRange, DailyReviewSummary } from '@maka/core';
+import type { DailyReviewRange, DailyReviewSummary } from '@maka/core/daily-review';
 import { dailyReviewScopeKey } from './daily-review-helpers.js';
 
 export interface DailyReviewScope {

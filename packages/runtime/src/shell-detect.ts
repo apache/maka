@@ -68,11 +68,15 @@ export interface ShellSpawnPlan {
   file: string;
   args: string[];
   useShellOption: boolean;
+  /** Required environment snapshot; callers must pass it to spawn when present. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface PtyShellSpawnPlan {
   file: string;
   args: string[];
+  /** Required environment snapshot; callers must pass it to the PTY when present. */
+  env?: NodeJS.ProcessEnv;
 }
 
 // PowerShell's -Command maps the process exit code to 0/1 from $? — a native
@@ -94,18 +98,57 @@ const POWERSHELL_EXIT_CODE_TAIL =
   '$__makaOk = $?\n' +
   'if (-not $__makaOk) { if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE } else { exit 1 } }';
 
-export function buildShellSpawnPlan(shell: ShellPlan, command: string): ShellSpawnPlan {
+// Node decodes both pipe and PTY output as UTF-8. PowerShell 7 already defaults
+// to UTF-8, but Windows PowerShell 5.1 can inherit a legacy console code page
+// and corrupt non-ASCII output before Node sees it. Set both sides of the
+// PowerShell/native-program boundary: Console.OutputEncoding controls bytes
+// written by PowerShell, while $OutputEncoding controls text piped to native
+// commands. UTF8Encoding(false) avoids a BOM at the start of every shell run.
+const POWERSHELL_UTF8_BOOTSTRAP =
+  '$__makaUtf8 = [System.Text.UTF8Encoding]::new($false)\n' +
+  '[Console]::OutputEncoding = $__makaUtf8\n' +
+  '$OutputEncoding = $__makaUtf8';
+
+const POWERSHELL_COMMAND_ENV = '__MAKA_RUNTIME_POWERSHELL_COMMAND';
+
+function buildPowerShellCommand(
+  command: string,
+  env: NodeJS.ProcessEnv,
+): { script: string; env: NodeJS.ProcessEnv } {
+  // Keep the user command as its own parsed script. Prefixing statements
+  // directly would invalidate command text that begins with script-level
+  // syntax such as `using namespace`. Carry it outside argv so wrapping does
+  // not shrink Windows' command-line budget, then remove the private slot
+  // before user code or any descendant process can inspect the environment.
+  const invokeCommand =
+    `$__makaCommandText = [Environment]::GetEnvironmentVariable('${POWERSHELL_COMMAND_ENV}')\n` +
+    `[Environment]::SetEnvironmentVariable('${POWERSHELL_COMMAND_ENV}', $null)\n` +
+    '$__makaCommand = [ScriptBlock]::Create($__makaCommandText)\n' +
+    '. $__makaCommand';
+  const inheritedEnv = Object.fromEntries(
+    Object.entries(env).filter(([key]) => key.toUpperCase() !== POWERSHELL_COMMAND_ENV),
+  );
+  return {
+    script: `${POWERSHELL_UTF8_BOOTSTRAP}\n${invokeCommand}`,
+    env: {
+      ...inheritedEnv,
+      [POWERSHELL_COMMAND_ENV]: `${command}\n${POWERSHELL_EXIT_CODE_TAIL}`,
+    },
+  };
+}
+
+export function buildShellSpawnPlan(
+  shell: ShellPlan,
+  command: string,
+  env: NodeJS.ProcessEnv = process.env,
+): ShellSpawnPlan {
   if ((shell.kind === 'pwsh' || shell.kind === 'powershell') && shell.exe) {
+    const wrapped = buildPowerShellCommand(command, env);
     return {
       file: shell.exe,
-      args: [
-        '-NoLogo',
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `${command}\n${POWERSHELL_EXIT_CODE_TAIL}`,
-      ],
+      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', wrapped.script],
       useShellOption: false,
+      env: wrapped.env,
     };
   }
   return { file: command, args: [], useShellOption: true };
@@ -117,9 +160,11 @@ export function buildPtyShellSpawnPlan(
   env: NodeJS.ProcessEnv = process.env,
 ): PtyShellSpawnPlan {
   if ((shell.kind === 'pwsh' || shell.kind === 'powershell') && shell.exe) {
+    const wrapped = buildPowerShellCommand(command, env);
     return {
       file: shell.exe,
-      args: ['-NoLogo', '-NoProfile', '-Command', `${command}\n${POWERSHELL_EXIT_CODE_TAIL}`],
+      args: ['-NoLogo', '-NoProfile', '-Command', wrapped.script],
+      env: wrapped.env,
     };
   }
   if (shell.kind === 'cmd') {

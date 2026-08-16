@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { SearchResult } from '@maka/core';
+import type { SearchResult } from '@maka/core/search';
 import { createThreadSearchSource } from '../search-modal.js';
 
 function deferred<T>() {

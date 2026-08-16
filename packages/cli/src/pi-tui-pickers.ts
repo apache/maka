@@ -15,17 +15,17 @@ import {
   type SelectItem,
   type TUI,
 } from '@earendil-works/pi-tui';
-import type { UserQuestionOption } from '@maka/core';
+import type { UserQuestionOption } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { InvocableSkillEntry } from '@maka/runtime';
+import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import { PROVIDER_DEFAULTS, type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
 import type { ModelChoice, OnboardingProviderEntry } from './pi-tui-contracts.js';
 import { skillInvocationPrefixAt } from './skill-token.js';
 import { ansi, editorTheme, selectListTheme, stripAnsi } from './tui-ansi.js';
 
 export class MakaAutocompleteProvider implements AutocompleteProvider {
-  private readonly fileProvider: CombinedAutocompleteProvider;
+  private readonly fileProvider: CombinedAutocompleteProvider | undefined;
   private readonly slashCommands: readonly MakaSlashCommandMetadata[];
   private readonly listSkills?: () => Promise<readonly InvocableSkillEntry[]>;
 
@@ -37,11 +37,11 @@ export class MakaAutocompleteProvider implements AutocompleteProvider {
   private lastSlashKind: 'skill' | null = null;
 
   constructor(
-    basePath: string,
+    basePath: string | undefined,
     slashCommands: readonly MakaSlashCommandMetadata[],
     listSkills?: () => Promise<readonly InvocableSkillEntry[]>,
   ) {
-    this.fileProvider = new CombinedAutocompleteProvider([], basePath);
+    this.fileProvider = basePath ? new CombinedAutocompleteProvider([], basePath) : undefined;
     this.slashCommands = slashCommands;
     this.listSkills = listSkills;
   }
@@ -142,7 +142,7 @@ export class MakaAutocompleteProvider implements AutocompleteProvider {
       // from triggerCharacters), so returning null restores the prior behavior.
       return null;
     }
-    return this.fileProvider.getSuggestions(lines, cursorLine, cursorCol, options);
+    return this.fileProvider?.getSuggestions(lines, cursorLine, cursorCol, options) ?? null;
   }
 
   applyCompletion(
@@ -185,12 +185,14 @@ export class MakaAutocompleteProvider implements AutocompleteProvider {
         cursorCol: beforePrefix.length + item.value.length + 1,
       };
     }
-    return this.fileProvider.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+    return this.fileProvider
+      ? this.fileProvider.applyCompletion(lines, cursorLine, cursorCol, item, prefix)
+      : { lines, cursorLine, cursorCol };
   }
 
   shouldTriggerFileCompletion(lines: string[], cursorLine: number, cursorCol: number): boolean {
     if (skillInvocationPrefixAt(lines, cursorLine, cursorCol) !== null) return false;
-    return this.fileProvider.shouldTriggerFileCompletion(lines, cursorLine, cursorCol);
+    return this.fileProvider?.shouldTriggerFileCompletion(lines, cursorLine, cursorCol) ?? false;
   }
 }
 
@@ -289,6 +291,7 @@ export class PickerOverlay implements Component {
       title: string;
       rightLabel: string;
       hint?: string;
+      notice?: string;
       onInput?: (data: string) => boolean;
     },
   ) {}
@@ -307,6 +310,7 @@ export class PickerOverlay implements Component {
     return [
       padLine(`${this.input.title} ${ansi.accent(this.input.rightLabel)}`, safeWidth),
       padLine(ansi.dim(this.input.hint ?? 'enter select / esc close'), safeWidth),
+      ...(this.input.notice ? [padLine(ansi.yellow(this.input.notice), safeWidth)] : []),
       padLine('', safeWidth),
       ...this.list.render(safeWidth).map((line) => formatPickerItemLine(line, safeWidth)),
       padLine(ansi.accent('-'.repeat(safeWidth)), safeWidth),
@@ -568,9 +572,13 @@ function matchesModelChoice(choice: ModelChoice, query: string): boolean {
 export interface ModelSearchOverlayInput {
   choices: readonly ModelChoice[];
   current: { model: string; connectionSlug: string };
+  showCacheWarning?: boolean;
   onSelect: (choice: ModelChoice) => void;
   onCancel: () => void;
 }
+
+export const MODEL_SWITCH_CACHE_WARNING =
+  '⚠ 切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高。';
 
 /**
  * One bottom search field + a bounded single-select list, for the cross-
@@ -659,6 +667,9 @@ export class ModelSearchOverlay implements Component {
     return [
       padLine(`Select Model ${ansi.accent(String(this.filtered.length))}`, safeWidth),
       padLine(ansi.dim('搜索模型 / 服务商 / 连接 · ↑↓ 选择 · Enter 确认 · Esc 取消'), safeWidth),
+      ...(this.input.showCacheWarning
+        ? [padLine(ansi.yellow(MODEL_SWITCH_CACHE_WARNING), safeWidth)]
+        : []),
       padLine('', safeWidth),
       ...this.renderFieldRow(this.searchEditor, '搜索', safeWidth),
       padLine('', safeWidth),

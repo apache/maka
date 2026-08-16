@@ -9,7 +9,6 @@ import {
   type InteractiveTaskLedgerWriter,
 } from '../task-ledger-authority.js';
 import {
-  createHeadlessRootLease,
   resolveStorageRoot,
   StorageRootAuthorityError,
   tryAcquireInteractiveRootOwner,
@@ -70,23 +69,11 @@ describe('interactive task ledger authority', () => {
     });
   });
 
-  test('rejects headless leases and forged writer facades', async () => {
-    await withTempDir(async (base) => {
-      const headless = await resolveStorageRoot({
-        path: join(base, 'headless'),
-        kind: 'headless',
-      });
-      await assert.rejects(
-        () =>
-          openInteractiveTaskLedgerStoreForWrite(
-            createHeadlessRootLease(headless, 'write') as unknown as StorageRootLease<
-              'interactive',
-              'write'
-            >,
-          ),
-        isInvalidLease,
-      );
-    });
+  test('rejects forged leases and forged writer facades', async () => {
+    await assert.rejects(
+      () => openInteractiveTaskLedgerStoreForWrite({} as StorageRootLease<'interactive', 'write'>),
+      isInvalidLease,
+    );
 
     await withInteractiveOwner(async ({ writer }) => {
       assert.throws(

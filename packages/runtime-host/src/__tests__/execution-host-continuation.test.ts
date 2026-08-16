@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mcpProxyToolName } from '@maka/runtime';
+import { mcpProxyToolName } from '@maka/runtime/mcp-tools';
 import { type ClientCapabilityProvider, RuntimeHostOperationError } from '../client/index.js';
 import {
   connectClient,
@@ -447,6 +447,7 @@ function resumeFixtureProvider(
         offerId: 'resume_fixture',
         version: '0',
         affinity: 'session',
+        hostPathAccess: 'cwd',
         label: 'Resume fixture',
         tools: toolNames.map((name) => ({
           serverId,

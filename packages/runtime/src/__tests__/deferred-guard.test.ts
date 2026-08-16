@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionHeader } from '@maka/core/session';
 import type { StoredMessage } from '@maka/core/session';
-import { projectToolActivityArgs } from '@maka/core';
+import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 
 import { ToolRuntime, formatDeferredNotLoadedText, type MakaTool } from '../tool-runtime.js';
 import { mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';

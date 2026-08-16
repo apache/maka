@@ -1,6 +1,6 @@
 /**
  * Small pure helpers backing the chat surface (TurnView,
- * RelativeTime, StreamingAssistantBubble, etc.) —
+ * RelativeTime, AssistantAnswerBubble, etc.) —
  * time formatters, turn duration + abort marker copy.
  *
  * PR-UI-LIB-EXTRACT-4 (round 5/10) introduced this module with a
@@ -12,7 +12,7 @@
  * Why this seam: duration formatting has ms→s→m bucket rules, and
  * the abort-marker label is i18n-able copy. Each rule was
  * previously buried between TurnView's 200-line JSX block and
- * StreamingAssistantBubble's rendering lifecycle; the bundle now
+ * the answer bubble's rendering lifecycle; the bundle now
  * sits as short pure functions easy to unit-test in isolation.
  *
  * PR-CHAT-CHROME-FOLLOWUP-0: `messageRoleLabel` / `avatarInitial`
@@ -21,7 +21,7 @@
  * sites.
  */
 
-import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core';
+import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
 import { getConversationCopy } from './conversation-copy.js';
 
 function createAbsoluteTimeFormat(locale: UiLocale): Intl.DateTimeFormat {

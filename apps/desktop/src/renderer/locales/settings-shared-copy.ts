@@ -1,4 +1,4 @@
-import type { UiCatalog, UiLocale } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export type SettingsSharedCopy = {
   modalLabel: string;
@@ -72,7 +72,7 @@ const SETTINGS_SHARED_COPY_BY_LOCALE = {
     ready: '就绪',
     groups: {
       memorySources: '记忆',
-      memorySourcesHelp: 'Maka 会在对话中记住你确认过的信息，用于之后的回答。',
+      memorySourcesHelp: 'Maka 会在任务中记住你确认过的信息，用于之后的回答。',
       memoryDocument: '记忆文件与备份',
       memoryDocumentHelp: '记忆保存在本机 MEMORY.md 里；这里可以直接编辑原文或恢复备份。',
       memoryEntries: '已记住的内容',
@@ -82,7 +82,7 @@ const SETTINGS_SHARED_COPY_BY_LOCALE = {
       searchBehavior: '搜索行为',
       searchBehaviorHelp: '什么时候发起搜索，以及每次取回多少结果。',
       dataLocation: '数据位置',
-      dataLocationHelp: '会话、设置、使用统计与凭据都以文件形式存放在本机的这个位置。',
+      dataLocationHelp: '任务、设置、使用统计与凭据都以文件形式存放在本机的这个位置。',
       reviewSchedule: '回顾计划',
       reviewScheduleHelp: '每日回顾的生成时间与使用的模型。',
       buildInfo: '版本信息',
@@ -122,7 +122,7 @@ const SETTINGS_SHARED_COPY_BY_LOCALE = {
       searchBehavior: 'Search behavior',
       searchBehaviorHelp: 'When a search runs, and how many results it returns.',
       dataLocation: 'Data location',
-      dataLocationHelp: 'Conversations, settings, usage statistics, and credentials are stored as files in this location on your machine.',
+      dataLocationHelp: 'Tasks, settings, usage statistics, and credentials are stored as files in this location on your machine.',
       reviewSchedule: 'Review schedule',
       reviewScheduleHelp: 'When the daily review runs, and which model writes it.',
       buildInfo: 'Build info',

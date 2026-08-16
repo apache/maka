@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { AgentGraphOperatorProvision, AgentGraphScheduleUpdate } from '@maka/core';
+import type { AgentGraphOperatorProvision } from '@maka/core/agent-graph-topology';
+import type { AgentGraphScheduleUpdate } from '@maka/core/agent-graph-schedule';
 import type {
   AgentGraphSupervisorObservation,
   AgentGraphSupervisorRuntimeEvent,
@@ -278,6 +279,7 @@ describe('agent graph client read model', () => {
     assert.equal(operator.readiness.length, 8);
     assert.equal(operator.omitted.readiness, 72);
     assert.equal(operator.readiness[0]?.waitingFor.length, 64);
+    assert.equal('policyKind' in operator.readiness[0]!, false);
     assert.equal(operator.omitted.readinessWaits, 80 * 236);
 
     const inspection = inspectAgentGraphOperator(input, operatorId);

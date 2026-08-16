@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { LlmConnection } from '@maka/core';
+import type { LlmConnection } from '@maka/core/llm-connections';
 import { convertArrayToReadableStream, MockLanguageModelV4 } from 'ai/test';
 import { z } from 'zod';
 

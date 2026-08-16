@@ -16,13 +16,18 @@ import type {
   PermissionDecisionMessage,
   TokenUsageMessage,
   SystemNoteMessage,
-  ToolActivityKind,
-  ToolActivityStatus,
-  ToolResultContent,
   TurnStatus,
-} from '@maka/core';
-import { deriveTurnRecords, projectToolActivityArgs } from '@maka/core';
-import { toolResultActivityStatus, unfinishedToolActivityStatus } from '@maka/core';
+} from '@maka/core/session';
+
+import type { ToolActivityKind, ToolResultContent } from '@maka/core/events';
+
+import type { ToolActivityStatus } from '@maka/core/tool-result-status';
+import { deriveTurnRecords } from '@maka/core/session';
+import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
+import {
+  toolResultActivityStatus,
+  unfinishedToolActivityStatus,
+} from '@maka/core/tool-result-status';
 
 // ============================================================================
 // View-model types (mirror packages/ui/src exports, lifted here for reuse)

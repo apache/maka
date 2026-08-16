@@ -15,9 +15,9 @@ import type {
   OsPermissionId,
   OsPermissionSnapshot,
   PermissionSnapshot,
-  UiLocale,
-} from '@maka/core';
-import { isDragGrantPermissionId, OS_PERMISSION_IDS } from '@maka/core';
+} from '@maka/core/capabilities';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { isDragGrantPermissionId, OS_PERMISSION_IDS } from '@maka/core/capabilities';
 import {
   Banner,
   Button,
@@ -544,7 +544,7 @@ function OsPermissionRow(props: {
        crushed the label column into a one-word-per-line sliver. Three
        buttons are a flow, not a row control — they move under the
        description and keep the full card width. */
-    <HStack gap={2} align="center" wrap="wrap">
+    (<HStack gap={2} align="center" wrap="wrap">
       {showOpenSettings && (
             <Button
               variant={showRequest || showDragGrant ? 'secondary' : 'primary'}
@@ -555,34 +555,34 @@ function OsPermissionRow(props: {
               label={pendingKey === 'openSettings' ? props.copy.opening : props.copy.openSettings}
             />
           )}
-          {/* The guided flow is the primary action where it exists: it does
-              what 前往系统设置 does and then stays to help. The plain link
-              keeps its place beside it so the manual route is never removed. */}
-          {showDragGrant && (
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={props.onDragGrant}
-              isDisabled={busy}
-              aria-busy={pendingKey === 'dragGrant' ? 'true' : undefined}
-              label={pendingKey === 'dragGrant' ? props.copy.dragGranting : props.copy.dragGrant}
-            />
-          )}
-          {showRequest && (
-            <Button
-              /* One primary per row. When the guided flow is present it owns
-                 the primary slot (see above), so 请求授权 steps down to
-                 secondary — otherwise the row shipped two filled accent
-                 buttons side by side and named no recommended path. */
-              variant={showDragGrant ? 'secondary' : 'primary'}
-              size="sm"
-              onClick={props.onRequest}
-              isDisabled={busy}
-              aria-busy={pendingKey === 'request' ? 'true' : undefined}
-              label={pendingKey === 'request' ? props.copy.requesting : props.copy.request}
-            />
-          )}
-    </HStack>
+      {/* The guided flow is the primary action where it exists: it does
+          what 前往系统设置 does and then stays to help. The plain link
+          keeps its place beside it so the manual route is never removed. */}
+      {showDragGrant && (
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={props.onDragGrant}
+          isDisabled={busy}
+          aria-busy={pendingKey === 'dragGrant' ? 'true' : undefined}
+          label={pendingKey === 'dragGrant' ? props.copy.dragGranting : props.copy.dragGrant}
+        />
+      )}
+      {showRequest && (
+        <Button
+          /* One primary per row. When the guided flow is present it owns
+             the primary slot (see above), so 请求授权 steps down to
+             secondary — otherwise the row shipped two filled accent
+             buttons side by side and named no recommended path. */
+          variant={showDragGrant ? 'secondary' : 'primary'}
+          size="sm"
+          onClick={props.onRequest}
+          isDisabled={busy}
+          aria-busy={pendingKey === 'request' ? 'true' : undefined}
+          label={pendingKey === 'request' ? props.copy.requesting : props.copy.request}
+        />
+      )}
+    </HStack>)
   );
 
   return (

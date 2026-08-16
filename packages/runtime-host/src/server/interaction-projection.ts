@@ -6,7 +6,10 @@ import {
   type InteractionCanonicalOutcome,
 } from '@maka/core/interaction';
 import type { SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
-import { RuntimeInteractionInvariantError, type RuntimeUserQuestionOutcome } from '@maka/runtime';
+import {
+  RuntimeInteractionInvariantError,
+  type RuntimeUserQuestionOutcome,
+} from '@maka/runtime/interaction-authority';
 import type {
   InteractionRecord,
   StoredInteractionOutcome,

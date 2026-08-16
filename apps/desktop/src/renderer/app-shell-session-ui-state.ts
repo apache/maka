@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import type { SessionEventStreamSnapshot } from '@maka/core';
+import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
 import { confirmLiveTurn, type InteractionQueues, type LiveTurnProjection } from '@maka/ui';
 import type { ShellRunUpdatesBySession } from './shell-run-update-state.js';
 

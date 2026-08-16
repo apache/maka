@@ -1,4 +1,4 @@
-import { createExternalExecutionBoundary } from '@maka/core';
+import { createExternalExecutionBoundary } from '@maka/core/sandbox-boundary';
 
 import { AiSdkBackend, type AiSdkBackendInput } from '../ai-sdk-backend.js';
 import {

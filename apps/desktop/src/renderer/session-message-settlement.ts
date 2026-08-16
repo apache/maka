@@ -1,59 +1,92 @@
-import type { StoredMessage } from '@maka/core';
+import type { StoredMessage } from '@maka/core/session';
+import { DesktopTranscriptRangeStore } from './desktop-transcript-range-store.js';
 
-/**
- * Read-model settlement shared by the main chat and the quote companion.
- *
- * After a turn completes, the live projection must not be handed off to the
- * persisted transcript until the matching assistant message is actually stored —
- * otherwise a settlement lag makes the just-finished exchange flicker away. This
- * reads the session's messages and, when a specific assistant message is
- * required, retries with a short backoff until it lands (or the budget is spent).
- */
-
-/** Backoff between committed-assistant settlement reads. */
-const COMMITTED_ASSISTANT_SETTLE_DELAYS_MS = [120, 360] as const;
+const COMMITTED_ASSISTANT_SETTLE_TIMEOUT_MS = 480;
 
 export interface RefreshMessagesOptions {
   requiredAssistantMessageId?: string;
+  signal?: AbortSignal;
 }
 
-export function hasAssistantMessage(
-  messages: readonly StoredMessage[],
-  messageId: string,
-): boolean {
-  return messages.some((message) => message.type === 'assistant' && message.id === messageId);
+export function mergeSettledMessages(
+  current: readonly StoredMessage[],
+  incoming: readonly StoredMessage[],
+): StoredMessage[] {
+  const incomingById = new Map(incoming.map((message) => [message.id, message]));
+  const knownIds = new Set(current.map((message) => message.id));
+  return current
+    .map((message) => incomingById.get(message.id) ?? message)
+    .concat(incoming.filter((message) => !knownIds.has(message.id)));
 }
 
-/**
- * Read a session's messages, waiting (with backoff) for `requiredAssistantMessageId`
- * to be persisted when one is given. `settled` reports whether that message was
- * found; the caller only hands off from the live projection once it is.
- */
 export async function readSettledMessages(
   sessionId: string,
   options: RefreshMessagesOptions = {},
 ): Promise<{ messages: StoredMessage[]; settled: boolean }> {
-  const requiredMessageId = options.requiredAssistantMessageId;
-  if (!requiredMessageId) {
-    return { messages: await window.maka.sessions.readMessages(sessionId), settled: true };
-  }
-
-  let lastError: unknown;
-  let lastMessages: StoredMessage[] | undefined;
-  for (let attempt = 0; attempt <= COMMITTED_ASSISTANT_SETTLE_DELAYS_MS.length; attempt += 1) {
-    try {
-      const messages = await window.maka.sessions.readMessages(sessionId);
-      if (hasAssistantMessage(messages, requiredMessageId)) {
-        return { messages, settled: true };
+  const deadline = Date.now() + COMMITTED_ASSISTANT_SETTLE_TIMEOUT_MS;
+  const store = new DesktopTranscriptRangeStore(sessionId);
+  let notify: () => void = () => {};
+  const changed = () => new Promise<void>((resolve) => {
+    notify = resolve;
+  });
+  let nextChange = changed();
+  let cancelOpen = () => {};
+  let rejectCancellation!: (error: Error) => void;
+  const cancellation = new Promise<never>((_resolve, reject) => {
+    rejectCancellation = reject;
+  });
+  void cancellation.catch(() => undefined);
+  let cancelled = false;
+  const cancel = (error: Error) => {
+    if (cancelled) return;
+    cancelled = true;
+    cancelOpen();
+    rejectCancellation(error);
+  };
+  const abort = () => cancel(new Error('Desktop transcript settlement was cancelled'));
+  options.signal?.addEventListener('abort', abort, { once: true });
+  if (options.signal?.aborted) abort();
+  const openTimeout = globalThis.setTimeout(
+    () => cancel(new Error('Desktop transcript settlement timed out while opening')),
+    Math.max(0, deadline - Date.now()),
+  );
+  const opening = window.maka.transcripts.open(
+    sessionId,
+    (batch) => {
+      if (!store.accept(batch)) return;
+      notify();
+      nextChange = changed();
+    },
+    (close) => {
+      cancelOpen = close;
+      if (cancelled) close();
+    },
+  );
+  void opening.catch(() => undefined);
+  let handle: Awaited<typeof opening> | undefined;
+  try {
+    handle = await Promise.race([opening, cancellation]);
+    globalThis.clearTimeout(openTimeout);
+    while (true) {
+      const snapshot = store.snapshot();
+      const requiredMessageId = options.requiredAssistantMessageId;
+      const settled =
+        snapshot.ready &&
+        (requiredMessageId === undefined || store.hasDurableMessage(requiredMessageId));
+      if (settled || Date.now() >= deadline) {
+        return { messages: [...snapshot.messages], settled };
       }
-      lastMessages = messages;
-    } catch (error) {
-      lastError = error;
+      await Promise.race([
+        nextChange,
+        cancellation,
+        new Promise<void>((resolve) =>
+          globalThis.setTimeout(resolve, Math.max(0, deadline - Date.now())),
+        ),
+      ]);
     }
-    const delayMs = COMMITTED_ASSISTANT_SETTLE_DELAYS_MS[attempt];
-    if (delayMs === undefined) break;
-    await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+  } finally {
+    globalThis.clearTimeout(openTimeout);
+    options.signal?.removeEventListener('abort', abort);
+    await handle?.close().catch(() => undefined);
   }
-  if (lastMessages) return { messages: lastMessages, settled: false };
-  throw lastError;
 }

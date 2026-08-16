@@ -119,20 +119,6 @@ describe('maka run session selection', () => {
       deps,
     );
     assert.equal(resumedAuto.kind === 'existing' ? resumedAuto.session : undefined, auto);
-    await assert.rejects(
-      selectMakaRunSession(
-        {
-          sessions: [session({ id: 'resume-me', backend: 'pi-agent' })],
-          resumeId: 'resume-me',
-          continueLatest: false,
-          processCwd: '/ignored',
-          thinkingSpecified: false,
-        },
-        deps,
-      ),
-      /unsupported backend/,
-    );
-
     for (const conflict of [
       { explicitConnection: 'other' },
       { explicitModel: 'other' },
@@ -161,7 +147,7 @@ describe('maka run session selection', () => {
       {
         sessions: [
           session({ id: 'archived', lastMessageAt: 500, isArchived: true }),
-          session({ id: 'done', lastMessageAt: 500, status: 'done' }),
+          session({ id: 'blocked', lastMessageAt: 500, status: 'blocked' }),
           session({ id: 'ask', lastMessageAt: 500, permissionMode: 'ask' }),
           session({ id: 'missing-time', lastMessageAt: undefined }),
           session({ id: 'inaccessible', cwd: '/missing', lastMessageAt: 400 }),

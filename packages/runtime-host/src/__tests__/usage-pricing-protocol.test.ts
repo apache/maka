@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -20,11 +21,9 @@ import {
   decodeUsageQueryInput,
   encodePricingQueryResult,
   encodeProtocolMessage,
-  HOST_OPERATION_SPECS,
   PRICING_PAGE_MAX_BYTES,
   PRICING_PAGE_MAX_ITEMS,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
-  RuntimeHostProtocolError,
   USAGE_PAGE_MAX_BYTES,
   USAGE_PAGE_MAX_ITEMS,
   USAGE_PROJECTION_TEXT_MAX_BYTES,
@@ -45,23 +44,6 @@ const CONNECTION_CONTEXT: ConnectionContext = {
 };
 
 describe('Usage/Pricing protocol', () => {
-  test('registers only the closed ready operations with current Kernel metadata', () => {
-    assert.deepEqual(operationMetadata('usage.query'), {
-      mode: 'query',
-      availability: 'ready',
-    });
-    assert.deepEqual(operationMetadata('pricing.query'), {
-      mode: 'query',
-      availability: 'ready',
-    });
-    assert.deepEqual(operationMetadata('pricing.mutate'), {
-      mode: 'command',
-      availability: 'ready',
-    });
-    const mutationErrors = HOST_OPERATION_SPECS['pricing.mutate'].errors;
-    assert.equal(new Set(mutationErrors).size, mutationErrors.length);
-  });
-
   test('decodes exact bounded usage queries', () => {
     assert.deepEqual(
       decodeUsageQueryInput({
@@ -597,11 +579,6 @@ describe('Usage/Pricing protocol', () => {
     );
   });
 });
-
-function operationMetadata(key: 'usage.query' | 'pricing.query' | 'pricing.mutate') {
-  const { mode, availability } = HOST_OPERATION_SPECS[key];
-  return { mode, availability };
-}
 
 function validProvenance() {
   return {

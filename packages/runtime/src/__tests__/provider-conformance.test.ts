@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import type { IncomingMessage } from 'node:http';
 import { after, describe, test } from 'node:test';
-import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core';
+import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core/llm-connections';
 import { openai } from '@ai-sdk/openai';
 import { anthropic } from '@ai-sdk/anthropic';
 import { generateText, isStepCount, streamText, tool, type ModelMessage } from 'ai';
@@ -930,7 +930,7 @@ describe('models.dev provider conformance', () => {
     assert.equal(body?.store, false);
   });
 
-  test('DeepSeek connection probes use the same account-declared Responses wire as execution', async () => {
+  test('DeepSeek V4 Pro connection probes use its default Responses wire', async () => {
     let body: Record<string, unknown> | undefined;
     const server = await startJsonServer(async (request, response) => {
       assert.equal(request.method, 'POST');
@@ -944,7 +944,6 @@ describe('models.dev provider conformance', () => {
       providerType: 'deepseek',
       baseUrl: `${server.url}/v1`,
       defaultModel: 'deepseek-v4-pro',
-      models: [{ id: 'deepseek-v4-pro', apiProtocol: 'openai-responses' }],
       enabled: true,
       createdAt: 1,
       updatedAt: 1,

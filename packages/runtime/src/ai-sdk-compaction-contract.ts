@@ -1,4 +1,5 @@
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
+import type { HistoryCompactRoute } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
@@ -12,7 +13,10 @@ import type {
   SynthesisCacheBlock,
   SynthesisSourceRef,
 } from './context-budget.js';
-import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
+import type {
+  HistoryCompactCheckpoint,
+  HistoryCompactProviderState,
+} from './history-compact-checkpoint.js';
 import type { ModelFactory } from './model-adapter.js';
 import type { SemanticCompactBlock } from './semantic-compact.js';
 import type { ToolResultArchiveCapability } from './tool-result-archive-capability.js';
@@ -106,6 +110,14 @@ export interface HistoryCompactSummaryInput {
   source: { foldedRuntimeEvents: RuntimeEvent[] };
   previousCheckpoint?: HistoryCompactCheckpoint;
   newlyFoldedRuntimeEvents?: RuntimeEvent[];
+  /**
+   * Estimated provider-input ceiling for this compaction call. A compactor
+   * should fail before dispatch when its projection cannot fit this budget.
+   */
+  inputBudget?: {
+    maxEstimatedTokens: number;
+    charsPerToken: number;
+  };
   requestShapeHashBefore?: string;
   abortSignal?: AbortSignal;
   /**
@@ -120,7 +132,11 @@ export interface HistoryCompactSummaryInput {
 }
 export type HistoryCompactSummarizer = (
   input: HistoryCompactSummaryInput,
-) => Promise<string | undefined> | string | undefined;
+) =>
+  | Promise<string | HistoryCompactProviderState | undefined>
+  | string
+  | HistoryCompactProviderState
+  | undefined;
 export type HistoryCompactCheckpointLoader = () =>
   | Promise<HistoryCompactCheckpoint | undefined>
   | HistoryCompactCheckpoint
@@ -158,11 +174,13 @@ export interface AiSdkCompactionCapabilities {
   loadHistoryCompact?: HistoryCompactLoader;
   /** Optional best-effort source-bearing history compact block writer. */
   writeHistoryCompact?: HistoryCompactWriter;
-  /** Preferred bounded V2 checkpoint loader. Legacy artifact blocks remain a read-only fallback. */
+  /** Preferred bounded checkpoint loader. Legacy artifact blocks remain a read-only fallback. */
   loadHistoryCompactCheckpoint?: HistoryCompactCheckpointLoader;
-  /** Produces a checkpoint summary from the prior summary plus newly evicted RuntimeEvents. */
+  /** Produces a checkpoint value from prior state plus newly evicted RuntimeEvents. */
   summarizeHistoryCompact?: HistoryCompactSummarizer;
-  /** Best-effort durable recorder for accepted V2 checkpoints. */
+  /** Actual route used by the configured history compactor, for durable diagnostics. */
+  historyCompactRoute?: HistoryCompactRoute;
+  /** Best-effort durable recorder for accepted checkpoints. */
   recordHistoryCompactCheckpoint?: HistoryCompactCheckpointRecorder;
   /**
    * Durable read of the given turn's persisted RuntimeEvents from the

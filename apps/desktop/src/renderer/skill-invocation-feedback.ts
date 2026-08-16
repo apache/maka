@@ -1,5 +1,5 @@
-import type { UiLocale } from '@maka/core';
-import type { SkillInvocationResult } from '@maka/runtime';
+import type { UiLocale } from '@maka/core/ui-locale';
+import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
 import { getShellCopy } from './locales/shell-copy.js';
 
 type SkillInvocationToastApi = {

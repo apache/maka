@@ -1,4 +1,4 @@
-import type { BotChannelSettings } from '@maka/core';
+import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';

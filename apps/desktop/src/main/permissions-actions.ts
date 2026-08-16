@@ -20,8 +20,8 @@
  */
 
 import { desktopCapturer, shell, systemPreferences } from 'electron';
-import type { OsPermissionId } from '@maka/core';
-import { OS_PERMISSION_IDS } from '@maka/core';
+import type { OsPermissionId } from '@maka/core/capabilities';
+import { OS_PERMISSION_IDS } from '@maka/core/capabilities';
 import { planPermissionRequest, requestScreenCaptureConsent } from './os-permission-policy.js';
 
 export type PermissionActionResult =

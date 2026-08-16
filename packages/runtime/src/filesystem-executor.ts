@@ -12,7 +12,9 @@
 import { Buffer } from 'node:buffer';
 import { realpath } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
-import type { ExecutionBoundary, PermissionMode, PermissionProfile } from '@maka/core';
+import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
+import type { PermissionMode } from '@maka/core/permission';
+import type { PermissionProfile } from '@maka/core/permission-profile';
 import { computeEditedSource } from './edit-replace.js';
 import { createUnifiedDiff } from './unified-diff.js';
 import { withFileWriteLock } from './file-write-lock.js';

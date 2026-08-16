@@ -1,12 +1,8 @@
 import { z } from 'zod';
-import {
-  TASK_ID_MAX_CHARS,
-  decodeCanonicalToolResultContent,
-  isSafeTaskId,
-  isSafeSubagentPresetId,
-  type TaskLedgerStore,
-  type ToolResultContent,
-} from '@maka/core';
+import { TASK_ID_MAX_CHARS, isSafeTaskId, type TaskLedgerStore } from '@maka/core/task-ledger';
+import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { isSafeSubagentPresetId } from '@maka/core/subagent-settings';
+import { type ToolResultContent } from '@maka/core/events';
 import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 import {
   AGENT_WORKSPACE_SAME_WORKSPACE,
@@ -397,9 +393,8 @@ export function buildSubagentListTool(): MakaTool<
     categoryHint: 'read',
     nesting: 'direct_only',
     impl: async (input, ctx) => {
-      // Runtime Host supplies this capability to production clients.
-      // A headless embedder can still construct ToolRuntime without it, so
-      // keep the failure explicit at the embedding boundary.
+      // Runtime Host supplies this capability to production clients. Keep the
+      // failure explicit at the embedding boundary.
       if (!ctx.listChildAgents) {
         throw new Error(
           'agent_list is not available in this session, so no agent catalog could be read. ' +

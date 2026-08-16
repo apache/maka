@@ -31,7 +31,6 @@ export function authenticateInteractiveProjectCatalogWriter(
 
 export async function openInteractiveProjectCatalogForWrite(
   lease: StorageRootLease<'interactive', 'write'>,
-  options: { readonly onLegacyImportFailure?: (error: unknown) => void } = {},
 ): Promise<InteractiveProjectCatalogWriter> {
   await assertStorageRootLease(lease, 'interactive', 'write');
   const existing = writerByLease.get(lease);
@@ -43,7 +42,7 @@ export async function openInteractiveProjectCatalogForWrite(
     let catalog: ProjectCatalog | undefined;
     try {
       catalog = await runWithStorageRootLease(lease, 'interactive', 'write', async (root) =>
-        createProjectCatalog(root, options),
+        createProjectCatalog(root),
       );
       await assertStorageRootLease(lease, 'interactive', 'write');
       const recoveredExisting = writerByLease.get(lease);

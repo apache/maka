@@ -9,14 +9,17 @@ import {
   Database,
   FolderOpen,
   Info,
+  ListTodo,
   Palette,
   Search,
   Settings as SettingsIcon,
   ShieldCheck,
+  Upload,
   Workflow,
   type LucideProps,
 } from '@maka/ui/icons';
-import type { SettingsSection, UiLocale } from '@maka/core';
+import type { SettingsSection } from '@maka/core/settings';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { safeLocalStorageGet } from '../browser-storage.js';
 import { getSettingsNavigationCopy } from '../locales/settings-navigation-copy.js';
 import {
@@ -67,6 +70,8 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
   { id: 'bot-chat', Icon: Bot, enabled: true, group: 'capabilities' },
   { id: 'search', Icon: Search, enabled: true, group: 'capabilities', badge: 'Beta' },
   { id: 'usage', Icon: BarChart3, enabled: true, group: 'activity' },
+  { id: 'archived-tasks', Icon: ListTodo, enabled: true, group: 'activity' },
+  { id: 'import-tasks', Icon: Upload, enabled: true, group: 'activity' },
   { id: 'daily-review', Icon: CalendarDays, enabled: true, group: 'activity' },
   { id: 'data', Icon: Database, enabled: true, group: 'system' },
   { id: 'permissions', Icon: ShieldCheck, enabled: true, group: 'system' },

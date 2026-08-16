@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createReadOnlyPermissionProfile } from '@maka/core';
+import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 import {
   issueManagedWorkspaceExecutionScopeInternal,
   revokeManagedWorkspaceExecutionScopeInternal,

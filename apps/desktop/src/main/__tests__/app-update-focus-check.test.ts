@@ -31,7 +31,7 @@ function createHarness(options: { start: number }) {
     currentVersion: '0.1.8',
     isPackaged: true,
     updater,
-    hasActiveTasks: () => false,
+    prepareInstall: async () => ({ kind: 'prepared', rollback() {} }),
     clock: {
       // No scheduled checks in these tests: the timer is a separate trigger and
       // firing it here would blur which path recorded the timestamp.
@@ -53,15 +53,6 @@ function createHarness(options: { start: number }) {
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
 
 describe('update check on window focus', () => {
-  test('checks when the window regains focus', async () => {
-    const harness = createHarness({ start: 1_000 });
-    harness.service.start();
-
-    await harness.service.checkForUpdatesOnFocus();
-
-    assert.equal(harness.checks.length, 1);
-  });
-
   test('does not check again inside the throttle window', async () => {
     const harness = createHarness({ start: 1_000 });
     harness.service.start();
@@ -103,5 +94,27 @@ describe('update check on window focus', () => {
     await harness.service.checkForUpdatesOnFocus();
 
     assert.equal(harness.checks.length, 0);
+  });
+
+  test('manual checkForUpdatesNow ignores the focus throttle', async () => {
+    const harness = createHarness({ start: 1_000 });
+    harness.service.start();
+
+    await harness.service.checkForUpdatesOnFocus();
+    harness.advance(1_000);
+    await harness.service.checkForUpdatesNow();
+
+    // Focus is throttled for 15 minutes; the About button must still check.
+    assert.equal(harness.checks.length, 2);
+  });
+
+  test('manual checkForUpdatesNow works before start for packaged builds', async () => {
+    // The user can open Settings → About before the first scheduled check
+    // arms; a manual click must not depend on start().
+    const harness = createHarness({ start: 1_000 });
+
+    await harness.service.checkForUpdatesNow();
+
+    assert.equal(harness.checks.length, 1);
   });
 });

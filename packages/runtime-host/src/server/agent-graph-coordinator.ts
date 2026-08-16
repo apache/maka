@@ -1,13 +1,14 @@
 import {
   AgentGraphClientOperationError,
-  agentGraphIdForRootSession,
-  encodeAgentGraphTerminalCursor,
   type AgentGraphClientChangedEvent,
+  type AgentGraphCoordinator,
+} from '@maka/runtime/stream-graph-coordinator';
+import {
+  encodeAgentGraphTerminalCursor,
   type AgentGraphClientOperator as RuntimeAgentGraphClientOperator,
   type AgentGraphClientSnapshot as RuntimeAgentGraphClientSnapshot,
-  type AgentGraphCoordinator,
   type AgentGraphOperatorInspection as RuntimeAgentGraphOperatorInspection,
-} from '@maka/runtime';
+} from '@maka/runtime/stream-graph-read-model';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import {
   AGENT_GRAPH_MAX_ACTIVITY,
@@ -42,7 +43,7 @@ import type { SessionContinuityCoordinator } from './session-continuity-coordina
 
 type AgentGraphAuthority = Pick<
   AgentGraphCoordinator,
-  'getSnapshot' | 'inspectOperator' | 'stop' | 'subscribeAll'
+  'currentGraphId' | 'getSnapshot' | 'inspectOperator' | 'subscribeAll'
 >;
 
 type GraphContinuity = Pick<SessionContinuityCoordinator, 'enqueueAgentGraphChanged'>;
@@ -70,13 +71,16 @@ export class HostAgentGraphCoordinator {
   };
 
   readonly #authority: AgentGraphAuthority;
+  readonly #stopExecution: (rootSessionId: string) => Promise<void>;
   #unsubscribe: (() => void) | undefined;
 
   constructor(options: {
     authority: AgentGraphAuthority;
     continuity: GraphContinuity;
+    stopExecution: (rootSessionId: string) => Promise<void>;
   }) {
     this.#authority = options.authority;
+    this.#stopExecution = options.stopExecution;
     this.#unsubscribe = options.authority.subscribeAll((event) =>
       options.continuity.enqueueAgentGraphChanged(projectChangedEvent(event)),
     );
@@ -114,12 +118,13 @@ export class HostAgentGraphCoordinator {
 
   async #stop(input: AgentGraphStopInput): Promise<OperationOutcome<'agent.graph.stop'>> {
     try {
-      await this.#authority.stop(input.rootSessionId);
+      await this.#stopExecution(input.rootSessionId);
+      const graphId = await this.#authority.currentGraphId(input.rootSessionId);
       return {
         ok: true,
         result: {
           rootSessionId: input.rootSessionId,
-          graphId: agentGraphIdForRootSession(input.rootSessionId),
+          graphId,
         },
       };
     } catch (error) {
@@ -283,7 +288,6 @@ function projectOperator(
       .map(projectReadinessWait);
     return {
       readinessId: entry.readinessId,
-      policyKind: entry.policyKind,
       status: entry.status,
       waitingFor,
       omittedWaitingFor: entry.omittedWaitingFor + entry.waitingFor.length - waitingFor.length,

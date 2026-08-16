@@ -6,14 +6,10 @@ import {
   type InteractionQueues,
   type LiveTurnProjection,
 } from '@maka/ui';
-import type {
-  PermissionMode,
-  QuoteRef,
-  SessionEvent,
-  SessionSummary,
-  TurnRecord,
-  UiLocale,
-} from '@maka/core';
+import type { PermissionMode } from '@maka/core/permission';
+import type { QuoteRef, SessionEvent } from '@maka/core/events';
+import type { SessionSummary, TurnRecord } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { RendererIngestInput } from '../preload/bridge-contract.js';
 import {
   acquireSessionCopyAttempt,
@@ -47,7 +43,7 @@ export interface CompanionSessionApi {
     },
   ): Promise<SessionSummary>;
   cleanupSessionCopy(sessionId: string): Promise<void>;
-  abandonSessionCopy(sessionId: string): Promise<void>;
+  abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
   stop(sessionId: string): Promise<void>;
   send(
     sessionId: string,
@@ -128,7 +124,7 @@ export async function abandonPendingCompanionCopy(
   if (!attempt) return true;
   abandonSessionCopyAttempt(key, attempt.copyId);
   try {
-    await api.abandonSessionCopy(attempt.copyId);
+    await api.abandonSessionCopy(sourceSessionId, attempt.copyId);
     completeSessionCopyAttempt(key, attempt.copyId);
     return true;
   } catch {
@@ -144,7 +140,7 @@ export async function recoverOrphanedCompanionCopies(
     attempts.map(async ({ key, attempt }) => {
       abandonSessionCopyAttempt(key, attempt.copyId);
       try {
-        await api.abandonSessionCopy(attempt.copyId);
+        await api.abandonSessionCopy(key.sourceSessionId, attempt.copyId);
         completeSessionCopyAttempt(key, attempt.copyId);
       } catch {
         // Keep the abandoning lease so the next renderer reload retries cleanup.

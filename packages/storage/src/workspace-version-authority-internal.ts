@@ -2,7 +2,7 @@ import type {
   WorkspaceBaselineAuthorityInput,
   WorkspaceBaselineCommitResult,
   WorkspaceHeadRecordV1,
-} from '@maka/core';
+} from '@maka/core/workspace-version-authority';
 import { lstatSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { basename, dirname, join, normalize, resolve } from 'node:path';

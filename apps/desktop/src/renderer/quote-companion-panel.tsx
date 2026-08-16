@@ -12,7 +12,7 @@ import {
   type ChatModelChoice,
   type ComposerHandle,
 } from '@maka/ui';
-import type { SessionSummary } from '@maka/core';
+import type { SessionSummary } from '@maka/core/session';
 import { useQuoteCompanion } from './use-quote-companion';
 import { useAppShellComposerAttachments } from './use-app-shell-composer-attachments';
 import { preflightAttachmentItems } from './attachment-preflight';
@@ -25,6 +25,7 @@ import type {
   StagedCompanionQuote,
 } from './quote-companion-panel-state';
 import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
+import { readScrollMotionBehavior } from './scroll-motion-policy';
 
 /**
  * The side-conversation workbar tab: a transient read-only fork of the main session.
@@ -204,6 +205,9 @@ export function QuoteCompanionPanel(props: {
             <Composer
               ref={composerRef}
               onSend={async (text) => {
+                // Mid-turn the same submit is steering — the side chat has no
+                // slash commands, so the split is just the turn's state.
+                if (companion.streaming) return companion.steer(text);
                 try {
                   preflightAttachmentItems(pendingAttachments, locale);
                 } catch (error) {
@@ -226,7 +230,6 @@ export function QuoteCompanionPanel(props: {
                 return accepted;
               }}
               onStop={() => void companion.stop()}
-              onSteer={(text: string) => companion.steer(text)}
               hidden={Boolean(activeInteraction)}
               streaming={companion.streaming}
               processing={companion.processing}
@@ -267,6 +270,7 @@ export function QuoteCompanionPanel(props: {
       >
         <ChatView
           messages={companion.messages}
+          scrollBehavior={readScrollMotionBehavior()}
           liveTurn={companion.liveTurn}
           runningStatus={companion.processing}
           activeSession={companion.companionSession}

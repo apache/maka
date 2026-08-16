@@ -155,7 +155,7 @@ The key distinction is simple: **a Turn is not a Run, and chat messages are not 
 
 ## The execution path around the Event Log
 
-The interactive and generic Headless paths currently share this runtime spine:
+All hosted execution paths share this Runtime spine:
 
 ```mermaid
 flowchart LR
@@ -179,7 +179,7 @@ These layers do more than split a large function. More precisely, they divide re
 
 `SessionManager.sendMessage()` is the public facade. It is now deliberately thin: public Session operations remain here, while execution is delegated to `RuntimeKernel.startTurn()`.
 
-Desktop, CLI, bot, and Headless callers therefore do not need to understand the Run ledger, Flow, or terminal facts. Runtime internals can evolve while callers continue to express one stable operation: send a user message to a Session.
+Desktop, CLI, bot, and Eval callers use Runtime Host and do not need to understand the Run ledger, Flow, or terminal facts. Runtime internals can evolve behind the host protocol.
 
 ### `RuntimeKernel`: the control plane for active execution
 
@@ -376,7 +376,7 @@ This is state repair, not checkpoint resume. The current Runtime can retain part
 - UI events and model-replayable facts have explicit, separate roles.
 - User stop, permissions, and tool side effects become diagnosable control flow.
 - Crash recovery can converge state from durable facts.
-- Headless runs, child agents, and future schedulers can reuse the same execution core.
+- Runtime Host clients, child agents, and schedulers reuse the same execution core.
 
 ### Current costs
 

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { SessionEvent, SessionSummary, StoredMessage } from '@maka/core';
-import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import type { SessionEvent } from '@maka/core/events';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import { LOCAL_RUNTIME_HOST_PROFILE, type RuntimeHostConnection } from '@maka/runtime-host/client';
 import type {
   InteractionPendingSnapshot,
   SessionCatalogProjection,
@@ -12,40 +13,6 @@ import type { RuntimeHostMakaSessionDriver } from '../runtime-host-session-drive
 import type { MakaRunContextInput, MakaRunOutcome } from '../run-command-core.js';
 
 describe('Runtime Host maka run adapter', () => {
-  test('runs the public command through one Host connection and preserves stdout semantics', async () => {
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    let closes = 0;
-    const exitCode = await runRuntimeHostTextCli(
-      ['answer once'],
-      {
-        workspaceRoot: () => '/runtime-host-data',
-        processCwd: () => process.cwd(),
-        stdinIsTTY: () => true,
-        readStdin: async () => '',
-        writeStdout: (text) => stdout.push(text),
-        writeStderr: (text) => stderr.push(text),
-        onSigint: () => () => {},
-        newId: () => 'turn-1',
-      },
-      {
-        connect: async () => ({
-          connection: readinessConnection(),
-          catalog: connectionCatalog(),
-          close: async () => {
-            closes += 1;
-          },
-        }),
-        createContext: (_connection, _catalog, input) => publicCommandContext(input),
-      },
-    );
-
-    assert.equal(exitCode, 0);
-    assert.deepEqual(stdout, ['Host answer\n']);
-    assert.deepEqual(stderr, []);
-    assert.equal(closes, 1);
-  });
-
   test('stops before context creation when CLI preflight finds a confirmed blocker', async () => {
     const stderr: string[] = [];
     let contextCreations = 0;
@@ -68,6 +35,7 @@ describe('Runtime Host maka run adapter', () => {
         connect: async () => ({
           connection: {} as RuntimeHostConnection,
           catalog: blockedCatalog,
+          profile: LOCAL_RUNTIME_HOST_PROFILE,
           close: async () => {},
         }),
         createContext: (_connection, _catalog, input) => {
@@ -75,12 +43,64 @@ describe('Runtime Host maka run adapter', () => {
           return publicCommandContext(input);
         },
       },
+      { clientDataRoot: '/client-data', cliCommand: 'npm run cli:dev --' },
     );
 
     assert.equal(exitCode, 2);
     assert.equal(contextCreations, 0);
     assert.match(stderr.join(''), /model_connection_disabled/);
-    assert.match(stderr.join(''), /repair connection "openai-main" in `maka`/);
+    assert.match(stderr.join(''), /repair connection "openai-main" in `npm run cli:dev --`/);
+  });
+
+  test('routes both launch roots through the selected Host profile and canonical Project', async () => {
+    let selectedWorkspaceRoot: string | undefined;
+    let selectedClientDataRoot: string | undefined;
+    let selectedProfile: string | undefined;
+    let contextInput: MakaRunContextInput | undefined;
+    const connection = remoteReadinessConnection();
+    const exitCode = await runRuntimeHostTextCli(
+      ['answer once', '--host', 'office', '--project', 'project-old'],
+      {
+        workspaceRoot: () => '/runtime-host-data',
+        processCwd: () => process.cwd(),
+        stdinIsTTY: () => true,
+        readStdin: async () => '',
+        writeStdout: () => {},
+        writeStderr: () => {},
+        onSigint: () => () => {},
+        newId: () => 'turn-remote',
+      },
+      {
+        connect: async (rootPath, profileId, clientDataRoot) => {
+          selectedWorkspaceRoot = rootPath;
+          selectedClientDataRoot = clientDataRoot;
+          selectedProfile = profileId;
+          return {
+            connection,
+            catalog: connectionCatalog(),
+            profile: {
+              id: 'office',
+              name: 'Office',
+              kind: 'remote',
+              transport: { kind: 'tls', url: 'wss://runtime.example.com/runtime-host' },
+              rootId: 'a'.repeat(64),
+            },
+            close: async () => {},
+          };
+        },
+        createContext: (_connection, _catalog, input) => {
+          contextInput = input;
+          return publicCommandContext(input);
+        },
+      },
+      { clientDataRoot: '/client-data', cliCommand: 'npm run cli:dev --' },
+    );
+
+    assert.equal(exitCode, 0);
+    assert.equal(selectedWorkspaceRoot, '/runtime-host-data');
+    assert.equal(selectedClientDataRoot, '/client-data');
+    assert.equal(selectedProfile, 'office');
+    assert.equal(contextInput?.projectId, 'project-1');
   });
 
   test('continues the Host-owned cwd Session without creating another identity', async () => {
@@ -99,7 +119,10 @@ describe('Runtime Host maka run adapter', () => {
           sessions: [
             {
               ...sessionProjection('session-existing'),
-              cwd,
+              workspace: {
+                target: { kind: 'host_path', path: cwd },
+                hostCwd: cwd,
+              },
               lastUsedAt: 10,
               lastMessageAt: 10,
             },
@@ -123,6 +146,7 @@ describe('Runtime Host maka run adapter', () => {
         connect: async () => ({
           connection,
           catalog: connectionCatalog(),
+          profile: LOCAL_RUNTIME_HOST_PROFILE,
           close: async () => {},
         }),
         createContext: (_connection, _catalog, input) => {
@@ -162,6 +186,7 @@ describe('Runtime Host maka run adapter', () => {
         connect: async () => ({
           connection: {} as RuntimeHostConnection,
           catalog: connectionCatalog(),
+          profile: LOCAL_RUNTIME_HOST_PROFILE,
           close: async () => {},
         }),
         createContext: () => fixture.context,
@@ -173,36 +198,6 @@ describe('Runtime Host maka run adapter', () => {
     assert.deepEqual(fixture.exactTurnStops, [
       { sessionId: 'session-created', turnId: 'turn-1', runId: 'run-1' },
     ]);
-  });
-
-  test('folds one Host Turn into the shared one-shot invocation contract', async () => {
-    const observed: MakaRunOutcome[] = [];
-    const fixture = runFixture({ observed });
-    const context = fixture.context;
-    const session = await context.runtime.createSession({
-      cwd: '/workspace',
-      name: 'Run once',
-      backend: 'ai-sdk',
-      llmConnectionSlug: 'openai-main',
-      model: 'gpt-5',
-      permissionMode: 'ask',
-    });
-    const events = await collect(
-      context.runtime.sendMessage(session.id, { turnId: 'turn-1', text: 'answer once' }),
-    );
-
-    assert.deepEqual(
-      events.map((event) => event.type),
-      ['text_complete', 'complete'],
-    );
-    assert.equal(observed.length, 1);
-    assert.equal(observed[0]?.outcomeId, 'run-1');
-    assert.equal(observed[0]?.status, 'completed');
-    assert.equal(observed[0]?.finalOutput, 'Host answer');
-    assert.deepEqual(context.target, {
-      connection: { slug: 'openai-main' },
-      model: 'gpt-5',
-    });
   });
 
   test('waits for Host-started graph supervisor Turns before returning', async () => {
@@ -337,22 +332,6 @@ describe('Runtime Host maka run adapter', () => {
 
     assert.equal(observed.length, 1);
     assert.equal(observed[0]?.finalOutput, 'Host answer');
-  });
-
-  test('canonicalizes a legacy resumed Session through Host authority', async () => {
-    const fixture = runFixture({
-      sessionCwdOverride: { sessionId: 'session-legacy', cwd: '/canonical-workspace' },
-      switchSummaryCwd: '/workspace-link',
-    });
-
-    await collect(
-      fixture.context.runtime.sendMessage('session-legacy', {
-        turnId: 'turn-1',
-        text: 'resume safely',
-      }),
-    );
-
-    assert.deepEqual(fixture.moves, ['/canonical-workspace']);
   });
 
   test('applies the requested step cap through the Host turn', async () => {
@@ -850,6 +829,62 @@ function readinessConnection(): RuntimeHostConnection {
   } as unknown as RuntimeHostConnection;
 }
 
+function remoteReadinessConnection(): RuntimeHostConnection {
+  return {
+    request: async (operation: string) => {
+      if (operation === 'session.catalog.query') {
+        return {
+          kind: 'page',
+          revision: 1,
+          nextCursor: null,
+          sessions: [sessionProjection('session-existing')],
+        };
+      }
+      if (operation === 'project.catalog.query') {
+        return {
+          kind: 'page',
+          view: 'summary',
+          revision: `sha256:${'1'.repeat(64)}`,
+          projectCount: 1,
+          items: [
+            {
+              kind: 'project',
+              projectIndex: 0,
+              id: 'project-1',
+              name: 'Project',
+              aliasCount: 1,
+              locationCount: 1,
+              preferredLocationIndex: 0,
+              archivedAt: null,
+              available: true,
+            },
+            {
+              kind: 'alias',
+              projectIndex: 0,
+              itemIndex: 0,
+              alias: 'project-old',
+            },
+          ],
+          nextCursor: null,
+        };
+      }
+      if (operation === 'credential.vault.query') {
+        return {
+          kind: 'status',
+          status: {
+            locator: { scope: 'connection', connectionId: 'connection-1', kind: 'api_key' },
+            configured: true,
+            credentialId: 'credential-1',
+            revision: 1,
+            updatedAt: 1,
+          },
+        };
+      }
+      throw new Error(`Unexpected readiness operation: ${operation}`);
+    },
+  } as unknown as RuntimeHostConnection;
+}
+
 async function* questionEvents(turnId: string): AsyncIterable<SessionEvent> {
   yield {
     type: 'user_question_request',
@@ -1032,7 +1067,10 @@ function sessionProjection(id: string): SessionCatalogProjection {
   return {
     id,
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: 'Run once',

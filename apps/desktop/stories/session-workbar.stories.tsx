@@ -1,6 +1,10 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { ArtifactRecord, Task } from '@maka/core';
+import type { ArtifactRecord } from '@maka/core/artifacts';
+import type { GitReviewSnapshot } from '@maka/core/git-review';
+import type { SessionSummary } from '@maka/core/session';
+import type { Task } from '@maka/core/task-ledger';
 import type { SessionTrace } from '@maka/core/session-trace';
+import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
 import { SessionWorkbar } from '../src/renderer/session-workbar';
 import {
@@ -34,6 +38,21 @@ import { withScopedMakaBridge } from './maka-bridge';
 
 const SESSION_ID = 'session-workbar';
 const NOW = Date.UTC(2026, 6, 31, 10, 30, 0);
+const TOOL_PICKER_SOURCE_SESSION: SessionSummary = {
+  id: SESSION_ID,
+  name: '工作栏组件审查',
+  isFlagged: false,
+  isArchived: false,
+  labels: [],
+  hasUnread: false,
+  status: 'active',
+  lastMessageAt: NOW,
+  backend: 'ai-sdk',
+  llmConnectionSlug: 'anthropic-main',
+  connectionLocked: false,
+  model: 'claude-sonnet-4-5',
+  permissionMode: 'ask',
+};
 
 // The record-file row reads `app:info`'s operationalStateDatabasePath (the
 // exact path main resolves). The short one is what a default workspace looks
@@ -135,6 +154,65 @@ const artifactText: Record<string, string> = {
     '+    <Card variant="transparent" padding={0} height="100%">',
   ].join('\n'),
   'artifact-notes': '# Conversation review\n\n- Long transcript\n- Narrow viewport',
+};
+
+const gitReviewFiles: GitReviewSnapshot['files'] = [
+  {
+    path: 'apps/desktop/src/renderer/session-review-panel.tsx',
+    status: 'modified',
+    additions: 28,
+    deletions: 94,
+    diff: [
+      'diff --git a/apps/desktop/src/renderer/session-review-panel.tsx b/apps/desktop/src/renderer/session-review-panel.tsx',
+      '--- a/apps/desktop/src/renderer/session-review-panel.tsx',
+      '+++ b/apps/desktop/src/renderer/session-review-panel.tsx',
+      '@@ -30,8 +30,6 @@',
+      "-type ReviewSource = GitReviewSource | 'last-turn';",
+      '+const REVIEW_FILE_PAGE_SIZE = 20;',
+      '-const [messages, setMessages] = useState<StoredMessage[]>([]);',
+      "+source: 'branch',",
+    ].join('\n'),
+  },
+  {
+    path: 'apps/desktop/src/renderer/locales/conversation-copy.ts',
+    status: 'modified',
+    additions: 17,
+    deletions: 4,
+    diff: [
+      'diff --git a/apps/desktop/src/renderer/locales/conversation-copy.ts b/apps/desktop/src/renderer/locales/conversation-copy.ts',
+      '--- a/apps/desktop/src/renderer/locales/conversation-copy.ts',
+      '+++ b/apps/desktop/src/renderer/locales/conversation-copy.ts',
+      '@@ -372,1 +372,1 @@',
+      "-      review: '审阅',",
+      "+      review: '变更',",
+    ].join('\n'),
+  },
+  {
+    path: 'apps/desktop/src/main/git-review-main.ts',
+    status: 'modified',
+    additions: 18,
+    deletions: 0,
+    diff: [
+      'diff --git a/apps/desktop/src/main/git-review-main.ts b/apps/desktop/src/main/git-review-main.ts',
+      '--- a/apps/desktop/src/main/git-review-main.ts',
+      '+++ b/apps/desktop/src/main/git-review-main.ts',
+      '@@ -56,1 +56,4 @@',
+      "+const branchComparison = await runGit(repositoryRoot, ['merge-base', baseBranch, 'HEAD']);",
+    ].join('\n'),
+  },
+];
+
+const gitReviewSnapshot: GitReviewSnapshot = {
+  source: 'branch',
+  repositoryRoot: '/Users/reviewer/maka-agent',
+  currentBranch: 'feat/git-authoritative-changes',
+  baseBranch: 'main',
+  baseBranchOptions: ['main', 'release/0.1'],
+  revision: 'storybook-git-review',
+  additions: gitReviewFiles.reduce((total, file) => total + file.additions, 0),
+  deletions: gitReviewFiles.reduce((total, file) => total + file.deletions, 0),
+  truncated: false,
+  files: gitReviewFiles,
 };
 
 const populatedTrace: SessionTrace = {
@@ -333,32 +411,69 @@ const populatedTrace: SessionTrace = {
   },
 };
 
+const populatedContext: ContextDiagnosticsResult = {
+  status: 'available',
+  providerId: 'zai',
+  modelId: 'glm-5.1',
+  completedAt: NOW + 42_900,
+  inputTokens: 18_900,
+  // Providers that cache always count the hits, and most real sessions carry
+  // one — the bar splits the prompt only when the snapshot reports it.
+  cacheReadInputTokens: 15_200,
+  contextWindow: 200_000,
+  composition: {
+    segments: [
+      { kind: 'system_instructions', bytes: 12_000 },
+      { kind: 'tool_definitions', bytes: 42_000 },
+      { kind: 'messages', bytes: 21_800 },
+      { kind: 'other', bytes: 400 },
+    ],
+    tools: [
+      { name: 'Bash', bytes: 9_400 },
+      { name: 'Read', bytes: 7_100 },
+      { name: 'Edit', bytes: 6_300 },
+      { name: 'Grep', bytes: 5_200 },
+      { name: 'mcp__Claude_Browser__computer', bytes: 4_800 },
+      { name: 'WebFetch', bytes: 3_900 },
+      { name: 'Write', bytes: 3_100 },
+      { name: 'Glob', bytes: 2_200 },
+    ],
+  },
+};
+
+/** A ledger written before tool schemas carried a name: bytes, no names. */
 /**
- * The same session with its latest prompt resized, rather than a second copy
- * of the fixture: what the near-limit story is about is the size of one call,
- * and a fork would drift from `populatedTrace` on every other axis.
+ * The same session with its latest prompt resized. The bar reads the snapshot
+ * now, so "near the limit" is a property of the snapshot rather than of a
+ * trace attempt (#2323).
  */
-const nearLimitTrace: SessionTrace = {
-  ...populatedTrace,
-  turns: populatedTrace.turns.map((turn, index) =>
-    index !== populatedTrace.turns.length - 1
-      ? turn
-      : {
-          ...turn,
-          steps: turn.steps.map((step) =>
-            step.kind !== 'model_call'
-              ? step
-              : {
-                  ...step,
-                  attempts: step.attempts.map((attempt) => ({
-                    ...attempt,
-                    inputTokens: 186_400,
-                    cacheReadInputTokens: 151_800,
-                  })),
-                },
-          ),
-        },
-  ),
+const nearLimitContext: ContextDiagnosticsResult = {
+  ...populatedContext,
+  ...(populatedContext.status === 'available'
+    ? { inputTokens: 186_400, cacheReadInputTokens: 151_800 }
+    : {}),
+};
+
+const unnamedToolsContext: ContextDiagnosticsResult = {
+  ...populatedContext,
+  composition: {
+    segments: populatedContext.status === 'available' ? populatedContext.composition!.segments : [],
+    unlabelledToolBytes: 42_000,
+  },
+};
+
+/**
+ * The durable metering record named this request; the best-effort capture that
+ * would have explained it never landed. A real state, and the one the panel
+ * must state rather than render as an empty prompt.
+ */
+const unrecordedContext: ContextDiagnosticsResult = {
+  status: 'available',
+  providerId: 'zai',
+  modelId: 'glm-5.1',
+  completedAt: NOW + 42_900,
+  inputTokens: 18_900,
+  contextWindow: 200_000,
 };
 
 const emptyTrace: SessionTrace = {
@@ -397,6 +512,8 @@ function bridge(options: {
   tasksFail?: boolean;
   trace?: SessionTrace;
   traceFail?: boolean;
+  /** The context snapshot the composition block reads (#2323). */
+  context?: ContextDiagnosticsResult;
   recordFilePath?: string;
 } = {}) {
   return withScopedMakaBridge({
@@ -430,17 +547,30 @@ function bridge(options: {
         options.traceFail
           ? { ok: false, error: { message: '追踪读取失败：无法读取运行记录' } }
           : { ok: true, data: options.trace ?? emptyTrace },
+      context: async () => ({
+        ok: true,
+        data: options.context ?? { status: 'unavailable', reason: 'no_completed_request' },
+      }),
+    },
+    gitReview: {
+      read: async () => ({
+        ok: true,
+        snapshot: gitReviewSnapshot,
+      }),
     },
     sessions: { subscribeEvents: unsubscribe },
   });
 }
 
 /** The column AppShell hands the workbar, at the width it restores by default. */
-function Workbar(props: { tab: 'tasks' | 'files' | 'inspector' }) {
-  const tabsState = openStaticSessionWorkbarTab(
-    createSessionWorkbarTabsState(),
-    props.tab,
-  );
+function Workbar(props: {
+  tab?: 'review' | 'tasks' | 'files' | 'inspector';
+  sourceSession?: SessionSummary;
+}) {
+  const emptyTabsState = createSessionWorkbarTabsState();
+  const tabsState = props.tab
+    ? openStaticSessionWorkbarTab(emptyTabsState, props.tab)
+    : emptyTabsState;
   return (
     <div style={{ height: 720, display: 'flex', justifyContent: 'flex-end' }}>
       <ToastProvider>
@@ -460,6 +590,7 @@ function Workbar(props: { tab: 'tasks' | 'files' | 'inspector' }) {
           onPinTab={noop}
           onOpenLauncher={noop}
           onRequestOpenTab={noop}
+          sourceSession={props.sourceSession}
         />
       </ToastProvider>
     </div>
@@ -475,7 +606,22 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-// Real path: sidebar → a session → 展开会话工作栏, landing on the tab the app
+// Real path: sidebar → a session → expand an empty workbar. The picker is the
+// workbar's empty content, composed entirely from Astryx List primitives.
+export const ToolPicker: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar sourceSession={TOOL_PICKER_SOURCE_SESSION} />,
+};
+
+// Real path: 任务工作栏 → 变更, showing the live branch comparison from the
+// session cwd. The panel is Git-backed; no message or tool-result fixture is
+// involved in this story.
+export const Changes: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar tab="review" />,
+};
+
+// Real path: sidebar → a session → 展开任务工作栏, landing on the tab the app
 // restored. Tasks is the default: an in-progress root, a child claimed and
 // blocked by a subagent, and the finished ones folded into 最近结束.
 export const Tasks: Story = {
@@ -483,19 +629,19 @@ export const Tasks: Story = {
   render: () => <Workbar tab="tasks" />,
 };
 
-// Real path: 会话工作栏 → 任务 on a session whose agent never wrote a task.
+// Real path: 任务工作栏 → 任务 on a session whose agent never wrote a task.
 export const TasksEmpty: Story = {
   decorators: [bridge({ tasks: [] })],
   render: () => <Workbar tab="tasks" />,
 };
 
-// Real path: 会话工作栏 → 任务 when `tasks.list` rejects; 重试 re-runs the read.
+// Real path: 任务工作栏 → 任务 when `tasks.list` rejects; 重试 re-runs the read.
 export const TasksLoadFailed: Story = {
   decorators: [bridge({ tasksFail: true })],
   render: () => <Workbar tab="tasks" />,
 };
 
-// Real path: 会话工作栏 → 文件, on a session whose agent wrote artifacts. The
+// Real path: 任务工作栏 → 文件, on a session whose agent wrote artifacts. The
 // count in the tab is the pane's own filtered total, reported upward.
 // The pane's empty state renders the same EmptyState as TraceEmpty below, so it
 // is not a second story.
@@ -504,40 +650,59 @@ export const Files: Story = {
   render: () => <Workbar tab="files" />,
 };
 
-// Real path: 会话工作栏 → 追踪, on a session that has run turns — the overview
+// Real path: 任务工作栏 → 追踪, on a session that has run turns — the overview
 // reads a context budget, token/cache figures and the session's facts off a
 // retried model call and a post-compaction call, while a turn that failed on a
 // denied tool sits in the raw record under the coverage notice the projection
 // raises when records are missing.
 export const Trace: Story = {
-  decorators: [bridge({ trace: populatedTrace })],
+  decorators: [bridge({ trace: populatedTrace, context: populatedContext })],
   render: () => <Workbar tab="inspector" />,
 };
 
-// Real path: 会话工作栏 → 追踪 on a long session whose latest call sits near the
+// Real path: 任务工作栏 → 追踪 on a long session whose latest call sits near the
 // top of its window — the tier the context bands and their legend switch to
 // before a compaction, and the state a reader is most likely to open the tab
 // for. Same session as Trace, sized differently, so the two read side by side.
 export const TraceContextNearLimit: Story = {
-  decorators: [bridge({ trace: nearLimitTrace })],
+  decorators: [bridge({ trace: populatedTrace, context: nearLimitContext })],
   render: () => <Workbar tab="inspector" />,
 };
 
-// Real path: 会话工作栏 → 追踪 on a session that has not run a turn yet — the
+// Real path: 任务工作栏 → 追踪 on a session recorded before tool schemas carried
+// a name — the shape of every ledger written prior to #2323. The composition
+// block still has to show those bytes, as unnamed tools rather than as a
+// missing category, which is what gating the tool list on the NAMED rows alone
+// silently broke.
+export const TraceUnnamedTools: Story = {
+  decorators: [bridge({ trace: populatedTrace, context: unnamedToolsContext })],
+  render: () => <Workbar tab="inspector" />,
+};
+
+// Real path: 任务工作栏 → 追踪 when the durable metering record names the latest
+// request but its best-effort capture never landed — the composition block has
+// to SAY so, since an absent section reads as "nothing to explain" and a zero
+// reads as an empty prompt.
+export const TraceCompositionUnrecorded: Story = {
+  decorators: [bridge({ trace: populatedTrace, context: unrecordedContext })],
+  render: () => <Workbar tab="inspector" />,
+};
+
+// Real path: 任务工作栏 → 追踪 on a session that has not run a turn yet — the
 // state the task-ledger e2e fixture opens on.
 export const TraceEmpty: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="inspector" />,
 };
 
-// Real path: 会话工作栏 → 追踪 when `inspector.trace` reports a failed read (an
+// Real path: 任务工作栏 → 追踪 when `inspector.trace` reports a failed read (an
 // unreadable or partially written run ledger); retry lives on the banner.
 export const TraceReadFailed: Story = {
   decorators: [bridge({ traceFail: true })],
   render: () => <Workbar tab="inspector" />,
 };
 
-// Real path: 会话工作栏 → 追踪 on a workspace whose path overflows the panel
+// Real path: 任务工作栏 → 追踪 on a workspace whose path overflows the panel
 // — the record-file row keeps its label and copy button, and the path alone
 // truncates. (The default stories above already show the row with a short
 // path; this variant pins the truncation contract.)

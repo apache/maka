@@ -1,17 +1,13 @@
 import { useRef } from 'react';
 import { useHotkeys } from '@astryxdesign/core/hooks';
-import type {
-  ChatDefaultPermissionMode,
-  LlmConnection,
-  ProviderType,
-  SettingsSection,
-  ThemePalette,
-  ThemePreference,
-  UiLocalePreference,
-} from '@maka/core';
+import type { ChatDefaultPermissionMode, SettingsSection, ThemePalette, ThemePreference } from '@maka/core/settings';
+import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
+import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { useUiLocale } from '@maka/ui';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy';
 import { SettingsSurface } from './settings-surface';
+import type { ArchivedTasksBridge } from './tasks-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 
 export { SETTINGS_NAV } from './settings-nav';
@@ -59,6 +55,10 @@ export function SettingsModal(props: {
    * source conversation. Settings owns the table, shell owns navigation.
    */
   onOpenSession?(sessionId: string): void;
+  /** The shell's session catalog, for 已归档任务. See ArchivedTasksBridge. */
+  archivedTasks: ArchivedTasksBridge;
+  /** Receives the task 导入任务 just created, and opens it. */
+  onTaskImported(session: DesktopSessionSummary): void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
@@ -113,6 +113,8 @@ export function SettingsModal(props: {
         onOpenDailyReview={props.onOpenDailyReview}
         onOpenKeyboardHelp={props.onOpenKeyboardHelp}
         onOpenSession={props.onOpenSession}
+        archivedTasks={props.archivedTasks}
+        onTaskImported={props.onTaskImported}
       />
     </div>
   );

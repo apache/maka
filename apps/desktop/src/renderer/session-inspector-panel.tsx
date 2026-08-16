@@ -9,7 +9,7 @@ import { Text } from '@astryxdesign/core/Text';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { ToggleButton } from '@astryxdesign/core/ToggleButton';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
-import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core';
+import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
 import type { TraceTotals } from '@maka/core/session-trace';
 import { useToast, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, Activity, AlertTriangle, Copy } from '@maka/ui/icons';
@@ -77,7 +77,10 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
   const [filter, setFilter] = useState<InspectorFilter>({});
   const trace = useMemo(() => deriveInspectorPanelModel(snapshot.trace), [snapshot.trace]);
   const model = useMemo(() => applyInspectorFilter(trace, filter, copy), [trace, filter, copy]);
-  const overview = useMemo(() => deriveInspectorOverviewModel(snapshot.trace), [snapshot.trace]);
+  const overview = useMemo(
+    () => deriveInspectorOverviewModel(snapshot.trace, snapshot.context),
+    [snapshot.trace, snapshot.context],
+  );
   // Counted on the unfiltered trace, so turning the filter on cannot change
   // the number that named it.
   const failedTurns = trace.turns.filter((turn) => turn.failed).length;
@@ -207,8 +210,18 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
           )}
         </div>
 
-        {!model.empty && (
-          <InspectorOverview copy={copy} locale={locale} totals={model.totals} overview={overview} />
+        {/* The two halves answer to different owners, so they are gated
+            separately: totals come from the trace, the context block from the
+            diagnostics query. A successful snapshot beside an empty or failed
+            trace used to be hidden entirely (#2323). */}
+        {(!model.empty || overview.context || overview.composition) && (
+          <InspectorOverview
+            copy={copy}
+            locale={locale}
+            totals={model.totals}
+            overview={overview}
+            showTotals={!model.empty}
+          />
         )}
 
         {!model.empty && (
@@ -334,6 +347,8 @@ function InspectorOverview(props: {
   locale: UiLocale;
   totals: TraceTotals;
   overview: ReturnType<typeof deriveInspectorOverviewModel>;
+  /** Trace-derived figures; absent when the trace is empty or failed to read. */
+  showTotals: boolean;
 }) {
   const { copy, overview, totals } = props;
   const formatNumber = numberFormatter(props.locale);
@@ -345,6 +360,7 @@ function InspectorOverview(props: {
           tried here ranked below the numbers it introduced, because a label
           over a 20px figure is exactly what a StatCell already is — the three
           cells label themselves. */}
+      {props.showTotals && (
       <dl className="maka-inspector-stats" data-maka-contract="session-inspector-stats">
         <StatCell label={copy.totals.cost} value={formatCost(totals.costUsd, copy.costUnavailable)} />
         <StatCell label={copy.totals.duration} value={formatDuration(totals.durationMs)} />
@@ -352,9 +368,18 @@ function InspectorOverview(props: {
           <StatCell label={copy.overview.cacheHit} value={formatPercent(overview.cacheHitRate)} />
         )}
       </dl>
+      )}
 
       {context && (
         <InspectorContextSection copy={copy} context={context} formatNumber={formatNumber} />
+      )}
+
+      {overview.composition && (
+        <InspectorCompositionSection
+          copy={copy}
+          state={overview.composition}
+          formatNumber={formatNumber}
+        />
       )}
     </VStack>
   );
@@ -383,7 +408,7 @@ function StatCell(props: { label: string; value: ReactNode }) {
  * left is name-left / number-right, the same skeleton as a step row, so the
  * whole panel scans on one rhythm.
  */
-function FactRow(props: { label: string; value: ReactNode; swatch?: ReactNode }) {
+function FactRow(props: { label: ReactNode; value: ReactNode; swatch?: ReactNode }) {
   return (
     <div className="maka-inspector-grid-row">
       <dt>
@@ -459,6 +484,91 @@ function InspectorContextSection(props: {
           />
         ))}
       </dl>
+    </VStack>
+  );
+}
+
+/**
+ * What filled the context, under the bar that says how full it is (#2323).
+ *
+ * A separate block rather than bands inside that bar, and the separation is the
+ * point: the bar's numbers are provider-reported tokens summing to the metered
+ * prompt, these are estimates over serialized bytes summing to the request. One
+ * track holding both would present the estimate as a decomposition of the
+ * reported figure — the confusion #1679 exists to prevent — so the heading says
+ * estimate, the basis line says what the unit is, and every figure carries `≈`.
+ *
+ * Tools are listed by name because that is the only row a reader can act on:
+ * "tool definitions ≈ 40%" names nothing to remove.
+ */
+function InspectorCompositionSection(props: {
+  copy: InspectorCopy;
+  state: NonNullable<ReturnType<typeof deriveInspectorOverviewModel>['composition']>;
+  formatNumber: (value: number) => string;
+}) {
+  const { copy, formatNumber, state } = props;
+  const labels = copy.overview.composition;
+  const estimate = (tokens: number) => `≈${formatNumber(tokens)}`;
+
+  return (
+    <VStack gap={2} data-maka-contract="session-inspector-composition">
+      <div className="maka-inspector-section-head">
+        <Heading level={3} className="maka-inspector-section-title">
+          {labels.title}
+        </Heading>
+      </div>
+      <p className="maka-inspector-section-note">{labels.basis}</p>
+
+      {state.status === 'unrecorded' ? (
+        // Stated, not hidden: a metered call whose capture never landed is a
+        // gap in what the reader can see, and an absent section would read as
+        // "nothing to explain" instead.
+        <p className="maka-inspector-section-note">{labels.unrecorded}</p>
+      ) : (
+        <>
+          <dl className="maka-inspector-grid">
+            {state.composition.parts.map((part) => (
+              <FactRow
+                key={part.kind}
+                label={labels.part[part.kind]}
+                value={estimate(part.estimatedTokens)}
+              />
+            ))}
+          </dl>
+
+          {/* Gated on either, not on the named list alone: a session recorded
+              before tools carried a name has bytes and no names, and that is
+              exactly when the unnamed row is the only thing to show. */}
+          {(state.composition.tools.length > 0 || state.composition.unlabelledTools) && (
+            <>
+              <Heading level={4} className="maka-inspector-section-subtitle">
+                {labels.tools}
+              </Heading>
+              <dl className="maka-inspector-grid">
+                {state.composition.tools.map((tool) => (
+                  <FactRow
+                    key={tool.name}
+                    label={<span className="maka-inspector-composition-name">{tool.name}</span>}
+                    value={estimate(tool.estimatedTokens)}
+                  />
+                ))}
+                {state.composition.remainingTools && (
+                  <FactRow
+                    label={labels.remainingTools(state.composition.remainingTools.count)}
+                    value={estimate(state.composition.remainingTools.estimatedTokens)}
+                  />
+                )}
+                {state.composition.unlabelledTools && (
+                  <FactRow
+                    label={labels.unlabelled}
+                    value={estimate(state.composition.unlabelledTools.estimatedTokens)}
+                  />
+                )}
+              </dl>
+            </>
+          )}
+        </>
+      )}
     </VStack>
   );
 }
@@ -544,12 +654,13 @@ function StepRow(props: { step: InspectorStepRow; copy: InspectorCopy }) {
   // A row names itself with whatever identity it has: a model, a tool, or —
   // for a compaction, an error, a permission prompt with no tool — its kind.
   const label = step.label ?? inspectorStepKindLabel(copy, step.kind);
-  const qualifier =
-    step.callKind !== undefined
-      ? copy.callKind(step.callKind)
-      : step.decision !== undefined
-        ? copy.permissionDecision(step.decision)
-        : step.detail;
+  const qualifier = [
+    step.callKind !== undefined ? copy.callKind(step.callKind) : undefined,
+    step.decision !== undefined ? copy.permissionDecision(step.decision) : undefined,
+    step.detail,
+  ]
+    .filter((part): part is string => part !== undefined)
+    .join(' · ');
   const meta = [
     step.retries !== undefined ? copy.retries(step.retries) : undefined,
     step.durationMs !== undefined ? formatDuration(step.durationMs) : undefined,

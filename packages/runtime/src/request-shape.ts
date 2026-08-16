@@ -62,6 +62,16 @@ export interface PreparedRequestSegment {
   hash: string;
   bytes: number;
   role?: string;
+  /**
+   * What this segment is, when the seam can name it. Set for `tool_schema` from
+   * the tool's own name, which the provider payload already carries.
+   *
+   * Present so a size can be acted on: "tool definitions are 40% of the prompt"
+   * names no tool to remove, and every segment kind but this one is already a
+   * single thing (#2323). Optional because a payload that names nothing is a
+   * shape this capture still has to describe.
+   */
+  label?: string;
 }
 
 export interface PreparedProviderRequestInput {
@@ -199,7 +209,7 @@ export function capturePreparedProviderRequest(
   const segments: PreparedRequestSegment[] = [];
 
   for (const [index, tool] of (input.tools ?? []).entries()) {
-    segments.push(preparedSegment('tool_schema', index, tool, true));
+    segments.push(preparedSegment('tool_schema', index, tool, true, undefined, toolLabel(tool)));
   }
   if (input.instructions !== undefined) {
     const instructions = Array.isArray(input.instructions)
@@ -440,6 +450,7 @@ function preparedSegment(
   value: unknown,
   cacheable: boolean,
   role?: string,
+  label?: string,
 ): PreparedRequestSegment {
   const serialized = stableStringify(value);
   return {
@@ -449,11 +460,32 @@ function preparedSegment(
     hash: stableHash(value),
     bytes: Buffer.byteLength(serialized, 'utf8'),
     ...(role !== undefined ? { role } : {}),
+    ...(label !== undefined ? { label } : {}),
   };
 }
 
-export function stableHash(value: unknown): string {
+/**
+ * The tool's own name as the payload carries it.
+ *
+ * Read off the serialized tool rather than the registry: this capture describes
+ * what crossed the wire, so a name that is not in the payload is not a name this
+ * segment can claim.
+ */
+function toolLabel(tool: unknown): string | undefined {
+  if (!isObjectLike(tool)) return undefined;
+  return typeof tool.name === 'string' && tool.name.length > 0 ? tool.name : undefined;
+}
+
+export function stableHash(value: unknown): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(stableStringify(value)).digest('hex')}`;
+}
+
+export function toolCatalogHash(tools: readonly MakaTool[]): `sha256:${string}` {
+  return stableHash(
+    [...tools]
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+      .map(toolShapeForDiagnostics),
+  );
 }
 
 export function stableStringify(value: unknown): string {

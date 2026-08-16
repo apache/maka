@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import type { IpcMain } from 'electron';
-import type { BotRegistry, ComputerUseToolSet, MakaTool } from '@maka/runtime';
+import type { BotRegistry } from '@maka/runtime/bots';
+import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { connectRuntimeHost } from '@maka/runtime-host/client';
 import {
   RUNTIME_HOST_PROTOCOL_VERSION,
@@ -12,6 +14,7 @@ import {
 } from '@maka/runtime-host/protocol';
 import {
   createUnavailableDomainOperationHandlers,
+  defineInteractiveRuntimeHostComposition,
   RuntimeHostKernel,
   type RuntimeHostComposition,
 } from '@maka/runtime-host/server';
@@ -38,7 +41,7 @@ test('drives Desktop Session operations through a real Runtime Host connection',
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 10_000,
-      compositionFactory: async ({ hostEpoch }) => ({
+      composition: defineInteractiveRuntimeHostComposition(async ({ hostEpoch }) => ({
         handlers: handlers({
           'session.catalog.query': async (input) =>
             input.kind === 'get'
@@ -60,7 +63,7 @@ test('drives Desktop Session operations through a real Runtime Host connection',
         beginDrain() {},
         async recover() {},
         async close() {},
-      }),
+      })),
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
@@ -100,6 +103,8 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
   const base = await mkdtemp(join(tmpdir(), 'maka-desktop-host-ipc-'));
   let host: RuntimeHostKernel | undefined;
   let projected: SessionCatalogProjection | undefined;
+  /** Arms one concurrent restore, landing between the Client's read and its remove. */
+  let restoreUnderNextRemove = false;
   try {
     const capability = await resolveStorageRoot({ path: base, kind: 'interactive' });
     const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -107,7 +112,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 10_000,
-      compositionFactory: async () => ({
+      composition: defineInteractiveRuntimeHostComposition(async () => ({
         handlers: handlers({
           'client.capability.replace': async (input) => ({
             ok: true,
@@ -140,8 +145,10 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
           'session.create': async (input) => {
             assert.deepEqual(input.modelTarget, { kind: 'default' });
             assert.equal(input.permissionMode, undefined);
+            assert.equal(input.workspace.kind, 'host_path');
+            if (input.workspace.kind !== 'host_path') throw new Error('Expected Host path');
             projected = session(input.sessionId, {
-              cwd: input.cwd,
+              workspace: { target: input.workspace, hostCwd: input.workspace.path },
               name: input.name,
               connectionLocked: false,
             });
@@ -175,6 +182,26 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
           },
           'session.remove': async (input) => {
             assert.ok(projected);
+            if (restoreUnderNextRemove) {
+              // Another window restored the task between the Client's read and
+              // this write. The Host rejects the stale revision, which is what
+              // a restore looks like from here.
+              restoreUnderNextRemove = false;
+              projected = session(projected.id, {
+                ...projected,
+                revision: projected.revision + 1,
+                isArchived: false,
+                status: 'active',
+              });
+              return {
+                ok: true,
+                result: {
+                  kind: 'revision_conflict',
+                  expectedRevision: input.expectedRevision,
+                  actualRevision: projected.revision,
+                },
+              };
+            }
             assert.equal(input.expectedRevision, projected.revision);
             const sessionId = projected.id;
             projected = undefined;
@@ -184,12 +211,13 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
         beginDrain() {},
         async recover() {},
         async close() {},
-      }),
+      })),
     });
     const ipc = ipcHarness();
     const changes: Array<{ reason: string; sessionId?: string }> = [];
     const started = await startDesktopRuntimeHostCandidate({
       rootPath: base,
+      candidateEntrypoint: new URL('file:///unused-runtime-host-candidate.js'),
       ipcMain: ipc,
       workspaceRoot: base,
       attachmentApprovals: createAttachmentApprovalRegistry(),
@@ -204,10 +232,11 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
         releaseComputerUseSession() {},
       },
       botRegistry: {} as BotRegistry,
-      resolveBotCreateTarget: async () => ({ cwd: base }),
-      resolveSessionCreateProject: async () => ({ cwd: base }),
-      emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
-      emitModeChanged() {},
+      resolveBotCreateTarget: async () => ({
+        workspace: { kind: 'host_path', path: base },
+      }),
+      resolveSessionCreateProject: async () => ({ kind: 'host_path', path: base }),
+      emitSessionsChanged: (_hostId, reason, sessionId) => changes.push({ reason, sessionId }),
       completeComputerUseTurn() {},
       createSessionCopyCleanup: () => ({
         ownCreation: (_creation, operation) => operation(),
@@ -221,6 +250,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     assert.equal(started.kind, 'ready');
     if (started.kind !== 'ready') throw new Error('Desktop candidate did not start');
     const { candidate } = started;
+    ipc.setHost(candidate.client.hostId, 'uds-target');
 
     const created = await ipc.invoke('sessions:create', undefined);
     assert.deepEqual((await ipc.invoke('sessions:list')) as unknown[], [created]);
@@ -232,11 +262,23 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     );
     await ipc.invoke('sessions:archive', 'session-ipc');
     assert.equal((await ipc.invoke('sessions:list') as Array<{ isArchived: boolean }>)[0]?.isArchived, true);
-    await ipc.invoke('sessions:remove', 'session-ipc');
+    // A purge sweep asks for the task it saw archived. Restored under it, the
+    // deletion is called off rather than replayed at the fresh revision (#3050).
+    restoreUnderNextRemove = true;
+    assert.equal(
+      await ipc.invoke('sessions:remove', 'session-ipc', { revisionFamily: true, requireArchived: true }),
+      'restored',
+    );
+    assert.equal((await ipc.invoke('sessions:list') as Array<{ isArchived: boolean }>)[0]?.isArchived, false);
+    await ipc.invoke('sessions:archive', 'session-ipc');
+    assert.equal(await ipc.invoke('sessions:remove', 'session-ipc'), 'removed');
     assert.deepEqual(await ipc.invoke('sessions:list'), []);
+    // Nothing was retired for the restored task: no `deleted` between the two
+    // archives, and the renderer keeps everything it holds for it.
     assert.deepEqual(changes, [
       { reason: 'created', sessionId: 'session-ipc' },
       { reason: 'mode-change', sessionId: 'session-ipc' },
+      { reason: 'archived', sessionId: 'session-ipc' },
       { reason: 'archived', sessionId: 'session-ipc' },
       { reason: 'deleted', sessionId: 'session-ipc' },
     ]);
@@ -259,7 +301,7 @@ test('drives the renderer Session execution facade through real UDS framing', as
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 10_000,
-      compositionFactory: async () => ({
+      composition: defineInteractiveRuntimeHostComposition(async () => ({
         handlers: handlers({
           'session.catalog.query': async (input) => ({
             ok: true,
@@ -296,7 +338,7 @@ test('drives the renderer Session execution facade through real UDS framing', as
         beginDrain() {},
         async recover() {},
         async close() {},
-      }),
+      })),
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
@@ -315,6 +357,7 @@ test('drives the renderer Session execution facade through real UDS framing', as
       {
         client,
         observer,
+        observations: observer,
         attachmentApprovals: createAttachmentApprovalRegistry(),
         emitSessionsChanged() {},
         stat: async () => ({ size: 0 }),
@@ -365,7 +408,7 @@ test('drives bounded Session domain projections through real UDS framing', async
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 10_000,
-      compositionFactory: async () => ({
+      composition: defineInteractiveRuntimeHostComposition(async () => ({
         handlers: handlers({
           'task.ledger.query': async (input) => ({
             ok: true,
@@ -420,7 +463,7 @@ test('drives bounded Session domain projections through real UDS framing', async
         beginDrain() {},
         async recover() {},
         async close() {},
-      }),
+      })),
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
@@ -478,7 +521,10 @@ type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
 
 function ipcHarness() {
   const ipcHandlers = new Map<string, IpcHandler>();
+  let host: { hostId: string; targetEpoch: string } | undefined;
   return {
+    epoch: 'uds-target',
+    isActive: () => true,
     handle(channel: string, handler: IpcHandler) {
       assert.equal(ipcHandlers.has(channel), false, `duplicate handler: ${channel}`);
       ipcHandlers.set(channel, handler);
@@ -489,7 +535,10 @@ function ipcHarness() {
     async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
       const handler = ipcHandlers.get(channel);
       assert.ok(handler, `missing handler: ${channel}`);
-      return handler({} as never, ...args);
+      return handler({} as never, ...(host ? [host, ...args] : args));
+    },
+    setHost(hostId: string, targetEpoch: string): void {
+      host = { hostId, targetEpoch };
     },
   };
 }
@@ -520,7 +569,10 @@ function session(
   return {
     id,
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: 'Desktop Host Session',

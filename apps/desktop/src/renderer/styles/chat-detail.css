@@ -273,69 +273,7 @@
 }
 
 .maka-workbar-launcher-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
   width: min(100%, 360px);
-}
-
-.maka-workbar-launcher-row {
-  display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-3);
-  width: 100%;
-  min-height: 36px;
-  padding: var(--space-1) var(--space-3);
-  border: 0;
-  border-radius: var(--radius-element);
-  background: transparent;
-  color: var(--foreground);
-  cursor: pointer;
-  text-align: left;
-}
-
-.maka-workbar-launcher-row:hover,
-.maka-workbar-launcher-row:focus-visible {
-  background: var(--color-overlay-hover);
-  outline: none;
-  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
-}
-
-.maka-workbar-launcher-row:active {
-  transform: scale(0.98);
-}
-
-.maka-workbar-launcher-row[data-secondary]:first-of-type,
-.maka-workbar-launcher-row:not([data-secondary])
-  + .maka-workbar-launcher-row[data-secondary] {
-  margin-top: var(--space-2);
-  padding-top: calc(var(--space-2) + var(--space-1));
-  border-top: var(--border-width-hairline) solid var(--border);
-  border-radius: 0 0 var(--radius-element) var(--radius-element);
-}
-
-.maka-workbar-launcher-row[aria-disabled="true"] {
-  cursor: default;
-  opacity: 0.45;
-  pointer-events: none;
-}
-
-.maka-workbar-launcher-icon {
-  display: inline-grid;
-  place-items: center;
-  color: var(--foreground-secondary);
-}
-
-.maka-workbar-launcher-icon > svg {
-  width: var(--icon-chrome);
-  height: var(--icon-chrome);
-}
-
-/* Astryx Kbd owns keycap chrome; only mute the cluster. */
-.maka-workbar-launcher-shortcut {
-  color: var(--muted-foreground);
-  white-space: nowrap;
 }
 
 /* Session trace (#1625): a read-only causal timeline in the workbar.
@@ -357,50 +295,54 @@
   overflow-y: auto;
 }
 
-.maka-session-review-panel > .astryx-toolbar {
-  position: sticky;
-  z-index: 1;
-  top: 0;
-  background: var(--agents-content-area-bg);
-}
-
-.maka-session-review-toolbar {
-  min-width: 0;
-}
-
-.maka-session-review-source {
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.maka-session-review-source::-webkit-scrollbar {
-  display: none;
-}
-
-.maka-session-review-summary {
-  display: flex;
-  min-height: 32px;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-1) var(--space-3);
-  padding: var(--space-1) var(--space-3);
-  border-bottom: 1px solid var(--border);
-  color: var(--muted-foreground);
-  font: var(--maka-text-supporting);
+.maka-session-review-file-stats {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .maka-session-review-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3);
+  min-width: 0;
+  overflow: hidden;
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-surface);
+  padding-inline: var(--space-3);
+}
+
+.maka-session-review-loading-list {
+  overflow: hidden;
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-surface);
+}
+
+.maka-session-review-file-trigger {
+  min-width: 0;
+  flex: 1;
+}
+
+.maka-session-review-file-path {
+  min-width: 0;
+  flex: 1;
+}
+
+.maka-session-review-additions {
+  color: var(--success);
+}
+
+.maka-session-review-deletions {
+  color: var(--destructive);
+}
+
+.maka-session-review-diff {
+  max-height: 360px;
+  overflow: auto;
+  border-radius: var(--radius-control);
+  background: var(--surface-sunken);
 }
 
 .maka-session-review-more {
   display: flex;
   justify-content: center;
+  border-top: var(--border-width-hairline) solid var(--border-soft);
   padding-block: var(--space-2);
 }
 
@@ -715,6 +657,29 @@
 
 .maka-inspector-section-head[data-level='error'] .maka-inspector-section-readout {
   color: var(--destructive-text);
+}
+
+/* The line under a section heading that says what its figures are, rather than
+   reporting one. The composition block needs it because its unit is not the
+   unit of the bar above it: estimated bytes, not reported tokens (#2323). */
+.maka-inspector-section-note {
+  margin: 0;
+  font: var(--maka-text-supporting);
+  color: var(--muted-foreground);
+}
+
+/* One tier under a section title, for the per-tool list inside the estimate —
+   it belongs to the section above it rather than opening a new one. */
+.maka-inspector-section-subtitle {
+  color: var(--foreground-secondary);
+  margin-top: var(--space-1);
+}
+
+/* A tool name is an identifier, and an MCP one can be longer than the column;
+   it wraps rather than pushing the figure off the panel. */
+.maka-inspector-composition-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* The context window drawn as bands. Colour is the join between the track and
@@ -1370,9 +1335,8 @@
  * This styles the `.maka-turn` container (NOT a per-turn marker), so it
  * stays hand-written here alongside the other model-catalog-preview turn
  * chrome. */
-/* Visual System 2.0 (T3): derived from `--accent`, not `--link`. Zero pixels
- * move — `--link` is defined exactly twice and both are `var(--accent)`, and
- * palettes override --accent alone — but the two names mean different things.
+/* Visual System 2.0 (T3): derived from `--accent`, not `--link`. The two names
+ * mean different things: palettes override --accent alone, while
  * DESIGN.md §3 scopes the link tier to link TEXT (and to `--accent-solid` at
  * that, for contrast); this is a selection wash and an outline, i.e. the
  * interaction accent doing its normal job. Deriving a surface from the link

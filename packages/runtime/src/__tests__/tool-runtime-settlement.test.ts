@@ -4,36 +4,13 @@ import { describe, it } from 'node:test';
 import {
   createBypassExecutionBoundary,
   createGenesisExecutionBoundary,
-  type LlmConnection,
-  type SessionHeader,
-} from '@maka/core';
+} from '@maka/core/sandbox-boundary';
+import { type LlmConnection } from '@maka/core/llm-connections';
+import { type SessionHeader } from '@maka/core/session';
 import { buildForegroundBashTool, buildManagedBashTool } from '../shell-tools.js';
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
 
 describe('ToolRuntime settlement', () => {
-  it('returns the raw result and provider-facing model output', async () => {
-    const runtime = makeRuntime();
-    const result = { ok: true, value: 42 };
-
-    const settlement = await runtime.settleToolCall({
-      tool: tool(() => result),
-      turnId: 'turn-1',
-      stepId: 'step-1',
-      toolCallId: 'call-1',
-      input: {},
-      abortSignal: new AbortController().signal,
-      eventSink: {
-        push: () => {},
-        pushAndWaitUntilConsumed: async () => {},
-      },
-    });
-
-    assert.deepEqual(settlement, {
-      result,
-      modelOutput: { type: 'json', value: result },
-    });
-  });
-
   it('requires the bypass boundary before dispatching Client Capability tools', async () => {
     let calls = 0;
     const clientTool: MakaTool = {

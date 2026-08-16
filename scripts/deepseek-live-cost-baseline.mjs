@@ -4,21 +4,20 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { AiSdkBackend } from '../packages/runtime/dist/ai-sdk-backend.js';
+import { buildBuiltinTools } from '../packages/runtime/dist/builtin-tools.js';
+import { estimateTokens } from '../packages/runtime/dist/context-budget.js';
 import {
-  AiSdkBackend,
-  BackendRegistry,
-  SessionManager,
-  buildBuiltinTools,
   buildHistoryCompactBlockFromSummary,
-  buildProviderOptions,
-  buildSynthesisCacheBlocksFromHydratedArchives,
-  computeCost,
-  estimateTokens,
-  getAIModel,
-  getBuiltinPricing,
   validateHistoryCompactBlockShape,
+} from '../packages/runtime/dist/history-compact.js';
+import { buildProviderOptions, getAIModel } from '../packages/runtime/dist/model-factory.js';
+import { BackendRegistry, SessionManager } from '../packages/runtime/dist/session-manager.js';
+import {
+  buildSynthesisCacheBlocksFromHydratedArchives,
   validateSynthesisCacheBlockShape,
-} from '../packages/runtime/dist/index.js';
+} from '../packages/runtime/dist/synthesis-cache.js';
+import { computeCost, getBuiltinPricing } from '../packages/runtime/dist/telemetry/index.js';
 import {
   createSqliteAgentRunStore,
   createSqliteArtifactStore,

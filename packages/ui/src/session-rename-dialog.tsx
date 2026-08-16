@@ -30,7 +30,7 @@ export interface SessionRenameTarget {
  * dialog is what those actions already look like.
  *
  * One button, no 取消: the header's close control and Escape are already two
- * ways out, which is the convention `PlanReminderFormDialog` set.
+ * ways out, which is the convention `ScheduledTaskFormDialog` set.
  */
 export function SessionRenameDialog(props: {
   target: SessionRenameTarget;
@@ -45,8 +45,8 @@ export function SessionRenameDialog(props: {
   const [name, setName] = useState(target.name);
 
   const trimmed = name.trim();
-  // The row's own vocabulary: a conversation is 对话 everywhere else in the
-  // sidebar, and the header doubles as the field's (hidden) label.
+  // The row's own vocabulary: a session is 任务 everywhere the user can see
+  // one, and the header doubles as the field's (hidden) label.
   const title = target.kind === 'project' ? copy.renameProjectTitle : copy.renameAriaLabel;
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -62,7 +62,6 @@ export function SessionRenameDialog(props: {
   return (
     <Dialog isOpen onOpenChange={props.onOpenChange} purpose="form" width={440}>
       <Layout
-        height="auto"
         header={
           <DialogHeader
             title={title}

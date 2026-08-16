@@ -14,12 +14,14 @@
 // nothing under packages/ is built yet, and the raw ERR_MODULE_NOT_FOUND from
 // deep inside an import chain (test file → harness → launcher → here) does
 // not say what to do about it.
-const { terminateChildProcessTree } = await import('@maka/runtime').catch((cause) => {
-  throw new Error(
-    "electron-lifecycle needs @maka/runtime's built dist. Run `npm --workspace @maka/runtime run build` (or any desktop build) first.",
-    { cause },
-  );
-});
+const { terminateChildProcessTree } = await import('@maka/runtime/process-tree-terminator').catch(
+  (cause) => {
+    throw new Error(
+      "electron-lifecycle needs @maka/runtime's built dist. Run `npm --workspace @maka/runtime run build` (or any desktop build) first.",
+      { cause },
+    );
+  },
+);
 
 /**
  * @typedef {{

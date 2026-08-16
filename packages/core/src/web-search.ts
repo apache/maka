@@ -1,12 +1,4 @@
-/**
- * Pure WebSearch contracts shared by the explicit UI query and agent-tool
- * paths. One configured provider handles a query; failures are returned as
- * closed reasons rather than silently rotating providers.
- *
- * The active execution owner controls credentials, provider calls, and the
- * incognito gate. Renderer results contain normalized title, URL, and snippet
- * fields and never expose cleartext credentials or raw provider errors.
- */
+/** Renderer-safe WebSearch contracts shared by UI and agent-tool paths. */
 
 /** Closed enum of search execution sources. */
 export const WEB_SEARCH_PROVIDERS = ['model', 'tavily'] as const;
@@ -63,13 +55,7 @@ export type WebSearchCredentialStatus = (typeof WEB_SEARCH_CREDENTIAL_STATUSES)[
 export const WEB_SEARCH_CREDENTIAL_SOURCES = ['none', 'saved', 'env'] as const;
 export type WebSearchCredentialSource = (typeof WEB_SEARCH_CREDENTIAL_SOURCES)[number];
 
-/**
- * Settings-layer placeholder for a stored API key. The renderer may
- * see this when the settings store mirrors back the current value;
- * an update that comes back with exactly this token MUST preserve
- * the existing token instead of overwriting it. Same pattern as the
- * existing bot token / proxy password mask in Maka.
- */
+/** A round-tripped sentinel preserves the stored API key. */
 export const MASKED_TOKEN_SENTINEL = '••••••';
 
 /** Returns `null` when the raw value isn't a usable query. */
@@ -96,13 +82,7 @@ export function isWebSearchProvider(value: unknown): value is WebSearchProvider 
   return typeof value === 'string' && (WEB_SEARCH_PROVIDERS as readonly string[]).includes(value);
 }
 
-/**
- * Settings shape persisted in `settings.json`. The `apiKey` field is
- * stored in cleartext on disk (settings store sees the raw value);
- * the IPC store boundary returns the masked sentinel to the renderer
- * for display. An update where `apiKey === MASKED_TOKEN_SENTINEL`
- * means "keep current" — the store preserves it.
- */
+/** Stored provider settings; renderer-facing reads mask `apiKey`. */
 export interface WebSearchProviderSettings {
   readonly apiKey: string;
   /** Renderer-safe credential source. Never carries the secret value. */
@@ -156,8 +136,6 @@ export function mergeWebSearchSettings(
   const nextProvider: WebSearchProvider = isWebSearchProvider(candidateProvider)
     ? candidateProvider
     : current.defaultProvider;
-  // Mask-sentinel preservation lives here so the IPC boundary does
-  // not have to special-case the round-tripped masked value.
   const nextApiKey =
     tavilyPatch && typeof tavilyPatch.apiKey === 'string'
       ? reconcileMaskedToken(current.providers.tavily.apiKey, tavilyPatch.apiKey)
@@ -247,11 +225,7 @@ export function normalizeWebSearchSettings(settings: WebSearchSettings): WebSear
   };
 }
 
-/**
- * Helper for the IPC store boundary: given a (possibly stale)
- * persisted token and the renderer-sent update token, choose which
- * to persist. Renderer sending exactly the mask means "keep current".
- */
+/** Preserve the stored token when the renderer returns its mask. */
 export function reconcileMaskedToken(persisted: string, candidate: string): string {
   if (candidate === MASKED_TOKEN_SENTINEL) return persisted;
   return candidate;

@@ -2,6 +2,7 @@ import { TOOL_ACTIVITY_KINDS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/eve
 import type { ToolResultPreviewContent } from '@maka/core/events';
 import { decodeToolResultPreviewContent } from '@maka/core/tool-result-preview';
 import type { ToolActivityKind } from '@maka/core/events';
+import { isSessionStatus, type SessionStatus } from '@maka/core/session';
 import {
   assertExactKeys,
   requireCount,
@@ -23,9 +24,16 @@ import { defineOperation } from './operation-spec.js';
 import { decodeTurnSnapshot, type TurnSnapshot } from './turn.js';
 import { decodeGoalProjection, type GoalProjection } from './goal.js';
 import { decodeRuntimeResourceRef } from './runtime-resource.js';
+import {
+  decodeSessionTranscriptBootstrap,
+  SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  type SessionTranscriptBootstrap,
+} from './session-transcript.js';
 
 export const SESSION_CONTINUITY_SCHEMA_VERSION = 3 as const;
 export const SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES = 56 * 1024;
+// Leave transport headroom for the response envelope and request correlation.
+export const SUBSCRIPTION_OPEN_RESULT_MAX_BYTES = 92 * 1024;
 export const SESSION_LIVE_DELTA_MAX_BYTES = 16 * 1024;
 // Core emits at most 8,192 UTF-16 code units per tool output event. A code unit
 // needs at most three UTF-8 bytes (an astral pair needs four bytes total).
@@ -34,15 +42,14 @@ export const SESSION_TOOL_NAME_MAX_BYTES = 256;
 export const SESSION_SUBSCRIPTION_FRAME_MAX_BYTES = 64 * 1024 - 1;
 export const SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES = 48 * 1024;
 
-export type SessionLifecycleStatus =
-  | 'active'
-  | 'running'
-  | 'waiting_for_user'
-  | 'blocked'
-  | 'review'
-  | 'done'
-  | 'archived'
-  | 'aborted';
+/**
+ * The wire status is core's `SessionStatus`, not a restatement of it. It used to
+ * be a hand-written union here plus a hand-written validator below — three
+ * copies of one enum, which is how `review` and `done` survived in two of them
+ * after the last writer went away. `session-catalog.ts` already validates the
+ * same field with core's `isSessionStatus`.
+ */
+export type SessionLifecycleStatus = SessionStatus;
 
 export interface SessionContinuityIdentity {
   sessionId: string;
@@ -66,6 +73,7 @@ export interface SessionContinuitySnapshot {
 
 export interface SubscriptionOpenInput {
   sessionId: string;
+  transcript: { kind: 'none' } | { kind: 'tail'; maxBytes: number };
 }
 
 export interface SubscriptionOpenResult {
@@ -73,6 +81,14 @@ export interface SubscriptionOpenResult {
   subscriptionId: string;
   nextSequence: number;
   snapshot: SessionContinuitySnapshot;
+  activeAssistantStreams: SessionAssistantStreamIdentity[];
+  transcript: SessionTranscriptBootstrap | null;
+}
+
+export interface SessionAssistantStreamIdentity {
+  kind: 'text' | 'thinking';
+  turnId: string;
+  messageId: string;
 }
 
 export interface SubscriptionCloseInput {
@@ -101,6 +117,8 @@ export interface SessionAssistantDelta {
   messageId: string;
   startOffset: number;
   text: string;
+  reset?: true;
+  complete?: true;
 }
 
 export interface SessionDeltaFrame extends SubscriptionEnvelope {
@@ -159,6 +177,12 @@ export interface SessionEventFrame extends SubscriptionEnvelope {
   event: SessionToolEvent;
 }
 
+export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
+  kind: 'subscription.transcript_advanced';
+  sessionId: string;
+  throughSequence: number;
+}
+
 export const SESSION_DOMAINS = ['task', 'plan', 'deep_research', 'runtime_resource'] as const;
 export type SessionDomain = (typeof SESSION_DOMAINS)[number];
 export const SESSION_RUNTIME_RESOURCE_CHANGES_MAX = 64;
@@ -210,6 +234,7 @@ export type SubscriptionFrame =
   | SessionProjectionFrame
   | SessionDeltaFrame
   | SessionEventFrame
+  | SessionTranscriptAdvancedFrame
   | SessionDomainChangedFrame
   | SessionRuntimeResourcePtyDataFrame
   | AgentGraphChangedFrame
@@ -221,6 +246,7 @@ const SUBSCRIPTION_OPEN_ERRORS = [
   'operation_unavailable',
   'not_found',
   'operation_conflict',
+  'persistence_failed',
   'internal_failure',
 ] as const;
 
@@ -239,6 +265,24 @@ export const SESSION_CONTINUITY_OPERATION_SPECS = {
     errors: SUBSCRIPTION_OPEN_ERRORS,
     decodeInput: decodeSubscriptionOpenInput,
     decodeOutput: decodeSubscriptionOpenResult,
+    assertOutputForInput: (input, output) => {
+      if (output.snapshot.session.sessionId !== input.sessionId) {
+        throw invalidProtocolFrame('Session subscription opened for a different Session');
+      }
+      if (
+        input.transcript.kind === 'none' ? output.transcript !== null : output.transcript === null
+      ) {
+        throw invalidProtocolFrame('Session subscription transcript policy changed');
+      }
+      if (
+        input.transcript.kind === 'tail' &&
+        output.transcript &&
+        output.transcript.durable.rawBytes + output.transcript.overlay.rawBytes >
+          input.transcript.maxBytes
+      ) {
+        throw invalidProtocolFrame('Session transcript bootstrap exceeds requested byte limit');
+      }
+    },
   }),
   'subscription.close': defineOperation({
     mode: 'control',
@@ -296,6 +340,21 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
       sessionId: requireEntityId(record.sessionId, 'sessionId'),
       runId: requireEntityId(record.runId, 'runId'),
       event: decodeSessionToolEvent(record.event),
+    };
+  } else if (record.kind === 'subscription.transcript_advanced') {
+    assertExactKeys(record, 'Session transcript advanced frame', [
+      'kind',
+      'hostEpoch',
+      'subscriptionId',
+      'sequence',
+      'sessionId',
+      'throughSequence',
+    ]);
+    frame = {
+      kind: record.kind,
+      ...envelope,
+      sessionId: requireEntityId(record.sessionId, 'sessionId'),
+      throughSequence: requireCount(record.throughSequence, 'Session transcript watermark'),
     };
   } else if (record.kind === 'subscription.agent_graph_changed') {
     assertExactKeys(record, 'Agent graph changed frame', [
@@ -409,6 +468,7 @@ export function isSubscriptionFrameKind(value: unknown): value is SubscriptionFr
     value === 'subscription.session_projection' ||
     value === 'subscription.session_delta' ||
     value === 'subscription.session_event' ||
+    value === 'subscription.transcript_advanced' ||
     value === 'subscription.session_domain_changed' ||
     value === 'subscription.runtime_resource_pty_data' ||
     value === 'subscription.agent_graph_changed' ||
@@ -463,16 +523,39 @@ export function decodeSessionContinuitySnapshot(value: unknown): SessionContinui
 }
 
 function decodeSubscriptionOpenInput(value: unknown): SubscriptionOpenInput {
-  const record = requireExactRecord(value, 'subscription.open input', ['sessionId']);
-  return { sessionId: requireEntityId(record.sessionId, 'sessionId') };
+  const record = requireExactRecord(value, 'subscription.open input', ['sessionId', 'transcript']);
+  const transcript = requireRecord(record.transcript, 'subscription transcript policy');
+  if (transcript.kind === 'none') {
+    requireExactRecord(transcript, 'subscription transcript policy', ['kind']);
+    return {
+      sessionId: requireEntityId(record.sessionId, 'sessionId'),
+      transcript: { kind: 'none' },
+    };
+  }
+  const tail = requireExactRecord(transcript, 'subscription transcript policy', [
+    'kind',
+    'maxBytes',
+  ]);
+  if (tail.kind !== 'tail') throw invalidProtocolFrame('Invalid subscription transcript policy');
+  const maxBytes = requireCount(tail.maxBytes, 'Session transcript bootstrap byte limit');
+  if (maxBytes < 2 || maxBytes > SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES) {
+    throw invalidProtocolFrame('Invalid Session transcript bootstrap byte limit');
+  }
+  return {
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    transcript: { kind: 'tail', maxBytes },
+  };
 }
 
 function decodeSubscriptionOpenResult(value: unknown): SubscriptionOpenResult {
+  requireEncodedByteLimit(value, 'subscription.open result', SUBSCRIPTION_OPEN_RESULT_MAX_BYTES);
   const record = requireExactRecord(value, 'subscription.open result', [
     'hostEpoch',
     'subscriptionId',
     'nextSequence',
     'snapshot',
+    'activeAssistantStreams',
+    'transcript',
   ]);
   const hostEpoch = requireId(record.hostEpoch, 'hostEpoch');
   const snapshot = decodeSessionContinuitySnapshot(record.snapshot);
@@ -482,7 +565,51 @@ function decodeSubscriptionOpenResult(value: unknown): SubscriptionOpenResult {
     subscriptionId: requireId(record.subscriptionId, 'subscriptionId'),
     nextSequence: requirePositiveCount(record.nextSequence, 'nextSequence'),
     snapshot,
+    activeAssistantStreams: decodeActiveAssistantStreams(record.activeAssistantStreams, snapshot),
+    transcript:
+      record.transcript === null ? null : decodeSessionTranscriptBootstrap(record.transcript),
   };
+}
+
+function decodeActiveAssistantStreams(
+  value: unknown,
+  snapshot: SessionContinuitySnapshot,
+): SessionAssistantStreamIdentity[] {
+  if (!Array.isArray(value)) {
+    throw invalidProtocolFrame('Invalid active Session assistant streams');
+  }
+  const root = snapshot.rootTurn;
+  const identities = value.map((candidate): SessionAssistantStreamIdentity => {
+    const record = requireExactRecord(candidate, 'active Session assistant stream', [
+      'kind',
+      'turnId',
+      'messageId',
+    ]);
+    if (record.kind !== 'text' && record.kind !== 'thinking') {
+      throw invalidProtocolFrame('Invalid active Session assistant stream kind');
+    }
+    const kind = record.kind;
+    const identity: SessionAssistantStreamIdentity = {
+      kind,
+      turnId: requireEntityId(record.turnId, 'turnId'),
+      messageId: requireEntityId(record.messageId, 'messageId'),
+    };
+    if (
+      !root ||
+      root.status === 'completed' ||
+      root.status === 'failed' ||
+      root.status === 'cancelled' ||
+      identity.turnId !== root.turnId
+    ) {
+      throw invalidProtocolFrame('Active Session assistant stream has no active root Turn');
+    }
+    return identity;
+  });
+  const keys = identities.map(({ kind, messageId }) => `${kind}\0${messageId}`);
+  if (new Set(keys).size !== keys.length) {
+    throw invalidProtocolFrame('Duplicate active Session assistant stream');
+  }
+  return identities;
 }
 
 function decodeSubscriptionCloseInput(value: unknown): SubscriptionCloseInput {
@@ -504,7 +631,18 @@ function decodeEnvelope(record: Record<string, unknown>): SubscriptionEnvelope {
 }
 
 function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
-  const record = requireExactRecord(value, 'Session assistant delta', [
+  const record = requireRecord(value, 'Session assistant delta');
+  assertAllowedKeys(record, 'Session assistant delta', [
+    'kind',
+    'turnId',
+    'runId',
+    'messageId',
+    'startOffset',
+    'text',
+    'reset',
+    'complete',
+  ]);
+  assertRequiredKeys(record, 'Session assistant delta', [
     'kind',
     'turnId',
     'runId',
@@ -515,17 +653,34 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
   if (record.kind !== 'text' && record.kind !== 'thinking') {
     throw invalidProtocolFrame('Invalid Session assistant delta kind');
   }
+  if (record.complete !== undefined && record.complete !== true) {
+    throw invalidProtocolFrame('Invalid Session assistant delta completion');
+  }
+  if (record.reset !== undefined && record.reset !== true) {
+    throw invalidProtocolFrame('Invalid Session assistant delta reset');
+  }
+  const startOffset = requireCount(record.startOffset, 'Session assistant delta start offset');
+  if (record.reset === true && startOffset !== 0) {
+    throw invalidProtocolFrame('Session assistant delta reset must start at offset zero');
+  }
   return {
     kind: record.kind,
     turnId: requireEntityId(record.turnId, 'turnId'),
     runId: requireEntityId(record.runId, 'runId'),
     messageId: requireEntityId(record.messageId, 'messageId'),
-    startOffset: requireCount(record.startOffset, 'Session assistant delta start offset'),
-    text: requireUtf8BoundedString(
-      record.text,
-      'Session assistant delta text',
-      SESSION_LIVE_DELTA_MAX_BYTES,
-    ),
+    startOffset,
+    // A completion may have no unseen suffix. Its empty frame closes the
+    // already accumulated content without resending the full assistant text.
+    text:
+      record.complete === true && record.text === ''
+        ? ''
+        : requireUtf8BoundedString(
+            record.text,
+            'Session assistant delta text',
+            SESSION_LIVE_DELTA_MAX_BYTES,
+          ),
+    ...(record.reset === true ? { reset: true as const } : {}),
+    ...(record.complete === true ? { complete: true as const } : {}),
   };
 }
 
@@ -809,17 +964,7 @@ function requireToolActivityKind(value: unknown): ToolActivityKind {
 }
 
 function requireSessionLifecycleStatus(value: unknown): SessionLifecycleStatus {
-  if (
-    value === 'active' ||
-    value === 'running' ||
-    value === 'waiting_for_user' ||
-    value === 'blocked' ||
-    value === 'review' ||
-    value === 'done' ||
-    value === 'archived' ||
-    value === 'aborted'
-  )
-    return value;
+  if (isSessionStatus(value)) return value;
   throw invalidProtocolFrame('Invalid Session lifecycle status');
 }
 

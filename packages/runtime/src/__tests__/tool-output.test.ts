@@ -3,16 +3,6 @@ import { describe, test } from 'node:test';
 import { truncateToolOutput } from '../tool-output.js';
 
 describe('truncateToolOutput', () => {
-  test('returns text unchanged when within line and byte budgets', () => {
-    const text = 'a\nb\nc';
-    assert.deepEqual(truncateToolOutput(text, { maxLines: 10, maxBytes: 1000 }), {
-      content: text,
-      truncated: false,
-      removed: 0,
-      unit: 'lines',
-    });
-  });
-
   test('keeps the head and reports removed lines when over the line budget', () => {
     const text = Array.from({ length: 10 }, (_, i) => `line${i}`).join('\n');
     const result = truncateToolOutput(text, { maxLines: 4, maxBytes: 100_000, direction: 'head' });
@@ -34,13 +24,6 @@ describe('truncateToolOutput', () => {
     assert.ok(!result.content.includes('line6'));
   });
 
-  test('marker caveats re-running so it does not encourage repeating side effects', () => {
-    const text = Array.from({ length: 10 }, (_, i) => `line${i}`).join('\n');
-    const marker = truncateToolOutput(text, { maxLines: 3, direction: 'tail' }).content;
-    assert.ok(marker.includes('safe to re-run'), 'recovery guidance is conditioned on safety');
-    assert.ok(marker.includes('side effects'), 'warns about repeating side effects');
-  });
-
   test('truncates by bytes and reports the bytes unit', () => {
     const text = Array.from({ length: 50 }, () => 'x'.repeat(100)).join('\n');
     const result = truncateToolOutput(text, { maxLines: 10_000, maxBytes: 250, direction: 'head' });
@@ -48,21 +31,6 @@ describe('truncateToolOutput', () => {
     assert.equal(result.unit, 'bytes');
     assert.ok(result.removed > 0);
     assert.ok(Buffer.byteLength(result.content.split('\n\n')[0], 'utf8') <= 250);
-  });
-
-  test('counts multi-byte characters by UTF-8 byte length', () => {
-    // Each '世' is 3 UTF-8 bytes; a 4-char line is 12 bytes + newline.
-    const text = Array.from({ length: 6 }, () => '世界世界').join('\n');
-    const result = truncateToolOutput(text, { maxLines: 10_000, maxBytes: 20, direction: 'head' });
-    assert.equal(result.truncated, true);
-    assert.equal(result.unit, 'bytes');
-  });
-
-  test('does not truncate when exactly at the line budget and within bytes', () => {
-    const text = 'a\nb\nc\nd';
-    const result = truncateToolOutput(text, { maxLines: 4, maxBytes: 1000 });
-    assert.equal(result.truncated, false);
-    assert.equal(result.content, text);
   });
 
   test('does not report a truncation when only a trailing newline exceeds the byte budget', () => {

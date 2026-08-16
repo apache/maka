@@ -3,17 +3,13 @@ import type {
   AgentRunHeader,
   AgentRunStore,
   EmittedAgentRunEvent,
-  RuntimeEvent,
-  RuntimeEventStore,
-  StorageRef,
-  StoredMessage,
-  ToolResultContent,
-} from '@maka/core';
-import {
-  decodeCanonicalToolResultContent,
-  isEmittedAgentRunEventType,
-  isSessionInlineRun,
-} from '@maka/core';
+} from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type { StorageRef, ToolResultContent } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
+import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { isEmittedAgentRunEventType, isSessionInlineRun } from '@maka/core/agent-run';
 import { TOOL_RECOVERY_DECISION_FACT_KIND } from '@maka/core/tool-recovery-fact';
 import {
   buildHistoryCompactCheckpoint,
@@ -617,6 +613,10 @@ function cloneAgentRunEvent(
     if (!validateHistoryCompactCheckpointShape(sourceCheckpoint, event.sessionId)) {
       throw new Error(`Cannot copy invalid history compact checkpoint ${event.id}`);
     }
+    // Conversation copies carry the canonical raw RuntimeEvents and can create
+    // a fresh checkpoint on demand. Do not export opaque provider state into a
+    // new session or degrade it into user-visible placeholder text.
+    if (sourceCheckpoint.version === 3) return null;
     const match = matchHistoryCompactCheckpointPrefix(sourceCheckpoint, sourceCompactableEvents);
     if (match.reason) {
       throw new Error(`Cannot copy unmatched history compact checkpoint ${event.id}`);

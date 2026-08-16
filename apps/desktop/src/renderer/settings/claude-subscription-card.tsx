@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { type SubscriptionAccountState, type UiLocale } from '@maka/core';
+import { type SubscriptionAccountState } from '@maka/core/oauth-subscription';
+import { type UiLocale } from '@maka/core/ui-locale';
 import { FieldStatus, ProgressBar, StatusDot } from '@astryxdesign/core';
 import {
   Banner,

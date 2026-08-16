@@ -1,17 +1,14 @@
-import type {
-  CollaborationMode,
-  InlineReference,
-  OrchestrationMode,
-  SandboxBoundaryResponse,
-  QuoteRef,
-  SessionSummary,
-  StoredMessage,
-  ThinkingLevel,
-  TurnOrchestration,
-  UiLocale,
-  UserQuestionResponse,
-} from '@maka/core';
-import { DEFAULT_SESSION_NAME } from '@maka/core';
+import type { CollaborationMode } from '@maka/core/collaboration';
+import type { InlineReference, QuoteRef } from '@maka/core/events';
+import type { OrchestrationMode } from '@maka/core/orchestration';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { StoredMessage } from '@maka/core/session';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { TurnOrchestration } from '@maka/core/runtime-inputs';
+import type { UiLocale } from '@maka/core/ui-locale';
+import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
+import type { UserQuestionResponse } from '@maka/core/user-question';
+import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
   armLiveTurn,
   dequeueInteractionByRequestId,
@@ -31,6 +28,7 @@ import {
   showSkillInvocationFeedback,
   skillInvocationDisplayText,
 } from './skill-invocation-feedback.js';
+import type { DesktopTranscriptRangeController } from './desktop-transcript-range-store.js';
 
 export type PendingAttachment = {
   /** Unique per staged item; keys the preview cache and its cleanup, so a
@@ -39,7 +37,7 @@ export type PendingAttachment = {
   stagingKey: string;
   displayName: string;
   mimeType?: string;
-  kind: import('@maka/core').AttachmentRef['kind'];
+  kind: import('@maka/core/events').AttachmentRef['kind'];
   size: number;
   /** Composer drawer thumbnail source for image attachments. Merged in from
    *  the preview cache only after the URL has actually decoded as an image,
@@ -65,12 +63,9 @@ import {
   noRealConnectionReasonFromError,
   noRealConnectionSetupDescription,
 } from './model-connection-errors.js';
-import { readSettledMessages, type RefreshMessagesOptions } from './session-message-settlement.js';
+import type { RefreshMessagesOptions } from './session-message-settlement.js';
 
 export type { RefreshMessagesOptions };
-
-const USER_MESSAGE_VISIBLE_TIMEOUT_MS = 1_200;
-const USER_MESSAGE_VISIBLE_POLL_MS = 40;
 
 type ComposerImportOwner = {
   sessionId: string | undefined;
@@ -152,11 +147,12 @@ export function createAppShellChatActions(deps: {
   isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
   markSessionReadLocally: (sessionId: string, readMessages: readonly StoredMessage[]) => void;
   messageRetryPendingRef: RefBox<Set<string>>;
-  refreshSessions: () => Promise<SessionSummary[]>;
+  refreshSessions: () => Promise<DesktopSessionSummary[]>;
   setActiveId: (sessionId: string | undefined) => void;
   setMessageLoadErrorBySession: MessageLoadErrorUpdater;
   setMessageRetryPendingBySession: BooleanRecordUpdater;
   setMessages: MessageListUpdater;
+  transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
   setNavSelection: (selection: NavSelection) => void;
   /** #646: arm the "正在处理…" indicator locally at send() — the model-wait
    * window opens before any SessionEvent arrives (turn_started is not one). */
@@ -167,7 +163,7 @@ export function createAppShellChatActions(deps: {
   onExecutionBoundaryChanged?: (sessionId: string) => void;
   showModelSetupToast: (description: string, reason?: string) => void;
   toastApi: ToastApi;
-  upsertSessionSummary: (session: SessionSummary) => void;
+  upsertSessionSummary: (session: DesktopSessionSummary) => void;
   newChatModel: PendingNewChatModel;
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
   newChatCollaborationMode: CollaborationMode;
@@ -190,6 +186,7 @@ export function createAppShellChatActions(deps: {
     setMessageLoadErrorBySession,
     setMessageRetryPendingBySession,
     setMessages,
+    transcriptRangeRef,
     setNavSelection,
     setLiveTurnBySession,
     setInteractionBySession,
@@ -209,7 +206,7 @@ export function createAppShellChatActions(deps: {
   function optimisticUserMessage(
     turnId: string,
     text: string,
-    attachments: readonly import('@maka/core').AttachmentRef[] = [],
+    attachments: readonly import('@maka/core/events').AttachmentRef[] = [],
     quotes: readonly QuoteRef[] = [],
     inlineReferences: readonly InlineReference[] = [],
   ): StoredMessage {
@@ -229,7 +226,7 @@ export function createAppShellChatActions(deps: {
     sessionId: string,
     turnId: string,
     text: string,
-    attachments: readonly import('@maka/core').AttachmentRef[] = [],
+    attachments: readonly import('@maka/core/events').AttachmentRef[] = [],
     options: {
       replaceCurrentMessages?: boolean;
       quotes?: readonly QuoteRef[];
@@ -290,6 +287,40 @@ export function createAppShellChatActions(deps: {
       delete next[sessionId];
       return next;
     });
+  }
+
+  // Rename only the exact unconfirmed arm this send created. Host events can
+  // beat the IPC response (main emits the sessions-changed nudge before it
+  // returns), and an authoritative projection that already arrived for the
+  // Host-chosen turn must not be replaced with a fresh waiting arm.
+  function rebindTurnActive(sessionId: string, fromTurnId: string, toTurnId: string): void {
+    setLiveTurnBySession((current) => {
+      const active = current[sessionId];
+      if (!active || active.turnId !== fromTurnId || !active.unconfirmed || active.phase !== 'waiting') {
+        return current;
+      }
+      return { ...current, [sessionId]: armLiveTurn(toTurnId) };
+    });
+  }
+
+  // One interpretation of a successful sessions:send for both the new-chat and
+  // existing-session branches: a busy-raced send can come back `steered` (this
+  // send owns no turn — the steering_message event renders the text) or under
+  // a Host-chosen turnId. Returns the turn the send owns, if any.
+  function settleSendBookkeeping(
+    sessionId: string,
+    requestedTurnId: string,
+    sendResult: { steered?: true; turnId?: string },
+  ): string | undefined {
+    if (sendResult.steered) {
+      disarmTurnActive(sessionId, requestedTurnId);
+      return undefined;
+    }
+    const startedTurnId = sendResult.turnId ?? requestedTurnId;
+    if (startedTurnId !== requestedTurnId) {
+      rebindTurnActive(sessionId, requestedTurnId, startedTurnId);
+    }
+    return startedTurnId;
   }
 
   async function send(
@@ -385,33 +416,51 @@ export function createAppShellChatActions(deps: {
           return false;
         }
         unsentSessionId = undefined;
+        const settledTurnId = settleSendBookkeeping(session.id, turnId, sendResult);
+        if (settledTurnId !== undefined) optimisticTurnId = settledTurnId;
         options.onSessionResolved?.(session.id);
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
           showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
         }
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
-          setNavSelection({ section: 'sessions', filter: 'chats' });
+          setNavSelection({ section: 'sessions' });
           setActiveId(session.id);
-          showOptimisticUserMessage(
-            session.id,
-            turnId,
-            options.displayText ??
-              skillInvocationDisplayText(text, sendResult.skillInvocation),
-            sendResult.attachments,
-            {
-              replaceCurrentMessages: true,
-              ...(quotes && quotes.length > 0 ? { quotes } : {}),
-              inlineReferences: sendResult.inlineReferences ?? [],
-            },
-          );
-        }
-        if (activeIdRef.current === session.id) {
-          await refreshMessagesUntilTurn(session.id, turnId);
+          if (settledTurnId !== undefined) {
+            showOptimisticUserMessage(
+              session.id,
+              settledTurnId,
+              options.displayText ??
+                skillInvocationDisplayText(text, sendResult.skillInvocation),
+              sendResult.attachments,
+              {
+                replaceCurrentMessages: true,
+                ...(quotes && quotes.length > 0 ? { quotes } : {}),
+                inlineReferences: sendResult.inlineReferences ?? [],
+              },
+            );
+          }
         }
         await refreshSessions();
         return true;
       }
       const sessionId = initialSessionId;
+      const transcript = transcriptRangeRef.current;
+      if (transcript) {
+        let hasNewer = false;
+        try {
+          const range = transcript.store.range();
+          hasNewer = range.sessionId === sessionId && range.hasNewer;
+        } catch {
+          // An unopened transcript is not a sparse historical view.
+        }
+        if (hasNewer) {
+          await transcript.loadLatest();
+          if (activeIdRef.current !== sessionId || transcriptRangeRef.current !== transcript) {
+            return false;
+          }
+          setMessages([...transcript.store.snapshot().messages]);
+        }
+      }
       optimisticSessionId = sessionId;
       optimisticTurnId = turnId;
       armTurnActive(sessionId, turnId);
@@ -438,13 +487,16 @@ export function createAppShellChatActions(deps: {
         disarmTurnActive(sessionId, turnId);
         return false;
       }
+      const startedTurnId = settleSendBookkeeping(sessionId, turnId, sendResult);
       options.onSessionResolved?.(sessionId);
+      if (startedTurnId === undefined) return true;
+      optimisticTurnId = startedTurnId;
       if (activeIdRef.current === sessionId) {
         showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
       }
       showOptimisticUserMessage(
         sessionId,
-        turnId,
+        startedTurnId,
         options.displayText ??
           skillInvocationDisplayText(text, sendResult.skillInvocation),
         sendResult.attachments,
@@ -453,7 +505,6 @@ export function createAppShellChatActions(deps: {
           inlineReferences: sendResult.inlineReferences ?? [],
         },
       );
-      await refreshMessagesUntilTurn(sessionId, turnId);
       return true;
     } catch (error) {
       await discardUnsentSession();
@@ -480,7 +531,10 @@ export function createAppShellChatActions(deps: {
       const feedbackSessionId = optimisticSessionId ?? initialSessionId;
       const sendStillOwnsCurrentSurface =
         (feedbackSessionId !== undefined &&
-          isShellSurfaceOwnerActive({ ...sendOwner, sessionId: feedbackSessionId })) ||
+          isShellSurfaceOwnerActive({
+            ...sendOwner,
+            sessionId: feedbackSessionId,
+          })) ||
         (newChatOwner !== null && isNewChatSendSurfaceActive(newChatOwner));
       if (!sendStillOwnsCurrentSurface) return false;
       if (isNoRealConnectionError(error)) {
@@ -547,19 +601,35 @@ export function createAppShellChatActions(deps: {
 
   async function refreshMessages(sessionId: string, options: RefreshMessagesOptions = {}): Promise<boolean> {
     try {
-      const result = await readSettledMessages(sessionId, options);
-      const next = result.messages;
-      if (activeIdRef.current === sessionId) {
-        markSessionReadLocally(sessionId, next);
-        setMessages(next);
-        setMessageLoadErrorBySession((current) => {
-          if (!current[sessionId]) return current;
-          const updated = { ...current };
-          delete updated[sessionId];
-          return updated;
-        });
+      if (activeIdRef.current !== sessionId) return false;
+      const controller = transcriptRangeRef.current;
+      if (!controller) return false;
+      await controller.ready();
+      if (activeIdRef.current !== sessionId || transcriptRangeRef.current !== controller) return false;
+      const requiredMessageId = options.requiredAssistantMessageId;
+      if (
+        requiredMessageId !== undefined &&
+        !controller.store.hasDurableMessage(requiredMessageId) &&
+        !(await controller.waitForDurableMessage(requiredMessageId, 480))
+      ) {
+        return false;
       }
-      return result.settled;
+      if (activeIdRef.current !== sessionId || transcriptRangeRef.current !== controller) {
+        return false;
+      }
+      const range = controller.store;
+      const snapshot = range.snapshot();
+      if (snapshot.sessionId !== sessionId) return false;
+      const next = [...snapshot.messages];
+      markSessionReadLocally(sessionId, next);
+      setMessages(next);
+      setMessageLoadErrorBySession((current) => {
+        if (!current[sessionId]) return current;
+        const updated = { ...current };
+        delete updated[sessionId];
+        return updated;
+      });
+      return requiredMessageId === undefined || range.hasDurableMessage(requiredMessageId);
     } catch (error) {
       if (activeIdRef.current === sessionId) {
         const message = messageRefreshErrorMessage(error, uiLocale);
@@ -575,39 +645,18 @@ export function createAppShellChatActions(deps: {
   async function retryMessages(sessionId: string) {
     if (!addPendingSessionAction(sessionId, messageRetryPendingRef, setMessageRetryPendingBySession)) return;
     try {
-      await refreshMessages(sessionId);
+      if (activeIdRef.current !== sessionId) return;
+      await transcriptRangeRef.current?.reload();
+    } catch (error) {
+      if (activeIdRef.current !== sessionId) return;
+      const message = messageRefreshErrorMessage(error, uiLocale);
+      setMessageLoadErrorBySession((current) => ({
+        ...current,
+        [sessionId]: message,
+      }));
+      toastApi.error(copy.refreshFailedTitle, message);
     } finally {
       clearPendingSessionAction(sessionId, messageRetryPendingRef, setMessageRetryPendingBySession);
-    }
-  }
-
-  async function refreshMessagesUntilTurn(sessionId: string, turnId: string): Promise<void> {
-    const deadline = Date.now() + USER_MESSAGE_VISIBLE_TIMEOUT_MS;
-    while (Date.now() <= deadline) {
-      // PR-FE-BUG-HUNT-4 (kenji bug-hunt 2026-06-24 LOW): bail if the
-      // user navigated away from the session this poll was started for.
-      // Previously the loop kept burning IPC bandwidth for the full
-      // 1200ms after a session switch (the setState was gated, but the
-      // readMessages call still fired every 40ms). Now we stop the
-      // polling cycle itself.
-      if (activeIdRef.current !== sessionId) return;
-      try {
-        const next = await window.maka.sessions.readMessages(sessionId);
-        if (activeIdRef.current !== sessionId) return;
-        const hasSentUserTurn = next.some((message) => message.type === 'user' && message.turnId === turnId);
-        if (hasSentUserTurn) {
-          markSessionReadLocally(sessionId, next);
-          setMessages(next);
-          return;
-        }
-      } catch {
-        // Keep the current visible messages while the bounded retry loop
-        // waits for the async send path to persist the first user message.
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, USER_MESSAGE_VISIBLE_POLL_MS));
-    }
-    if (activeIdRef.current === sessionId) {
-      await refreshMessages(sessionId);
     }
   }
 

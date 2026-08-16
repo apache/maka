@@ -123,6 +123,12 @@ function createWriterFacade(
     readExtractionCursor: (sessionId) => run(() => store.readExtractionCursor(sessionId)),
     readPendingExtractionFailure: (sessionId) =>
       run(() => store.readPendingExtractionFailure(sessionId)),
+    recordCompactionPolicyDenial: (denial) => {
+      const snapshot = Object.freeze({ ...denial });
+      return run(() => store.recordCompactionPolicyDenial(snapshot));
+    },
+    readCompactionPolicyDenials: (sessionId) =>
+      run(() => store.readCompactionPolicyDenials(sessionId)),
     settleExtractionFailure: (request) => {
       const snapshot = Object.freeze({ ...request });
       return run(() => store.settleExtractionFailure(snapshot));
@@ -157,7 +163,11 @@ function snapshotCommitExtractionRequest(
     items: Object.freeze(request.items.map(snapshotItemWrite)),
     requestedItemIndexes: Object.freeze([...request.requestedItemIndexes]),
     ...(request.noOpReason ? { noOpReason: request.noOpReason } : {}),
+    ...(request.skipReason ? { skipReason: request.skipReason } : {}),
     trigger: request.trigger,
+    ...(request.compactionCheckpointId
+      ? { compactionCheckpointId: request.compactionCheckpointId }
+      : {}),
   });
 }
 

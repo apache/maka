@@ -1,6 +1,7 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { decodeClientFrame, decodeHostFrame, RuntimeHostProtocolError } from '../protocol/index.js';
+import { decodeClientFrame, decodeHostFrame } from '../protocol/index.js';
 
 test('context operations preserve bounded exact wire values', () => {
   assert.deepEqual(
@@ -39,7 +40,11 @@ test('context operations preserve bounded exact wire values', () => {
         completedAt: 10,
         inputTokens: 20,
         contextWindow: 128_000,
-        segments: [{ kind: 'messages', bytes: 80, estimatedTokens: 20 }],
+        composition: {
+          segments: [{ kind: 'messages', bytes: 80 }],
+          tools: [{ name: 'Bash', bytes: 40 }],
+          remainingTools: { count: 3, bytes: 90 },
+        },
         compaction: {
           kind: 'history',
           phase: 'pre_turn',
@@ -60,7 +65,11 @@ test('context operations preserve bounded exact wire values', () => {
         completedAt: 10,
         inputTokens: 20,
         contextWindow: 128_000,
-        segments: [{ kind: 'messages', bytes: 80, estimatedTokens: 20 }],
+        composition: {
+          segments: [{ kind: 'messages', bytes: 80 }],
+          tools: [{ name: 'Bash', bytes: 40 }],
+          remainingTools: { count: 3, bytes: 90 },
+        },
         compaction: {
           kind: 'history',
           phase: 'pre_turn',
@@ -119,7 +128,6 @@ test('context operations reject open shapes and invalid diagnostics', () => {
           modelId: 'openrouter/free',
           completedAt: 10,
           contextWindow: 0,
-          segments: [],
         },
       }),
     isProtocolError,

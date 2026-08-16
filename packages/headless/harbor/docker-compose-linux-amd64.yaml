@@ -1,9 +1,0 @@
-services:
-  main:
-    platform: linux/amd64
-    # Docker Desktop injects host.docker.internal; native Linux Docker does not.
-    # In-container agents dial that name to reach the host credential proxy, so
-    # without this mapping every Codex and Claude Code cell fails before its
-    # first model step -- Codex as a connect error, Claude Code as ENOTFOUND.
-    extra_hosts:
-      - 'host.docker.internal:host-gateway'

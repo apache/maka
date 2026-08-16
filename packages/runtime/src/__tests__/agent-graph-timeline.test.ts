@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import {
-  AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
-  type AgentGraphTimelineMetadataSnapshot,
-  type AgentRunHeader,
-  type RuntimeEvent,
-} from '@maka/core';
+import { AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION } from '@maka/core/agent-graph-supervisor-wake';
+import { type AgentGraphTimelineMetadataSnapshot } from '@maka/core/agent-graph-timeline';
+import { type AgentRunHeader } from '@maka/core/agent-run';
+import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { createSqliteSessionMetadataStore } from '@maka/storage';
 import {
   buildAgentGraphTimeline,

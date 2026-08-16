@@ -1,3 +1,4 @@
+import type { ModelCallCommit } from '@maka/core/agent-run';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -59,7 +60,12 @@ describe('strict provider-request usage', () => {
 
   test('marks OpenAI cache miss as derived and leaves unsupported cache-write missing', () => {
     const usage = telemetry.strictProviderRequestUsage({
-      inputTokens: { total: 100, noCache: 30, cacheRead: 70, cacheWrite: undefined },
+      inputTokens: {
+        total: 100,
+        noCache: 30,
+        cacheRead: 70,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 20, text: 15, reasoning: 5 },
       raw: {
         prompt_tokens: 100,
@@ -105,7 +111,12 @@ describe('strict provider-request usage', () => {
 
   test('preserves Google usage and derives cache miss from raw usage metadata', () => {
     const usage = telemetry.strictProviderRequestUsage({
-      inputTokens: { total: 100, noCache: 60, cacheRead: 40, cacheWrite: undefined },
+      inputTokens: {
+        total: 100,
+        noCache: 60,
+        cacheRead: 40,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 20, text: 15, reasoning: 5 },
       raw: {
         promptTokenCount: 100,
@@ -128,7 +139,12 @@ describe('strict provider-request usage', () => {
 
   test('does not inherit Google adapter zeroes for omitted raw cache and reasoning fields', () => {
     const usage = telemetry.strictProviderRequestUsage({
-      inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: undefined },
+      inputTokens: {
+        total: 100,
+        noCache: 100,
+        cacheRead: 0,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 20, text: 20, reasoning: 0 },
       raw: {
         promptTokenCount: 100,
@@ -141,7 +157,12 @@ describe('strict provider-request usage', () => {
 
   test('does not turn omitted provider cache details into zero-valued evidence', () => {
     const usage = telemetry.strictProviderRequestUsage({
-      inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: undefined },
+      inputTokens: {
+        total: 100,
+        noCache: 100,
+        cacheRead: 0,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 20, text: 20, reasoning: 0 },
       raw: { prompt_tokens: 100, completion_tokens: 20 },
     });
@@ -151,7 +172,12 @@ describe('strict provider-request usage', () => {
 
   test('does not inherit normalized zero totals when the raw provider fields are missing', () => {
     const usage = telemetry.strictProviderRequestUsage({
-      inputTokens: { total: 0, noCache: 0, cacheRead: 10, cacheWrite: undefined },
+      inputTokens: {
+        total: 0,
+        noCache: 0,
+        cacheRead: 10,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 0, text: 0, reasoning: 0 },
       raw: { prompt_tokens_details: { cached_tokens: 10 } },
     });
@@ -164,7 +190,12 @@ describe('strict provider-request usage', () => {
 
   test('keeps normalized totals when no raw provider payload is available', () => {
     const usage = telemetry.strictProviderRequestUsage({
-      inputTokens: { total: 8, noCache: 8, cacheRead: undefined, cacheWrite: undefined },
+      inputTokens: {
+        total: 8,
+        noCache: 8,
+        cacheRead: undefined,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 3, text: 3, reasoning: undefined },
     });
 
@@ -173,7 +204,12 @@ describe('strict provider-request usage', () => {
 
   test('does not derive cache miss from inconsistent provider components', () => {
     const usage = telemetry.strictProviderRequestUsage({
-      inputTokens: { total: 10, noCache: 0, cacheRead: 20, cacheWrite: undefined },
+      inputTokens: {
+        total: 10,
+        noCache: 0,
+        cacheRead: 20,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 0, text: 0, reasoning: 0 },
       raw: {
         prompt_tokens: 10,
@@ -321,8 +357,12 @@ describe('provider request tracker', () => {
       requestHash: string;
       serializedRequest: string;
     }> = [];
-    const attempts: Array<{ step: number; attempt: number; status: string; captureId: string }> =
-      [];
+    const attempts: Array<{
+      step: number;
+      attempt: number;
+      status: string;
+      captureId: string;
+    }> = [];
     const Tracker = Reflect.get(telemetry, 'ProviderRequestTracker') as unknown as
       | (new (
           input: Record<string, unknown>,
@@ -380,7 +420,12 @@ describe('provider request tracker', () => {
             type: 'finish',
             finishReason: { unified: 'stop', raw: 'stop' },
             usage: {
-              inputTokens: { total: 10, noCache: 6, cacheRead: 4, cacheWrite: undefined },
+              inputTokens: {
+                total: 10,
+                noCache: 6,
+                cacheRead: 4,
+                cacheWrite: undefined,
+              },
               outputTokens: { total: 2, text: 2, reasoning: 0 },
               raw: {
                 prompt_tokens: 10,
@@ -404,8 +449,18 @@ describe('provider request tracker', () => {
         captureId,
       })),
       [
-        { step: 2, attempt: 1, status: 'failed', captureId: captures[0]!.captureId },
-        { step: 2, attempt: 2, status: 'completed', captureId: captures[0]!.captureId },
+        {
+          step: 2,
+          attempt: 1,
+          status: 'failed',
+          captureId: captures[0]!.captureId,
+        },
+        {
+          step: 2,
+          attempt: 2,
+          status: 'completed',
+          captureId: captures[0]!.captureId,
+        },
       ],
     );
     assert.equal((attempts[1] as Record<string, unknown>).cacheReadInputSource, 'provider');
@@ -472,6 +527,136 @@ describe('provider request tracker', () => {
         },
       ],
     );
+  });
+
+  test('redacts native compaction state from provider request captures', async () => {
+    const captures: Array<{ serializedRequest: string }> = [];
+    const tracker = new telemetry.ProviderRequestTracker({
+      traceId: 'compaction-trace',
+      turnId: 'turn-compaction',
+      now: () => 1_000,
+      newId: () => 'compaction-id',
+      persistCapture: async (capture) => {
+        captures.push(capture);
+        return { artifactId: 'compaction-artifact' };
+      },
+      recordAttempt: () => undefined,
+    });
+    const params = {
+      image: new URL('https://example.com/provider-image.png'),
+      prompt: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'custom',
+              kind: 'openai.compaction',
+              providerOptions: {
+                openai: {
+                  itemId: 'cmp_secret',
+                  encryptedContent: 'OPAQUE_ENCRYPTED_STATE',
+                  safeMetadata: 'preserved',
+                },
+                otherProvider: { cacheKey: 'preserved' },
+              },
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'business-call',
+              toolName: 'echo',
+              input: {
+                type: 'custom',
+                kind: 'openai.compaction',
+                providerOptions: {
+                  openai: {
+                    itemId: 'BUSINESS_ITEM_ID',
+                    encryptedContent: 'BUSINESS_OPAQUE_TEXT',
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    await tracker.trackGenerate({
+      providerId: 'openai-codex',
+      modelId: 'gpt-5.3-codex',
+      params,
+      doGenerate: async () => ({ text: 'ok' }),
+    });
+
+    assert.equal(captures.length, 1);
+    assert.doesNotMatch(captures[0]!.serializedRequest, /cmp_secret|OPAQUE_ENCRYPTED_STATE/);
+    assert.deepEqual(JSON.parse(captures[0]!.serializedRequest), {
+      image: 'https://example.com/provider-image.png',
+      prompt: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'custom',
+              kind: 'openai.compaction',
+              providerOptions: {
+                openai: { safeMetadata: 'preserved', redacted: true },
+                otherProvider: { cacheKey: 'preserved' },
+              },
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'business-call',
+              toolName: 'echo',
+              input: {
+                type: 'custom',
+                kind: 'openai.compaction',
+                providerOptions: {
+                  openai: {
+                    itemId: 'BUSINESS_ITEM_ID',
+                    encryptedContent: 'BUSINESS_OPAQUE_TEXT',
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  test('awaits the durable dispatch gate before a non-streaming provider call', async () => {
+    let captured = false;
+    let dispatched = false;
+    const tracker = new telemetry.ProviderRequestTracker({
+      traceId: 'gated-history-trace',
+      turnId: 'gated-history-turn',
+      now: () => 1_000,
+      newId: () => 'gated-history-id',
+      beforeDispatch: async () => {
+        throw new Error('Run Composition store unavailable');
+      },
+      persistCapture: async () => {
+        captured = true;
+        return { artifactId: 'unreachable-artifact' };
+      },
+      recordAttempt: () => {},
+    });
+
+    await assert.rejects(
+      () =>
+        tracker.trackGenerate({
+          providerId: 'openai',
+          modelId: 'gpt-history',
+          params: preparedParams('history summary'),
+          doGenerate: async () => {
+            dispatched = true;
+            return { text: 'unreachable' };
+          },
+        }),
+      /Run Composition store unavailable/u,
+    );
+    assert.equal(captured, false);
+    assert.equal(dispatched, false);
   });
 
   test('captures a changed logical body separately and blocks provider calls on capture failure', async () => {
@@ -677,7 +862,12 @@ function finishPart(): Record<string, unknown> {
     type: 'finish',
     finishReason: { unified: 'stop', raw: 'stop' },
     usage: {
-      inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+      inputTokens: {
+        total: 1,
+        noCache: 1,
+        cacheRead: undefined,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 1, text: 1, reasoning: undefined },
       raw: { input_tokens: 1, output_tokens: 1 },
     },
@@ -699,7 +889,11 @@ function interruptedStream(): ReadableStream<unknown> {
     pull(controller) {
       pulls += 1;
       if (pulls === 1) {
-        controller.enqueue({ type: 'text-delta', id: 'text', delta: 'partial' });
+        controller.enqueue({
+          type: 'text-delta',
+          id: 'text',
+          delta: 'partial',
+        });
       } else {
         controller.error(new Error('stream broke'));
       }
@@ -715,13 +909,15 @@ async function drain(stream: ReadableStream<unknown>): Promise<void> {
 
 describe('canonical model-call accounting', () => {
   function accountingTracker(overrides: {
-    record: (attempt: ModelCallAttempt) => void | Promise<void>;
+    record: ({ attempt }: ModelCallCommit<ModelCallAttempt>) => void | Promise<void>;
     resolveCost?: telemetry.ModelCallAccountingInput['resolveCost'];
     assertReady?: () => void;
     resolveRunId?: () => string | undefined;
     /** Models a deployment with request capture switched off. */
     withoutCapture?: boolean;
     recordAttempt?: (attempt: telemetry.ProviderRequestAttemptRecord) => void;
+    callKind?: ModelCallAttempt['callKind'];
+    historyCompactRoute?: ModelCallAttempt['historyCompactRoute'];
   }): telemetry.ProviderRequestTracker {
     let n = 0;
     return new telemetry.ProviderRequestTracker({
@@ -736,7 +932,10 @@ describe('canonical model-call accounting', () => {
       accounting: {
         sessionId: 'session-1',
         resolveRunId: overrides.resolveRunId ?? (() => 'run-1'),
-        callKind: 'main',
+        callKind: overrides.callKind ?? 'main',
+        ...(overrides.historyCompactRoute
+          ? { historyCompactRoute: overrides.historyCompactRoute }
+          : {}),
         record: overrides.record,
         ...(overrides.resolveCost ? { resolveCost: overrides.resolveCost } : {}),
         ...(overrides.assertReady ? { assertReady: overrides.assertReady } : {}),
@@ -747,8 +946,8 @@ describe('canonical model-call accounting', () => {
   test('emits a decodable priced record for a completed call', async () => {
     const recorded: ModelCallAttempt[] = [];
     const tracker = accountingTracker({
-      record: (a) => {
-        recorded.push(a);
+      record: ({ attempt }) => {
+        recorded.push(attempt);
       },
       resolveCost: () => ({ costUsd: 0.002, pricingRevision: 4 }),
     });
@@ -775,13 +974,65 @@ describe('canonical model-call accounting', () => {
     assert.equal(attempt.attempt, 0);
   });
 
+  test('persists a structured failure fingerprint and the selected compaction route', async () => {
+    const recorded: ModelCallAttempt[] = [];
+    const diagnosticAttempts: telemetry.ProviderRequestAttemptRecord[] = [];
+    const tracker = accountingTracker({
+      callKind: 'history_compact',
+      historyCompactRoute: 'provider_native',
+      record: ({ attempt }) => {
+        recorded.push(attempt);
+      },
+      recordAttempt: (attempt) => {
+        diagnosticAttempts.push(attempt);
+      },
+    });
+    const providerError = Object.assign(new Error('provider payload must not persist'), {
+      name: 'AI_APICallError',
+      statusCode: 429,
+      data: {
+        error: { code: 'rate_limit_exceeded', message: 'private response body' },
+      },
+      responseHeaders: { 'x-request-id': 'req-compact-1' },
+      requestBodyValues: { input: 'private request body' },
+    });
+
+    await assert.rejects(
+      tracker.trackGenerate({
+        providerId: 'openai.responses',
+        modelId: 'gpt-codex-test',
+        params: preparedParams('private prompt'),
+        doGenerate: async () => {
+          throw providerError;
+        },
+      }),
+      (error) => error === providerError,
+    );
+
+    const attempt = decodeModelCallAttempt(recorded[0]);
+    assert.equal(attempt.historyCompactRoute, 'provider_native');
+    assert.equal(attempt.errorClass, 'RateLimit');
+    assert.equal(attempt.httpStatus, 429);
+    assert.equal(attempt.providerCode, 'rate_limit_exceeded');
+    assert.equal(attempt.providerRequestId, 'req-compact-1');
+    assert.equal(attempt.retryable, false);
+    assert.deepEqual(diagnosticAttempts[0]?.failure, {
+      errorClass: 'RateLimit',
+      httpStatus: 429,
+      providerCode: 'rate_limit_exceeded',
+      providerRequestId: 'req-compact-1',
+      retryable: false,
+    });
+    assert.doesNotMatch(JSON.stringify(attempt), /private|prompt|response body/i);
+  });
+
   test('a call the provider reported no usage for records usageBasis missing', async () => {
     // The alternative is a record claiming zero tokens, which is a measurement
     // nobody made. `missing` says the call happened and the meter did not read.
     const recorded: ModelCallAttempt[] = [];
     const tracker = accountingTracker({
-      record: (a) => {
-        recorded.push(a);
+      record: ({ attempt }) => {
+        recorded.push(attempt);
       },
       resolveCost: () => ({ costUsd: 0.002, pricingRevision: 4 }),
     });
@@ -811,8 +1062,8 @@ describe('canonical model-call accounting', () => {
     const attempts: telemetry.ProviderRequestAttemptRecord[] = [];
     const tracker = accountingTracker({
       withoutCapture: true,
-      record: (a) => {
-        recorded.push(a);
+      record: ({ attempt }) => {
+        recorded.push(attempt);
       },
       recordAttempt: (a) => {
         attempts.push(a);
@@ -841,8 +1092,8 @@ describe('canonical model-call accounting', () => {
   test('an unresolvable price records unpriced rather than zero', async () => {
     const recorded: ModelCallAttempt[] = [];
     const tracker = accountingTracker({
-      record: (a) => {
-        recorded.push(a);
+      record: ({ attempt }) => {
+        recorded.push(attempt);
       },
       resolveCost: () => undefined,
     });
@@ -863,8 +1114,8 @@ describe('canonical model-call accounting', () => {
   test('retries of one step share a logicalCallId and increment the ordinal', async () => {
     const recorded: ModelCallAttempt[] = [];
     const tracker = accountingTracker({
-      record: (a) => {
-        recorded.push(a);
+      record: ({ attempt }) => {
+        recorded.push(attempt);
       },
     });
 
@@ -932,8 +1183,8 @@ describe('canonical model-call accounting', () => {
     const recorded: ModelCallAttempt[] = [];
     const controller = new AbortController();
     const tracker = accountingTracker({
-      record: (a) => {
-        recorded.push(a);
+      record: ({ attempt }) => {
+        recorded.push(attempt);
       },
       resolveCost: () => ({ costUsd: 0.003 }),
     });
@@ -959,11 +1210,63 @@ describe('canonical model-call accounting', () => {
     assert.equal(settledRecord?.costUsd, 0.003);
   });
 
+  test('late reported usage waits for provisional accounting and remains authoritative', async () => {
+    const recorded: ModelCallAttempt[] = [];
+    const controller = new AbortController();
+    let releaseProvisional!: () => void;
+    const provisionalReleased = new Promise<void>((resolve) => {
+      releaseProvisional = resolve;
+    });
+    let provisionalStarted!: () => void;
+    const provisionalStart = new Promise<void>((resolve) => {
+      provisionalStarted = resolve;
+    });
+    let writes = 0;
+    const tracker = accountingTracker({
+      record: async ({ attempt }) => {
+        const write = writes;
+        writes += 1;
+        if (write === 0) {
+          provisionalStarted();
+          await provisionalReleased;
+        }
+        recorded.push(attempt);
+      },
+      resolveCost: () => ({ costUsd: 0.003 }),
+    });
+
+    const result = await tracker.trackStream({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      params: preparedParams('hello'),
+      abortSignal: controller.signal,
+      doStream: async () => ({ stream: streamOf([finishPart()]) }),
+    });
+    controller.abort();
+    await provisionalStart;
+    const settlement = drain(result.stream);
+
+    assert.equal(
+      await Promise.race([
+        settlement.then(() => 'settled'),
+        new Promise<'pending'>((resolve) => setImmediate(() => resolve('pending'))),
+      ]),
+      'pending',
+    );
+    releaseProvisional();
+    await settlement;
+
+    assert.equal(recorded.length, 2);
+    const final = decodeModelCallAttempt(recorded.at(-1));
+    assert.equal(final.usageBasis, 'reported');
+    assert.equal(final.costUsd, 0.003);
+  });
+
   test('no canonical record is emitted without a resolvable run', async () => {
     const recorded: ModelCallAttempt[] = [];
     const tracker = accountingTracker({
-      record: (a) => {
-        recorded.push(a);
+      record: ({ attempt }) => {
+        recorded.push(attempt);
       },
       resolveRunId: () => undefined,
     });

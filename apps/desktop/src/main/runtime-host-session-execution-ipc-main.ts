@@ -1,16 +1,15 @@
 import { randomUUID } from "node:crypto";
-import type { IpcMain, IpcMainInvokeEvent } from "electron";
+import type { IpcMainInvokeEvent } from "electron";
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import {
-  deriveTurnRecords,
-  SIDE_CONVERSATION_SESSION_LABEL,
-  type ActiveInteractionRequestEvent,
-  type AttachmentRef,
-  type PermissionMode,
-  type SandboxBoundaryResponse,
   type SessionChangedEvent,
   type SessionChangedReason,
-  type StoredMessage,
-} from "@maka/core";
+} from '@maka/core/session';
+import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
+import { type ActiveInteractionRequestEvent, type AttachmentRef } from '@maka/core/events';
+import { type PermissionMode } from '@maka/core/permission';
+import { type SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { AttachmentApprovalRegistry } from "./attachment-approval.js";
 import {
   resolveAttachmentRefs,
@@ -24,12 +23,19 @@ import {
   normalizeSessionSendCommand,
   normalizeUserQuestionResponse,
 } from "./permission-response-guard.js";
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from "./ipc-reconnect-policy.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type { SessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
+import type { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
 import {
   RuntimeHostSessionObserver,
   type RuntimeHostSessionObserverTarget,
+  type RuntimeHostTranscriptTarget,
 } from "./runtime-host-session-observer.js";
+import type { DesktopTranscriptRangeRequest } from '../preload/transcript-contract.js';
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import { mergeWorkspaceFileInlineReferences } from "./session-workspace-inline-references.js";
 
@@ -41,6 +47,8 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "getSession"
   | "ingestAttachment"
   | "interruptTurn"
+  | 'listSessionTurns'
+  | 'listSessionTurnLandmarks'
   | "queryTurnResume"
   | "readExecutionBoundary"
   | "regenerateTurn"
@@ -55,6 +63,13 @@ type RuntimeHostSessionExecutionClient = Pick<
 export interface RuntimeHostSessionExecutionIpcDeps {
   client: RuntimeHostSessionExecutionClient;
   observer: RuntimeHostSessionObserver;
+  observations: Pick<
+    RuntimeHostSessionObservationRegistry,
+    | 'loadTranscriptAround'
+    | 'loadTranscriptBefore'
+    | 'observe'
+    | 'openTranscript'
+  >;
   attachmentApprovals: AttachmentApprovalRegistry;
   emitSessionsChanged: (
     reason: SessionChangedReason,
@@ -86,7 +101,7 @@ export interface RuntimeHostSessionExecutionIpcDeps {
  */
 export function registerRuntimeHostSessionExecutionIpc(
   deps: RuntimeHostSessionExecutionIpcDeps,
-  ipcMain: Pick<IpcMain, "handle">,
+  ipcMain: ReconnectableReadIpcMain,
 ): (sessionId: string) => Promise<void> {
   const observedCopyOwners = new Set<string>();
   const bindCopyOwner = (event: IpcMainInvokeEvent): string => {
@@ -112,34 +127,52 @@ export function registerRuntimeHostSessionExecutionIpc(
     async (event, sessionId: unknown, observerId: unknown) => {
       const normalizedSessionId = requiredId(sessionId, "Session");
       const normalizedObserverId = requiredId(observerId, "Session observer");
-      await deps.observer.observe(
+      await deps.observations.observe(
         normalizedSessionId,
         normalizedObserverId,
         event.sender as RuntimeHostSessionObserverTarget,
       );
     },
   );
-  ipcMain.handle("sessions:unobserve", async (_event, observerId: unknown) => {
-    await deps.observer.unobserve(requiredId(observerId, "Session observer"));
-  });
-  ipcMain.handle("sessions:readMessages", async (_event, sessionId: string) => {
-    const messages = await deps.observer.readMessages(sessionId);
-    const readThroughMessageId = latestVisibleMessageId(messages);
-    if (readThroughMessageId) {
-      await deps.client
-        .setSessionReadMarker(sessionId, readThroughMessageId)
-        .catch(() => undefined);
-    }
-    return messages;
-  });
-  ipcMain.handle("sessions:listTurns", async (_event, sessionId: string) =>
-    deriveTurnRecords(await deps.observer.readMessages(sessionId)),
-  );
   ipcMain.handle(
+    'sessions:transcript:open',
+    async (event, sessionId: unknown, consumerId: unknown) => {
+      const result = await deps.observations.openTranscript(
+        requiredId(sessionId, 'Session'),
+        requiredId(consumerId, 'Transcript consumer'),
+        event.sender as RuntimeHostTranscriptTarget,
+      );
+      return result;
+    },
+  );
+  ipcMain.handle('sessions:transcript:load-before', async (event, input: unknown) => {
+    await deps.observations.loadTranscriptBefore(
+      normalizeTranscriptRangeRequest(input),
+      event.sender.id,
+    );
+  });
+  ipcMain.handle('sessions:transcript:load-around', async (event, input: unknown) => {
+    await deps.observations.loadTranscriptAround(
+      normalizeTranscriptRangeRequest(input),
+      event.sender.id,
+    );
+  });
+  handleReconnectableRead(ipcMain, 'sessions:listTurns', async (_event, sessionId: unknown) =>
+    deps.client.listSessionTurns(requiredId(sessionId, 'Session')),
+  );
+  handleReconnectableRead(
+    ipcMain,
+    'sessions:listTurnLandmarks',
+    async (_event, sessionId: unknown) =>
+      deps.client.listSessionTurnLandmarks(requiredId(sessionId, 'Session')),
+  );
+  handleReconnectableRead(
+    ipcMain,
     "sessions:readExecutionBoundary",
     (_event, sessionId: string) => deps.client.readExecutionBoundary(sessionId),
   );
-  ipcMain.handle(
+  handleReconnectableRead(
+    ipcMain,
     "sessions:listActiveInteractions",
     async (_event, sessionId: string) => [
       ...(deps.e2eInteractions?.list(sessionId) ?? []),
@@ -166,7 +199,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         });
         attachments = await resolveAttachmentRefs({
           files,
-          cwd: session.cwd,
+          cwd: session.workspace.hostCwd,
           sessionId,
           workspaceFiles: "snapshot",
           resizeImage: deps.resizeImage,
@@ -207,7 +240,60 @@ export function registerRuntimeHostSessionExecutionIpc(
           ? { turnOrchestration: command.turnOrchestration }
           : {}),
       };
-      const startResult = await deps.client.startTurn(startInput);
+      let startResult;
+      try {
+        startResult = await deps.client.startTurn(startInput);
+      } catch (error) {
+        // The renderer routes text at a session it sees as running to
+        // `sessions:steer`, but its view can lag the Host: another window, a
+        // Bot, or a Goal continuation may have opened the root Turn first, and
+        // that race surfaced here as a session_busy send failure that dropped
+        // the user's message (#1954). `turn.message.submit` resolves the race
+        // on the Host: an active session queues the text as steering, an idle
+        // one starts the Turn. Skill and orchestration sends keep the error —
+        // their turn semantics cannot be expressed as a queued message — and
+        // the Desktop composer carries Skills as canonical /skill: tokens in
+        // the text, not as skillIds.
+        if (
+          !(error instanceof RuntimeHostOperationError) ||
+          error.code !== "session_busy" ||
+          (command.skillIds?.length ?? 0) > 0 ||
+          command.turnOrchestration ||
+          new RegExp(SKILL_INVOCATION_TOKEN_SOURCE).test(command.text)
+        ) {
+          throw error;
+        }
+        const submitted = await deps.client.submitMessage({
+          sessionId,
+          messageId: newId(),
+          content: startInput.content,
+          placement: "current_turn",
+        });
+        const emptySkillInvocation = { loaded: [], failed: [], receipts: [] };
+        if (submitted.disposition === "turn_started") {
+          deps.emitSessionsChanged("status-change", sessionId, {
+            turnId: submitted.turnId,
+          });
+          return {
+            ok: true as const,
+            turnId: submitted.turnId,
+            attachments,
+            inlineReferences,
+            skillInvocation: emptySkillInvocation,
+          };
+        }
+        // The steering renderer believed this session idle; nudge it to
+        // refresh so its composer converges on the running turn.
+        deps.emitSessionsChanged("status-change", sessionId);
+        return {
+          ok: true as const,
+          steered: true as const,
+          turnId,
+          attachments,
+          inlineReferences,
+          skillInvocation: emptySkillInvocation,
+        };
+      }
       if (startResult.kind === "blocked") {
         return {
           ok: false as const,
@@ -404,6 +490,30 @@ export function registerRuntimeHostSessionExecutionIpc(
   return stopSession;
 }
 
+function normalizeTranscriptRangeRequest(input: unknown): DesktopTranscriptRangeRequest {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Invalid Desktop transcript range request');
+  }
+  const value = input as Record<string, unknown>;
+  const anchorSequence = value.anchorSequence;
+  const maxBytes = value.maxBytes;
+  if (
+    anchorSequence !== null &&
+    (!Number.isSafeInteger(anchorSequence) || (anchorSequence as number) < 0)
+  ) {
+    throw new Error('Invalid Desktop transcript range anchor');
+  }
+  if (!Number.isSafeInteger(maxBytes)) {
+    throw new Error('Invalid Desktop transcript range byte limit');
+  }
+  return {
+    consumerId: requiredId(value.consumerId, 'Transcript consumer'),
+    generation: requiredId(value.generation, 'Transcript generation'),
+    anchorSequence: anchorSequence as number | null,
+    maxBytes: maxBytes as number,
+  };
+}
+
 function createRuntimeHostSessionStop(
   deps: Pick<
     RuntimeHostSessionExecutionIpcDeps,
@@ -427,17 +537,6 @@ function createRuntimeHostSessionStop(
   };
 }
 
-function latestVisibleMessageId(
-  messages: readonly StoredMessage[],
-): string | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]!;
-    if (message.type === "user" || message.type === "assistant")
-      return message.id;
-  }
-  return undefined;
-}
-
 async function requireInteraction(
   observer: RuntimeHostSessionObserver,
   sessionId: string,
@@ -454,6 +553,13 @@ function requiredId(value: unknown, label: string): string {
     throw new Error(`Invalid ${label} identity`);
   }
   return value;
+}
+
+function requiredSequence(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`Invalid ${label} sequence`);
+  }
+  return value as number;
 }
 
 function steeringContent(value: unknown): string {

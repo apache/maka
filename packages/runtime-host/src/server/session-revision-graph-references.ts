@@ -1,11 +1,10 @@
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import { sessionRevisionFamilyId, type SessionHeader } from '@maka/core/session';
+import { type AgentGraphCoordinator } from '@maka/runtime/stream-graph-coordinator';
 import {
-  agentGraphIdForRootSession,
-  type AgentGraphCoordinator,
   type ConversationCopyExternalChildReferences,
   type ConversationCopyLinkedChildReference,
-} from '@maka/runtime';
+} from '@maka/runtime/conversation-copy';
 import type { InteractiveArtifactStoreWriter } from '@maka/storage/artifact-stores';
 
 type ConversationCopyKind = 'branch' | 'revision';
@@ -21,7 +20,7 @@ export type AgentGraphRevisionReferencePreparation =
       readonly message: string;
     };
 
-type GraphReader = Pick<AgentGraphCoordinator, 'readSessionState'>;
+type GraphReader = Pick<AgentGraphCoordinator, 'readGraphState' | 'readSessionState'>;
 
 interface GraphRevisionDependencies {
   readonly agentRunStore: {
@@ -90,28 +89,38 @@ export async function prepareAgentGraphRevisionReferences(
   }
 
   const headersById = new Map(input.sessionHeaders.map((header) => [header.id, header]));
-  const referencedGraphRootSessionIds = new Set<string>();
-  const graphRootSessionIds = new Set([input.sourceSessionId]);
-  for (const request of requests) {
-    const parentSessionId = headersById.get(request.childSessionId)?.subagentParent
-      ?.parentSessionId;
-    if (parentSessionId) {
-      referencedGraphRootSessionIds.add(parentSessionId);
-      graphRootSessionIds.add(parentSessionId);
-    }
-  }
-  for (const rootSessionId of graphRootSessionIds) {
-    let state: 'absent' | 'live' | 'terminal';
-    try {
-      state = await dependencies.graph.readSessionState(rootSessionId);
-    } catch {
-      return failure('operation_unavailable', 'Retained Agent Graph state is unavailable');
-    }
-    if (state === 'live') {
+  try {
+    if ((await dependencies.graph.readSessionState(input.sourceSessionId)) === 'live') {
       return failure('session_busy', 'A retained Agent Graph is not terminal');
     }
-    if (referencedGraphRootSessionIds.has(rootSessionId) && state === 'absent') {
-      return failure('operation_unavailable', 'Retained Agent Graph control state is unavailable');
+  } catch {
+    return failure('operation_unavailable', 'Retained Agent Graph state is unavailable');
+  }
+  const referencedGraphs = new Map<string, Set<string>>();
+  for (const request of requests) {
+    const parent = headersById.get(request.childSessionId)?.subagentParent;
+    if (!parent?.graph) continue;
+    const graphIds = referencedGraphs.get(parent.parentSessionId) ?? new Set<string>();
+    graphIds.add(parent.graph.graphId);
+    referencedGraphs.set(parent.parentSessionId, graphIds);
+  }
+  for (const [rootSessionId, graphIds] of referencedGraphs) {
+    for (const graphId of graphIds) {
+      let state: 'absent' | 'live' | 'terminal';
+      try {
+        state = await dependencies.graph.readGraphState(rootSessionId, graphId);
+      } catch {
+        return failure('operation_unavailable', 'Retained Agent Graph state is unavailable');
+      }
+      if (state === 'live') {
+        return failure('session_busy', 'A retained Agent Graph is not terminal');
+      }
+      if (state === 'absent') {
+        return failure(
+          'operation_unavailable',
+          'Retained Agent Graph control state is unavailable',
+        );
+      }
     }
   }
 
@@ -125,7 +134,7 @@ export async function prepareAgentGraphRevisionReferences(
       !child ||
       !parent?.graph ||
       !familySessionIds.has(parent.parentSessionId) ||
-      parent.graph.graphId !== agentGraphIdForRootSession(parent.parentSessionId) ||
+      !referencedGraphs.get(parent.parentSessionId)?.has(parent.graph.graphId) ||
       !retainedTurnIds.has(parent.spawnedBy.parentTurnId)
     ) {
       return failure(

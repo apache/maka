@@ -3,6 +3,7 @@ import {
   decodeMessageContent as decodeCanonicalMessageContent,
   isCanonicalAttachmentRef,
   type MessageContent,
+  type ProviderRetryReason,
 } from '@maka/core/events';
 import {
   isOrchestrationMode,
@@ -25,6 +26,8 @@ import {
   requireString,
 } from './codec.js';
 import { defineOperation } from './operation-spec.js';
+
+export const TURN_FAILURE_MESSAGE_MAX_BYTES = 256;
 
 export interface TurnStartInput {
   sessionId: string;
@@ -138,15 +141,34 @@ interface TurnSnapshotBase {
   runId: string;
 }
 
+export type TurnProviderRetry =
+  | {
+      phase: 'scheduled';
+      attempt: number;
+      maxAttempts: number;
+      delayMs: number;
+      reason: ProviderRetryReason;
+    }
+  | {
+      phase: 'started';
+      attempt: number;
+      maxAttempts: number;
+      reason: ProviderRetryReason;
+    };
+
+export type LiveTurnSnapshot = TurnSnapshotBase & {
+  status: Exclude<TurnRunStatus, 'completed' | 'failed' | 'cancelled'>;
+  providerRetry?: TurnProviderRetry;
+};
+
 export type TurnSnapshot =
-  | (TurnSnapshotBase & {
-      status: Exclude<TurnRunStatus, 'completed' | 'failed' | 'cancelled'>;
-    })
+  | LiveTurnSnapshot
   | (TurnSnapshotBase & { status: 'completed'; terminalEventId: string })
   | (TurnSnapshotBase & {
       status: 'failed';
       terminalEventId: string;
       failureClass: string;
+      failureMessage?: string;
     })
   | (TurnSnapshotBase & {
       status: 'cancelled';
@@ -604,19 +626,27 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
     };
   }
   if (status === 'failed') {
-    assertExactKeys(record, 'failed Turn snapshot', [
-      'sessionId',
-      'turnId',
-      'runId',
-      'status',
-      'terminalEventId',
-      'failureClass',
-    ]);
+    requireShapedRecord(
+      record,
+      'failed Turn snapshot',
+      ['sessionId', 'turnId', 'runId', 'status', 'terminalEventId', 'failureClass'],
+      ['failureMessage'],
+    );
     return {
       ...base,
       status,
       terminalEventId: requireId(record.terminalEventId, 'terminalEventId'),
       failureClass: requireString(record.failureClass, 'failureClass', 128),
+      ...(record.failureMessage !== undefined
+        ? {
+            failureMessage: requireUtf8String(
+              record.failureMessage,
+              'failureMessage',
+              TURN_FAILURE_MESSAGE_MAX_BYTES,
+              false,
+            ),
+          }
+        : {}),
     };
   }
   if (status === 'cancelled') {
@@ -635,8 +665,67 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
       abortSource: requireString(record.abortSource, 'abortSource', 128),
     };
   }
-  assertExactKeys(record, 'non-terminal Turn snapshot', ['sessionId', 'turnId', 'runId', 'status']);
-  return { ...base, status };
+  requireShapedRecord(
+    record,
+    'non-terminal Turn snapshot',
+    ['sessionId', 'turnId', 'runId', 'status'],
+    ['providerRetry'],
+  );
+  return {
+    ...base,
+    status,
+    ...(record.providerRetry !== undefined
+      ? { providerRetry: decodeTurnProviderRetry(record.providerRetry) }
+      : {}),
+  };
+}
+
+export function decodeTurnProviderRetry(value: unknown): TurnProviderRetry {
+  const record = requireRecord(value, 'Turn provider retry');
+  const phase = record.phase;
+  const attempt = requirePositiveCount(record.attempt, 'attempt');
+  const maxAttempts = requirePositiveCount(record.maxAttempts, 'maxAttempts');
+  if (attempt > maxAttempts) throw invalidProtocolFrame('Invalid Turn provider retry');
+  const reason = requireProviderRetryReason(record.reason);
+  if (phase === 'scheduled') {
+    assertExactKeys(record, 'scheduled Turn provider retry', [
+      'phase',
+      'attempt',
+      'maxAttempts',
+      'delayMs',
+      'reason',
+    ]);
+    return {
+      phase,
+      attempt,
+      maxAttempts,
+      delayMs: requireCount(record.delayMs, 'delayMs'),
+      reason,
+    };
+  }
+  if (phase === 'started') {
+    assertExactKeys(record, 'started Turn provider retry', [
+      'phase',
+      'attempt',
+      'maxAttempts',
+      'reason',
+    ]);
+    return { phase, attempt, maxAttempts, reason };
+  }
+  throw invalidProtocolFrame('Invalid Turn provider retry');
+}
+
+function requireProviderRetryReason(value: unknown): ProviderRetryReason {
+  if (
+    value === 'network' ||
+    value === 'provider_unavailable' ||
+    value === 'rate_limit' ||
+    value === 'timeout' ||
+    value === 'unknown'
+  ) {
+    return value;
+  }
+  throw invalidProtocolFrame('Invalid Turn provider retry reason');
 }
 
 function requireTurnRunStatus(value: unknown): TurnRunStatus {

@@ -28,7 +28,8 @@ import {
   type ManagedWorkspaceReadOnlyResult,
   type ManagedWorkspaceWorkerBridgeInternal,
 } from './managed-workspace-worker-bridge-internal.js';
-import type { RuntimeWorkspaceVersionAuthorityStore, WorkspaceHeadRecordV1 } from '@maka/core';
+import type { RuntimeWorkspaceVersionAuthorityStore } from '@maka/core/runtime-event-store';
+import type { WorkspaceHeadRecordV1 } from '@maka/core/workspace-version-authority';
 import {
   assertInteractiveRootOwner,
   authenticateInteractiveRootOwner,

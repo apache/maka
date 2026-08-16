@@ -9,15 +9,15 @@ import type { TurnTimelineItem } from './materialize.js';
  * maintain a nesting invariant. This module derives the folded view right
  * before rendering:
  *
- *  - answer `text` entries stay in place and are the only grouping boundary;
+ *  - answer `text` and inserted `user` entries stay in place and bound groups;
  *  - a maximal thinking+tools run between two texts folds into ONE
  *    `processing` block when it contains at least one tools group, preserving
  *    the run's interleaved order as `children`;
  *  - a pure-thinking run stays bare (the 深度思考 disclosure renders it
  *    directly — wrapping a lone reasoning block would just double the fold).
  *
- * Each block carries a stable `id` derived from the PRECEDING answer text's
- * messageId (`'start'` when the block opens the turn). Between two texts there
+ * Each block carries a stable `id` derived from the preceding text or inserted
+ * user entry's messageId (`'start'` when the block opens the turn). Between two boundaries there
  * is at most one block, so the id is unique per turn — and, unlike a key
  * guessed from the first child, it survives the first tool being projected
  * away (shell-run folding) without remounting the disclosure or dropping a
@@ -33,7 +33,7 @@ export type FoldedTimelineChild = Extract<TurnTimelineItem, { kind: 'thinking' |
 
 export interface ProcessingFold {
   kind: 'processing';
-  /** Stable identity: `'start'` or the preceding answer text's messageId. */
+  /** Stable identity: `'start'` or the preceding text/user boundary's messageId. */
   id: string;
   children: FoldedTimelineChild[];
 }

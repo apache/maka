@@ -1,9 +1,10 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { DailyReviewArchive } from '@maka/core';
+import type { DailyReviewArchive } from '@maka/core/daily-review';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.js';
@@ -59,7 +60,7 @@ test('two Clients share Daily Review config, generation, and restart recovery', 
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 30_000,
-      compositionFactory: createExecutionRuntimeHostComposition,
+      composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
     });
     owner = undefined;
     [desktop, tui] = await Promise.all([connect(root, 'desktop'), connect(root, 'tui')]);
@@ -139,7 +140,7 @@ test('two Clients share Daily Review config, generation, and restart recovery', 
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 30_000,
-      compositionFactory: createExecutionRuntimeHostComposition,
+      composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
     });
     owner = undefined;
     tui = await connect(root, 'tui');

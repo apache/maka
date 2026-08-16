@@ -1,4 +1,4 @@
-import type { UserQuestion, UserQuestionRequest, UserQuestionResponse } from '@maka/core';
+import type { UserQuestion, UserQuestionRequest, UserQuestionResponse } from '@maka/core/user-question';
 
 export type QuestionAnswerDraft =
   | { kind: 'option'; optionIndex: number }

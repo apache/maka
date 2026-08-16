@@ -2,15 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { lstat, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
-import {
-  canReadPath,
-  canWritePath,
-  compilePermissionProfile,
-  type ExecutionBoundary,
-  type PermissionMode,
-  type PermissionProfile,
-  type SandboxBoundaryExpansion,
-} from '@maka/core';
+import { canReadPath, canWritePath, type PermissionProfile } from '@maka/core/permission-profile';
+
+import { compilePermissionProfile } from '@maka/core/permission-profile-compiler';
+
+import { type ExecutionBoundary, type SandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
+
+import { type PermissionMode } from '@maka/core/permission';
 
 import { normalizeSandboxBoundaryPath } from '../sandbox-boundary-path.js';
 import { resolveCanonicalDirectoryEntryTarget } from '../path-containment.js';

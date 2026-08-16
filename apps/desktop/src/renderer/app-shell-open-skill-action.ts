@@ -1,4 +1,4 @@
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { openSkillFailureCopy } from './app-shell-copy';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 

@@ -1,9 +1,9 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   decodeClientFrame,
   decodeHostFrame,
-  RuntimeHostProtocolError,
   SESSION_EFFECT_OPERATION_SPECS,
   SESSION_RECAP_RAW_MAX_BYTES,
 } from '../protocol/index.js';

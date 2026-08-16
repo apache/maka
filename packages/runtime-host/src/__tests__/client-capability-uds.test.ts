@@ -1,14 +1,12 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import {
-  LOAD_TOOLS_NAME,
-  type MakaTool,
-  mcpProxyToolName,
-  ToolAvailabilityRuntime,
-} from '@maka/runtime';
+import { LOAD_TOOLS_NAME, ToolAvailabilityRuntime } from '@maka/runtime/tool-availability';
+import { type MakaTool } from '@maka/runtime/tool-runtime';
+import { mcpProxyToolName } from '@maka/runtime/mcp-tools';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
   connectRuntimeHost,
@@ -44,7 +42,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 60_000,
-      compositionFactory: async () => {
+      composition: defineInteractiveRuntimeHostComposition(async () => {
         coordinator = new HostClientCapabilityCoordinator({
           activation: new RuntimePolicyActivationGate(),
           onModelToolsChanged: () => undefined,
@@ -62,7 +60,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
           recover: async () => undefined,
           close: async () => coordinator?.close(),
         };
-      },
+      }),
     });
 
     const connected = await connectRuntimeHost({
@@ -91,6 +89,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
             offerId: 'bypassed',
             version: '0',
             affinity: 'call',
+            hostPathAccess: 'cwd',
             label: 'Bypassed',
             tools: [
               {
@@ -114,6 +113,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
           offerId: 'fixture_unknown',
           version: '0',
           affinity: 'session',
+          hostPathAccess: 'cwd',
           label: 'Unknown fixture',
           description: 'A capability the Host source does not enumerate.',
           tools: [

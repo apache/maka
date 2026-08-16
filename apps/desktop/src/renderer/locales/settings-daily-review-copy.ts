@@ -1,4 +1,4 @@
-import type { UiCatalog, UiLocale } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export type DailyReviewSettingsCopy = {
   defaultModel: string;
@@ -22,7 +22,7 @@ export type DailyReviewSettingsCopy = {
 
 const SETTINGS_DAILY_REVIEW_COPY = {
   zh: {
-    defaultModel: '跟随对话默认',
+    defaultModel: '跟随任务默认',
     saveFailed: '保存每日回顾设置失败',
     aria: '每日回顾',
     unavailable: '当前版本无法读取每日回顾设置。',
@@ -38,10 +38,10 @@ const SETTINGS_DAILY_REVIEW_COPY = {
     analysisTitle: '分析',
     analysisDescription: '选择用于生成固定结构报告的模型。',
     model: '分析模型',
-    modelHelp: '未指定时跟随当前对话的默认模型。',
+    modelHelp: '未指定时跟随当前任务的默认模型。',
   },
   en: {
-    defaultModel: 'Follow conversation default',
+    defaultModel: 'Follow task default',
     saveFailed: 'Failed to save Daily Review settings',
     aria: 'Daily Review',
     unavailable: 'Daily Review settings are unavailable in this build.',
@@ -57,7 +57,7 @@ const SETTINGS_DAILY_REVIEW_COPY = {
     analysisTitle: 'Analysis',
     analysisDescription: 'Choose the model used to generate the fixed report structure.',
     model: 'Analysis model',
-    modelHelp: 'Follows the current conversation default when unspecified.',
+    modelHelp: 'Follows the current task default when unspecified.',
   },
 } satisfies UiCatalog<DailyReviewSettingsCopy>;
 

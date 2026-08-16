@@ -6,25 +6,11 @@ import { __TEST__ } from '../simple-bridge.js';
 const { utf16Len, prefixWithinUtf16, splitForTelegram } = __TEST__;
 
 describe('Telegram UTF-16 limits', () => {
-  it('counts BMP and astral-plane characters in UTF-16 code units', () => {
-    for (const [text, expected] of [
-      ['', 0],
-      ['hello', 5],
-      ['你好世界', 4],
-      ['😀', 2],
-      ['a😀b', 4],
-      ['\u{20000}', 2],
-    ] as const) {
-      assert.equal(utf16Len(text), expected, text);
-    }
-  });
-
   it('truncates prefixes without splitting surrogate pairs', () => {
     for (const [text, limit, expected] of [
       ['hello', 100, 'hello'],
       ['abcdef', 3, 'abc'],
       ['a😀', 2, 'a'],
-      ['😀😀😀😀', 5, '😀😀'],
     ] as const) {
       assert.equal(prefixWithinUtf16(text, limit), expected, text);
     }

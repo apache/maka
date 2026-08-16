@@ -30,7 +30,7 @@ test('staged Skills come back as chips after leaving and returning', async ({
   await expect(workspaceChip).toContainText('Workspace Only');
 
   await page.getByRole('button', { name: '展开侧边栏' }).click();
-  const sidebar = page.getByRole('navigation', { name: '对话列表' });
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
   await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
   await expect(composer).toHaveText('');
 

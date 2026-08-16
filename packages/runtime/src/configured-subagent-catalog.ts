@@ -1,4 +1,5 @@
-import { connectionEnabledModelIds, type SubagentPreset } from '@maka/core';
+import { connectionEnabledModelIds } from '@maka/core/llm-connections';
+import { type SubagentPreset } from '@maka/core/subagent-settings';
 import type { SubagentPresetListItem } from './agent-catalog.js';
 
 export interface ConfiguredSubagentCatalog {

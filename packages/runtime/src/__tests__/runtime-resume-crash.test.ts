@@ -18,13 +18,14 @@ import {
 import { terminateChildProcessTree } from '../process-tree-terminator.js';
 
 const CRASH_CHILD_ENV = 'MAKA_RUNTIME_RESUME_CRASH_CHILD';
+const CRASH_HARNESS_TIMEOUT_MS = process.platform === 'win32' ? 120_000 : 60_000;
 
 if (process.env[CRASH_CHILD_ENV] === '1') {
   await runCrashChild();
 } else {
   describe('runtime resume phase 0 process crash harness', () => {
     test('reopens every fully committed P0-P11 ledger prefix after SIGKILL', {
-      timeout: 60_000,
+      timeout: CRASH_HARNESS_TIMEOUT_MS,
     }, async () => {
       const root = await mkdtemp(join(tmpdir(), 'maka-runtime-resume-crash-'));
       try {

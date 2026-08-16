@@ -1,4 +1,4 @@
-/* Codex-style prompt navigation rail: one tick per user prompt, pinned to the
+/* Codex-style prompt navigation rail: bounded prompt landmarks pinned to the
    right edge of the chat scrollport. Low-key by default, brightens on hover;
    each tick jumps to that prompt and the active turn's tick stays highlighted.
    The tick bar draws in `currentColor` so active/hover just shift the neutral
@@ -74,7 +74,12 @@
   /* `safe` so the max-height above can never strand the first ticks past an
      unscrollable overflow edge, which plain centring does. */
   justify-content: safe center;
-  gap: var(--space-1);
+  /* No gap on purpose: a gap between ticks is a band where the pointer is over
+     the rail but over no tick, so the hover falloff drops out and picks up
+     again every few pixels of travel. The ticks carry the same rhythm in their
+     own padding instead (see the tick's `padding-block`), which keeps the
+     pitch identical and leaves the column continuous — moving down the rail
+     hands the hover from one tick straight to the next. */
   padding: var(--space-1);
   pointer-events: auto;
   opacity: var(--opacity-muted);
@@ -106,7 +111,10 @@
   appearance: none;
   border: 0;
   margin: 0;
-  padding: var(--space-0-5) 0;
+  /* Holds the rail's rhythm now that the rail itself has no gap: half of this
+     used to be the gap, so the pitch between bars is unchanged and the hit
+     boxes tile instead of leaving a dead band between them. */
+  padding: var(--space-1) 0;
   background: transparent;
   color: var(--muted-foreground);
   display: flex;
@@ -118,7 +126,6 @@
   height: auto;
   width: 100%;
   box-shadow: none;
-  transition: color var(--duration-base) var(--ease-out-strong);
   animation: maka-prompt-rail-tick-in var(--duration-large) var(--ease-out-strong) backwards;
   /* Capped, so a 90-prompt conversation cascades in a third of a second rather
      than nearly two: past the cap the tail arrives together. */
@@ -130,53 +137,27 @@
   color: var(--foreground);
 }
 
-/* Dock-style falloff. `--maka-prompt-rail-proximity` counts ticks away from the
-   pointer (0 = hovered) and rests at the falloff distance, so the whole ramp is
-   one expression and the resting width is its own tail. */
+/* Dock-style falloff. The bar keeps a fixed layout width and changes only its
+   compositor transform, so active-prompt tracking never starts a width-driven
+   layout animation while the transcript is scrolling. */
 .maka-prompt-rail-tick-bar {
-  width: calc(14px + ((3 - var(--maka-prompt-rail-proximity, 3)) * 3px));
-  height: 3px;
-  border-radius: var(--radius-pill);
-  background: currentColor;
-  transition: width var(--duration-emphasized) var(--ease-out-strong);
-}
-
-/* The travelling highlight for the prompt currently being read. Anchor
-   positioning is Astryx's own idiom for a sliding indicator (see its Outline):
-   the active tick's bar publishes an anchor name, the highlight reads its
-   position, and the transition on `top` is what makes it glide between prompts
-   as the transcript scrolls. Sized past the widest tick so it always reads as
-   the longer bar. */
-.maka-prompt-rail-tick[data-active="true"] .maka-prompt-rail-tick-bar {
-  anchor-name: --maka-prompt-rail-active;
-  /* The highlight is drawn over this bar, so hide the bar rather than
-     double-print it. Fading rather than hiding also gives the prompt being
-     left something to do while the highlight travels away from it. */
-  opacity: 0;
-  transition:
-    width var(--duration-emphasized) var(--ease-out-strong),
-    opacity var(--duration-base) var(--ease-out-strong);
-}
-
-.maka-prompt-rail-indicator {
-  position: absolute;
-  position-anchor: --maka-prompt-rail-active;
-  right: var(--space-1);
-  top: anchor(center);
-  translate: 0 -50%;
+  /* Load-bearing since #2580 put the tick on Astryx's Button: the bar used to
+     be a direct child of the flex tick, which blockified it, and now it sits
+     inside the Button's own label span in normal flow. An inline box takes no
+     width or height, so without this the bar computes to 0x0 and the whole
+     rail paints nothing. */
+  display: block;
   width: 26px;
   height: 3px;
   border-radius: var(--radius-pill);
-  background: var(--foreground);
-  pointer-events: none;
-  transition: top var(--duration-large) var(--ease-out-strong);
+  background: currentColor;
+  transform: scaleX(var(--maka-prompt-rail-scale, 0.5385));
+  transform-origin: right center;
+  transition: transform var(--duration-emphasized) var(--ease-out-strong);
 }
 
-/* No active prompt yet (a transcript that has not been scrolled) leaves the
-   anchor undefined, and an unresolved anchor would park the bar at the top of
-   the rail. Hide it until a tick claims the anchor. */
-.maka-prompt-rail:not(:has(.maka-prompt-rail-tick[data-active="true"])) .maka-prompt-rail-indicator {
-  display: none;
+.maka-prompt-rail-tick[data-active="true"] .maka-prompt-rail-tick-bar {
+  transform: scaleX(1);
 }
 
 /* HoverCard content. Astryx owns the card itself — surface, radius, shadow,

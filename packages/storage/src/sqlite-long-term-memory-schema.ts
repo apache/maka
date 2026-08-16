@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_LONG_TERM_MEMORY_SCHEMA_VERSION = 3;
+export const SQLITE_LONG_TERM_MEMORY_SCHEMA_VERSION = 5;
 
 const SQLITE_INITIALIZATION_BUSY_TIMEOUT_MS = 5_000;
 const SQLITE_INITIALIZATION_RETRY_DELAY_MS = 10;
@@ -148,6 +148,60 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     );
   `,
   ],
+  [
+    4,
+    `
+    ALTER TABLE memory_extraction_failures RENAME TO memory_extraction_failures_v3;
+
+    CREATE TABLE memory_extraction_failures (
+      session_id TEXT PRIMARY KEY CHECK (length(session_id) > 0),
+      from_ordinal INTEGER NOT NULL CHECK (from_ordinal > 0),
+      through_ordinal INTEGER NOT NULL CHECK (through_ordinal >= from_ordinal),
+      coverage_hash TEXT NOT NULL CHECK (length(coverage_hash) = 64),
+      first_operation_id TEXT NOT NULL UNIQUE CHECK (length(first_operation_id) > 0),
+      first_trigger TEXT NOT NULL CHECK (
+        first_trigger IN ('remember', 'extract', 'compaction')
+      ),
+      compaction_checkpoint_id TEXT CHECK (
+        compaction_checkpoint_id IS NULL OR length(compaction_checkpoint_id) > 0
+      ),
+      first_failure_class TEXT NOT NULL CHECK (
+        first_failure_class IN (
+          'provider', 'schema', 'evidence', 'localization', 'requested_admission'
+        )
+      ),
+      failed_at INTEGER NOT NULL CHECK (failed_at >= 0),
+      CHECK (
+        (first_trigger = 'compaction' AND compaction_checkpoint_id IS NOT NULL)
+        OR (first_trigger != 'compaction' AND compaction_checkpoint_id IS NULL)
+      )
+    );
+
+    INSERT INTO memory_extraction_failures(
+      session_id, from_ordinal, through_ordinal, coverage_hash,
+      first_operation_id, first_trigger, compaction_checkpoint_id,
+      first_failure_class, failed_at
+    )
+    SELECT
+      session_id, from_ordinal, through_ordinal, coverage_hash,
+      first_operation_id, first_trigger, NULL,
+      first_failure_class, failed_at
+    FROM memory_extraction_failures_v3;
+
+    DROP TABLE memory_extraction_failures_v3;
+  `,
+  ],
+  [
+    5,
+    `
+    CREATE TABLE memory_compaction_policy_denials (
+      session_id TEXT NOT NULL CHECK (length(session_id) > 0),
+      compaction_checkpoint_id TEXT NOT NULL CHECK (length(compaction_checkpoint_id) > 0),
+      denied_at INTEGER NOT NULL CHECK (denied_at >= 0),
+      PRIMARY KEY(session_id, compaction_checkpoint_id)
+    ) WITHOUT ROWID;
+  `,
+  ],
 ]);
 
 interface MinimumTableShape {
@@ -219,7 +273,7 @@ const VERSION_1_MINIMUM_SCHEMA_SHAPE: MinimumSchemaShape = {
   ],
 };
 
-const MINIMUM_SCHEMA_SHAPES: ReadonlyMap<number, MinimumSchemaShape> = new Map([
+const MINIMUM_SCHEMA_SHAPES = new Map<number, MinimumSchemaShape>([
   [1, VERSION_1_MINIMUM_SCHEMA_SHAPE],
   [
     2,
@@ -280,7 +334,56 @@ const MINIMUM_SCHEMA_SHAPES: ReadonlyMap<number, MinimumSchemaShape> = new Map([
       indexes: VERSION_1_MINIMUM_SCHEMA_SHAPE.indexes,
     },
   ],
+  [
+    4,
+    {
+      tables: [
+        ...VERSION_1_MINIMUM_SCHEMA_SHAPE.tables,
+        {
+          name: 'memory_extraction_cursors',
+          requiredColumns: ['session_id', 'processed_ordinal', 'updated_at'],
+        },
+        {
+          name: 'memory_extraction_receipts',
+          requiredColumns: [
+            'operation_id',
+            'session_id',
+            'request_hash',
+            'result_json',
+            'committed_at',
+          ],
+        },
+        {
+          name: 'memory_extraction_failures',
+          requiredColumns: [
+            'session_id',
+            'from_ordinal',
+            'through_ordinal',
+            'coverage_hash',
+            'first_operation_id',
+            'first_trigger',
+            'compaction_checkpoint_id',
+            'first_failure_class',
+            'failed_at',
+          ],
+        },
+      ],
+      indexes: VERSION_1_MINIMUM_SCHEMA_SHAPE.indexes,
+    },
+  ],
 ]);
+
+const version4MinimumShape = MINIMUM_SCHEMA_SHAPES.get(4)!;
+MINIMUM_SCHEMA_SHAPES.set(5, {
+  tables: [
+    ...version4MinimumShape.tables,
+    {
+      name: 'memory_compaction_policy_denials',
+      requiredColumns: ['session_id', 'compaction_checkpoint_id', 'denied_at'],
+    },
+  ],
+  indexes: version4MinimumShape.indexes,
+});
 
 for (let version = 1; version <= SQLITE_LONG_TERM_MEMORY_SCHEMA_VERSION; version += 1) {
   if (!MIGRATIONS.has(version)) {

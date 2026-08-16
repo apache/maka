@@ -1,4 +1,4 @@
-import type { BotOnboardingProvider } from '@maka/core';
+import type { BotOnboardingProvider } from '@maka/core/bot-onboarding';
 import type { BotOnboardingProviderAdapter } from './bot-onboarding-main.js';
 
 type AdapterMap = Partial<Record<BotOnboardingProvider, BotOnboardingProviderAdapter>>;

@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,10 +7,12 @@ import { test } from 'node:test';
 import {
   agentGraphIdForRootSession,
   type AgentGraphClientChangedListener,
-  type AgentGraphClientSnapshot,
   type AgentGraphCoordinator,
+} from '@maka/runtime/stream-graph-coordinator';
+import {
+  type AgentGraphClientSnapshot,
   type AgentGraphOperatorInspection,
-} from '@maka/runtime';
+} from '@maka/runtime/stream-graph-read-model';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
   connectRuntimeHost,
@@ -47,7 +50,7 @@ test('two Clients query and control one Agent graph through Session invalidation
   const host = await RuntimeHostKernel.start({
     owner,
     idleGraceMs: 10_000,
-    compositionFactory: async (context) => {
+    composition: defineInteractiveRuntimeHostComposition(async (context) => {
       const continuity = new SessionContinuityCoordinator(
         context.hostEpoch,
         async (sessionId) => (sessionId === ROOT_SESSION_ID ? canonical(context.hostEpoch) : null),
@@ -57,6 +60,7 @@ test('two Clients query and control one Agent graph through Session invalidation
       const graph = new HostAgentGraphCoordinator({
         authority,
         continuity,
+        stopExecution: (rootSessionId) => authority.stopExecution(rootSessionId),
       });
       return {
         handlers: {
@@ -72,7 +76,7 @@ test('two Clients query and control one Agent graph through Session invalidation
           continuity.close();
         },
       };
-    },
+    }),
   });
   // Two probe round-trips observed while the stop request is pending resolve
   // the fake's stopGate. The observer is wired only onto the final TUI
@@ -94,7 +98,10 @@ test('two Clients query and control one Agent graph through Session invalidation
   try {
     desktop = await connect(root, 'desktop');
     tui = await connect(root, 'tui');
-    subscription = await desktop.openSessionSubscription({ sessionId: ROOT_SESSION_ID });
+    subscription = await desktop.openSessionSubscription({
+      sessionId: ROOT_SESSION_ID,
+      transcript: { kind: 'none' },
+    });
 
     const [desktopSnapshot, tuiSnapshot] = await Promise.all([
       desktop.request('agent.graph.query', { rootSessionId: ROOT_SESSION_ID }),
@@ -150,13 +157,17 @@ test('two Clients query and control one Agent graph through Session invalidation
 
 type GraphAuthority = Pick<
   AgentGraphCoordinator,
-  'getSnapshot' | 'inspectOperator' | 'stop' | 'subscribeAll'
+  'currentGraphId' | 'getSnapshot' | 'inspectOperator' | 'subscribeAll'
 >;
 
 class FakeAgentGraphAuthority implements GraphAuthority {
   readonly #listeners = new Set<AgentGraphClientChangedListener>();
   #snapshot = snapshot();
   stopCount = 0;
+
+  async currentGraphId(): Promise<string> {
+    return this.#snapshot.graphId;
+  }
 
   async getSnapshot(): Promise<AgentGraphClientSnapshot> {
     return structuredClone(this.#snapshot);
@@ -171,7 +182,8 @@ class FakeAgentGraphAuthority implements GraphAuthority {
    *  probe cycles — causal ordering, no fixed timing at all. */
   stopGate: Promise<void> = Promise.resolve();
 
-  async stop(): Promise<void> {
+  async stopExecution(rootSessionId: string): Promise<void> {
+    assert.equal(rootSessionId, ROOT_SESSION_ID);
     await this.stopGate;
     this.stopCount += 1;
     this.#snapshot.status = 'stopped';

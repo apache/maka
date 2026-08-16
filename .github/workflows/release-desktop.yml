@@ -135,6 +135,24 @@ jobs:
         if: matrix.platform == 'windows'
         run: npm run verify:windows-x64 -- "${{ steps.release.outputs.exe }}"
 
+      - name: Download and verify the pinned Windows upgrade baseline
+        id: previous
+        if: matrix.platform == 'windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          previous_exe="$(node scripts/prepare-windows-upgrade-baseline.mjs \
+            "$version" artifacts/windows-upgrade-baseline)"
+          echo "exe=$previous_exe" >> "$GITHUB_OUTPUT"
+
+      - name: Exercise pinned Windows upgrade and uninstall
+        if: matrix.platform == 'windows'
+        run: |
+          npm run verify:windows-installer -- \
+            "${{ steps.release.outputs.exe }}" \
+            "${{ steps.previous.outputs.exe }}"
+
       - name: Upload the verified release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

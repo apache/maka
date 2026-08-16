@@ -3,7 +3,7 @@ import {
   INLINE_REFERENCE_MAX_COUNT,
   isInlineReference,
   type InlineReference,
-} from '@maka/core';
+} from '@maka/core/events';
 import { posix } from 'node:path';
 
 export function mergeWorkspaceFileInlineReferences(input: {

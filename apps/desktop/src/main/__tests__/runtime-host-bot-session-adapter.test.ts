@@ -12,7 +12,7 @@ import {
   createRuntimeHostBotSessionAdapter,
   type RuntimeHostBotSessionAdapterDeps,
 } from '../runtime-host-bot-session-adapter.js';
-import type { DesktopRuntimeHostSession } from '../runtime-host-client.js';
+import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
 
 type BotClient = RuntimeHostBotSessionAdapterDeps['client'];
 
@@ -27,7 +27,9 @@ test('creates an explore Session through the Host-owned default model route', as
   });
   const adapter = createRuntimeHostBotSessionAdapter({
     client,
-    resolveCreateTarget: async () => ({ cwd: '/workspace', projectId: 'project-1' }),
+    resolveCreateTarget: async () => ({
+      workspace: { kind: 'project', projectId: 'project-1' },
+    }),
     emitSessionsChanged: (reason, sessionId, extra) =>
       changes.push({ reason, sessionId, extra }),
     newId: () => 'bot-session-1',
@@ -42,8 +44,7 @@ test('creates an explore Session through the Host-owned default model route', as
   assert.deepEqual(creates, [
     {
       sessionId: 'bot-session-1',
-      cwd: '/workspace',
-      projectId: 'project-1',
+      workspace: { kind: 'project', projectId: 'project-1' },
       name: 'Telegram conversation',
       labels: ['bot', 'telegram'],
       modelTarget: { kind: 'default' },
@@ -66,7 +67,7 @@ test('prepares a bound Session without exposing Host configuration revisions to 
   });
   const adapter = createRuntimeHostBotSessionAdapter({
     client,
-    resolveCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged() {},
   });
 
@@ -77,7 +78,7 @@ test('prepares a bound Session without exposing Host configuration revisions to 
 
   const unavailable = createRuntimeHostBotSessionAdapter({
     client: botClient({ getSession: async () => null }),
-    resolveCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged() {},
   });
   await assert.rejects(
@@ -98,7 +99,7 @@ test('reconciles an uncertain Host Session create with its stable Session identi
       },
       getSession: async (sessionId) => session(sessionId, { permissionMode: 'explore' }),
     }),
-    resolveCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged() {},
     newId: () => 'stable-session-id',
   });
@@ -112,16 +113,18 @@ test('reconciles an uncertain Host Session create with its stable Session identi
 test('subscribes before Turn start and settles a fast Host reply without losing text', async () => {
   const events = new AsyncFrameQueue();
   const changes: unknown[] = [];
+  const replySnapshots: string[] = [];
   let closeCount = 0;
-  const handle: DesktopRuntimeHostSession = {
+  const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(null),
+    activeAssistantStreams: [],
     transcript: Promise.resolve([]),
     events,
     async close() {
       closeCount += 1;
       events.end();
     },
-  };
+  });
   const client = botClient({
     openSession: async () => handle,
     startTurn: async (input) => {
@@ -129,8 +132,10 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
       events.push(projectionFrame(1, runningTurn(input.sessionId, input.turnId)));
       events.push(deltaFrame(2, input.sessionId, input.turnId, 0, 'Hello'));
       events.push(deltaFrame(3, input.sessionId, input.turnId, 3, 'lo world'));
+      events.push(deltaFrame(4, input.sessionId, input.turnId, 0, 'Hello world'));
+      events.push(deltaFrame(5, input.sessionId, input.turnId, 0, 'Corrected reply', true));
       events.push(
-        projectionFrame(4, {
+        projectionFrame(6, {
           ...runningTurn(input.sessionId, input.turnId),
           status: 'completed',
           terminalEventId: 'terminal-1',
@@ -141,7 +146,7 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
   });
   const adapter = createRuntimeHostBotSessionAdapter({
     client,
-    resolveCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged: (reason, sessionId, extra) =>
       changes.push({ reason, sessionId, extra }),
   });
@@ -150,9 +155,11 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
     sessionId: 'bot-session-1',
     turnId: 'turn-1',
     text: 'hello',
+    onReplySnapshot: (text) => replySnapshots.push(text),
   });
 
-  assert.deepEqual(result, { kind: 'completed', text: 'Hello world' });
+  assert.deepEqual(result, { kind: 'completed', text: 'Corrected reply' });
+  assert.deepEqual(replySnapshots, ['Hello', 'Hello world', 'Corrected reply']);
   assert.equal(closeCount, 1);
   assert.deepEqual(changes, [
     {
@@ -163,13 +170,99 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
   ]);
 });
 
+test('accepts an empty reset delta as the authoritative Bot reply', async () => {
+  const events = new AsyncFrameQueue();
+  const replySnapshots: string[] = [];
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      openSession: async () => runtimeHostSessionFixture({
+        snapshot: continuitySnapshot(null),
+        activeAssistantStreams: [],
+        transcript: Promise.resolve([]),
+        events,
+        async close() {
+          events.end();
+        },
+      }),
+      startTurn: async (input) => {
+        events.push(deltaFrame(1, input.sessionId, input.turnId, 0, 'Provisional reply'));
+        events.push(deltaFrame(2, input.sessionId, input.turnId, 0, '', true));
+        events.push(
+          projectionFrame(3, {
+            ...runningTurn(input.sessionId, input.turnId),
+            status: 'completed',
+            terminalEventId: 'terminal-1',
+          }),
+        );
+        return startedTurn(runningTurn(input.sessionId, input.turnId));
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+
+  assert.deepEqual(
+    await adapter.runTurn({
+      sessionId: 'bot-session-1',
+      turnId: 'turn-1',
+      text: 'hello',
+      onReplySnapshot: (text) => replySnapshots.push(text),
+    }),
+    { kind: 'completed', text: '' },
+  );
+  assert.deepEqual(replySnapshots, ['Provisional reply', '']);
+});
+
+test('reply snapshot observers cannot interrupt the authoritative Host Turn', async () => {
+  const events = new AsyncFrameQueue();
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      openSession: async () => runtimeHostSessionFixture({
+        snapshot: continuitySnapshot(null),
+        activeAssistantStreams: [],
+        transcript: Promise.resolve([]),
+        events,
+        async close() {
+          events.end();
+        },
+      }),
+      startTurn: async (input) => {
+        events.push(deltaFrame(1, input.sessionId, input.turnId, 0, 'Reply'));
+        events.push(
+          projectionFrame(2, {
+            ...runningTurn(input.sessionId, input.turnId),
+            status: 'completed',
+            terminalEventId: 'terminal-1',
+          }),
+        );
+        return startedTurn(runningTurn(input.sessionId, input.turnId));
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+
+  assert.deepEqual(
+    await adapter.runTurn({
+      sessionId: 'bot-session-1',
+      turnId: 'turn-1',
+      text: 'hello',
+      onReplySnapshot() {
+        throw new Error('delivery failed');
+      },
+    }),
+    { kind: 'completed', text: 'Reply' },
+  );
+});
+
 test('returns blocked Skill feedback without waiting for a Turn that was not created', async () => {
   const events = new AsyncFrameQueue();
   let closeCount = 0;
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
+        activeAssistantStreams: [],
         transcript: Promise.resolve([]),
         events,
         async close() {
@@ -186,7 +279,7 @@ test('returns blocked Skill feedback without waiting for a Turn that was not cre
         },
       }),
     }),
-    resolveCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged() {},
   });
 
@@ -221,8 +314,9 @@ async function runProjectedTurn(rootTurn: TurnSnapshot) {
   const events = new AsyncFrameQueue();
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
-      openSession: async () => ({
+      openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
+        activeAssistantStreams: [],
         transcript: Promise.resolve([]),
         events,
         async close() {
@@ -234,7 +328,7 @@ async function runProjectedTurn(rootTurn: TurnSnapshot) {
         return startedTurn(runningTurn(rootTurn.sessionId, rootTurn.turnId));
       },
     }),
-    resolveCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged() {},
   });
   return adapter.runTurn({
@@ -265,7 +359,10 @@ function session(
   return {
     id,
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: id,
@@ -284,6 +381,10 @@ function session(
     orchestrationMode: 'default',
     ...overrides,
   };
+}
+
+async function hostPathCreateTarget() {
+  return { workspace: { kind: 'host_path' as const, path: '/workspace' } };
 }
 
 function runningTurn(sessionId: string, turnId: string): TurnSnapshot {
@@ -333,6 +434,7 @@ function deltaFrame(
   turnId: string,
   startOffset: number,
   text: string,
+  reset = false,
 ): SubscriptionFrame {
   return {
     kind: 'subscription.session_delta',
@@ -347,6 +449,7 @@ function deltaFrame(
       messageId: 'message-1',
       startOffset,
       text,
+      ...(reset ? { reset: true } : {}),
     },
   };
 }

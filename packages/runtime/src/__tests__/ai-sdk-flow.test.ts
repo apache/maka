@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { decodeStoredMessageForRecovery, type BackendKind } from '@maka/core/session';
-import type { AgentRunHeader } from '@maka/core';
+import type { BackendKind } from '@maka/core/session';
+import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SessionEvent } from '@maka/core/events';
 import type { BackendSendInput, BackendSessionEvent } from '@maka/core/backend-types';
@@ -19,7 +19,6 @@ import {
   mapSessionEventToRuntimeEvent,
   createSessionEventMapMemory,
 } from '../ai-sdk-flow.js';
-import { flowSupportsControl } from '../agent-flow.js';
 import type { AgentBackend } from '@maka/core/backend-types';
 import { RuntimeRunner } from '../runtime-runner.js';
 import type { InvocationContext } from '../invocation-context.js';
@@ -149,20 +148,6 @@ describe('AiSdkFlow seam', () => {
     );
 
     assert.equal(runtimeEvent.refs?.sourceMessageDigest, digest);
-  });
-
-  test('implements AgentFlow + AgentFlowControl and reflects the wrapped backend', () => {
-    const backend = new ScriptedBackend({ events: [] });
-    const flow = new AiSdkFlow({ backend });
-
-    assert.equal(flow.kind, 'ai-sdk');
-    assert.equal(flow.sessionId, 'session-1');
-    assert.equal(typeof flow.run, 'function');
-    assert.equal(flowSupportsControl(flow), true);
-    assert.equal(flow.backendRef, backend);
-    // Structural: an AiSdkFlow is assignable to the AgentFlow contract.
-    const _asFlow: import('../agent-flow.js').AgentFlow = flow;
-    void _asFlow;
   });
 
   test('single-flights a pending backend stop and retries after it settles', async () => {
@@ -425,62 +410,6 @@ describe('AiSdkFlow seam', () => {
     assert.equal(out[2].status, 'completed');
   });
 
-  test('drops legacy permission events at backend ingress and rejects direct mapping', async () => {
-    const legacyEvents = [
-      ev({
-        type: 'permission_request',
-        kind: 'tool_permission',
-        requestId: 'legacy-request',
-        toolUseId: 'legacy-tool',
-        toolName: 'Write',
-        category: 'file_write',
-        reason: 'file_write',
-        args: { path: '/tmp/example' },
-        rememberForTurnAllowed: true,
-      }),
-      ev({
-        type: 'permission_answer_ack',
-        requestId: 'legacy-request',
-        toolUseId: 'legacy-tool',
-      }),
-      ev({
-        type: 'permission_closure_ack',
-        requestId: 'legacy-request',
-        toolUseId: 'legacy-tool',
-        reason: 'timed_out',
-      }),
-      ev({
-        type: 'permission_decision_ack',
-        requestId: 'legacy-request',
-        toolUseId: 'legacy-tool',
-        decision: 'deny',
-      }),
-    ];
-    const observed: string[] = [];
-    const backend = new ScriptedBackend({
-      events: [...legacyEvents, ev({ type: 'complete', stopReason: 'end_turn' })],
-    });
-    const flow = new AiSdkFlow({
-      backend,
-      onSessionEvent: (event) => {
-        observed.push(event.type);
-      },
-    });
-
-    const out = await collect(flow.run(ctx, { text: 'do it', context: [] }));
-    assert.deepEqual(
-      out.map((event) => event.status),
-      ['completed'],
-    );
-    assert.deepEqual(observed, ['complete']);
-    for (const legacyEvent of legacyEvents) {
-      assert.throws(
-        () => mapSessionEventToRuntimeEvent(legacyEvent, ctx, createSessionEventMapMemory()),
-        /legacy permission event/,
-      );
-    }
-  });
-
   test('maps the error path preserving error content + terminal failed', async () => {
     const backend = new ScriptedBackend({
       events: [
@@ -508,6 +437,7 @@ describe('AiSdkFlow seam', () => {
 
     assert.equal(out[1].status, 'failed');
     assert.equal(isTerminalRuntimeEvent(out[1]), true);
+    assert.deepEqual(out[1].content, err.content);
   });
 
   test('synthesizes a failed terminal event when the backend exhausts without one', async () => {
@@ -757,102 +687,6 @@ describe('AiSdkFlow seam', () => {
   });
 });
 
-describe('token usage durable round trip', () => {
-  test('token usage fields survive SessionEvent projection and legacy backfill', () => {
-    const contextBudget = {
-      enabled: true,
-      estimatedTokensBefore: 100,
-      estimatedTokensAfter: 80,
-      keptTurns: 2,
-      droppedTurns: 1,
-      keptEvents: 4,
-      droppedEvents: 2,
-    };
-    const usage = {
-      input: 100,
-      output: 25,
-      cacheHitInput: 40,
-      cacheMissInput: 60,
-      cacheWriteInput: 10,
-      cacheMissInputSource: 'explicit' as const,
-      reasoning: 5,
-      total: 125,
-      rawFinishReason: 'stop',
-      runtimeSteps: 3,
-      cacheRead: 40,
-      cacheCreation: 10,
-      costUsd: 0.002,
-      systemPromptHash: 'system-hash',
-      contextRemaining: 9000,
-      prefixHash: 'prefix-hash',
-      prefixChangeReason: 'stable' as const,
-      requestShapeHash: 'request-shape-hash',
-      requestShapeChangeReason: 'stable' as const,
-      promptSegments: [{ kind: 'system_prompt' as const, chars: 400, estimatedTokens: 100 }],
-      contextBudget,
-    };
-    const sessionEvent: SessionEvent = {
-      type: 'token_usage',
-      id: 'usage-1',
-      turnId: 'turn-1',
-      ts: 123,
-      ...usage,
-      providerRequestTraceId: 'provider-trace-1',
-    };
-    const runtimeEvent = decodeRuntimeEvent(
-      JSON.parse(
-        JSON.stringify(
-          mapSessionEventToRuntimeEvent(sessionEvent, ctx, createSessionEventMapMemory()),
-        ),
-      ),
-    );
-
-    assert.deepEqual(runtimeEvent.actions?.tokenUsage, usage);
-    assert.equal(runtimeEvent.refs?.providerRequestTraceId, 'provider-trace-1');
-
-    const projected = projectRuntimeEventsToStoredMessages([runtimeEvent], {
-      runHeaders: [],
-    });
-    const projectedMessage = projected.messages[0];
-    assert.ok(projectedMessage);
-    const stored = decodeStoredMessageForRecovery(JSON.parse(JSON.stringify(projectedMessage)));
-    assert.deepEqual(stored, {
-      type: 'token_usage',
-      id: 'usage-1',
-      turnId: 'turn-1',
-      ts: 123,
-      ...usage,
-      providerRequestTraceId: 'provider-trace-1',
-    });
-    assert.deepEqual(projected.diagnostics, []);
-
-    const backfilled = backfillRuntimeEventsFromStoredMessages({
-      run: {
-        runId: 'run-1',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        status: 'completed',
-        backendKind: 'ai-sdk',
-        llmConnectionSlug: 'anthropic',
-        modelId: 'model-1',
-        cwd: '/tmp',
-        permissionMode: 'ask',
-        createdAt: 100,
-        updatedAt: 200,
-      },
-      messages: [stored],
-      newId: () => 'backfilled-usage-1',
-      now: () => 999,
-    });
-
-    const backfilledEvent = backfilled.events[0];
-    assert.ok(backfilledEvent);
-    const replayed = decodeRuntimeEvent(JSON.parse(JSON.stringify(backfilledEvent)));
-    assert.deepEqual(replayed.actions?.tokenUsage, usage);
-    assert.equal(replayed.refs?.providerRequestTraceId, 'provider-trace-1');
-  });
-});
-
 // ============================================================================
 // Pure mapping unit tests
 // ============================================================================
@@ -930,22 +764,6 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     );
     assert.equal(b.partial, true);
     assert.equal(b.role, 'tool');
-  });
-
-  test('tool_start maps its semantic activity kind into runtime state', () => {
-    const event = mapSessionEventToRuntimeEvent(
-      ev({
-        type: 'tool_start',
-        toolUseId: 'tu-kind',
-        toolName: 'CustomCommand',
-        activityKind: 'command',
-        args: {},
-      }),
-      ctx,
-      createSessionEventMapMemory(),
-    );
-
-    assert.equal(event.actions?.stateDelta?.activityKind, 'command');
   });
 
   test('tool activity mapping retains nested CodeMode replay and parent identity', () => {

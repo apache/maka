@@ -1,11 +1,9 @@
-import type { ipcMain as electronIpcMain } from "electron";
 import type {
   AppSettings,
   SettingsTestResult,
-  UsageRange,
   UpdateAppSettingsInput,
   UpdateAppSettingsResult,
-} from "@maka/core";
+} from '@maka/core/settings';
 import type {
   CredentialLocator,
   CredentialStatus,
@@ -23,6 +21,10 @@ import {
   proxyTestFailure,
 } from "./settings-ipc-helpers.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from "./ipc-reconnect-policy.js";
 
 type RuntimeHostSettingsClient = Pick<
   DesktopRuntimeHostClient,
@@ -45,7 +47,7 @@ const WEB_SEARCH_CREDENTIAL: CredentialLocator = {
 };
 
 export interface RuntimeHostSettingsIpcDeps {
-  readonly ipcMain: Pick<typeof electronIpcMain, "handle">;
+  readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: RuntimeHostSettingsClient;
   readonly settingsStore: SettingsStore;
   readonly applyClientSettings: (settings: AppSettings) => Promise<void>;
@@ -54,10 +56,7 @@ export interface RuntimeHostSettingsIpcDeps {
 export function registerRuntimeHostSettingsIpc(
   deps: RuntimeHostSettingsIpcDeps,
 ): void {
-  deps.ipcMain.handle("settings:usageStats", (_event, range?: UsageRange) =>
-    deps.settingsStore.usageStats(range),
-  );
-  deps.ipcMain.handle("settings:get", async () =>
+  handleReconnectableRead(deps.ipcMain, "settings:get", async () =>
     maskAppSettings(await loadRuntimeHostSettings(deps)),
   );
   deps.ipcMain.handle(

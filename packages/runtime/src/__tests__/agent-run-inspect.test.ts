@@ -1,11 +1,7 @@
 import { describe, test } from 'node:test';
-import type {
-  AgentRunEvent,
-  AgentRunHeader,
-  AgentRunStore,
-  RuntimeEvent,
-  RuntimeEventStore,
-} from '@maka/core';
+import type { AgentRunEvent, AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import { expect } from '../test-helpers.js';
 import { inspectAgentRunReadModel } from '../agent-run-inspect.js';
 

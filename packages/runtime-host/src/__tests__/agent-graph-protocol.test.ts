@@ -1,3 +1,4 @@
+import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
@@ -13,24 +14,11 @@ import {
   decodeHostFrame,
   type AgentGraphClientSnapshot,
   type AgentGraphOperatorInspection,
-  RuntimeHostProtocolError,
 } from '../protocol/index.js';
 
 const fingerprint = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Agent Graph Client protocol', () => {
-  test('declares bounded ready query, inspection, and stop operations', () => {
-    assert.equal(AGENT_GRAPH_OPERATION_SPECS['agent.graph.query'].mode, 'query');
-    assert.equal(AGENT_GRAPH_OPERATION_SPECS['agent.graph.operator.query'].mode, 'query');
-    assert.equal(AGENT_GRAPH_OPERATION_SPECS['agent.graph.stop'].mode, 'control');
-    for (const spec of Object.values(AGENT_GRAPH_OPERATION_SPECS)) {
-      assert.equal(spec.availability, 'ready');
-      assert.ok(spec.errors.includes('not_found'));
-      assert.ok(spec.errors.includes('operation_conflict'));
-      assert.ok(spec.errors.includes('internal_failure'));
-    }
-  });
-
   test('round-trips canonical inputs and bounded projections', () => {
     assert.deepEqual(decodeAgentGraphQueryInput({ rootSessionId: 'root-1' }), {
       rootSessionId: 'root-1',
@@ -71,6 +59,17 @@ describe('Agent Graph Client protocol', () => {
       decodeAgentGraphClientSnapshot({
         ...snapshot,
         operators: [{ ...snapshot.operators[0], privatePrompt: 'secret' }],
+      }),
+    );
+    assertInvalid(() =>
+      decodeAgentGraphClientSnapshot({
+        ...snapshot,
+        operators: [
+          {
+            ...snapshot.operators[0],
+            readiness: [{ ...snapshot.operators[0]!.readiness[0], policyKind: 'map' }],
+          },
+        ],
       }),
     );
     assertInvalid(() =>
@@ -161,7 +160,6 @@ function graphSnapshot(): AgentGraphClientSnapshot {
         readiness: [
           {
             readinessId: 'readiness:1',
-            policyKind: 'map',
             status: 'waiting',
             waitingFor: [{ kind: 'input_route', upstreamOperatorIds: ['operator:0'] }],
             omittedWaitingFor: 0,

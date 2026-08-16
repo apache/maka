@@ -56,7 +56,7 @@ export interface PageHeaderProps {
   titleId?: string;
   /**
    * Right-aligned action cluster (buttons, search box). The cluster's own
-   * positioning class (e.g. `maka-module-main-actions`, `maka-plan-top-actions`)
+   * positioning class (e.g. `maka-module-main-actions`, `maka-scheduled-task-top-actions`)
    * is passed as a child by the call site; the shell only slots it to the end.
    */
   actions?: ReactNode;
@@ -70,7 +70,7 @@ export interface PageHeaderProps {
   /** Wrapper class — the existing call-site hook (kept so CSS + contracts stay pinned). */
   className?: string;
   /**
-   * Class for the title+subtitle content column (e.g. `maka-plan-heading`).
+   * Class for the title+subtitle content column (e.g. `maka-scheduled-task-heading`).
    * Lets a call site keep a wrapper that its CSS targets as the heading group.
    */
   contentClassName?: string;

@@ -1,15 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-  type UiLocale,
-} from '@maka/core';
+import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
+import { type UiLocale } from '@maka/core/ui-locale';
 import type { SessionTrace } from '@maka/core/session-trace';
+import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { createTraceRefreshCoalescer } from './session-trace-refresh.js';
 
 interface SessionTraceSnapshot {
   sessionId?: string;
   trace?: SessionTrace;
+  /**
+   * What the context is made of right now, from the Host operation that owns
+   * that question (#2323). Read on the same signal as the trace but kept
+   * separate: it is a different fact from a different owner, and a failure to
+   * answer it must not blank the causal record beside it.
+   */
+  context?: ContextDiagnosticsResult;
   loading: boolean;
   error?: string;
 }
@@ -47,10 +52,14 @@ export function useSessionTrace(
       const revision = ++revisionRef.current;
       setSnapshot((current) => ({
         sessionId: targetSessionId,
-        // Keep the last trace on screen through every read: a live turn would
-        // otherwise blank the timeline on each event, and re-activation would
-        // blank it on each glance.
-        ...(current.sessionId === targetSessionId ? { trace: current.trace } : {}),
+        // Keep BOTH reads on screen through every refresh. They settle
+        // independently, so preserving only the trace left the composition
+        // blank from the moment a read started until the second response
+        // landed — a flicker on every ledger event, on data that was still
+        // valid the whole time.
+        ...(current.sessionId === targetSessionId
+          ? { trace: current.trace, context: current.context }
+          : {}),
         loading: true,
       }));
       void window.maka.inspector.trace(targetSessionId).then(
@@ -59,25 +68,52 @@ export function useSessionTrace(
           if (!result.ok) {
             setSnapshot((current) => ({
               sessionId: targetSessionId,
-              ...(current.sessionId === targetSessionId ? { trace: current.trace } : {}),
+              ...(current.sessionId === targetSessionId
+                ? { trace: current.trace, context: current.context }
+                : {}),
               loading: false,
               error: result.error.message || copy.loadFailed,
             }));
             return;
           }
-          setSnapshot({ sessionId: targetSessionId, trace: result.data, loading: false });
+          setSnapshot((current) => ({
+            sessionId: targetSessionId,
+            trace: result.data,
+            ...(current.sessionId === targetSessionId ? { context: current.context } : {}),
+            loading: false,
+          }));
         },
         (error: unknown) => {
           if (revision !== revisionRef.current) return;
           setSnapshot((current) => ({
             sessionId: targetSessionId,
-            ...(current.sessionId === targetSessionId ? { trace: current.trace } : {}),
+            ...(current.sessionId === targetSessionId
+              ? { trace: current.trace, context: current.context }
+              : {}),
             loading: false,
             error:
               copy.locale === 'zh'
                 ? generalizedErrorMessageChinese(error, copy.loadFailed)
                 : generalizedErrorMessage(error, copy.loadFailed),
           }));
+        },
+      );
+      // Enrichment, and read as such: the context snapshot has its own owner
+      // and its own failure modes, so it lands when it lands and its absence
+      // costs the composition block, never the trace.
+      void window.maka.inspector.context(targetSessionId).then(
+        (result) => {
+          if (revision !== revisionRef.current) return;
+          setSnapshot((current) =>
+            current.sessionId === targetSessionId && result.ok
+              ? { ...current, context: result.data }
+              : current,
+          );
+        },
+        () => {
+          // A refresh that could not reach the snapshot leaves the last one
+          // standing: it is still the newest answer anyone has, and blanking it
+          // would report "no composition" for a read that simply failed.
         },
       );
     },

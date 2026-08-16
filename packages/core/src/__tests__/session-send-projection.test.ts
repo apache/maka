@@ -249,33 +249,6 @@ describe('projectSessionSendOutcome — silent rebind walk', () => {
 });
 
 describe('projectSessionSendOutcome — codex normalization', () => {
-  // 'gpt-5-codex' is the one entry in CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.
-  const codex = connection({
-    slug: 'codex-sub',
-    providerType: 'openai-codex',
-    defaultModel: 'gpt-5.6-sol',
-    models: [{ id: 'gpt-5.6-sol' }],
-  });
-
-  it('a requested ChatGPT-unsupported session model falls back to the servable default', () => {
-    // Without normalization the sticky 'gpt-5-codex' is not in the
-    // enabled list → model_not_enabled. The send path drops it and
-    // validates the normalized default instead → ready.
-    const outcome = projectSessionSendOutcome(
-      input({
-        session: {
-          backend: 'ai-sdk',
-          llmConnectionSlug: 'codex-sub',
-          model: 'gpt-5-codex',
-          connectionLocked: true,
-        },
-        connections: [codex],
-        defaultSlug: 'codex-sub',
-      }),
-    );
-    assert.deepEqual(outcome, { kind: 'ready' });
-  });
-
   it('a codex connection with only unsupported models rebinds onto the fallback list', () => {
     const outcome = projectSessionSendOutcome(
       input({

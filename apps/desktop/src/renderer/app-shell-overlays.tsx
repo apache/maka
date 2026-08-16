@@ -1,22 +1,16 @@
 import { lazy, Suspense } from 'react';
-import type {
-  ChatDefaultPermissionMode,
-  LlmConnection,
-  ProviderType,
-  SessionSummary,
-  SettingsSection,
-  ThemePalette,
-  ThemePreference,
-  UiLocalePreference,
-} from '@maka/core';
+import type { ChatDefaultPermissionMode, SettingsSection, ThemePalette, ThemePreference } from '@maka/core/settings';
+import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
+import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { SearchModal, useUiLocale } from '@maka/ui';
 import { KeyboardHelpModal } from './keyboard-help';
 import { CommandPalette } from './command-palette';
 import { useAppShellCommands, type AppShellCommandListOptions } from './app-shell-command-actions';
+import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import type { UiLocaleUpdateGate } from './settings/ui-locale-update-gate';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
-import { ExternalSessionImportDialog } from './external-session-import-dialog.js';
 
 const SettingsModal = lazy(() => import('./settings/settings-modal').then((m) => ({ default: m.SettingsModal })));
 
@@ -60,6 +54,7 @@ export function AppShellOverlays(props: {
   onOpenDailyReview(): void;
   onOpenKeyboardHelp(): void;
   onOpenSettingsSession(sessionId: string): void;
+  archivedTasks: ArchivedTasksBridge;
   helpOpen: boolean;
   closeHelp(): void;
   searchModalOpen: boolean;
@@ -69,9 +64,7 @@ export function AppShellOverlays(props: {
   paletteOpen: boolean;
   closePalette(): void;
   commandOptions: AppShellCommandListOptions;
-  externalImportOpen: boolean;
-  onExternalImportOpenChange(open: boolean): void;
-  onExternalSessionImported(session: SessionSummary): void;
+  onExternalSessionImported(session: DesktopSessionSummary): void;
 }) {
   const {
     closeHelp,
@@ -100,8 +93,6 @@ export function AppShellOverlays(props: {
     setDefaultPermissionMode,
     themePalette,
     themePref,
-    externalImportOpen,
-    onExternalImportOpenChange,
     onExternalSessionImported,
   } = props;
 
@@ -132,6 +123,8 @@ export function AppShellOverlays(props: {
             onOpenDailyReview={props.onOpenDailyReview}
             onOpenKeyboardHelp={props.onOpenKeyboardHelp}
             onOpenSession={props.onOpenSettingsSession}
+            archivedTasks={props.archivedTasks}
+            onTaskImported={onExternalSessionImported}
           />
         </Suspense>
       )}
@@ -155,11 +148,6 @@ export function AppShellOverlays(props: {
           if (!open) closePalette();
         }}
         commands={commands}
-      />
-      <ExternalSessionImportDialog
-        isOpen={externalImportOpen}
-        onOpenChange={onExternalImportOpenChange}
-        onImported={onExternalSessionImported}
       />
     </>
   );

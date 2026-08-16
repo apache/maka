@@ -1,11 +1,13 @@
-import type {
-  ChatDefaultPermissionMode,
-  LlmConnection,
-  PermissionMode,
-  SessionSummary,
-  ThinkingLevel,
-  UiLocale,
-} from '@maka/core';
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
+import type { LlmConnection } from '@maka/core/llm-connections';
+import type { PermissionMode } from '@maka/core/permission';
+import {
+  deriveModelSwitchTranscript,
+  type StoredMessage,
+} from '@maka/core/session';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { UiLocale } from '@maka/core/ui-locale';
+import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 
 type RefBox<T> = { current: T };
@@ -33,23 +35,27 @@ export function createAppShellSessionSettingsActions(deps: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
   connections: readonly LlmConnection[];
+  messages: readonly StoredMessage[];
   pendingPermissionModeChangesRef: RefBox<Set<string>>;
   pendingSessionModelChangesRef: RefBox<Set<string>>;
-  refreshSessions: () => Promise<SessionSummary[]>;
+  refreshSessions: () => Promise<DesktopSessionSummary[]>;
   saveComposerDefaults: (patch: {
     model: { llmConnectionSlug: string; model: string };
   }) => void;
-  sessionsRef: RefBox<SessionSummary[]>;
+  sessionsRef: RefBox<DesktopSessionSummary[]>;
   setDefaultPermissionMode: (mode: ChatDefaultPermissionMode) => void;
   setPendingPermissionModeBySession: BooleanRecordUpdater;
   setPendingSessionModelBySession: BooleanRecordUpdater;
-  setSessions: (updater: (current: SessionSummary[]) => SessionSummary[]) => void;
+  setSessions: (
+    updater: (current: DesktopSessionSummary[]) => DesktopSessionSummary[],
+  ) => void;
   toastApi: ToastApi;
 }): AppShellSessionSettingsActions {
   const {
     uiLocale,
     activeIdRef,
     connections,
+    messages,
     pendingPermissionModeChangesRef,
     pendingSessionModelChangesRef,
     refreshSessions,
@@ -68,6 +74,19 @@ export function createAppShellSessionSettingsActions(deps: {
     const next = { ...current };
     delete next[sessionId];
     return next;
+  }
+
+  function modelLabel(connectionSlug: string, model: string): string {
+    const connection = connections.find((entry) => entry.slug === connectionSlug);
+    const displayName = connection?.models?.find((entry) => entry.id === model)?.displayName?.trim();
+    return displayName || model;
+  }
+
+  function modelEndpointLabel(connectionSlug: string, model: string, includeConnection: boolean): string {
+    const label = modelLabel(connectionSlug, model);
+    if (!includeConnection) return label;
+    const connection = connections.find((entry) => entry.slug === connectionSlug);
+    return `${label} (${connection?.name ?? connectionSlug})`;
   }
 
   async function setPermissionMode(mode: PermissionMode) {
@@ -125,6 +144,8 @@ export function createAppShellSessionSettingsActions(deps: {
   async function setSessionModel(input: { llmConnectionSlug: string; model: string }) {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
+    const previous = sessionsRef.current.find((session) => session.id === sessionId);
+    const transcript = deriveModelSwitchTranscript(messages);
     if (pendingSessionModelChangesRef.current.has(sessionId)) return;
     pendingSessionModelChangesRef.current.add(sessionId);
     setPendingSessionModelBySession((current) => ({
@@ -134,9 +155,23 @@ export function createAppShellSessionSettingsActions(deps: {
     try {
       const next = await window.maka.sessions.setModel(sessionId, input);
       setSessions((prev) => prev.map((session) => (session.id === next.id ? next : session)));
-      const connection = connections.find((entry) => entry.slug === next.llmConnectionSlug);
       if (activeIdRef.current === sessionId) {
-        toastApi.success(copy.modelSwitchedTitle, `${connection?.name ?? next.llmConnectionSlug} · ${next.model}`);
+        const connectionChanged = previous?.llmConnectionSlug !== next.llmConnectionSlug;
+        const to = modelEndpointLabel(next.llmConnectionSlug, next.model, connectionChanged);
+        const previousModel = transcript.lastUsedModel ?? previous?.model;
+        toastApi.success(
+          copy.modelSwitchedTitle,
+          previous && previousModel
+            ? copy.modelSwitchedDescription(
+                modelEndpointLabel(
+                  previous.llmConnectionSlug,
+                  previousModel,
+                  connectionChanged,
+                ),
+                to,
+              )
+            : to,
+        );
       }
       saveComposerDefaults({ model: input });
       await refreshSessions();

@@ -1,9 +1,8 @@
 # Session Task Ledger Lifecycle
 
 This document defines the lifecycle and persistence contract for the task ledger
-attached to an interactive session. It is distinct from the Headless `TaskRun`
-record: the ledger tracks model-visible work items inside a session, while a
-`TaskRun` records a complete benchmark or automation execution.
+attached to an interactive session. The ledger tracks model-visible work items
+inside a Runtime Host Session; it is not an Eval experiment or cell ledger.
 
 ## Scope
 
@@ -222,7 +221,7 @@ editing controls.
 
 This interactive task ledger remains separate from:
 
-- Headless `TaskRun`, the durable execution envelope across Attempts;
+- Eval experiments, cells, and attempts;
 - Goal state, which owns bounded autonomous continuation;
-- Automation and plan reminders, which own scheduled execution;
+- ScheduledTask, which owns scheduled execution;
 - `AgentRun` / `RuntimeEvent`, which own actual runtime and evidence history.

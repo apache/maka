@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { SessionSummary, StoredMessage } from '@maka/core';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import {
   SNIPPET_MAX_CODE_POINTS,
   TOOL_RESULT_SCAN_CAP_BYTES,
@@ -8,7 +8,6 @@ import {
   collectSearchableText,
   findMatch,
   foldForMatch,
-  formatSearchResultSummary,
   runThreadSearch,
 } from '../search/thread-search.js';
 
@@ -133,7 +132,7 @@ describe('runThreadSearch', () => {
     assert.equal(hits.at(-1)?.truncated, true);
   });
 
-  it('redacts snippets and excludes fake-backend sessions', async () => {
+  it('redacts snippets and excludes fake-backend and archived sessions', async () => {
     const hits = expectResults(
       await runThreadSearch(
         { source: 'thread', query: 'hello', limit: 5 },
@@ -141,6 +140,13 @@ describe('runThreadSearch', () => {
           fake: {
             session: session({ id: 'fake', backend: 'fake' }),
             messages: [userMessage('hello from fixture')],
+          },
+          // Archiving a task takes it out of the working set. It has no rail
+          // row to land on, so a hit inside it can only be opened from a
+          // surface that no longer exists; Settings manages it instead.
+          archived: {
+            session: session({ id: 'archived', isArchived: true }),
+            messages: [userMessage('hello from an archived task')],
           },
           real: {
             session: session({ id: 'real' }),
@@ -209,7 +215,7 @@ describe('runThreadSearch', () => {
       await runThreadSearch({ source: 'thread', query: 'roadmap', limit: 5 }, makeDeps(entries)),
     )[0]!;
     assert.deepEqual(titleHit.target, { kind: 'thread', sessionId: 's1' });
-    assert.equal(titleHit.summary, '会话标题');
+    assert.equal(titleHit.summary, '任务标题');
     assert.equal(titleHit.url, undefined);
     assert.match(titleHit.snippet ?? '', /\[redacted\]/);
     assert.equal(titleHit.snippet?.includes('sk-ant-test-secret-token-12345'), false);
@@ -221,9 +227,25 @@ describe('runThreadSearch', () => {
       kind: 'thread',
       sessionId: 's1',
       turnId: 'turn-user',
+      sequence: 0,
     });
     assert.equal(messageHit.summary, '用户消息');
     assert.equal(messageHit.url, undefined);
+  });
+
+  it('skips a transcript that its dependency could not read', async () => {
+    const entries = {
+      s1: { session: session({ id: 's1' }), messages: [] },
+    };
+    const deps = makeDeps(entries);
+
+    assert.deepEqual(
+      await runThreadSearch(
+        { source: 'thread', query: 'diagnostic', limit: 5 },
+        { ...deps, readMessages: async () => null },
+      ),
+      [],
+    );
   });
 
   it('blocks active or unverifiable privacy state before scanning', async () => {
@@ -371,11 +393,4 @@ describe('thread search text projection', () => {
     for (const message of excluded) assert.equal(collectSearchableText(message), undefined);
   });
 
-  it('labels searchable message types without leaking raw enum names', () => {
-    assert.equal(formatSearchResultSummary(userMessage('hello')), '用户消息');
-    assert.equal(formatSearchResultSummary(assistantMessage('hello')), '助手回复');
-    assert.equal(formatSearchResultSummary(toolCall('list files')), '工具调用：Shell command');
-    assert.equal(formatSearchResultSummary(toolResult({ ok: true })), '工具结果：成功');
-    assert.equal(formatSearchResultSummary(toolResult({ ok: false }, true)), '工具结果：失败');
-  });
 });

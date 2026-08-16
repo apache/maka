@@ -17,14 +17,11 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute } from 'node:path';
-import {
-  compilePermissionProfile,
-  parseAttachmentResourceRef,
-  type SandboxBoundaryExpansion,
-  type StorageRef,
-  type PermissionProfile,
-  type ToolResultContent,
-} from '@maka/core';
+import { compilePermissionProfile } from '@maka/core/permission-profile-compiler';
+import { parseAttachmentResourceRef } from '@maka/core/attachments';
+import { type SandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
+import { type StorageRef, type ToolResultContent } from '@maka/core/events';
+import { type PermissionProfile } from '@maka/core/permission-profile';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
 import { fileWriteToolResultToModelOutput } from './file-tool-model-output.js';
 import { openAiApplyPatchInputSchema } from './openai-apply-patch.js';

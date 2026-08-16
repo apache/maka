@@ -6,16 +6,13 @@ import {
 } from './icons.js';
 import { DeepResearchEmptyHero, EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
-import { PromptAnchorRail } from './prompt-anchor-rail.js';
+import { PromptAnchorRail, type PromptAnchorRailTurn } from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
-import type {
-  DeepResearchClientProgress,
-  ProviderType,
-  SessionSummary,
-  ShellRunUpdate,
-  StoredMessage,
-} from '@maka/core';
-import { isDeepResearchSession } from '@maka/core';
+import type { DeepResearchClientProgress } from '@maka/core/deep-research-run';
+import type { ProviderType } from '@maka/core/llm-connections';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { ShellRunUpdate } from '@maka/core/events';
+import { isDeepResearchSession } from '@maka/core/explore-agent';
 import { Button, ButtonGroup, ChatMessageList, EmptyState, Spinner } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
@@ -32,20 +29,23 @@ import {
   type TurnPresentationDeriver,
 } from './chat-turn.js';
 import { useChatScroll } from './use-chat-scroll.js';
-import { useProgressiveTurnMount } from './use-progressive-turn-mount.js';
-import { createTurnSizeIndex, layoutKeyOf, measureSettledGeometry } from './turn-size-index.js';
+import { useTurnVirtualizer } from './use-turn-virtualizer.js';
+import { placeChatConversationItems } from './chat-conversation-items.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { SessionContextLayer } from './session-context-layer.js';
 
-// #2224: one geometry cache for the app's single ChatView. Session-keyed
-// inside; module scope only saves threading it through the shell.
-const turnSizeIndex = createTurnSizeIndex();
+export interface LiveContentActivationSnapshot {
+  turnId: string;
+  entries: ReadonlyMap<string, string>;
+}
 
 export function ChatView(props: {
   messages: StoredMessage[];
   messageLoading?: boolean;
   liveTurn?: LiveTurnProjection;
+  /** Live display content already present when the host activated this conversation surface. */
+  initialLiveContentSnapshot?: LiveContentActivationSnapshot;
   shellRunUpdates?: readonly ShellRunUpdate[];
   /** Called once the streaming bubble has displayed the final text and can hand off to history. */
   onStreamingSettled?(messageId?: string): void;
@@ -99,6 +99,7 @@ export function ChatView(props: {
   conversationItems?: ReadonlyArray<{
     id: string;
     afterTurnId: string;
+    renderWhenAnchorMissing?: boolean;
     content: ReactNode;
   }>;
   /**
@@ -162,7 +163,17 @@ export function ChatView(props: {
    * chat view only scrolls/highlights the already-rendered turn.
    */
   scrollTargetTurn?: { turnId: string; nonce: number };
-  scrollBehavior?: ScrollBehavior;
+  scrollBehavior: ScrollBehavior;
+  hasOlderHistory?: boolean;
+  historyLoadPending?: boolean;
+  onLoadEarlierHistory?(): Promise<void> | void;
+  returnToLatest?: {
+    label: string;
+    isPending: boolean;
+    onClick(): Promise<void> | void;
+  };
+  transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
+  onLoadTranscriptTurn?(target: { turnId: string; sequence: number }): void;
   /**
    * PR109f: when the active session is a branched session
    * (`parentSessionId` set on its summary), show a banner above the
@@ -315,7 +326,7 @@ export function ChatView(props: {
   // per-entry comparison is O(1) per turn because an unaffected turn keeps its
   // object identity, so its text is the same string reference.
   const promptRailTurnsRef = useRef<ReadonlyArray<{ turnId: string; label: string; reply: string }>>([]);
-  const promptRailTurns = useMemo(() => {
+  const loadedPromptRailTurns = useMemo(() => {
     const next = turns
       .filter((turn) => (turn.user?.text ?? '').trim().length > 0)
       .map((turn) => ({
@@ -336,6 +347,19 @@ export function ChatView(props: {
     promptRailTurnsRef.current = next;
     return next;
   }, [turns]);
+  const promptRailTurns = useMemo(() => {
+    const index = props.transcriptTurnIndex;
+    if (!index || index.length === 0) return loadedPromptRailTurns;
+    const loadedByTurnId = new Map(loadedPromptRailTurns.map((turn) => [turn.turnId, turn]));
+    return index.map((turn) => ({
+        ...(loadedByTurnId.get(turn.turnId) ?? {
+          turnId: turn.turnId,
+          label: turn.label,
+          reply: '',
+        }),
+        sequence: turn.sequence,
+      }));
+  }, [loadedPromptRailTurns, props.transcriptTurnIndex]);
   // Stable event wrappers (advanced-use-latest): parent handlers are
   // recreated per render upstream; routing through refs keeps the
   // memoized TurnView's function props identity-stable without
@@ -364,107 +388,47 @@ export function ChatView(props: {
     (sessionId: string) => onOpenLinkedSessionRef.current?.(sessionId),
     [],
   );
-  const conversationItemsByTurn = useMemo(() => {
-    const items = new Map<string, Array<{ id: string; content: ReactNode }>>();
-    for (const item of props.conversationItems ?? []) {
-      const current = items.get(item.afterTurnId) ?? [];
-      current.push({ id: item.id, content: item.content });
-      items.set(item.afterTurnId, current);
-    }
-    return items;
-  }, [props.conversationItems]);
   const turnIds = useMemo(() => new Set(turns.map((turn) => turn.turnId)), [turns]);
+  const conversationItemPlacement = useMemo(() => placeChatConversationItems(
+    (props.conversationItems ?? []).map((item) => ({
+      afterTurnId: item.afterTurnId,
+      renderWhenAnchorMissing: item.renderWhenAnchorMissing,
+      value: { id: item.id, content: item.content },
+    })),
+    turnIds,
+  ), [props.conversationItems, turnIds]);
+  const turnIdsRef = useRef(turnIds);
+  turnIdsRef.current = turnIds;
+  const loadTranscriptTurnRef = useRef(props.onLoadTranscriptTurn);
+  loadTranscriptTurnRef.current = props.onLoadTranscriptTurn;
   const chatLayout = useChatLayoutContext();
   if (!chatLayout) {
     throw new Error('ChatView must be rendered inside ChatSurfaceLayout');
   }
   const scrollRef = chatLayout.scrollContainerRef;
-  // #2052: the first commit after a session switch mounts only a tail window
-  // of turns; the rest arrive in idle chunks with scroll compensation. The
-  // full `turns` array above still feeds deriveTurnPresentation and the
-  // prompt rail, so presentation caching (#2030) and rail geometry are not
-  // window-dependent; only the JSX mapping below is sliced.
+  const [latestNavigationNonce, setLatestNavigationNonce] = useState(0);
   const orderedTurnIds = useMemo(() => turns.map((turn) => turn.turnId), [turns]);
-  // #2224: heights measured on a previous visit under the current layout.
-  // With them the unmounted prefix is held by one spacer and each turn's
-  // intrinsic size is seeded, so the scroller's total height stays put while
-  // the fill runs. Without them (first visit, resized window) everything
-  // below degrades to the plain #2052 fill and the warm-up relearns sizes.
   const sessionId = props.activeSession?.id;
-  // The lookup should land in the same commit as the session switch, so the
-  // scroller never paints a frame at its unseeded height. An in-place
-  // switch has the scroller ref during render and the memo reads it there.
-  // Two things invalidate that read: on a fresh mount the ref is still null
-  // (the scroller is an ancestor host whose ref attaches after descendant
-  // effects), and on platforms with classic scrollbars the column is wider
-  // until enough turns mount to overflow, so an early read misses the
-  // record. The nudge effect below answers both by retrying after every
-  // commit while the fill window is open (each fill chunk moves mountStart)
-  // and stopping on the first hit or when the window closes, so token
-  // streaming never re-reads layout.
-  const [lookupPass, setLookupPass] = useState(0);
-  const seededGeometry = useMemo(() => {
-    const root = scrollRef.current;
-    if (!sessionId || !root) return undefined;
-    return turnSizeIndex.lookup(sessionId, layoutKeyOf(root));
-  }, [sessionId, scrollRef, lookupPass]);
-  const { start: mountStart, filled: turnsFilled, prefixHeight, revealTurn } = useProgressiveTurnMount({
+  const {
+    start: mountStart,
+    end: mountEnd,
+    beforeHeight,
+    afterHeight,
+    revealTurn,
+  } = useTurnVirtualizer({
     sessionId,
     turnIds: orderedTurnIds,
     scrollRef,
     targetTurnId: props.scrollTargetTurn?.turnId,
-    seededGeometry,
+    targetKey: props.scrollTargetTurn?.nonce,
   });
-  useEffect(() => {
-    if (!turnsFilled && !seededGeometry && scrollRef.current) {
-      setLookupPass((count) => count + 1);
+  const navigatePromptRailFallback = useCallback((turn: PromptAnchorRailTurn) => {
+    if (turnIdsRef.current.has(turn.turnId)) revealTurn(turn.turnId);
+    else if (turn.sequence !== undefined) {
+      loadTranscriptTurnRef.current?.({ turnId: turn.turnId, sequence: turn.sequence });
     }
-  }, [sessionId, orderedTurnIds, mountStart, turnsFilled, seededGeometry, scrollRef]);
-  const mountedTurns = mountStart === 0 ? turns : turns.slice(mountStart);
-  // Record geometry once the transcript has settled: fill complete and the
-  // warm-up done, so every turn's box is its remembered final size and
-  // reading it forces no render. An exit-time capture would be too late,
-  // React runs effect cleanups after the next session's DOM is already in.
-  // Streaming turns are still moving and are left out.
-  useEffect(() => {
-    const root = scrollRef.current;
-    // A pair of turns is the smallest transcript measureSettledGeometry
-    // accepts, and the pair gate also keeps an empty session from polling
-    // forever: with no turns the warm-up never runs, so 'settled' is never
-    // written and the wait below would have no end.
-    if (!sessionId || !root || !turnsFilled || orderedTurnIds.length < 2) return;
-    let disposed = false;
-    let timer: number | undefined;
-    // Backstop for the same never-settles shape arriving some other way: a
-    // walk that has not settled after 150 polls is not going to, and a dead
-    // timer must not keep reading layout on a resting surface.
-    let polls = 0;
-    const startKey = layoutKeyOf(root);
-    const measure = () => {
-      if (disposed) return;
-      const attempt = measureSettledGeometry(root, startKey);
-      if (attempt.status === 'pending') {
-        polls += 1;
-        if (polls < 150) timer = window.setTimeout(measure, 200);
-        return;
-      }
-      if (attempt.status === 'measured') {
-        turnSizeIndex.record(sessionId, startKey, attempt.geometry);
-        // Published like data-turn-warmup, with the key as the value: a
-        // wait can then ask for the record covering the layout it is about
-        // to rely on, not merely some record from an earlier width.
-        root.dataset.turnGeometry = startKey;
-      }
-    };
-    timer = window.setTimeout(measure, 200);
-    return () => {
-      disposed = true;
-      window.clearTimeout(timer);
-      // The key describes the transcript that was measured; whatever
-      // replaces it must not inherit the announcement.
-      delete root.dataset.turnGeometry;
-    };
-  }, [sessionId, turnsFilled, orderedTurnIds, scrollRef]);
+  }, [revealTurn]);
+  const mountedTurns = turns.slice(mountStart, mountEnd);
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,
@@ -472,7 +436,10 @@ export function ChatView(props: {
     messages: props.messages,
     target: props.scrollTargetTurn,
     behavior: props.scrollBehavior,
-    warmupReady: turnsFilled,
+    hasOlderHistory: props.hasOlderHistory,
+    historyLoadPending: props.historyLoadPending,
+    onLoadEarlierHistory: props.onLoadEarlierHistory,
+    latestNavigationNonce,
   });
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
     scrollRef,
@@ -532,10 +499,11 @@ export function ChatView(props: {
   }
 
   const deepResearchActive = isDeepResearchSession(props.activeSession.labels);
-  const conversationItems = props.conversationItems ?? [];
+  const hasVisibleConversationItem =
+    conversationItemPlacement.byTurn.size > 0 || conversationItemPlacement.orphan !== undefined;
   const showEmptyState =
-    (chat.length === 0 && !streamingActive && conversationItems.length === 0)
-    || Boolean(props.messageLoading && chat.length === 0 && conversationItems.length === 0);
+    (chat.length === 0 && !streamingActive && !hasVisibleConversationItem)
+    || Boolean(props.messageLoading && chat.length === 0 && !hasVisibleConversationItem);
   const emptyContent = props.messageLoading
     ? (
         <div className="maka-chat-message-loading">
@@ -570,6 +538,21 @@ export function ChatView(props: {
 
   return (
     <main className="maka-main agents-chat-panel agents-chat-view-root">
+      {props.returnToLatest ? (
+        <div className="maka-transcript-history-controls">
+          <Button
+            label={props.returnToLatest.label}
+            variant="ghost"
+            size="sm"
+            isDisabled={props.returnToLatest.isPending}
+            onClick={() => {
+              void Promise.resolve(props.returnToLatest?.onClick()).then(() => {
+                setLatestNavigationNonce((nonce) => nonce + 1);
+              });
+            }}
+          />
+        </div>
+      ) : null}
       <SessionContextLayer
         sessionName={props.activeSession.name}
         branch={props.branchBanner}
@@ -596,11 +579,12 @@ export function ChatView(props: {
         <PromptAnchorRail
           turns={promptRailTurns}
           scrollRef={scrollRef}
-          onNavigateFallback={revealTurn}
-          mountedTurnsRevision={mountStart}
+          onNavigateFallback={navigatePromptRailFallback}
+          onNavigateStart={chatLayout.unlockAutoFollow}
         />
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
+          data-turn-source-count={turns.length}
           density="compact"
           gap={4}
           isStreaming={streamingActive}
@@ -609,27 +593,22 @@ export function ChatView(props: {
           {showEmptyState ? null : (
             <>
               {chat.length === 0 && !streamingActive ? emptyContent : null}
-              {/* #2224: stands in for the unmounted prefix so the scroller's
-                  total height (and the native scrollbar) holds still while
-                  the fill replaces it chunk by chunk. */}
-              {mountStart > 0 && prefixHeight !== undefined && prefixHeight > 0 && (
+              {beforeHeight > 0 && (
                 <div
                   aria-hidden="true"
-                  className="maka-turn-prefix-spacer"
-                  // transition: none matters: the app-wide transition rule
-                  // (even at its near-zero duration) applies height changes
-                  // a frame after the commit, so the fill's same-frame
-                  // scroll compensation would read the old spacer height
-                  // and the anchor would jump by one chunk per step.
-                  style={{ height: prefixHeight, flex: '0 0 auto', transition: 'none' }}
+                  className="maka-turn-virtual-spacer"
+                  style={{ height: beforeHeight, flex: '0 0 auto', transition: 'none' }}
                 />
               )}
               {mountedTurns.map((turn) => {
                 return (
-                  <Fragment key={turn.turnId}>
+                  <div
+                    key={turn.turnId}
+                    className="maka-turn-virtual-item"
+                    data-virtual-turn-id={turn.turnId}
+                  >
                     <TurnView
                       turn={turn}
-                      seededHeight={seededGeometry?.heights.get(turn.turnId)}
                       userLabel={props.userLabel}
                       footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
                       onFooterAction={stableTurnFooterAction}
@@ -656,16 +635,27 @@ export function ChatView(props: {
                               onStreamingSettled: props.onStreamingSettled,
                               runningStatus: props.runningStatus,
                               providerRetry: props.liveTurn?.providerRetry,
+                              initialLiveContent: props.liveTurn?.turnId
+                                === props.initialLiveContentSnapshot?.turnId
+                                ? props.initialLiveContentSnapshot?.entries
+                                : undefined,
                             }
                           : undefined
                       }
                     />
-                    {conversationItemsByTurn.get(turn.turnId)?.map((item) => (
+                    {conversationItemPlacement.byTurn.get(turn.turnId)?.map((item) => (
                       <Fragment key={item.id}>{item.content}</Fragment>
                     ))}
-                  </Fragment>
+                  </div>
                 );
               })}
+              {afterHeight > 0 && (
+                <div
+                  aria-hidden="true"
+                  className="maka-turn-virtual-spacer"
+                  style={{ height: afterHeight, flex: '0 0 auto', transition: 'none' }}
+                />
+              )}
               {/* #642 fallback: streaming began before the optimistic user turn
                   materialized (rare — e.g. an event replay while messages are still
                   loading), so there is no tail turn to inject into. Render the live
@@ -685,16 +675,18 @@ export function ChatView(props: {
                       ) : (
                         /* No turn here means no `startedAt`, so this one shows
                            the working phrase without a clock. */
-                        props.runningStatus && <TurnRunningStatus />
+                        (props.runningStatus && <TurnRunningStatus />)
                       )}
                     </div>
                     <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />
                   </LocalizedChatMessage>
                 </section>
               )}
-              {conversationItems
-                .filter((item) => !turnIds.has(item.afterTurnId))
-                .map((item) => <Fragment key={item.id}>{item.content}</Fragment>)}
+              {conversationItemPlacement.orphan && (
+                <Fragment key={conversationItemPlacement.orphan.id}>
+                  {conversationItemPlacement.orphan.content}
+                </Fragment>
+              )}
             </>
           )}
         </ChatMessageList>

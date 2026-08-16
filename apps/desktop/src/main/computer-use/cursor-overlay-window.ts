@@ -20,7 +20,7 @@
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import type { BrowserWindowConstructorOptions, Rectangle } from 'electron';
-import type { CuPresentationFence } from '@maka/runtime';
+import type { CuPresentationFence } from '@maka/runtime/computer-use-types';
 import { resolveOverlayAssetDir } from '../overlay-assets.js';
 import { cursorPresentationReadyDeadlineMs } from '../../renderer/computer-use-overlay/engine/cursor-engine.js';
 

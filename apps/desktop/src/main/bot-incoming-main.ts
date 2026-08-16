@@ -4,13 +4,13 @@ import {
   botDisplayLabel,
   botSourceEventKey,
   formatBotMessageForSession,
-  generalizedErrorMessage,
   isPlaintextHelpCommand,
   isPlaintextResetCommand,
   nonTextMessageAck,
   plaintextHelpReply,
-} from '@maka/core';
-import type { BotIncomingMessage, BotRegistry } from '@maka/runtime';
+} from '@maka/core/bot-events';
+import { generalizedErrorMessage } from '@maka/core/redaction';
+import type { BotIncomingMessage, BotRegistry, BotReplyStream } from '@maka/runtime/bots';
 import type { BotSessionAdapter, BotSessionTurnResult } from './bot-session-adapter.js';
 import { isBotSessionUnavailableError } from './bot-session-adapter.js';
 import { isSessionWorkspaceUnavailableError } from './project-context-root.js';
@@ -183,7 +183,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     noticeTtlMs: number,
   ): Promise<string | undefined> {
     if (botConversationSessions.size >= BOT_CONVERSATION_SESSION_LIMIT) {
-      await sendTransientBotNotice(message, 'Maka 当前机器人会话数量已达上限，请重置或清理旧会话后再试。', noticeTtlMs);
+      await sendTransientBotNotice(message, 'Maka 当前机器人任务数量已达上限，请重置或清理旧任务后再试。', noticeTtlMs);
       return undefined;
     }
     if (!consumeBotConversationToken(conversationKey)) {
@@ -191,7 +191,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       return undefined;
     }
     const sessionId = await deps.sessions.createSession({
-      name: `${botDisplayLabel(message.platform)} 对话`,
+      name: `${botDisplayLabel(message.platform)} 任务`,
       labels: ['bot', message.platform],
     });
     botConversationSessions.set(conversationKey, sessionId);
@@ -204,6 +204,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     text: string,
   ): Promise<void> {
     if (closed) return;
+    let replyStream: BotReplyStream | null = null;
     // PR-BOT-EPHEMERAL-REPLY-0: TTL for system notices (help / reset ack /
     // fallback errors). Five minutes is long enough for the user to read
     // and process the notice on mobile; short enough that bot DMs do not
@@ -239,8 +240,8 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
         ephemeralTtlMs: SYSTEM_NOTICE_TTL_MS,
       };
       const ack = had
-        ? '会话已重置，下一条消息会开新对话。'
-        : '当前没有进行中的对话；下一条消息会开新对话。';
+        ? '任务已重置，下一条消息会开新任务。'
+        : '当前没有进行中的任务；下一条消息会开新任务。';
       await deps.botRegistry.sendMessage(message.platform, message.chatId, ack, replyOptions).catch(() => null);
       return;
     }
@@ -284,10 +285,19 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       }
 
       const turnId = randomUUID();
+      const replyOptions = message.sourceMessageId
+        ? { replyToMessageId: message.sourceMessageId }
+        : undefined;
+      replyStream = deps.botRegistry.startReplyStream?.(
+        message.platform,
+        message.chatId,
+        { ...(replyOptions ?? {}), isGroup: message.isGroup, streamId: turnId },
+      ) ?? null;
       const turn = deps.sessions.runTurn({
         sessionId,
         turnId,
         text: formatBotMessageForSession({ ...message, text }),
+        onReplySnapshot: (snapshot) => replyStream?.update(snapshot),
       });
       // PR-BOT-TYPING-INDICATOR-0 (external bot research): keep "Maka 正在
       // 输入…" visible in the Telegram client while the agent generates
@@ -323,20 +333,27 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
         typingAbort.abort();
         await typingLoop.catch(() => {});
       }
-      if (closed) return;
+      if (closed) {
+        await replyStream?.abort();
+        return;
+      }
       // PR-BOT-REPLY-TO-MESSAGE-0 (external bot research): thread the bot reply
       // under the originating user message. Group chats with concurrent
       // conversations otherwise visually scramble; even in DMs the threading
       // keeps a long reply attached to the question that produced it. Bot
       // bridge layer drops the field for non-Telegram platforms / multi-chunk
       // continuation pieces.
-      const replyOptions = message.sourceMessageId
-        ? { replyToMessageId: message.sourceMessageId }
-        : undefined;
       if (reply.trim()) {
         // Actual agent reply: NO ephemeral TTL. The answer must stay
         // visible — auto-deleting it would defeat the bot's purpose.
-        const sent = await deps.botRegistry.sendMessage(message.platform, message.chatId, reply.trim(), replyOptions);
+        const sent = replyStream
+          ? await replyStream.finish(reply.trim())
+          : await deps.botRegistry.sendMessage(
+              message.platform,
+              message.chatId,
+              reply.trim(),
+              replyOptions,
+            );
         if (!sent) {
           // Fallback transient notice: 5-minute TTL so the chat does
           // not accumulate "delivery failed" markers.
@@ -347,8 +364,11 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
             { ...(replyOptions ?? {}), ephemeralTtlMs: 5 * 60 * 1_000 },
           ).catch(() => null);
         }
+      } else {
+        await replyStream?.abort();
       }
     } catch (error) {
+      await replyStream?.abort().catch(() => {});
       if (closed) return;
       const detail = isSessionWorkspaceUnavailableError(error)
         ? '工作目录不可用，请在桌面端选择有效目录后重试'
@@ -376,7 +396,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     if ((await deps.sessions.prepareSession(sessionId)) === 'ready') return true;
     await sendTransientBotNotice(
       message,
-      'Maka 已拒绝这条机器人消息：绑定会话当前不是只读探索模式，请先在桌面端切回 explore 后再试。',
+      'Maka 已拒绝这条机器人消息：绑定任务当前不是只读探索模式，请先在桌面端切回 explore 后再试。',
       noticeTtlMs,
     );
     return false;

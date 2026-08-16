@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Origin and review evidence for Skills bundled with Maka. This file is separate from SKILL.md so provenance updates do not change installed Skill content hashes.",
+  "records": [
+    {
+      "id": "computer-use",
+      "status": "contributor-confirmed",
+      "origin": "independently-authored",
+      "author": {
+        "name": "Haoqing Wang",
+        "github": "hqhq1025"
+      },
+      "aiAssistance": {
+        "tool": "OpenAI Codex",
+        "role": "Drafting and implementation assistance"
+      },
+      "inputs": [
+        "Maka Computer Use source code",
+        "The maka.cu/2 schema and model-facing tool contract",
+        "Maka Computer Use tests"
+      ],
+      "thirdPartySkillBodiesUsed": false,
+      "license": "Apache-2.0",
+      "introducedBy": {
+        "pullRequest": 2147,
+        "commit": "2fb83e20b71124bc4a4f2fd4e40f971e415d0ea5"
+      },
+      "contributorConfirmedOn": "2026-08-11",
+      "review": {
+        "status": "pending-independent-review",
+        "requirement": "A human reviewer other than the contributor must verify the origin and release conclusion."
+      }
+    }
+  ],
+  "unresolvedGroups": []
+}

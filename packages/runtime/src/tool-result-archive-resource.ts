@@ -66,34 +66,15 @@ export function parseToolResultArchiveResourceRef(
     return null;
   }
   const pathParts = url.pathname.split('/').filter(Boolean);
-  if (url.hash) return null;
+  if (url.hash || url.search || pathParts.length !== 3) return null;
   let artifactId: string;
+  let bodySha256: string;
+  let bytesText: string;
   try {
     artifactId = decodeURIComponent(pathParts[0] ?? '');
+    bodySha256 = decodeURIComponent(pathParts[1] ?? '');
+    bytesText = decodeURIComponent(pathParts[2] ?? '');
   } catch {
-    return null;
-  }
-  let bodySha256 = '';
-  let bytesText = '';
-  if (pathParts.length === 3 && url.search === '') {
-    try {
-      bodySha256 = decodeURIComponent(pathParts[1] ?? '');
-      bytesText = decodeURIComponent(pathParts[2] ?? '');
-    } catch {
-      return null;
-    }
-  } else if (pathParts.length === 1) {
-    const queryKeys = [...url.searchParams.keys()];
-    if (
-      queryKeys.length !== 2 ||
-      queryKeys.filter((key) => key === 'sha256').length !== 1 ||
-      queryKeys.filter((key) => key === 'bytes').length !== 1
-    ) {
-      return null;
-    }
-    bodySha256 = url.searchParams.get('sha256') ?? '';
-    bytesText = url.searchParams.get('bytes') ?? '';
-  } else {
     return null;
   }
   if (

@@ -1,4 +1,4 @@
-import type { AgentRunEvent, AgentRunStore } from '@maka/core';
+import type { AgentRunEvent, AgentRunStore } from '@maka/core/agent-run';
 import {
   canReplaceHistoryCompactCheckpoint,
   validateHistoryCompactCheckpointShape,
@@ -8,6 +8,23 @@ import {
 interface LedgerCheckpointCandidate {
   checkpoint: HistoryCompactCheckpoint;
   event: AgentRunEvent;
+}
+
+export async function loadHistoryCompactCheckpointsFromRunLedger(
+  runStore: Pick<AgentRunStore, 'listSessionRuns' | 'readEvents'>,
+  sessionId: string,
+): Promise<HistoryCompactCheckpoint[]> {
+  const checkpoints = new Map<string, HistoryCompactCheckpoint>();
+  for (const run of await runStore.listSessionRuns(sessionId)) {
+    for (const event of await runStore.readEvents(sessionId, run.runId)) {
+      if (event.type !== 'history_compact_checkpoint_recorded') continue;
+      const checkpoint = event.data?.checkpoint;
+      if (validateHistoryCompactCheckpointShape(checkpoint, sessionId)) {
+        checkpoints.set(checkpoint.checkpointId, checkpoint);
+      }
+    }
+  }
+  return [...checkpoints.values()];
 }
 
 export async function loadLatestHistoryCompactCheckpointFromRunLedger(

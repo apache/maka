@@ -1,4 +1,6 @@
-import type { ComputerUseToolSet, MakaTool } from '@maka/runtime';
+import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 
 const ACTIONS_WITHOUT_OBSERVATION_OWNERSHIP = new Set([
   'list_apps',

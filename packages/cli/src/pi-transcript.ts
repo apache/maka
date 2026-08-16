@@ -14,14 +14,16 @@ import {
 } from '@maka/core/session';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import {
-  isActiveShellRunStatus,
-  mergeShellRunStateWithDiagnostics,
-  projectToolActivityArgs,
-  type ShellRunUpdate,
-} from '@maka/core';
+import { isActiveShellRunStatus } from '@maka/core/shell-run';
+import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
+import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
+import { type ShellRunUpdate } from '@maka/core/events';
 import { homedir } from 'node:os';
-import { materializeSession, type ChatItem, type ToolActivityItem } from '@maka/runtime';
+import {
+  materializeSession,
+  type ChatItem,
+  type ToolActivityItem,
+} from '@maka/runtime/materializer';
 import type { MakaSessionDriver } from './session-driver.js';
 import { BoundedChunkBuffer } from './bounded-chunk-buffer.js';
 import { ansi } from './tui-ansi.js';
@@ -48,7 +50,6 @@ export interface MakaPiUsageSummary {
 
 export interface MakaPiTranscriptState {
   entries: MakaPiTranscriptEntry[];
-  sawTextDeltaMessageIds: Set<string>;
   pendingInteraction?: MakaPiPendingInteraction;
   queuedInteractions: MakaPiPendingInteraction[];
   /**
@@ -139,6 +140,7 @@ const LIVE_TOOL_BUFFER_MAX_CHUNKS = 512;
 
 export type MakaPiTranscriptEntry =
   | { kind: 'user'; text: string }
+  | { kind: 'legacy_automation'; text: string }
   | { kind: 'assistant'; messageId: string; text: string }
   | { kind: 'thinking'; messageId: string; text: string; expanded: boolean }
   | {
@@ -193,7 +195,6 @@ export interface MakaPiTranscriptMetadata {
 export function createMakaPiTranscriptState(): MakaPiTranscriptState {
   return {
     entries: [],
-    sawTextDeltaMessageIds: new Set(),
     queuedInteractions: [],
     expandAllTools: false,
     expandAllThinking: false,
@@ -310,14 +311,6 @@ export function replaceTranscriptWithStoredMessages(
 ): void {
   const view = materializeSession(messages);
   state.entries = foldStoredShellRunChildren(view.items.flatMap(chatItemToTranscriptEntries));
-  state.sawTextDeltaMessageIds = new Set(
-    state.entries
-      .filter(
-        (entry): entry is Extract<MakaPiTranscriptEntry, { kind: 'assistant' }> =>
-          entry.kind === 'assistant',
-      )
-      .map((entry) => entry.messageId),
-  );
   clearPendingInteractions(state);
   state.pendingShellRunPolls.clear();
   state.expandAllTools = false;
@@ -529,12 +522,11 @@ export function applyMakaSessionEventToTranscript(
   }
   switch (event.type) {
     case 'text_delta':
-      state.sawTextDeltaMessageIds.add(event.messageId);
       appendAssistantText(state, event.messageId, event.text);
       break;
 
     case 'text_complete':
-      if (!state.sawTextDeltaMessageIds.has(event.messageId) && event.text) {
+      if (!setAssistantText(state, event.messageId, event.text) && event.text) {
         appendAssistantText(state, event.messageId, event.text);
       }
       break;
@@ -811,7 +803,12 @@ export function applyMakaSessionEventToTranscript(
 function chatItemToTranscriptEntries(item: ChatItem): MakaPiTranscriptEntry[] {
   switch (item.kind) {
     case 'user':
-      return [{ kind: 'user', text: item.message.displayText ?? item.message.text }];
+      return [
+        {
+          kind: item.message.origin?.kind === 'legacy_automation' ? 'legacy_automation' : 'user',
+          text: item.message.displayText ?? item.message.text,
+        },
+      ];
     case 'assistant': {
       const entries: MakaPiTranscriptEntry[] = [];
       // Stored thinking happened before the reply text, so it resumes above it.
@@ -1070,7 +1067,7 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
     case 'model_change':
       return 'Model changed.';
     case 'context_compacted':
-      return 'Context compacted to keep this session within the model window.';
+      return 'Context compacted to keep this task within the model window.';
     case 'context_compaction_failed_open':
       return 'Context summary failed; the session continued without a new summary.';
     case 'step_limit':
@@ -1240,6 +1237,8 @@ function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number)
   switch (entry.kind) {
     case 'user':
       return renderUserBlock(entry.text, width);
+    case 'legacy_automation':
+      return renderLegacyAutomationBlock(entry.text, width);
     case 'assistant':
       return renderAssistantBlock(entry.text, width);
     case 'thinking':
@@ -1253,14 +1252,15 @@ function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number)
 
 function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): string {
   switch (entry.kind) {
-    // user and assistant text is append-only (user is immutable; assistant only
-    // grows via appendAssistantText, and text_complete is guarded from replacing
-    // it), so length is a safe change key. If a path ever replaces their text in
-    // place, switch these to full-text keys like thinking below.
+    // User text is immutable, so length is a safe change key.
     case 'user':
       return `user|${width}|${entry.text.length}`;
+    case 'legacy_automation':
+      return `legacy_automation|${width}|${entry.text}`;
     case 'assistant':
-      return `assistant|${width}|${entry.text.length}`;
+      // text_complete authoritatively replaces streamed text, including with a
+      // same-length final, so the full value must participate in the cache key.
+      return `assistant|${width}|${entry.text}`;
     case 'thinking':
       // Not just the length: `thinking_complete` can replace the streamed text
       // in place with a same-length final, which a length-only key would miss and
@@ -1478,6 +1478,17 @@ function appendAssistantText(state: MakaPiTranscriptState, messageId: string, te
   state.entries.push({ kind: 'assistant', messageId, text });
 }
 
+function setAssistantText(state: MakaPiTranscriptState, messageId: string, text: string): boolean {
+  for (let index = state.entries.length - 1; index >= 0; index -= 1) {
+    const entry = state.entries[index];
+    if (entry?.kind === 'assistant' && entry.messageId === messageId) {
+      entry.text = text;
+      return true;
+    }
+  }
+  return false;
+}
+
 function appendThinking(state: MakaPiTranscriptState, messageId: string, text: string): void {
   const last = state.entries[state.entries.length - 1];
   if (last?.kind === 'thinking' && last.messageId === messageId) {
@@ -1648,6 +1659,14 @@ function renderUserBlock(text: string, width: number): string[] {
   return renderIndented(text, width, 2).map((line) => fitLine(`${prefix} ${line.slice(2)}`, width));
 }
 
+function renderLegacyAutomationBlock(text: string, width: number): string[] {
+  if (!text.trim()) return [];
+  return [
+    fitLine(ansi.dim('Legacy Automation (history only)'), width),
+    ...renderIndented(text, width, 2).map((line) => fitLine(line, width)),
+  ];
+}
+
 /** An assistant turn: bare markdown prose, no speaker label or indent. */
 function renderAssistantBlock(text: string, width: number): string[] {
   if (!text.trim()) return [];
@@ -1683,7 +1702,7 @@ function renderWelcomeBlock(width: number): string[] {
   // `/`. The active model and connection live in the statusline, so the
   // welcome does not repeat them.
   const hints: [string, string][] = [
-    ['/session', '切换或恢复会话'],
+    ['/session', '切换或恢复任务'],
     ['/model', '切换模型'],
     ['/setup', '配置模型提供商'],
   ];
@@ -1722,7 +1741,7 @@ function renderSandboxBoundaryPrompt(
   }
   lines.push(
     fitLine(
-      `${ansi.bold('y')}${ansi.dim('/Enter allow for session')}  ${ansi.bold('n')}${ansi.dim('/Esc deny')}`,
+      `${ansi.bold('y')}${ansi.dim('/Enter allow for this task')}  ${ansi.bold('n')}${ansi.dim('/Esc deny')}`,
       width,
     ),
   );

@@ -8,7 +8,7 @@ import {
   projectWriteStdinInput,
   WRITE_STDIN_INPUT_PREVIEW_MAX_CHARS,
   WRITE_STDIN_REF_PREVIEW_MAX_CHARS,
-} from '../index.js';
+} from '../tool-activity-args.js';
 
 it('formats exact terminal input as inert, unambiguous escaped text', () => {
   assert.equal(

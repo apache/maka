@@ -22,7 +22,7 @@ import {
 } from './events.js';
 import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from './interaction.js';
 import type { PermissionRequestPayload, PermissionResponse } from './permission.js';
-import type { TurnOrigin } from './runtime-inputs.js';
+import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
 import type { UserQuestionRequest } from './user-question.js';
 import {
   defineObjectShape,
@@ -419,13 +419,10 @@ export interface RuntimeEvent {
  * cover the interface, so it moves whenever the interface does — which makes it
  * the thing anything re-implementing the envelope check must be pinned to.
  *
- * The Harbor trajectory exporter re-implements it in Python and drifted: it
- * never learned `origin` or `modelVisibility`, so once the runtime started
- * emitting them every event failed the check and all 89 cells of a benchmark
- * run exported a one-line summary instead of a trajectory. The shared
- * validation corpus was supposed to catch that and could not — it exercised
- * the keys someone thought to write cases for, and those two were never among
- * them. `runtime-event.test.ts` now holds the corpus to this list.
+ * A former external consumer reimplemented it and drifted: it never learned
+ * `origin` or `modelVisibility`, so once Runtime emitted them every event
+ * failed its envelope check. `runtime-event.test.ts` therefore holds the
+ * validation corpus to this list instead of a second hand-maintained shape.
  */
 export function runtimeEventEnvelopeKeys(): readonly string[] {
   return [...RUNTIME_EVENT_SHAPE.allowed];
@@ -627,42 +624,13 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
         kind: 'text',
         ...normalizeMessageContent(value.content as unknown as MessageContent),
         ...(value.content.origin !== undefined
-          ? { origin: value.content.origin as TurnOrigin }
+          ? { origin: decodeTurnOrigin(value.content.origin) }
           : {}),
         ...(value.content.steering === true ? { steering: true as const } : {}),
       },
     } as unknown as RuntimeEvent;
   }
   return value as unknown as RuntimeEvent;
-}
-
-export function decodePersistedRuntimeEvent(value: unknown): RuntimeEvent {
-  return decodeRuntimeEvent(normalizeLegacyPermissionRequest(value));
-}
-
-function normalizeLegacyPermissionRequest(value: unknown): unknown {
-  if (!isRecord(value) || !isRecord(value.actions)) return value;
-  const request = value.actions.permissionRequest;
-  if (
-    !isRecord(request) ||
-    Object.hasOwn(request, 'kind') ||
-    Object.hasOwn(request, 'rememberForTurnAllowed')
-  ) {
-    return value;
-  }
-  const normalized = {
-    ...request,
-    kind: 'tool_permission',
-    rememberForTurnAllowed: false,
-  };
-  if (!isPermissionRequestPayload(normalized)) return value;
-  return {
-    ...value,
-    actions: {
-      ...value.actions,
-      permissionRequest: normalized,
-    },
-  };
 }
 
 function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
@@ -725,20 +693,7 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
 }
 
 function isTurnOrigin(value: unknown): value is TurnOrigin {
-  if (!isRecord(value)) return false;
-  if (value.kind === 'automation') {
-    return Object.keys(value).length === 2 && typeof value.automationId === 'string';
-  }
-  if (value.kind === 'goal') {
-    return Object.keys(value).length === 2 && typeof value.goalId === 'string';
-  }
-  return (
-    value.kind === 'agent_graph' &&
-    Object.keys(value).length === 4 &&
-    typeof value.graphId === 'string' &&
-    typeof value.wakeId === 'string' &&
-    typeof value.attemptId === 'string'
-  );
+  return decodeTurnOrigin(value) !== undefined;
 }
 
 function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {

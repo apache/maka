@@ -1,4 +1,4 @@
-import type { RuntimeEvent } from '@maka/core';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 

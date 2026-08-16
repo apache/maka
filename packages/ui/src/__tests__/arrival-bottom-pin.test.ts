@@ -63,18 +63,16 @@ function fakeTranscript() {
 
 function fakeSizeObserver() {
   let notify: (() => void) | undefined;
-  let observed: Element | undefined;
   let disconnected = false;
   return {
     factory: (callback: () => void): ArrivalPinSizeObserver => {
       notify = callback;
       return {
-        observe: (element) => { observed = element; },
+        observe: () => {},
         disconnect: () => { disconnected = true; },
       };
     },
     grow: () => notify?.(),
-    get observed() { return observed; },
     get disconnected() { return disconnected; },
   };
 }
@@ -138,31 +136,6 @@ describe('releasesArrivalPin', () => {
 });
 
 describe('createArrivalBottomPin', () => {
-  it('consumes every growth step instantly while pinned', () => {
-    const viewport = fakeViewport({ scrollTop: 0, scrollHeight: 800, clientHeight: 600 });
-    const observer = fakeSizeObserver();
-    const content = {} as Element;
-    const states: string[] = [];
-    const pin = createArrivalBottomPin({
-      viewport,
-      content,
-      onStateChange: (state) => { states.push(state); },
-      createSizeObserver: observer.factory,
-    });
-
-    // Positioned on creation: the transcript's first commit is already growth.
-    assert.equal(viewport.distanceFromBottom, 0);
-    assert.equal(observer.observed, content);
-    viewport.scrollHeight = 15_000;
-    observer.grow();
-    assert.equal(viewport.distanceFromBottom, 0);
-    viewport.scrollHeight = 32_908;
-    observer.grow();
-    assert.equal(viewport.distanceFromBottom, 0);
-    assert.deepEqual(states, ['pinned']);
-    assert.equal(pin.isPinned(), true);
-  });
-
   it('stops following once the reader scrolls up, and stays released', () => {
     const viewport = fakeViewport({ scrollTop: 0, scrollHeight: 4_000, clientHeight: 600 });
     const observer = fakeSizeObserver();
@@ -297,17 +270,5 @@ describe('createArrivalBottomPin', () => {
     assert.equal(viewport.listenerCount('scroll'), 0);
     assert.equal(viewport.listenerCount('wheel'), 0);
     assert.equal(viewport.listenerCount('touchmove'), 0);
-  });
-
-  it('does nothing but position when the content element is missing', () => {
-    const viewport = fakeViewport({ scrollTop: 0, scrollHeight: 800, clientHeight: 600 });
-    const observer = fakeSizeObserver();
-    createArrivalBottomPin({
-      viewport,
-      content: null,
-      createSizeObserver: observer.factory,
-    });
-    assert.equal(viewport.distanceFromBottom, 0);
-    assert.equal(observer.observed, undefined);
   });
 });

@@ -1,0 +1,611 @@
+{
+  "schemaVersion": "maka.eval.v1",
+  "id": "deepseek-v4-flash-4arm-tbench-2.1",
+  "benchmark": {
+    "id": "terminal-bench-2.1",
+    "version": "d49e28f1e4ddd13d289e85a5f312a66750951932",
+    "config": {
+      "repository": "https://github.com/harbor-framework/terminal-bench-2-1"
+    }
+  },
+  "executor": {
+    "kind": "harbor",
+    "config": {
+      "frameworkVersion": "0.20.0",
+      "pythonPathEnv": "MAKA_EVAL_HARBOR_PYTHON",
+      "trialsRootEnv": "MAKA_EVAL_TRIALS_DIR",
+      "environment": { "type": "docker", "delete": true },
+      "preparationEnvironment": [
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "DOCKER_TLS_VERIFY",
+        "DOCKER_CERT_PATH",
+        "DOCKER_CONFIG",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy"
+      ],
+      "egressProxy": {
+        "composeSourceEnv": "MAKA_EVAL_MAKA_BUNDLE_PATH",
+        "composeRelativePath": "packages/eval/harbor/docker-compose-egress-proxy.yaml",
+        "networkPolicyRelativePath": "packages/eval/harbor/egress-proxy/network-policy",
+        "proxyUrl": "http://maka-eval-mitmproxy:8080",
+        "allowedHost": "maka-eval-mitmproxy",
+        "containerCaPath": "/opt/maka-egress/mitmproxy-ca-cert.pem"
+      },
+      "mounts": [
+        {
+          "sourceEnv": "MAKA_EVAL_MAKA_BUNDLE_PATH",
+          "target": "/opt/maka-agent",
+          "readOnly": true
+        },
+        {
+          "sourceEnv": "MAKA_EVAL_NODE_TOOLCHAIN_PATH",
+          "target": "/opt/maka-node-toolchain",
+          "readOnly": true
+        },
+        {
+          "sourceEnv": "MAKA_EVAL_CODEX_TOOLCHAIN_PATH",
+          "target": "/opt/maka-codex-toolchain",
+          "readOnly": true
+        },
+        {
+          "sourceEnv": "MAKA_EVAL_CLAUDE_CODE_TOOLCHAIN_PATH",
+          "target": "/opt/maka-claude-code-toolchain",
+          "readOnly": true
+        },
+        {
+          "sourceEnv": "MAKA_EVAL_REASONIX_TOOLCHAIN_PATH",
+          "target": "/opt/maka-reasonix-toolchain",
+          "readOnly": true
+        }
+      ]
+    }
+  },
+  "execution": { "maxConcurrentTaskGroups": 1 },
+  "subjects": [
+    {
+      "id": "maka",
+      "kind": "maka",
+      "credentials": ["OPENAI_API_KEY"],
+      "config": {
+        "nodePath": "/opt/maka-node-toolchain/bin/node",
+        "shimPath": "/opt/maka-agent/packages/eval/dist/harbor-maka-subject.js",
+        "runtimeHostsPath": "/tmp/maka-runtime-hosts",
+        "connectionSlug": "env-openai",
+        "baseUrl": "https://api.deepseek.com",
+        "model": "deepseek-v4-flash",
+        "thinkingLevel": "max",
+        "permissionMode": "bypass",
+        "collaborationMode": "agent",
+        "orchestrationMode": "default",
+        "hostSettlementTimeoutMs": 120000,
+        "toolProfile": "headless-coding-v1"
+      }
+    },
+    {
+      "id": "codex",
+      "kind": "external",
+      "credentials": ["OPENAI_API_KEY"],
+      "config": {
+        "command": "/opt/maka-node-toolchain/bin/node",
+        "args": [
+          "/opt/maka-agent/packages/eval/dist/harbor-external-subject.js",
+          "codex",
+          "https://api.deepseek.com",
+          "/",
+          "/opt/maka-codex-toolchain/bin/codex",
+          "exec",
+          "--json",
+          "--dangerously-bypass-approvals-and-sandbox",
+          "--model",
+          "deepseek-v4-flash",
+          "{{task.input}}"
+        ]
+      }
+    },
+    {
+      "id": "claude-code",
+      "kind": "external",
+      "credentials": ["ANTHROPIC_API_KEY"],
+      "config": {
+        "command": "/opt/maka-node-toolchain/bin/node",
+        "args": [
+          "/opt/maka-agent/packages/eval/dist/harbor-external-subject.js",
+          "claude-code",
+          "https://api.deepseek.com/anthropic",
+          "/",
+          "/opt/maka-claude-code-toolchain/bin/claude",
+          "--print",
+          "--output-format",
+          "json",
+          "--disallowedTools",
+          "WebSearch",
+          "WebFetch",
+          "FetchURL",
+          "--dangerously-skip-permissions",
+          "--model",
+          "deepseek-v4-flash",
+          "{{task.input}}"
+        ]
+      }
+    },
+    {
+      "id": "reasonix",
+      "kind": "external",
+      "credentials": ["OPENAI_API_KEY"],
+      "config": {
+        "command": "/opt/maka-node-toolchain/bin/node",
+        "args": [
+          "/opt/maka-agent/packages/eval/dist/harbor-external-subject.js",
+          "reasonix",
+          "https://api.deepseek.com",
+          "/",
+          "/opt/maka-reasonix-toolchain/bin/reasonix",
+          "run",
+          "--auto",
+          "--model",
+          "maka-proxy/deepseek-v4-flash",
+          "--effort",
+          "max",
+          "--output-format",
+          "stream-json",
+          "{{task.input}}"
+        ]
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "id": "adaptive-rejection-sampler",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/adaptive-rejection-sampler" } }
+    },
+    {
+      "id": "bn-fit-modify",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/bn-fit-modify" } }
+    },
+    {
+      "id": "break-filter-js-from-html",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/break-filter-js-from-html" } }
+    },
+    {
+      "id": "build-cython-ext",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/build-cython-ext" } }
+    },
+    {
+      "id": "build-pmars",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/build-pmars" } }
+    },
+    {
+      "id": "build-pov-ray",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/build-pov-ray" } }
+    },
+    {
+      "id": "caffe-cifar-10",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/caffe-cifar-10" } }
+    },
+    {
+      "id": "cancel-async-tasks",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/cancel-async-tasks" } }
+    },
+    {
+      "id": "chess-best-move",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/chess-best-move" } }
+    },
+    {
+      "id": "circuit-fibsqrt",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/circuit-fibsqrt" } }
+    },
+    {
+      "id": "cobol-modernization",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/cobol-modernization" } }
+    },
+    {
+      "id": "code-from-image",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/code-from-image" } }
+    },
+    {
+      "id": "compile-compcert",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/compile-compcert" } }
+    },
+    {
+      "id": "configure-git-webserver",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/configure-git-webserver" } }
+    },
+    {
+      "id": "constraints-scheduling",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/constraints-scheduling" } }
+    },
+    {
+      "id": "count-dataset-tokens",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/count-dataset-tokens" } }
+    },
+    {
+      "id": "crack-7z-hash",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/crack-7z-hash" } }
+    },
+    {
+      "id": "custom-memory-heap-crash",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/custom-memory-heap-crash" } }
+    },
+    {
+      "id": "db-wal-recovery",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/db-wal-recovery" } }
+    },
+    {
+      "id": "distribution-search",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/distribution-search" } }
+    },
+    {
+      "id": "dna-assembly",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/dna-assembly" } }
+    },
+    {
+      "id": "dna-insert",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/dna-insert" } }
+    },
+    {
+      "id": "extract-elf",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/extract-elf" } }
+    },
+    {
+      "id": "extract-moves-from-video",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/extract-moves-from-video" } }
+    },
+    {
+      "id": "feal-differential-cryptanalysis",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/feal-differential-cryptanalysis" } }
+    },
+    {
+      "id": "feal-linear-cryptanalysis",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/feal-linear-cryptanalysis" } }
+    },
+    {
+      "id": "filter-js-from-html",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/filter-js-from-html" } }
+    },
+    {
+      "id": "financial-document-processor",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/financial-document-processor" } }
+    },
+    {
+      "id": "fix-code-vulnerability",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/fix-code-vulnerability" } }
+    },
+    {
+      "id": "fix-git",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/fix-git" } }
+    },
+    {
+      "id": "fix-ocaml-gc",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/fix-ocaml-gc" } }
+    },
+    {
+      "id": "gcode-to-text",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/gcode-to-text" } }
+    },
+    {
+      "id": "git-leak-recovery",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/git-leak-recovery" } }
+    },
+    {
+      "id": "git-multibranch",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/git-multibranch" } }
+    },
+    {
+      "id": "gpt2-codegolf",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/gpt2-codegolf" } }
+    },
+    {
+      "id": "headless-terminal",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/headless-terminal" } }
+    },
+    {
+      "id": "hf-model-inference",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/hf-model-inference" } }
+    },
+    {
+      "id": "install-windows-3.11",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/install-windows-3.11" } }
+    },
+    {
+      "id": "kv-store-grpc",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/kv-store-grpc" } }
+    },
+    {
+      "id": "large-scale-text-editing",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/large-scale-text-editing" } }
+    },
+    {
+      "id": "largest-eigenval",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/largest-eigenval" } }
+    },
+    {
+      "id": "llm-inference-batching-scheduler",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/llm-inference-batching-scheduler" } }
+    },
+    {
+      "id": "log-summary-date-ranges",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/log-summary-date-ranges" } }
+    },
+    {
+      "id": "mailman",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/mailman" } }
+    },
+    {
+      "id": "make-doom-for-mips",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/make-doom-for-mips" } }
+    },
+    {
+      "id": "make-mips-interpreter",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/make-mips-interpreter" } }
+    },
+    {
+      "id": "mcmc-sampling-stan",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/mcmc-sampling-stan" } }
+    },
+    {
+      "id": "merge-diff-arc-agi-task",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/merge-diff-arc-agi-task" } }
+    },
+    {
+      "id": "model-extraction-relu-logits",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/model-extraction-relu-logits" } }
+    },
+    {
+      "id": "modernize-scientific-stack",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/modernize-scientific-stack" } }
+    },
+    {
+      "id": "mteb-leaderboard",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/mteb-leaderboard" } }
+    },
+    {
+      "id": "mteb-retrieve",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/mteb-retrieve" } }
+    },
+    {
+      "id": "multi-source-data-merger",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/multi-source-data-merger" } }
+    },
+    {
+      "id": "nginx-request-logging",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/nginx-request-logging" } }
+    },
+    {
+      "id": "openssl-selfsigned-cert",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/openssl-selfsigned-cert" } }
+    },
+    {
+      "id": "overfull-hbox",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/overfull-hbox" } }
+    },
+    {
+      "id": "password-recovery",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/password-recovery" } }
+    },
+    {
+      "id": "path-tracing",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/path-tracing" } }
+    },
+    {
+      "id": "path-tracing-reverse",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/path-tracing-reverse" } }
+    },
+    {
+      "id": "polyglot-c-py",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/polyglot-c-py" } }
+    },
+    {
+      "id": "polyglot-rust-c",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/polyglot-rust-c" } }
+    },
+    {
+      "id": "portfolio-optimization",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/portfolio-optimization" } }
+    },
+    {
+      "id": "protein-assembly",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/protein-assembly" } }
+    },
+    {
+      "id": "prove-plus-comm",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/prove-plus-comm" } }
+    },
+    {
+      "id": "pypi-server",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/pypi-server" } }
+    },
+    {
+      "id": "pytorch-model-cli",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/pytorch-model-cli" } }
+    },
+    {
+      "id": "pytorch-model-recovery",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/pytorch-model-recovery" } }
+    },
+    {
+      "id": "qemu-alpine-ssh",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/qemu-alpine-ssh" } }
+    },
+    {
+      "id": "qemu-startup",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/qemu-startup" } }
+    },
+    {
+      "id": "query-optimize",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/query-optimize" } }
+    },
+    {
+      "id": "raman-fitting",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/raman-fitting" } }
+    },
+    {
+      "id": "regex-chess",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/regex-chess" } }
+    },
+    {
+      "id": "regex-log",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/regex-log" } }
+    },
+    {
+      "id": "reshard-c4-data",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/reshard-c4-data" } }
+    },
+    {
+      "id": "rstan-to-pystan",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/rstan-to-pystan" } }
+    },
+    {
+      "id": "sam-cell-seg",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/sam-cell-seg" } }
+    },
+    {
+      "id": "sanitize-git-repo",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/sanitize-git-repo" } }
+    },
+    {
+      "id": "schemelike-metacircular-eval",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/schemelike-metacircular-eval" } }
+    },
+    {
+      "id": "sparql-university",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/sparql-university" } }
+    },
+    {
+      "id": "sqlite-db-truncate",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/sqlite-db-truncate" } }
+    },
+    {
+      "id": "sqlite-with-gcov",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/sqlite-with-gcov" } }
+    },
+    {
+      "id": "torch-pipeline-parallelism",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/torch-pipeline-parallelism" } }
+    },
+    {
+      "id": "torch-tensor-parallelism",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/torch-tensor-parallelism" } }
+    },
+    {
+      "id": "train-fasttext",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/train-fasttext" } }
+    },
+    {
+      "id": "tune-mjcf",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/tune-mjcf" } }
+    },
+    {
+      "id": "video-processing",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/video-processing" } }
+    },
+    {
+      "id": "vulnerable-secret",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/vulnerable-secret" } }
+    },
+    {
+      "id": "winning-avg-corewars",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/winning-avg-corewars" } }
+    },
+    {
+      "id": "write-compressor",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/write-compressor" } }
+    }
+  ],
+  "repetitions": 1,
+  "budget": { "timeoutMultiplier": 1, "maxSteps": 100000 },
+  "verifier": { "reward": "reward" }
+}

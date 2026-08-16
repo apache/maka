@@ -1,15 +1,6 @@
 // packages/runtime/src/shell-exec.ts
 //
-// Single shared shell runner for BOTH Bash paths — the in-process builtin Bash
-// tool (builtin-tools.ts) and the Harbor/local isolated executor
-// (headless/harbor-cell.ts).
-//
-// WHY THIS EXISTS: the builtin streamed via spawn with a memory-bounded tail,
-// but the Harbor executor used execAsync({ maxBuffer }). A command whose output
-// passed maxBuffer was KILLED mid-run and only its first maxBuffer bytes (the
-// HEAD) were returned — so the benchmark path never delivered the recoverable,
-// bounded TAIL the builtin did, and reported a wrong (killed) exit code. This
-// module is the one place a shell command runs: it streams stdout/stderr into a
+// Runtime's shared shell runner. It streams stdout/stderr into a
 // BashTailBuffer (keeping only the last `maxRetainedChars` per stream) and lets
 // the command run to completion regardless of output size.
 //
@@ -121,8 +112,15 @@ export function runShellWithBoundedTail(
   command: string,
   options: BoundedShellOptions,
 ): Promise<BoundedShellResult> {
-  const plan = buildShellSpawnPlan(options.shell ?? defaultShellPlan(), command);
-  return runSpawnedProcessWithBoundedTail(plan.file, plan.args, plan.useShellOption, options);
+  const plan = buildShellSpawnPlan(
+    options.shell ?? defaultShellPlan(),
+    command,
+    options.env ?? process.env,
+  );
+  return runSpawnedProcessWithBoundedTail(plan.file, plan.args, plan.useShellOption, {
+    ...options,
+    ...(plan.env ? { env: plan.env } : {}),
+  });
 }
 
 /** Run an argv command directly, without a second shell parsing pass. */

@@ -1,0 +1,102 @@
+#!/bin/sh
+set -eu
+
+# gost's allowlist is never written here: the sidecar entrypoint empties it at
+# start and this policy only ever forwards through the audited proxy, so gost
+# forwards nothing on its own. That also removes the packet-mark exemption gost
+# needs when it does forward — the sidecar shares the subject's network
+# namespace, so a mark the sidecar can set is one the subject can set too.
+GOST_PORT=12345
+NFTABLES_RULESET_NAME=gost_egress
+PROXY_HOST=maka-eval-mitmproxy
+PROXY_PORT=8080
+
+remove_nftables() {
+  nft delete table inet "$NFTABLES_RULESET_NAME" 2>/dev/null || true
+}
+
+resolve_proxy_ip() {
+  getent ahostsv4 "$PROXY_HOST" | awk 'NR == 1 { print $1 }'
+}
+
+# The only difference between the two modes this policy installs is whether the
+# audited proxy is exempt, so they are one ruleset with one optional pair of
+# rules rather than two rulesets that have to be kept in step.
+apply_ruleset() {
+  proxy_ip="${1:-}"
+  nft --file - <<EOF
+add table inet $NFTABLES_RULESET_NAME
+flush table inet $NFTABLES_RULESET_NAME
+
+table inet $NFTABLES_RULESET_NAME {
+  chain output {
+    type nat hook output priority dstnat; policy accept;
+
+    fib daddr type local return
+${proxy_ip:+    ip daddr $proxy_ip tcp dport $PROXY_PORT return}
+    meta l4proto tcp redirect to :$GOST_PORT
+  }
+
+  chain egress {
+    type filter hook output priority filter; policy accept;
+
+    fib daddr type local accept
+${proxy_ip:+    ip daddr $proxy_ip tcp dport $PROXY_PORT accept}
+    # Rejecting everything else rather than only non-TCP: the nat chain above
+    # rewrote every TCP destination this policy admits to a local one, so what
+    # reaches here still carrying a public destination is traffic the nat hook
+    # never saw — a connection conntrack established before the policy existed.
+    reject
+  }
+}
+EOF
+}
+
+setup_proxy_only() {
+  proxy_ip="$(resolve_proxy_ip)"
+  if [ -z "$proxy_ip" ]; then
+    echo "could not resolve Eval egress proxy" >&2
+    exit 1
+  fi
+  apply_ruleset "$proxy_ip"
+  echo "ok: Eval proxy-only egress applied ($proxy_ip:$PROXY_PORT)"
+}
+
+case "${1:-}" in
+  allow-all)
+    remove_nftables
+    echo "ok: allow all egress"
+    ;;
+  deny-all)
+    # A phase that asked for no network gets none. Answering it with the
+    # proxy-only ruleset would hand it a route this override invented, which
+    # Harbor's own deny-all does not grant either.
+    apply_ruleset
+    echo "ok: Eval no-network egress applied"
+    ;;
+  allow)
+    shift
+    if [ "$#" -ne 1 ] || [ "$1" != "$PROXY_HOST" ]; then
+      echo "Eval egress policy accepts only $PROXY_HOST" >&2
+      exit 2
+    fi
+    setup_proxy_only
+    ;;
+  show)
+    if ! rules="$(nft list table inet "$NFTABLES_RULESET_NAME" 2>/dev/null)"; then
+      echo "mode: allow-all"
+    elif printf '%s' "$rules" | grep -q "dport $PROXY_PORT"; then
+      echo "mode: Eval proxy-only"
+      echo "proxy: $PROXY_HOST:$PROXY_PORT"
+    else
+      echo "mode: Eval no-network"
+    fi
+    ;;
+  rules)
+    nft list table inet "$NFTABLES_RULESET_NAME" 2>/dev/null || echo "mode: allow-all"
+    ;;
+  *)
+    echo "Usage: network-policy {show|allow-all|deny-all|allow|rules}" >&2
+    exit 2
+    ;;
+esac

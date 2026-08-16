@@ -1,4 +1,4 @@
-import type { ProviderType } from '@maka/core';
+import type { ProviderType } from '@maka/core/llm-connections';
 
 export const FIRST_RUN_PROVIDER_TYPES = [
   'opencode-free',

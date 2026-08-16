@@ -1,12 +1,7 @@
 import { useState, type Dispatch, type SetStateAction } from 'react';
-import type {
-  ChatDefaultPermissionMode,
-  ThinkingLevel,
-  ThemePalette,
-  ThemePreference,
-  UiLocale,
-  UiLocalePreference,
-} from '@maka/core';
+import type { ChatDefaultPermissionMode, ThemePalette, ThemePreference } from '@maka/core/settings';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
 import { createUiLocaleUpdateGate } from './settings/ui-locale-update-gate';
 import { applyTheme, applyThemePalette } from './theme';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';

@@ -36,7 +36,7 @@ test('regenerate hosted root identity requires both source lineage fields', () =
   );
   assert.equal(
     agentRunMatchesHostedRootExecution(
-      { ...run, automationId: 'automation-1' },
+      { ...run, scheduledTaskId: 'scheduled-task-1' },
       { kind: 'regenerate', sourceTurnId: 'turn-1' },
     ),
     false,

@@ -13,7 +13,7 @@
  */
 
 import { WebSocket } from 'undici';
-import type { BotChannelSettings } from '@maka/core';
+import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import { proxiedFetch } from './proxied-fetch.js';
 import type { BotPlatform, BotSendOptions, BotStatus, SendCapable } from './types.js';
@@ -28,7 +28,7 @@ const QQ_INTENT_GUILDS = 1 << 0;
 const QQ_INTENT_DIRECT_MESSAGE = 1 << 12;
 const QQ_INTENT_PUBLIC_GUILD_MESSAGES = 1 << 30;
 const QQ_INTENT_PUBLIC_MESSAGES = 1 << 25;
-export const QQ_INTENTS =
+const QQ_INTENTS =
   QQ_INTENT_GUILDS |
   QQ_INTENT_DIRECT_MESSAGE |
   QQ_INTENT_PUBLIC_GUILD_MESSAGES |
@@ -101,7 +101,7 @@ export function decideQQClose(code: number, explicitlyStopped: boolean): QQClose
   return { kind: 'reconnect', resumable };
 }
 
-export function qqReconnectBackoffMs(attempts: number): number {
+function qqReconnectBackoffMs(attempts: number): number {
   const exp = Math.min(2 ** attempts, RECONNECT_DELAY_MAX_MS / RECONNECT_DELAY_MIN_MS);
   return Math.min(RECONNECT_DELAY_MIN_MS * exp, RECONNECT_DELAY_MAX_MS);
 }
@@ -730,12 +730,10 @@ export class QQBotBridge extends BaseBotAdapter implements SendCapable {
 
 export const __TEST__ = {
   decideQQClose,
-  qqReconnectBackoffMs,
   classifyQQSendResponse,
   qqChannelMessageToEvent,
   qqGroupMessageToEvent,
   qqC2CMessageToEvent,
   pickQQSendRoute,
   pickQQTypingRoute,
-  QQ_INTENTS,
 };

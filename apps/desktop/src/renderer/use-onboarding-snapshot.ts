@@ -14,7 +14,10 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { generalizedErrorMessage, generalizedErrorMessageChinese, type LlmConnection, type OnboardingState, type SessionSummary, type UiLocale } from '@maka/core';
+import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
+import { type LlmConnection } from '@maka/core/llm-connections';
+import { type SessionSummary } from '@maka/core/session';
+import { type UiLocale } from '@maka/core/ui-locale';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import { useUiLocale } from '@maka/ui';
 import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
@@ -36,7 +39,7 @@ export interface UseOnboardingSnapshotResult {
   refresh: () => void;
   /** Sessions from the snapshot — populated on first load, before the separate sessions:list IPC. */
   getSessions(): SessionSummary[] | null;
-  /** Connections from the snapshot — populated on first load, avoids separate connections:list + getDefault. */
+  /** Connections from the snapshot — populated on first load before the live projection refresh. */
   getConnections(): LlmConnection[] | null;
   getDefaultSlug(): string | null;
 }
@@ -268,17 +271,3 @@ const LIVE_DEPS: UseOnboardingSnapshotDeps = {
     };
   },
 };
-
-/**
- * Whether a snapshot's state is one of the actionable-by-user setup
- * variants (kind starts with `needs_`). Returns false for ready_* and
- * blocked.
- */
-export function isSetupRequired(state: OnboardingState | undefined): boolean {
-  if (!state) return false;
-  return (
-    state.kind === 'needs_connection' ||
-    state.kind === 'needs_connection_credentials' ||
-    state.kind === 'needs_model'
-  );
-}

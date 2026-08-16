@@ -225,6 +225,9 @@ function projectModelCallSteps(attempts: readonly ModelCallAttempt[]): TraceMode
       endedAt,
       durationMs: Math.max(0, endedAt - startedAt),
       callKind: first.callKind,
+      ...(first.historyCompactRoute !== undefined
+        ? { historyCompactRoute: first.historyCompactRoute }
+        : {}),
       providerId: first.providerId,
       modelId: first.modelId,
       ...(first.connectionSlug !== undefined ? { connectionSlug: first.connectionSlug } : {}),
@@ -255,6 +258,12 @@ function toTraceAttempt(attempt: ModelCallAttempt): TraceModelAttempt {
       : {}),
     ...(attempt.finishReason !== undefined ? { finishReason: attempt.finishReason } : {}),
     ...(attempt.errorClass !== undefined ? { errorClass: attempt.errorClass } : {}),
+    ...(attempt.httpStatus !== undefined ? { httpStatus: attempt.httpStatus } : {}),
+    ...(attempt.providerCode !== undefined ? { providerCode: attempt.providerCode } : {}),
+    ...(attempt.providerRequestId !== undefined
+      ? { providerRequestId: attempt.providerRequestId }
+      : {}),
+    ...(attempt.retryable !== undefined ? { retryable: attempt.retryable } : {}),
     ...(attempt.inputTokens !== undefined ? { inputTokens: attempt.inputTokens } : {}),
     ...(attempt.outputTokens !== undefined ? { outputTokens: attempt.outputTokens } : {}),
     ...(attempt.cacheReadInputTokens !== undefined

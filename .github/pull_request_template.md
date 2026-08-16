@@ -22,6 +22,19 @@ If work intentionally remains, open as a draft and track it with a
 task list under its own section.
 -->
 
+## AI use
+
+Select exactly one:
+
+- [ ] No generative tool made a substantive contribution
+- [ ] Generative tooling made a substantive contribution
+
+<!-- If the second option applies, name the tool(s) and briefly describe their
+scope. If AI authored material contribution content, add Generated-by trailers
+to the affected commits and ensure the final squash commit retains the trailer. -->
+
+Tool(s) and scope:
+
 ## Checklist
 
 - [ ] Tests cover the change and fail without it

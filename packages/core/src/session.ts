@@ -1,11 +1,3 @@
-/**
- * Session disk format: JSONL with SessionHeader as line 1 + append-only
- * StoredMessage lines.
- * Storage layer enforces append-only for messages and read-rewrite-write
- * (atomic temp + rename) for header. Per-session write queue invariant
- * is enforced by the storage implementation.
- */
-
 import {
   decodeMessageContent,
   TOOL_ACTIVITY_KINDS,
@@ -31,14 +23,26 @@ import {
 } from './record-schema.js';
 import { isPermissionDecisionFields } from './interaction-record-schema.js';
 import { isTokenUsageFields, type TokenUsageFields } from './usage-record-schema.js';
-import {
-  decodePersistedToolResultContentForRecovery,
-  normalizeToolResultContentForRead,
-} from './tool-result-record-schema.js';
+import { decodeCanonicalToolResultContent } from './tool-result-record-schema.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
+import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
 
 export { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from './explore-agent.js';
 
+/**
+ * `archived` is still here and still written by `SessionStore.archive()`
+ * alongside `isArchived`; consolidating those two onto one authority is its own
+ * change (#2984, PR 3) because it rewrites stored rows.
+ *
+ * `review` and `done` have no writer in current source, but they stay: this
+ * list is read back out of storage, and narrowing it is a data migration, not a
+ * cleanup. `resolveLegacyStatus` in the JSONL importer (removed in #2656) let
+ * both values through into real SQLite stores verbatim, and `normalizeSession
+ * Header` throws on an unrecognised status for the WHOLE header — so one stored
+ * row carrying `done` fails an entire catalog page, not just its own row.
+ * Removing them needs a schema migration or a tolerant read, which is its own
+ * change with its own review.
+ */
 export const SESSION_STATUSES = [
   'active',
   'running',
@@ -185,6 +189,13 @@ export function isTurnStatus(value: unknown): value is TurnStatus {
 // Header (JSONL line 1)
 // ============================================================================
 
+export const SESSION_TOOL_PROFILES = ['headless-coding-v1'] as const;
+export type SessionToolProfile = (typeof SESSION_TOOL_PROFILES)[number];
+
+export function isSessionToolProfile(value: unknown): value is SessionToolProfile {
+  return typeof value === 'string' && (SESSION_TOOL_PROFILES as readonly string[]).includes(value);
+}
+
 export interface SessionHeader {
   // Identity
   id: string;
@@ -244,6 +255,8 @@ export interface SessionHeader {
   connectionLocked: boolean;
   /** Sticky session default model id, captured when the session is created. */
   model: string;
+  /** Immutable versioned prompt/tool contract for non-product execution surfaces. */
+  toolProfile?: SessionToolProfile;
   /** Per-model reasoning-depth variant; `undefined` = model default. Cleared on model switch. */
   thinkingLevel?: import('./model-thinking.js').ThinkingLevel;
   permissionMode: PermissionMode;
@@ -259,7 +272,7 @@ export interface SessionHeader {
   schemaVersion: 1;
 }
 
-export type BackendKind = 'ai-sdk' | 'fake' | 'pi-agent';
+export type BackendKind = 'ai-sdk' | 'fake';
 
 export interface SessionSummary {
   id: string;
@@ -668,11 +681,8 @@ export interface UserMessage extends MessageContent {
   /** Canonical RuntimeEvent that materialized this mid-Turn steering projection. */
   steeringEventId?: string;
   /** Non-user trigger source. Lets the chat mark turns the user did not
-   * hand-type. Mirrors TurnOrigin in runtime-inputs. */
-  origin?:
-    | { kind: 'automation'; automationId: string }
-    | { kind: 'goal'; goalId: string }
-    | { kind: 'agent_graph'; graphId: string; wakeId: string; attemptId: string };
+   * hand-type. */
+  origin?: TurnOrigin;
 }
 
 /** Prefer the human-facing view of a user message when one was stored. */
@@ -815,6 +825,8 @@ export interface TurnStateMessage {
 
 export interface TurnRecord {
   turnId: string;
+  firstSequence?: number;
+  userPromptPreview?: string;
   status: TurnStatus;
   /**
    * Whether `status` came from a `turn_state` message or was reconstructed by
@@ -945,17 +957,6 @@ const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
   ['text'],
   ['signature', 'providerOptions', 'parts'],
 );
-type MessageOrigin = NonNullable<UserMessage['origin']>;
-type AutomationOrigin = Extract<MessageOrigin, { kind: 'automation' }>;
-type GoalOrigin = Extract<MessageOrigin, { kind: 'goal' }>;
-type AgentGraphOrigin = Extract<MessageOrigin, { kind: 'agent_graph' }>;
-const AUTOMATION_ORIGIN_SHAPE = defineObjectShape<AutomationOrigin>()(['kind', 'automationId'], []);
-const GOAL_ORIGIN_SHAPE = defineObjectShape<GoalOrigin>()(['kind', 'goalId'], []);
-const AGENT_GRAPH_ORIGIN_SHAPE = defineObjectShape<AgentGraphOrigin>()(
-  ['kind', 'graphId', 'wakeId', 'attemptId'],
-  [],
-);
-
 const SYSTEM_NOTE_KINDS = new Set([
   'session_start',
   'session_resume',
@@ -968,28 +969,18 @@ const SYSTEM_NOTE_KINDS = new Set([
   'abort',
 ]);
 
-export function decodeStoredMessageForRead(value: unknown): StoredMessage {
-  return decodeStoredMessage(value, normalizeToolResultContentForRead);
-}
-
-export function decodeStoredMessageForRecovery(value: unknown): StoredMessage {
-  return decodeStoredMessage(value, decodePersistedToolResultContentForRecovery);
-}
-
-function decodeStoredMessage(
-  value: unknown,
-  decodeToolResultContent: (content: unknown) => ToolResultContent,
-): StoredMessage {
-  const message = decodeStoredMessageContent(value, decodeToolResultContent);
+export function decodeStoredMessage(value: unknown): StoredMessage {
+  const message = decodeStoredMessageContent(value, decodeCanonicalToolResultContent);
   if (!isRecord(message)) throw new Error('Invalid stored message schema');
   switch (message.type) {
     case 'user':
       if (
         hasExactShape(message, USER_MESSAGE_SHAPE) &&
         hasMessageEnvelope(message, true) &&
-        (message.origin === undefined || isMessageOrigin(message.origin))
+        (message.origin === undefined || decodeTurnOrigin(message.origin) !== undefined)
       ) {
         const { displayText, attachments, quotes, inlineReferences, origin, ...envelope } = message;
+        const decodedOrigin = origin === undefined ? undefined : decodeTurnOrigin(origin);
         try {
           return {
             ...envelope,
@@ -1000,7 +991,7 @@ function decodeStoredMessage(
               quotes,
               inlineReferences,
             }),
-            ...(origin !== undefined ? { origin } : {}),
+            ...(decodedOrigin !== undefined ? { origin: decodedOrigin } : {}),
           } as unknown as UserMessage;
         } catch {
           break;
@@ -1144,39 +1135,6 @@ function isAssistantThinking(value: unknown): value is AssistantThinking {
   );
 }
 
-function isAutomationOrigin(value: unknown): value is AutomationOrigin {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, AUTOMATION_ORIGIN_SHAPE) &&
-    value.kind === 'automation' &&
-    typeof value.automationId === 'string'
-  );
-}
-
-function isGoalOrigin(value: unknown): value is GoalOrigin {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, GOAL_ORIGIN_SHAPE) &&
-    value.kind === 'goal' &&
-    typeof value.goalId === 'string'
-  );
-}
-
-function isAgentGraphOrigin(value: unknown): value is AgentGraphOrigin {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, AGENT_GRAPH_ORIGIN_SHAPE) &&
-    value.kind === 'agent_graph' &&
-    typeof value.graphId === 'string' &&
-    typeof value.wakeId === 'string' &&
-    typeof value.attemptId === 'string'
-  );
-}
-
-function isMessageOrigin(value: unknown): value is MessageOrigin {
-  return isAutomationOrigin(value) || isGoalOrigin(value) || isAgentGraphOrigin(value);
-}
-
 function isOptionalFiniteDuration(value: unknown): boolean {
   return value === undefined || isFiniteNumber(value);
 }
@@ -1194,6 +1152,29 @@ function isToolActivityIdentity(value: Record<string, unknown>): boolean {
 
 export const STEP_LIMIT_NOTICE_TEXT =
   'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.';
+
+/**
+ * View-boundary facts for explaining a model selection without adding a
+ * second persisted model authority. Assistant rows already record the actual
+ * model used by each completed step, so the latest such row is the only
+ * durable model fact the switcher needs.
+ */
+export function deriveModelSwitchTranscript(messages: readonly StoredMessage[]): {
+  hasConversation: boolean;
+  lastUsedModel?: string;
+} {
+  let lastUsedModel: string | undefined;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.type !== 'assistant') continue;
+    lastUsedModel = message.modelId;
+    break;
+  }
+  return {
+    hasConversation: messages.length > 0,
+    ...(lastUsedModel ? { lastUsedModel } : {}),
+  };
+}
 
 export function deriveTurnRecords(messages: readonly StoredMessage[]): TurnRecord[] {
   const order: string[] = [];

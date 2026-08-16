@@ -1,4 +1,4 @@
-import { MAX_MODEL_IMAGE_EDGE } from '@maka/core';
+import { MAX_MODEL_IMAGE_EDGE } from '@maka/core/attachments';
 
 export const ATTACHMENT_IMAGE_MAX_EDGE = MAX_MODEL_IMAGE_EDGE;
 

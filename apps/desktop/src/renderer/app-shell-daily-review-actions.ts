@@ -1,4 +1,4 @@
-import type { UiLocale } from '@maka/core';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { DailyReviewMarkdownActionInput } from '@maka/ui';
 import { dailyReviewActionErrorMessage, dailyReviewExportDefaultName } from './daily-review-actions';
 import { getShellCopy } from './locales/shell-copy.js';

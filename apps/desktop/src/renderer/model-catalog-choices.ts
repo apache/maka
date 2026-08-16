@@ -8,8 +8,8 @@ import {
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
 } from '@maka/core/llm-connections';
-import { isWiredOAuthProvider } from '@maka/core/provider-registry';
-import type { LlmConnection, ProviderType, UiLocale } from '@maka/core';
+import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 
 const DAILY_REVIEW_MODEL_KEY_SEPARATOR = '::';
@@ -144,9 +144,6 @@ function isModelConsumerConnection(connection: Pick<LlmConnection, 'enabled' | '
   // Mirrors `isFakeBackend` in connection-readiness.ts; without this guard the
   // `.backendKind` read below throws on load for an orphan connection.
   if (!connection.enabled || !defaults || defaults.backendKind !== 'ai-sdk') return false;
-  if (defaults.authKind === 'oauth_token' && !isWiredOAuthProvider(connection.providerType)) {
-    return false;
-  }
   return true;
 }
 

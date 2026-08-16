@@ -1,4 +1,4 @@
-import type { UiCatalog, UiLocale } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type BackgroundTerminalStatus = 'running' | 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'orphaned';
 type WebCredentialCopyKey = 'env' | 'settings' | 'missing' | 'unknown';
@@ -59,14 +59,6 @@ export interface ToolActivityCopy {
       string
     >;
   };
-  automation: {
-    created: (name: string) => string;
-    nextFire: (value: string) => string;
-    deleted: string;
-    notFound: string;
-    list: (count: number) => string;
-    empty: string;
-  };
   loadTools: {
     displayName: string;
     loaded: (namespace?: string) => string;
@@ -121,7 +113,6 @@ export interface ToolActivityCopy {
     >;
     readOnly: string;
     duration: (value: string) => string;
-    openSessionAriaLabel: (name: string) => string;
     copyState: { pending: string; copied: string; failed: string; pendingAria: (label: string) => string; failedAria: (label: string) => string };
     copyButtons: Record<'summary' | 'continuation' | 'process' | 'evidence' | 'report' | 'candidate' | 'matches', { idle: string; copied: string }>;
     objectiveFallback: string;
@@ -198,17 +189,15 @@ const TOOL_ACTIVITY_COPY = {
         drag: '拖动',
       },
     },
-    automation: { created: (name) => `自动化任务已创建：${name}`, nextFire: (value) => `下次触发：${value}`, deleted: '自动化任务已删除', notFound: '未找到该任务（可能已完成或已删除）', list: (count) => `自动化任务列表 (${count})`, empty: '当前会话暂无自动化任务' },
     loadTools: { displayName: '加载工具组', loaded: (namespace) => namespace ? `已加载 ${namespace} 工具组` : '已加载工具组', count: (n) => `新增 ${n} 个可用工具：`, footer: '下一步即可调用' },
     permissionDenied: '用户已拒绝权限请求',
     result: {
-      hiddenLines: (n) => `… 已隐藏 ${n} 行`, ptyFailed: '后台终端交互失败', queued: '已输入', notQueued: '未输入', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}：${preview}` : `${action}：${preview}… · 共 ${bytes} 字节`, byteCount: (action, bytes) => `${action} ${bytes} 字节`, resizeNotApplied: (size) => `未调整为 ${size}`, resized: (size) => `已调整为 ${size}`, sizeUnchanged: (size) => `尺寸已是 ${size}`, ptyCompleted: '后台终端交互已完成', terminalUnavailable: '终端输出不可用', noTerminalFrame: '（无可用终端画面）', noOutputYet: '（尚无输出）', noOutput: '（无输出）', exitCode: (code) => `退出码 ${code}`, managedBySource: '由源会话管理', sourceUnavailable: '源会话不可用', running: '运行中', success: '成功', failed: '失败', timedOut: '已超时', cancelled: '已取消', disconnected: '已断开', terminalTruncated: '终端输出已截断', terminalRedacted: '终端输出已脱敏', streamHidden: (stream, n) => `… ${stream} 已隐藏 ${n} 行`, streamsTruncated: (limit) => `输出已截断 · 每路仅展示前 ${limit} 行`, outputTruncated: '输出已截断', outputRedacted: '输出已脱敏',
+      hiddenLines: (n) => `… 已隐藏 ${n} 行`, ptyFailed: '后台终端交互失败', queued: '已输入', notQueued: '未输入', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}：${preview}` : `${action}：${preview}… · 共 ${bytes} 字节`, byteCount: (action, bytes) => `${action} ${bytes} 字节`, resizeNotApplied: (size) => `未调整为 ${size}`, resized: (size) => `已调整为 ${size}`, sizeUnchanged: (size) => `尺寸已是 ${size}`, ptyCompleted: '后台终端交互已完成', terminalUnavailable: '终端输出不可用', noTerminalFrame: '（无可用终端画面）', noOutputYet: '（尚无输出）', noOutput: '（无输出）', exitCode: (code) => `退出码 ${code}`, managedBySource: '由源任务管理', sourceUnavailable: '源任务不可用', running: '运行中', success: '成功', failed: '失败', timedOut: '已超时', cancelled: '已取消', disconnected: '已断开', terminalTruncated: '终端输出已截断', terminalRedacted: '终端输出已脱敏', streamHidden: (stream, n) => `… ${stream} 已隐藏 ${n} 行`, streamsTruncated: (limit) => `输出已截断 · 每路仅展示前 ${limit} 行`, outputTruncated: '输出已截断', outputRedacted: '输出已脱敏',
       backgroundStatus: { running: '后台运行中', completed: '后台已完成', failed: '后台失败', timed_out: '后台超时', cancelled: '后台已取消', orphaned: '后台任务已断开' }, backgroundUnknown: (status) => `后台 · ${status}`,
       workflow: { action: '动作', status: '状态', error: '错误', nodes: '节点摘要', diagnostics: '诊断片段' }, webNoResults: '没有结果', webResults: (n) => `${n} 条结果`, credentialSource: { env: '环境变量', settings: '本机已保存 key', missing: '未配置', unknown: '来源未知' }, webFailure: '搜索失败', webSearch: '联网搜索', webGuidance: { env: '请检查 TAVILY_API_KEY / MAKA_TAVILY_API_KEY 后重启。', settings: '请在 设置 · 联网搜索 中更新 Tavily key。', rate_limited: 'Tavily 当前限流，请稍后重试或更换可用凭据。', not_configured: '请先完成联网搜索配置后再重试。', timed_out: '请求超时，请稍后重试。', privacy_mode: '隐私模式下不会发起联网搜索。', unknown: '请检查网络或稍后重试。' },
     },
     agent: {
       subagentStatus: { completed: '已完成', failed: '失败', cancelled: '已取消', running: '运行中', waiting_for_user: '等待用户输入' }, readOnly: '只读', duration: (value) => `耗时 ${value}`,
-      openSessionAriaLabel: (name) => `打开子代理会话「${name}」`,
       copyState: { pending: '复制中…', copied: '已复制', failed: '复制失败', pendingAria: (label) => `${label}中`, failedAria: (label) => `${label}失败` },
       copyButtons: { summary: { idle: '复制摘要', copied: '已复制探索摘要' }, continuation: { idle: '复制续研提示', copied: '已复制续研提示' }, process: { idle: '复制过程', copied: '已复制探索过程' }, evidence: { idle: '复制证据', copied: '已复制证据锚点' }, report: { idle: '复制报告', copied: '已复制研究报告' }, candidate: { idle: '复制候选', copied: '已复制候选文件' }, matches: { idle: '复制片段', copied: '已复制命中片段' } },
       objectiveFallback: '只读探索', foundRead: (found, read) => `发现/读 ${found} / ${read} 个文件`, skipped: (count, sensitive) => sensitive ? `跳过 ${count} 个（含敏感 ${sensitive} 个）` : `跳过 ${count} 个`, budgetLimited: '受预算限制', continuationSuggested: (reason) => `建议续研：${reason}`, followupActionsAriaLabel: '只读探索后续操作', continuationTitle: '复制一段可继续只读探索的提示', incompleteFallback: '只读探索未完成。', detail: { terminal: '终态', foundRead: '发现/读', scope: '范围', queries: '查询', ignored: '忽略', stopping: '停止', boundary: '边界', next: '后续' }, files: (n) => `${n} 个文件`,
@@ -257,17 +246,15 @@ const TOOL_ACTIVITY_COPY = {
         drag: 'Drag',
       },
     },
-    automation: { created: (name) => `Automation created: ${name}`, nextFire: (value) => `Next run: ${value}`, deleted: 'Automation deleted', notFound: 'Automation not found (it may have completed or been deleted)', list: (count) => `Automations (${count})`, empty: 'No automations in this conversation' },
     loadTools: { displayName: 'Load tools', loaded: (namespace) => namespace ? `Loaded ${namespace} tools` : 'Loaded tools', count: (n) => `Added ${n} available ${n === 1 ? 'tool' : 'tools'}:`, footer: 'Ready to use' },
     permissionDenied: 'User denied the permission request',
     result: {
-      hiddenLines: (n) => `… ${n} ${n === 1 ? 'line' : 'lines'} hidden`, ptyFailed: 'Background terminal interaction failed', queued: 'Entered', notQueued: 'Not entered', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}: ${preview}` : `${action}: ${preview}… · ${bytes} bytes total`, byteCount: (action, bytes) => `${action} ${bytes} bytes`, resizeNotApplied: (size) => `Not resized to ${size}`, resized: (size) => `Resized to ${size}`, sizeUnchanged: (size) => `Size already ${size}`, ptyCompleted: 'Background terminal interaction completed', terminalUnavailable: 'Terminal output unavailable', noTerminalFrame: '(No terminal frame available)', noOutputYet: '(No output yet)', noOutput: '(No output)', exitCode: (code) => `exit code ${code}`, managedBySource: 'Managed by source conversation', sourceUnavailable: 'Source conversation unavailable', running: 'Running', success: 'Succeeded', failed: 'Failed', timedOut: 'Timed out', cancelled: 'Cancelled', disconnected: 'Disconnected', terminalTruncated: 'Terminal output truncated', terminalRedacted: 'Terminal output redacted', streamHidden: (stream, n) => `… ${n} ${stream} ${n === 1 ? 'line' : 'lines'} hidden`, streamsTruncated: (limit) => `Output truncated · showing the first ${limit} lines of each stream`, outputTruncated: 'Output truncated', outputRedacted: 'Output redacted',
+      hiddenLines: (n) => `… ${n} ${n === 1 ? 'line' : 'lines'} hidden`, ptyFailed: 'Background terminal interaction failed', queued: 'Entered', notQueued: 'Not entered', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}: ${preview}` : `${action}: ${preview}… · ${bytes} bytes total`, byteCount: (action, bytes) => `${action} ${bytes} bytes`, resizeNotApplied: (size) => `Not resized to ${size}`, resized: (size) => `Resized to ${size}`, sizeUnchanged: (size) => `Size already ${size}`, ptyCompleted: 'Background terminal interaction completed', terminalUnavailable: 'Terminal output unavailable', noTerminalFrame: '(No terminal frame available)', noOutputYet: '(No output yet)', noOutput: '(No output)', exitCode: (code) => `exit code ${code}`, managedBySource: 'Managed by the source task', sourceUnavailable: 'Source task unavailable', running: 'Running', success: 'Succeeded', failed: 'Failed', timedOut: 'Timed out', cancelled: 'Cancelled', disconnected: 'Disconnected', terminalTruncated: 'Terminal output truncated', terminalRedacted: 'Terminal output redacted', streamHidden: (stream, n) => `… ${n} ${stream} ${n === 1 ? 'line' : 'lines'} hidden`, streamsTruncated: (limit) => `Output truncated · showing the first ${limit} lines of each stream`, outputTruncated: 'Output truncated', outputRedacted: 'Output redacted',
       backgroundStatus: { running: 'Running in background', completed: 'Background task completed', failed: 'Background task failed', timed_out: 'Background task timed out', cancelled: 'Background task cancelled', orphaned: 'Background task disconnected' }, backgroundUnknown: (status) => `Background · ${status}`,
       workflow: { action: 'Action', status: 'Status', error: 'Error', nodes: 'Node summary', diagnostics: 'Diagnostic excerpts' }, webNoResults: 'No results', webResults: (n) => `${n} ${n === 1 ? 'result' : 'results'}`, credentialSource: { env: 'Environment variable', settings: 'Locally saved key', missing: 'Not configured', unknown: 'Unknown source' }, webFailure: 'Search failed', webSearch: 'Web search', webGuidance: { env: 'Check TAVILY_API_KEY / MAKA_TAVILY_API_KEY and restart.', settings: 'Update the Tavily key in Settings · Web search.', rate_limited: 'Tavily is rate-limiting requests. Try again later or use another credential.', not_configured: 'Configure web search before retrying.', timed_out: 'The request timed out. Try again later.', privacy_mode: 'Web search is disabled in privacy mode.', unknown: 'Check the network connection or try again later.' },
     },
     agent: {
       subagentStatus: { completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', running: 'Running', waiting_for_user: 'Waiting for user input' }, readOnly: 'Read only', duration: (value) => `Duration ${value}`,
-      openSessionAriaLabel: (name) => `Open subagent session “${name}”`,
       copyState: { pending: 'Copying…', copied: 'Copied', failed: 'Copy failed', pendingAria: (label) => `Copying ${label}`, failedAria: (label) => `Failed to copy ${label}` },
       copyButtons: { summary: { idle: 'Copy summary', copied: 'Exploration summary copied' }, continuation: { idle: 'Copy continuation prompt', copied: 'Continuation prompt copied' }, process: { idle: 'Copy process', copied: 'Exploration process copied' }, evidence: { idle: 'Copy evidence', copied: 'Evidence anchors copied' }, report: { idle: 'Copy report', copied: 'Research report copied' }, candidate: { idle: 'Copy candidates', copied: 'Candidate files copied' }, matches: { idle: 'Copy matches', copied: 'Matching excerpts copied' } },
       objectiveFallback: 'Read-only exploration', foundRead: (found, read) => `Discovered/read ${found} / ${read} files`, skipped: (count, sensitive) => sensitive ? `Skipped ${count} (${sensitive} sensitive)` : `Skipped ${count}`, budgetLimited: 'Budget limited', continuationSuggested: (reason) => `Continue: ${reason}`, followupActionsAriaLabel: 'Read-only exploration follow-up actions', continuationTitle: 'Copy a prompt that continues the read-only exploration', incompleteFallback: 'Read-only exploration did not complete.', detail: { terminal: 'Terminal state', foundRead: 'Discovered/read', scope: 'Scope', queries: 'Queries', ignored: 'Ignored', stopping: 'Stopped by', boundary: 'Limits', next: 'Next' }, files: (n) => `${n} ${n === 1 ? 'file' : 'files'}`,

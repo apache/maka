@@ -56,19 +56,6 @@ describe('AgentRun continuation source decoding', () => {
       /Invalid AgentRun header schema/,
     );
   });
-
-  it('preserves legacy V1 compatibility for a zero source high-water', () => {
-    const decoded = decodeAgentRunHeader(
-      headerWithContinuation({
-        sourceInvocationId: 'legacy-source-invocation',
-        sourceRunId: 'legacy-source-run',
-        sourceTurnId: 'legacy-source-turn',
-        sourceRuntimeEventHighWater: 0,
-      }),
-    );
-
-    assert.equal(decoded.continuationSource?.sourceRuntimeEventHighWater, 0);
-  });
 });
 
 function headerWithContinuation(

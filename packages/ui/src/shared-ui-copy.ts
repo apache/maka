@@ -1,12 +1,14 @@
-import type { TaskStatus, UiCatalog, UiLocale } from '@maka/core';
+import type { TaskStatus } from '@maka/core/task-ledger';
+
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export interface SharedUiCopy {
   capabilityAudit: {
     ariaLabel: string;
     needsAuthorization: (count: number) => string;
     sourceErrors: (count: number) => string;
-    failedAutomations: (count: number) => string;
-    skippedAutomations: (count: number) => string;
+    failedScheduledTasks: (count: number) => string;
+    skippedScheduledTasks: (count: number) => string;
   };
   markdown: {
     invalidInternalLink: string;
@@ -56,7 +58,7 @@ export interface SharedUiCopy {
       title: string;
       description: string;
       selectorLabel: (module: string) => string;
-      planReminders: string;
+      scheduledTasks: string;
       dailyReview: string;
     };
   };
@@ -111,8 +113,8 @@ const SHARED_UI_COPY = {
       ariaLabel: '能力风险提示',
       needsAuthorization: (count) => `${count} 个来源等待授权`,
       sourceErrors: (count) => `${count} 个来源异常`,
-      failedAutomations: (count) => `${count} 个自动化上次失败`,
-      skippedAutomations: (count) => `${count} 个自动化上次跳过`,
+      failedScheduledTasks: (count) => `${count} 个定时任务上次失败`,
+      skippedScheduledTasks: (count) => `${count} 个定时任务上次跳过`,
     },
     markdown: {
       invalidInternalLink: '内部链接无效',
@@ -160,9 +162,9 @@ const SHARED_UI_COPY = {
       },
       automations: {
         title: '定时任务',
-        description: '安排计划提醒，并回顾本机对话中的工作进展。',
+        description: '安排定时运行，并回顾本机任务的工作进展。',
         selectorLabel: (module) => `定时任务内容：${module}`,
-        planReminders: '计划提醒',
+        scheduledTasks: '定时任务',
         dailyReview: '每日回顾',
       },
     },
@@ -173,20 +175,20 @@ const SHARED_UI_COPY = {
       loadingAutomations: '正在加载定时任务…',
       dailyReview: '每日回顾',
       loadingDailyReview: '正在加载每日回顾…',
-      dailyReviewDescription: '自动汇总本机对话，生成摘要、遗漏提醒与深度分析；可在设置中开启定时执行。',
+      dailyReviewDescription: '自动汇总本机任务，生成摘要、遗漏提醒与深度分析；可在设置中开启定时执行。',
       dailyReviewDisconnectedTitle: '等待连接每日回顾数据',
       dailyReviewDisconnectedBody: '桌面端数据桥当前未连接。',
     },
     primitives: { loading: '加载中', close: '关闭', resizeHandle: '调整宽度' },
     taskLedger: {
       status: { pending: '待处理', in_progress: '进行中', blocked: '已阻塞', completed: '已完成', failed: '失败', cancelled: '已取消' },
-      ariaLabel: '会话任务',
-      retry: '重新载入任务',
-      loading: '正在载入任务…',
-      activeAriaLabel: '活跃会话任务',
-      empty: '当前会话没有待推进任务',
+      ariaLabel: '任务待办',
+      retry: '重新载入待办',
+      loading: '正在载入待办…',
+      activeAriaLabel: '进行中的待办',
+      empty: '这个任务还没有待办',
       recent: '最近结束',
-      recentAriaLabel: '最近结束的会话任务',
+      recentAriaLabel: '最近结束的待办',
       childAgent: (agentId) => `子代理${agentId ? ` ${agentId}` : ''}`,
       mainAgent: '主代理',
     },
@@ -200,8 +202,8 @@ const SHARED_UI_COPY = {
       ariaLabel: 'Capability risks',
       needsAuthorization: (count) => `${count} ${count === 1 ? 'source' : 'sources'} awaiting authorization`,
       sourceErrors: (count) => `${count} ${count === 1 ? 'source has' : 'sources have'} errors`,
-      failedAutomations: (count) => `${count} ${count === 1 ? 'automation failed' : 'automations failed'} last run`,
-      skippedAutomations: (count) => `${count} ${count === 1 ? 'automation was' : 'automations were'} skipped last run`,
+      failedScheduledTasks: (count) => `${count} scheduled ${count === 1 ? 'task failed' : 'tasks failed'} last run`,
+      skippedScheduledTasks: (count) => `${count} scheduled ${count === 1 ? 'task was' : 'tasks were'} skipped last run`,
     },
     markdown: {
       invalidInternalLink: 'Invalid internal link',
@@ -249,9 +251,9 @@ const SHARED_UI_COPY = {
       },
       automations: {
         title: 'Scheduled tasks',
-        description: 'Schedule reminders and review progress from local conversations.',
+        description: 'Schedule recurring runs and review progress across local tasks.',
         selectorLabel: (module) => `Scheduled task content: ${module}`,
-        planReminders: 'Plan reminders',
+        scheduledTasks: 'Scheduled tasks',
         dailyReview: 'Daily review',
       },
     },
@@ -262,20 +264,20 @@ const SHARED_UI_COPY = {
       loadingAutomations: 'Loading scheduled tasks…',
       dailyReview: 'Daily review',
       loadingDailyReview: 'Loading daily review…',
-      dailyReviewDescription: 'Summarize local conversations into highlights, missed items, and deeper analysis. Scheduled runs can be enabled in Settings.',
+      dailyReviewDescription: 'Summarize local tasks into highlights, missed items, and deeper analysis. Scheduled runs can be enabled in Settings.',
       dailyReviewDisconnectedTitle: 'Waiting for daily review data',
       dailyReviewDisconnectedBody: 'The desktop data bridge is not connected.',
     },
     primitives: { loading: 'Loading', close: 'Close', resizeHandle: 'Resize handle' },
     taskLedger: {
       status: { pending: 'Pending', in_progress: 'In progress', blocked: 'Blocked', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled' },
-      ariaLabel: 'Conversation tasks',
-      retry: 'Reload tasks',
-      loading: 'Loading tasks…',
-      activeAriaLabel: 'Active conversation tasks',
-      empty: 'This conversation has no active tasks',
+      ariaLabel: 'To-do list',
+      retry: 'Reload the to-do list',
+      loading: 'Loading the to-do list…',
+      activeAriaLabel: 'In-progress to-dos',
+      empty: 'This task has no to-dos yet',
       recent: 'Recently finished',
-      recentAriaLabel: 'Recently finished conversation tasks',
+      recentAriaLabel: 'Recently finished to-dos',
       childAgent: (agentId) => `Child agent${agentId ? ` ${agentId}` : ''}`,
       mainAgent: 'Main agent',
     },

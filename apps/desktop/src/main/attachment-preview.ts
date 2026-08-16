@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { attachmentKindFromMimeType, guessMimeFromName, MAX_ATTACHMENT_BYTES } from '@maka/core';
+import { attachmentKindFromMimeType, guessMimeFromName, MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
 import type { AttachmentApprovalRegistry } from './attachment-approval.js';
 
 export type AttachmentPreviewResult =

@@ -1,4 +1,4 @@
-import type { UiCatalog, UiLocale } from '@maka/core';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type WidenCopy<T> = T extends string
   ? string
@@ -61,7 +61,7 @@ const zhCopy = {
     credentials: '连接', dangerZone: '删除连接', deleteRowHelp: '此操作不可撤销。',
     credentialsHelp: '密钥只保存在本机。',
     credentialsHelpAccount: '登录令牌只保存在本机。',
-    modelManagementHelp: '这些模型会出现在对话的模型选择器里。',
+    modelManagementHelp: '这些模型会出现在任务的模型选择器里。',
     ...zhCapabilitiesCopy,
     capabilitiesHelp: '声明每个已启用模型的思考档位、视觉与上下文窗口；保存后生效。',
     // Row affordances (settings-sidebar 的 InfoRow / ExpandableRow 语言)：一行
@@ -89,7 +89,7 @@ const zhCopy = {
         ? '这会退出本机账号、删除 OAuth 凭据和模型连接；刷新后不会自动重新创建。'
         : '这会删除模型连接及其本机凭据；如需再次使用，需要重新添加。',
       isDefault
-        ? '它当前是默认连接；删除后默认模型会变成未设置，已有对话可能需要重新选择模型。'
+        ? '它当前是默认连接；删除后默认模型会变成未设置，已有任务可能需要重新选择模型。'
         : '',
     ].filter(Boolean).join(' '),
     connectionSuccess: (name: string) => `连接成功 · ${name}`, connectionFailed: (name: string) => `连接失败 · ${name}`,
@@ -118,7 +118,7 @@ const zhCopy = {
     tabs: { all: '全部', recommended: '推荐', accounts: '账号', plans: '模型计划', api: 'API', aggregators: '聚合服务', local: '本地' },
     loadFailed: '载入模型连接失败', loadingAria: '正在加载模型供应商', connections: '模型连接',
     retry: '点击重试。', empty: '还没有模型连接',
-    emptyHelp: '从下方选择一种连接方式开始。', default: '默认', setDefault: '设为默认', setDefaultTitle: '让新对话默认使用这个连接', setDefaultPending: '设置中…', setDefaultFailed: '设为默认失败', addHelp: '选择账号登录、模型计划、API、聚合服务或本地运行时。',
+    emptyHelp: '从下方选择一种连接方式开始。', default: '默认', setDefault: '设为默认', setDefaultTitle: '让新任务默认使用这个连接', setDefaultPending: '设置中…', setDefaultFailed: '设为默认失败', addHelp: '选择账号登录、模型计划、API、聚合服务或本地运行时。',
     categoriesAria: '模型供应商分类', searchPlaceholder: '搜索服务商', searchAria: '搜索模型服务商', noMatch: '没有匹配的服务商', clearSearch: '清除搜索',
     createSubtitle: '完成必要配置后，连接会出现在模型页上方。', connection: '模型连接',
     count: (value: number) => `· ${value}`, connectTitle: (name: string) => `连接 ${name}`,
@@ -127,18 +127,16 @@ const zhCopy = {
   },
   catalog: {
     unavailable: '未开放',
-    wiredTitle: (name: string) => `${name}（请从账号连接登录）`,
-    unwiredTitle: (name: string) => `${name}（账号登录暂未接入聊天发送）`, cardAria: (name: string, description: string) => `添加模型供应商：${name}，${description}`,
+    cardAria: (name: string, description: string) => `添加模型供应商：${name}，${description}`,
   },
   add: {
     invalidSlug: '连接标识格式不正确', duplicateSlug: '连接标识已存在', cloudflareAccount: '请填写 Cloudflare Account ID', endpointRequired: '这个供应商需要填写服务地址',
-    wiredLogin: '请到账号连接完成登录；登录成功后会自动创建模型连接。', unwiredLogin: '该账号登录暂未接入聊天发送；请先使用同一家厂商的模型密钥。',
-    apiKeyPlaceholder: '输入或粘贴 API Key', cancel: '取消', wiredTitle: '使用账号连接登录', unwiredTitle: '账号登录暂未接入',
+    accountLogin: '请到账号连接完成登录；登录成功后会自动创建模型连接。',
+    apiKeyPlaceholder: '输入或粘贴 API Key', cancel: '取消', accountTitle: '使用账号连接登录',
     advancedRequest: '高级请求设置', expandAdvancedRequest: '展开高级请求设置', collapseAdvancedRequest: '收起高级请求设置',
     requestHeaders: '自定义请求头', headerName: '请求头名称', headerValue: '请求头值', retainedHeaderValue: '保留已保存的值', addHeader: '添加请求头', removeHeader: '移除', noRequestHeaders: '未设置自定义请求头。',
     extraRequestBody: '额外请求体（JSON）', extraRequestBodyHelp: '仅添加顶层字段；与 Maka 生成字段重名时会明确失败。请求头值将作为凭据保存在本机。', requestCustomizationInvalid: '请检查高级请求设置。',
-    wiredDetail: '不要在这里手动添加；请回到模型连接页的账号连接完成登录，Maka 会自动创建并刷新模型连接。',
-    unwiredDetail: '这类账号登录暂未接入聊天发送。当前请先使用同一家厂商的模型密钥。',
+    accountDetail: '不要在这里手动添加；请回到模型连接页的账号连接完成登录，Maka 会自动创建并刷新模型连接。',
     slug: '连接标识', name: '显示名称',
     accountIdPlaceholder: '填写账户 ID',
     saving: '保存中…', save: '保存供应商', keyRequired: (name: string) => `请填写 ${name} API Key`,
@@ -277,18 +275,16 @@ const enCopy: ProviderSettingsCopy = {
   },
   catalog: {
     unavailable: 'Unavailable',
-    wiredTitle: (name: string) => `${name} (sign in under account connections)`,
-    unwiredTitle: (name: string) => `${name} (account sign-in not connected to chat)`, cardAria: (name: string, description: string) => `Add model provider: ${name}; ${description}`,
+    cardAria: (name: string, description: string) => `Add model provider: ${name}; ${description}`,
   },
   add: {
     invalidSlug: 'The connection identifier format is invalid', duplicateSlug: 'Connection identifier already exists', cloudflareAccount: 'Enter the Cloudflare Account ID', endpointRequired: 'This provider requires a service URL',
-    wiredLogin: 'Complete sign-in under account connections. A model connection is created automatically afterward.', unwiredLogin: 'This account sign-in is not connected to chat yet. Use a model key from the same provider for now.',
-    apiKeyPlaceholder: 'Enter or paste API key', cancel: 'Cancel', wiredTitle: 'Sign in with an account connection', unwiredTitle: 'Account sign-in is not connected',
+    accountLogin: 'Complete sign-in under account connections. A model connection is created automatically afterward.',
+    apiKeyPlaceholder: 'Enter or paste API key', cancel: 'Cancel', accountTitle: 'Sign in with an account connection',
     advancedRequest: 'Advanced request settings', expandAdvancedRequest: 'Show advanced request settings', collapseAdvancedRequest: 'Hide advanced request settings',
     requestHeaders: 'Custom request headers', headerName: 'Header name', headerValue: 'Header value', retainedHeaderValue: 'Keep saved value', addHeader: 'Add header', removeHeader: 'Remove', noRequestHeaders: 'No custom request headers.',
     extraRequestBody: 'Extra request body (JSON)', extraRequestBodyHelp: 'Adds top-level fields only. A collision with a Maka-generated field fails explicitly. Header values stay in the local credential vault.', requestCustomizationInvalid: 'Check the advanced request settings.',
-    wiredDetail: 'Do not add this provider manually here. Return to account connections and sign in; Maka creates and refreshes the model connection automatically.',
-    unwiredDetail: 'This account sign-in is not connected to chat yet. Use a model key from the same provider for now.',
+    accountDetail: 'Do not add this provider manually here. Return to account connections and sign in; Maka creates and refreshes the model connection automatically.',
     slug: 'Connection identifier', name: 'Display name',
     accountIdPlaceholder: 'Enter account ID',
     saving: 'Saving…', save: 'Save provider', keyRequired: (name: string) => `Enter the ${name} API key`,

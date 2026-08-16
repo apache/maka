@@ -1,5 +1,7 @@
-import type { ConnectionTestResult, TextFileImportPreflightFailureReason, UiLocale } from '@maka/core';
-import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core';
+import type { ConnectionTestResult } from '@maka/core/llm-connections';
+import type { TextFileImportPreflightFailureReason } from '@maka/core/text-file-import';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
 import { getShellCopy } from './locales/shell-copy.js';
 
 const SESSION_READ_MESSAGES_ERROR_MARKER = 'MAKA_SESSION_READ_MESSAGES_ERROR:';

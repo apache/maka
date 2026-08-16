@@ -1,4 +1,4 @@
-import type { OsPermissionSnapshot, OsPermissionState, PermissionSnapshot } from '@maka/core';
+import type { OsPermissionSnapshot, OsPermissionState, PermissionSnapshot } from '@maka/core/capabilities';
 
 /**
  * #1361: a typed OS-permission snapshot for the `settings-permissions` e2e

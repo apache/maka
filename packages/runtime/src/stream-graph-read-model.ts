@@ -1,11 +1,9 @@
-import type {
-  AgentGraphClientClaimAdmission,
-  AgentGraphIntentClaim,
-  AgentGraphOperatorProvision,
-  AgentGraphScheduleUpdate,
-  SessionEvent,
-} from '@maka/core';
-import { failureClassFromCompleteStopReason } from '@maka/core';
+import type { AgentGraphClientClaimAdmission } from '@maka/core/agent-graph-client-projection';
+import type { AgentGraphIntentClaim } from '@maka/core/agent-graph-control';
+import type { AgentGraphOperatorProvision } from '@maka/core/agent-graph-topology';
+import type { AgentGraphScheduleUpdate } from '@maka/core/agent-graph-schedule';
+import type { SessionEvent } from '@maka/core/events';
+import { failureClassFromCompleteStopReason } from '@maka/core/events';
 import type {
   AgentGraphSupervisorObservation,
   AgentGraphSupervisorRuntimeEvent,
@@ -84,7 +82,6 @@ export interface AgentGraphClientOperator {
   scheduledWorkIds: string[];
   readiness: Array<{
     readinessId: string;
-    policyKind: 'map' | 'all_settled';
     status: 'waiting' | 'runnable';
     waitingFor: AgentGraphReadinessWait[];
     omittedWaitingFor: number;
@@ -659,7 +656,6 @@ function buildReadModel(input: BuildAgentGraphClientReadModelInput): BuiltReadMo
       .filter((entry) => entry.operatorId === binding.operatorId)
       .map((entry) => ({
         readinessId: entry.readinessId,
-        policyKind: entry.policyKind,
         status: entry.status,
         waitingFor: entry.waitingFor.slice(0, MAX_OPERATOR_READINESS_WAITS).map(cloneWait),
         omittedWaitingFor: Math.max(0, entry.waitingFor.length - MAX_OPERATOR_READINESS_WAITS),

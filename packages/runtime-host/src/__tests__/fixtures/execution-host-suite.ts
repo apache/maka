@@ -16,7 +16,7 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
+import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import { normalizeMessageContent, type MessageContent } from '@maka/core/events';
@@ -25,19 +25,19 @@ import type { StoredMessage } from '@maka/core/session';
 import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { BackendRegistry, SessionManager } from '@maka/runtime/session-manager';
+import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
 import {
-  BackendRegistry,
-  buildTaskLedgerTools,
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
+} from '@maka/runtime/terminal-run-commit';
+import {
   FAKE_ASK_USER_QUESTION_PROMPT,
   FAKE_WAIT_FOR_STEERING_PROMPT,
   FakeBackend,
-  SessionManager,
-  type MakaTool,
-  type MakaToolContext,
-} from '@maka/runtime';
+} from '@maka/runtime/fake-backend';
+import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
@@ -1127,6 +1127,7 @@ export async function sendStartWithoutReadingResponse(
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+    compositionId: 'maka.interactive',
   });
   const handshake = decodeHostFrame(await transport.read(2_000));
   assert.ok('kind' in handshake);
@@ -1255,7 +1256,10 @@ export async function waitForTerminalTurn(
   sessionId: string,
   turnId: string,
 ): Promise<TurnSnapshot> {
-  const subscription = await connection.openSessionSubscription({ sessionId }, PROCESS_TIMEOUT_MS);
+  const subscription = await connection.openSessionSubscription(
+    { sessionId, transcript: { kind: 'none' } },
+    PROCESS_TIMEOUT_MS,
+  );
   try {
     return await withTimeout(
       (async () => {

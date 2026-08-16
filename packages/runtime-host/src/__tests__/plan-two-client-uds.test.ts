@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -61,11 +62,14 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 30_000,
-      compositionFactory: createExecutionRuntimeHostComposition,
+      composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
     });
     owner = undefined;
     [desktop, tui] = await Promise.all([connect(root, 'desktop'), connect(root, 'tui')]);
-    const subscription = await desktop.openSessionSubscription({ sessionId: session.id });
+    const subscription = await desktop.openSessionSubscription({
+      sessionId: session.id,
+      transcript: { kind: 'none' },
+    });
 
     const first = await desktop.queryPlan({ kind: 'list_start', sessionId: session.id });
     assert.equal(first.kind, 'page');
@@ -111,7 +115,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 30_000,
-      compositionFactory: createExecutionRuntimeHostComposition,
+      composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
     });
     owner = undefined;
     tui = await connect(root, 'tui');

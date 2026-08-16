@@ -17,8 +17,10 @@ on:
       - 'apps/desktop/package.json'
       - 'scripts/package-windows-x64.mjs'
       - 'scripts/prepare-bundled-git.mjs'
-      - 'scripts/prepare-bundled-git.test.mjs'
       - 'scripts/verify-windows-x64.mjs'
+      - 'scripts/verify-windows-installer-lifecycle.mjs'
+      - 'scripts/prepare-windows-upgrade-baseline.mjs'
+      - 'scripts/windows-upgrade-baseline.json'
       - 'scripts/verify-packaged-app.mjs'
       - 'scripts/npm-spawn.mjs'
       - 'scripts/generate-third-party-notices.mjs'
@@ -64,3 +66,20 @@ jobs:
         run: |
           version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-x64 -- "apps/desktop/release/Maka-${version}-win-x64.exe"
+
+      - name: Download and verify the pinned Windows upgrade baseline
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          previous_exe="$(node scripts/prepare-windows-upgrade-baseline.mjs \
+            "$version" artifacts/windows-upgrade-baseline)"
+          echo "exe=$previous_exe" >> "$GITHUB_OUTPUT"
+
+      - name: Exercise pinned-version upgrade and uninstall
+        run: |
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          npm run verify:windows-installer -- \
+            "apps/desktop/release/Maka-${version}-win-x64.exe" \
+            "${{ steps.previous.outputs.exe }}"

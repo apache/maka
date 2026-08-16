@@ -2,7 +2,7 @@
 //
 // One severity reading for one Skill, shared by the list rows and the
 // inspector so a skill never reads as two different states depending on
-// where it is shown — the same contract plan-reminder-status.ts keeps for
+// where it is shown — the same contract scheduled-task-status.ts keeps for
 // 定时任务.
 //
 // Meaning rules: `error` is a broken state file or unreadable metadata;
