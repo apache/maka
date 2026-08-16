@@ -36,11 +36,13 @@ test('Tool, UI, and Hook share one Revision with typed dispatch, rollback, and r
   const root = await mkdtemp(join(tmpdir(), 'maka-hook-package-'));
   const control = join(root, 'control');
   const goodSource = join(root, 'good');
+  const updatedSource = join(root, 'updated');
   const badSource = join(root, 'bad');
   const events: RuntimeEvent[] = [];
   let fixture: ReturnType<typeof createFixture> | undefined;
   try {
     await writeCombinedPackage(goodSource, false);
+    await writeCombinedPackage(updatedSource, false, '1.1.0', '[hook-v2] ');
     await writeCombinedPackage(badSource, true);
     fixture = createFixture(control);
     const installed = await fixture.loader.installPackage(goodSource);
@@ -54,6 +56,7 @@ test('Tool, UI, and Hook share one Revision with typed dispatch, rollback, and r
       'UserPromptSubmit:prompt',
     ]);
     const bad = await fixture.loader.installPackage(badSource);
+    const updated = await fixture.loader.installPackage(updatedSource);
     await fixture.controller.recover();
     const enabled = await fixture.controller.handlers['extension.catalog.mutate'](
       {
@@ -194,6 +197,31 @@ test('Tool, UI, and Hook share one Revision with typed dispatch, rollback, and r
     assert.equal(events.at(-1)?.actions?.hookCompleted?.eventName, 'PostToolUse');
     await toolRuntime.endTurn();
 
+    const accepted = await fixture.controller.handlers['extension.catalog.mutate'](
+      { kind: 'update', bindingId: 'hook-binding', revision: updated.revision },
+      connection,
+    );
+    assert.equal(accepted.ok, true, JSON.stringify(accepted));
+    assert.ok(
+      fixture.runtime
+        .inspectHooks('session-1')
+        .every(({ revision }) => revision === updated.revision),
+    );
+    const updatedDispatcher = createHostHookComposition({
+      stateRoot: root,
+      extensions: fixture.runtime,
+      runtimeEvents: { appendRuntimeEvent: async () => undefined },
+    }).dispatcherFor(header(root));
+    updatedDispatcher.prepareTurn('turn-updated');
+    const updatedPrompt = await updatedDispatcher.runExtensionHook?.(
+      'UserPromptSubmit',
+      { text: 'hello' },
+      new AbortController().signal,
+      { ...runtimeContext, turnId: 'turn-updated' },
+    );
+    updatedDispatcher.releaseTurn('turn-updated');
+    assert.deepEqual(updatedPrompt?.payload, { text: '[hook-v2] hello' });
+
     const rejected = await fixture.controller.handlers['extension.catalog.mutate'](
       { kind: 'update', bindingId: 'hook-binding', revision: bad.revision },
       connection,
@@ -207,7 +235,7 @@ test('Tool, UI, and Hook share one Revision with typed dispatch, rollback, and r
     const retained = afterFailure.ok
       ? afterFailure.result.bindings.find(({ bindingId }) => bindingId === 'hook-binding')
       : undefined;
-    assert.equal(retained?.lastGoodRevision, installed.revision);
+    assert.equal(retained?.lastGoodRevision, updated.revision);
     assert.equal(retained?.status, 'failed');
     assert.equal(fixture.runtime.inspectHooks('session-1').length, 5);
 
@@ -350,11 +378,15 @@ function createFixture(control: string) {
   return { runtime, loader, controller, hookStore };
 }
 
-async function writeCombinedPackage(root: string, broken: boolean): Promise<void> {
+async function writeCombinedPackage(
+  root: string,
+  broken: boolean,
+  version = broken ? '2.0.0' : '1.0.0',
+  promptPrefix = '[hook] ',
+): Promise<void> {
   await mkdir(join(root, 'dist'), { recursive: true });
   await mkdir(join(root, 'documents'), { recursive: true });
   const id = 'dev.maka.hook.system';
-  const version = broken ? '2.0.0' : '1.0.0';
   await writeFile(
     join(root, 'maka.extension.json'),
     JSON.stringify({ schemaVersion: 1, id, version, displayName: 'Hook System Test' }),
@@ -425,7 +457,7 @@ async function writeCombinedPackage(root: string, broken: boolean): Promise<void
     join(root, 'dist', 'index.mjs'),
     `export default {
       echo: async (input) => input,
-      prompt: async (payload) => ({ payload: { text: '[hook] ' + payload.text } }),
+      prompt: async (payload) => ({ payload: { text: ${JSON.stringify(promptPrefix)} + payload.text } }),
       start: async () => undefined,
       gate: async () => ({ decision: 'deny', reason: 'blocked by extension' }),
       post: async (payload) => ({ payload: { result: { wrapped: payload.result } } }),

@@ -1357,16 +1357,31 @@ export class AiSdkBackend implements AgentBackend {
     // Default to aborted so an abandoned async iterator cannot be reported as
     // a completed Run. Normal exhaustion is the only path that promotes it.
     let outcome: 'completed' | 'failed' | 'aborted' = 'aborted';
+    let runEndDispatched = false;
+    const hookContext = {
+      invocationId: input.invocationId ?? input.runId ?? input.turnId,
+      sessionId: this.input.sessionId,
+      runId: input.runId ?? input.turnId,
+      turnId: input.turnId,
+      cwd: this.input.header.cwd,
+      permissionMode: this.input.header.permissionMode,
+      origin: 'provider' as const,
+    };
+    const dispatchRunEnd = async () => {
+      if (runEndDispatched) return;
+      runEndDispatched = true;
+      try {
+        await this.input.preToolUseHooks?.runExtensionHook?.(
+          'RunEnd',
+          { outcome },
+          new AbortController().signal,
+          hookContext,
+        );
+      } catch {
+        // Observe-only Extension Hooks are fail-open and cannot replace turn settlement.
+      }
+    };
     try {
-      const hookContext = {
-        invocationId: input.invocationId ?? input.runId ?? input.turnId,
-        sessionId: this.input.sessionId,
-        runId: input.runId ?? input.turnId,
-        turnId: input.turnId,
-        cwd: this.input.header.cwd,
-        permissionMode: this.input.header.permissionMode,
-        origin: 'provider' as const,
-      };
       const promptResult = await this.input.preToolUseHooks?.runExtensionHook?.(
         'UserPromptSubmit',
         { text: input.text },
@@ -1381,31 +1396,23 @@ export class AiSdkBackend implements AgentBackend {
         scope.abortController.signal,
         hookContext,
       );
-      yield* this.sendWithinScope(scope, preparedInput);
-      outcome = 'completed';
+      for await (const event of this.sendWithinScope(scope, preparedInput)) {
+        if (event.type === 'complete') {
+          outcome = 'completed';
+          // The Flow forwards the terminal event to its own consumer. That
+          // consumer is allowed to stop pulling immediately, so a RunEnd left
+          // in this generator's finally block may never commit. Settle the
+          // lifecycle Hook before the terminal event becomes observable.
+          await dispatchRunEnd();
+        }
+        yield event;
+      }
+      if (!runEndDispatched) outcome = 'completed';
     } catch (error) {
       outcome = scope.abortController.signal.aborted ? 'aborted' : 'failed';
       throw error;
     } finally {
-      const hookContext = {
-        invocationId: input.invocationId ?? input.runId ?? input.turnId,
-        sessionId: this.input.sessionId,
-        runId: input.runId ?? input.turnId,
-        turnId: input.turnId,
-        cwd: this.input.header.cwd,
-        permissionMode: this.input.header.permissionMode,
-        origin: 'provider' as const,
-      };
-      try {
-        await this.input.preToolUseHooks?.runExtensionHook?.(
-          'RunEnd',
-          { outcome },
-          new AbortController().signal,
-          hookContext,
-        );
-      } catch {
-        // Observe-only Extension Hooks are fail-open and cannot replace turn settlement.
-      }
+      await dispatchRunEnd();
       await this.cleanupAfterTurn(scope);
     }
   }

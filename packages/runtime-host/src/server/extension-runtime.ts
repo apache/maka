@@ -235,9 +235,20 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
   }
 
   inspectHooks(scopeId: string): readonly ExtensionHookContributionInspection[] {
-    if (scopeId === PROFILE_EXTENSION_SCOPE) return this.#hooks.inspect([scopeId]);
+    const scopeIds =
+      scopeId === PROFILE_EXTENSION_SCOPE ? [scopeId] : [PROFILE_EXTENSION_SCOPE, scopeId];
+    const committed = scopeIds.flatMap((resolvedScopeId) =>
+      this.#lifecycle
+        .inspectScope(resolvedScopeId)
+        .flatMap((binding) =>
+          binding.current
+            ? [{ bindingId: binding.bindingId, revision: binding.current.revision }]
+            : [],
+        ),
+    );
+    if (scopeId === PROFILE_EXTENSION_SCOPE) return this.#hooks.inspect(scopeIds, committed);
     const resolved = new Map<string, ExtensionHookContributionInspection>();
-    for (const hook of this.#hooks.inspect([PROFILE_EXTENSION_SCOPE, scopeId])) {
+    for (const hook of this.#hooks.inspect(scopeIds, committed)) {
       const key = `${hook.event}\0${hook.extensionId}\0${hook.id}`;
       const current = resolved.get(key);
       if (!current || hook.scopeId === scopeId) resolved.set(key, hook);

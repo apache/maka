@@ -87,7 +87,10 @@ export class ExtensionHookContributionRegistry {
     validateExtensionHookContribution(contribution);
     const current = this.#scopes.get(context.scopeId) ?? [];
     const conflict = current.find(
-      (entry) => entry.event === contribution.event && entry.id === contribution.id,
+      (entry) =>
+        entry.event === contribution.event &&
+        entry.id === contribution.id &&
+        (entry.bindingId !== context.bindingId || entry.extensionId !== context.extensionId),
     );
     if (conflict) {
       throw new ExtensionHookContributionError(
@@ -120,8 +123,16 @@ export class ExtensionHookContributionRegistry {
     };
   }
 
-  inspect(scopeIds: readonly string[]): readonly ExtensionHookContributionInspection[] {
-    const entries = scopeIds.flatMap((scopeId) => this.#scopes.get(scopeId) ?? []);
+  inspect(
+    scopeIds: readonly string[],
+    committed?: readonly { readonly bindingId: string; readonly revision: string }[],
+  ): readonly ExtensionHookContributionInspection[] {
+    const revisions = committed
+      ? new Map(committed.map(({ bindingId, revision }) => [bindingId, revision]))
+      : undefined;
+    const entries = scopeIds
+      .flatMap((scopeId) => this.#scopes.get(scopeId) ?? [])
+      .filter((entry) => !revisions || revisions.get(entry.bindingId) === entry.revision);
     return Object.freeze(
       entries.map(({ token: _token, ...entry }) => Object.freeze(entry)).sort(compareHook),
     );

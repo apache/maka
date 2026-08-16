@@ -161,6 +161,49 @@ describe('AiSdkBackend Extension Hook lifecycle', () => {
 
     assert.deepEqual(outcomes, [{ outcome: 'aborted' }]);
   });
+
+  test('settles RunEnd before exposing the terminal complete event', async () => {
+    const calls: string[] = [];
+    const preToolUseHooks: NonNullable<AiSdkBackendInput['preToolUseHooks']> = {
+      prepareTurn() {},
+      releaseTurn() {},
+      async runPreToolUse() {
+        return { denied: false, audits: [], auditWriteFailures: [] };
+      },
+      async runExtensionHook(event, payload) {
+        calls.push(event);
+        return { denied: false, payload, audits: [], auditWriteFailures: [] };
+      },
+    };
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => textCompletionModel('done'),
+      tools: [],
+      preToolUseHooks,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const iterator = backend
+      .send({ turnId: 'turn-1', text: 'original prompt', context: [] })
+      [Symbol.asyncIterator]();
+
+    try {
+      for (;;) {
+        const next = await iterator.next();
+        assert.equal(next.done, false);
+        if (next.value.type !== 'complete') continue;
+        assert.deepEqual(calls, ['UserPromptSubmit', 'RunStart', 'RunEnd']);
+        break;
+      }
+    } finally {
+      await iterator.return?.();
+    }
+  });
 });
 
 describe('AiSdkBackend ApplyPatch routing', () => {
