@@ -1,8 +1,11 @@
 import {
+  HISTORY_COMPACT_ROUTES,
+  MODEL_CALL_DIAGNOSTIC_FIELD_MAX_LENGTH,
   MODEL_CALL_ATTEMPT_STATUSES,
   MODEL_CALL_COST_BASES,
   MODEL_CALL_KINDS,
   MODEL_CALL_USAGE_BASES,
+  type HistoryCompactRoute,
   type ModelCallAttemptStatus,
   type ModelCallKind,
 } from './model-call-attempt.js';
@@ -54,6 +57,10 @@ export interface TraceModelAttempt {
   timeToFirstTokenMs?: number;
   finishReason?: string;
   errorClass?: string;
+  httpStatus?: number;
+  providerCode?: string;
+  providerRequestId?: string;
+  retryable?: boolean;
   inputTokens?: number;
   outputTokens?: number;
   cacheReadInputTokens?: number;
@@ -92,6 +99,8 @@ export interface TraceModelCallStep {
   endedAt: number;
   durationMs: number;
   callKind: ModelCallKind;
+  /** How a history-compaction call reduced the covered conversation. */
+  historyCompactRoute?: HistoryCompactRoute;
   providerId: string;
   modelId: string;
   connectionSlug?: string;
@@ -322,7 +331,7 @@ const MODEL_CALL_STEP_SHAPE = defineObjectShape<TraceModelCallStep>()(
     'attempts',
     'status',
   ],
-  ['connectionSlug', 'costUsd'],
+  ['connectionSlug', 'historyCompactRoute', 'costUsd'],
 );
 const MODEL_ATTEMPT_SHAPE = defineObjectShape<TraceModelAttempt>()(
   [
@@ -339,6 +348,10 @@ const MODEL_ATTEMPT_SHAPE = defineObjectShape<TraceModelAttempt>()(
     'timeToFirstTokenMs',
     'finishReason',
     'errorClass',
+    'httpStatus',
+    'providerCode',
+    'providerRequestId',
+    'retryable',
     'inputTokens',
     'outputTokens',
     'cacheReadInputTokens',
@@ -476,6 +489,9 @@ function isModelCallStep(value: Record<string, unknown>): boolean {
     ) &&
     [value.startedAt, value.endedAt, value.durationMs].every(isNonnegativeNumber) &&
     MODEL_CALL_KINDS.includes(value.callKind as ModelCallKind) &&
+    (value.historyCompactRoute === undefined ||
+      (value.callKind === 'history_compact' &&
+        HISTORY_COMPACT_ROUTES.includes(value.historyCompactRoute as HistoryCompactRoute))) &&
     isOptionalString(value.connectionSlug) &&
     isNonnegativeInteger(value.step) &&
     Array.isArray(value.attempts) &&
@@ -504,8 +520,28 @@ function isModelAttempt(value: unknown): value is TraceModelAttempt {
     ].every(isOptionalNonnegativeNumber) &&
     isOptionalString(value.finishReason) &&
     isOptionalString(value.errorClass) &&
+    isOptionalHttpStatus(value.httpStatus) &&
+    isOptionalDiagnosticString(value.providerCode) &&
+    isOptionalDiagnosticString(value.providerRequestId) &&
+    (value.retryable === undefined || typeof value.retryable === 'boolean') &&
     MODEL_CALL_COST_BASES.includes(value.costBasis as TraceModelAttempt['costBasis']) &&
     MODEL_CALL_USAGE_BASES.includes(value.usageBasis as TraceModelAttempt['usageBasis'])
+  );
+}
+
+function isOptionalHttpStatus(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (Number.isInteger(value) && (value as number) >= 100 && (value as number) <= 599)
+  );
+}
+
+function isOptionalDiagnosticString(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (typeof value === 'string' &&
+      value.length > 0 &&
+      value.length <= MODEL_CALL_DIAGNOSTIC_FIELD_MAX_LENGTH)
   );
 }
 

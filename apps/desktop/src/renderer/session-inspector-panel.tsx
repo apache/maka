@@ -654,12 +654,13 @@ function StepRow(props: { step: InspectorStepRow; copy: InspectorCopy }) {
   // A row names itself with whatever identity it has: a model, a tool, or —
   // for a compaction, an error, a permission prompt with no tool — its kind.
   const label = step.label ?? inspectorStepKindLabel(copy, step.kind);
-  const qualifier =
-    step.callKind !== undefined
-      ? copy.callKind(step.callKind)
-      : step.decision !== undefined
-        ? copy.permissionDecision(step.decision)
-        : step.detail;
+  const qualifier = [
+    step.callKind !== undefined ? copy.callKind(step.callKind) : undefined,
+    step.decision !== undefined ? copy.permissionDecision(step.decision) : undefined,
+    step.detail,
+  ]
+    .filter((part): part is string => part !== undefined)
+    .join(' · ');
   const meta = [
     step.retries !== undefined ? copy.retries(step.retries) : undefined,
     step.durationMs !== undefined ? formatDuration(step.durationMs) : undefined,

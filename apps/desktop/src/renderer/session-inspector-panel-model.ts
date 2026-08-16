@@ -1,4 +1,10 @@
-import { emptyTraceTotals, type SessionTrace, type TraceStep, type TraceTotals } from '@maka/core/session-trace';
+import {
+  emptyTraceTotals,
+  type SessionTrace,
+  type TraceModelCallStep,
+  type TraceStep,
+  type TraceTotals,
+} from '@maka/core/session-trace';
 
 /**
  * View model for the Inspector panel (#1625).
@@ -16,7 +22,7 @@ export interface InspectorStepRow {
    * is the panel's job, in the reader's language, not this file's in English.
    */
   label?: string;
-  /** Free text the trace already carries in words — an error message. */
+  /** Concise supporting detail — a trace error message or bounded provider facts. */
   detail?: string;
   /** Why this call was made, when it was not the turn's own request. */
   callKind?: string;
@@ -96,6 +102,7 @@ function toStepRow(step: TraceStep, attributedToStepId: string | undefined): Ins
     step.kind === 'error';
 
   if (step.kind === 'model_call') {
+    const detail = historyCompactDiagnosticDetail(step);
     return {
       id: step.id,
       kind: step.kind,
@@ -104,6 +111,7 @@ function toStepRow(step: TraceStep, attributedToStepId: string | undefined): Ins
       // nothing; a compaction or a title call beside it is the fact worth a
       // second column.
       ...(step.callKind !== 'main' ? { callKind: step.callKind } : {}),
+      ...(detail !== undefined ? { detail } : {}),
       durationMs: step.durationMs,
       ...(step.attempts.length > 1 ? { retries: step.attempts.length - 1 } : {}),
       failed,
@@ -138,6 +146,21 @@ function toStepRow(step: TraceStep, attributedToStepId: string | undefined): Ins
   return { id: step.id, kind: step.kind, detail: step.message, failed: true };
 }
 
+/** Compact, body-free provider facts for the one auxiliary call that needs diagnosis. */
+function historyCompactDiagnosticDetail(step: TraceModelCallStep): string | undefined {
+  if (step.callKind !== 'history_compact') return undefined;
+  const settled = step.attempts.at(-1);
+  const parts = [
+    step.historyCompactRoute !== undefined ? `route=${step.historyCompactRoute}` : undefined,
+    settled?.errorClass !== undefined ? `error=${settled.errorClass}` : undefined,
+    settled?.httpStatus !== undefined ? `HTTP ${settled.httpStatus}` : undefined,
+    settled?.providerCode !== undefined ? `code=${settled.providerCode}` : undefined,
+    settled?.providerRequestId !== undefined ? `request=${settled.providerRequestId}` : undefined,
+    settled?.retryable !== undefined ? `retryable=${settled.retryable}` : undefined,
+  ].filter((part): part is string => part !== undefined);
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
 function coverageNotice(trace: SessionTrace): InspectorCoverageNotice | undefined {
   const { coverage } = trace;
   if (coverage.modelCalls === 'none' || coverage.modelCalls === 'no_known_gap') return undefined;
@@ -148,4 +171,3 @@ function coverageNotice(trace: SessionTrace): InspectorCoverageNotice | undefine
     unreadableRecords: coverage.unreadableRecords,
   };
 }
-
