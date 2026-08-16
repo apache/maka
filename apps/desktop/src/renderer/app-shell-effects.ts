@@ -394,7 +394,7 @@ export function useAppShellBootstrapSubscriptions(options: {
     // render path as short as possible.
     void options.refreshShellSettings();
     // Non-critical: defer to next frame so the first paint isn't blocked.
-    requestAnimationFrame(runDeferredStartupRefreshes);
+    const startupFrame = requestAnimationFrame(runDeferredStartupRefreshes);
     const unsubscribeConnections = window.maka.connections.subscribeEvents(handleConnectionSubscriptionEvent);
     const unsubscribeRuntimeHostChanges =
       window.maka.runtimeHostProfiles.subscribeChanges(handleRuntimeHostChange);
@@ -408,6 +408,7 @@ export function useAppShellBootstrapSubscriptions(options: {
     const unsubscribeWindowCommand = window.maka.appWindow.subscribeCommand(handleWindowCommand);
     markRendererMounted();
     return () => {
+      cancelAnimationFrame(startupFrame);
       cleanupPendingRefs();
       unsubscribeConnections();
       unsubscribeRuntimeHostChanges();
