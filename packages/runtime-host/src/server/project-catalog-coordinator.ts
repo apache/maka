@@ -83,7 +83,10 @@ export class HostProjectCatalogCoordinator {
         input.kind === 'directory_list_start' ||
         input.kind === 'directory_list_continue'
       ) {
-        return error instanceof TypeError || isInvalidPathError(error)
+        if (error instanceof TypeError) {
+          return queryFailure('invalid_request', error.message);
+        }
+        return isInvalidPathError(error)
           ? queryFailure('invalid_request', 'Project directory is unavailable')
           : queryFailure('internal_failure', 'Unable to list the project directory');
       }

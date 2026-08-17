@@ -24,6 +24,10 @@ type DirectoryLoad =
       readonly root: DesktopProjectDirectoryRoot;
       readonly segments: readonly string[];
     };
+type DirectoryError = {
+  readonly message: string;
+  readonly retryable: boolean;
+};
 
 export function RemoteProjectDirectoryDialog(props: {
   host?: DirectoryHost;
@@ -39,7 +43,7 @@ export function RemoteProjectDirectoryDialog(props: {
   const [loading, setLoading] = useState(false);
   const [registering, setRegistering] = useState(false);
   const [showHidden, setShowHidden] = useState(false);
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<DirectoryError>();
   const request = useRef(0);
   const lastLoad = useRef<DirectoryLoad | undefined>(undefined);
 
@@ -90,7 +94,10 @@ export function RemoteProjectDirectoryDialog(props: {
       setEntries(next);
     } catch (cause) {
       if (request.current !== sequence) return;
-      setError(localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale));
+      setError({
+        message: localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale),
+        retryable: true,
+      });
     } finally {
       if (request.current === sequence) setLoading(false);
     }
@@ -104,7 +111,12 @@ export function RemoteProjectDirectoryDialog(props: {
 
   function selectRoot(nextRoot: DesktopProjectDirectoryRoot): void {
     const host = props.host;
-    if (!host || loading || registering || nextRoot.id === root?.id) return;
+    if (
+      !host ||
+      loading ||
+      registering ||
+      (nextRoot.id === root?.id && segments.length === 0)
+    ) return;
     void load({ kind: 'directory', host, root: nextRoot, segments: [] });
   }
 
@@ -123,7 +135,10 @@ export function RemoteProjectDirectoryDialog(props: {
       props.onRegistered(project, host);
     } catch (cause) {
       if (request.current !== sequence) return;
-      setError(localizedShellErrorMessage(cause, copy.projectUpdateFailedFallback, locale));
+      setError({
+        message: localizedShellErrorMessage(cause, copy.projectUpdateFailedFallback, locale),
+        retryable: false,
+      });
     } finally {
       if (request.current === sequence) setRegistering(false);
     }
@@ -170,7 +185,10 @@ export function RemoteProjectDirectoryDialog(props: {
         content={
           <LayoutContent padding={4}>
             <div className="remoteProjectDirectoryBody">
-              <nav className="remoteProjectDirectoryBreadcrumbs" aria-label={copy.currentProject}>
+              <nav
+                className="remoteProjectDirectoryBreadcrumbs"
+                aria-label={copy.remoteDirectoryBreadcrumbs}
+              >
                 {roots.length > 1 ? (
                   <DropdownMenu
                     placement="below"
@@ -218,8 +236,10 @@ export function RemoteProjectDirectoryDialog(props: {
               </nav>
               {error ? (
                 <div className="remoteProjectDirectoryError" role="alert">
-                  <Text type="body" color="secondary">{error}</Text>
-                  <Button label={copy.remoteDirectoryRetry} variant="ghost" onClick={retry} />
+                  <Text type="body" color="secondary">{error.message}</Text>
+                  {error.retryable ? (
+                    <Button label={copy.remoteDirectoryRetry} variant="ghost" onClick={retry} />
+                  ) : null}
                 </div>
               ) : loading ? (
                 <Text type="body" color="secondary">{copy.remoteDirectoryLoading}</Text>

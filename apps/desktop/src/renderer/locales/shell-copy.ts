@@ -169,6 +169,7 @@ type ShellCopy = {
     catalogUnavailable: string;
     retryCatalog: string;
     remoteDirectoryTitle(host: string): string;
+    remoteDirectoryBreadcrumbs: string;
     remoteDirectoryHome: string;
     remoteDirectoryEmpty: string;
     remoteDirectorySelect: string;
@@ -733,6 +734,7 @@ const SHELL_COPY_BY_LOCALE = {
       catalogUnavailable: 'Runtime Host 暂时不可用',
       retryCatalog: '重试加载',
       remoteDirectoryTitle: (host: string) => `在 ${host} 上添加项目`,
+      remoteDirectoryBreadcrumbs: '当前文件夹',
       remoteDirectoryHome: '主目录',
       remoteDirectoryEmpty: '此文件夹中没有子文件夹',
       remoteDirectorySelect: '添加此文件夹',
@@ -1218,6 +1220,7 @@ const SHELL_COPY_BY_LOCALE = {
       catalogUnavailable: 'Runtime Hosts unavailable',
       retryCatalog: 'Retry loading',
       remoteDirectoryTitle: (host: string) => `Add a project on ${host}`,
+      remoteDirectoryBreadcrumbs: 'Current folder',
       remoteDirectoryHome: 'Home',
       remoteDirectoryEmpty: 'No folders here',
       remoteDirectorySelect: 'Add this folder',

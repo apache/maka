@@ -1,9 +1,9 @@
-import { createHash } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
-import { readdir, realpath, stat } from 'node:fs/promises';
+import { opendir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
+  PROJECT_DIRECTORY_MAX_ENTRIES,
   PROJECT_DIRECTORY_PAGE_MAX_BYTES,
   PROJECT_DIRECTORY_PAGE_MAX_ITEMS,
   PROJECT_DIRECTORY_MAX_ROOTS,
@@ -13,7 +13,6 @@ import {
   type ProjectDirectoryRegisterInput,
 } from '../protocol/index.js';
 
-const HOME_ROOT_ID = 'home';
 export interface PublishedProjectDirectoryRoot {
   readonly label: string;
   readonly path: string;
@@ -34,11 +33,14 @@ export class HostProjectDirectoryAuthority {
   readonly #roots: readonly ResolvedProjectDirectoryRoot[];
   readonly #rootsById: ReadonlyMap<string, ResolvedProjectDirectoryRoot>;
 
-  constructor(roots: readonly PublishedProjectDirectoryRoot[] = [{ label: '~', path: homedir() }]) {
-    if (roots.length === 0 || roots.length > PROJECT_DIRECTORY_MAX_ROOTS) {
-      throw new TypeError('Runtime Host must publish between one and eight project roots');
+  constructor(roots?: readonly PublishedProjectDirectoryRoot[]) {
+    if (roots && roots.length > PROJECT_DIRECTORY_MAX_ROOTS) {
+      throw new TypeError('Runtime Host may publish at most eight project roots');
     }
-    const resolved = roots.map((root, index) => resolveRoot(root, index));
+    const resolved =
+      roots === undefined
+        ? resolveImplicitHomeRoot()
+        : roots.map((root, index) => resolveRoot(root, index));
     if (new Set(resolved.map((root) => root.label)).size !== resolved.length) {
       throw new TypeError('Project directory root labels must be unique');
     }
@@ -93,28 +95,21 @@ export class HostProjectDirectoryAuthority {
     directory: string,
     input: Exclude<ProjectDirectoryQueryInput, { readonly kind: 'directory_roots' }>,
   ): Promise<ProjectDirectoryQueryResult> {
-    const candidates = (await readdir(directory, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
-      .sort((left, right) => compareNames(left.name, right.name));
-    const names = candidates.map((entry) => entry.name);
+    const names = await boundedDirectoryNames(directory);
     const start = input.kind === 'directory_list_start' ? 0 : firstNameAfter(names, input.cursor);
     const entries: { name: string }[] = [];
-    let lastScanned: string | undefined;
-    for (let index = start; index < candidates.length; index += 1) {
-      const entry = candidates[index];
-      if (!entry) continue;
+    for (let index = start; index < names.length; index += 1) {
+      const name = names[index];
+      if (!name) continue;
       let contained = false;
       try {
-        const target = await realpath(join(directory, entry.name));
+        const target = await realpath(join(directory, name));
         contained = isWithin(root.path, target) && (await stat(target)).isDirectory();
       } catch {
         // Entries can disappear while a directory is being listed.
       }
-      if (!contained) {
-        lastScanned = entry.name;
-        continue;
-      }
-      const page = directoryPage(input, [...entries, { name: entry.name }], entry.name);
+      if (!contained) continue;
+      const page = directoryPage(input, [...entries, { name }], name);
       if (
         entries.length >= PROJECT_DIRECTORY_PAGE_MAX_ITEMS ||
         Buffer.byteLength(JSON.stringify(page), 'utf8') > PROJECT_DIRECTORY_PAGE_MAX_BYTES
@@ -122,12 +117,11 @@ export class HostProjectDirectoryAuthority {
         if (entries.length === 0) {
           throw new TypeError('Project directory entry exceeds the response limit');
         }
-        return directoryPage(input, entries, lastScanned ?? null);
+        return directoryPage(input, entries, entries.at(-1)?.name ?? null);
       }
-      entries.push({ name: entry.name });
-      lastScanned = entry.name;
+      entries.push({ name });
       if (entries.length >= PROJECT_DIRECTORY_PAGE_MAX_ITEMS) {
-        return directoryPage(input, entries, index + 1 < candidates.length ? entry.name : null);
+        return directoryPage(input, entries, index + 1 < names.length ? name : null);
       }
     }
     return directoryPage(input, entries, null);
@@ -165,13 +159,33 @@ function resolveRoot(
     throw new TypeError('Project directory root is not a directory');
   }
   return {
-    id:
-      index === 0 && input.path === homedir()
-        ? HOME_ROOT_ID
-        : `root-${createHash('sha256').update(path).digest('hex').slice(0, 24)}`,
+    id: `root-${index + 1}`,
     label,
     path,
   };
+}
+
+function resolveImplicitHomeRoot(): readonly ResolvedProjectDirectoryRoot[] {
+  try {
+    return [resolveRoot({ label: '~', path: homedir() }, 0)];
+  } catch {
+    // Directory browsing is optional; an unusable service-account Home must
+    // not prevent unrelated Runtime Host domains from starting.
+    return [];
+  }
+}
+
+async function boundedDirectoryNames(directory: string): Promise<string[]> {
+  const names: string[] = [];
+  let scanned = 0;
+  for await (const entry of await opendir(directory)) {
+    scanned += 1;
+    if (scanned > PROJECT_DIRECTORY_MAX_ENTRIES) {
+      throw new TypeError('Project directory contains too many entries');
+    }
+    if (entry.isDirectory() || entry.isSymbolicLink()) names.push(entry.name);
+  }
+  return names.sort(compareNames);
 }
 
 function isWithin(root: string, candidate: string): boolean {

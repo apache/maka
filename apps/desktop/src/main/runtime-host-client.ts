@@ -609,11 +609,7 @@ export class DesktopRuntimeHostClient {
     segments: readonly string[],
   ): Promise<ProjectCatalogProject> {
     return this.#projectForMutation(
-      await this.request("project.catalog.mutate", {
-        kind: "register_directory",
-        rootId,
-        segments,
-      }),
+      await this.#mutateProject({ kind: "register_directory", rootId, segments }),
     );
   }
 

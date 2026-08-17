@@ -34,7 +34,10 @@ test('Project directory authority exposes folders without crossing its published
       roots.roots.map((root) => root.label),
       ['Home', 'Shared'],
     );
-    assert.equal(new Set(roots.roots.map((root) => root.id)).size, 2);
+    assert.deepEqual(
+      roots.roots.map((root) => root.id),
+      ['root-1', 'root-2'],
+    );
     const homeRoot = roots.roots[0];
     const sharedRoot = roots.roots[1];
     assert.ok(homeRoot && sharedRoot);
@@ -82,6 +85,14 @@ test('Project directory authority exposes folders without crossing its published
   } finally {
     await rm(base, { recursive: true, force: true });
   }
+});
+
+test('Project directory authority can publish no roots without disabling the Host', async () => {
+  const authority = new HostProjectDirectoryAuthority([]);
+  assert.deepEqual(await authority.query({ kind: 'directory_roots' }), {
+    kind: 'directory_roots',
+    roots: [],
+  });
 });
 
 test('Project directory continuation returns each contained folder once', async () => {
