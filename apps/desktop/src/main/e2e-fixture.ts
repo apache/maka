@@ -46,7 +46,7 @@ import {
   writeScheduledTasks,
   writeSettings,
 } from './e2e-fixture/scenarios-settings.js';
-import { usageStatsSessions } from './e2e-fixture/scenarios-usage.js';
+import { seedUsageStatsFixture, usageStatsSessions } from './e2e-fixture/scenarios-usage.js';
 
 const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'settings-models',
@@ -242,5 +242,6 @@ export async function seedE2eFixture(input: {
     for (const seed of usageStatsSessions(now)) {
       await writeSession(input.workspaceRoot, seed.header, seed.messages);
     }
+    await seedUsageStatsFixture(input.workspaceRoot, now);
   }
 }

@@ -25,12 +25,9 @@ import type {
   StorageRef,
   ToolResultContent,
 } from '@maka/core/events';
-import type {
-  SessionSummary,
-  StoredMessage,
-  TurnRecord,
-} from '@maka/core/session';
+import type { SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { UsageStats } from '@maka/core/settings';
+import { desktopSessionKey, type DesktopHostRef } from './runtime-host-identity.js';
 import { desktopSessionKey, type DesktopHostRef } from './runtime-host-identity.js';
 
 export interface DesktopSessionSummary extends SessionSummary {
@@ -228,19 +225,6 @@ export function projectDesktopDailyReviewSummary(
     sessions: summary.sessions.map((session) => ({
       ...session,
       id: projectSessionId(host, session.id),
-    })),
-  };
-}
-
-export function projectDesktopUsageStats(
-  host: DesktopHostRef,
-  stats: UsageStats,
-): UsageStats {
-  return {
-    ...stats,
-    logs: stats.logs.map((log) => ({
-      ...log,
-      sessionId: projectSessionId(host, log.sessionId),
     })),
   };
 }
