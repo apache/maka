@@ -9,13 +9,18 @@ import {
   type SessionTraceCoverage,
 } from '../session-trace.js';
 
-function coverage(modelCalls: SessionTraceCoverage['modelCalls'], unreadableRecords = 0) {
+function coverage(
+  modelCalls: SessionTraceCoverage['modelCalls'],
+  unreadableRecords = 0,
+  oversizedRuns = 0,
+): SessionTraceCoverage {
   return {
     modelCalls,
     turnsMissingModelCalls: [],
     turnsWithFewerModelCallsThanSteps: [],
     unreadableRecords,
-  } satisfies SessionTraceCoverage;
+    oversizedRuns,
+  };
 }
 
 test('coverage merge distinguishes backend absence from a gap in only some pages', () => {
@@ -31,6 +36,10 @@ test('coverage merge distinguishes backend absence from a gap in only some pages
   }
   assert.equal(
     mergeDisjointTraceCoverage(coverage('partial', 1), coverage('partial', 2)).unreadableRecords,
+    3,
+  );
+  assert.equal(
+    mergeDisjointTraceCoverage(coverage('partial', 0, 1), coverage('partial', 0, 2)).oversizedRuns,
     3,
   );
 });
@@ -64,4 +73,16 @@ test('page merge orders and deduplicates turns while recomputing totals', () => 
     ['run-1', 'run-2'],
   );
   assert.equal(merged.totals.inputTokens, 3);
+});
+
+test('coverage merge keeps equal turn ids from distinct runs separate', () => {
+  const first = coverage('partial');
+  first.turnsMissingModelCalls = [{ runId: 'run-1', turnId: 'turn-1' }];
+  const second = coverage('partial');
+  second.turnsMissingModelCalls = [{ runId: 'run-2', turnId: 'turn-1' }];
+
+  assert.deepEqual(mergeDisjointTraceCoverage(first, second).turnsMissingModelCalls, [
+    { runId: 'run-1', turnId: 'turn-1' },
+    { runId: 'run-2', turnId: 'turn-1' },
+  ]);
 });

@@ -235,6 +235,17 @@ export interface TurnTrace {
   failure?: TraceFailureAttribution;
 }
 
+export interface TraceTurnIdentity {
+  runId: string;
+  turnId: string;
+}
+
+const TRACE_TURN_IDENTITY_SHAPE = defineObjectShape<TraceTurnIdentity>()(['runId', 'turnId'], []);
+
+export function traceTurnIdentityKey(identity: TraceTurnIdentity): string {
+  return `${identity.runId}\0${identity.turnId}`;
+}
+
 /**
  * What the trace could not see.
  *
@@ -255,8 +266,8 @@ export interface SessionTraceCoverage {
    * `none` — no model activity to cover.
    */
   modelCalls: 'no_known_gap' | 'partial' | 'absent' | 'none';
-  /** Turn ids with aggregate usage but no canonical record behind it. */
-  turnsMissingModelCalls: string[];
+  /** Turns with aggregate usage but no canonical record behind them. */
+  turnsMissingModelCalls: TraceTurnIdentity[];
   /**
    * Canonical records the reader could not read or decode.
    *
@@ -266,12 +277,14 @@ export interface SessionTraceCoverage {
    * nothing is known about how many records it held. Read it as a floor.
    */
   unreadableRecords: number;
+  /** Runs whose durable evidence exists but exceeds the bounded online view. */
+  oversizedRuns: number;
   /**
-   * Turn ids where the aggregate usage stands for more runtime steps than there
+   * Turns where the aggregate usage stands for more runtime steps than there
    * are main model calls on record. A shortfall this narrow is still only what
    * the ledgers disagree about — it is a floor on what is missing, not a count.
    */
-  turnsWithFewerModelCallsThanSteps: string[];
+  turnsWithFewerModelCallsThanSteps: TraceTurnIdentity[];
 }
 
 export interface SessionTrace {
@@ -291,6 +304,7 @@ const TRACE_COVERAGE_SHAPE = defineObjectShape<SessionTraceCoverage>()(
     'modelCalls',
     'turnsMissingModelCalls',
     'unreadableRecords',
+    'oversizedRuns',
     'turnsWithFewerModelCallsThanSteps',
   ],
   [],
@@ -435,9 +449,10 @@ function isTraceCoverage(value: unknown): value is SessionTraceCoverage {
       value.modelCalls === 'partial' ||
       value.modelCalls === 'absent' ||
       value.modelCalls === 'none') &&
-    isStringArray(value.turnsMissingModelCalls) &&
-    isStringArray(value.turnsWithFewerModelCallsThanSteps) &&
-    isNonnegativeInteger(value.unreadableRecords)
+    isTraceTurnIdentityArray(value.turnsMissingModelCalls) &&
+    isTraceTurnIdentityArray(value.turnsWithFewerModelCallsThanSteps) &&
+    isNonnegativeInteger(value.unreadableRecords) &&
+    isNonnegativeInteger(value.oversizedRuns)
   );
 }
 
@@ -640,16 +655,16 @@ export function mergeDisjointTraceCoverage(
             : 'partial';
   return {
     modelCalls,
-    turnsMissingModelCalls: [
-      ...new Set([...base.turnsMissingModelCalls, ...next.turnsMissingModelCalls]),
-    ],
-    turnsWithFewerModelCallsThanSteps: [
-      ...new Set([
-        ...base.turnsWithFewerModelCallsThanSteps,
-        ...next.turnsWithFewerModelCallsThanSteps,
-      ]),
-    ],
+    turnsMissingModelCalls: mergeTraceTurnIdentities(
+      base.turnsMissingModelCalls,
+      next.turnsMissingModelCalls,
+    ),
+    turnsWithFewerModelCallsThanSteps: mergeTraceTurnIdentities(
+      base.turnsWithFewerModelCallsThanSteps,
+      next.turnsWithFewerModelCallsThanSteps,
+    ),
     unreadableRecords: base.unreadableRecords + next.unreadableRecords,
+    oversizedRuns: base.oversizedRuns + next.oversizedRuns,
   };
 }
 
@@ -666,10 +681,8 @@ export function mergeSessionTraces(traces: readonly SessionTrace[]): SessionTrac
     if (page.schemaVersion !== current.schemaVersion || page.sessionId !== current.sessionId) {
       throw new Error('Session trace pages do not describe the same Session');
     }
-    const turns = new Map(
-      current.turns.map((turn) => [`${turn.turnId}\0${turn.runId}`, turn] as const),
-    );
-    for (const turn of page.turns) turns.set(`${turn.turnId}\0${turn.runId}`, turn);
+    const turns = new Map(current.turns.map((turn) => [traceTurnIdentityKey(turn), turn] as const));
+    for (const turn of page.turns) turns.set(traceTurnIdentityKey(turn), turn);
     const ordered = [...turns.values()].sort(
       (left, right) => left.startedAt - right.startedAt || left.runId.localeCompare(right.runId),
     );
@@ -684,4 +697,30 @@ export function mergeSessionTraces(traces: readonly SessionTrace[]): SessionTrac
       coverage: mergeDisjointTraceCoverage(current.coverage, page.coverage),
     };
   }, first);
+}
+
+function isTraceTurnIdentityArray(value: unknown): value is TraceTurnIdentity[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (identity) =>
+        isRecord(identity) &&
+        hasExactShape(identity, TRACE_TURN_IDENTITY_SHAPE) &&
+        typeof identity.runId === 'string' &&
+        identity.runId.length > 0 &&
+        typeof identity.turnId === 'string' &&
+        identity.turnId.length > 0,
+    )
+  );
+}
+
+function mergeTraceTurnIdentities(
+  base: readonly TraceTurnIdentity[],
+  next: readonly TraceTurnIdentity[],
+): TraceTurnIdentity[] {
+  return [
+    ...new Map(
+      [...base, ...next].map((identity) => [traceTurnIdentityKey(identity), identity]),
+    ).values(),
+  ];
 }

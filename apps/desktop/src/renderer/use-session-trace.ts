@@ -11,8 +11,8 @@ import type {
   DesktopSessionUsageSummary,
 } from '../preload/bridge-contract.js';
 import {
+  createRefreshCoalescer,
   createTraceRefreshCoalescer,
-  isUsageSummaryRelevantEvent,
 } from './session-trace-refresh.js';
 
 interface SessionTraceState {
@@ -233,7 +233,7 @@ export function useSessionTrace(
       schedule: (callback, delayMs) => setTimeout(callback, delayMs),
       cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
     });
-    const summaryCoalescer = createTraceRefreshCoalescer({
+    const summaryCoalescer = createRefreshCoalescer({
       refresh: () => readSummary(sessionId),
       delayMs: TRACE_REFRESH_DEBOUNCE_MS,
       schedule: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -241,8 +241,10 @@ export function useSessionTrace(
     });
     const unsubscribe = window.maka.sessions.subscribeEvents(sessionId, (event) => {
       traceCoalescer.observe(event);
-      if (isUsageSummaryRelevantEvent(event)) summaryCoalescer.observe(event);
     });
+    const unsubscribeUsage = window.maka.inspector.subscribeUsageChanges(sessionId, () =>
+      summaryCoalescer.request(),
+    );
     load(sessionId);
     return () => {
       traceRevisionRef.current += 1;
@@ -251,6 +253,7 @@ export function useSessionTrace(
       traceCoalescer.cancel();
       summaryCoalescer.cancel();
       unsubscribe();
+      unsubscribeUsage();
     };
   }, [active, load, readContext, readSummary, readTraceWindow, sessionId]);
 

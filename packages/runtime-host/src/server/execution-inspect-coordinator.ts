@@ -250,6 +250,7 @@ export class HostExecutionInspectCoordinator {
     const modelCallAttempts: ModelCallAttempt[] = [];
     let unreadableRecords = 0;
     let includedRuns = 0;
+    let acceptedPage: ExecutionInspectQueryResult | undefined;
     for (const run of runPage.runs) {
       let evidence: {
         readonly runtimeEvents: RuntimeEvent[];
@@ -261,7 +262,7 @@ export class HostExecutionInspectCoordinator {
       } catch (error) {
         if (!isInspectQueryTooLargeError(error)) throw error;
         if (includedRuns > 0) break;
-        return unreadableTracePage(
+        return oversizedTracePage(
           input.sessionId,
           tracePageCursorAfter(runPage.runs, 1, runPage.nextCursor),
         );
@@ -288,7 +289,7 @@ export class HostExecutionInspectCoordinator {
         encodedBytes(candidatePage) > EXECUTION_INSPECT_RESULT_MAX_BYTES
       ) {
         if (includedRuns === 0) {
-          return unreadableTracePage(
+          return oversizedTracePage(
             input.sessionId,
             tracePageCursorAfter(runPage.runs, 1, runPage.nextCursor),
           );
@@ -299,19 +300,19 @@ export class HostExecutionInspectCoordinator {
       modelCallAttempts.push(...evidence.modelCallAttempts);
       unreadableRecords = candidateUnreadableRecords;
       includedRuns = candidateRunCount;
+      acceptedPage = candidatePage;
     }
-    const trace = projectSessionTrace({
-      sessionId: input.sessionId,
-      runtimeEvents,
-      modelCallAttempts,
-      ...(unreadableRecords > 0 ? { unreadableRecords } : {}),
-    });
-    const page: ExecutionInspectQueryResult = {
-      kind: 'session_trace_page',
-      ...trace,
-      nextCursor: tracePageCursorAfter(runPage.runs, includedRuns, runPage.nextCursor),
-    };
-    return page;
+    return (
+      acceptedPage ?? {
+        kind: 'session_trace_page',
+        ...projectSessionTrace({
+          sessionId: input.sessionId,
+          runtimeEvents: [],
+          modelCallAttempts: [],
+        }),
+        nextCursor: tracePageCursorAfter(runPage.runs, 0, runPage.nextCursor),
+      }
+    );
   }
 
   async #inspectTurnTrace(
@@ -449,7 +450,7 @@ function encodedBytes(result: ExecutionInspectQueryResult): number {
   return Buffer.byteLength(JSON.stringify(result), 'utf8');
 }
 
-function unreadableTracePage(
+function oversizedTracePage(
   sessionId: string,
   nextCursor: string | null,
 ): ExecutionInspectQueryResult {
@@ -459,7 +460,7 @@ function unreadableTracePage(
       sessionId,
       runtimeEvents: [],
       modelCallAttempts: [],
-      unreadableRecords: 1,
+      oversizedRuns: 1,
     }),
     nextCursor,
   };

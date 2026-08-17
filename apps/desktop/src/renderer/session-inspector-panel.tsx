@@ -8,6 +8,7 @@ import { Section } from '@astryxdesign/core/Section';
 import { Text } from '@astryxdesign/core/Text';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
+import { traceTurnIdentityKey } from '@maka/core/session-trace';
 import { useToast, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, Activity, AlertTriangle, Copy } from '@maka/ui/icons';
 import {
@@ -211,9 +212,15 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
           )}
         </div>
 
+        {snapshot.loading && !snapshot.trace && (
+          <Text type="supporting" color="secondary">
+            {copy.loadingTrace}
+          </Text>
+        )}
+
         {/* Usage and context answer to different owners, so a successful
             snapshot beside an empty or failed trace remains visible (#2323). */}
-        {snapshot.summaryLoading && !snapshot.summary && (
+        {snapshot.summaryLoading && (
           <Text type="supporting" color="secondary">
             {copy.loadingSummary}
           </Text>
@@ -264,6 +271,8 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                           copy.turnsShort(model.coverage.turnsShort),
                         model.coverage.unreadableRecords > 0 &&
                           copy.unreadable(model.coverage.unreadableRecords),
+                        model.coverage.oversizedRuns > 0 &&
+                          copy.oversizedRuns(model.coverage.oversizedRuns),
                       ].filter((part): part is string => typeof part === 'string'),
                     )}
                   </span>
@@ -282,7 +291,7 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
               <ol className="maka-inspector-turns">
                 {model.turns.map((turn) => (
                   <TurnRow
-                    key={turn.turnId}
+                    key={traceTurnIdentityKey(turn)}
                     turn={turn}
                     copy={copy}
                     locale={locale}
@@ -641,10 +650,12 @@ function TurnRow(props: {
 }
 
 function formatTurnStartedAt(startedAt: number, locale: UiLocale): string {
+  const date = new Date(startedAt);
+  if (!Number.isFinite(date.getTime())) return '—';
   return new Intl.DateTimeFormat(uiLocaleToIntlLocale(locale), {
     dateStyle: 'short',
     timeStyle: 'medium',
-  }).format(startedAt);
+  }).format(date);
 }
 
 /**

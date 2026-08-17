@@ -231,6 +231,7 @@ function tracePage() {
       modelCalls: 'none' as const,
       turnsMissingModelCalls: [],
       unreadableRecords: 0,
+      oversizedRuns: 0,
       turnsWithFewerModelCallsThanSteps: [],
     },
     nextCursor: null,

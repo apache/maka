@@ -36,6 +36,7 @@ function trace(sessionId: string): SessionTrace {
       turnsMissingModelCalls: [],
       turnsWithFewerModelCallsThanSteps: [],
       unreadableRecords: 0,
+      oversizedRuns: 0,
     },
   };
 }
@@ -82,6 +83,7 @@ interface TraceHarness {
   contextReads: string[];
   summaryReads: string[];
   emit: (event: SessionEvent) => void;
+  emitUsageChange: () => void;
   subscriptions: number;
   unsubscribes: number;
 }
@@ -100,6 +102,7 @@ function installMakaBridge(
   } = {},
 ): TraceHarness {
   const handlers = new Set<(event: SessionEvent) => void>();
+  const usageChangeHandlers = new Set<() => void>();
   const harness: TraceHarness = {
     reads: [],
     traceRequests: [],
@@ -107,6 +110,9 @@ function installMakaBridge(
     summaryReads: [],
     emit: (event) => {
       for (const handler of [...handlers]) handler(event);
+    },
+    emitUsageChange: () => {
+      for (const handler of [...usageChangeHandlers]) handler();
     },
     subscriptions: 0,
     unsubscribes: 0,
@@ -138,6 +144,10 @@ function installMakaBridge(
         context: async (sessionId: string) => {
           harness.contextReads.push(sessionId);
           return { ok: true as const, data: { status: 'unavailable' as const, reason: 'no_completed_request' as const } };
+        },
+        subscribeUsageChanges: (_sessionId: string, handler: () => void) => {
+          usageChangeHandlers.add(handler);
+          return () => usageChangeHandlers.delete(handler);
         },
       },
       sessions: {
@@ -249,7 +259,7 @@ describe('useSessionTrace', () => {
     assert.equal(harness.reads.length, 2, 'a closing burst is one re-read, not three');
   });
 
-  it('does not rescan Session usage for an event that only changes the timeline', async () => {
+  it('refreshes Session usage only from the Usage authority signal', async () => {
     const { root } = installReactRenderer();
     const harness = installMakaBridge();
     await act(async () => {
@@ -263,6 +273,10 @@ describe('useSessionTrace', () => {
     assert.equal(harness.summaryReads.length, 1);
 
     await act(async () => harness.emit(event('token_usage')));
+    await flushRefresh();
+    assert.equal(harness.summaryReads.length, 1, 'Session events do not own Usage freshness');
+
+    await act(async () => harness.emitUsageChange());
     await flushRefresh();
     assert.equal(harness.summaryReads.length, 2);
   });
@@ -504,7 +518,7 @@ describe('useSessionTrace', () => {
     });
     assert.equal(snapshot?.summary?.totalCostUsd, 1);
 
-    await act(async () => harness.emit(event('complete')));
+    await act(async () => harness.emitUsageChange());
     await flushRefresh();
 
     assert.equal(snapshot?.summary, undefined);

@@ -8,8 +8,10 @@ import {
   emptyTraceTotals,
   mergeTraceTotals,
   SESSION_TRACE_SCHEMA_VERSION,
+  traceTurnIdentityKey,
   type SessionTrace,
   type SessionTraceCoverage,
+  type TraceTurnIdentity,
   type TraceFailureAttribution,
   type TraceModelAttempt,
   type TraceModelCallStep,
@@ -43,6 +45,8 @@ export interface SessionTraceInput {
    * the unit, and a whole unreadable run counting as one is a floor.
    */
   unreadableRecords?: number;
+  /** Durable runs omitted only because their online representation exceeds its budget. */
+  oversizedRuns?: number;
 }
 
 export function projectSessionTrace(input: SessionTraceInput): SessionTrace {
@@ -52,19 +56,20 @@ export function projectSessionTrace(input: SessionTraceInput): SessionTrace {
   // this the trace invents a retry and can double-count a priced settlement,
   // which would put it out of step with Settings → Usage over the same records.
   const attempts = dedupeModelCallAttempts(input.modelCallAttempts);
-  const turnIds = orderedTurnIds(events, attempts);
-  const eventsByTurn = groupBy(events, (event) => event.turnId);
-  const attemptsByTurn = groupBy(attempts, (attempt) => attempt.turnId);
+  const turnIdentities = orderedTurnIdentities(events, attempts);
+  const eventsByTurn = groupBy(events, traceTurnIdentityKey);
+  const attemptsByTurn = groupBy(attempts, traceTurnIdentityKey);
 
   const turns: TurnTrace[] = [];
-  const turnsMissingModelCalls: string[] = [];
-  const turnsWithFewerModelCallsThanSteps: string[] = [];
+  const turnsMissingModelCalls: TraceTurnIdentity[] = [];
+  const turnsWithFewerModelCallsThanSteps: TraceTurnIdentity[] = [];
   let turnsWithModelActivity = 0;
 
-  for (const turnId of turnIds) {
-    const turnEvents = eventsByTurn.get(turnId) ?? [];
-    const turnAttempts = attemptsByTurn.get(turnId) ?? [];
-    const turn = projectTurn(turnId, turnEvents, turnAttempts);
+  for (const identity of turnIdentities) {
+    const key = traceTurnIdentityKey(identity);
+    const turnEvents = eventsByTurn.get(key) ?? [];
+    const turnAttempts = attemptsByTurn.get(key) ?? [];
+    const turn = projectTurn(identity, turnEvents, turnAttempts);
     if (!turn) continue;
     turns.push(turn);
 
@@ -73,9 +78,9 @@ export function projectSessionTrace(input: SessionTraceInput): SessionTrace {
     const hasAggregateUsage = turnEvents.some((event) => event.actions?.tokenUsage !== undefined);
     if (hasAggregateUsage || turnAttempts.length > 0) turnsWithModelActivity += 1;
     if (hasAggregateUsage && turnAttempts.length === 0) {
-      turnsMissingModelCalls.push(turnId);
+      turnsMissingModelCalls.push(identity);
     } else if (hasAggregateUsage && missesRuntimeSteps(turnEvents, turn)) {
-      turnsWithFewerModelCallsThanSteps.push(turnId);
+      turnsWithFewerModelCallsThanSteps.push(identity);
     }
   }
 
@@ -94,6 +99,7 @@ export function projectSessionTrace(input: SessionTraceInput): SessionTrace {
       turnsMissingModelCalls,
       turnsWithFewerModelCallsThanSteps,
       input.unreadableRecords ?? 0,
+      input.oversizedRuns ?? 0,
     ),
   };
 }
@@ -105,16 +111,18 @@ export function projectSessionTrace(input: SessionTraceInput): SessionTrace {
  */
 function resolveCoverage(
   turnsWithModelActivity: number,
-  turnsMissingModelCalls: string[],
-  turnsWithFewerModelCallsThanSteps: string[],
+  turnsMissingModelCalls: TraceTurnIdentity[],
+  turnsWithFewerModelCallsThanSteps: TraceTurnIdentity[],
   unreadableRecords: number,
+  oversizedRuns: number,
 ): SessionTraceCoverage {
-  if (turnsWithModelActivity === 0 && unreadableRecords === 0) {
+  if (turnsWithModelActivity === 0 && unreadableRecords === 0 && oversizedRuns === 0) {
     return {
       modelCalls: 'none',
       turnsMissingModelCalls: [],
       turnsWithFewerModelCallsThanSteps: [],
       unreadableRecords: 0,
+      oversizedRuns: 0,
     };
   }
   if (turnsWithModelActivity > 0 && turnsMissingModelCalls.length === turnsWithModelActivity) {
@@ -123,10 +131,14 @@ function resolveCoverage(
       turnsMissingModelCalls,
       turnsWithFewerModelCallsThanSteps,
       unreadableRecords,
+      oversizedRuns,
     };
   }
   const gaps =
-    turnsMissingModelCalls.length + turnsWithFewerModelCallsThanSteps.length + unreadableRecords;
+    turnsMissingModelCalls.length +
+    turnsWithFewerModelCallsThanSteps.length +
+    unreadableRecords +
+    oversizedRuns;
   return {
     // "No known gap" rather than "complete": records that are present cannot
     // prove that every call settled, so this is the absence of evidence of a
@@ -135,6 +147,7 @@ function resolveCoverage(
     turnsMissingModelCalls,
     turnsWithFewerModelCallsThanSteps,
     unreadableRecords,
+    oversizedRuns,
   };
 }
 
@@ -161,12 +174,11 @@ function missesRuntimeSteps(events: readonly RuntimeEvent[], turn: TurnTrace): b
 }
 
 function projectTurn(
-  turnId: string,
+  identity: TraceTurnIdentity,
   events: readonly RuntimeEvent[],
   attempts: readonly ModelCallAttempt[],
 ): TurnTrace | undefined {
   if (events.length === 0 && attempts.length === 0) return undefined;
-  const runId = events[0]?.runId ?? attempts[0]?.runId ?? '';
   const steps = [...projectModelCallSteps(attempts), ...projectEventSteps(events)].sort(
     (left, right) => left.startedAt - right.startedAt,
   );
@@ -187,8 +199,7 @@ function projectTurn(
   const failure = attributeTurnFailure(steps, events);
 
   return {
-    turnId,
-    runId,
+    ...identity,
     startedAt,
     endedAt,
     durationMs: Math.max(0, endedAt - startedAt),
@@ -464,20 +475,37 @@ function stepEndedAt(step: TraceStep): number {
 }
 
 /** Turn order follows first appearance, so a trace reads in the order it ran. */
-function orderedTurnIds(
+function orderedTurnIdentities(
   events: readonly RuntimeEvent[],
   attempts: readonly ModelCallAttempt[],
-): string[] {
-  const seen = new Map<string, number>();
+): TraceTurnIdentity[] {
+  const seen = new Map<string, { identity: TraceTurnIdentity; at: number }>();
   for (const event of events) {
-    const at = seen.get(event.turnId);
-    if (at === undefined || event.ts < at) seen.set(event.turnId, event.ts);
+    rememberTurnIdentity(seen, event, event.ts);
   }
   for (const attempt of attempts) {
-    const at = seen.get(attempt.turnId);
-    if (at === undefined || attempt.startedAt < at) seen.set(attempt.turnId, attempt.startedAt);
+    rememberTurnIdentity(seen, attempt, attempt.startedAt);
   }
-  return [...seen.entries()].sort((left, right) => left[1] - right[1]).map(([turnId]) => turnId);
+  return [...seen.values()]
+    .sort(
+      (left, right) =>
+        left.at - right.at ||
+        left.identity.runId.localeCompare(right.identity.runId) ||
+        left.identity.turnId.localeCompare(right.identity.turnId),
+    )
+    .map(({ identity }) => identity);
+}
+
+function rememberTurnIdentity(
+  seen: Map<string, { identity: TraceTurnIdentity; at: number }>,
+  identity: TraceTurnIdentity,
+  at: number,
+): void {
+  const key = traceTurnIdentityKey(identity);
+  const current = seen.get(key);
+  if (!current || at < current.at) {
+    seen.set(key, { identity: { runId: identity.runId, turnId: identity.turnId }, at });
+  }
 }
 
 function groupBy<T>(items: readonly T[], key: (item: T) => string): Map<string, T[]> {

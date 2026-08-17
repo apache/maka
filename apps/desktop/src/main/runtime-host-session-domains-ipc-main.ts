@@ -271,6 +271,9 @@ export function registerRuntimeHostSessionDomainsIpc(
       case 'plan':
         deps.sendToRenderer?.('plan-mode:changed', { sessionId: change.sessionId });
         break;
+      case 'usage':
+        deps.sendToRenderer?.('usage:changed', { sessionId: change.sessionId });
+        break;
       case 'runtime_resource':
         void refreshRuntimeResources(deps, change.sessionId, change.resources);
         break;
@@ -289,6 +292,7 @@ export function registerRuntimeHostSessionDomainsIpc(
       sessionDomainChanged({ sessionId, domain: 'task' });
       sessionDomainChanged({ sessionId, domain: 'deep_research' });
       sessionDomainChanged({ sessionId, domain: 'plan' });
+      sessionDomainChanged({ sessionId, domain: 'usage' });
       deps.sendToRenderer?.('graphs:resync', { rootSessionId: sessionId });
       deps.sendToRenderer?.('shell-runs:resync', { sessionId });
     },

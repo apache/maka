@@ -1002,6 +1002,7 @@ export interface MakaBridge {
     trace(sessionId: string, cursor?: string): Promise<Result<DesktopSessionTracePage>>;
     /** Complete Session-scoped LLM usage estimate, independent of loaded trace pages. */
     summary(sessionId: string): Promise<Result<DesktopSessionUsageSummary>>;
+    subscribeUsageChanges(sessionId: string, handler: () => void): () => void;
     /** What the session's context is made of right now (#2323). */
     context(sessionId: string): Promise<Result<ContextDiagnosticsResult>>;
   };

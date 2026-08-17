@@ -435,8 +435,9 @@ const populatedTrace: SessionTrace = {
   },
   coverage: {
     modelCalls: 'partial',
-    turnsMissingModelCalls: ['turn-2'],
+    turnsMissingModelCalls: [{ runId: 'run-2', turnId: 'turn-2' }],
     unreadableRecords: 1,
+    oversizedRuns: 0,
     turnsWithFewerModelCallsThanSteps: [],
   },
 };
@@ -523,8 +524,24 @@ const emptyTrace: SessionTrace = {
     modelCalls: 'none',
     turnsMissingModelCalls: [],
     unreadableRecords: 0,
+    oversizedRuns: 0,
     turnsWithFewerModelCallsThanSteps: [],
   },
+};
+
+const olderTrace: SessionTrace = {
+  ...emptyTrace,
+  turns: [
+    {
+      turnId: 'turn-older',
+      runId: 'run-older',
+      startedAt: NOW - 60_000,
+      endedAt: NOW - 60_000,
+      durationMs: 0,
+      steps: [],
+      totals: { ...emptyTrace.totals },
+    },
+  ],
 };
 
 const emptyUsageSummary: DesktopSessionUsageSummary = {
@@ -647,7 +664,7 @@ function bridge(options: {
           : {
               ok: true,
               data: cursor
-                ? { trace: emptyTrace, nextCursor: null }
+                ? { trace: olderTrace, nextCursor: null }
                 : {
                     trace: options.trace ?? emptyTrace,
                     nextCursor: options.traceNextCursor ?? null,
@@ -660,6 +677,7 @@ function bridge(options: {
             ? populatedUsageSummary
             : emptyUsageSummary,
       }),
+      subscribeUsageChanges: unsubscribe,
       context: async () => ({
         ok: true,
         data: options.context ?? { status: 'unavailable', reason: 'no_completed_request' },

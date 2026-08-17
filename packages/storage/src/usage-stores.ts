@@ -122,6 +122,7 @@ export interface InteractiveUsageStoresWriter {
   readonly telemetry: Readonly<TelemetryIndexWriter>;
   readonly modelCalls: Readonly<ModelCallIndexWriter>;
   readonly pricing: Readonly<PricingAuthorityWriter>;
+  subscribeSessionUsageChanges(listener: (sessionId: string) => void): () => void;
   beginDrain(): Promise<void>;
   flush(): Promise<void>;
   close(): Promise<void>;
@@ -321,6 +322,17 @@ function createWriterFacade(
   const failures: unknown[] = [];
   let drainPromise: Promise<void> | undefined;
   let closePromise: Promise<void> | undefined;
+  const sessionUsageChangeListeners = new Set<(sessionId: string) => void>();
+
+  const publishSessionUsageChange = (sessionId: string): void => {
+    for (const listener of sessionUsageChangeListeners) {
+      try {
+        listener(sessionId);
+      } catch {
+        /* observers cannot perturb the Usage authority */
+      }
+    }
+  };
 
   const assertOpen = () => {
     if (state !== 'open') throw new InteractiveUsageStoresClosedError();
@@ -389,6 +401,7 @@ function createWriterFacade(
       })
       .finally(() => {
         state = 'closed';
+        sessionUsageChangeListeners.clear();
       });
     return closePromise;
   };
@@ -404,13 +417,21 @@ function createWriterFacade(
       toolLogs: (query, offset, limit) => read(() => telemetry.toolLogs(query, offset, limit)),
       latestLlmRuntimeProbe: (connectionSlug, modelId) =>
         read(() => telemetry.latestLlmRuntimeProbe(connectionSlug, modelId)),
-      recordLlmCall: (record) => admit(() => run(() => telemetry.insertLlmCall(record))),
+      recordLlmCall: (record) =>
+        admit(async () => {
+          await run(() => telemetry.insertLlmCall(record));
+          if (record.sessionId) publishSessionUsageChange(record.sessionId);
+        }),
       recordToolInvocation: (record) =>
         admit(() => run(() => telemetry.insertToolInvocation(record))),
     },
     modelCalls: {
       modelCallAttempts: (range, sessionId) => read(() => modelCalls.read(range, sessionId)),
-      recordModelCallAttempt: (attempt) => admit(() => run(() => modelCalls.record(attempt))),
+      recordModelCallAttempt: (attempt) =>
+        admit(async () => {
+          await run(() => modelCalls.record(attempt));
+          publishSessionUsageChange(attempt.sessionId);
+        }),
       markRunPendingReprojection: (sessionId, runId) =>
         admit(() => run(() => modelCalls.markRunPendingReprojection(sessionId, runId))),
       pendingReprojections: (sessionId) => read(() => modelCalls.pendingReprojections(sessionId)),
@@ -426,6 +447,11 @@ function createWriterFacade(
           () => run(() => pricing.delete(expectedRevision, modelKey)),
           isExpectedPricingFailure,
         ),
+    },
+    subscribeSessionUsageChanges(listener) {
+      assertOpen();
+      sessionUsageChangeListeners.add(listener);
+      return () => sessionUsageChangeListeners.delete(listener);
     },
     beginDrain,
     flush,
@@ -456,8 +482,10 @@ function modelCallReader(
   run: <T>(operation: () => T | Promise<T>) => Promise<T>,
 ): Readonly<ModelCallIndexReader> {
   return Object.freeze({
-    modelCallAttempts: (range: { readonly from: number; readonly to: number }) =>
-      run(() => ledger.read(range)),
+    modelCallAttempts: (
+      range: { readonly from: number; readonly to: number },
+      sessionId?: string,
+    ) => run(() => ledger.read(range, sessionId)),
   });
 }
 

@@ -214,6 +214,7 @@ export async function createExecutionRuntimeHostComposition(
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
   let unsubscribeTaskLedger: (() => void) | undefined;
   let unsubscribeTranscriptChanges: (() => void) | undefined;
+  let unsubscribeUsageChanges: (() => void) | undefined;
   let managedWorkspaceOwner: ManagedWorkspaceOwner | undefined;
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
   let goalExecutions: HostGoalExecutionCoordinator | undefined;
@@ -497,6 +498,9 @@ export async function createExecutionRuntimeHostComposition(
     const continuityCoordinator = continuity;
     unsubscribeTranscriptChanges = stores.sessionStore.subscribeTranscriptChanges((sessionId) =>
       continuityCoordinator.enqueueCanonicalRefresh(sessionId),
+    );
+    unsubscribeUsageChanges = openedUsageStores.subscribeSessionUsageChanges((sessionId) =>
+      continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'usage'),
     );
     unsubscribeTaskLedger = taskLedger.subscribe(({ sessionId }) =>
       continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'task'),
@@ -1404,6 +1408,7 @@ export async function createExecutionRuntimeHostComposition(
           () => oauth?.close(),
           () => {
             unsubscribeTranscriptChanges?.();
+            unsubscribeUsageChanges?.();
             unsubscribeTaskLedger?.();
           },
         ],
@@ -1614,6 +1619,7 @@ export async function createExecutionRuntimeHostComposition(
     }
     try {
       unsubscribeTranscriptChanges?.();
+      unsubscribeUsageChanges?.();
       unsubscribeTaskLedger?.();
     } catch (closeError) {
       errors.push(closeError);

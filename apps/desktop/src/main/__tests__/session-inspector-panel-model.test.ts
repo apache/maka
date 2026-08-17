@@ -146,6 +146,7 @@ test('shows one compact diagnostic line for a failed history-compaction call', (
       turnsMissingModelCalls: [],
       turnsWithFewerModelCallsThanSteps: [],
       unreadableRecords: 0,
+      oversizedRuns: 0,
     },
   };
 
@@ -156,6 +157,29 @@ test('shows one compact diagnostic line for a failed history-compaction call', (
     'route=provider_native · error=RequestRejected · HTTP 400 · code=invalid_request_error · request=req-compact-1 · retryable=false',
   );
   const turn = deriveInspectorPanelModel(trace).turns[0];
-  assert.equal('index' in (turn ?? {}), false);
   assert.equal((turn as { startedAt?: number } | undefined)?.startedAt, 1);
+});
+
+test('reports runs omitted only by the bounded online view separately', () => {
+  const model = deriveInspectorPanelModel({
+    schemaVersion: SESSION_TRACE_SCHEMA_VERSION,
+    sessionId: 'session-1',
+    turns: [],
+    totals: emptyTraceTotals(),
+    coverage: {
+      modelCalls: 'partial',
+      turnsMissingModelCalls: [],
+      turnsWithFewerModelCallsThanSteps: [],
+      unreadableRecords: 0,
+      oversizedRuns: 1,
+    },
+  });
+
+  assert.deepEqual(model.coverage, {
+    kind: 'partial',
+    turnsMissing: 0,
+    turnsShort: 0,
+    unreadableRecords: 0,
+    oversizedRuns: 1,
+  });
 });

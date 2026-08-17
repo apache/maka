@@ -41,6 +41,7 @@ export interface InspectorStepRow {
 }
 
 export interface InspectorTurnRow {
+  runId: string;
   turnId: string;
   startedAt: number;
   durationMs: number;
@@ -55,6 +56,7 @@ export interface InspectorCoverageNotice {
   turnsMissing: number;
   turnsShort: number;
   unreadableRecords: number;
+  oversizedRuns: number;
 }
 
 export interface InspectorPanelModel {
@@ -72,6 +74,7 @@ export function deriveInspectorPanelModel(trace: SessionTrace | undefined): Insp
   if (!trace) return { turns: [], empty: true };
 
   const turns = trace.turns.map<InspectorTurnRow>((turn) => ({
+    runId: turn.runId,
     turnId: turn.turnId,
     startedAt: turn.startedAt,
     durationMs: turn.durationMs,
@@ -170,5 +173,6 @@ function coverageNotice(trace: SessionTrace): InspectorCoverageNotice | undefine
     turnsMissing: coverage.turnsMissingModelCalls.length,
     turnsShort: coverage.turnsWithFewerModelCallsThanSteps.length,
     unreadableRecords: coverage.unreadableRecords,
+    oversizedRuns: coverage.oversizedRuns,
   };
 }

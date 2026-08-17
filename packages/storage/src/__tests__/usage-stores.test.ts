@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
+import { MODEL_CALL_ATTEMPT_SCHEMA_VERSION } from '@maka/core/model-call-attempt';
 import {
   PricingCommitUnknownError,
   PricingRevisionConflictError,
@@ -124,6 +125,27 @@ describe('InteractiveUsageStores', () => {
       try {
         assert.deepEqual(await stores.pricing.snapshot(), { revision: 0, overrides: [] });
       } finally {
+        await stores.close();
+        await owner.close();
+      }
+    });
+  });
+
+  test('publishes the owning Session after each durable model-usage write', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      const changed: string[] = [];
+      const unsubscribe = stores.subscribeSessionUsageChanges((sessionId) =>
+        changed.push(sessionId),
+      );
+      try {
+        await stores.telemetry.recordLlmCall(llmRecord({ sessionId: 'session-legacy' }));
+        await stores.modelCalls.recordModelCallAttempt(modelCallAttempt('session-canonical'));
+        assert.deepEqual(changed, ['session-legacy', 'session-canonical']);
+      } finally {
+        unsubscribe();
         await stores.close();
         await owner.close();
       }
@@ -425,4 +447,30 @@ function toolRecord() {
       ReturnType<typeof openInteractiveUsageStoresForWrite>
     >['telemetry']['recordToolInvocation']
   >[0];
+}
+
+function modelCallAttempt(sessionId: string) {
+  return {
+    schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+    logicalCallId: 'call-1',
+    attemptId: 'attempt-1',
+    traceId: 'trace-1',
+    sessionId,
+    runId: 'run-1',
+    turnId: 'turn-1',
+    step: 0,
+    attempt: 0,
+    callKind: 'main' as const,
+    providerId: 'openai',
+    modelId: 'gpt-5',
+    startedAt: 1,
+    completedAt: 2,
+    latencyMs: 1,
+    status: 'completed' as const,
+    usageBasis: 'reported' as const,
+    inputTokens: 1,
+    outputTokens: 1,
+    costBasis: 'priced' as const,
+    costUsd: 0.001,
+  };
 }

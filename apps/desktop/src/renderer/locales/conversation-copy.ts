@@ -164,6 +164,7 @@ export interface DesktopConversationCopy {
     costEstimateHelp: string;
     loadEarlier: string;
     loadingEarlier: string;
+    loadingTrace: string;
     loadingSummary: string;
     summaryUnavailable: string;
     /** Label for the complete Session cost estimate. */
@@ -179,6 +180,7 @@ export interface DesktopConversationCopy {
     coverageAbsent: (parts: readonly string[]) => string;
     /** Each states its own count, so English can say "1 turn" and not "1 turns". */
     unreadable: (count: number) => string;
+    oversizedRuns: (count: number) => string;
     turnsMissing: (count: number) => string;
     turnsShort: (count: number) => string;
     /**
@@ -477,17 +479,19 @@ const COPY = {
       empty: '这个任务还没有可追踪的活动',
       emptyHelp: '任务尚无活动记录。',
       costUnavailable: '费用未知',
-      costEstimateHelp: '基于当前定价和已记录用量估算；缺失或未定价的调用可能未计入。',
+      costEstimateHelp: '基于已记录用量和定价估算；缺失或未定价的调用可能未计入。',
       loadEarlier: '加载更早记录',
       loadingEarlier: '正在加载…',
+      loadingTrace: '正在读取时间线…',
       loadingSummary: '正在估算完整会话用量…',
       summaryUnavailable: '完整会话用量暂时无法估算。',
       totals: {
         cost: '估算成本',
       },
-      coveragePartial: (parts) => `部分调用没有留下记录，下面的数字只少不多${zhDetail(parts)}`,
+      coveragePartial: (parts) => `部分调用未能完整显示，下面的数字只少不多${zhDetail(parts)}`,
       coverageAbsent: (parts) => `这个后端不记录每次调用的明细${zhDetail(parts)}`,
       unreadable: (count) => `${count} 条记录读不出来`,
+      oversizedRuns: (count) => `${count} 条运行记录过大，无法在线显示`,
       turnsMissing: (count) => `${count} 轮没有调用记录`,
       turnsShort: (count) => `${count} 轮的调用记录不全`,
       stepKind: { permission: '权限', compaction: '上下文压缩', error: '错误' },
@@ -677,18 +681,21 @@ const COPY = {
       empty: 'Nothing to trace in this task yet',
       emptyHelp: 'No activity recorded for this task yet.',
       costUnavailable: 'cost unknown',
-      costEstimateHelp: 'Estimated from current pricing and recorded usage; missing or unpriced calls may be excluded.',
+      costEstimateHelp: 'Estimated from recorded usage and pricing; missing or unpriced calls may be excluded.',
       loadEarlier: 'Load earlier records',
       loadingEarlier: 'Loading…',
+      loadingTrace: 'Loading timeline…',
       loadingSummary: 'Estimating full-session usage…',
       summaryUnavailable: 'Full-session usage is temporarily unavailable.',
       totals: {
         cost: 'Estimated cost',
       },
       coveragePartial: (parts) =>
-        `Some calls left no record, so the numbers below only undercount${enDetail(parts)}`,
+        `Some calls could not be shown completely, so the numbers below only undercount${enDetail(parts)}`,
       coverageAbsent: (parts) => `This backend does not record per-call detail${enDetail(parts)}`,
       unreadable: (count) => `${count} record${count === 1 ? '' : 's'} could not be read`,
+      oversizedRuns: (count) =>
+        `${count} run record${count === 1 ? '' : 's'} too large to show online`,
       turnsMissing: (count) => `${count} turn${count === 1 ? '' : 's'} with no call record`,
       turnsShort: (count) =>
         `${count} turn${count === 1 ? '' : 's'} with an incomplete call record`,

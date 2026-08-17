@@ -404,7 +404,8 @@ describe('HostExecutionInspectCoordinator', () => {
       assert.equal(first.ok, true);
       if (!first.ok || first.result.kind !== 'session_trace_page') return;
       assert.equal(first.result.coverage.modelCalls, 'partial');
-      assert.equal(first.result.coverage.unreadableRecords, 1);
+      assert.equal(first.result.coverage.unreadableRecords, 0);
+      assert.equal(first.result.coverage.oversizedRuns, 1);
       assert.ok(first.result.nextCursor);
 
       const older = await coordinator.handlers['execution.inspect.query'](
@@ -448,7 +449,8 @@ describe('HostExecutionInspectCoordinator', () => {
       if (!first.ok || first.result.kind !== 'session_trace_page') return;
       assert.equal(first.result.turns.length, 0);
       assert.equal(first.result.coverage.modelCalls, 'partial');
-      assert.equal(first.result.coverage.unreadableRecords, 1);
+      assert.equal(first.result.coverage.unreadableRecords, 0);
+      assert.equal(first.result.coverage.oversizedRuns, 1);
       assert.ok(first.result.nextCursor);
 
       const older = await coordinator.handlers['execution.inspect.query'](
