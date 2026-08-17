@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Banner, EmptyState, Spinner } from '@astryxdesign/core';
 import { Button } from '@astryxdesign/core/Button';
-import type { UiLocale } from '@maka/core/ui-locale';
 import { useUiLocale } from '@maka/ui';
 import type {
   CreateWorkBoardItemInput,
@@ -11,77 +10,9 @@ import type {
 } from '@maka/core/work-board';
 import { ListTodo } from '@maka/ui/icons';
 import { useWorkBoard } from './use-work-board.js';
+import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 
-interface WorkBoardPanelCopy {
-  inbox: string;
-  project: string;
-  noProject: string;
-  createPlaceholder: string;
-  create: string;
-  empty: string;
-  loading: string;
-  retry: string;
-  loadFailed: string;
-  actionFailed: string;
-  complete: string;
-  reopen: string;
-  rename: string;
-  renameSave: string;
-  moveToInbox: string;
-  moveToProject: string;
-  archive: string;
-  unarchive: string;
-  delete: string;
-  archived: string;
-}
-
-function getWorkBoardPanelCopy(locale: UiLocale): WorkBoardPanelCopy {
-  return locale === 'zh'
-    ? {
-        inbox: 'Inbox',
-        project: '当前项目',
-        noProject: '未选择项目',
-        createPlaceholder: '记录稍后处理的事项…',
-        create: '添加',
-        empty: '暂无暂缓事项',
-        loading: '正在加载工作看板…',
-        retry: '重试',
-        loadFailed: '工作看板加载失败',
-        actionFailed: '操作失败',
-        complete: '完成',
-        reopen: '重开',
-        rename: '改名',
-        renameSave: '保存',
-        moveToInbox: '移到 Inbox',
-        moveToProject: '移到项目',
-        archive: '归档',
-        unarchive: '恢复',
-        delete: '删除',
-        archived: '已归档',
-      }
-    : {
-        inbox: 'Inbox',
-        project: 'Current project',
-        noProject: 'No project selected',
-        createPlaceholder: 'Capture something for later…',
-        create: 'Add',
-        empty: 'No deferred work',
-        loading: 'Loading work board…',
-        retry: 'Retry',
-        loadFailed: 'Failed to load work board',
-        actionFailed: 'Action failed',
-        complete: 'Complete',
-        reopen: 'Reopen',
-        rename: 'Rename',
-        renameSave: 'Save',
-        moveToInbox: 'Move to Inbox',
-        moveToProject: 'Move to project',
-        archive: 'Archive',
-        unarchive: 'Restore',
-        delete: 'Delete',
-        archived: 'Archived',
-      };
-}
+type WorkBoardPanelCopy = ReturnType<typeof getDesktopConversationCopy>['workBoardPanel'];
 
 function scopeForFilter(filter: 'inbox' | 'project', projectId: string | null): WorkBoardScope {
   return filter === 'project' && projectId !== null
@@ -165,8 +96,7 @@ function WorkBoardRow(props: {
 }
 
 export function WorkBoardPanel(props: { projectId: string | null }) {
-  const locale = useUiLocale();
-  const copy = getWorkBoardPanelCopy(locale);
+  const copy = getDesktopConversationCopy(useUiLocale()).workBoardPanel;
   const [filter, setFilter] = useState<'inbox' | 'project'>('inbox');
   const query: WorkBoardListQuery = useMemo(
     () => ({
@@ -184,12 +114,14 @@ export function WorkBoardPanel(props: { projectId: string | null }) {
   const activeItems = board.items.filter((item) => !item.archived);
   const archivedItems = board.items.filter((item) => item.archived);
 
-  const runAction = async (action: () => Promise<unknown>): Promise<void> => {
+  const runAction = async (action: () => Promise<unknown>): Promise<boolean> => {
     setActionError(undefined);
     try {
       await action();
+      return true;
     } catch (error) {
       setActionError(error instanceof Error ? error.message : copy.actionFailed);
+      return false;
     }
   };
 
@@ -202,8 +134,9 @@ export function WorkBoardPanel(props: { projectId: string | null }) {
       creator: { kind: 'user' },
       provenance: { kind: 'manual' },
     };
-    await runAction(() => board.create(input));
-    setNewTitle('');
+    if (await runAction(() => board.create(input))) {
+      setNewTitle('');
+    }
   };
 
   const startRename = (item: WorkBoardItem): void => {
@@ -214,8 +147,9 @@ export function WorkBoardPanel(props: { projectId: string | null }) {
   const saveRename = async (item: WorkBoardItem): Promise<void> => {
     const title = renamingTitle.trim();
     if (!title) return;
-    await runAction(() => board.update(item.id, { title }));
-    setRenamingId(null);
+    if (await runAction(() => board.update(item.id, { title }))) {
+      setRenamingId(null);
+    }
   };
 
   const moveScope = (item: WorkBoardItem): WorkBoardScope =>
@@ -226,11 +160,14 @@ export function WorkBoardPanel(props: { projectId: string | null }) {
         : item.scope;
 
   return (
-    <section className="maka-work-board-panel" aria-label={copy.inbox}>
+    <section
+      className="maka-work-board-panel"
+      aria-label={filter === 'project' ? copy.project : copy.inbox}
+    >
       {actionError && (
         <Banner status="error" role="alert" className="maka-work-board-message" title={actionError} />
       )}
-      <div className="maka-work-board-filters" role="tablist" aria-label={copy.inbox}>
+      <div className="maka-work-board-filters">
         <Button
           size="sm"
           variant={filter === 'inbox' ? 'primary' : 'ghost'}

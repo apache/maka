@@ -103,6 +103,28 @@ export interface DesktopConversationCopy {
       sideChat: string;
     };
   };
+  workBoardPanel: {
+    inbox: string;
+    project: string;
+    noProject: string;
+    createPlaceholder: string;
+    create: string;
+    empty: string;
+    loading: string;
+    retry: string;
+    loadFailed: string;
+    actionFailed: string;
+    complete: string;
+    reopen: string;
+    rename: string;
+    renameSave: string;
+    moveToInbox: string;
+    moveToProject: string;
+    archive: string;
+    unarchive: string;
+    delete: string;
+    archived: string;
+  };
   reviewPanel: {
     ariaLabel: string;
     empty: string;
@@ -432,6 +454,28 @@ const COPY = {
         sideChat: '在不打断主任务的情况下追问和只读探索',
       },
     },
+    workBoardPanel: {
+      inbox: 'Inbox',
+      project: '当前项目',
+      noProject: '未选择项目',
+      createPlaceholder: '记录稍后处理的事项…',
+      create: '添加',
+      empty: '暂无暂缓事项',
+      loading: '正在加载工作看板…',
+      retry: '重试',
+      loadFailed: '工作看板加载失败',
+      actionFailed: '操作失败',
+      complete: '完成',
+      reopen: '重开',
+      rename: '改名',
+      renameSave: '保存',
+      moveToInbox: '移到 Inbox',
+      moveToProject: '移到项目',
+      archive: '归档',
+      unarchive: '恢复',
+      delete: '删除',
+      archived: '已归档',
+    },
     reviewPanel: {
       ariaLabel: 'Git 变更',
       empty: '当前 Git 工作区没有变化',
@@ -634,6 +678,28 @@ const COPY = {
         inspector: 'Inspect model calls, tools, and timing',
         sideChat: 'Ask and explore read-only without interrupting the main task',
       },
+    },
+    workBoardPanel: {
+      inbox: 'Inbox',
+      project: 'Current project',
+      noProject: 'No project selected',
+      createPlaceholder: 'Capture something for later…',
+      create: 'Add',
+      empty: 'No deferred work',
+      loading: 'Loading work board…',
+      retry: 'Retry',
+      loadFailed: 'Failed to load work board',
+      actionFailed: 'Action failed',
+      complete: 'Complete',
+      reopen: 'Reopen',
+      rename: 'Rename',
+      renameSave: 'Save',
+      moveToInbox: 'Move to Inbox',
+      moveToProject: 'Move to project',
+      archive: 'Archive',
+      unarchive: 'Restore',
+      delete: 'Delete',
+      archived: 'Archived',
     },
     reviewPanel: {
       ariaLabel: 'Git changes',

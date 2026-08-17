@@ -590,6 +590,7 @@ export function isSessionWorkbarTabKind(value: unknown): value is SessionWorkbar
     value === 'review' ||
     value === 'terminal' ||
     value === 'tasks' ||
+    value === 'work-board' ||
     value === 'browser' ||
     value === 'files' ||
     value === 'inspector' ||
