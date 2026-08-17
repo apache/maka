@@ -9,8 +9,13 @@ test('Project directory authority exposes folders without crossing its published
   const base = await mkdtemp(join(tmpdir(), 'maka-project-directory-'));
   const home = join(base, 'home');
   const project = join(home, 'work', 'project');
+  const hidden = join(home, '.hidden');
   const outside = join(base, 'outside');
-  await Promise.all([mkdir(project, { recursive: true }), mkdir(outside, { recursive: true })]);
+  await Promise.all([
+    mkdir(project, { recursive: true }),
+    mkdir(hidden, { recursive: true }),
+    mkdir(outside, { recursive: true }),
+  ]);
   await symlink(outside, join(home, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
   const authority = new HostProjectDirectoryAuthority(home);
 

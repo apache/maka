@@ -79,6 +79,7 @@ export class HostProjectDirectoryAuthority {
     const entries = await readdir(directory, { withFileTypes: true });
     const names: string[] = [];
     for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
       try {
         const target = await realpath(join(directory, entry.name));
