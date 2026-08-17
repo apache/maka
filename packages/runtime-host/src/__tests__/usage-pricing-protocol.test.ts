@@ -372,6 +372,68 @@ describe('Usage/Pricing protocol', () => {
     }
   });
 
+  test('settles a qualified summary when pending repairs outlast one pass', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-usage-repair-fence-'));
+    const capability = await resolveStorageRoot({
+      path: join(base, 'interactive-root'),
+      kind: 'interactive',
+    });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner, 'test must acquire the real Interactive write lease');
+    const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+
+    try {
+      // More than three repair passes' worth of pending runs: a fence that ran
+      // repairs inside it would keep observing its own writes and fail.
+      await Promise.all(
+        Array.from({ length: 60 }, (_, index) =>
+          stores.modelCalls.markRunPendingReprojection('session', `run-${index}`),
+        ),
+      );
+      const coordinator = new HostUsagePricingCoordinator(
+        stores,
+        () => {},
+        new RuntimePolicyActivationGate(),
+        () => {},
+        async () => [],
+      );
+
+      const outcome = await coordinator.handlers['usage.query'](
+        { kind: 'summary', query: { range: 'all' } },
+        CONNECTION_CONTEXT,
+      );
+      const frame = decodeHostFrame(
+        JSON.parse(
+          encodeProtocolMessage({
+            requestId: 'usage-repair-fence-query',
+            operation: 'usage.query',
+            ...outcome,
+          }).toString('utf8'),
+        ),
+      );
+      if (
+        'kind' in frame ||
+        frame.operation !== 'usage.query' ||
+        !frame.ok ||
+        frame.result.kind !== 'summary'
+      ) {
+        throw new Error('Expected a qualified usage summary');
+      }
+      // One bounded pass cleared 16 markers; the rest stay qualified, and the
+      // query returns instead of retrying until failure.
+      assert.equal(frame.result.provenance.pendingRepairs, 44);
+      assert.equal((await stores.modelCalls.pendingReprojections()).length, 44);
+    } finally {
+      await stores.close().catch(() => undefined);
+      await owner.close();
+      await rm(join(resolveRootControlNamespace(), capability.rootId), {
+        recursive: true,
+        force: true,
+      });
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
   test('decodes revision-pinned numeric-offset pricing pages and revision-CAS mutation', () => {
     assert.doesNotThrow(() => pricingRequest('pricing.query', { kind: 'start' }));
     assert.doesNotThrow(() =>

@@ -42,9 +42,16 @@ import {
 } from '../protocol/index.js';
 import type { UsagePricingOperationHandlerMap } from './operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
-import { readCanonicalUsage, type RunEventReader } from './canonical-usage-reader.js';
+import {
+  readCanonicalUsage,
+  repairPendingCanonicalUsage,
+  type CanonicalUsageRepairStats,
+  type RunEventReader,
+} from './canonical-usage-reader.js';
 
 export type { RunEventReader } from './canonical-usage-reader.js';
+
+const NO_REPAIR: CanonicalUsageRepairStats = { remaining: 0, unreadableEvents: 0 };
 
 /** Root-scoped projection over the authentic lease-bound usage stores. */
 export class HostUsagePricingCoordinator {
@@ -79,15 +86,25 @@ export class HostUsagePricingCoordinator {
    * Reads the canonical ledger for the window a query addresses (#1679). The
    * range is resolved once here so both sources answer the same window.
    */
-  async #canonicalUsage(query: UsageQuery, now: number): Promise<CanonicalUsageSource> {
-    return readCanonicalUsage(this.#stores, query, now, this.#readRunEvents);
+  async #canonicalUsage(
+    query: UsageQuery,
+    now: number,
+    repair: CanonicalUsageRepairStats,
+  ): Promise<CanonicalUsageSource> {
+    return readCanonicalUsage(this.#stores, query, now, repair);
   }
 
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
     try {
+      // One bounded repair pass runs before the fence. The fence itself only
+      // reads: repair writes advance the snapshot revision, and fencing them in
+      // would retry forever whenever more than one pass's worth of runs remain.
+      const repair = this.#readRunEvents
+        ? await repairPendingCanonicalUsage(this.#stores, this.#readRunEvents)
+        : NO_REPAIR;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const before = await this.#stores.usageSnapshotRevision();
-        const result = await this.#queryUsageResult(input, before);
+        const result = await this.#queryUsageResult(input, before, repair);
         const after = await this.#stores.usageSnapshotRevision();
         if (after === before) {
           return {
@@ -114,12 +131,16 @@ export class HostUsagePricingCoordinator {
     }
   }
 
-  async #queryUsageResult(input: UsageQueryInput, revision: number): Promise<UsageQueryResult> {
+  async #queryUsageResult(
+    input: UsageQueryInput,
+    revision: number,
+    repair: CanonicalUsageRepairStats,
+  ): Promise<UsageQueryResult> {
     const now = Date.now();
     if (input.kind === 'summary') {
       const merged = mergeUsageSummary(
         await this.#stores.telemetry.summary(input.query),
-        await this.#canonicalUsage(input.query, now),
+        await this.#canonicalUsage(input.query, now, repair),
         input.query,
         now,
       );
@@ -137,7 +158,7 @@ export class HostUsagePricingCoordinator {
           ? { buckets: [...legacy], provenance: EMPTY_PROVENANCE }
           : mergeUsageBuckets(
               legacy,
-              await this.#canonicalUsage(input.query, now),
+              await this.#canonicalUsage(input.query, now, repair),
               input.query,
               input.groupBy,
               now,
@@ -172,7 +193,7 @@ export class HostUsagePricingCoordinator {
     const legacy = await this.#stores.telemetry.logs(input.query, 0, offset + limit);
     const merged = mergeUsageLogs(
       legacy,
-      await this.#canonicalUsage(input.query, now),
+      await this.#canonicalUsage(input.query, now, repair),
       input.query,
       now,
       offset,
