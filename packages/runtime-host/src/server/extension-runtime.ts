@@ -443,7 +443,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
         delivered: 0,
         failed: 0,
         failures: Object.freeze([]),
-        result: payload,
+        result: mode === 'bail' ? undefined : payload,
       });
     }
     const parsed = validateExtensionCoreEventPayload(event, payload);

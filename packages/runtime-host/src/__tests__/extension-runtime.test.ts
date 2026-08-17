@@ -109,6 +109,23 @@ test('core Agent seams preserve the zero-listener hot path without serializing p
 
   assert.equal(dispatched.listenerCount, 0);
   assert.equal(dispatched.result, payload);
+  const unhandledBail = await extensions.dispatchCoreEvent(
+    'session-empty',
+    'maka.agent.request-error',
+    { failure: 'terminal', hostOnly: Symbol('host-only') },
+    {
+      sessionId: 'session-empty',
+      runId: 'run-empty',
+      turnId: 'turn-empty',
+      cwd: process.cwd(),
+      permissionMode: 'default',
+      origin: 'host',
+      configuration: Object.freeze({}),
+      signal: new AbortController().signal,
+    },
+  );
+  assert.equal(unhandledBail.listenerCount, 0);
+  assert.equal(unhandledBail.result, undefined);
   await extensions.close();
 });
 
@@ -159,8 +176,26 @@ test('core Agent seams and typed Services share lifecycle-owned dispatch', async
               },
               timeoutMs: 1_000,
             },
+            {
+              name: 'badOutput',
+              description: 'Return a deliberately invalid output.',
+              handler: 'badOutput',
+              inputSchema: {
+                type: 'object',
+                properties: { value: { type: 'string' } },
+                required: ['value'],
+                additionalProperties: false,
+              },
+              outputSchema: {
+                type: 'object',
+                properties: { value: { type: 'string' } },
+                required: ['value'],
+                additionalProperties: false,
+              },
+              timeoutMs: 1_000,
+            },
           ],
-          invoke: async (_method, input) => input,
+          invoke: async (method, input) => (method === 'badOutput' ? { value: 1 } : input),
         },
       ],
     }),
@@ -208,6 +243,134 @@ test('core Agent seams and typed Services share lifecycle-owned dispatch', async
     ),
     /input does not match/u,
   );
+  await assert.rejects(
+    extensions.callService(
+      'session-core',
+      'runtime-policy.echo',
+      'badOutput',
+      { value: 'ok' },
+      { ...context, callerExtensionId: 'runtime-policy' },
+    ),
+    /output does not match/u,
+  );
+  await extensions.close();
+});
+
+test('custom Event modes honor priority, neutral bail, schemas, and lifecycle cleanup', async () => {
+  const extensions = new HostExtensionRuntime();
+  const calls: string[] = [];
+  const objectSchema = {
+    type: 'object',
+    properties: { value: { type: 'number' } },
+    required: ['value'],
+    additionalProperties: false,
+  } as const;
+  await extensions.installToolRevision({
+    extensionId: 'dispatch',
+    revision: '1',
+    toolNames: [],
+    eventContributionIds: ['unhandled', 'serial', 'gate', 'transform'],
+    prepare: async () => ({
+      tools: [],
+      events: [
+        {
+          name: 'dispatch.unhandled',
+          description: 'An optionally answered query.',
+          mode: 'bail',
+          payloadSchema: objectSchema,
+          resultSchema: {
+            type: 'object',
+            properties: { answer: { type: 'number' } },
+            required: ['answer'],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: 'dispatch.serial',
+          description: 'Ordered results.',
+          mode: 'serial',
+          payloadSchema: objectSchema,
+          resultSchema: { type: 'number' },
+        },
+        {
+          name: 'dispatch.gate',
+          description: 'First denial wins.',
+          mode: 'gate',
+          payloadSchema: objectSchema,
+        },
+        {
+          name: 'dispatch.transform',
+          description: 'Schema-preserving transform.',
+          mode: 'transform',
+          payloadSchema: objectSchema,
+        },
+      ],
+      listeners: [
+        listener('serial-low', 'dispatch.serial', 0, async () => {
+          calls.push('serial-low');
+          return 0;
+        }),
+        listener('serial-high', 'dispatch.serial', 100, async () => {
+          calls.push('serial-high');
+          return 100;
+        }),
+        listener('gate-allow', 'dispatch.gate', 100, async () => ({ decision: 'allow' })),
+        listener('gate-deny', 'dispatch.gate', 50, async () => ({
+          decision: 'deny',
+          reason: 'policy denied',
+        })),
+        listener('gate-unreached', 'dispatch.gate', 0, async () => ({ decision: 'allow' })),
+        listener('invalid-transform', 'dispatch.transform', 0, async () => ({ value: 'wrong' })),
+      ],
+    }),
+  });
+  await extensions.activate({
+    bindingId: 'dispatch-binding',
+    scopeId: 'session-dispatch',
+    extensionId: 'dispatch',
+    revision: '1',
+  });
+  const context = extensionContext('session-dispatch');
+
+  const unhandled = await extensions.emitEvent(
+    'session-dispatch',
+    'dispatch.unhandled',
+    { value: 1 },
+    context,
+  );
+  assert.equal(unhandled.listenerCount, 0);
+  assert.equal(Object.hasOwn(unhandled, 'result'), false);
+
+  const serial = await extensions.emitEvent(
+    'session-dispatch',
+    'dispatch.serial',
+    { value: 1 },
+    context,
+  );
+  assert.deepEqual(serial.result, [100, 0]);
+  assert.deepEqual(calls, ['serial-high', 'serial-low']);
+
+  const gate = await extensions.emitEvent(
+    'session-dispatch',
+    'dispatch.gate',
+    { value: 1 },
+    context,
+  );
+  assert.equal(gate.listenerCount, 3);
+  assert.equal(gate.delivered, 2);
+  assert.deepEqual(gate.result, { decision: 'deny', reason: 'policy denied' });
+
+  await assert.rejects(
+    extensions.emitEvent('session-dispatch', 'dispatch.transform', { value: 1 }, context),
+    /result does not match/u,
+  );
+
+  await extensions.stop('dispatch-binding');
+  await assert.rejects(
+    extensions.emitEvent('session-dispatch', 'dispatch.serial', { value: 1 }, context),
+    /event is not defined/u,
+  );
+  assert.deepEqual(extensions.inspectEventListeners('session-dispatch'), []);
   await extensions.close();
 });
 
@@ -217,5 +380,27 @@ function tool(name: string, revision: number): MakaTool {
     description: `${name} revision ${revision}`,
     parameters: z.object({}),
     impl: async () => ({ revision }),
+  };
+}
+
+function listener(
+  id: string,
+  event: string,
+  priority: number,
+  invoke: (payload: unknown) => Promise<unknown>,
+) {
+  return { id, event, handler: id, priority, timeoutMs: 1_000, invoke };
+}
+
+function extensionContext(sessionId: string) {
+  return {
+    sessionId,
+    runId: 'run-extension',
+    turnId: 'turn-extension',
+    cwd: process.cwd(),
+    permissionMode: 'default',
+    origin: 'host' as const,
+    configuration: Object.freeze({}),
+    signal: new AbortController().signal,
   };
 }

@@ -52,7 +52,10 @@ export async function dispatchExtensionHandlers<TIdentity>(input: {
 
   const settlements: ExtensionDispatchSettlement<TIdentity>[] = [];
   const serialValues: unknown[] = [];
-  let current = clone(input.payload);
+  // A bail lane has no answer until a handler supplies one. Using the input
+  // payload as its initial value makes an unhandled bail indistinguishable from
+  // a listener answer and can violate an unrelated result schema.
+  let current = input.mode === 'bail' ? undefined : clone(input.payload);
   let stopped = false;
   let denied = false;
   let reason: string | undefined;

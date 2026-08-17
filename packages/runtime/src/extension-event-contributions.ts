@@ -259,6 +259,9 @@ export class ExtensionEventContributionRegistry {
     value: unknown,
   ): unknown {
     const definition = this.#definition(scopeIds, committed, event);
+    // No bail listener answered. The result schema describes actual answers,
+    // not the absence of one.
+    if (definition.mode === 'bail' && value === undefined) return undefined;
     const validator =
       definition.mode === 'transform' ? definition.schema : definition.resultValidator;
     if (!validator) return structuredClone(value);

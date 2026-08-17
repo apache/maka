@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -372,6 +372,87 @@ test('production composition commits automatic titles through Host-owned Session
         const summary = (await manager.listSessions()).find((item) => item.id === session.id);
         return summary?.name === 'Host owns this automatic title';
       });
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('production Session create and archive dispatch profile Extension lifecycle seams', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    const observed: Array<{ event: string; payload: unknown }> = [];
+    const operationContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'extension-session-lifecycle-test',
+      surface: 'desktop' as const,
+      principal: 'local_os_user' as const,
+      acquireResidency: () => ({ release() {} }),
+    };
+    try {
+      await composition.extensions.installToolRevision({
+        extensionId: 'lifecycle-observer',
+        revision: '1',
+        toolNames: [],
+        eventContributionIds: ['session-created', 'session-disposed'],
+        prepare: async () => ({
+          tools: [],
+          listeners: [
+            {
+              id: 'created',
+              event: 'maka.session.created',
+              handler: 'created',
+              priority: 0,
+              timeoutMs: 1_000,
+              invoke: async (payload) => {
+                observed.push({ event: 'maka.session.created', payload: structuredClone(payload) });
+              },
+            },
+            {
+              id: 'disposed',
+              event: 'maka.session.disposed',
+              handler: 'disposed',
+              priority: 0,
+              timeoutMs: 1_000,
+              invoke: async (payload) => {
+                observed.push({
+                  event: 'maka.session.disposed',
+                  payload: structuredClone(payload),
+                });
+              },
+            },
+          ],
+        }),
+      });
+      await composition.extensions.activate({
+        bindingId: 'lifecycle-observer-binding',
+        scopeId: 'profile',
+        extensionId: 'lifecycle-observer',
+        revision: '1',
+      });
+      await composition.recover();
+
+      const sessionId = 'extension-lifecycle-session';
+      const created = await composition.handlers['session.create'](
+        {
+          sessionId,
+          workspace: { kind: 'host_path', path: root },
+          modelTarget: { kind: 'default' },
+        },
+        operationContext,
+      );
+      assert.equal(created.ok, true);
+      const archived = await composition.handlers['session.lifecycle.set'](
+        { sessionId, state: 'archived' },
+        operationContext,
+      );
+      assert.equal(archived.ok, true);
+
+      const canonicalRoot = await realpath(root);
+      assert.deepEqual(observed, [
+        { event: 'maka.session.created', payload: { sessionId, cwd: canonicalRoot } },
+        { event: 'maka.session.disposed', payload: { sessionId } },
+      ]);
     } finally {
       await composition.close();
     }

@@ -94,3 +94,121 @@ test('parallel dispatch overlaps handlers and gate stops at first denial', async
     ['allow', 'deny'],
   );
 });
+
+test('every mode has a deterministic empty-handler identity', async () => {
+  const signal = new AbortController().signal;
+  const payload = { value: 7 };
+  const expected = new Map<string, unknown>([
+    ['emit', payload],
+    ['parallel', []],
+    ['serial', []],
+    ['bail', undefined],
+    ['transform', payload],
+    ['observe', payload],
+    ['gate', payload],
+  ]);
+
+  for (const [mode, value] of expected) {
+    const result = await dispatchExtensionHandlers({
+      mode: mode as Parameters<typeof dispatchExtensionHandlers>[0]['mode'],
+      payload,
+      signal,
+      handlers: [],
+    });
+    assert.deepEqual(result.value, value, `${mode} returned the wrong identity`);
+    assert.deepEqual(result.settlements, []);
+    assert.equal(result.stopped, false);
+    assert.equal(result.denied, false);
+  }
+});
+
+test('bail ignores empty and failed answers, then stops on the first value', async () => {
+  const invoked: string[] = [];
+  const result = await dispatchExtensionHandlers({
+    mode: 'bail',
+    payload: { question: 'answer' },
+    signal: new AbortController().signal,
+    handlers: [
+      {
+        identity: 'undefined',
+        invoke: async () => {
+          invoked.push('undefined');
+          return undefined;
+        },
+      },
+      {
+        identity: 'failed',
+        invoke: async () => {
+          invoked.push('failed');
+          throw new Error('contained');
+        },
+      },
+      {
+        identity: 'answer',
+        invoke: async () => {
+          invoked.push('answer');
+          return { value: 42 };
+        },
+      },
+      {
+        identity: 'unreached',
+        invoke: async () => {
+          invoked.push('unreached');
+          return { value: 0 };
+        },
+      },
+    ],
+  });
+
+  assert.deepEqual(invoked, ['undefined', 'failed', 'answer']);
+  assert.deepEqual(result.value, { value: 42 });
+  assert.equal(result.stopped, true);
+  assert.deepEqual(
+    result.settlements.map(({ status }) => status),
+    ['fulfilled', 'rejected', 'fulfilled'],
+  );
+});
+
+test('dispatch clones handler inputs and propagates cancellation authority', async () => {
+  const payload = { nested: { value: 1 } };
+  const isolated = await dispatchExtensionHandlers({
+    mode: 'serial',
+    payload,
+    signal: new AbortController().signal,
+    handlers: [
+      {
+        identity: 'mutator',
+        invoke: async (value) => {
+          (value as typeof payload).nested.value = 99;
+          return 'mutated-private-copy';
+        },
+      },
+      {
+        identity: 'observer',
+        invoke: async (value) => (value as typeof payload).nested.value,
+      },
+    ],
+  });
+  assert.deepEqual(payload, { nested: { value: 1 } });
+  assert.deepEqual(isolated.value, ['mutated-private-copy', 1]);
+
+  const controller = new AbortController();
+  await assert.rejects(
+    dispatchExtensionHandlers({
+      mode: 'serial',
+      payload,
+      signal: controller.signal,
+      handlers: [
+        {
+          identity: 'abort',
+          invoke: async () => {
+            controller.abort(new Error('authority revoked'));
+            return 'ignored';
+          },
+        },
+        { identity: 'unreached', invoke: async () => 'unreached' },
+      ],
+    }),
+    /authority revoked/u,
+  );
+});

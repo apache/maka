@@ -146,8 +146,10 @@ export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
       active.state.running = false;
       active.state.lastError = boundedError(error);
     });
-    this.#schedule(key, active);
-    if (active.state.lastError) return;
+    if (active.state.lastError) {
+      this.#schedule(key, active);
+      return;
+    }
 
     const controller = new AbortController();
     const timeout = setTimeout(
@@ -175,6 +177,9 @@ export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
       clearTimeout(timeout);
       active.state.running = false;
       await this.#persistQueued().catch(() => undefined);
+      // A Timer owns at most one live sandbox. If the invocation ran beyond its
+      // interval, #fire collapses all missed ticks when this next handle fires.
+      this.#schedule(key, active);
     }
   }
 

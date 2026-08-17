@@ -44,6 +44,7 @@ test('cross-plugin Event contracts dispatch isolated Listeners and recover bindi
       'event:dev.maka.notes.audit.logged',
       'event:dev.maka.notes.note.changed',
     ]);
+    assert.deepEqual(provider.serviceContributionIds, ['dev.maka.notes.metrics']);
     assert.deepEqual(consumer.eventContributionIds, [
       'listener:dev.maka.notes.audit.logged:audit-record',
       'listener:dev.maka.notes.note.changed:record-change',
@@ -82,6 +83,28 @@ test('cross-plugin Event contracts dispatch isolated Listeners and recover bindi
     );
     assert.equal(fixture.runtime.inspectEvents('session-1').length, 2);
     assert.equal(fixture.runtime.inspectEventListeners('session-1').length, 3);
+    assert.equal(fixture.runtime.inspectServices('session-1').length, 1);
+
+    assert.deepEqual(
+      await fixture.runtime.callService(
+        'session-1',
+        'dev.maka.notes.metrics',
+        'score',
+        { value: 4 },
+        { ...invocationContext(root), callerExtensionId: 'dev.maka.notes.consumer' },
+      ),
+      { score: 8 },
+    );
+    await assert.rejects(
+      fixture.runtime.callService(
+        'session-1',
+        'dev.maka.notes.metrics',
+        'score',
+        { value: 'four' },
+        { ...invocationContext(root), callerExtensionId: 'dev.maka.notes.consumer' },
+      ),
+      /input does not match/u,
+    );
 
     const result = await fixture.runtime.emitEvent(
       'session-1',
@@ -117,6 +140,7 @@ test('cross-plugin Event contracts dispatch isolated Listeners and recover bindi
     await fixture.controller.recover();
     assert.equal(fixture.runtime.inspectEvents('session-1').length, 2);
     assert.equal(fixture.runtime.inspectEventListeners('session-1').length, 3);
+    assert.equal(fixture.runtime.inspectServices('session-1').length, 1);
     assert.equal(
       (
         await fixture.runtime.emitEvent(
@@ -133,6 +157,53 @@ test('cross-plugin Event contracts dispatch isolated Listeners and recover bindi
       connection,
     );
     assert.equal(fixture.runtime.inspectEventListeners('session-1').length, 0);
+  } finally {
+    await fixture.runtime.close().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('cross-plugin Service calls require a declared package dependency', {
+  timeout: 60_000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-service-dependency-'));
+  const control = join(root, 'control');
+  const providerSource = join(root, 'provider');
+  const rogueSource = join(root, 'rogue');
+  const fixture = createFixture(control);
+  try {
+    await writeProvider(providerSource);
+    await writeRogueServiceConsumer(rogueSource);
+    const provider = await fixture.loader.installPackage(providerSource);
+    const rogue = await fixture.loader.installPackage(rogueSource);
+    await fixture.controller.recover();
+    for (const [bindingId, installed] of [
+      ['provider-binding', provider],
+      ['rogue-binding', rogue],
+    ] as const) {
+      const result = await fixture.controller.handlers['extension.catalog.mutate'](
+        {
+          kind: 'enable',
+          bindingId,
+          scopeId: 'session-1',
+          extensionId: installed.extensionId,
+          revision: installed.revision,
+        },
+        connection,
+      );
+      assert.equal(result.ok, true);
+    }
+
+    await assert.rejects(
+      fixture.runtime.callService(
+        'session-1',
+        'dev.maka.rogue.probe',
+        'score',
+        { value: 4 },
+        { ...invocationContext(root), callerExtensionId: 'host-test' },
+      ),
+      /provider must be declared as a dependency/u,
+    );
   } finally {
     await fixture.runtime.close().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
@@ -187,6 +258,72 @@ test('serverless Extension Timers retain their next fire across Host restart', a
   }
 });
 
+test('serverless Extension Timers never overlap and collapse a missed interval', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-extension-timer-overlap-'));
+  const control = join(root, 'control');
+  const scheduler = new HostExtensionTimerScheduler(control, () => root);
+  let calls = 0;
+  let active = 0;
+  let peak = 0;
+  let releaseFirst!: () => void;
+  const firstBlocked = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let firstStarted!: () => void;
+  const firstStart = new Promise<void>((resolve) => {
+    firstStarted = resolve;
+  });
+  const context = {
+    bindingId: 'non-overlap-binding',
+    scopeId: 'session-non-overlap',
+    extensionId: 'dev.maka.non-overlap',
+    revision: 'revision-1',
+    signal: new AbortController().signal,
+    ownEffect: () => undefined,
+    dependency: () => {
+      throw new Error('No Timer dependencies');
+    },
+    dependencyRevision: () => {
+      throw new Error('No Timer dependencies');
+    },
+  };
+  let unregister: (() => Promise<void>) | undefined;
+  try {
+    unregister = await scheduler.register(context, {
+      id: 'slow-heartbeat',
+      handler: 'slowHeartbeat',
+      intervalMs: 1_000,
+      initialDelayMs: 0,
+      timeoutMs: 5_000,
+      configuration: Object.freeze({}),
+      invoke: async () => {
+        calls += 1;
+        active += 1;
+        peak = Math.max(peak, active);
+        if (calls === 1) {
+          firstStarted();
+          await firstBlocked;
+        }
+        active -= 1;
+      },
+    });
+    await firstStart;
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    assert.equal(calls, 1, 'a second Timer sandbox overlapped the first');
+    assert.equal(scheduler.inspect('session-non-overlap')[0]?.running, true);
+
+    releaseFirst();
+    await waitFor(() => calls === 2);
+    assert.equal(peak, 1);
+    assert.equal(scheduler.inspect('session-non-overlap')[0]?.running, false);
+  } finally {
+    releaseFirst();
+    await unregister?.().catch(() => undefined);
+    await scheduler.close().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Agent Event tools define, test, activate, emit, inspect, and stop a package', {
   timeout: 60_000,
 }, async () => {
@@ -195,6 +332,34 @@ test('Agent Event tools define, test, activate, emit, inspect, and stop a packag
   const fixture = createFixture(control);
   try {
     await fixture.controller.recover();
+    const timerPids: number[] = [];
+    await fixture.runtime.installToolRevision({
+      extensionId: 'timer-observer',
+      revision: '1',
+      toolNames: [],
+      eventContributionIds: ['timer-fired-listener'],
+      prepare: async () => ({
+        tools: [],
+        listeners: [
+          {
+            id: 'capture-pid',
+            event: 'dev.maka.dynamic.events.timer.fired',
+            handler: 'capturePid',
+            priority: 0,
+            timeoutMs: 1_000,
+            invoke: async (payload) => {
+              timerPids.push((payload as { pid: number }).pid);
+            },
+          },
+        ],
+      }),
+    });
+    await fixture.runtime.activate({
+      bindingId: 'timer-observer-binding',
+      scopeId: 'session-1',
+      extensionId: 'timer-observer',
+      revision: '1',
+    });
     const management = new HostEventPackageManagementTools(
       control,
       fixture.controller,
@@ -222,7 +387,7 @@ test('Agent Event tools define, test, activate, emit, inspect, and stop a packag
           id: 'dev.maka.dynamic.events',
           version: '1.0.0',
           source:
-            "export default { observe: async (payload) => { if (payload.value !== 7) throw new Error('wrong payload'); }, add: async ({ left, right }) => ({ value: left + right }), tick: async () => ({ ok: true }) };\n",
+            "export default { observe: async (payload) => { if (payload.value !== 7) throw new Error('wrong payload'); }, add: async ({ left, right }) => ({ value: left + right }), loop: async (input, context) => context.callService('dev.maka.dynamic.events.math', 'loop', input), tick: async (_payload, context) => context.emitEvent('dev.maka.dynamic.events.timer.fired', { pid: process.pid }) };\n",
           events: [
             {
               name: 'dev.maka.dynamic.events.changed',
@@ -231,6 +396,16 @@ test('Agent Event tools define, test, activate, emit, inspect, and stop a packag
                 type: 'object',
                 properties: { value: { type: 'number' } },
                 required: ['value'],
+                additionalProperties: false,
+              },
+            },
+            {
+              name: 'dev.maka.dynamic.events.timer.fired',
+              description: 'A Timer sandbox fired.',
+              payloadSchema: {
+                type: 'object',
+                properties: { pid: { type: 'integer' } },
+                required: ['pid'],
                 additionalProperties: false,
               },
             },
@@ -267,6 +442,24 @@ test('Agent Event tools define, test, activate, emit, inspect, and stop a packag
                     additionalProperties: false,
                   },
                   timeoutMs: 1_000,
+                },
+                {
+                  name: 'loop',
+                  description: 'Exercise the Host recursion guard.',
+                  handler: 'loop',
+                  inputSchema: {
+                    type: 'object',
+                    properties: { value: { type: 'number' } },
+                    required: ['value'],
+                    additionalProperties: false,
+                  },
+                  outputSchema: {
+                    type: 'object',
+                    properties: { value: { type: 'number' } },
+                    required: ['value'],
+                    additionalProperties: false,
+                  },
+                  timeoutMs: 3_000,
                 },
               ],
             },
@@ -338,9 +531,22 @@ test('Agent Event tools define, test, activate, emit, inspect, and stop a packag
         ),
       { value: 10 },
     );
-    await waitFor(
-      () => fixture.runtime.inspectTimers('session-1')[0]?.lastSucceededAt !== undefined,
+    await assert.rejects(
+      async () =>
+        await tools
+          .find(({ name }) => name === 'call_service')!
+          .impl(
+            {
+              service: 'dev.maka.dynamic.events.math',
+              method: 'loop',
+              input: { value: 1 },
+            } as never,
+            context,
+          ),
+      /recursion limit exceeded/u,
     );
+    await waitFor(() => timerPids.length >= 2);
+    assert.equal(new Set(timerPids.slice(0, 2)).size, 2, 'Timer fires reused one worker process');
     assert.deepEqual(
       await tools
         .find(({ name }) => name === 'emit_event')!
@@ -365,8 +571,8 @@ test('Agent Event tools define, test, activate, emit, inspect, and stop a packag
       timers: unknown[];
       coreEvents: unknown[];
     };
-    assert.equal(inspected.events.length, 1);
-    assert.equal(inspected.listeners.length, 1);
+    assert.equal(inspected.events.length, 2);
+    assert.equal(inspected.listeners.length, 2);
     assert.equal(inspected.services.length, 1);
     assert.equal(inspected.timers.length, 1);
     assert.equal(inspected.coreEvents.length, 12);
@@ -446,10 +652,39 @@ async function writeProvider(root: string): Promise<void> {
         },
       ],
       listeners: [],
+      services: [
+        {
+          name: 'dev.maka.notes.metrics',
+          version: '1.0.0',
+          description: 'Typed note metrics.',
+          methods: [
+            {
+              name: 'score',
+              description: 'Score a note value.',
+              handler: 'score',
+              inputSchema: {
+                type: 'object',
+                properties: { value: { type: 'number' } },
+                required: ['value'],
+                additionalProperties: false,
+              },
+              outputSchema: {
+                type: 'object',
+                properties: { score: { type: 'number' } },
+                required: ['score'],
+                additionalProperties: false,
+              },
+            },
+          ],
+        },
+      ],
       permissions: { workspace: 'none', network: false },
     }),
   );
-  await writeFile(join(root, 'dist', 'events.mjs'), 'export default {};\n');
+  await writeFile(
+    join(root, 'dist', 'events.mjs'),
+    'export default { score: async ({ value }) => ({ score: value * 2 }) };\n',
+  );
 }
 
 async function writeConsumer(root: string): Promise<void> {
@@ -499,6 +734,8 @@ async function writeConsumer(root: string): Promise<void> {
     `export default {
       recordChange: async (payload, context) => {
         if (payload.id !== 'note-1' && payload.id !== 'note-2') throw new Error('unexpected note');
+        const metric = await context.callService('dev.maka.notes.metrics', 'score', { value: payload.value });
+        if (metric.score !== payload.value * 2) throw new Error('cross-plugin Service failed');
         const nested = await context.emitEvent('dev.maka.notes.audit.logged', { id: payload.id });
         if (nested.delivered !== 1 || nested.failed !== 0) throw new Error('nested Event failed');
       },
@@ -506,6 +743,59 @@ async function writeConsumer(root: string): Promise<void> {
         if (!payload.id.startsWith('note-')) throw new Error('unexpected audit');
       },
       rejectZero: async () => { throw new Error('contained listener failure'); }
+    };\n`,
+  );
+}
+
+async function writeRogueServiceConsumer(root: string): Promise<void> {
+  await mkdir(join(root, 'dist'), { recursive: true });
+  await writeFile(
+    join(root, 'maka.extension.json'),
+    JSON.stringify({ schemaVersion: 1, id: 'dev.maka.rogue', version: '1.0.0' }),
+  );
+  await writeFile(
+    join(root, 'maka.event.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      id: 'dev.maka.rogue',
+      version: '1.0.0',
+      entry: 'dist/events.mjs',
+      events: [],
+      listeners: [],
+      services: [
+        {
+          name: 'dev.maka.rogue.probe',
+          version: '1.0.0',
+          description: 'Attempt an undeclared foreign Service call.',
+          methods: [
+            {
+              name: 'score',
+              description: 'Proxy note scoring.',
+              handler: 'score',
+              inputSchema: {
+                type: 'object',
+                properties: { value: { type: 'number' } },
+                required: ['value'],
+                additionalProperties: false,
+              },
+              outputSchema: {
+                type: 'object',
+                properties: { score: { type: 'number' } },
+                required: ['score'],
+                additionalProperties: false,
+              },
+            },
+          ],
+        },
+      ],
+      permissions: { workspace: 'none', network: false },
+    }),
+  );
+  await writeFile(
+    join(root, 'dist', 'events.mjs'),
+    `export default {
+      score: async (input, context) =>
+        context.callService('dev.maka.notes.metrics', 'score', input)
     };\n`,
   );
 }

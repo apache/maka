@@ -189,6 +189,181 @@ describe('AiSdkBackend Extension Hook lifecycle', () => {
     assert.equal(JSON.stringify(compactPrompt(model)).includes('ASSEMBLED SYSTEM'), false);
   });
 
+  test('lets a turn-stopping core listener continue the Agent Loop with an instruction', async () => {
+    const { model, callCount } = countingToolLoopModel(0);
+    let stoppingCalls = 0;
+    const preToolUseHooks: NonNullable<AiSdkBackendInput['preToolUseHooks']> = {
+      prepareTurn() {},
+      releaseTurn() {},
+      async runPreToolUse() {
+        return { denied: false, audits: [], auditWriteFailures: [] };
+      },
+      async runExtensionHook(_event, payload) {
+        return { denied: false, payload, audits: [], auditWriteFailures: [] };
+      },
+      async runCoreEvent(event, payload) {
+        if (event === 'maka.agent.turn-stopping') {
+          stoppingCalls += 1;
+          if (stoppingCalls === 1) {
+            return {
+              result: { continue: true, instruction: 'Inspect once more before stopping.' },
+              delivered: 1,
+              failed: 0,
+            };
+          }
+        }
+        return { result: payload, delivered: 0, failed: 0 };
+      },
+    };
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      preToolUseHooks,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(backend.send({ turnId: 'turn-1', text: 'check carefully', context: [] }));
+
+    assert.equal(callCount(), 2);
+    assert.equal(stoppingCalls, 2);
+  });
+
+  test('observes real child-agent settlement through subagent start and end seams', async () => {
+    const coreEvents: Array<{ event: string; payload: unknown }> = [];
+    const preToolUseHooks: NonNullable<AiSdkBackendInput['preToolUseHooks']> = {
+      prepareTurn() {},
+      releaseTurn() {},
+      async runPreToolUse() {
+        return { denied: false, audits: [], auditWriteFailures: [] };
+      },
+      async runExtensionHook(_event, payload) {
+        return { denied: false, payload, audits: [], auditWriteFailures: [] };
+      },
+      async runCoreEvent(event, payload) {
+        if (event === 'maka.subagent.start' || event === 'maka.subagent.end') {
+          coreEvents.push({ event, payload: structuredClone(payload) });
+        }
+        return { result: payload, delivered: 1, failed: 0 };
+      },
+    };
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      preToolUseHooks,
+      spawnChildAgent: async () => ({ ok: true, summary: 'child complete' }),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const tool: MakaTool = {
+      name: 'ChildProbe',
+      description: 'Spawn one child Agent.',
+      parameters: {},
+      categoryHint: 'subagent',
+      impl: async (_args, context) => {
+        assert.ok(context.spawnChildAgent);
+        return await context.spawnChildAgent({
+          spec: { id: 'reader', name: 'Reader', systemPrompt: 'Read carefully.' },
+          prompt: 'Inspect the evidence.',
+        });
+      },
+    };
+    backendInternals(backend).openTurnScope({
+      turnId: 'turn-1',
+      runId: 'run-1',
+      text: '',
+      context: [],
+    } as never);
+
+    const result = await runtimeExecute(backend, tool, 'turn-1', { push: () => undefined })(
+      {},
+      { toolCallId: 'child-probe', abortSignal: new AbortController().signal },
+    );
+
+    assert.deepEqual(result, { ok: true, summary: 'child complete' });
+    assert.deepEqual(coreEvents, [
+      {
+        event: 'maka.subagent.start',
+        payload: { parentRunId: 'run-1', name: 'Reader', prompt: 'Inspect the evidence.' },
+      },
+      {
+        event: 'maka.subagent.end',
+        payload: { parentRunId: 'run-1', name: 'Reader', outcome: 'completed' },
+      },
+    ]);
+  });
+
+  test('dispatches request-error before a non-retryable provider failure becomes terminal', async () => {
+    const requestErrors: unknown[] = [];
+    let providerCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        providerCalls += 1;
+        throw new APICallError({
+          message: 'request rejected',
+          url: 'https://provider.invalid/v1/messages',
+          requestBodyValues: {},
+          statusCode: 400,
+          responseHeaders: {},
+        });
+      },
+    });
+    const preToolUseHooks: NonNullable<AiSdkBackendInput['preToolUseHooks']> = {
+      prepareTurn() {},
+      releaseTurn() {},
+      async runPreToolUse() {
+        return { denied: false, audits: [], auditWriteFailures: [] };
+      },
+      async runExtensionHook(_event, payload) {
+        return { denied: false, payload, audits: [], auditWriteFailures: [] };
+      },
+      async runCoreEvent(event, payload) {
+        if (event === 'maka.agent.request-error') requestErrors.push(structuredClone(payload));
+        return { result: undefined, delivered: 0, failed: 0 };
+      },
+    };
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      preToolUseHooks,
+      providerRetrySleep: async () => {},
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({
+      turnId: 'turn-request-error',
+      text: 'fail once',
+      context: [],
+    })) {
+      events.push(event);
+    }
+
+    assert.equal(providerCalls, 1);
+    assert.equal(requestErrors.length, 1);
+    assert.equal((requestErrors[0] as { retryable?: unknown }).retryable, false);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
   test('reports an abandoned provider stream as an aborted Run', async () => {
     const outcomes: unknown[] = [];
     const preToolUseHooks: NonNullable<AiSdkBackendInput['preToolUseHooks']> = {
