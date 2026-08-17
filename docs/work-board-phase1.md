@@ -19,31 +19,27 @@ A compact Work Board tab in the session workbar, next to Tasks, with:
 
 ## Why a dedicated store instead of a project file
 
-A project `TODO.md` / issue would satisfy the literal capture-and-list atom,
-but the #2560 acceptance criteria also require:
+A project `TODO.md` / issue would cover the literal capture-and-list atom, but
+the one thing that justifies a store is **provenance + Session linking**:
+side-conversation captures must keep typed source references and a bounded
+excerpt after the temporary fork is deleted, and Phase 3 must link a board item
+to the Session it starts. Typed provenance and stable item identity also let
+concurrent Desktop writers mutate items with revision CAS instead of parsing a
+file. If provenance and Session linking were not in scope, a project file would
+suffice.
 
-- side-conversation capture that keeps typed source references and a bounded
-  excerpt after the temporary fork is deleted;
-- per-item user lifecycle (complete / reopen / archive) under concurrent
-  Desktop writes, which needs a stable item identity and revision CAS;
-- Inbox vs project scoping, and later start-as-task linking with typed result
-  refs.
+## Assumption
 
-A file would need an ad-hoc parse convention, provide no stable per-item
-identity or CAS for concurrent writers, and cannot carry typed provenance
-without inventing a second format. It would also bypass the operational-state
-database that already owns backup/restore and migrations. The Work Board store
-is therefore not a Linear/Jira-shaped skeleton: it is the smallest
-machine-readable authority that keeps the deferred-intent atom linkable and
-safe under concurrent local writers. Session linking (Phase 3) and result refs
-(Phase 4) are the load-bearing reasons for this shape; if they were not in
-scope, a project file would indeed suffice.
+We are betting that users will return to the board and start tasks from it.
+Phase 3 must prove this.
 
 ## Sequencing
 
-Per maintainer review, the load-bearing assumption is that users return to the
-board and start tasks from it. The plan is to validate a thin
-capture -> revisit -> start-as-task loop before expanding Phases 2 and 4.
+Per maintainer review, the thin capture -> revisit -> start-as-task loop is
+validated **before** Phase 2 (side-chat capture) and Phase 4 (evidence /
+refinement): a minimal, flag-gated Phase 3 spike wires one hard-coded item ->
+"Start task" -> new Session -> link back, with no polish. Only if the loop
+shows real use do we resume Phases 2 and 4.
 
 ## Implementation
 
