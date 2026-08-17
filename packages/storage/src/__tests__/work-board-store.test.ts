@@ -11,7 +11,11 @@ import {
   restoreOperationalStateBackup,
 } from '../operational-state-backup.js';
 import { buildWorkBoardListStatement } from '../work-board-list-query.js';
-import { createWorkBoardStore, WorkBoardStoreError } from '../work-board-store.js';
+import {
+  createWorkBoardStore,
+  WorkBoardStoreError,
+  type WorkBoardMutationOptions,
+} from '../work-board-store.js';
 import {
   WORK_BOARD_DEFAULT_PAGE_SIZE,
   WORK_BOARD_PROJECT_ID_MAX_CHARS,
@@ -314,6 +318,44 @@ describe('Work Board store', () => {
         const reopened = await store.unarchive(item.id, {}, 40);
         assert.equal(reopened.updatedAt, 100);
         assert.equal(reopened.revision, 4);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  test('rejects unknown mutation option keys instead of disabling CAS', async () => {
+    await withTempRoot(async (root) => {
+      const store = createWorkBoardStore(root);
+      try {
+        const item = await store.create(itemInput(), 100);
+        await store.update(item.id, { title: 'v2' }, {}, 101);
+
+        await assert.rejects(
+          store.update(
+            item.id,
+            { state: 'in_progress' },
+            { expectedRevison: 1 } as unknown as WorkBoardMutationOptions,
+            102,
+          ),
+          (error: unknown) =>
+            error instanceof WorkBoardStoreError && error.code === 'invalid_input',
+        );
+        await assert.rejects(
+          store.update(
+            item.id,
+            { state: 'done' },
+            { expectedRevision: 1, extra: true } as unknown as WorkBoardMutationOptions,
+            103,
+          ),
+          (error: unknown) =>
+            error instanceof WorkBoardStoreError && error.code === 'invalid_input',
+        );
+
+        const final = await store.get(item.id);
+        assert.ok(final);
+        assert.equal(final.revision, 2);
+        assert.equal(final.state, 'todo');
       } finally {
         store.close();
       }

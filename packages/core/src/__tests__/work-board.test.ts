@@ -184,6 +184,18 @@ describe('Work Board contract', () => {
     assert.equal(normalizeWorkBoardCreator({ kind: 'user', confirmedAt: 5 }).ok, false);
   });
 
+  test('keeps null notes exclusive to update patches', () => {
+    const createResult = normalizeCreateWorkBoardItemInput({
+      scope: { kind: 'inbox' },
+      title: 'x',
+      creator: { kind: 'user' },
+      provenance: { kind: 'manual' },
+      notes: null,
+    });
+    assert.equal(createResult.ok, false);
+    assert.equal(decodeWorkBoardItem({ ...baseItem, notes: null }), null);
+  });
+
   test('normalizes notes patch semantics for absent, undefined, null, empty, whitespace, and values', () => {
     const cases: Array<[unknown, unknown]> = [
       [{}, {}],

@@ -310,6 +310,12 @@ class SqliteWorkBoardStore implements WorkBoardStore {
 }
 
 function normalizeExpectedRevision(options: WorkBoardMutationOptions): number | undefined {
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    throw storeError('invalid_input', 'Work Board mutation options must be an object');
+  }
+  if (Object.keys(options).some((key) => key !== 'expectedRevision')) {
+    throw storeError('invalid_input', 'Work Board mutation options contain unknown fields');
+  }
   const expected = options.expectedRevision;
   if (expected === undefined) return undefined;
   if (!Number.isSafeInteger(expected) || expected < 1) {

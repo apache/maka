@@ -327,6 +327,9 @@ export function normalizeCreateWorkBoardItemInput(
   if (!title.ok) return title;
   if (title.value === undefined) return fail('title is required');
   const titleValue = title.value;
+  if (input.notes === null) {
+    return fail('notes must not be null in create input');
+  }
   const notes = normalizeOptionalText(input.notes, {
     field: 'notes',
     max: WORK_BOARD_NOTES_MAX_CHARS,
@@ -457,6 +460,7 @@ export function decodeWorkBoardItem(value: unknown): WorkBoardItem | null {
   if (!title.ok) return null;
   if (title.value === undefined) return null;
   const titleValue = title.value;
+  if (value.notes === null) return null;
   const notes = normalizeOptionalText(value.notes, {
     field: 'notes',
     max: WORK_BOARD_NOTES_MAX_CHARS,
