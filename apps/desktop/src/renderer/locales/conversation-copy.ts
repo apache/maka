@@ -111,6 +111,7 @@ export interface DesktopConversationCopy {
     create: string;
     empty: string;
     loading: string;
+    loadMore: string;
     retry: string;
     loadFailed: string;
     actionFailed: string;
@@ -462,6 +463,7 @@ const COPY = {
       create: '添加',
       empty: '暂无暂缓事项',
       loading: '正在加载工作看板…',
+      loadMore: '加载更多',
       retry: '重试',
       loadFailed: '工作看板加载失败',
       actionFailed: '操作失败',
@@ -687,6 +689,7 @@ const COPY = {
       create: 'Add',
       empty: 'No deferred work',
       loading: 'Loading work board…',
+      loadMore: 'Load more',
       retry: 'Retry',
       loadFailed: 'Failed to load work board',
       actionFailed: 'Action failed',

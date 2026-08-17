@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Banner, EmptyState, Spinner } from '@astryxdesign/core';
 import { Button } from '@astryxdesign/core/Button';
 import { useUiLocale } from '@maka/ui';
@@ -47,7 +47,9 @@ function WorkBoardRow(props: {
             value={props.renameValue}
             onChange={(event) => props.onRenameChange(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') props.onRenameSave();
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                props.onRenameSave();
+              }
               if (event.key === 'Escape') props.onRenameCancel();
             }}
             aria-label={copy.rename}
@@ -110,6 +112,10 @@ export function WorkBoardPanel(props: { projectId: string | null }) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState('');
   const [actionError, setActionError] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (props.projectId === null) setFilter('inbox');
+  }, [props.projectId]);
 
   const activeItems = board.items.filter((item) => !item.archived);
   const archivedItems = board.items.filter((item) => item.archived);
@@ -189,7 +195,7 @@ export function WorkBoardPanel(props: { projectId: string | null }) {
           value={newTitle}
           onChange={(event) => setNewTitle(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === 'Enter') void create();
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing) void create();
           }}
           placeholder={copy.createPlaceholder}
           aria-label={copy.createPlaceholder}
@@ -270,6 +276,15 @@ export function WorkBoardPanel(props: { projectId: string | null }) {
                 />
               ))}
             </ul>
+          )}
+          {board.nextCursor && (
+            <Button
+              size="sm"
+              variant="ghost"
+              label={copy.loadMore}
+              onClick={board.loadMore}
+              isDisabled={board.loading}
+            />
           )}
         </>
       )}

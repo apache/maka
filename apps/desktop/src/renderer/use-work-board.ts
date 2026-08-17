@@ -10,12 +10,14 @@ import type { WorkBoardChangedEvent, WorkBoardIpcResult } from '../shared/work-b
 
 interface WorkBoardSnapshot {
   items: WorkBoardItem[];
+  nextCursor?: string;
   loading: boolean;
   error?: string;
 }
 
 export interface UseWorkBoardResult extends WorkBoardSnapshot {
   retry(): void;
+  loadMore(): void;
   create(input: CreateWorkBoardItemInput): Promise<WorkBoardItem>;
   update(
     id: string,
@@ -29,6 +31,7 @@ export interface UseWorkBoardResult extends WorkBoardSnapshot {
 
 const EMPTY_SNAPSHOT: WorkBoardSnapshot = {
   items: [],
+  nextCursor: undefined,
   loading: false,
 };
 
@@ -51,6 +54,7 @@ export function useWorkBoard(query?: WorkBoardListQuery): UseWorkBoardResult {
       const revision = ++revisionRef.current;
       setSnapshot((current) => ({
         items: preserveItems ? current.items : [],
+        nextCursor: preserveItems ? current.nextCursor : undefined,
         loading: true,
       }));
       void window.maka.workBoard.list(query).then(
@@ -58,7 +62,11 @@ export function useWorkBoard(query?: WorkBoardListQuery): UseWorkBoardResult {
           if (revision !== revisionRef.current) return;
           setSnapshot(
             result.ok
-              ? { items: result.value.items, loading: false }
+              ? {
+                  items: result.value.items,
+                  nextCursor: result.value.nextCursor,
+                  loading: false,
+                }
               : { items: [], loading: false, error: result.message },
           );
         },
@@ -89,6 +97,41 @@ export function useWorkBoard(query?: WorkBoardListQuery): UseWorkBoardResult {
 
   const retry = useCallback(() => load(true), [load]);
 
+  const loadMore = useCallback(() => {
+    const cursor = snapshot.nextCursor;
+    if (!cursor || snapshot.loading) return;
+    const revision = ++revisionRef.current;
+    setSnapshot((current) => ({ ...current, loading: true }));
+    void window.maka.workBoard.list({ ...query, cursor }).then(
+      (result) => {
+        if (revision !== revisionRef.current) return;
+        if (!result.ok) {
+          setSnapshot((current) => ({ ...current, loading: false, error: result.message }));
+          return;
+        }
+        setSnapshot((current) => {
+          const known = new Set(current.items.map((item: WorkBoardItem) => item.id));
+          const appended = result.value.items.filter(
+            (item: WorkBoardItem) => !known.has(item.id),
+          );
+          return {
+            items: [...current.items, ...appended],
+            nextCursor: result.value.nextCursor,
+            loading: false,
+          };
+        });
+      },
+      (error: unknown) => {
+        if (revision !== revisionRef.current) return;
+        setSnapshot((current) => ({
+          ...current,
+          loading: false,
+          error: error instanceof Error ? error.message : 'Work Board load failed',
+        }));
+      },
+    );
+  }, [query, snapshot.loading, snapshot.nextCursor]);
+
   // The main process emits workBoard:changed for every successful mutation;
   // the subscription above is the single reload path, so no second list
   // request is issued here.
@@ -101,6 +144,7 @@ export function useWorkBoard(query?: WorkBoardListQuery): UseWorkBoardResult {
   return {
     ...snapshot,
     retry,
+    loadMore,
     create: (input) => mutate(() => window.maka.workBoard.create(input)),
     update: (id, patch, options) =>
       mutate(() => window.maka.workBoard.update(id, patch, options)),
