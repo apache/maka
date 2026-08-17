@@ -140,6 +140,7 @@ export type {
 } from './operational-state-store.js';
 export * from './operational-state-backup.js';
 export * from './mcp-config-store.js';
+export * from './model-facts-store.js';
 export * from './workspace-identity.js';
 export * from './memory-bundle-store.js';
 export * from './long-term-memory-store.js';

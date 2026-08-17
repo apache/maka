@@ -81,6 +81,7 @@
     "./llm-connections": "./dist/llm-connections.js",
     "./provider-registry": "./dist/provider-registry.js",
     "./model-catalog": "./dist/model-catalog.js",
+    "./model-facts": "./dist/model-facts.js",
     "./model-metadata": "./dist/model-metadata.js",
     "./model-web-search": "./dist/model-web-search.js",
     "./model-thinking": "./dist/model-thinking.js",

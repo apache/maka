@@ -8,6 +8,11 @@ import { PROVIDER_DEFAULTS, providerSupportsModelDiscovery } from './llm-connect
 import type { PricingConfig } from './usage-stats/types.js';
 import { curatedCatalogFallbackModelsForProvider, lookupModelMetadata } from './model-metadata.js';
 import { pricingModelKey } from './usage-stats/pricing.js';
+import {
+  applyModelFactOverride,
+  lookupModelFactOverride,
+  type ModelFactOverrides,
+} from './model-facts.js';
 
 export type ModelCapabilitySource = 'provider_api' | 'static_catalog' | 'user_override' | 'unknown';
 
@@ -34,6 +39,7 @@ export interface KnownModelCapabilities {
   reasoning?: true;
   functionCalling?: true;
   imageGeneration?: true;
+  webSearch?: true;
 }
 
 export interface ModelCatalogPricing {
@@ -109,6 +115,7 @@ export interface BuildConnectionModelCatalogInput {
   authOk?: boolean;
   pricing?: Iterable<PricingConfig>;
   pricingSource?: 'builtin' | 'user_override';
+  modelFactOverrides?: ModelFactOverrides;
 }
 
 export interface BuildModelCatalogInput {
@@ -126,6 +133,7 @@ export interface BuildModelCatalogInput {
   pricing?: Iterable<PricingConfig>;
   pricingSource?: 'builtin' | 'user_override';
   savedModelIds?: Iterable<SavedModelChoice | undefined | null>;
+  modelFactOverrides?: ModelFactOverrides;
 }
 
 const DEFAULT_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
@@ -158,7 +166,10 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
     .map((model) =>
       makeEntry(
         input,
-        model,
+        applyModelFactOverride(
+          model,
+          lookupModelFactOverride(input.modelFactOverrides, input.providerType, model.id.trim()),
+        ),
         source,
         modelSource,
         savedChoiceSources,
@@ -228,6 +239,7 @@ export function buildConnectionModelCatalogEntries(
     pricing: input.pricing,
     pricingSource: input.pricingSource,
     savedModelIds: input.savedModelIds,
+    modelFactOverrides: input.modelFactOverrides,
   });
 }
 
@@ -290,11 +302,17 @@ function makeEntry(
     providerType: input.providerType,
     ...(input.connectionSlug ? { connectionSlug: input.connectionSlug } : {}),
     source,
-    capabilitySource: normalizedModel.capabilities
-      ? source
-      : metadata.capabilities
-        ? 'static_catalog'
-        : 'unknown',
+    capabilitySource: lookupModelFactOverride(
+      input.modelFactOverrides,
+      input.providerType,
+      normalizedModel.id,
+    )?.capabilities
+      ? 'user_override'
+      : normalizedModel.capabilities
+        ? source
+        : metadata.capabilities
+          ? 'static_catalog'
+          : 'unknown',
     unavailableReason,
     availability: availabilityOf(unavailableReason),
     canUseAsChatDefault: canUseUnavailableReasonAsDefault(unavailableReason),
@@ -340,6 +358,7 @@ function mergeCapabilities(
     reasoning: providerCapabilities.reasoning ?? metadataCapabilities.reasoning,
     functionCalling: providerCapabilities.functionCalling ?? metadataCapabilities.functionCalling,
     imageGeneration: providerCapabilities.imageGeneration ?? metadataCapabilities.imageGeneration,
+    webSearch: providerCapabilities.webSearch ?? metadataCapabilities.webSearch,
   };
 }
 
@@ -353,36 +372,56 @@ function makeMissingDefaultEntry(
 ): ModelCatalogEntry {
   const unavailableReason = missingEntryUnavailableReason(input, modelSource);
   const metadata = lookupModelMetadata(input.providerType, id);
+  const model = applyModelFactOverride(
+    { id },
+    lookupModelFactOverride(input.modelFactOverrides, input.providerType, id),
+  );
   const recommendedRank = recommendedRanks.get(id);
   return {
     id,
-    ...displayNameForKnownModel(input.providerType, id),
-    ...(metadata.description !== undefined ? { description: metadata.description } : {}),
+    ...displayNameForModel(input.providerType, model),
+    ...((model.description ?? metadata.description)
+      ? { description: model.description ?? metadata.description }
+      : {}),
     providerType: input.providerType,
     ...(input.connectionSlug ? { connectionSlug: input.connectionSlug } : {}),
     source: 'unknown',
-    capabilitySource: metadata.capabilities ? 'static_catalog' : 'unknown',
+    capabilitySource: model.capabilities
+      ? 'user_override'
+      : metadata.capabilities
+        ? 'static_catalog'
+        : 'unknown',
     unavailableReason,
     availability: availabilityOf(unavailableReason),
     canUseAsChatDefault: canUseUnavailableReasonAsDefault(unavailableReason),
     isDefault: true,
-    capabilities: normalizeCapabilities(metadata.capabilities),
+    capabilities: normalizeCapabilities(
+      mergeCapabilities(model.capabilities, metadata.capabilities),
+    ),
     lifecycle: metadata.lifecycle ?? 'unknown',
     ...(recommendedRank ? { recommendedRank } : {}),
     ...(metadata.docsUrl ? { docsUrl: metadata.docsUrl } : {}),
-    ...(metadata.contextWindow !== undefined ? { contextWindow: metadata.contextWindow } : {}),
-    ...(metadata.inputLimit !== undefined ? { inputLimit: metadata.inputLimit } : {}),
-    ...(metadata.maxOutputTokens !== undefined
-      ? { maxOutputTokens: metadata.maxOutputTokens }
+    ...((model.contextWindow ?? metadata.contextWindow) !== undefined
+      ? { contextWindow: model.contextWindow ?? metadata.contextWindow }
       : {}),
-    ...(metadata.knowledgeCutoff !== undefined
-      ? { knowledgeCutoff: metadata.knowledgeCutoff }
+    ...((model.inputLimit ?? metadata.inputLimit) !== undefined
+      ? { inputLimit: model.inputLimit ?? metadata.inputLimit }
       : {}),
-    ...(metadata.structuredOutput !== undefined
-      ? { structuredOutput: metadata.structuredOutput }
+    ...((model.maxOutputTokens ?? metadata.maxOutputTokens) !== undefined
+      ? { maxOutputTokens: model.maxOutputTokens ?? metadata.maxOutputTokens }
       : {}),
-    ...(metadata.lastUpdated !== undefined ? { lastUpdated: metadata.lastUpdated } : {}),
-    ...(metadata.modalities !== undefined ? { modalities: metadata.modalities } : {}),
+    ...((model.knowledgeCutoff ?? metadata.knowledgeCutoff) !== undefined
+      ? { knowledgeCutoff: model.knowledgeCutoff ?? metadata.knowledgeCutoff }
+      : {}),
+    ...((model.structuredOutput ?? metadata.structuredOutput) !== undefined
+      ? { structuredOutput: model.structuredOutput ?? metadata.structuredOutput }
+      : {}),
+    ...((model.lastUpdated ?? metadata.lastUpdated) !== undefined
+      ? { lastUpdated: model.lastUpdated ?? metadata.lastUpdated }
+      : {}),
+    ...((model.modalities ?? metadata.modalities) !== undefined
+      ? { modalities: model.modalities ?? metadata.modalities }
+      : {}),
     provenance: {
       modelSource,
       ...(input.modelsFetchedAt ? { modelsFetchedAt: input.modelsFetchedAt } : {}),
@@ -401,36 +440,56 @@ function makeMissingUserChoiceEntry(
 ): ModelCatalogEntry {
   const unavailableReason = missingEntryUnavailableReason(input, modelSource);
   const metadata = lookupModelMetadata(input.providerType, id);
+  const model = applyModelFactOverride(
+    { id },
+    lookupModelFactOverride(input.modelFactOverrides, input.providerType, id),
+  );
   const recommendedRank = recommendedRanks.get(id);
   return {
     id,
-    ...displayNameForKnownModel(input.providerType, id),
-    ...(metadata.description !== undefined ? { description: metadata.description } : {}),
+    ...displayNameForModel(input.providerType, model),
+    ...((model.description ?? metadata.description)
+      ? { description: model.description ?? metadata.description }
+      : {}),
     providerType: input.providerType,
     ...(input.connectionSlug ? { connectionSlug: input.connectionSlug } : {}),
     source: 'unknown',
-    capabilitySource: metadata.capabilities ? 'static_catalog' : 'unknown',
+    capabilitySource: model.capabilities
+      ? 'user_override'
+      : metadata.capabilities
+        ? 'static_catalog'
+        : 'unknown',
     unavailableReason,
     availability: availabilityOf(unavailableReason),
     canUseAsChatDefault: canUseUnavailableReasonAsDefault(unavailableReason),
     isDefault: id === normalizedDefaultModel,
-    capabilities: normalizeCapabilities(metadata.capabilities),
+    capabilities: normalizeCapabilities(
+      mergeCapabilities(model.capabilities, metadata.capabilities),
+    ),
     lifecycle: metadata.lifecycle ?? 'unknown',
     ...(recommendedRank ? { recommendedRank } : {}),
     ...(metadata.docsUrl ? { docsUrl: metadata.docsUrl } : {}),
-    ...(metadata.contextWindow !== undefined ? { contextWindow: metadata.contextWindow } : {}),
-    ...(metadata.inputLimit !== undefined ? { inputLimit: metadata.inputLimit } : {}),
-    ...(metadata.maxOutputTokens !== undefined
-      ? { maxOutputTokens: metadata.maxOutputTokens }
+    ...((model.contextWindow ?? metadata.contextWindow) !== undefined
+      ? { contextWindow: model.contextWindow ?? metadata.contextWindow }
       : {}),
-    ...(metadata.knowledgeCutoff !== undefined
-      ? { knowledgeCutoff: metadata.knowledgeCutoff }
+    ...((model.inputLimit ?? metadata.inputLimit) !== undefined
+      ? { inputLimit: model.inputLimit ?? metadata.inputLimit }
       : {}),
-    ...(metadata.structuredOutput !== undefined
-      ? { structuredOutput: metadata.structuredOutput }
+    ...((model.maxOutputTokens ?? metadata.maxOutputTokens) !== undefined
+      ? { maxOutputTokens: model.maxOutputTokens ?? metadata.maxOutputTokens }
       : {}),
-    ...(metadata.lastUpdated !== undefined ? { lastUpdated: metadata.lastUpdated } : {}),
-    ...(metadata.modalities !== undefined ? { modalities: metadata.modalities } : {}),
+    ...((model.knowledgeCutoff ?? metadata.knowledgeCutoff) !== undefined
+      ? { knowledgeCutoff: model.knowledgeCutoff ?? metadata.knowledgeCutoff }
+      : {}),
+    ...((model.structuredOutput ?? metadata.structuredOutput) !== undefined
+      ? { structuredOutput: model.structuredOutput ?? metadata.structuredOutput }
+      : {}),
+    ...((model.lastUpdated ?? metadata.lastUpdated) !== undefined
+      ? { lastUpdated: model.lastUpdated ?? metadata.lastUpdated }
+      : {}),
+    ...((model.modalities ?? metadata.modalities) !== undefined
+      ? { modalities: model.modalities ?? metadata.modalities }
+      : {}),
     provenance: {
       modelSource,
       ...(input.modelsFetchedAt ? { modelsFetchedAt: input.modelsFetchedAt } : {}),
@@ -565,6 +624,7 @@ function normalizeCapabilities(caps: ModelInfo['capabilities']): KnownModelCapab
     ...(caps.reasoning === true ? { reasoning: true as const } : {}),
     ...(caps.functionCalling === true ? { functionCalling: true as const } : {}),
     ...(caps.imageGeneration === true ? { imageGeneration: true as const } : {}),
+    ...(caps.webSearch === true ? { webSearch: true as const } : {}),
   };
 }
 
