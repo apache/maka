@@ -271,6 +271,8 @@ test('evicting a turn-owned sibling interaction hands focus back to the transcri
   await scroller.waitFor();
   await loadPromptRailBeyondVirtualWindow(page);
   await scrollTranscriptTo(page, 'bottom');
+  await notifyTranscriptScrolled(page);
+  await waitForPaintedFrames(page);
   await expect(page.locator('[data-virtual-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
   const retainedTurnId = await page.evaluate(() => {
     const turns = document.querySelectorAll<HTMLElement>('[data-virtual-turn-id]');

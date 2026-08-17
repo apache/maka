@@ -110,7 +110,7 @@ export function buildFixtureEnv(userDataDir, homeDir, options = {}) {
  * @param {NodeJS.Platform} [platform]
  */
 export function isCiLinuxDisplay(env = process.env, platform = process.platform) {
-  return Boolean(env.CI) && platform === 'linux';
+  return isTruthyCiFlag(env.CI) && platform === 'linux';
 }
 
 /**
@@ -122,5 +122,16 @@ export function isCiLinuxDisplay(env = process.env, platform = process.platform)
  * @param {NodeJS.Platform} [platform]
  */
 export function isCiIsolatedDisplay(env = process.env, platform = process.platform) {
-  return isCiLinuxDisplay(env, platform) || (Boolean(env.CI) && platform === 'darwin');
+  return isCiLinuxDisplay(env, platform) || (isTruthyCiFlag(env.CI) && platform === 'darwin');
+}
+
+/**
+ * `CI=false` and `CI=0` must stay hidden. `Boolean("false")` is true.
+ *
+ * @param {string | undefined} value
+ */
+function isTruthyCiFlag(value) {
+  if (value == null) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes';
 }
