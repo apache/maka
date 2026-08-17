@@ -360,7 +360,6 @@ describe('useSessionTrace', () => {
     const harness = installMakaBridge({
       tracePages: [
         tracePage('session-1', 'run-3', 'cursor-3'),
-        tracePage('session-1', 'run-3', 'cursor-3'),
         tracePage('session-1', 'run-2', 'cursor-2'),
         tracePage('session-1', 'run-5', 'cursor-5'),
         tracePage('session-1', 'run-4', 'cursor-4'),
@@ -394,7 +393,7 @@ describe('useSessionTrace', () => {
     );
     assert.deepEqual(
       harness.traceRequests.map((request) => request.cursor),
-      [undefined, undefined, 'cursor-3', undefined, 'cursor-5'],
+      [undefined, 'cursor-3', undefined, 'cursor-5'],
     );
   });
 
@@ -402,7 +401,6 @@ describe('useSessionTrace', () => {
     const { root } = installReactRenderer();
     const harness = installMakaBridge({
       tracePages: [
-        tracePage('session-1', 'run-z', 'cursor-z'),
         tracePage('session-1', 'run-z', 'cursor-z'),
         tracePage('session-1', 'run-m', null),
         // The head page and its cursor are unchanged, but run-n now sorts
@@ -443,9 +441,9 @@ describe('useSessionTrace', () => {
 
   it('keeps the requested page depth when a head refresh supersedes load-earlier', async () => {
     const { root } = installReactRenderer();
-    let resolveEarlierHead: ((result: Result<DesktopSessionTracePage>) => void) | undefined;
-    const earlierHead = new Promise<Result<DesktopSessionTracePage>>((resolve) => {
-      resolveEarlierHead = resolve;
+    let resolveEarlierPage: ((result: Result<DesktopSessionTracePage>) => void) | undefined;
+    const earlierPage = new Promise<Result<DesktopSessionTracePage>>((resolve) => {
+      resolveEarlierPage = resolve;
     });
     let startReads = 0;
     const harness = installMakaBridge({
@@ -455,9 +453,9 @@ describe('useSessionTrace', () => {
           if (startReads === 1) {
             return { ok: true, data: tracePage(sessionId, 'run-3', 'cursor-3') };
           }
-          if (startReads === 2) return earlierHead;
           return { ok: true, data: tracePage(sessionId, 'run-4', 'cursor-4') };
         }
+        if (cursor === 'cursor-3') return earlierPage;
         if (cursor === 'cursor-4') {
           return { ok: true, data: tracePage(sessionId, 'run-3', 'cursor-3') };
         }
@@ -482,7 +480,7 @@ describe('useSessionTrace', () => {
     await act(async () => harness.emit(event('complete')));
     await flushRefresh();
     await act(async () => {
-      resolveEarlierHead?.({ ok: true, data: tracePage('session-1', 'run-3', 'cursor-3') });
+      resolveEarlierPage?.({ ok: true, data: tracePage('session-1', 'run-2', 'cursor-2') });
     });
 
     assert.deepEqual(
@@ -492,7 +490,7 @@ describe('useSessionTrace', () => {
     assert.equal(snapshot?.loadingEarlier, false);
     assert.deepEqual(
       harness.traceRequests.map((request) => request.cursor),
-      [undefined, undefined, undefined, 'cursor-4'],
+      [undefined, 'cursor-3', undefined, 'cursor-4'],
     );
   });
 

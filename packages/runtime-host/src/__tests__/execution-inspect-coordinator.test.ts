@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import type { AgentRunHeader, EmittedAgentRunEvent } from '@maka/core/agent-run';
 import { MODEL_CALL_ATTEMPT_SCHEMA_VERSION } from '@maka/core/model-call-attempt';
@@ -17,6 +18,41 @@ import {
 import { HostExecutionInspectCoordinator } from '../server/execution-inspect-coordinator.js';
 
 describe('HostExecutionInspectCoordinator', () => {
+  test('reports a corrupt persisted model-call event as unreadable evidence', async () => {
+    await withCoordinator(async ({ root, stores, coordinator }) => {
+      const session = await stores.sessionStore.create(sessionInput('Corrupt model call'));
+      const runId = 'corrupt-model-call-run';
+      await stores.agentRunStore.createRun(runHeader(session.id, runId, 1));
+      await stores.agentRunStore.appendEvent(session.id, runId, {
+        type: 'model_call_attempt_recorded',
+        id: 'corrupt-model-call-event',
+        sessionId: session.id,
+        runId,
+        turnId: `turn-${runId}`,
+        ts: 1,
+        data: {},
+      });
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        database
+          .prepare('UPDATE core_agent_run_events SET record_json = ? WHERE event_id = ?')
+          .run('{', 'corrupt-model-call-event');
+      } finally {
+        database.close();
+      }
+
+      const result = await coordinator.handlers['execution.inspect.query'](
+        { kind: 'session_trace_start', sessionId: session.id },
+        connectionContext(),
+      );
+
+      assert.equal(result.ok, true);
+      if (!result.ok || result.result.kind !== 'session_trace_page') return;
+      assert.equal(result.result.coverage.unreadableRecords, 1);
+      assert.equal(result.result.coverage.modelCalls, 'partial');
+    });
+  });
+
   test('projects persisted history-compaction failure facts into the Session trace', async () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Compaction diagnostics'));
@@ -620,6 +656,7 @@ function connectionContext() {
 
 async function withCoordinator(
   run: (input: {
+    root: string;
     stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>;
     coordinator: HostExecutionInspectCoordinator;
   }) => Promise<void>,
@@ -630,7 +667,7 @@ async function withCoordinator(
   assert.ok(owner);
   const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
   try {
-    await run({ stores, coordinator: new HostExecutionInspectCoordinator(stores) });
+    await run({ root, stores, coordinator: new HostExecutionInspectCoordinator(stores) });
   } finally {
     await stores.sessionStore.close?.();
     await owner.close();

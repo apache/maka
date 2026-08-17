@@ -378,6 +378,10 @@ export class HostExecutionInspectCoordinator {
       });
     const modelCallAttempts: ModelCallAttempt[] = [];
     for (const event of runEvents) {
+      if (event.type === 'event_corrupt') {
+        unreadableRecords += 1;
+        continue;
+      }
       if (event.type !== MODEL_CALL_ATTEMPT_EVENT_TYPE) continue;
       try {
         modelCallAttempts.push(decodeModelCallAttempt(event.data));

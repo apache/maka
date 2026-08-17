@@ -284,7 +284,7 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                   variant="ghost"
                   size="sm"
                   label={snapshot.loadingEarlier ? copy.loadingEarlier : copy.loadEarlier}
-                  isDisabled={snapshot.loadingEarlier}
+                  isDisabled={snapshot.loading || snapshot.loadingEarlier}
                   onClick={snapshot.loadEarlier}
                 />
               )}

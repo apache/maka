@@ -2381,24 +2381,13 @@ const makaBridge = {
       return loadSessionUsageSummary(sessionId);
     },
     subscribeUsageChanges(sessionId: string, handler: () => void): () => void {
-      let disposed = false;
-      let unsubscribe = (): void => {};
-      void runtimeHostSessionRef(sessionId)
-        .then((session) => {
-          if (disposed) return;
-          unsubscribe = subscribeRuntimeHostEvent(
-            'usage:changed',
-            session.scope,
-            (event: { sessionId: string }) => {
-              if (event.sessionId === session.sessionId) handler();
-            },
-          );
-        })
-        .catch(() => undefined);
-      return () => {
-        disposed = true;
-        unsubscribe();
-      };
+      const session = parseDesktopSessionKey(sessionId);
+      return subscribeEveryRuntimeHostEvent(
+        'usage:changed',
+        (scope, event: { sessionId: string }) => {
+          if (scope.hostId === session.hostId && event.sessionId === session.sessionId) handler();
+        },
+      );
     },
     /**
      * What the session's context is made of right now (#2323).

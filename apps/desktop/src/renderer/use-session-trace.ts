@@ -74,7 +74,7 @@ export function useSessionTrace(
   const [state, setState] = useState<SessionTraceState>(EMPTY_STATE);
 
   const readTraceWindow = useCallback(
-    (targetSessionId: string, intent: 'refresh' | 'earlier') => {
+    (targetSessionId: string) => {
       const revision = ++traceRevisionRef.current;
       const desired = desiredPageCountRef.current;
       const pageCount = desired?.sessionId === targetSessionId ? desired.count : 1;
@@ -82,14 +82,12 @@ export function useSessionTrace(
         current.sessionId === targetSessionId
           ? {
               ...current,
-              loading: intent === 'refresh' ? true : current.loading,
-              loadingEarlier: intent === 'earlier' ? true : current.loadingEarlier,
+              loading: true,
               error: undefined,
             }
           : {
               sessionId: targetSessionId,
-              loading: intent === 'refresh',
-              loadingEarlier: intent === 'earlier',
+              loading: true,
             },
       );
       void readTracePageWindow(
@@ -114,13 +112,6 @@ export function useSessionTrace(
         },
         (error: unknown) => {
           if (revision !== traceRevisionRef.current) return;
-          if (intent === 'earlier') {
-            const loaded = traceWindowRef.current;
-            desiredPageCountRef.current = {
-              sessionId: targetSessionId,
-              count: loaded?.sessionId === targetSessionId ? Math.max(loaded.pages.length, 1) : 1,
-            };
-          }
           setState((current) =>
             current.sessionId === targetSessionId
               ? {
@@ -136,6 +127,62 @@ export function useSessionTrace(
           );
         },
       );
+    },
+    [copy.loadFailed, copy.locale],
+  );
+
+  const readEarlierPage = useCallback(
+    (targetSessionId: string, requestCursor: string) => {
+      const revision = ++traceRevisionRef.current;
+      setState((current) =>
+        current.sessionId === targetSessionId
+          ? { ...current, loadingEarlier: true, error: undefined }
+          : current,
+      );
+      void (async () => {
+        try {
+          const result = await window.maka.inspector.trace(targetSessionId, requestCursor);
+          if (revision !== traceRevisionRef.current) return;
+          const loaded = traceWindowRef.current;
+          if (loaded?.sessionId !== targetSessionId) return;
+          if (!result.ok) throw new Error(result.error.message || copy.loadFailed);
+          const nextCursor = result.data.nextCursor;
+          if (
+            nextCursor !== null &&
+            (nextCursor === requestCursor ||
+              loaded.pages.some((page) => page.nextCursor === nextCursor))
+          ) {
+            throw new Error(copy.loadFailed);
+          }
+          const pages = [...loaded.pages, result.data];
+          traceWindowRef.current = { sessionId: targetSessionId, pages };
+          desiredPageCountRef.current = { sessionId: targetSessionId, count: pages.length };
+          setState((current) =>
+            current.sessionId === targetSessionId
+              ? { ...current, tracePages: pages, loadingEarlier: false }
+              : current,
+          );
+        } catch (error) {
+          if (revision !== traceRevisionRef.current) return;
+          const loaded = traceWindowRef.current;
+          desiredPageCountRef.current = {
+            sessionId: targetSessionId,
+            count: loaded?.sessionId === targetSessionId ? Math.max(loaded.pages.length, 1) : 1,
+          };
+          setState((current) =>
+            current.sessionId === targetSessionId
+              ? {
+                  ...current,
+                  loadingEarlier: false,
+                  error:
+                    copy.locale === 'zh'
+                      ? generalizedErrorMessageChinese(error, copy.loadFailed)
+                      : generalizedErrorMessage(error, copy.loadFailed),
+                }
+              : current,
+          );
+        }
+      })();
     },
     [copy.loadFailed, copy.locale],
   );
@@ -202,7 +249,7 @@ export function useSessionTrace(
 
   const load = useCallback(
     (targetSessionId: string) => {
-      readTraceWindow(targetSessionId, 'refresh');
+      readTraceWindow(targetSessionId);
       readSummary(targetSessionId);
       readContext(targetSessionId);
     },
@@ -226,7 +273,7 @@ export function useSessionTrace(
     }
     const traceCoalescer = createTraceRefreshCoalescer({
       refresh: () => {
-        readTraceWindow(sessionId, 'refresh');
+        readTraceWindow(sessionId);
         readContext(sessionId);
       },
       delayMs: TRACE_REFRESH_DEBOUNCE_MS,
@@ -268,14 +315,14 @@ export function useSessionTrace(
   const nextCursor = state.tracePages?.at(-1)?.nextCursor;
 
   const loadEarlier = useCallback(() => {
-    if (!sessionId || !nextCursor || state.loadingEarlier) return;
+    if (!sessionId || !nextCursor || state.loading || state.loadingEarlier) return;
     const desired = desiredPageCountRef.current;
     desiredPageCountRef.current = {
       sessionId,
       count: (desired?.sessionId === sessionId ? desired.count : 1) + 1,
     };
-    readTraceWindow(sessionId, 'earlier');
-  }, [nextCursor, readTraceWindow, sessionId, state.loadingEarlier]);
+    readEarlierPage(sessionId, nextCursor);
+  }, [nextCursor, readEarlierPage, sessionId, state.loading, state.loadingEarlier]);
 
   if (state.sessionId !== sessionId) {
     return { ...EMPTY_SNAPSHOT, loading: Boolean(sessionId) && active, retry, loadEarlier };

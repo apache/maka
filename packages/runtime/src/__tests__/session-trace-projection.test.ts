@@ -206,6 +206,25 @@ describe('session trace projection', () => {
     assert.equal(trace.totals.costUsd, undefined);
   });
 
+  test('known unreadable evidence makes an otherwise absent backend partial', () => {
+    for (const gap of [{ unreadableRecords: 1 }, { oversizedRuns: 1 }]) {
+      const trace = projectSessionTrace({
+        sessionId: 'session-1',
+        runtimeEvents: [
+          event({
+            id: 'usage-1',
+            ts: 1_000,
+            actions: { tokenUsage: { input: 100, output: 20, total: 120 } },
+          }),
+        ],
+        modelCallAttempts: [],
+        ...gap,
+      });
+
+      assert.equal(trace.coverage.modelCalls, 'partial');
+    }
+  });
+
   test('distinguishes a partially covered session from a wholly uncovered one', () => {
     const trace = projectSessionTrace({
       sessionId: 'session-1',

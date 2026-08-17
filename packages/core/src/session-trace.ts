@@ -15,7 +15,6 @@ import {
   isFiniteNumber,
   isOptionalString,
   isRecord,
-  isStringArray,
 } from './record-schema.js';
 
 /**

@@ -125,7 +125,12 @@ function resolveCoverage(
       oversizedRuns: 0,
     };
   }
-  if (turnsWithModelActivity > 0 && turnsMissingModelCalls.length === turnsWithModelActivity) {
+  if (
+    turnsWithModelActivity > 0 &&
+    turnsMissingModelCalls.length === turnsWithModelActivity &&
+    unreadableRecords === 0 &&
+    oversizedRuns === 0
+  ) {
     return {
       modelCalls: 'absent',
       turnsMissingModelCalls,
