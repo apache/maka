@@ -171,19 +171,32 @@ test('the pointer is always on a tick while it travels down the rail', async ({
     const first = ticks[0]!.getBoundingClientRect();
     const last = ticks[ticks.length - 1]!.getBoundingClientRect();
     const x = Math.round(first.left + first.width / 2);
-    const misses: Array<{ y: number; hit: string }> = [];
-    for (let y = Math.round(first.top); y < Math.round(last.bottom); y += 1) {
+    const describe = (found: Element | null) =>
+      found instanceof Element
+        ? `${found.tagName.toLowerCase()}.${found.className.toString().trim().replace(/\s+/g, '.')}`
+        : 'null';
+    const probe = (y: number) => {
       const found = document.elementFromPoint(x, y);
-      if (!found?.closest('.maka-prompt-rail-tick')) {
-        misses.push({
-          y,
-          hit: found instanceof Element
-            ? `${found.tagName.toLowerCase()}.${found.className.toString().trim().replace(/\s+/g, '.')}`
-            : 'null',
-        });
-      }
+      return {
+        tick: Boolean(found?.closest('.maka-prompt-rail-tick')),
+        rail: Boolean(found?.closest('.maka-prompt-rail')),
+        hit: describe(found),
+      };
+    };
+    // A shown macOS window paints the hiddenInset titlebar over the top of
+    // the scrollport. Ticks there report a negative top, and the first ~36px
+    // of the column hit `astryx-layout-content` — that is chrome, not a gap
+    // between ticks. Walk only the column that is actually over the rail.
+    let startY = Math.max(0, Math.round(first.top));
+    let endY = Math.min(window.innerHeight, Math.round(last.bottom));
+    while (startY < endY && !probe(startY).rail) startY += 1;
+    while (endY > startY && !probe(endY - 1).rail) endY -= 1;
+    const misses: Array<{ y: number; hit: string }> = [];
+    for (let y = startY; y < endY; y += 1) {
+      const found = probe(y);
+      if (!found.tick) misses.push({ y, hit: found.hit });
     }
-    return { misses: misses.length, span: Math.round(last.bottom - first.top), sample: misses.slice(0, 3) };
+    return { misses: misses.length, span: endY - startY, sample: misses.slice(0, 3) };
   });
 
   expect(travel.span).toBeGreaterThan(0);
@@ -214,7 +227,14 @@ test('the first click of a session lands on its prompt and holds', async ({
   // opening scroll position its top is already above the scrollport, which
   // passes an upper-bound-only check without the jump doing anything at all.
   const targetTurnId = 'turn-prompt-rail-1';
-  await page.locator('.maka-prompt-rail-tick').first().click({ force: true });
+  // The first tick sits under the macOS titlebar overlay on a shown window,
+  // so a pointer click lands on `astryx-layout-content` and the jump never
+  // runs. This test is the jump vs auto-follow lock, not hit-testing — fire
+  // the tick's own click. Overlay reachability lives in the tests around it.
+  await page.locator('.maka-prompt-rail-tick').first().evaluate((tick) => {
+    if (!(tick instanceof HTMLElement)) throw new Error('the first prompt-rail tick is missing');
+    tick.click();
+  });
 
   const landing = async () =>
     page.evaluate((turnId) => {
@@ -265,7 +285,10 @@ test('long transcripts keep a bounded mounted turn window', async ({
   })).toEqual({ list: 16, turn: 16 });
   expect(await count()).toBeGreaterThan(0);
   expect(await count()).toBeLessThanOrEqual(100);
-  await page.locator('.maka-prompt-rail-tick').first().click({ force: true });
+  await page.locator('.maka-prompt-rail-tick').first().evaluate((tick) => {
+    if (!(tick instanceof HTMLElement)) throw new Error('the first prompt-rail tick is missing');
+    tick.click();
+  });
   await expect(page.locator('[data-turn-id="turn-prompt-rail-1"]')).toHaveCount(1);
   expect(await count()).toBeGreaterThan(0);
   expect(await count()).toBeLessThanOrEqual(100);
@@ -335,14 +358,19 @@ test('a tick is what the pointer lands on, not the scrollbar', async ({
   // `elementFromPoint`, not `hover()`: dispatched events cannot see occlusion,
   // and macOS's overlay scrollbar occludes without taking layout space.
   const hit = await page.evaluate(() => {
-    const tick = document.querySelector('.maka-prompt-rail-tick');
-    if (!tick) throw new Error('the prompt rail has no ticks');
+    const ticks = [...document.querySelectorAll('.maka-prompt-rail-tick')];
+    if (ticks.length === 0) throw new Error('the prompt rail has no ticks');
+    // Same X as every tick, so the overlay contract does not depend on which
+    // one we pick. The first tick's centre can sit under the titlebar overlay,
+    // where `elementFromPoint` is null and `?.closest(...) !== null` would
+    // false-pass. Probe the middle of the column, inside the viewport.
+    const tick = ticks[Math.floor(ticks.length / 2)]!;
     const box = tick.getBoundingClientRect();
     const x = Math.round(box.left + box.width / 2);
     const y = Math.round(box.top + box.height / 2);
     const found = document.elementFromPoint(x, y);
     return {
-      insideRail: found?.closest('.maka-prompt-rail') !== null,
+      insideRail: Boolean(found?.closest('.maka-prompt-rail')),
       x,
       y,
       hit: found instanceof Element
