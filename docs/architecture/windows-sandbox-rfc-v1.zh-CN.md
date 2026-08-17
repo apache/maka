@@ -1,6 +1,6 @@
 # Windows 沙箱后端 RFC v1
 
-- 状态：实现基线已选定；产品接入正在做发布验证
+- 状态：实现基线已选定；首个预览切片（[#2961](https://github.com/maka-agent/maka-agent/pull/2961)）已于 2026-08-17 合并；产品接入继续做发布验证（预览范围见 §6.5）
 - 跟踪：[Issue #2142](https://github.com/maka-agent/maka-agent/issues/2142) Windows Phase 4
 - 更新日期：2026-08-14
 - Owner：`@maka/runtime` sandbox boundary 与 Runtime Host execution composition
@@ -125,7 +125,7 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - child 通过 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 在创建时进入 Job，不存在可运行的 pre-assignment window；
 - Job owner close 时杀死所有 descendant，禁止 breakaway；
 - 仅通过 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 继承声明的 stdio/protocol handle；
-- 非交互 worker 使用 private desktop，不能读 clipboard、广播 window message、装 global hook 或操作用户桌面；
+- 非交互 worker 使用 private desktop，不能读 clipboard、广播 window message、装 global hook 或操作用户桌面； _(后续门禁：当前预览切片尚未强制；worker 依赖 AppContainer 约束而非独立 desktop —— 见 §6.5。)_
 - token 移除 privilege 并使用 restricting SID；low integrity 只是 defense in depth，不是文件策略；
 - child 只接收 allowlist 环境，不隐式继承 credential、token、proxy、shell startup hook、用户 PATH 或 loader
   injection variable；
@@ -134,12 +134,35 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 
 ### 6.4 能力与失败
 
-- readiness 必须在生产 identity/token/Job/desktop/handle/filesystem/offline network 下启动真实 probe；
-- launcher signature/version/digest 必须与 package metadata 一致；
+- readiness 必须在生产 identity/token/Job/desktop/handle/filesystem/offline network 下启动真实 probe； _(后续门禁：预览版依据打包 native resource 的实际存在来注册后端，缺失即 fail closed；完整的生产 identity readiness probe 暂缓 —— 见 §6.5。)_
+- launcher signature/version/digest 必须与 package metadata 一致； _(后续门禁：每次启动的 request digest 目前已在 broker 内重算并强制；对照打包 metadata 校验 launcher 二进制的 signature 与 version 随 Phase 3 签名一并暂缓 —— 见 §6.5。)_
 - setup 缺失、identity drift、ACL state 损坏、网络策略无效、文件系统不支持、helper 不匹配、probe 失败都返回
   stable typed unavailable reason；
 - restricted managed profile 在 `auto`/`require` 下绝不 fallback host execution；
 - diagnostics 只暴露 backend、setup version 与 failure stage，不暴露 path、SID、credential、env 或 firewall detail。
+
+### 6.5 预览实现状态（2026-08-17）
+
+首个预览切片 [#2961](https://github.com/maka-agent/maka-agent/pull/2961) 已于 2026-08-17 合并，强制上述保证的一个子集。本节把文档与已交付切片对齐，使 RFC 不 overclaim：§6.3/§6.4 中尚未强制的保证在此显式标为后续门禁。
+
+**预览切片已强制：**
+
+- 默认拒绝文件系统，读/写 grant 分离（§6.1）；
+- ACL 修改前拒绝 reparse point 与多硬链接对象（§5/§6.1）；
+- 每次启动使用 request-derived 独立 AppContainer SID + 版本化 ledger + startup reconcile（§6.1/§7.1）；
+- 不授予网络 capability 的 AppContainer token（§6.2）；
+- 创建时原子附加、close 时杀整棵树的 kill-on-close Job（§6.3）；
+- 仅通过 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 继承声明的 handle（§6.3）；
+- 封闭、排序后的 allowlist 环境（§6.3）；
+- fail-closed capability check，绝不 unsandboxed fallback（§6.4）。
+
+**已设计但作为后续门禁暂缓（预览切片尚未强制）：**
+
+- private desktop / window station（§6.3）；
+- 完整的生产 identity readiness probe（§6.4）；
+- 随 Phase 3 签名一并落地的 launcher signature/version 校验（§6.4）。
+
+暂缓收窄的是 readiness 丰富度与 desktop 层的 defense-in-depth，而非强制边界本身：backend 不可用、identity drift 或启动失败仍然 fail closed，受限 managed profile 也绝不回退到宿主执行。
 
 ## 7. 选定架构
 

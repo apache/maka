@@ -1,6 +1,6 @@
 # Windows sandbox backend RFC v1
 
-- Status: implementation baseline selected; product integration under release validation
+- Status: implementation baseline selected; first preview slice ([#2961](https://github.com/maka-agent/maka-agent/pull/2961)) merged 2026-08-17; product integration continuing under release validation (preview scope in §6.5)
 - Tracking: Windows Phase 4 in [issue #2142](https://github.com/maka-agent/maka-agent/issues/2142)
 - Updated: 2026-08-14
 - Owners: `@maka/runtime` sandbox boundary and Runtime Host execution composition
@@ -148,7 +148,9 @@ Lexical prefix checks are never authorization evidence.
 - The Job kills all descendants when its owner closes and does not permit breakaway.
 - Only declared stdio/protocol handles are inherited through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`.
 - Non-interactive workers use a private desktop and cannot read the clipboard, broadcast window
-  messages, install global hooks, or interact with the user's desktop.
+  messages, install global hooks, or interact with the user's desktop. _(Later gate: not yet
+  enforced in the shipped preview slice; the worker rides on AppContainer confinement rather than a
+  separate desktop — see §6.5.)_
 - The token removes privileges and uses restricting SIDs; low integrity is defense in depth, not the
   filesystem policy by itself.
 - The child receives an allowlisted environment. Credentials, tokens, proxy variables, shell startup
@@ -161,13 +163,59 @@ Lexical prefix checks are never authorization evidence.
 ### 6.4 Capability and failure
 
 - Readiness launches a real probe under the production identity, token, Job, desktop, handles,
-  filesystem policy, and offline network policy. OS version checks alone are insufficient.
-- Launcher signature, version, and digest are verified against packaged metadata.
+  filesystem policy, and offline network policy. OS version checks alone are insufficient. _(Later
+  gate: the preview registers the backend on the verified presence of the packaged native resource
+  and fails closed if it is absent; the full production-identity readiness probe is deferred — see
+  §6.5.)_
+- Launcher signature, version, and digest are verified against packaged metadata. _(Later gate: the
+  per-launch request digest is recomputed and enforced in-broker today; verifying the launcher
+  binary's signature and version against packaged metadata is deferred with Phase 3 signing — see
+  §6.5.)_
 - Missing setup, identity drift, ACL-state corruption, ineffective network policy, unsupported
   filesystem, helper mismatch, or a failed probe returns a stable typed unavailable reason.
 - `auto` and `require` never fall back to host execution for a restricted managed profile.
 - Diagnostics expose the backend, setup version, and failure stage without paths, SIDs, credentials,
   environment values, or firewall details.
+
+### 6.5 Preview implementation status (2026-08-17)
+
+The first product slice — the packaged Windows 11 x64 AppContainer backend in
+[#2961](https://github.com/maka-agent/maka-agent/pull/2961), merged 2026-08-17 — enforces a subset
+of the guarantees above. This subsection aligns the documented guarantees with what the preview
+actually ships so the RFC does not overclaim. The remaining guarantees are designed but explicitly
+deferred as later gates, tracked by Phase 4 in [#2142](https://github.com/maka-agent/maka-agent/issues/2142).
+
+Enforced in the preview slice:
+
+- default-deny filesystem with distinct read/write roots compiled from the exact profile (§6.1);
+- recursive reparse-point rejection and multi-hard-link rejection before ACL mutation (§5, §6.1);
+- a fresh request-derived AppContainer SID, per-launch ACL grants in a versioned recovery ledger,
+  and stale-ledger reconciliation at startup (§6.1, §7.1);
+- an AppContainer token with no network capabilities (§6.2);
+- atomic kill-on-close Job membership through `PROC_THREAD_ATTRIBUTE_JOB_LIST` (§6.3);
+- inheritance limited to declared stdio/protocol handles through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
+  (§6.3);
+- a closed, sorted, allowlisted environment (§6.3);
+- fail-closed capability outcomes with no unsandboxed fallback for `auto`/`require` (§6.4).
+
+Designed but deferred as later gates (not enforced in the preview slice):
+
+- Private desktop / window-station isolation (§6.3). The worker does not yet run on a separate
+  desktop; clipboard, window-message, and global-hook isolation currently ride on AppContainer
+  confinement rather than a dedicated desktop.
+- Full production-identity readiness probe (§6.4). The preview registers the backend on the verified
+  presence of the packaged native resource and fails closed when it is absent; it does not yet
+  launch a real probe under the full production identity, token, Job, desktop, and handles at
+  readiness.
+- Launcher signature/version verification at readiness (§6.4). The per-launch request digest is
+  recomputed and enforced in-broker on every launch; verifying the launcher binary's Authenticode
+  signature and version against packaged metadata is deferred together with Phase 3 signing.
+
+Deferral narrows readiness richness and desktop-layer defense-in-depth, not the enforcement
+boundary: an unavailable, drifted, or failed backend still fails closed, and a restricted managed
+profile never falls back to host execution. The lifecycle evidence for cancellation, parent-death,
+concurrency, process-drain, and residual ACL/state release tracked by W1 (§9) and Phase 4 (#2142)
+remains release evidence, not an assumption.
 
 ## 7. Selected architecture
 
