@@ -73,9 +73,6 @@ import type {
   CuSemanticAction,
 } from './computer-use-types.js';
 
-// Re-export the moved types and codec functions so existing direct importers
-// (e.g. openai-computer-loop.ts, index.ts barrel, test files) keep working
-// without changing their import paths.
 export { adaptToCuAction, snapshotComputerParams } from './computer-use-codec.js';
 export type {
   CuAppSummary,
