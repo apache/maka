@@ -198,7 +198,7 @@ export function buildActiveCompactionSourceIndex(
   input: ActiveCompactionSourceIndexInput,
 ): ActiveCompactionSourceIndex {
   const charsPerToken = input.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN;
-  const runtimeIndex = buildRuntimeEventIndex(input.runtimeEvents ?? [], charsPerToken);
+  const runtimeIndex = buildRuntimeEventIndex(input.runtimeEvents ?? []);
   const entries: ActiveCompactionSourceEntry[] = [];
 
   input.messages.forEach((message, messageIndex) => {
@@ -673,16 +673,13 @@ interface RuntimeEventIndex {
   byBodySha256: Map<string, RuntimeEvent[]>;
 }
 
-function buildRuntimeEventIndex(
-  events: readonly RuntimeEvent[],
-  charsPerToken: number,
-): RuntimeEventIndex {
+function buildRuntimeEventIndex(events: readonly RuntimeEvent[]): RuntimeEventIndex {
   const byToolCallId = new Map<string, RuntimeEvent[]>();
   const byBodySha256 = new Map<string, RuntimeEvent[]>();
   for (const event of events) {
     const toolCallId = runtimeToolCallId(event);
     if (toolCallId) pushMap(byToolCallId, toolCallId, event);
-    pushMap(byBodySha256, runtimeEventBodySha256(event, charsPerToken), event);
+    pushMap(byBodySha256, runtimeEventBodySha256(event), event);
   }
   return { byToolCallId, byBodySha256 };
 }
@@ -701,15 +698,10 @@ function matchRuntimeEvent(
       : input.contentKind === 'tool_result' || input.contentKind === 'active_archive_placeholder'
         ? 'function_response'
         : input.contentKind;
-  return (
-    candidates.find((event) => event.content?.kind === preferredKind) ??
-    bodyMatches[0] ??
-    toolMatches[0]
-  );
+  return candidates.find((event) => event.content?.kind === preferredKind);
 }
 
-function runtimeEventBodySha256(event: RuntimeEvent, charsPerToken: number): string {
-  void charsPerToken;
+function runtimeEventBodySha256(event: RuntimeEvent): string {
   const content = event.content;
   if (!content) return sha256('');
   switch (content.kind) {

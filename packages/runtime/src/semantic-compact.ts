@@ -2,7 +2,6 @@ import type { ModelMessage } from './model-protocol.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import {
-  activeCompactionCoverageFromEntries,
   activeCompactionMessageSignature,
   buildActiveCompactionHeadAnchor,
   buildActiveCompactionSourceIndex,
@@ -298,7 +297,6 @@ export async function rewriteSemanticCompactInMessages(
   }
 
   const validation = validateActiveCompactionCoverageForSourceIndex(selection.coverage, index, {
-    archiveRefs: selection.entries.map((entry) => entry.archiveRef).filter(isArchiveRef),
     sessionId: input.sessionId,
     turnId: input.turnId,
     archiveRequired: policy.archiveRequired,
@@ -732,7 +730,7 @@ function buildSemanticCompactBlock(input: {
   const preservedTailEntries = input.index.entries.filter((entry) =>
     preservedTailIndexes.includes(entry.messageIndex),
   );
-  const newCoverage = activeCompactionCoverageFromEntries(input.selection.entries);
+  const newCoverage = input.selection.coverage;
   const coverage = input.predecessorBlock
     ? mergeSemanticCoverage(input.predecessorBlock.coverage, newCoverage)
     : newCoverage;

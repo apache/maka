@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import {
   activeCompactionCoverageFromEntries,
@@ -66,6 +67,38 @@ test('active compaction kernel fails closed on hash drift and split tool pairs',
   );
   assert.equal(hashValidation.valid, false);
   assert.ok(hashValidation.reasons.includes('source_hash_mismatch'));
+});
+
+test('active compaction kernel does not relabel a tool result from a call-only runtime match', () => {
+  const index = buildActiveCompactionSourceIndex({
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    messages: fixtureMessages(),
+    runtimeEvents: [
+      {
+        id: 'event-call-1',
+        invocationId: 'invocation-1',
+        runId: 'run-1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        ts: 1,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'call-1',
+          name: 'Read',
+          args: { path: 'README.md' },
+        },
+      } satisfies RuntimeEvent,
+    ],
+  });
+
+  const resultEntry = index.entries.find((entry) => entry.messageIndex === 2);
+  assert.ok(resultEntry);
+  assert.equal(resultEntry.contentKind, 'tool_result');
+  assert.equal(resultEntry.runtimeEventId, undefined);
 });
 
 test('active compaction kernel binds safe-span selection to the exact user head', () => {
