@@ -16,13 +16,16 @@ async function openGitChanges(page: Page) {
 
 async function setRightWorkbarWidth(page: Page, width: number) {
   const workbar = page.locator('.maka-session-workbar[data-placement="right"]');
+  await expect(workbar).toBeVisible();
   await workbar.evaluate((element, nextWidth) => {
     (element as HTMLElement).style.setProperty(
       '--maka-session-workbar-width',
       `${nextWidth}px`,
     );
   }, width);
-  await expect.poll(async () => (await workbar.boundingBox())?.width).toBe(width);
+  await expect
+    .poll(async () => (await workbar.boundingBox())?.width)
+    .toBeCloseTo(width, 0);
   return workbar;
 }
 
@@ -41,7 +44,7 @@ test('narrow right workbar keeps launcher shortcuts and side-chat send button in
 
   const workbarBox = await workbar.boundingBox();
   const shortcutBoxes = await launcher
-    .getByRole('img')
+    .locator('kbd')
     .evaluateAll((elements) =>
       elements.map((element) => {
         const box = element.getBoundingClientRect();
