@@ -102,9 +102,9 @@ export function buildFixtureEnv(userDataDir, homeDir, options = {}) {
  * protocols crawl. Only that isolated virtual display gets a visible window;
  * nobody is watching it.
  *
- * This is the one ambient read the launch environment needs, kept out of
- * `buildFixtureEnv` so the builder stays a pure function. Callers compose it:
- * `showWindow: wantVisible || isCiLinuxDisplay()`.
+ * This helper stays Linux-only so tests can assert the xvfb case in isolation.
+ * Call sites that also need GitHub macOS runners (App Nap) should compose
+ * `isCiIsolatedDisplay()` instead.
  *
  * @param {NodeJS.ProcessEnv} [env]
  * @param {NodeJS.Platform} [platform]
@@ -117,6 +117,10 @@ export function isCiLinuxDisplay(env = process.env, platform = process.platform)
  * Isolated CI displays that throttle a hidden Electron window. Linux CI uses
  * xvfb; GitHub's macOS runners App-Nap background windows the same way. Local
  * developer machines stay hidden so a suite does not steal focus.
+ *
+ * This is the ambient read the launch environment needs, kept out of
+ * `buildFixtureEnv` so the builder stays a pure function. Callers compose it:
+ * `showWindow: wantVisible || isCiIsolatedDisplay()`.
  *
  * @param {NodeJS.ProcessEnv} [env]
  * @param {NodeJS.Platform} [platform]
