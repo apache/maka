@@ -166,21 +166,28 @@ test('the pointer is always on a tick while it travels down the rail', async ({
   // pixel at a time rather than sampled between two ticks: a single midpoint
   // would pass on a rail whose gaps sat anywhere else.
   const travel = await page.evaluate(() => {
-    const bars = [...document.querySelectorAll('.maka-prompt-rail-tick-bar')];
-    if (bars.length < 2) throw new Error('the prompt rail needs at least two ticks');
-    const first = bars[0]!.getBoundingClientRect();
-    const last = bars[bars.length - 1]!.getBoundingClientRect();
+    const ticks = [...document.querySelectorAll('.maka-prompt-rail-tick')];
+    if (ticks.length < 2) throw new Error('the prompt rail needs at least two ticks');
+    const first = ticks[0]!.getBoundingClientRect();
+    const last = ticks[ticks.length - 1]!.getBoundingClientRect();
     const x = Math.round(first.left + first.width / 2);
-    const misses: number[] = [];
-    for (let y = Math.round(first.top + first.height / 2); y <= Math.round(last.top + last.height / 2); y += 1) {
+    const misses: Array<{ y: number; hit: string }> = [];
+    for (let y = Math.round(first.top); y < Math.round(last.bottom); y += 1) {
       const found = document.elementFromPoint(x, y);
-      if (!found?.closest('.maka-prompt-rail-tick')) misses.push(y);
+      if (!found?.closest('.maka-prompt-rail-tick')) {
+        misses.push({
+          y,
+          hit: found instanceof Element
+            ? `${found.tagName.toLowerCase()}.${found.className.toString().trim().replace(/\s+/g, '.')}`
+            : 'null',
+        });
+      }
     }
-    return { misses: misses.length, span: Math.round(last.bottom - first.top) };
+    return { misses: misses.length, span: Math.round(last.bottom - first.top), sample: misses.slice(0, 3) };
   });
 
   expect(travel.span).toBeGreaterThan(0);
-  expect(travel.misses).toBe(0);
+  expect(travel, `rail travel hits ${JSON.stringify(travel.sample)}`).toMatchObject({ misses: 0 });
 });
 
 test('the first click of a session lands on its prompt and holds', async ({
@@ -331,12 +338,18 @@ test('a tick is what the pointer lands on, not the scrollbar', async ({
     const tick = document.querySelector('.maka-prompt-rail-tick');
     if (!tick) throw new Error('the prompt rail has no ticks');
     const box = tick.getBoundingClientRect();
-    const found = document.elementFromPoint(
-      Math.round(box.left + box.width / 2),
-      Math.round(box.top + box.height / 2),
-    );
-    return { insideRail: found?.closest('.maka-prompt-rail') !== null };
+    const x = Math.round(box.left + box.width / 2);
+    const y = Math.round(box.top + box.height / 2);
+    const found = document.elementFromPoint(x, y);
+    return {
+      insideRail: found?.closest('.maka-prompt-rail') !== null,
+      x,
+      y,
+      hit: found instanceof Element
+        ? `${found.tagName.toLowerCase()}.${found.className.toString().trim().replace(/\s+/g, '.')}`
+        : 'null',
+    };
   });
 
-  expect(hit.insideRail).toBe(true);
+  expect(hit, `tick center hit ${hit.hit} at ${hit.x},${hit.y}`).toMatchObject({ insideRail: true });
 });

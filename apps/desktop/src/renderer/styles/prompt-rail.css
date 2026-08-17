@@ -48,12 +48,13 @@
      moves the content column left instead, which is why the regression
      sailed through CI green. The overlay dead band is 14px when the bar
      appears only while scrolling, and ~16px when the system shows scroll
-     bars Always — GitHub's macos-15 image uses Always. Rest the rail at
-     `space-4 + space-2` (24px), clear of both, and hover it 3px further
-     inward. The old motion's translateX(3px) did the opposite and pushed
-     the ticks into the band. `translateY(-50%)` stays: it only centres
-     vertically and has no part in the hit-region problem. */
-  right: calc(var(--space-4) + var(--space-2));
+     bars Always — GitHub's macos-15 image uses Always, and a visible
+     Electron window can stack a native overlay on the webview's own bar.
+     Rest the rail at `space-8 + space-4` (48px), clear of that stack, and
+     hover it 3px further inward. The old motion's translateX(3px) did the
+     opposite and pushed the ticks into the band. `translateY(-50%)` stays:
+     it only centres vertically and has no part in the hit-region problem. */
+  right: calc(var(--space-8) + var(--space-4));
   top: calc((var(--maka-prompt-rail-scrollport, 100svh) - var(--maka-prompt-rail-dock, 0px)) / 2);
   transform: translateY(-50%);
   max-height: calc(
@@ -92,7 +93,7 @@
 
 .maka-prompt-rail:hover {
   opacity: 1;
-  right: calc(var(--space-4) + var(--space-2) + 3px);
+  right: calc(var(--space-8) + var(--space-4) + 3px);
   transform: translateY(-50%);
 }
 

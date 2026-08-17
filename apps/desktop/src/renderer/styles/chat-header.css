@@ -156,6 +156,10 @@
   display: flex;
   flex-direction: column;
   overscroll-behavior: contain;
+  /* Keep overlay scrollbars in a reserved gutter so they cannot sit on the
+     prompt rail. Linux already in-flows the bar; this matches that geometry
+     on macOS without hiding the affordance. */
+  scrollbar-gutter: stable;
 }
 
 /*
