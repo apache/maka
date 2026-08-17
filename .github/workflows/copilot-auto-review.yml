@@ -4,9 +4,7 @@ on:
   pull_request_target:
     types: [opened, reopened, ready_for_review, synchronize]
 
-permissions:
-  contents: read
-  pull-requests: write
+permissions: {}
 
 concurrency:
   group: copilot-auto-review-${{ github.event.pull_request.number }}
@@ -22,13 +20,25 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      # pull_request_target supplies a writable token for fork PRs. Do not
-      # checkout or execute code from the untrusted pull request in this job.
+      # pull_request_target exposes the repository secret to fork PR events.
+      # Never checkout, execute, or otherwise consume untrusted PR code here.
       - name: Request GitHub Copilot review
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.COPILOT_REVIEW_TOKEN }}
+          EXPECTED_REVIEW_REQUESTER: hqhq1025
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::COPILOT_REVIEW_TOKEN is not configured"
+            exit 1
+          fi
+
+          review_requester="$(gh api user --jq '.login')"
+          if [[ "${review_requester}" != "${EXPECTED_REVIEW_REQUESTER}" ]]; then
+            echo "::error::COPILOT_REVIEW_TOKEN belongs to ${review_requester}, expected ${EXPECTED_REVIEW_REQUESTER}"
+            exit 1
+          fi
+
           if gh api \
             "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers" \
             --jq '.users[].login' | \
