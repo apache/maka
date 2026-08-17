@@ -323,7 +323,14 @@ class LiveEgressFilterTest(unittest.TestCase):
     @classmethod
     def audit_records(cls) -> list[dict[str, object]]:
         listed = subprocess.run(
-            ["docker", "exec", cls.proxy, "cat", "/opt/maka-egress-state/hits.jsonl"],
+            [
+                "docker",
+                "exec",
+                cls.proxy,
+                "sh",
+                "-c",
+                "if [ -f /opt/maka-egress-state/hits.jsonl ]; then cat /opt/maka-egress-state/hits.jsonl; fi",
+            ],
             capture_output=True,
             text=True,
             timeout=COMMAND_TIMEOUT_S,

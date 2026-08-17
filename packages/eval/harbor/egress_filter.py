@@ -137,14 +137,11 @@ def response(flow: object) -> None:
     response = getattr(flow, "response", None)
     if getattr(response, "status_code", None) != 101:
         return
-    headers = getattr(response, "headers", None)
-    upgrade = ""
-    if headers is not None:
-        try:
-            upgrade = str(headers.get("upgrade", "") or "")
-        except Exception:
-            upgrade = ""
-    if upgrade.lower() == "websocket":
+    # mitmproxy 12.2.3 sets flow.websocket before HttpResponseHook only when
+    # the 101 is a real WebSocket upgrade (Upgrade + version 13 + option on).
+    # A websocket Upgrade header alone still falls through to CloseConnection
+    # under rawtcp=false and must be audited.
+    if getattr(flow, "websocket", None) is not None:
         return
     record_raw_tunnel(flow)
 

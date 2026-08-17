@@ -291,11 +291,29 @@ class EgressFilterTest(unittest.TestCase):
                     "response": SimpleNamespace(
                         status_code=101, headers={"upgrade": "websocket"}
                     ),
+                    "websocket": object(),
                     "server_conn": SimpleNamespace(address=("origin", 19082)),
                 },
             )()
             MODULE.response(websocket)
             self.assertEqual(len(MODULE.AUDIT_PATH.read_text().splitlines()), 1)
+
+            invalid = type(
+                "Flow",
+                (),
+                {
+                    "response": SimpleNamespace(
+                        status_code=101, headers={"upgrade": "websocket"}
+                    ),
+                    "server_conn": SimpleNamespace(address=("origin", 19082)),
+                },
+            )()
+            MODULE.response(invalid)
+            self.assertEqual(len(MODULE.AUDIT_PATH.read_text().splitlines()), 2)
+            self.assertEqual(
+                json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[1])["ruleId"],
+                "raw_tunnel",
+            )
 
     def test_next_layer_replaces_raw_tcp_with_a_closer(self) -> None:
         class FakeTCPLayer:
