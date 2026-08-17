@@ -59,6 +59,12 @@ fn run() -> Result<u8, String> {
         }
         return windows_launcher::self_probe();
     }
+    if first == "--readiness-probe" {
+        if args.next().is_some() {
+            return Err("--readiness-probe does not accept arguments".to_owned());
+        }
+        return windows_launcher::readiness_probe();
+    }
     if first == "--stdio-probe" {
         let sleep_seconds = match args.next() {
             None => 0,

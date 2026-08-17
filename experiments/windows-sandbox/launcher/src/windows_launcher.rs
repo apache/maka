@@ -34,13 +34,13 @@ use windows_sys::Win32::System::JobObjects::{
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, CreateProcessW,
-    CreateProcessWithTokenW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-    GetCurrentProcess, GetExitCodeProcess, GetProcessId, InitializeProcThreadAttributeList,
-    OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
-    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, ResumeThread,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW, TerminateProcess,
-    UpdateProcThreadAttribute, WaitForSingleObject,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
+    CreateProcessW, CreateProcessWithTokenW, DeleteProcThreadAttributeList,
+    EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetExitCodeProcess, GetProcessId,
+    InitializeProcThreadAttributeList, OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+    PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
+    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use crate::acl_ledger::{LaunchFailure, with_acl_grants};
@@ -135,6 +135,188 @@ pub fn launch_appcontainer(request: &LaunchRequest) -> Result<u8, String> {
             }
         }
     }
+}
+
+/// Bound on the throwaway readiness child. It only runs `cmd.exe /c exit 0`,
+/// so anything beyond a couple of seconds means the machine cannot stand up the
+/// boundary and the probe must fail closed rather than hang availability.
+const READINESS_PROBE_TIMEOUT_MS: u64 = 10_000;
+
+/// Production-identity readiness probe (RFC §6.4).
+///
+/// Availability is not just "the packaged binary exists on disk". This builds
+/// the real production identity — a kill-on-close Job plus a per-launch
+/// AppContainer profile and SID — and launches a throwaway child
+/// (`cmd.exe /c exit 0`) under that AppContainer token inside the Job, proving
+/// the OS can actually create and account the sandbox boundary on this machine
+/// before any workload is admitted. Anything short of a child that is both
+/// AppContainer-confined and Job-accounted, and that exits cleanly, fails
+/// closed so a restricted managed profile is never selected on a host that
+/// cannot enforce it.
+pub fn readiness_probe() -> Result<u8, String> {
+    let system_root = std::env::var_os("SystemRoot")
+        .or_else(|| std::env::var_os("windir"))
+        .ok_or_else(|| "readiness probe: SystemRoot is not set".to_owned())?;
+    let mut cmd_path = std::path::PathBuf::from(system_root);
+    cmd_path.push("System32");
+    cmd_path.push("cmd.exe");
+    let cmd_path = cmd_path.to_string_lossy().into_owned();
+
+    unsafe {
+        let job = create_kill_on_close_job()?;
+        // A per-process identity so concurrent probes never collide on a
+        // profile name; the profile is deleted when it drops.
+        let request_id = format!("readiness-probe.{}", std::process::id());
+        let profile = match AppContainerProfile::create(&request_id) {
+            Ok(profile) => profile,
+            Err(error) => {
+                CloseHandle(job);
+                return Err(error);
+            }
+        };
+        let result = probe_appcontainer_child(&cmd_path, job, profile.sid);
+        // Closing the last Job handle is the kernel backstop: it terminates the
+        // throwaway child if the wait above did not already reap it.
+        CloseHandle(job);
+        drop(profile);
+        result
+    }
+}
+
+/// Launch the throwaway readiness child under the AppContainer token and Job.
+/// Mirrors `create_appcontainer_child` but carries no stdio/handle inheritance
+/// (nothing is relayed) and inherits the parent environment, since the child
+/// only needs to reach `exit 0`.
+unsafe fn probe_appcontainer_child(
+    cmd_path: &str,
+    job: HANDLE,
+    app_container_sid: *mut c_void,
+) -> Result<u8, String> {
+    let executable = wide(cmd_path);
+    // Build the command line directly: cmd.exe's `/c` switch must stay
+    // unquoted, so the per-token quoting used for arbitrary workloads would
+    // make cmd treat "/c" as a program to run and exit non-zero.
+    let mut command = wide(&format!("\"{cmd_path}\" /c exit 0"));
+    // Run from System32 rather than inheriting the launcher's cwd: the probe
+    // grants no filesystem roots, so an inherited working directory would be
+    // default-denied and cmd.exe would fail to initialize. System32 is readable
+    // by ALL APPLICATION PACKAGES, so the AppContainer child can start there.
+    let cwd = std::path::Path::new(cmd_path)
+        .parent()
+        .map(|parent| wide(&parent.to_string_lossy()));
+    let cwd_ptr = cwd.as_ref().map_or(null(), |value| value.as_ptr());
+
+    let mut attribute_size = 0usize;
+    unsafe { InitializeProcThreadAttributeList(null_mut(), 2, 0, &mut attribute_size) };
+    if attribute_size == 0 {
+        return Err(last_error(
+            "InitializeProcThreadAttributeList(readiness size)",
+        ));
+    }
+    let words = attribute_size.div_ceil(size_of::<usize>());
+    let mut attribute_storage = vec![0usize; words];
+    let attribute_list = attribute_storage.as_mut_ptr() as *mut c_void;
+    if unsafe { InitializeProcThreadAttributeList(attribute_list, 2, 0, &mut attribute_size) } == 0
+    {
+        return Err(last_error("InitializeProcThreadAttributeList(readiness)"));
+    }
+
+    let mut job_value = job;
+    let mut capabilities = SECURITY_CAPABILITIES {
+        AppContainerSid: app_container_sid,
+        Capabilities: null_mut(),
+        CapabilityCount: 0,
+        Reserved: 0,
+    };
+    let attributes = (|| -> Result<(), String> {
+        if unsafe {
+            UpdateProcThreadAttribute(
+                attribute_list,
+                0,
+                PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
+                &mut job_value as *mut HANDLE as *const c_void,
+                size_of::<HANDLE>(),
+                null_mut(),
+                null(),
+            )
+        } == 0
+        {
+            return Err(last_error("UpdateProcThreadAttribute(readiness JOB_LIST)"));
+        }
+        if unsafe {
+            UpdateProcThreadAttribute(
+                attribute_list,
+                0,
+                PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
+                &mut capabilities as *mut SECURITY_CAPABILITIES as *const c_void,
+                size_of::<SECURITY_CAPABILITIES>(),
+                null_mut(),
+                null(),
+            )
+        } == 0
+        {
+            return Err(last_error(
+                "UpdateProcThreadAttribute(readiness SECURITY_CAPABILITIES)",
+            ));
+        }
+        Ok(())
+    })();
+    if let Err(error) = attributes {
+        unsafe { DeleteProcThreadAttributeList(attribute_list) };
+        return Err(error);
+    }
+
+    let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
+    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+    startup.lpAttributeList = attribute_list;
+    let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
+    let creation_flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW;
+    let created = unsafe {
+        CreateProcessW(
+            executable.as_ptr(),
+            command.as_mut_ptr(),
+            null(),
+            null(),
+            // No handle list is declared, so no handles are inherited.
+            0,
+            creation_flags,
+            // Inherit the parent environment: a readiness check needs no
+            // sanitized block, only enough to reach `exit 0`.
+            null(),
+            cwd_ptr,
+            &startup.StartupInfo,
+            &mut process,
+        )
+    };
+    unsafe { DeleteProcThreadAttributeList(attribute_list) };
+    if created == 0 {
+        return Err(last_error("CreateProcessW(readiness appcontainer)"));
+    }
+
+    let result = (|| -> Result<u8, String> {
+        if unsafe { ResumeThread(process.hThread) } == u32::MAX {
+            return Err(last_error("ResumeThread(readiness)"));
+        }
+        let child_app_container = unsafe { child_token_is_appcontainer(process.hProcess) }?;
+        let child_in_job = unsafe { child_process_is_in_job(process.hProcess) }?;
+        if !(child_app_container && child_in_job) {
+            return Err(
+                "readiness probe child did not establish the AppContainer token and Job boundary"
+                    .to_owned(),
+            );
+        }
+        let exit = unsafe { wait_for_child(process.hProcess, Some(READINESS_PROBE_TIMEOUT_MS)) }?;
+        if exit != 0 {
+            return Err(format!("readiness probe child exited with status {exit}"));
+        }
+        Ok(0)
+    })();
+
+    unsafe {
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+    }
+    result
 }
 
 pub fn appcontainer_sid_string(request_id: &str) -> Result<String, String> {
