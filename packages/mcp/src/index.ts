@@ -651,13 +651,23 @@ export class McpClientManager {
       // owner with explicit refreshes and live change signals. A notification
       // arriving while the first tools/list is in flight therefore joins that
       // pass instead of publishing a snapshot the server already marked stale.
-      const initialRefresh = await this.startToolRefresh(
+      const initialRefreshPromise = this.startToolRefresh(
         serverId,
         entry,
         connectedClient,
         connectionGeneration,
         { initial: true, signal },
       );
+      if (bufferedEvents.pendingToolsChanged) {
+        this.handleToolsChanged(
+          serverId,
+          entry,
+          connectedClient,
+          connectionGeneration,
+          bufferedEvents.pendingToolsChanged.error,
+        );
+      }
+      const initialRefresh = await initialRefreshPromise;
       if (
         signal.aborted ||
         entry.closing ||
@@ -703,7 +713,6 @@ export class McpClientManager {
           undefined,
         );
       }
-      publishMcpHeaderExclusionWarning(snapshot.warning);
       if (subscription) {
         this.observeSubscriptionClose(
           serverId,
@@ -711,15 +720,6 @@ export class McpClientManager {
           connectedClient,
           connectionGeneration,
           subscription,
-        );
-      }
-      if (bufferedEvents.pendingToolsChanged) {
-        this.handleToolsChanged(
-          serverId,
-          entry,
-          connectedClient,
-          connectionGeneration,
-          bufferedEvents.pendingToolsChanged.error,
         );
       }
       return cloneStatus(entry.status);
@@ -1048,6 +1048,12 @@ export class McpClientManager {
         if (!this.ownsToolRefresh(serverId, entry, state)) {
           throw safeMcpOperationError(serverId, 'connection changed during tool refresh', failure);
         }
+        // A notification that arrived while this list was in flight supersedes
+        // its result: skip the stale publish and let the trailing notification
+        // pass own the snapshot. A manual refresh queued during the list is
+        // different: its result is still a valid latest snapshot, so publish it
+        // below and only then run the trailing pass.
+        if (state.pendingNotification) continue;
         const notificationState = entry.refreshNotificationState;
         const notificationStateMatches =
           notificationState?.client === state.client &&
@@ -1055,22 +1061,17 @@ export class McpClientManager {
         const refreshSuppressed = notificationStateMatches && notificationState.suppressed;
         if (failure !== undefined) {
           if (refreshSuppressed) throw this.toolRefreshFrequencyError(serverId);
-          if (state.pending) continue;
           const exposed = safeMcpOperationError(serverId, 'tool refresh failed', failure);
           entry.refreshDiagnostic = errorMessage(exposed);
           this.publishConnectionDiagnostics(entry);
-          if (
-            this.connections.get(serverId) !== entry ||
-            entry.client !== state.client ||
-            entry.connectionGeneration !== state.connectionGeneration ||
-            entry.status.state !== 'connected'
-          ) {
+          if (!this.ownsToolRefresh(serverId, entry, state)) {
             throw safeMcpOperationError(
               serverId,
               'connection changed during tool refresh',
               failure,
             );
           }
+          if (state.pending) continue;
           throw exposed;
         }
         if (!definitions) {
@@ -1105,6 +1106,9 @@ export class McpClientManager {
             error: projectConnectionDiagnostics(entry),
             updatedAt: this.now(),
           });
+          // A synchronous status listener can retire this generation during
+          // publication. Never hand descriptors for that retired snapshot
+          // back to the caller.
           if (!this.ownsToolRefresh(serverId, entry, state)) {
             throw safeMcpOperationError(
               serverId,
