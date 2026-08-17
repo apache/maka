@@ -631,6 +631,45 @@ test('connection test derives a persisted summary from one bounded projection', 
   });
 });
 
+test('keeps a neutral provider permission failure out of needs_reauth', async () => {
+  await withFixture(async ({ stores }) => {
+    const connection = await createConnection(stores, 0, connectionDraft('plan-limit', 'openai'));
+    await setConnectionCredential(stores, connection, 'test-credential');
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      now: () => Date.parse('2026-07-29T12:00:00.000Z'),
+      createTransport: () => recordingTransport(() => {}),
+      runConnectionTest: async (_connection, _apiKey, _options, modelId) => {
+        assert.equal(modelId, 'gpt-5');
+        return {
+          ok: false,
+          error: { kind: 'unknown', statusCode: 403 },
+          modelId: 'gpt-5',
+          latencyMs: 17,
+        };
+      },
+    });
+
+    const outcome = await coordinator.handlers['connection.test.run'](
+      { connectionId: connection.connectionId, modelId: 'gpt-5' },
+      context,
+    );
+
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok || outcome.result.kind !== 'committed') {
+      throw new Error('connection test did not commit');
+    }
+    const persisted = await stores.connectionCatalog.getSnapshot();
+    assert.deepEqual(persisted.connections[0]?.lastTest, {
+      status: 'error',
+      checkedAt: outcome.result.test.checkedAt,
+      errorClass: 'unknown',
+    });
+  });
+});
+
 test('projects credential changes during provider I/O as semantic superseded and closes transport', async () => {
   await withFixture(async ({ stores }) => {
     const connection = await createConnection(stores, 0, connectionDraft('superseded', 'openai'));

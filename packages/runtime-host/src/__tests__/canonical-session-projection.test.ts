@@ -359,6 +359,7 @@ test('projects a failed Turn message from the canonical terminal event', async (
         ts: 12,
         recoverable: false,
         code: 'provider_error',
+        boundedProviderMessage: true,
         message: 'canonical provider failure api_key=sk-test-secret-value',
       },
       context,
@@ -399,6 +400,8 @@ test('projects a failed Turn message from the canonical terminal event', async (
         canonical.rootTurn.failureMessage,
         'canonical provider failure api_key=[redacted]',
       );
+      assert.equal(canonical.rootTurn.failureCode, 'provider_error');
+      assert.equal(canonical.rootTurn.boundedProviderMessage, true);
     }
   });
 });
