@@ -72,7 +72,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 34 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 35 as const;
+// 35: Session trace inspection uses cursor pages and Session usage has its own
+// invalidation domain. Older peers cannot safely exchange those frames.
 // 34: ScheduledTask execution templates no longer emit `backend`. Epoch-33
 // Clients require that closed-shape response field, so a newer Host must reject
 // them during the handshake instead of failing on the first Automation read.

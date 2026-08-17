@@ -71,6 +71,7 @@ function matchesQuery(
   range: { from: number; to: number },
 ): boolean {
   if (attempt.completedAt < range.from || attempt.completedAt > range.to) return false;
+  if (query.sessionId !== undefined && attempt.sessionId !== query.sessionId) return false;
   if (query.providerId !== undefined && attempt.providerId !== query.providerId) return false;
   if (query.modelId !== undefined && attempt.modelId !== query.modelId) return false;
   if (query.connectionSlug !== undefined && attempt.connectionSlug !== query.connectionSlug) {

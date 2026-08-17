@@ -103,7 +103,11 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a new compatibility epoch for backend-free ScheduledTask templates', () => {
-    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 34);
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 33);
+  });
+
+  test('publishes a new compatibility epoch for Session trace pagination', () => {
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 35);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {

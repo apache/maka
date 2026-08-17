@@ -126,21 +126,26 @@ describe('model-call usage projection', () => {
     assert.equal(Math.round(summary.totalCostUsd * 1000) / 1000, 0.004);
   });
 
-  test('filters by range, provider, model, and status', () => {
+  test('filters by Session, range, provider, model, and status', () => {
     const rows = [
       attempt({ attemptId: 'recent' }),
       attempt({ attemptId: 'old', completedAt: NOW - 40 * 86_400_000 }),
       attempt({ attemptId: 'other-provider', providerId: 'openai', modelId: 'gpt-x' }),
       attempt({ attemptId: 'failed', status: 'failed' }),
+      attempt({ attemptId: 'other-session', sessionId: 'session-2' }),
     ];
-    assert.equal(selectModelCallAttempts(rows, { range: '24h' }, NOW).rows.length, 3);
+    assert.equal(selectModelCallAttempts(rows, { range: '24h' }, NOW).rows.length, 4);
+    assert.equal(
+      selectModelCallAttempts(rows, { range: 'all', sessionId: 'session-1' }, NOW).rows.length,
+      4,
+    );
     assert.equal(
       selectModelCallAttempts(rows, { range: 'all', providerId: 'openai' }, NOW).rows.length,
       1,
     );
     assert.equal(
       selectModelCallAttempts(rows, { range: 'all', modelId: 'claude-opus-5' }, NOW).rows.length,
-      3,
+      4,
     );
     assert.equal(
       selectModelCallAttempts(rows, { range: 'all', status: 'error' }, NOW).rows.length,
@@ -148,7 +153,7 @@ describe('model-call usage projection', () => {
     );
     assert.equal(
       selectModelCallAttempts(rows, { range: 'all', status: 'all' }, NOW).rows.length,
-      4,
+      5,
     );
   });
 

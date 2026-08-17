@@ -11,6 +11,8 @@ import type { SessionListFilter } from '@maka/core/runtime-inputs';
 import {
   createSqliteAgentRunStore,
   type AgentRunIdentitySearchResult,
+  type AgentRunPageInput,
+  type AgentRunPageResult,
   type AdmitRootTurnInput,
   type AdmitRootTurnResult,
   type CommitRootTurnStartRejectionInput,
@@ -75,6 +77,8 @@ export {
 
 export type {
   AgentRunIdentitySearchResult,
+  AgentRunPageInput,
+  AgentRunPageResult,
   AdmitRootTurnInput,
   AdmitRootTurnResult,
   CommitRootTurnStartRejectionInput,
@@ -159,6 +163,7 @@ export interface ExecutionAgentRunReader {
   findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
   listSessionRuns(sessionId: string): Promise<AgentRunHeader[]>;
   listSessionRunsBounded(sessionId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
+  listSessionRunsPage(sessionId: string, input: AgentRunPageInput): Promise<AgentRunPageResult>;
   readEvents(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
   readEventsBounded(
     sessionId: string,
@@ -443,6 +448,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       listSessionRuns: (sessionId) => run(() => agentRunStore.listSessionRuns(sessionId)),
       listSessionRunsBounded: (sessionId, limit) =>
         run(() => agentRunStore.listSessionRunsBounded(sessionId, limit)),
+      listSessionRunsPage: (sessionId, input) =>
+        run(() => agentRunStore.listSessionRunsPage(sessionId, input)),
       listSessionRunsForRecovery: (sessionId) =>
         run(() => agentRunStore.listSessionRunsForRecovery(sessionId)),
       appendEvent: (sessionId, runId, event, options) =>
@@ -595,6 +602,8 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
       listSessionRuns: (sessionId) => run(() => agentRunStore.listSessionRuns(sessionId)),
       listSessionRunsBounded: (sessionId, limit) =>
         run(() => agentRunStore.listSessionRunsBounded(sessionId, limit)),
+      listSessionRunsPage: (sessionId, input) =>
+        run(() => agentRunStore.listSessionRunsPage(sessionId, input)),
       readEvents: (sessionId, runId) => run(() => agentRunStore.readEvents(sessionId, runId)),
       readEventsBounded: (sessionId, runId, budget) =>
         run(() => agentRunStore.readEventsBounded(sessionId, runId, budget)),

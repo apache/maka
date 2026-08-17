@@ -154,6 +154,12 @@ describe('HostExecutionInspectCoordinator', () => {
         'shared-run',
         runtimeEvent(first.id, 'shared-run', 4),
       );
+      await stores.agentRunStore.createRun(runHeader(first.id, 'older-run', 0));
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        first.id,
+        'older-run',
+        runtimeEvent(first.id, 'older-run', 0),
+      );
       const trace = await coordinator.handlers['execution.inspect.query'](
         { kind: 'session_trace_start', sessionId: first.id },
         connectionContext(),
@@ -162,6 +168,7 @@ describe('HostExecutionInspectCoordinator', () => {
       if (!trace.ok || trace.result.kind !== 'session_trace_page') return;
       assert.equal(trace.result.turns.length, 1);
       assert.equal(trace.result.turns[0]?.steps[0]?.kind, 'error');
+      assert.ok(trace.result.nextCursor);
 
       await stores.agentRunStore.createRun(runHeader(first.id, 'new-run', 5));
       await stores.runtimeEventStore.appendRuntimeEvent(
@@ -169,18 +176,17 @@ describe('HostExecutionInspectCoordinator', () => {
         'new-run',
         runtimeEvent(first.id, 'new-run', 5),
       );
-      const changed = await coordinator.handlers['execution.inspect.query'](
+      const older = await coordinator.handlers['execution.inspect.query'](
         {
           kind: 'session_trace_continue',
           sessionId: first.id,
-          revision: trace.result.revision,
-          offset: 1,
+          cursor: trace.result.nextCursor,
         },
         connectionContext(),
       );
-      assert.equal(changed.ok, true);
-      if (!changed.ok) return;
-      assert.equal(changed.result.kind, 'session_trace_revision_changed');
+      assert.equal(older.ok, true);
+      if (!older.ok || older.result.kind !== 'session_trace_page') return;
+      assert.equal(older.result.turns[0]?.runId, 'older-run');
     });
   });
 
@@ -243,7 +249,7 @@ describe('HostExecutionInspectCoordinator', () => {
         { kind: 'session_trace_start', sessionId: session.id },
         connectionContext(),
       );
-      assert.equal(sessionTrace.ok, false);
+      assert.equal(sessionTrace.ok, true);
 
       const target = await coordinator.handlers['execution.inspect.query'](
         { kind: 'turn_trace', sessionId: session.id, turnId },
@@ -317,6 +323,46 @@ describe('HostExecutionInspectCoordinator', () => {
     });
   });
 
+  test('keeps a Session trace pageable when one run exceeds the evidence budget', async () => {
+    await withCoordinator(async ({ stores, coordinator }) => {
+      const session = await stores.sessionStore.create(sessionInput('Oversized trace page'));
+      await stores.agentRunStore.createRun(runHeader(session.id, 'oversized-run', 2));
+      await stores.runtimeEventStore.appendRuntimeEvent(session.id, 'oversized-run', {
+        ...runtimeEvent(session.id, 'oversized-run', 2),
+        content: { kind: 'text', text: 'x'.repeat(EXECUTION_INSPECT_EVIDENCE_MAX_BYTES) },
+      });
+      await stores.agentRunStore.createRun(runHeader(session.id, 'older-run', 1));
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        'older-run',
+        runtimeEvent(session.id, 'older-run', 1),
+      );
+
+      const first = await coordinator.handlers['execution.inspect.query'](
+        { kind: 'session_trace_start', sessionId: session.id },
+        connectionContext(),
+      );
+
+      assert.equal(first.ok, true);
+      if (!first.ok || first.result.kind !== 'session_trace_page') return;
+      assert.equal(first.result.coverage.modelCalls, 'partial');
+      assert.equal(first.result.coverage.unreadableRecords, 1);
+      assert.ok(first.result.nextCursor);
+
+      const older = await coordinator.handlers['execution.inspect.query'](
+        {
+          kind: 'session_trace_continue',
+          sessionId: session.id,
+          cursor: first.result.nextCursor,
+        },
+        connectionContext(),
+      );
+      assert.equal(older.ok, true);
+      if (!older.ok || older.result.kind !== 'session_trace_page') return;
+      assert.equal(older.result.turns[0]?.runId, 'older-run');
+    });
+  });
+
   test('accepts evidence that exactly consumes the shared byte budget before an empty ledger', async () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Exact evidence budget'));
@@ -359,41 +405,35 @@ describe('HostExecutionInspectCoordinator', () => {
     });
   });
 
-  test('shares one evidence budget across every AgentRun in a Session query', async () => {
+  test('pages a Session trace when aggregate evidence exceeds one live read budget', async () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Aggregate evidence'));
-      const payload = 'x'.repeat(Math.ceil(EXECUTION_INSPECT_EVIDENCE_MAX_BYTES / 2));
       for (const [index, runId] of ['aggregate-run-1', 'aggregate-run-2'].entries()) {
         await stores.agentRunStore.createRun(runHeader(session.id, runId, index + 1));
-        await stores.agentRunStore.appendEvent(session.id, runId, {
-          type: 'run_started',
-          id: `aggregate-event-${index + 1}`,
-          sessionId: session.id,
-          runId,
-          turnId: `turn-${runId}`,
-          ts: index + 1,
-          data: { payload },
-        });
+        for (let eventIndex = 0; eventIndex < 1_400; eventIndex += 1) {
+          await stores.runtimeEventStore.appendRuntimeEvent(session.id, runId, {
+            id: `aggregate-event-${index + 1}-${eventIndex}`,
+            invocationId: runId,
+            sessionId: session.id,
+            turnId: `turn-${runId}`,
+            runId,
+            ts: index * 2_000 + eventIndex,
+            partial: false,
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'text', text: 'fixture' },
+          });
+        }
       }
 
-      const individual = await coordinator.handlers['execution.inspect.query'](
-        { kind: 'agent_run', sessionId: session.id, agentRunId: 'aggregate-run-1' },
+      const first = await coordinator.handlers['execution.inspect.query'](
+        { kind: 'session_trace_start', sessionId: session.id },
         connectionContext(),
       );
-      assert.equal(individual.ok, true);
-
-      const aggregate = await coordinator.handlers['execution.inspect.query'](
-        { kind: 'session', sessionId: session.id },
-        connectionContext(),
-      );
-      assert.deepEqual(aggregate, {
-        ok: false,
-        error: {
-          code: 'invalid_request',
-          message:
-            'Session inspection exceeds the live Host evidence limit; stop the Host to inspect it offline',
-        },
-      });
+      assert.equal(first.ok, true);
+      if (!first.ok || first.result.kind !== 'session_trace_page') return;
+      assert.ok(first.result.turns.length > 0);
+      assert.ok(first.result.nextCursor !== null);
     });
   });
 });

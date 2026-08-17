@@ -161,6 +161,11 @@ export interface DesktopConversationCopy {
     /** The panel-empty (tier 2) sentence under `empty`. */
     emptyHelp: string;
     costUnavailable: string;
+    costEstimateHelp: string;
+    loadEarlier: string;
+    loadingEarlier: string;
+    loadingSummary: string;
+    summaryUnavailable: string;
     /** Labels for the two headline figures the trace always states. */
     totals: {
       duration: string;
@@ -197,14 +202,6 @@ export interface DesktopConversationCopy {
      * reader gets, with a plain fallback for a code nobody has named yet.
      */
     turnFailure: (code: string) => string;
-    filterLabel: string;
-    filterPlaceholder: string;
-    /** The failure count that doubles as the "only failures" toggle. */
-    filterFailedOnly: (count: number) => string;
-    noMatches: string;
-    /** The filter no-match's clear action. */
-    clearFilter: string;
-    hiddenByFilter: (count: number) => string;
     /** Display name of one turn in the raw record: 第 N 轮 / Turn N. */
     turnLabel: (index: number) => string;
     /** Summary above the raw timeline. */
@@ -481,9 +478,14 @@ const COPY = {
       empty: '这个任务还没有可追踪的活动',
       emptyHelp: '任务尚无活动记录。',
       costUnavailable: '费用未知',
+      costEstimateHelp: '基于当前定价和已记录用量估算；缺失或未定价的调用可能未计入。',
+      loadEarlier: '加载更早记录',
+      loadingEarlier: '正在加载…',
+      loadingSummary: '正在估算完整会话用量…',
+      summaryUnavailable: '完整会话用量暂时无法估算。',
       totals: {
         duration: '总耗时',
-        cost: '花费',
+        cost: '估算成本',
       },
       coveragePartial: (parts) => `部分调用没有留下记录，下面的数字只少不多${zhDetail(parts)}`,
       coverageAbsent: (parts) => `这个后端不记录每次调用的明细${zhDetail(parts)}`,
@@ -496,12 +498,6 @@ const COPY = {
       recoveredAs: (disposition) => `已恢复：${ZH_RECOVERED[disposition] ?? disposition}`,
       retries: (count) => `重试 ${count} 次`,
       turnFailure: (code) => ZH_TURN_FAILURE[code] ?? '本轮失败',
-      filterLabel: '筛选追踪',
-      filterPlaceholder: '按工具、模型或轮次筛选',
-      filterFailedOnly: (count) => `${count} 轮失败`,
-      noMatches: '没有匹配的记录',
-      clearFilter: '清除筛选',
-      hiddenByFilter: (count) => `已隐藏 ${count} 项`,
       turnLabel: (index) => `第 ${index} 轮`,
       overview: {
         context: '上下文窗口',
@@ -683,9 +679,14 @@ const COPY = {
       empty: 'Nothing to trace in this task yet',
       emptyHelp: 'No activity recorded for this task yet.',
       costUnavailable: 'cost unknown',
+      costEstimateHelp: 'Estimated from current pricing and recorded usage; missing or unpriced calls may be excluded.',
+      loadEarlier: 'Load earlier records',
+      loadingEarlier: 'Loading…',
+      loadingSummary: 'Estimating full-session usage…',
+      summaryUnavailable: 'Full-session usage is temporarily unavailable.',
       totals: {
         duration: 'Duration',
-        cost: 'Cost',
+        cost: 'Estimated cost',
       },
       coveragePartial: (parts) =>
         `Some calls left no record, so the numbers below only undercount${enDetail(parts)}`,
@@ -700,12 +701,6 @@ const COPY = {
       recoveredAs: (disposition) => `recovered as ${disposition}`,
       retries: (count) => `${count} retr${count === 1 ? 'y' : 'ies'}`,
       turnFailure: (code) => EN_TURN_FAILURE[code] ?? 'Turn failed',
-      filterLabel: 'Filter the trace',
-      filterPlaceholder: 'Filter by tool, model or turn',
-      filterFailedOnly: (count) => `${count} failed turn${count === 1 ? '' : 's'}`,
-      noMatches: 'Nothing matches this filter',
-      clearFilter: 'Clear filters',
-      hiddenByFilter: (count) => `${count} hidden by the filter`,
       turnLabel: (index) => `Turn ${index}`,
       overview: {
         context: 'Context window',

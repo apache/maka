@@ -169,6 +169,7 @@ export interface DurableAgentRunStore
     RootTurnStartRejectionStore {
   findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
   listSessionRunsBounded(sessionId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
+  listSessionRunsPage(sessionId: string, input: AgentRunPageInput): Promise<AgentRunPageResult>;
   readEventsBounded(
     sessionId: string,
     runId: string,
@@ -200,6 +201,21 @@ export interface DurableAgentRunStore
 export interface AgentRunIdentitySearchResult {
   readonly runs: readonly AgentRunHeader[];
   readonly truncated: boolean;
+}
+
+export interface AgentRunPageCursor {
+  readonly createdAt: number;
+  readonly runId: string;
+}
+
+export interface AgentRunPageInput {
+  readonly before?: AgentRunPageCursor;
+  readonly limit: number;
+}
+
+export interface AgentRunPageResult {
+  readonly runs: readonly AgentRunHeader[];
+  readonly nextCursor: AgentRunPageCursor | null;
 }
 
 export type { BoundedEvidenceReadResult, EvidenceReadBudget } from './bounded-evidence.js';
@@ -414,6 +430,67 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       return normalizeAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
     });
     return { runs, truncated };
+  }
+
+  async listSessionRunsPage(
+    sessionId: string,
+    input: AgentRunPageInput,
+  ): Promise<AgentRunPageResult> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertIdentitySearchLimit(input.limit);
+    if (input.before) assertSafeId(input.before.runId, 'Invalid AgentRun page cursor');
+    const rows = this.#lease.database
+      .prepare(
+        input.before
+          ? `
+            SELECT run_id, created_at, record_json
+            FROM core_agent_runs
+            WHERE session_id = ?
+              AND (created_at < ? OR (created_at = ? AND run_id < ?))
+            ORDER BY created_at DESC, run_id DESC
+            LIMIT ?
+          `
+          : `
+            SELECT run_id, created_at, record_json
+            FROM core_agent_runs
+            WHERE session_id = ?
+            ORDER BY created_at DESC, run_id DESC
+            LIMIT ?
+          `,
+      )
+      .all(
+        ...(input.before
+          ? [
+              sessionId,
+              input.before.createdAt,
+              input.before.createdAt,
+              input.before.runId,
+              input.limit + 1,
+            ]
+          : [sessionId, input.limit + 1]),
+      ) as Array<{ run_id?: unknown; created_at?: unknown; record_json?: unknown }>;
+    const pageRows = rows.slice(0, input.limit);
+    const runs = pageRows.map((row) => {
+      if (
+        typeof row.run_id !== 'string' ||
+        typeof row.created_at !== 'number' ||
+        typeof row.record_json !== 'string'
+      ) {
+        throw new Error('Invalid SQLite AgentRun page row');
+      }
+      return normalizeAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
+    });
+    const last = pageRows.at(-1);
+    return {
+      runs,
+      nextCursor:
+        rows.length > input.limit &&
+        last &&
+        typeof last.run_id === 'string' &&
+        typeof last.created_at === 'number'
+          ? { createdAt: last.created_at, runId: last.run_id }
+          : null,
+    };
   }
 
   async listSessionRunsForRecovery(sessionId: string): Promise<AgentRunHeader[]> {

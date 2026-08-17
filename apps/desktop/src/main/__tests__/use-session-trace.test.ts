@@ -8,6 +8,7 @@ import {
 } from '@maka/core/session-trace';
 import type { SessionEvent } from '@maka/core/events';
 import type { Result } from '@maka/core/result';
+import type { DesktopSessionTracePage } from '../../preload/bridge-contract.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   TRACE_REFRESH_DEBOUNCE_MS,
@@ -39,6 +40,7 @@ function trace(sessionId: string): SessionTrace {
 interface TraceHarness {
   reads: string[];
   contextReads: string[];
+  summaryReads: string[];
   emit: (event: SessionEvent) => void;
   subscriptions: number;
   unsubscribes: number;
@@ -49,6 +51,7 @@ function installMakaBridge(): TraceHarness {
   const harness: TraceHarness = {
     reads: [],
     contextReads: [],
+    summaryReads: [],
     emit: (event) => {
       for (const handler of [...handlers]) handler(event);
     },
@@ -59,9 +62,45 @@ function installMakaBridge(): TraceHarness {
   // replaces `globalThis.window`, so building one here first would be clobbered.
   (globalThis.window as unknown as { maka: unknown }).maka = {
       inspector: {
-        trace: async (sessionId: string): Promise<Result<SessionTrace>> => {
+        trace: async (sessionId: string): Promise<Result<DesktopSessionTracePage>> => {
           harness.reads.push(sessionId);
-          return { ok: true, data: trace(sessionId) };
+          return { ok: true, data: { trace: trace(sessionId), nextCursor: null } };
+        },
+        summary: async (sessionId: string) => {
+          harness.summaryReads.push(sessionId);
+          return {
+            ok: true as const,
+            data: {
+              range: { from: 0, to: 1 },
+              totalRequests: 0,
+              totalCostUsd: 0,
+              totalTokens: {
+                input: 0,
+                output: 0,
+                cacheMiss: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                reasoning: 0,
+                total: 0,
+              },
+              cacheHitRequests: 0,
+              cacheCreateRequests: 0,
+              errorRequests: 0,
+              provenance: {
+                coverage: {
+                  attempts: 0,
+                  pricedAttempts: 0,
+                  unpricedAttempts: 0,
+                  usageReportedAttempts: 0,
+                  usagePartialAttempts: 0,
+                  usageMissingAttempts: 0,
+                },
+                legacyRecords: 0,
+                unreadableRecords: 0,
+                pendingRepairs: 0,
+              },
+            },
+          };
         },
         // The hook reads the context snapshot on the same signal (#2323). It
         // is counted separately: the assertions below are about how often the

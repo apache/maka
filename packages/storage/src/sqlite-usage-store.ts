@@ -260,6 +260,7 @@ class SqliteTelemetryRepo implements TelemetryRepo {
   private filteredUsageRows(query: UsageQuery, from: number, to: number) {
     return this.readLlmRows().filter((row) => {
       if (row.ts < from || row.ts > to) return false;
+      if (query.sessionId && row.sessionId !== query.sessionId) return false;
       if (query.connectionSlug && row.connectionSlug !== query.connectionSlug) return false;
       if (query.providerId && row.providerId !== query.providerId) return false;
       if (query.modelId && row.modelId !== query.modelId) return false;

@@ -6,11 +6,8 @@ import { Heading } from '@astryxdesign/core/Heading';
 import { HStack, VStack } from '@astryxdesign/core/Layout';
 import { Section } from '@astryxdesign/core/Section';
 import { Text } from '@astryxdesign/core/Text';
-import { TextInput } from '@astryxdesign/core/TextInput';
-import { ToggleButton } from '@astryxdesign/core/ToggleButton';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
-import type { TraceTotals } from '@maka/core/session-trace';
 import { useToast, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, Activity, AlertTriangle, Copy } from '@maka/ui/icons';
 import {
@@ -18,15 +15,16 @@ import {
   type InspectorCopy,
   inspectorStepKindLabel,
 } from './locales/conversation-copy.js';
-import { applyInspectorFilter, type InspectorFilter } from './session-inspector-filter.js';
-import { deriveInspectorOverviewModel } from './session-inspector-overview-model.js';
+import {
+  deriveInspectorOverviewModel,
+  estimatedSessionCost,
+} from './session-inspector-overview-model.js';
 import {
   deriveInspectorPanelModel,
   type InspectorStepRow,
   type InspectorTurnRow,
 } from './session-inspector-panel-model.js';
 import { useSessionTrace } from './use-session-trace.js';
-
 
 /**
  * The record file is the workspace's operational-state database — the file
@@ -74,17 +72,11 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
     loadFailed: copy.loadFailed,
     locale,
   });
-  const [filter, setFilter] = useState<InspectorFilter>({});
-  const trace = useMemo(() => deriveInspectorPanelModel(snapshot.trace), [snapshot.trace]);
-  const model = useMemo(() => applyInspectorFilter(trace, filter, copy), [trace, filter, copy]);
+  const model = useMemo(() => deriveInspectorPanelModel(snapshot.trace), [snapshot.trace]);
   const overview = useMemo(
-    () => deriveInspectorOverviewModel(snapshot.trace, snapshot.context),
-    [snapshot.trace, snapshot.context],
+    () => deriveInspectorOverviewModel(snapshot.trace, snapshot.context, snapshot.summary),
+    [snapshot.trace, snapshot.context, snapshot.summary],
   );
-  // Counted on the unfiltered trace, so turning the filter on cannot change
-  // the number that named it.
-  const failedTurns = trace.turns.filter((turn) => turn.failed).length;
-  const hidden = model.hiddenTurns + model.hiddenSteps;
 
   // The record file is a fact about the workspace, not about the session's
   // activity: it exists whether the trace is empty or not, and it never
@@ -143,7 +135,7 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
       className="maka-inspector-panel"
       data-maka-contract="session-inspector"
       aria-label={copy.ariaLabel}
-      aria-busy={snapshot.loading || undefined}
+      aria-busy={snapshot.loading || snapshot.summaryLoading || undefined}
     >
       {/* 24px between blocks against 8px inside one: proximity is the only
           grouping tool a panel without boxes has, and it used to spend the
@@ -210,7 +202,7 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
           className="maka-inspector-status"
           data-empty={model.empty || undefined}
         >
-          {model.empty && !snapshot.loading && !snapshot.error && (
+          {model.empty && !snapshot.nextCursor && !snapshot.loading && !snapshot.error && (
             <EmptyState
               title={copy.empty}
               description={copy.emptyHelp}
@@ -223,65 +215,33 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
             separately: totals come from the trace, the context block from the
             diagnostics query. A successful snapshot beside an empty or failed
             trace used to be hidden entirely (#2323). */}
-        {(!model.empty || overview.context || overview.composition) && (
+        {snapshot.summaryLoading && !snapshot.summary && (
+          <Text type="supporting" color="secondary">
+            {copy.loadingSummary}
+          </Text>
+        )}
+        {snapshot.summaryError && !snapshot.summary && (
+          <Text type="supporting" color="secondary">
+            {copy.summaryUnavailable}
+          </Text>
+        )}
+        {(snapshot.summary || overview.context || overview.composition) && (
           <InspectorOverview
             copy={copy}
             locale={locale}
-            totals={model.totals}
+            summary={snapshot.summary}
             overview={overview}
-            showTotals={!model.empty}
+            showTotals={Boolean(snapshot.summary && snapshot.summary.totalRequests > 0)}
           />
         )}
 
-        {!model.empty && (
+        {(!model.empty || snapshot.nextCursor) && (
           <div className="maka-inspector-raw" data-maka-contract="session-inspector-raw">
             <VStack gap={2}>
               <div className="maka-inspector-section-head maka-inspector-timeline-head">
                 <Heading level={3} className="maka-inspector-section-title">
                   {copy.overview.timelineTab}
                 </Heading>
-                {failedTurns > 0 && (
-                  <ToggleButton
-                    className="maka-inspector-failed-filter"
-                    size="sm"
-                    label={copy.filterFailedOnly(failedTurns)}
-                    isPressed={filter.failedOnly ?? false}
-                    onPressedChange={(pressed) => setFilter({ ...filter, failedOnly: pressed })}
-                  />
-                )}
-                <TextInput
-                  size="sm"
-                  className="maka-inspector-search"
-                  label={copy.filterLabel}
-                  isLabelHidden
-                  hasClear
-                  value={filter.query ?? ''}
-                  placeholder={copy.filterPlaceholder}
-                  onChange={(value) => setFilter({ ...filter, query: value })}
-                />
-              </div>
-
-              <div role="status" aria-live="polite" className="maka-inspector-status">
-                {model.filtered && model.turns.length === 0 && (
-                  <EmptyState
-                    isCompact
-                    title={copy.noMatches}
-                    actions={
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        label={copy.clearFilter}
-                        onClick={() => setFilter({ ...filter, query: '', failedOnly: false })}
-                      />
-                    }
-                    data-maka-contract="session-inspector-no-matches"
-                  />
-                )}
-                {model.filtered && hidden > 0 && model.turns.length > 0 && (
-                  <p className="maka-inspector-meta" data-maka-contract="session-inspector-hidden">
-                    {copy.hiddenByFilter(hidden)}
-                  </p>
-                )}
               </div>
 
               {model.coverage && (
@@ -317,6 +277,15 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                   />
                 ))}
               </ol>
+              {snapshot.nextCursor && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  label={snapshot.loadingEarlier ? copy.loadingEarlier : copy.loadEarlier}
+                  isDisabled={snapshot.loadingEarlier}
+                  onClick={snapshot.loadEarlier}
+                />
+              )}
             </VStack>
           </div>
         )}
@@ -330,7 +299,7 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
  *
  * What survived a pass over "who reads this number, and to decide what":
  *
- * - Cost, duration and cache hit rate are the three a reader opens the tab
+ * - Cost and cache hit rate are the Session-wide figures a reader opens the tab
  *   for, and as figures rather than table rows they also give the column
  *   something to fill. They open the panel with nothing over them: a heading
  *   above a 20px figure is a caption ranking below what it captions, and a
@@ -359,12 +328,12 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
 function InspectorOverview(props: {
   copy: InspectorCopy;
   locale: UiLocale;
-  totals: TraceTotals;
+  summary: ReturnType<typeof useSessionTrace>['summary'];
   overview: ReturnType<typeof deriveInspectorOverviewModel>;
   /** Trace-derived figures; absent when the trace is empty or failed to read. */
   showTotals: boolean;
 }) {
-  const { copy, overview, totals } = props;
+  const { copy, overview } = props;
   const formatNumber = numberFormatter(props.locale);
   const context = overview.context;
 
@@ -375,13 +344,20 @@ function InspectorOverview(props: {
           over a 20px figure is exactly what a StatCell already is — the three
           cells label themselves. */}
       {props.showTotals && (
-      <dl className="maka-inspector-stats" data-maka-contract="session-inspector-stats">
-        <StatCell label={copy.totals.cost} value={formatCost(totals.costUsd, copy.costUnavailable)} />
-        <StatCell label={copy.totals.duration} value={formatDuration(totals.durationMs)} />
-        {overview.cacheHitRate !== undefined && (
-          <StatCell label={copy.overview.cacheHit} value={formatPercent(overview.cacheHitRate)} />
-        )}
-      </dl>
+        <>
+          <dl className="maka-inspector-stats" data-maka-contract="session-inspector-stats">
+            <StatCell
+              label={copy.totals.cost}
+              value={formatCost(estimatedSessionCost(props.summary), copy.costUnavailable)}
+            />
+            {overview.cacheHitRate !== undefined && (
+              <StatCell label={copy.overview.cacheHit} value={formatPercent(overview.cacheHitRate)} />
+            )}
+          </dl>
+          <Text type="supporting" color="secondary">
+            {copy.costEstimateHelp}
+          </Text>
+        </>
       )}
 
       {context && (

@@ -6,6 +6,42 @@ import {
   type SessionTrace,
 } from '@maka/core/session-trace';
 import { deriveInspectorPanelModel } from '../../renderer/session-inspector-panel-model.js';
+import { estimatedSessionCost } from '../../renderer/session-inspector-overview-model.js';
+
+test('does not render legacy zero cost as a known free Session', () => {
+  const summary = {
+    range: { from: 0, to: 1 },
+    totalRequests: 1,
+    totalCostUsd: 0,
+    totalTokens: {
+      input: 1,
+      output: 1,
+      cacheMiss: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      reasoning: 0,
+      total: 2,
+    },
+    cacheHitRequests: 0,
+    cacheCreateRequests: 0,
+    errorRequests: 0,
+    provenance: {
+      coverage: {
+        attempts: 0,
+        pricedAttempts: 0,
+        unpricedAttempts: 0,
+        usageReportedAttempts: 0,
+        usagePartialAttempts: 0,
+        usageMissingAttempts: 0,
+      },
+      legacyRecords: 1,
+      unreadableRecords: 0,
+      pendingRepairs: 0,
+    },
+  };
+  assert.equal(estimatedSessionCost(summary), undefined);
+  assert.equal(estimatedSessionCost({ ...summary, totalCostUsd: 0.01 }), 0.01);
+});
 
 test('shows one compact diagnostic line for a failed history-compaction call', () => {
   const trace: SessionTrace = {

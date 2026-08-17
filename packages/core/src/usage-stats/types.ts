@@ -16,6 +16,7 @@ export type UsageGroupBy = 'provider' | 'model' | 'tool' | 'day' | 'hour';
 
 export interface UsageQuery {
   range: TimeRange;
+  sessionId?: string;
   connectionSlug?: string;
   providerId?: string;
   modelId?: string;

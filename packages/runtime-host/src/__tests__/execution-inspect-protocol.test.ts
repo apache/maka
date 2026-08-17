@@ -96,7 +96,7 @@ describe('execution inspect protocol', () => {
           ok: true,
           result: {
             ...tracePage(),
-            nextOffset: 2,
+            nextCursor: 'not a cursor',
           },
         }),
       isProtocolError,
@@ -217,8 +217,6 @@ function tracePage() {
     kind: 'session_trace_page' as const,
     schemaVersion: 1 as const,
     sessionId: 'session-1',
-    revision: `sha256:${'a'.repeat(64)}` as const,
-    offset: 0,
     turns: [],
     totals: {
       durationMs: 0,
@@ -235,7 +233,7 @@ function tracePage() {
       unreadableRecords: 0,
       turnsWithFewerModelCallsThanSteps: [],
     },
-    nextOffset: null,
+    nextCursor: null,
   };
 }
 
