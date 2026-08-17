@@ -4,6 +4,7 @@ import { Button } from '@astryxdesign/core/Button';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { HStack } from '@astryxdesign/core/Stack';
+import { Switch } from '@astryxdesign/core/Switch';
 import { Text } from '@astryxdesign/core/Text';
 import { useUiLocale } from '@maka/ui';
 import { FolderOpen } from '@maka/ui/icons';
@@ -25,6 +26,7 @@ export function RemoteProjectDirectoryDialog(props: {
   const [entries, setEntries] = useState<readonly DesktopProjectDirectoryEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [registering, setRegistering] = useState(false);
+  const [showHidden, setShowHidden] = useState(false);
   const [error, setError] = useState<string>();
   const request = useRef(0);
 
@@ -35,6 +37,7 @@ export function RemoteProjectDirectoryDialog(props: {
     setRootId(undefined);
     setSegments([]);
     setEntries([]);
+    setShowHidden(false);
     setError(undefined);
     setLoading(true);
     void window.maka.projects.getDirectoryRoots(host).then(async (roots) => {
@@ -98,6 +101,9 @@ export function RemoteProjectDirectoryDialog(props: {
   }
 
   const host = props.host;
+  const visibleEntries = showHidden
+    ? entries
+    : entries.filter((entry) => !entry.name.startsWith('.'));
   return (
     <Dialog
       isOpen={host !== undefined}
@@ -150,11 +156,11 @@ export function RemoteProjectDirectoryDialog(props: {
                 </div>
               ) : loading ? (
                 <Text type="body" color="secondary">{copy.remoteDirectoryLoading}</Text>
-              ) : entries.length === 0 ? (
+              ) : visibleEntries.length === 0 ? (
                 <Text type="body" color="secondary">{copy.remoteDirectoryEmpty}</Text>
               ) : (
                 <div className="remoteProjectDirectoryEntries">
-                  {entries.map((entry) => (
+                  {visibleEntries.map((entry) => (
                     <Button
                       className="remoteProjectDirectoryEntry"
                       key={entry.name}
@@ -171,15 +177,22 @@ export function RemoteProjectDirectoryDialog(props: {
         }
         footer={
           <LayoutFooter hasDivider>
-            <HStack gap={2} hAlign="end">
-              <Button variant="ghost" label={copy.remoteDirectoryCancel} onClick={props.onClose} />
-              <Button
-                variant="primary"
-                label={copy.remoteDirectorySelect}
-                isDisabled={!rootId || loading || registering}
-                isLoading={registering}
-                onClick={() => void register()}
+            <HStack gap={3} hAlign="between" vAlign="center" wrap="wrap">
+              <Switch
+                label={copy.remoteDirectoryShowHidden}
+                value={showHidden}
+                onChange={setShowHidden}
               />
+              <HStack gap={2}>
+                <Button variant="ghost" label={copy.remoteDirectoryCancel} onClick={props.onClose} />
+                <Button
+                  variant="primary"
+                  label={copy.remoteDirectorySelect}
+                  isDisabled={!rootId || loading || registering}
+                  isLoading={registering}
+                  onClick={() => void register()}
+                />
+              </HStack>
             </HStack>
           </LayoutFooter>
         }
