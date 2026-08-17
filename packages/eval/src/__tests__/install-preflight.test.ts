@@ -110,6 +110,40 @@ test('rejects an unusable trials root before invoking external prerequisites', {
   assert.equal(commands, 0);
 });
 
+test('rejects a dangling trials root symlink before invoking external prerequisites', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-eval-install-trials-link-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const trials = join(root, 'trials');
+  const mount = join(root, 'mount');
+  await mkdir(mount);
+  try {
+    await symlink(join(root, 'missing-trials'), trials, 'dir');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') {
+      t.skip('symlinks require additional privileges on this platform');
+      return;
+    }
+    throw error;
+  }
+  const restore = setMachinePaths({
+    MAKA_TEST_PREFLIGHT_PYTHON: process.execPath,
+    MAKA_TEST_PREFLIGHT_TRIALS: trials,
+    MAKA_TEST_PREFLIGHT_MOUNT: mount,
+  });
+  t.after(restore);
+  let commands = 0;
+
+  await assert.rejects(
+    preflight(experiment(), join(root, 'spec.json'), {
+      runCommand: async () => {
+        commands += 1;
+      },
+    }),
+    /machine path MAKA_TEST_PREFLIGHT_TRIALS is a dangling symbolic link/,
+  );
+  assert.equal(commands, 0);
+});
+
 test('identifies a mismatched Python framework environment', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-eval-install-python-'));
   t.after(() => rm(root, { recursive: true, force: true }));

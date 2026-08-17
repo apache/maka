@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, stat } from 'node:fs/promises';
+import { access, lstat, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import {
   BUNDLED_HARNESS_RELAY_ROOT,
@@ -217,6 +217,18 @@ async function requireUsableDirectory(path: string, label: string): Promise<void
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         throw new Error(`${label} is inaccessible: ${candidate}: ${errorMessage(error)}`);
       }
+      let linkMetadata;
+      try {
+        linkMetadata = await lstat(candidate);
+      } catch (linkError) {
+        if ((linkError as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw new Error(`${label} is inaccessible: ${candidate}: ${errorMessage(linkError)}`);
+        }
+      }
+      if (linkMetadata?.isSymbolicLink()) {
+        throw new Error(`${label} is a dangling symbolic link: ${candidate}`);
+      }
+      if (linkMetadata) continue;
       const parent = dirname(candidate);
       if (parent === candidate) {
         throw new Error(`${label} has no accessible parent directory: ${path}`);
