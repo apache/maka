@@ -422,9 +422,15 @@ describe('Provider error classification', () => {
       code: 'rate_limit_exceeded',
     });
     assert.equal(classifyError(throttle), 'RateLimit');
-    assert.deepEqual(providerRetryMetadata(throttle), { retryable: true });
-    assert.deepEqual(providerRetryMetadata(Object.assign(throttle, { isRetryable: false })), {
-      retryable: false,
+    // A bare rate limit fails closed; automatic retries need a named delay.
+    assert.deepEqual(providerRetryMetadata(throttle), { retryable: false });
+    const delayedThrottle = Object.assign(
+      providerError(429, 'Too many requests', { code: 'rate_limit_exceeded' }),
+      { responseHeaders: { 'retry-after': '40' } },
+    );
+    assert.deepEqual(providerRetryMetadata(delayedThrottle), {
+      retryable: true,
+      retryAfterMs: 40_000,
     });
 
     assert.equal(classifyError(providerError(401, 'Invalid API key')), 'Auth');

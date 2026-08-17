@@ -646,11 +646,13 @@ describe('ModelAdapter stream and error normalization', () => {
       retryable: false,
       code: 'permission_error',
       message: `${observedMessage} (code=permission_error, status=403)`,
+      boundedProviderMessage: true,
     });
     const event = adapter.makeErrorEvent('turn-1', failure);
     assert.equal(event.reason, undefined);
     assert.equal(event.code, 'permission_error');
     assert.equal(event.message, `${observedMessage} (code=permission_error, status=403)`);
+    assert.equal(event.boundedProviderMessage, true);
   });
 
   test('normalizes cache and reasoning usage variants in the adapter module', () => {

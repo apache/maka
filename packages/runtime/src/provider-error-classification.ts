@@ -389,22 +389,27 @@ function durableProviderErrorClass(classified: string, httpStatus: number | unde
 function providerFailureDiagnosticFacts(error: unknown): ProviderErrorFacts | undefined {
   let current = providerErrorTarget(error);
   let fallback: ProviderErrorFacts | undefined;
+  let structuredFallback: ProviderErrorFacts | undefined;
   let codedFallback: ProviderErrorFacts | undefined;
   const seen = new Set<unknown>();
   for (let depth = 0; depth < 4 && current !== undefined && !seen.has(current); depth += 1) {
     seen.add(current);
     const facts = normalizeProviderError(current);
     fallback ??= facts;
-    if (facts && (facts.evidence.statusCode || facts.evidence.structuredCodes.length > 0)) {
-      return facts;
-    }
+    // HTTP status is the strongest durable evidence: an SDK wrapper can carry
+    // its own transport `code` (for example `FETCH_FAILED`) while the real
+    // provider status sits on the wrapped cause. Prefer the status-bearing
+    // fact, and only fall back to wrapper-level structured codes when no fact
+    // in the chain carries one.
+    if (facts?.evidence.statusCode) return facts;
+    structuredFallback ??= facts && facts.evidence.structuredCodes.length > 0 ? facts : undefined;
     if (facts?.evidence.code) codedFallback ??= facts;
     current =
       current && typeof current === 'object'
         ? safeField(current as Record<string, unknown>, 'cause')
         : undefined;
   }
-  return codedFallback ?? fallback;
+  return structuredFallback ?? codedFallback ?? fallback;
 }
 
 interface ProviderFailureSources {

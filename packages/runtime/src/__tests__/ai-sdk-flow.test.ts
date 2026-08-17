@@ -419,6 +419,7 @@ describe('AiSdkFlow seam', () => {
           code: 'AUTH',
           reason: 'auth_failed',
           message: 'no token',
+          boundedProviderMessage: true,
         }),
         ev({ type: 'complete', stopReason: 'error' }),
       ],
@@ -428,10 +429,16 @@ describe('AiSdkFlow seam', () => {
 
     const err = out[0];
     assert.equal(err.content?.kind, 'error');
-    const errContent = err.content as { code?: string; reason?: string; message: string };
+    const errContent = err.content as {
+      code?: string;
+      reason?: string;
+      message: string;
+      boundedProviderMessage?: boolean;
+    };
     assert.equal(errContent.message, 'no token');
     assert.equal(errContent.code, 'AUTH');
     assert.equal(errContent.reason, 'auth_failed');
+    assert.equal(errContent.boundedProviderMessage, true);
     // error event itself is non-terminal; the trailing complete carries failed.
     assert.equal(isTerminalRuntimeEvent(err), false);
 

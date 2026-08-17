@@ -560,6 +560,7 @@ function mapBackendSessionEvent(
         ...(event.code !== undefined ? { code: event.code } : {}),
         ...(event.reason !== undefined ? { reason: event.reason } : {}),
         message: event.message,
+        ...(event.boundedProviderMessage === true ? { boundedProviderMessage: true } : {}),
         ...(event.details !== undefined ? { details: event.details } : {}),
       };
       memory.failureContent = content;

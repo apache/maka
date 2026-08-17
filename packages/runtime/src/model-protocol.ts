@@ -335,6 +335,11 @@ export interface ModelFailure {
   /** Provider-requested delay for the next physical attempt, in milliseconds. */
   retryAfterMs?: number;
   code?: string;
+  /**
+   * True when `message` is the bounded, redacted provider summary from the
+   * provider-failure boundary rather than a generalized error message.
+   */
+  boundedProviderMessage?: boolean;
 }
 
 /**

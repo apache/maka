@@ -492,6 +492,7 @@ export class ModelAdapter {
       ts: this.input.now(),
       recoverable: false,
       ...(failure.code !== undefined ? { code: failure.code } : {}),
+      ...(failure.boundedProviderMessage === true ? { boundedProviderMessage: true } : {}),
       ...(failure.kind !== 'abort' && failure.kind !== 'unknown' ? { reason: failure.kind } : {}),
       message: failure.message,
     };
@@ -951,10 +952,15 @@ function normalizeProviderFailure(error: unknown): ModelFailure {
   if (isModelFailure(error)) return error;
   const summary = providerFailureSummary(error);
   const failure = normalizeModelFailure(error);
+  // The bounded summary is display-safe provider wording; a generalized
+  // presentation message is not. The marker must follow the message, not the
+  // presence of a code (Error.code and provider codes both exist here).
+  const boundedProviderMessage = failure.kind === 'unknown' && summary !== undefined;
   return {
     ...failure,
     ...(summary?.code !== undefined ? { code: summary.code } : {}),
-    ...(failure.kind === 'unknown' && summary !== undefined ? { message: summary.message } : {}),
+    ...(boundedProviderMessage ? { message: summary.message } : {}),
+    ...(boundedProviderMessage ? { boundedProviderMessage: true } : {}),
   };
 }
 
