@@ -4,6 +4,7 @@ export type SessionWorkbarTabKind =
   | 'review'
   | 'terminal'
   | 'tasks'
+  | 'work-board'
   | 'browser'
   | 'files'
   | 'inspector'
@@ -54,6 +55,7 @@ export interface PersistedSessionWorkbarPanels {
 const PERSISTED_KINDS = new Set<SessionWorkbarTabKind>([
   'review',
   'tasks',
+  'work-board',
   'browser',
   'files',
   'inspector',
@@ -63,6 +65,7 @@ const STATIC_TAB_IDS: Record<Exclude<SessionWorkbarTabKind, 'side-chat'>, string
   review: 'workbar:review',
   terminal: 'workbar:terminal',
   tasks: 'workbar:tasks',
+  'work-board': 'workbar:work-board',
   browser: 'workbar:browser',
   files: 'workbar:files',
   inspector: 'workbar:inspector',
