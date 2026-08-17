@@ -69,6 +69,7 @@ function SessionWorkbarFallback() {
 
 export interface WorkbarHostModel {
   activeId?: string;
+  projectId?: string | null;
   rightCollapsed: boolean;
   bottomOpen: boolean;
   hidden: boolean;
@@ -164,6 +165,7 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
             <WorkbarSurface
               key={props.activeId}
               sessionId={props.activeId}
+              projectId={props.projectId}
               hidden={props.hidden}
               onDismissPanel={props.onDismissPanel}
               panelsState={props.panelsState}

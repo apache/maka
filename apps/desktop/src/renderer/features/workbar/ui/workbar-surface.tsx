@@ -52,6 +52,7 @@ import {
 import {
   ICON_SIZE,
   Activity,
+  Clipboard,
   FolderOpen,
   GitBranch,
   Globe,
@@ -87,6 +88,7 @@ import {
 } from '../model/workbar-tabs';
 import { useSessionTasks } from '../tools/tasks/use-session-tasks';
 import { WorkbarToggle } from './workbar-toggle';
+import { WorkBoardPanel } from '../../../work-board-panel.js';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 import type {
   CompanionQuoteTarget,
@@ -94,7 +96,6 @@ import type {
   QuoteCompanionPanelState,
 } from '../tools/side-chat/quote-companion-panel-state';
 import type { CompanionForkVisibilityEvent } from '../tools/side-chat/quote-companion-visibility';
-import { WORKBAR_TOOL_DEFINITIONS } from '../model/workbar-tool-definitions';
 
 const ArtifactPane = lazy(() =>
   import('../tools/artifacts/artifact-pane').then((module) => ({ default: module.ArtifactPane })),
@@ -184,6 +185,8 @@ function tabLabel(
         : copy.terminal;
     case 'tasks':
       return copy.tasks;
+    case 'work-board':
+      return copy.workBoard;
     case 'browser':
       return copy.browser;
     case 'files':
@@ -220,6 +223,8 @@ function tabIcon(tab: SessionWorkbarTab, active: boolean): ReactNode {
         ? Terminal
         : tab.kind === 'tasks'
           ? ListTodo
+          : tab.kind === 'work-board'
+            ? Clipboard
           : tab.kind === 'browser'
             ? Globe
             : tab.kind === 'files'
@@ -575,42 +580,69 @@ function WorkbarLauncher(props: {
   sideChatAvailable: boolean;
 }) {
   const copy = getDesktopConversationCopy(useUiLocale()).workbar;
-  const icons = {
-    activity: Activity,
-    folder: FolderOpen,
-    'git-branch': GitBranch,
-    globe: Globe,
-    'list-todo': ListTodo,
-    'message-circle-question': MessageCircleQuestion,
-    terminal: Terminal,
-  } as const;
-  const actions = WORKBAR_TOOL_DEFINITIONS.map((definition) => {
-    const presentation = (() => {
-      switch (definition.kind) {
-        case 'side-chat':
-          return { label: copy.sideChat, description: copy.launcher.sideChat };
-        case 'review':
-          return { label: copy.review, description: copy.launcher.review };
-        case 'terminal':
-          return { label: copy.terminal, description: copy.launcher.terminal };
-        case 'browser':
-          return { label: copy.browser, description: copy.launcher.browser };
-        case 'files':
-          return { label: copy.files, description: copy.launcher.files };
-        case 'tasks':
-          return { label: copy.tasks, description: copy.launcher.tasks };
-        case 'inspector':
-          return { label: copy.inspector, description: copy.launcher.inspector };
-      }
-    })();
-    return {
-      ...presentation,
-      kind: definition.kind,
-      icon: icons[definition.icon],
-      shortcut: 'shortcut' in definition ? definition.shortcut : undefined,
-      disabled: definition.kind === 'side-chat' && !props.sideChatAvailable,
-    };
-  });
+  const actions: Array<{
+    kind: SessionWorkbarTabKind;
+    label: string;
+    description: string;
+    icon: typeof Activity;
+    shortcut?: string;
+    disabled?: boolean;
+  }> = [
+    {
+      kind: 'side-chat',
+      label: copy.sideChat,
+      description: copy.launcher.sideChat,
+      icon: MessageCircleQuestion,
+      shortcut: 'mod+alt+s',
+      disabled: !props.sideChatAvailable,
+    },
+    {
+      kind: 'review',
+      label: copy.review,
+      description: copy.launcher.review,
+      icon: GitBranch,
+      shortcut: 'ctrl+shift+g',
+    },
+    {
+      kind: 'terminal',
+      label: copy.terminal,
+      description: copy.launcher.terminal,
+      icon: Terminal,
+      shortcut: 'ctrl+`',
+    },
+    {
+      kind: 'browser',
+      label: copy.browser,
+      description: copy.launcher.browser,
+      icon: Globe,
+      shortcut: 'mod+t',
+    },
+    {
+      kind: 'files',
+      label: copy.files,
+      description: copy.launcher.files,
+      icon: FolderOpen,
+      shortcut: 'mod+p',
+    },
+    {
+      kind: 'tasks',
+      label: copy.tasks,
+      description: copy.launcher.tasks,
+      icon: ListTodo,
+    },
+    {
+      kind: 'work-board',
+      label: copy.workBoard,
+      description: copy.launcher.workBoard,
+      icon: Clipboard,
+    },
+    {
+      kind: 'inspector',
+      label: copy.inspector,
+      description: copy.launcher.inspector,
+      icon: Activity,
+    },
+  ];
   return (
     <div className="maka-workbar-launcher">
       <div className="maka-workbar-launcher-frame">
@@ -642,6 +674,7 @@ function WorkbarLauncher(props: {
 
 export function WorkbarSurface(props: {
   sessionId: string;
+  projectId?: string | null;
   hidden: boolean;
   onDismissPanel: (placement: SessionWorkbarPlacement) => void;
   panelsState: SessionWorkbarPanelsState;
@@ -798,6 +831,8 @@ export function WorkbarSurface(props: {
               onRetry={sessionTasks.retry}
             />
           );
+        } else if (tab.kind === 'work-board') {
+          content = <WorkBoardPanel projectId={props.projectId ?? null} />;
         } else if (tab.kind === 'browser') {
           content = (
             <Suspense fallback={<WorkbarPanelLoading label={copy.browser} />}>
