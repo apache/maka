@@ -233,22 +233,33 @@ def connect_target_url(flow: object) -> str:
 
 
 def looks_like_raw_tcp(nextlayer: object) -> bool:
-    """Match mitmproxy 12.2.3's raw-TCP classifier without waiting for TCPLayer."""
+    """Close only when the bytes cannot still become HTTP or TLS.
+
+    Script next_layer runs before mitmproxy 12.2.3's classifier. Copying its
+    `probably_no_http` test here would treat `GET` / `GET ` as raw and assign
+    CloseRawLayer while the request line is still arriving. With rawtcp=false
+    the built-in path would have kept waiting for HttpLayer.
+    """
     data_client = _next_layer_bytes(nextlayer, "data_client")
     data_server = _next_layer_bytes(nextlayer, "data_server")
     if starts_like_tls_record(data_client):
         return False
     if not data_client and not data_server:
         return False
-    probably_no_http = (
-        len(data_client) < 3
-        or b" " not in data_client
-        or (data_client.find(b" ") > data_client.find(b"\n"))
-        or not data_client[:3].isalpha()
-        or bool(data_server)
-        or data_client.startswith(b"SSH")
-    )
-    return probably_no_http
+    if data_server or data_client.startswith(b"SSH"):
+        return True
+    return not _still_could_be_http(data_client)
+
+
+def _still_could_be_http(data: bytes) -> bool:
+    first_line, newline, _rest = data.partition(b"\n")
+    line = first_line.rstrip(b"\r")
+    method, space, _remainder = line.partition(b" ")
+    if not method.isascii() or not method.isalpha():
+        return False
+    if newline and not space:
+        return False
+    return True
 
 
 def _next_layer_bytes(nextlayer: object, name: str) -> bytes:

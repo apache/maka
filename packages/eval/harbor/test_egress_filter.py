@@ -241,6 +241,32 @@ class EgressFilterTest(unittest.TestCase):
         MODULE.next_layer(empty)
         self.assertIsNone(empty.layer)
 
+        for prefix in (b"G", b"GE", b"GET", b"GET ", b"GET / HTTP/1.1"):
+            with self.subTest(prefix=prefix):
+                incomplete = SimpleNamespace(
+                    layer=None,
+                    context=context,
+                    data_client=lambda prefix=prefix: prefix,
+                    data_server=lambda: b"",
+                )
+                MODULE.next_layer(incomplete)
+                self.assertIsNone(incomplete.layer)
+
+    def test_next_layer_closes_bytes_that_cannot_become_http(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
+            context = SimpleNamespace(
+                layers=[], options=None, client=object(), server=None
+            )
+            binary = SimpleNamespace(
+                layer=None,
+                context=context,
+                data_client=lambda: b"\x00\x01\x02\x03",
+                data_server=lambda: b"",
+            )
+            MODULE.next_layer(binary)
+            self.assertIsInstance(binary.layer, MODULE.CloseRawLayer)
+
     def test_response_audits_a_non_websocket_101_upgrade(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
