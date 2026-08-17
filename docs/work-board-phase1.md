@@ -1,7 +1,5 @@
 # Work Board Phase 1 — capture/list MVP
 
-Status: in development (`feat/2560-work-board-phase1`).
-
 ## Surface
 
 A compact Work Board tab in the session workbar, next to Tasks, with:

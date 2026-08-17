@@ -89,13 +89,13 @@ export function useWorkBoard(query?: WorkBoardListQuery): UseWorkBoardResult {
 
   const retry = useCallback(() => load(true), [load]);
 
+  // The main process emits workBoard:changed for every successful mutation;
+  // the subscription above is the single reload path, so no second list
+  // request is issued here.
   const mutate = useCallback(
-    async <T>(operation: () => Promise<WorkBoardIpcResult<T>>): Promise<T> => {
-      const value = requireResult(await operation());
-      await load(true);
-      return value;
-    },
-    [load],
+    async <T>(operation: () => Promise<WorkBoardIpcResult<T>>): Promise<T> =>
+      requireResult(await operation()),
+    [],
   );
 
   return {
