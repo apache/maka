@@ -115,6 +115,12 @@ export function registerAppIpc(
   );
   targetIpc.handle('projects:add', (_event, options?: { select?: unknown }) =>
     deps.projectManagement.add({ select: options?.select !== false }));
+  handleReconnectableRead(targetIpc, 'projects:directoryRoots', () =>
+    deps.projectManagement.directoryRoots());
+  handleReconnectableRead(targetIpc, 'projects:listDirectory', (_event, input: unknown) =>
+    deps.projectManagement.listDirectory(input));
+  targetIpc.handle('projects:registerDirectory', (_event, input: unknown) =>
+    deps.projectManagement.registerDirectory(input));
   targetIpc.handle('projects:select', (_event, projectId: unknown) =>
     deps.projectManagement.select(projectId));
   targetIpc.handle('projects:relink', (_event, projectId: unknown) =>

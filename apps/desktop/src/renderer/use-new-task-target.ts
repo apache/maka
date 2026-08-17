@@ -32,6 +32,7 @@ export function useNewTaskTarget(options: {
   const [pending, setPending] = useState(false);
   const [refreshing, setRefreshing] = useState(true);
   const [error, setError] = useState<string>();
+  const [directoryHost, setDirectoryHost] = useState<ReadyHost>();
   const refreshSequence = useRef(0);
 
   async function refresh(): Promise<DesktopNewTaskCatalog> {
@@ -113,7 +114,12 @@ export function useNewTaskTarget(options: {
   };
 
   async function addProject(host: ReadyHost): Promise<void> {
-    if (!host.capabilities.chooseClientDirectory || pending) return;
+    if (pending) return;
+    if (host.capabilities.chooseHostDirectory) {
+      setDirectoryHost(host);
+      return;
+    }
+    if (!host.capabilities.chooseClientDirectory) return;
     setPending(true);
     try {
       const result = await window.maka.newTasks.addProject({
@@ -134,6 +140,15 @@ export function useNewTaskTarget(options: {
     } finally {
       setPending(false);
     }
+  }
+
+  async function acceptRegisteredProject(project: ProjectRecord): Promise<void> {
+    const host = directoryHost;
+    if (!host) return;
+    setDirectoryHost(undefined);
+    setSelectedProfileId(host.profile.id);
+    setProjectSelections((current) => new Map(current).set(host.profile.id, project.id));
+    await refresh();
   }
 
   async function relinkProject(host: ReadyHost, projectId: string): Promise<void> {
@@ -172,10 +187,13 @@ export function useNewTaskTarget(options: {
     pending,
     refreshing,
     error,
+    directoryHost,
     refresh,
     selectProject,
     selectNoProject,
     addProject,
+    closeDirectoryPicker: () => setDirectoryHost(undefined),
+    acceptRegisteredProject,
     relinkProject,
   };
 }

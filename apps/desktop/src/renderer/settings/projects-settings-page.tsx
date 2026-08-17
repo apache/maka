@@ -23,9 +23,11 @@ import { RuntimeHostProfilesSection } from './runtime-host-profiles-section.js';
 import { useKeyedActionGuard } from './use-action-guard';
 import { useOptionalRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
+import { RemoteProjectDirectoryDialog } from '../remote-project-directory-dialog.js';
 
 const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {
   chooseClientDirectory: false,
+  chooseHostDirectory: false,
   selectNoProject: false,
   setLocalDefault: false,
   viewClientPath: false,
@@ -66,6 +68,7 @@ export function ProjectsSettingsPage(props: {
   const [homePath, setHomePath] = useState<string | undefined>(undefined);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
+  const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false);
   const reloadGeneration = useRef(0);
 
   const reload = useCallback(async () => {
@@ -173,15 +176,17 @@ export function ProjectsSettingsPage(props: {
             ? `${copy.sectionHelp} ${copy.defaultUnavailable}`
             : copy.sectionHelp
         }
-        action={capabilities.chooseClientDirectory ? (
+        action={capabilities.chooseClientDirectory || capabilities.chooseHostDirectory ? (
           <Button
             variant="secondary"
             size="sm"
             label={copy.addProject}
-            clickAction={async () => {
-              const result = await window.maka.projects.add(host);
-              if (result.ok) await reload();
-            }}
+            clickAction={capabilities.chooseHostDirectory
+              ? () => setDirectoryPickerOpen(true)
+              : async () => {
+                  const result = await window.maka.projects.add(host);
+                  if (result.ok) await reload();
+                }}
           />
         ) : undefined}
       >
@@ -383,6 +388,14 @@ export function ProjectsSettingsPage(props: {
           </List>)
         )}
       </SettingsSection>
+      <RemoteProjectDirectoryDialog
+        host={directoryPickerOpen ? host : undefined}
+        onClose={() => setDirectoryPickerOpen(false)}
+        onRegistered={() => {
+          setDirectoryPickerOpen(false);
+          void reload();
+        }}
+      />
     </SettingsPage>
   );
 }

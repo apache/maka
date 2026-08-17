@@ -1735,6 +1735,21 @@ const makaBridge = {
     > {
       return invokeSelectedRuntimeHost(host, 'projects:add');
     },
+    getDirectoryRoots(host: DesktopRuntimeHostRef) {
+      return invokeSelectedRuntimeHost(host, 'projects:directoryRoots');
+    },
+    listDirectory(
+      input: { readonly rootId: string; readonly segments: readonly string[] },
+      host: DesktopRuntimeHostRef,
+    ) {
+      return invokeSelectedRuntimeHost(host, 'projects:listDirectory', input);
+    },
+    registerDirectory(
+      input: { readonly rootId: string; readonly segments: readonly string[] },
+      host: DesktopRuntimeHostRef,
+    ) {
+      return invokeSelectedRuntimeHost(host, 'projects:registerDirectory', input);
+    },
     select(
       projectId: string | null,
       host?: DesktopRuntimeHostRef,

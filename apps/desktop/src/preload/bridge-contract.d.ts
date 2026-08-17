@@ -328,9 +328,18 @@ export type DesktopRuntimeHostSshTerminalSnapshot =
 
 export interface DesktopProjectCapabilities {
   readonly chooseClientDirectory: boolean;
+  readonly chooseHostDirectory: boolean;
   readonly selectNoProject: boolean;
   readonly setLocalDefault: boolean;
   readonly viewClientPath: boolean;
+}
+
+export interface DesktopProjectDirectoryRoot {
+  readonly id: string;
+}
+
+export interface DesktopProjectDirectoryEntry {
+  readonly name: string;
 }
 
 export interface DesktopProjectSnapshot {
@@ -643,6 +652,15 @@ export interface MakaBridge {
     add(host?: DesktopRuntimeHostRef): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     >;
+    getDirectoryRoots(host: DesktopRuntimeHostRef): Promise<readonly DesktopProjectDirectoryRoot[]>;
+    listDirectory(
+      input: { readonly rootId: string; readonly segments: readonly string[] },
+      host: DesktopRuntimeHostRef,
+    ): Promise<readonly DesktopProjectDirectoryEntry[]>;
+    registerDirectory(
+      input: { readonly rootId: string; readonly segments: readonly string[] },
+      host: DesktopRuntimeHostRef,
+    ): Promise<ProjectRecord>;
     select(
       projectId: string | null,
       host?: DesktopRuntimeHostRef,

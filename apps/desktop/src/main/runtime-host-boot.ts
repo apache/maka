@@ -751,6 +751,7 @@ function registerHostClientIpc(
   }));
   const targetProjectManagement = createProjectManagementService({
     catalog: targetProjectCatalog,
+    directoryCatalog: targetProjectCatalog,
     chooseDirectory: async () => {
       const result = await mainWindowController.showOpenDialog({
         title: "Add project",
@@ -762,12 +763,14 @@ function registerHostClientIpc(
     capabilities: target.kind === "local"
       ? {
           chooseClientDirectory: true,
+          chooseHostDirectory: false,
           selectNoProject: true,
           setLocalDefault: true,
           viewClientPath: true,
         }
       : {
           chooseClientDirectory: false,
+          chooseHostDirectory: true,
           selectNoProject: false,
           setLocalDefault: false,
           viewClientPath: false,
