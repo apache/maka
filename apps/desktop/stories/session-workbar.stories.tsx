@@ -8,6 +8,7 @@ import type { Task } from '@maka/core/task-ledger';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
+import type { DesktopSessionUsageSummary } from '../src/preload/bridge-contract';
 import { SessionWorkbar } from '../src/renderer/session-workbar';
 import {
   createSessionWorkbarPanelsState,
@@ -523,6 +524,68 @@ const emptyTrace: SessionTrace = {
   },
 };
 
+const emptyUsageSummary: DesktopSessionUsageSummary = {
+  range: { from: NOW, to: NOW },
+  totalRequests: 0,
+  totalCostUsd: 0,
+  totalTokens: {
+    input: 0,
+    output: 0,
+    cacheMiss: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    reasoning: 0,
+    total: 0,
+  },
+  cacheHitRequests: 0,
+  cacheCreateRequests: 0,
+  errorRequests: 0,
+  provenance: {
+    coverage: {
+      attempts: 0,
+      pricedAttempts: 0,
+      unpricedAttempts: 0,
+      usageReportedAttempts: 0,
+      usagePartialAttempts: 0,
+      usageMissingAttempts: 0,
+    },
+    legacyRecords: 0,
+    unreadableRecords: 0,
+    pendingRepairs: 0,
+  },
+};
+
+const populatedUsageSummary: DesktopSessionUsageSummary = {
+  range: { from: NOW, to: NOW + 43_600 },
+  totalRequests: 3,
+  totalCostUsd: 0.0243,
+  totalTokens: {
+    input: 81_300,
+    output: 740,
+    cacheMiss: 7_200,
+    cacheRead: 74_100,
+    cacheWrite: 0,
+    reasoning: 120,
+    total: 82_040,
+  },
+  cacheHitRequests: 2,
+  cacheCreateRequests: 0,
+  errorRequests: 1,
+  provenance: {
+    coverage: {
+      attempts: 3,
+      pricedAttempts: 2,
+      unpricedAttempts: 1,
+      usageReportedAttempts: 2,
+      usagePartialAttempts: 0,
+      usageMissingAttempts: 1,
+    },
+    legacyRecords: 0,
+    unreadableRecords: 1,
+    pendingRepairs: 0,
+  },
+};
+
 // ---- bridge --------------------------------------------------------------
 
 const noop = () => undefined;
@@ -575,6 +638,13 @@ function bridge(options: {
         options.traceFail
           ? { ok: false, error: { message: '追踪读取失败：无法读取运行记录' } }
           : { ok: true, data: options.trace ?? emptyTrace },
+      summary: async () => ({
+        ok: true,
+        data:
+          options.trace && options.trace.turns.length > 0
+            ? populatedUsageSummary
+            : emptyUsageSummary,
+      }),
       context: async () => ({
         ok: true,
         data: options.context ?? { status: 'unavailable', reason: 'no_completed_request' },
