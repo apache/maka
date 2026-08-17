@@ -3526,9 +3526,6 @@ function AppShellContent({
 
       <AppShellOverlays
         settingsOpen={settingsOpen}
-        connections={defaultHostConnections.snapshot.connections}
-        defaultConnection={defaultHostConnections.snapshot.defaultConnection}
-        refreshConnections={defaultHostConnections.refreshConnections}
         closeSettings={closeSettings}
         themePref={themePref}
         setThemePref={setThemePref}

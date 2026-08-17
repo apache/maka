@@ -10,6 +10,7 @@ import type {
 } from '@maka/core/llm-connections';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import { ProvidersPanel, type ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
+import { RuntimeHostSettingsTarget } from '../../src/renderer/settings/runtime-host-settings-target';
 import { SettingsPage } from '../../src/renderer/settings/settings-section';
 
 const NOW = Date.parse('2026-07-01T08:00:00Z');
@@ -403,7 +404,11 @@ function ProviderStory(props: {
   bridge: ConnectionsBridge;
   autoOpen?: AutoOpenTarget;
 }): ReactNode {
-  return <ProviderStoryFrame bridge={props.bridge} autoOpen={props.autoOpen} />;
+  return (
+    <RuntimeHostSettingsTarget host={{ profileId: 'local', hostId: 'storybook-local-host' }}>
+      <ProviderStoryFrame bridge={props.bridge} autoOpen={props.autoOpen} />
+    </RuntimeHostSettingsTarget>
+  );
 }
 
 // Real path: same page with several healthy connections and one of them set as default.

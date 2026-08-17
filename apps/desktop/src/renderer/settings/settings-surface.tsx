@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   Badge,
   Button,
-  Card,
   IconButton,
   Layout,
   LayoutContent,
@@ -25,10 +24,14 @@ import type {
   UsageStats,
 } from '@maka/core/settings';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
-import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
+import type {
+  DesktopRuntimeHostProfileSnapshot,
+  DesktopRuntimeHostRef,
+  DesktopSessionSummary,
+} from '../../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { createDefaultSettings } from '@maka/core/settings';
-import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Banner, Selector, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { ProvidersPanel } from './providers-panel';
 import { SubagentSettingsPage } from './subagent-settings-page';
 import { safeLocalStorageSet } from '../browser-storage';
@@ -43,7 +46,13 @@ import { HealthCenterPage } from './health-center-page';
 import { MemorySettingsPage } from './memory-settings-page';
 import { PermissionCenterPage } from './permission-center-page';
 import { SettingsSkeleton } from './settings-skeleton';
-import { SETTINGS_NAV, groupedNav, navLabel, readLastSettingsSection } from './settings-nav';
+import {
+  SETTINGS_NAV,
+  groupedNav,
+  navLabel,
+  readLastSettingsSection,
+  settingsSectionScope,
+} from './settings-nav';
 import { getSettingsNavigationCopy } from '../locales/settings-navigation-copy.js';
 import { SettingRow } from './settings-rows';
 import { SettingsPage } from './settings-section';
@@ -54,13 +63,19 @@ import { UsageSettingsPage } from './usage-settings-page';
 import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
+import {
+  runtimeHostConnectionsBridge,
+  type RuntimeHostSettingsConnectionsBridge,
+} from './runtime-host-settings-bridge.js';
+import {
+  hasRuntimeHostSettingsPatch,
+  projectClientOwnedSettings,
+} from '../../shared/settings-ownership.js';
+import { RuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 const NARROW_SETTINGS_QUERY = '(max-width: 760px)';
 
 export function SettingsSurface(props: {
-  connections: LlmConnection[];
-  defaultSlug: string | null;
-  onRefresh(): Promise<void>;
   onClose(): void;
   themePref: ThemePreference;
   onThemeChange(pref: ThemePreference): void;
@@ -153,13 +168,48 @@ export function SettingsSurface(props: {
     safeLocalStorageSet('maka-settings-section-v1', section);
   }, [section]);
   const [settings, setSettings] = useState<AppSettings>(() => createDefaultSettings());
+  const clientSettingsRef = useRef(settings);
+  const [connections, setConnections] = useState<LlmConnection[]>([]);
+  const [defaultSlug, setDefaultSlug] = useState<string | null>(null);
+  const [runtimeHosts, setRuntimeHosts] = useState<DesktopRuntimeHostProfileSnapshot>();
+  const [selectedProfileId, setSelectedProfileId] = useState<string>();
   const [usageStats, setUsageStats] = useState<UsageStats | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [clientLoading, setClientLoading] = useState(true);
+  const [runtimeHostLoading, setRuntimeHostLoading] = useState(false);
   const settingsModalMountedRef = useMountedRef();
   const settingsReloadTicketRef = useRef(0);
   const settingsUpdateTicketRef = useRef(0);
   const usageReloadTicketRef = useRef(0);
+  const runtimeHostReloadTicketRef = useRef(0);
   const toast = useToast();
+
+  const selectedRuntimeHostEntry = runtimeHosts?.entries.find(
+    (entry) => entry.profile.id === selectedProfileId,
+  );
+  const selectedRuntimeHost = useMemo<DesktopRuntimeHostRef | undefined>(() => {
+    if (
+      selectedRuntimeHostEntry?.readiness !== 'ready' ||
+      !selectedRuntimeHostEntry.hostId
+    ) return undefined;
+    return {
+      profileId: selectedRuntimeHostEntry.profile.id,
+      hostId: selectedRuntimeHostEntry.hostId,
+    };
+  }, [
+    selectedRuntimeHostEntry?.hostId,
+    selectedRuntimeHostEntry?.profile.id,
+    selectedRuntimeHostEntry?.readiness,
+  ]);
+  const connectionsBridge = useMemo(
+    () => selectedRuntimeHost
+      ? runtimeHostConnectionsBridge(selectedRuntimeHost)
+      : undefined,
+    [selectedRuntimeHost],
+  );
+  const showsRuntimeHost = settingsSectionScope(section) === 'runtime-host';
+  const loading =
+    clientLoading ||
+    (showsRuntimeHost && (runtimeHosts === undefined || runtimeHostLoading));
 
   useEffect(() => {
     if (!loading && section === 'models' && providerCatalogRequested) {
@@ -172,16 +222,18 @@ export function SettingsSurface(props: {
       settingsReloadTicketRef.current += 1;
       settingsUpdateTicketRef.current += 1;
       usageReloadTicketRef.current += 1;
+      runtimeHostReloadTicketRef.current += 1;
     };
   }, []);
 
-  async function reloadSettings() {
+  async function reloadRuntimeHostSettings(host = selectedRuntimeHost) {
+    if (!host) return;
     const ticket = settingsReloadTicketRef.current + 1;
     settingsReloadTicketRef.current = ticket;
     try {
-      const next = await window.maka.settings.get();
+      const next = await window.maka.settings.get(host);
       if (settingsModalMountedRef.current && ticket === settingsReloadTicketRef.current) {
-        setSettings(next);
+        setSettings(projectClientOwnedSettings(next, clientSettingsRef.current));
       }
     } catch (error) {
       if (settingsModalMountedRef.current && ticket === settingsReloadTicketRef.current) {
@@ -189,9 +241,27 @@ export function SettingsSurface(props: {
       }
     } finally {
       if (settingsModalMountedRef.current && ticket === settingsReloadTicketRef.current) {
-        setLoading(false);
+        setRuntimeHostLoading(false);
       }
     }
+  }
+
+  async function reloadClientSettings(): Promise<void> {
+    const next = await window.maka.settings.getClient();
+    if (!settingsModalMountedRef.current) return;
+    clientSettingsRef.current = next;
+    setSettings((current) => projectClientOwnedSettings(current, next));
+    setClientLoading(false);
+  }
+
+  async function reloadConnections(
+    bridge = connectionsBridge,
+  ): Promise<void> {
+    if (!bridge) return;
+    const snapshot = await bridge.getSnapshot();
+    if (!settingsModalMountedRef.current || bridge !== connectionsBridge) return;
+    setConnections(snapshot.connections);
+    setDefaultSlug(snapshot.defaultConnection);
   }
 
   async function updateSettings(patch: Parameters<typeof window.maka.settings.update>[0]) {
@@ -201,22 +271,37 @@ export function SettingsSurface(props: {
       patch.personalization?.uiLocale !== undefined,
     );
     try {
-      const result = await window.maka.settings.update(patch);
-      const next = result.settings;
+      const updatesRuntimeHost = hasRuntimeHostSettingsPatch(patch);
+      if (updatesRuntimeHost && !selectedRuntimeHost) {
+        throw new Error(copy.runtimeHostUnavailable);
+      }
+      const result = updatesRuntimeHost
+        ? await window.maka.settings.update(patch, selectedRuntimeHost)
+        : await window.maka.settings.updateClient(patch);
+      if (!updatesRuntimeHost) clientSettingsRef.current = result.settings;
       props.uiLocaleUpdateGate.commit(
         uiLocaleTicket,
-        next.personalization.uiLocale,
+        result.settings.personalization.uiLocale,
         props.onUiLocalePreferenceChange,
       );
-      if (patch.chatDefaults?.permissionMode !== undefined) {
+      if (
+        patch.chatDefaults?.permissionMode !== undefined &&
+        selectedProfileId === runtimeHosts?.defaultProfileId
+      ) {
         // The empty composer lives outside Settings and mirrors this value.
         // Update it from the committed result even if Settings closed while
         // the save was in flight; a close-time re-read can race the write.
-        props.onDefaultPermissionModeChange(next.chatDefaults.permissionMode);
+        props.onDefaultPermissionModeChange(result.settings.chatDefaults.permissionMode);
       }
       if (settingsModalMountedRef.current && ticket === settingsUpdateTicketRef.current) {
-        setSettings(next);
-        props.onUserLabelChange?.(next.personalization.displayName);
+        if (updatesRuntimeHost) {
+          setSettings(projectClientOwnedSettings(result.settings, clientSettingsRef.current));
+        } else {
+          setSettings((current) => projectClientOwnedSettings(current, result.settings));
+        }
+        if (selectedProfileId === runtimeHosts?.defaultProfileId) {
+          props.onUserLabelChange?.(result.settings.personalization.displayName);
+        }
       }
       return result;
     } catch (error) {
@@ -241,8 +326,84 @@ export function SettingsSurface(props: {
   }
 
   useEffect(() => {
-    void reloadSettings();
-  }, []);
+    let disposed = false;
+    const reloadRuntimeHosts = async () => {
+      const ticket = ++runtimeHostReloadTicketRef.current;
+      const next = await window.maka.runtimeHostProfiles.getSnapshot();
+      if (disposed || ticket !== runtimeHostReloadTicketRef.current) return;
+      setRuntimeHosts(next);
+      setSelectedProfileId((current) => {
+        if (current && next.entries.some((entry) => entry.profile.id === current && entry.enabled)) {
+          return current;
+        }
+        return next.defaultProfileId;
+      });
+    };
+    const unsubscribe = window.maka.runtimeHostProfiles.subscribeChanges(() => {
+      void reloadRuntimeHosts().catch(() => undefined);
+    });
+    void reloadRuntimeHosts().catch((error) => {
+      if (!disposed) {
+        toast.error(copy.settingsLoadFailed, settingsActionErrorMessage(error, locale));
+      }
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [copy.settingsLoadFailed, locale, toast]);
+
+  useEffect(() => {
+    void reloadClientSettings().catch((error) => {
+      if (!settingsModalMountedRef.current) return;
+      setClientLoading(false);
+      toast.error(copy.settingsLoadFailed, settingsActionErrorMessage(error, locale));
+    });
+    return window.maka.settings.subscribeClientChanged(() => {
+      void reloadClientSettings().catch((error) => {
+        if (settingsModalMountedRef.current) {
+          toast.error(copy.settingsLoadFailed, settingsActionErrorMessage(error, locale));
+        }
+      });
+    });
+  }, [copy.settingsLoadFailed, locale, toast]);
+
+  useEffect(() => {
+    settingsReloadTicketRef.current += 1;
+    settingsUpdateTicketRef.current += 1;
+    setRuntimeHostLoading(true);
+    setConnections([]);
+    setDefaultSlug(null);
+    if (!selectedRuntimeHost || !connectionsBridge) {
+      setRuntimeHostLoading(false);
+      return;
+    }
+    void Promise.all([
+      reloadRuntimeHostSettings(selectedRuntimeHost),
+      reloadConnections(connectionsBridge),
+    ]).catch((error) => {
+      if (settingsModalMountedRef.current) {
+        toast.error(copy.settingsLoadFailed, settingsActionErrorMessage(error, locale));
+        setRuntimeHostLoading(false);
+      }
+    });
+    const unsubscribeSettings = window.maka.settings.subscribeExternalChanged(
+      () => void reloadRuntimeHostSettings(selectedRuntimeHost),
+      selectedRuntimeHost,
+    );
+    const unsubscribeConnections = connectionsBridge.subscribeEvents?.(() => {
+      void reloadConnections(connectionsBridge).catch((error) => {
+        if (settingsModalMountedRef.current) {
+          toast.error(copy.settingsLoadFailed, settingsActionErrorMessage(error, locale));
+        }
+      });
+    });
+    return () => {
+      settingsReloadTicketRef.current += 1;
+      unsubscribeSettings();
+      unsubscribeConnections?.();
+    };
+  }, [connectionsBridge, selectedRuntimeHost]);
 
   useEffect(() => {
     if (section === 'usage') void reloadUsage();
@@ -256,6 +417,13 @@ export function SettingsSurface(props: {
   // silently rendering 通用 copy over a different page's body. The nav
   // highlight below still keys off `section === item.id` independently.
   const headerCopy = getSettingsNavigationCopy(locale).sections[section];
+  const runtimeHostOptions = (runtimeHosts?.entries ?? [])
+    .filter((entry) => entry.enabled)
+    .map((entry) => ({
+      value: entry.profile.id,
+      label: entry.profile.name,
+      disabled: entry.readiness !== 'ready' || !entry.hostId,
+    }));
 
   return (
     <div className="settingsSurface" data-modal="true">
@@ -344,6 +512,19 @@ export function SettingsSurface(props: {
                         <p className="settingsPageHeaderDescription">{headerCopy.description}</p>
                       )}
                     </div>
+                    {showsRuntimeHost && runtimeHostOptions.length > 0 ? (
+                      <div className="settingsRuntimeHostSelector">
+                        <Selector
+                          label={copy.runtimeHost}
+                          isLabelHidden
+                          value={selectedProfileId ?? runtimeHosts?.defaultProfileId ?? 'local'}
+                          options={runtimeHostOptions}
+                          isDisabled={!runtimeHosts}
+                          width={220}
+                          onChange={setSelectedProfileId}
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 </LayoutHeader>
               )}
@@ -351,31 +532,42 @@ export function SettingsSurface(props: {
                 <LayoutContent padding={6}>
                   {loading ? (
                     <SettingsSkeleton />
+                  ) : showsRuntimeHost && !selectedRuntimeHost ? (
+                    <Banner status="warning" title={copy.runtimeHostUnavailable} />
                   ) : (
-                    <SettingsPageBody
-                      section={section}
-                      settings={settings}
-                      usageStats={usageStats}
-                      connections={props.connections}
-                      defaultSlug={props.defaultSlug}
-                      themePref={props.themePref}
-                      themePalette={props.themePalette}
-                      onRefreshConnections={props.onRefresh}
-                      onUpdateSettings={updateSettings}
-                      onReloadSettings={reloadSettings}
-                      onReloadUsage={reloadUsage}
-                      onThemeChange={props.onThemeChange}
-                      onThemePaletteChange={props.onThemePaletteChange}
-                      onOpenDailyReview={props.onOpenDailyReview}
-                      onOpenKeyboardHelp={props.onOpenKeyboardHelp}
-                      onOpenSession={props.onOpenSession}
-                      archivedTasks={props.archivedTasks}
-                      onTaskImported={props.onTaskImported}
-                      openProviderCatalog={providerCatalogRequested}
-                      initialConnectionSlug={props.initialConnectionSlug}
-                      initialCreateProviderType={createProviderRequest}
-                      onInitialCreateProviderConsumed={() => setCreateProviderRequest(undefined)}
-                    />
+                    <RuntimeHostSettingsTarget
+                      key={selectedRuntimeHost
+                        ? `${selectedRuntimeHost.profileId}:${selectedRuntimeHost.hostId}`
+                        : 'client'}
+                      host={selectedRuntimeHost}
+                    >
+                      <SettingsPageBody
+                        section={section}
+                        settings={settings}
+                        usageStats={usageStats}
+                        connections={connections}
+                        connectionsBridge={connectionsBridge}
+                        defaultSlug={defaultSlug}
+                        runtimeHost={selectedRuntimeHost}
+                        themePref={props.themePref}
+                        themePalette={props.themePalette}
+                        onRefreshConnections={reloadConnections}
+                        onUpdateSettings={updateSettings}
+                        onReloadSettings={reloadRuntimeHostSettings}
+                        onReloadUsage={reloadUsage}
+                        onThemeChange={props.onThemeChange}
+                        onThemePaletteChange={props.onThemePaletteChange}
+                        onOpenDailyReview={props.onOpenDailyReview}
+                        onOpenKeyboardHelp={props.onOpenKeyboardHelp}
+                        onOpenSession={props.onOpenSession}
+                        archivedTasks={props.archivedTasks}
+                        onTaskImported={props.onTaskImported}
+                        openProviderCatalog={providerCatalogRequested}
+                        initialConnectionSlug={props.initialConnectionSlug}
+                        initialCreateProviderType={createProviderRequest}
+                        onInitialCreateProviderConsumed={() => setCreateProviderRequest(undefined)}
+                      />
+                    </RuntimeHostSettingsTarget>
                   )}
                 </LayoutContent>
               )}
@@ -392,7 +584,9 @@ function SettingsPageBody(props: {
   settings: AppSettings;
   usageStats: UsageStats | null;
   connections: LlmConnection[];
+  connectionsBridge: RuntimeHostSettingsConnectionsBridge | undefined;
   defaultSlug: string | null;
+  runtimeHost: DesktopRuntimeHostRef | undefined;
   themePref: ThemePreference;
   themePalette: ThemePalette;
   onRefreshConnections(): Promise<void>;
@@ -421,10 +615,11 @@ function SettingsPageBody(props: {
   // pattern (PR-STOP-ERROR-SURFACE-0 / PR-BOT-RESTART-RACE-0).
     switch (props.section) {
     case 'models':
+      if (!props.connectionsBridge) return null;
       return (
         <SettingsPage className="settingsModelsPage">
           <ProvidersPanel
-            bridge={window.maka.connections}
+            bridge={props.connectionsBridge}
             initialPage={props.openProviderCatalog ? 'catalog' : 'connections'}
             initialConnectionSlug={props.initialConnectionSlug}
             initialCreateProviderType={props.initialCreateProviderType}
@@ -461,11 +656,15 @@ function SettingsPageBody(props: {
     case 'about':
       return <AboutSettingsPage onOpenKeyboardHelp={props.onOpenKeyboardHelp} />;
     case 'general':
+      if (!props.connectionsBridge || !props.runtimeHost) return null;
       return (
         <GeneralSettingsPage
           settings={props.settings}
           connections={props.connections}
           defaultSlug={props.defaultSlug}
+          connectionsBridge={props.connectionsBridge}
+          testNetworkProxy={(input) =>
+            window.maka.settings.testNetworkProxy(input, props.runtimeHost)}
           onUpdate={props.onUpdateSettings}
           onRefreshConnections={props.onRefreshConnections}
         />

@@ -1,7 +1,7 @@
 import { useRef } from 'react';
 import { useHotkeys } from '@astryxdesign/core/hooks';
 import type { ChatDefaultPermissionMode, SettingsSection, ThemePalette, ThemePreference } from '@maka/core/settings';
-import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type { ProviderType } from '@maka/core/llm-connections';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { useUiLocale } from '@maka/ui';
@@ -14,9 +14,6 @@ export { SETTINGS_NAV } from './settings-nav';
 export type { SettingsNavGroup } from './settings-nav';
 
 export function SettingsModal(props: {
-  connections: LlmConnection[];
-  defaultSlug: string | null;
-  onRefresh(): Promise<void>;
   onClose(): void;
   themePref: ThemePreference;
   onThemeChange(pref: ThemePreference): void;
@@ -93,9 +90,6 @@ export function SettingsModal(props: {
       data-agents-page
     >
       <SettingsSurface
-        connections={props.connections}
-        defaultSlug={props.defaultSlug}
-        onRefresh={props.onRefresh}
         onClose={props.onClose}
         themePref={props.themePref}
         onThemeChange={props.onThemeChange}

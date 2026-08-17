@@ -31,6 +31,8 @@ import {
   type ConnectionsBridge,
   type CredentialPresenceStatus,
 } from './provider-panel-shared';
+import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
 
 // Maps an OAuth model-connection provider type to the browser-assisted login
 // service that can re-run its authorization from inside the connection dialog. Only
@@ -42,16 +44,19 @@ export interface OAuthLoginService {
   display: { name: string; shortName: string };
 }
 
-export function oauthLoginServiceFor(providerType: ProviderType): OAuthLoginService | null {
+export function oauthLoginServiceFor(
+  providerType: ProviderType,
+  host: import('../../preload/bridge-contract.js').DesktopRuntimeHostRef,
+): OAuthLoginService | null {
   switch (providerType) {
     case 'openai-codex':
       return {
-        bridge: window.maka.openAiCodex as unknown as OAuthLoginFlowBridge,
+        bridge: runtimeHostOAuthLoginBridge(window.maka.openAiCodex, host),
         display: { name: 'OpenAI Codex', shortName: 'Codex' },
       };
     case 'xai-oauth':
       return {
-        bridge: window.maka.xaiOAuth as unknown as OAuthLoginFlowBridge,
+        bridge: runtimeHostOAuthLoginBridge(window.maka.xaiOAuth, host),
         display: { name: 'xAI Grok', shortName: 'SuperGrok / X Premium' },
       };
     default:
@@ -76,6 +81,7 @@ export interface ConnectionDetailProps {
 // the guard, lifecycle gate, and cross-calls (save auto-fetches models) stay in
 // one place with zero behavior change.
 export function useConnectionDetail(props: ConnectionDetailProps) {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
@@ -108,7 +114,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const toast = useToast();
   const supportsApiKey = providerAuthSupportsApiKey(connection.providerType);
   const needsOAuth = defaults.authKind === 'oauth_token';
-  const oauthLoginService = needsOAuth ? oauthLoginServiceFor(connection.providerType) : null;
+  const oauthLoginService = needsOAuth
+    ? oauthLoginServiceFor(connection.providerType, host)
+    : null;
   const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
   const supportsRemoteDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const requiresCredential = providerAuthRequiresSecret(connection.providerType);

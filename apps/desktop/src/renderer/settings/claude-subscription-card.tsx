@@ -21,6 +21,7 @@ import {
   subscriptionActionErrorMessage,
   subscriptionResultMessage,
 } from './use-oauth-login-flow';
+import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 /**
  * Claude Pro / Max subscription card: the paste-code OAuth flow (browser →
@@ -31,6 +32,7 @@ import {
  * needs the manual authorization-code step and the experimental gate.
  */
 export function ClaudeSubscriptionCard() {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).claude;
   const [experimentalEnabled, setExperimentalEnabled] = useState<boolean | null>(null);
@@ -56,13 +58,13 @@ export function ClaudeSubscriptionCard() {
     return () => {
       const pendingAuthRequestId = claudeAuthRequestIdRef.current;
       claudeAuthRequestIdRef.current = null;
-      if (pendingAuthRequestId) void window.maka.claudeSubscription.cancelAuthorization(pendingAuthRequestId);
+      if (pendingAuthRequestId) void window.maka.claudeSubscription.cancelAuthorization(pendingAuthRequestId, host);
     };
   }, []);
 
   const refresh = async () => {
     try {
-      const next = await window.maka.claudeSubscription.getAccountState();
+      const next = await window.maka.claudeSubscription.getAccountState(host);
       if (!claudeCardMountedRef.current) return;
       setState(next);
       setPasteError(null);
@@ -76,7 +78,7 @@ export function ClaudeSubscriptionCard() {
 
   const refreshExperimentalGate = async () => {
     try {
-      const flag = await window.maka.claudeSubscription.isExperimentalEnabled();
+      const flag = await window.maka.claudeSubscription.isExperimentalEnabled(host);
       if (!claudeCardMountedRef.current) return;
       setExperimentalEnabled(flag);
       setExperimentalGateError(null);
@@ -98,7 +100,7 @@ export function ClaudeSubscriptionCard() {
     // renders nothing — no teasing UI.
     let cancelled = false;
     void window.maka.claudeSubscription
-      .isExperimentalEnabled()
+      .isExperimentalEnabled(host)
       .then((flag) => {
         if (cancelled) return;
         setExperimentalEnabled(flag);
@@ -163,7 +165,7 @@ export function ClaudeSubscriptionCard() {
       // (e.g. experimental flag flipped off after the card
       // mounted). Discriminate by checking for the `ok` field; the
       // envelope variant has it, the success payload does not.
-      const payload = await window.maka.claudeSubscription.getAuthUrl();
+      const payload = await window.maka.claudeSubscription.getAuthUrl(host);
       if ('ok' in payload) {
         if (!claudeCardMountedRef.current) return;
         // Envelope variant. `ok: true` shouldn't happen for
@@ -175,7 +177,7 @@ export function ClaudeSubscriptionCard() {
       claudeAuthRequestIdRef.current = payload.authRequestId;
       if (!claudeCardMountedRef.current) {
         claudeAuthRequestIdRef.current = null;
-        void window.maka.claudeSubscription.cancelAuthorization(payload.authRequestId);
+        void window.maka.claudeSubscription.cancelAuthorization(payload.authRequestId, host);
         return;
       }
       setAuthRequestId(payload.authRequestId);
@@ -184,12 +186,12 @@ export function ClaudeSubscriptionCard() {
       setPasteError(null);
       // kenji `1da909d5` hardening: pass the opaque authRequestId,
       // NOT the URL. Main looks up the URL it generated.
-      const opened = await window.maka.claudeSubscription.openAuthUrl(payload.authRequestId);
+      const opened = await window.maka.claudeSubscription.openAuthUrl(payload.authRequestId, host);
       if (!claudeCardMountedRef.current) return;
       if (!opened.ok) {
         toast.error(copy.openFailed, subscriptionResultMessage(opened.message, copy.openFailedRetry, locale));
         claudeAuthRequestIdRef.current = null;
-        void window.maka.claudeSubscription.cancelAuthorization(payload.authRequestId);
+        void window.maka.claudeSubscription.cancelAuthorization(payload.authRequestId, host);
         setAuthRequestId(null);
         setStateHint(null);
       }
@@ -197,7 +199,7 @@ export function ClaudeSubscriptionCard() {
     } catch (error) {
       const pendingAuthRequestId = claudeAuthRequestIdRef.current;
       claudeAuthRequestIdRef.current = null;
-      if (pendingAuthRequestId) void window.maka.claudeSubscription.cancelAuthorization(pendingAuthRequestId);
+      if (pendingAuthRequestId) void window.maka.claudeSubscription.cancelAuthorization(pendingAuthRequestId, host);
       const message = subscriptionActionErrorMessage(error, locale);
       if (!claudeCardMountedRef.current) return;
       setAuthRequestId(null);
@@ -217,6 +219,7 @@ export function ClaudeSubscriptionCard() {
       const result = await window.maka.claudeSubscription.completeAuthorization(
         authRequestId,
         pasteValue,
+        host,
       );
       if (!claudeCardMountedRef.current) return;
       if (result.ok) {
@@ -243,7 +246,7 @@ export function ClaudeSubscriptionCard() {
     if (!authRequestId) return;
     if (!beginPendingAction('cancel')) return;
     try {
-      await window.maka.claudeSubscription.cancelAuthorization(authRequestId);
+      await window.maka.claudeSubscription.cancelAuthorization(authRequestId, host);
       if (!claudeCardMountedRef.current) return;
       claudeAuthRequestIdRef.current = null;
       setAuthRequestId(null);
@@ -270,7 +273,7 @@ export function ClaudeSubscriptionCard() {
         destructive: true,
       });
       if (!ok) return;
-      const result = await window.maka.claudeSubscription.logout();
+      const result = await window.maka.claudeSubscription.logout(host);
       if (!claudeCardMountedRef.current) return;
       if (result.ok) {
         toast.success(copy.loggedOut, copy.cleared);
@@ -289,7 +292,7 @@ export function ClaudeSubscriptionCard() {
   async function refreshQuota() {
     if (!beginPendingAction('quota')) return;
     try {
-      await window.maka.claudeSubscription.refreshQuota();
+      await window.maka.claudeSubscription.refreshQuota(host);
       if (!claudeCardMountedRef.current) return;
       await refresh();
     } catch (error) {

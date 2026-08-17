@@ -232,12 +232,14 @@ export interface DesktopRuntimeHostProfileSnapshot {
   readonly defaultProfileId: string;
 }
 
-export interface DesktopNewTaskHostRef {
+export interface DesktopRuntimeHostRef {
   readonly profileId: string;
   readonly hostId: string;
 }
 
-export interface DesktopNewTaskTarget extends DesktopNewTaskHostRef {
+export type DesktopNewTaskHostRef = DesktopRuntimeHostRef;
+
+export interface DesktopNewTaskTarget extends DesktopRuntimeHostRef {
   readonly projectId: string | null;
 }
 
@@ -634,24 +636,26 @@ export interface MakaBridge {
       snapshot: DesktopProjectSnapshot;
       info: DesktopAppInfo;
     }>;
-    getSnapshot(sessionId?: string): Promise<DesktopProjectSnapshot>;
-    subscribeChanges(handler: () => void, sessionId?: string): () => void;
+    getSnapshot(sessionId?: string, host?: DesktopRuntimeHostRef): Promise<DesktopProjectSnapshot>;
+    subscribeChanges(handler: () => void, sessionId?: string, host?: DesktopRuntimeHostRef): () => void;
     getLocalSnapshot(): Promise<DesktopProjectSnapshot>;
     subscribeLocalChanges(handler: () => void): () => void;
-    add(): Promise<
+    add(host?: DesktopRuntimeHostRef): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     >;
     select(
       projectId: string | null,
+      host?: DesktopRuntimeHostRef,
     ): Promise<{ project: ProjectRecord | null; path: string }>;
     relink(
       projectId: string,
+      host?: DesktopRuntimeHostRef,
     ): Promise<{ ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }>;
     /** Open a catalogued project's folder in the OS file manager. */
-    reveal(projectId: string): Promise<OpenPathResult>;
-    rename(projectId: string, name: string): Promise<ProjectRecord>;
-    archive(projectId: string): Promise<ProjectRecord>;
-    restore(projectId: string): Promise<ProjectRecord>;
+    reveal(projectId: string, host?: DesktopRuntimeHostRef): Promise<OpenPathResult>;
+    rename(projectId: string, name: string, host?: DesktopRuntimeHostRef): Promise<ProjectRecord>;
+    archive(projectId: string, host?: DesktopRuntimeHostRef): Promise<ProjectRecord>;
+    restore(projectId: string, host?: DesktopRuntimeHostRef): Promise<ProjectRecord>;
   };
   shellRuns: {
     list(sessionId: string): Promise<ShellRunUpdate[]>;
@@ -689,21 +693,22 @@ export interface MakaBridge {
     clear(sessionId: string): Promise<void>;
   };
   connections: {
-    getSnapshot(sessionId?: string): Promise<DesktopConnectionSnapshot>;
-    setDefault(slug: string | null): Promise<void>;
-    setDefaultModel(input: { slug: string; model: string } | null): Promise<void>;
-    create(input: CreateConnectionInput): Promise<LlmConnection>;
-    update(slug: string, patch: UpdateConnectionInput): Promise<LlmConnection>;
-    delete(slug: string): Promise<void>;
-    test(slug: string, opts?: { model?: string }): Promise<ConnectionTestResult>;
-    fetchModels(slug: string): Promise<ModelDiscoveryResult>;
-    hasSecret(slug: string): Promise<boolean>;
-    getRequestHeaders(slug: string): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
+    getSnapshot(sessionId?: string, host?: DesktopRuntimeHostRef): Promise<DesktopConnectionSnapshot>;
+    setDefault(slug: string | null, host?: DesktopRuntimeHostRef): Promise<void>;
+    setDefaultModel(input: { slug: string; model: string } | null, host?: DesktopRuntimeHostRef): Promise<void>;
+    create(input: CreateConnectionInput, host?: DesktopRuntimeHostRef): Promise<LlmConnection>;
+    update(slug: string, patch: UpdateConnectionInput, host?: DesktopRuntimeHostRef): Promise<LlmConnection>;
+    delete(slug: string, host?: DesktopRuntimeHostRef): Promise<void>;
+    test(slug: string, opts?: { model?: string }, host?: DesktopRuntimeHostRef): Promise<ConnectionTestResult>;
+    fetchModels(slug: string, host?: DesktopRuntimeHostRef): Promise<ModelDiscoveryResult>;
+    hasSecret(slug: string, host?: DesktopRuntimeHostRef): Promise<boolean>;
+    getRequestHeaders(slug: string, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
     setRequestHeaders(
       slug: string,
       headers: readonly import('@maka/core/llm-connections').RequestHeaderUpdate[],
+      host?: DesktopRuntimeHostRef,
     ): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
-    subscribeEvents(handler: (event: ConnectionEvent) => void): () => void;
+    subscribeEvents(handler: (event: ConnectionEvent) => void, host?: DesktopRuntimeHostRef): () => void;
   };
   mcp: {
     getConfig(): Promise<McpConfigFile>;
@@ -717,10 +722,13 @@ export interface MakaBridge {
     subscribeChanges(handler: (statuses: McpServerStatus[]) => void): () => void;
   };
   settings: {
-    get(): Promise<AppSettings>;
-    update(patch: UpdateAppSettingsInput): Promise<UpdateAppSettingsResult>;
-    subscribeExternalChanged(handler: () => void): () => void;
-    testNetworkProxy(input?: TestProxyInput): Promise<SettingsTestResult>;
+    getClient(): Promise<AppSettings>;
+    get(host?: DesktopRuntimeHostRef): Promise<AppSettings>;
+    updateClient(patch: UpdateAppSettingsInput): Promise<UpdateAppSettingsResult>;
+    update(patch: UpdateAppSettingsInput, host?: DesktopRuntimeHostRef): Promise<UpdateAppSettingsResult>;
+    subscribeClientChanged(handler: () => void): () => void;
+    subscribeExternalChanged(handler: () => void, host?: DesktopRuntimeHostRef): () => void;
+    testNetworkProxy(input?: TestProxyInput, host?: DesktopRuntimeHostRef): Promise<SettingsTestResult>;
     testBotChannel(provider: BotProvider): Promise<SettingsTestResult>;
     usageStats(range?: UsageRange): Promise<UsageStats>;
     bots: {
@@ -780,16 +788,16 @@ export interface MakaBridge {
     getSnapshot(): Promise<HealthSnapshot>;
   };
   memory: {
-    getState(sessionId?: string): Promise<LocalMemoryState>;
-    save(content: string): Promise<LocalMemoryState>;
-    reset(): Promise<LocalMemoryState>;
-    restoreLatestBackup(): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; message: string }>;
-    restoreBackup(kind: 'save' | 'reset' | 'restore'): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; message: string }>;
-    setEnabled(enabled: boolean): Promise<LocalMemoryState>;
-    setAgentReadEnabled(enabled: boolean): Promise<LocalMemoryState>;
-    openFile(): Promise<{ ok: true } | { ok: false; message: string }>;
-    openLatestBackup(): Promise<{ ok: true } | { ok: false; message: string }>;
-    openBackup(kind: 'save' | 'reset' | 'restore'): Promise<{ ok: true } | { ok: false; message: string }>;
+    getState(sessionId?: string, host?: DesktopRuntimeHostRef): Promise<LocalMemoryState>;
+    save(content: string, host?: DesktopRuntimeHostRef): Promise<LocalMemoryState>;
+    reset(host?: DesktopRuntimeHostRef): Promise<LocalMemoryState>;
+    restoreLatestBackup(host?: DesktopRuntimeHostRef): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; message: string }>;
+    restoreBackup(kind: 'save' | 'reset' | 'restore', host?: DesktopRuntimeHostRef): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; message: string }>;
+    setEnabled(enabled: boolean, host?: DesktopRuntimeHostRef): Promise<LocalMemoryState>;
+    setAgentReadEnabled(enabled: boolean, host?: DesktopRuntimeHostRef): Promise<LocalMemoryState>;
+    openFile(host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; message: string }>;
+    openLatestBackup(host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; message: string }>;
+    openBackup(kind: 'save' | 'reset' | 'restore', host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; message: string }>;
   };
   attachments: {
     pickFiles(): Promise<
@@ -822,26 +830,27 @@ export interface MakaBridge {
     >;
   };
   claudeSubscription: {
-    isExperimentalEnabled(): Promise<boolean>;
-    getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
-    openAuthUrl(authRequestId: string): Promise<SubscriptionActionResult>;
+    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean>;
+    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
+    openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     completeAuthorization(
       authRequestId: string,
       pasted: string,
+      host?: DesktopRuntimeHostRef,
     ): Promise<SubscriptionActionResult>;
-    cancelAuthorization(authRequestId?: string): Promise<{ ok: true }>;
-    getAccountState(): Promise<SubscriptionAccountState>;
-    refreshQuota(): Promise<SubscriptionActionResult>;
-    refreshTokens(): Promise<SubscriptionActionResult>;
-    logout(): Promise<SubscriptionActionResult>;
+    cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }>;
+    getAccountState(host?: DesktopRuntimeHostRef): Promise<SubscriptionAccountState>;
+    refreshQuota(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
   };
   openAiCodex: {
-    isExperimentalEnabled(): Promise<boolean>;
-    getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
-    openAuthUrl(authRequestId: string): Promise<SubscriptionActionResult>;
-    completeAuthorization(authRequestId: string): Promise<SubscriptionActionResult>;
-    cancelAuthorization(authRequestId?: string): Promise<{ ok: true }>;
-    getAccountState(): Promise<{
+    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean>;
+    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
+    openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }>;
+    getAccountState(host?: DesktopRuntimeHostRef): Promise<{
       provider: 'openai-codex';
       runtimeState:
         | 'not_logged_in'
@@ -855,15 +864,15 @@ export interface MakaBridge {
       picture?: string;
       errorMessage?: string;
     }>;
-    refreshTokens(): Promise<SubscriptionActionResult>;
-    logout(): Promise<SubscriptionActionResult>;
+    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
   };
   xaiOAuth: {
-    getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
-    openAuthUrl(authRequestId: string): Promise<SubscriptionActionResult>;
-    completeAuthorization(authRequestId: string): Promise<SubscriptionActionResult>;
-    cancelAuthorization(authRequestId?: string): Promise<{ ok: true }>;
-    getAccountState(): Promise<{
+    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
+    openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }>;
+    getAccountState(host?: DesktopRuntimeHostRef): Promise<{
       provider: 'xai-oauth';
       runtimeState:
         | 'not_logged_in'
@@ -874,18 +883,18 @@ export interface MakaBridge {
         | 'storage_failed';
       errorMessage?: string;
     }>;
-    refreshTokens(): Promise<SubscriptionActionResult>;
-    logout(): Promise<SubscriptionActionResult>;
+    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
   };
   githubCopilotSubscription: {
-    connectExistingLogin(): Promise<SubscriptionActionResult>;
-    getAccountState(): Promise<{
+    connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    getAccountState(host?: DesktopRuntimeHostRef): Promise<{
       provider: 'github-copilot';
       runtimeState: 'not_logged_in' | 'authenticated' | 'refreshing' | 'refresh_failed' | 'storage_failed';
       errorMessage?: string;
     }>;
-    refreshTokens(): Promise<SubscriptionActionResult>;
-    logout(): Promise<SubscriptionActionResult>;
+    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
   };
   scheduledTasks: {
     list(): Promise<ScheduledTask[]>;
@@ -916,13 +925,13 @@ export interface MakaBridge {
       limit?: number;
       provider?: WebSearchProvider;
       apiKey?: string;
-    }): Promise<WebSearchResponse>;
-    test(input: { provider?: WebSearchProvider; apiKey?: string }): Promise<WebSearchResponse>;
+    }, host?: DesktopRuntimeHostRef): Promise<WebSearchResponse>;
+    test(input: { provider?: WebSearchProvider; apiKey?: string }, host?: DesktopRuntimeHostRef): Promise<WebSearchResponse>;
   };
   dailyReview: {
     day(offsetDays: number, daySpan?: number): Promise<Result<DailyReviewSummary>>;
-    getConfig?(): Promise<DailyReviewConfig>;
-    setConfig?(patch: Partial<DailyReviewConfig>): Promise<DailyReviewConfig>;
+    getConfig?(host?: DesktopRuntimeHostRef): Promise<DailyReviewConfig>;
+    setConfig?(patch: Partial<DailyReviewConfig>, host?: DesktopRuntimeHostRef): Promise<DailyReviewConfig>;
     runOnce?(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }>;
     listArchives?(): Promise<DailyReviewArchiveSummary[]>;
     getArchive?(archiveId: string): Promise<DailyReviewArchive | null>;

@@ -34,6 +34,7 @@ import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { providerDisplay } from './provider-display';
 import { EnabledModelManager } from './provider-enabled-model-manager';
 import { useActionGuard } from './use-action-guard';
+import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
   providerPanelActionErrorMessage,
@@ -748,6 +749,7 @@ function GitHubCopilotReloginNotice(props: {
   hasSecret: CredentialPresenceStatus;
   onRelogin(): Promise<void>;
 }) {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   // connectGuard stays: it survives this component's renders and is the
@@ -763,7 +765,7 @@ function GitHubCopilotReloginNotice(props: {
   async function connect() {
     if (!connectGuard.begin('connect')) return;
     try {
-      const result = await window.maka.githubCopilotSubscription.connectExistingLogin();
+      const result = await window.maka.githubCopilotSubscription.connectExistingLogin(host);
       if (!result.ok) {
         toast.error(copy.copilotImportFailed, result.message);
         return;

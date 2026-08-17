@@ -43,11 +43,14 @@ import { useOptimisticSettingsDraft } from "./use-optimistic-settings-draft";
 import { getSettingsPreferencesCopy } from "../locales/settings-preferences-copy.js";
 import { settingsTestResultMessage } from "../locales/settings-test-result-copy.js";
 import { getShellCopy } from "../locales/shell-copy.js";
+import type { RuntimeHostSettingsConnectionsBridge } from './runtime-host-settings-bridge.js';
 
 export function GeneralSettingsPage(props: {
   settings: AppSettings;
   connections: readonly LlmConnection[];
   defaultSlug: string | null;
+  connectionsBridge: Pick<RuntimeHostSettingsConnectionsBridge, 'setDefaultModel'>;
+  testNetworkProxy(input: TestProxyInput): Promise<import('@maka/core/settings').SettingsTestResult>;
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
@@ -137,6 +140,7 @@ export function GeneralSettingsPage(props: {
       <GeneralDefaultsCard
         connections={props.connections}
         defaultSlug={props.defaultSlug}
+        connectionsBridge={props.connectionsBridge}
         onRefresh={props.onRefreshConnections}
         permissionMode={props.settings.chatDefaults.permissionMode}
         thinkingLevel={props.settings.chatDefaults.thinkingLevel}
@@ -149,6 +153,7 @@ export function GeneralSettingsPage(props: {
         <NetworkProxySection
           settings={props.settings}
           onUpdate={props.onUpdate}
+          testNetworkProxy={props.testNetworkProxy}
         />
       </SettingsSection>
     </SettingsPage>
@@ -181,6 +186,7 @@ const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "med
 function GeneralDefaultsCard(props: {
   connections: readonly LlmConnection[];
   defaultSlug: string | null;
+  connectionsBridge: Pick<RuntimeHostSettingsConnectionsBridge, 'setDefaultModel'>;
   onRefresh(): Promise<void>;
   permissionMode: ChatDefaultPermissionMode;
   thinkingLevel?: ThinkingLevel;
@@ -232,7 +238,7 @@ function GeneralDefaultsCard(props: {
     setSaving(true);
     try {
       const parsed = parseModelChoiceValue(nextValue);
-      await window.maka.connections.setDefaultModel(
+      await props.connectionsBridge.setDefaultModel(
         parsed
           ? {
               slug: parsed.llmConnectionSlug,
@@ -390,6 +396,7 @@ function GeneralDefaultsCard(props: {
 
 function NetworkProxySection(props: {
   settings: AppSettings;
+  testNetworkProxy(input: TestProxyInput): Promise<import('@maka/core/settings').SettingsTestResult>;
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
@@ -428,9 +435,7 @@ function NetworkProxySection(props: {
     if (!proxyTestGuard.begin("test")) return;
     setTesting(true);
     try {
-      const result = await window.maka.settings.testNetworkProxy(
-        toProxyTestInput(proxyDraftRef.current),
-      );
+      const result = await props.testNetworkProxy(toProxyTestInput(proxyDraftRef.current));
       const latency =
         result.latencyMs !== undefined ? ` · ${result.latencyMs} ms` : "";
       const message = settingsTestResultMessage(result, locale);

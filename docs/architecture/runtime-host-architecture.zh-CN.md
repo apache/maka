@@ -197,6 +197,8 @@ Host profile 是 Client-owned connection configuration，不是 Host state。内
 
 Desktop 会让 `local` 与所有已启用的 remote profile 独立保持连接。其中一个 profile 是默认 Host，只用于创建新 Session 和其他没有现成 Host scope 的操作；改变默认 Host 不会重连 Host，也不会移动已有 Session。一个 remote connection 失败不会中断 Local 或其他 remote Host。
 
+Desktop Settings 使用显式 Host selector 管理 Host-owned 配置。外观、语言等 Client-owned 偏好仍是 Desktop 唯一一份设置，不随该 selector 改变。
+
 Desktop 会聚合所有已连接 Host 的 Session summary。产品中的 Session identity 是 `(Host rootId, Session id)`，因此不同 Host 上相同的 Session id 仍是两个不同 Session。Request、event 与 persistent Client-local resource 都会路由回拥有该 Session 的 Host。Transport scope 还包含 Client target Epoch（`targetEpoch`），用于在 Desktop 替换该 profile 的 connection lifecycle 后阻止迟到的 request 或 event。Client target Epoch 不是 Host Epoch，也不是 authentication boundary。
 
 已启用 profile 与默认 profile 是持久化偏好，不代表 connection 已 ready。Remote profile 不可用时，Desktop 仍会显示它，供用户重试或停用。TUI 与 CLI 仍是单 Host Client：启动时解析一个 profile，并把 profile 不可用作为错误报告。

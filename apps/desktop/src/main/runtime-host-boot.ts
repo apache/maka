@@ -90,6 +90,7 @@ import { registerRuntimeHostConfigIpc } from "./runtime-host-config-ipc-main.js"
 import { createCapabilityRevisionPublisher } from "./runtime-host-capability-revision-publisher.js";
 import { buildClientSettingsTools } from "./client-settings-tools.js";
 import { createClientSettingsEffects } from "./client-settings-effects.js";
+import { registerClientSettingsIpc } from "./client-settings-ipc-main.js";
 import { startClientSettingsWatcher } from "./client-settings-watcher.js";
 import { registerRuntimeHostGitHubCopilotIpc } from "./runtime-host-github-copilot-ipc-main.js";
 import { registerRuntimeHostArtifactsIpc } from "./runtime-host-artifacts-ipc-main.js";
@@ -359,7 +360,7 @@ const botRegistry = new BotRegistry({
       .catch((error) => console.error("[runtime-host] bot message failed:", error));
   },
   onStatusChange: (status) => {
-    sendActiveRuntimeHostEvent("settings:bots:statusChanged", status);
+    mainWindowController.send("settings:bots:statusChanged", status);
   },
 });
 const clientSettingsEffects = createClientSettingsEffects({
@@ -370,8 +371,10 @@ const clientSettingsEffects = createClientSettingsEffects({
   applyBotSettings: useBotOnboardingFixture
     ? async () => undefined
     : (settings) => botRegistry.applySettings(settings),
-  emitExternalChanged: () =>
-    sendActiveRuntimeHostEvent("settings:externalChanged", { ts: Date.now() }),
+  emitExternalChanged: () => {
+    mainWindowController.send("settings:clientChanged");
+    sendActiveRuntimeHostEvent("settings:externalChanged", { ts: Date.now() });
+  },
 });
 const clientSettingsTools = buildClientSettingsTools({
   read: () => settingsStore.get(),
@@ -877,23 +880,6 @@ function registerHostClientIpc(
       updateRuntimeHostSettings(settingsIpcDeps, patch),
     emitConnectionsChanged: emitTargetConnectionListChanged,
   });
-  const candidateSettingsBotsIpc = registerSettingsBotsIpc({
-    ipcMain: scopedIpc,
-    settingsStore,
-    botRegistry,
-    applySettingsRuntimeEffects: async (settings) => {
-      await clientSettingsEffects.apply(settings, true);
-    },
-    productVersion: app.getVersion(),
-    openExternal: (url) => shell.openExternal(url),
-    ...(useBotOnboardingFixture
-      ? {
-          botOnboardingAdapters: createE2eFixtureBotOnboardingAdapters(),
-          botOnboardingReadChannelStatus: () => ({ running: true }),
-        }
-      : {}),
-  });
-  settingsBotsIpc = candidateSettingsBotsIpc;
   registerRuntimeHostPermissionsIpc({
     ipcMain: scopedIpc,
     client,
@@ -1060,10 +1046,6 @@ function registerHostClientIpc(
     unsubscribeSessionCatalogChanges();
     unsubscribeProjectCatalogChanges();
     unsubscribeScheduledTaskChanges();
-    candidateSettingsBotsIpc.dispose();
-    if (settingsBotsIpc === candidateSettingsBotsIpc) {
-      settingsBotsIpc = undefined;
-    }
     runtimePolicyTargets.delete(target);
     if (runtimePolicyTargetsByEpoch.get(scope.targetEpoch) === targetContext) {
       runtimePolicyTargetsByEpoch.delete(scope.targetEpoch);
@@ -1088,6 +1070,29 @@ function registerPersistentClientIpc(): void {
   });
   registerMarkdownSaveIpc({ ipcMain, mainWindowController });
   registerDesktopRuntimeHostProfileIpc(ipcMain, runtimeHostProfileService);
+  registerClientSettingsIpc({
+    ipcMain,
+    settingsStore,
+    apply: async (settings) => {
+      await clientSettingsEffects.apply(settings, true);
+    },
+  });
+  settingsBotsIpc = registerSettingsBotsIpc({
+    ipcMain,
+    settingsStore,
+    botRegistry,
+    applySettingsRuntimeEffects: async (settings) => {
+      await clientSettingsEffects.apply(settings, true);
+    },
+    productVersion: app.getVersion(),
+    openExternal: (url) => shell.openExternal(url),
+    ...(useBotOnboardingFixture
+      ? {
+          botOnboardingAdapters: createE2eFixtureBotOnboardingAdapters(),
+          botOnboardingReadChannelStatus: () => ({ running: true }),
+        }
+      : {}),
+  });
   ipcMain.handle("settings:usageStats", async (_event, range?: UsageRange) =>
     projectDesktopUsageStats(
       { hostId: localRuntimeHostId },

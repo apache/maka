@@ -20,6 +20,7 @@ import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
 import { RuntimeHostProfilesSection } from './runtime-host-profiles-section.js';
 import { useKeyedActionGuard } from './use-action-guard';
+import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {
   chooseClientDirectory: false,
@@ -48,6 +49,7 @@ export function ProjectsSettingsPage(props: {
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
 }) {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale);
   const toast = useToast();
@@ -63,16 +65,20 @@ export function ProjectsSettingsPage(props: {
 
   const reload = useCallback(async () => {
     const generation = ++reloadGeneration.current;
-    const snapshot = await window.maka.projects.getSnapshot();
+    const snapshot = await window.maka.projects.getSnapshot(undefined, host);
     if (mountedRef.current && generation === reloadGeneration.current) {
       setProjects([...snapshot.projects]);
       setCapabilities(snapshot.capabilities);
     }
-  }, [mountedRef]);
+  }, [host, mountedRef]);
 
   useEffect(() => {
     void reload();
-    const unsubscribeProjects = window.maka.projects.subscribeChanges(() => void reload());
+    const unsubscribeProjects = window.maka.projects.subscribeChanges(
+      () => void reload(),
+      undefined,
+      host,
+    );
     const unsubscribeHosts = window.maka.runtimeHostProfiles.subscribeChanges(() => void reload());
     // Paths render unabbreviated until this lands, which is why
     // `collapseHomePath` treats an unknown home as a no-op rather than a bug.
@@ -135,7 +141,7 @@ export function ProjectsSettingsPage(props: {
             size="sm"
             label={copy.addProject}
             clickAction={async () => {
-              const result = await window.maka.projects.add();
+              const result = await window.maka.projects.add(host);
               if (result.ok) await reload();
             }}
           />
@@ -216,6 +222,7 @@ export function ProjectsSettingsPage(props: {
                                       async () => {
                                         const result = await window.maka.projects.reveal(
                                           project.id,
+                                          host,
                                         );
                                         if (!result.ok) throw new Error(result.reason);
                                       },
@@ -238,7 +245,7 @@ export function ProjectsSettingsPage(props: {
                                     destructive: true,
                                   });
                                   if (!ok) return;
-                                  await window.maka.projects.archive(project.id);
+                                  await window.maka.projects.archive(project.id, host);
                                   // Removing the default leaves the preference
                                   // pointing at nothing; clear it in the same
                                   // action rather than leaving a dangling id.
@@ -262,7 +269,7 @@ export function ProjectsSettingsPage(props: {
                 await runRowAction(
                   `rename:${project.id}`,
                   async () => {
-                    await window.maka.projects.rename(project.id, next);
+                    await window.maka.projects.rename(project.id, next, host);
                     setRenamingId(null);
                   },
                   copy.renameFailed,

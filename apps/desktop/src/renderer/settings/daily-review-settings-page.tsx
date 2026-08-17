@@ -9,6 +9,7 @@ import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { useActionGuard } from './use-action-guard';
+import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 const DAILY_REVIEW_DEFAULT_MODEL_VALUE = '__maka_daily_review_default_model__';
 
@@ -28,6 +29,7 @@ function buildDailyReviewModelOptions(
 }
 
 export function DailyReviewSettingsPage(props: { connections: readonly LlmConnection[] }) {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getDailyReviewSettingsCopy(locale);
   const toast = useToast();
@@ -50,7 +52,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
-    dailyReviewIpc.getConfig().then((next) => {
+    dailyReviewIpc.getConfig(host).then((next) => {
       if (!cancelled && mountedRef.current) {
         setConfig(next);
         setLoading(false);
@@ -62,7 +64,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
       }
     });
     return () => { cancelled = true; };
-  }, [dailyReviewIpc, hasConfigIpc, locale, mountedRef]);
+  }, [dailyReviewIpc, hasConfigIpc, host, locale, mountedRef]);
 
   useEffect(() => {
     setExecuteTimeDraft(config?.executeTime ?? '08:00');
@@ -74,7 +76,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
     saveConfigGuard.begin(key);
     setSavingKey(key);
     try {
-      const next = await dailyReviewIpc.setConfig(patch);
+      const next = await dailyReviewIpc.setConfig(patch, host);
       if (mountedRef.current && saveConfigGuard.current === key) setConfig(next);
     } catch (error) {
       if (mountedRef.current && saveConfigGuard.current === key) {

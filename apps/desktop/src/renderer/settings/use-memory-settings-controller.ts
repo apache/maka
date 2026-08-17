@@ -21,6 +21,7 @@ import { deriveMemorySettingsViewModel } from './memory-settings-view-model';
 import { useKeyedActionGuard } from './use-action-guard';
 import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
 import { readScrollMotionBehavior } from '../scroll-motion-policy';
+import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 export interface MemoryDocumentControllerProps {
   settings: AppSettings;
@@ -29,6 +30,7 @@ export interface MemoryDocumentControllerProps {
 
 /** Owns the MEMORY.md document lifecycle. */
 export function useMemoryDocumentController(props: MemoryDocumentControllerProps) {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getMemorySettingsCopy(locale);
   type MemoryWriteAction = 'reload' | 'enable' | 'agent-read' | 'save' | 'reset' | 'restore' | 'entry-status';
@@ -125,7 +127,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
     const lifecycle = memoryPageLifecycleRef.current;
     const ticket = ++memoryReloadTicketRef.current;
     try {
-      const next = await window.maka.memory.getState();
+      const next = await window.maka.memory.getState(undefined, host);
       if (!isMemoryPageCurrent(lifecycle) || ticket !== memoryReloadTicketRef.current) return false;
       setState(next);
       setDraft(next.content);
@@ -157,7 +159,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
   async function setEnabled(enabled: boolean) {
     try {
       await runMemoryWriteAction('enable', async (isCurrent) => {
-        const next = await window.maka.memory.setEnabled(enabled);
+        const next = await window.maka.memory.setEnabled(enabled, host);
         await props.onReloadSettings();
         if (!isCurrent()) return;
         setState(next);
@@ -171,7 +173,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
   async function setAgentReadEnabled(agentReadEnabled: boolean) {
     try {
       await runMemoryWriteAction('agent-read', async (isCurrent) => {
-        const next = await window.maka.memory.setAgentReadEnabled(agentReadEnabled);
+        const next = await window.maka.memory.setAgentReadEnabled(agentReadEnabled, host);
         await props.onReloadSettings();
         if (!isCurrent()) return;
         setState(next);
@@ -185,7 +187,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
   async function save() {
     try {
       await runMemoryWriteAction('save', async (isCurrent) => {
-        const next = await window.maka.memory.save(draft);
+        const next = await window.maka.memory.save(draft, host);
         if (!isCurrent()) return;
         const redacted = next.content !== draft;
         setState(next);
@@ -219,7 +221,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
   async function reset() {
     try {
       await runMemoryWriteAction('reset', async (isCurrent) => {
-        const next = await window.maka.memory.reset();
+        const next = await window.maka.memory.reset(host);
         if (!isCurrent()) return;
         setState(next);
         setDraft(next.content);
@@ -250,7 +252,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
           });
           if (!ok) return;
           if (!isCurrent()) return;
-          const result = await window.maka.memory.restoreLatestBackup();
+          const result = await window.maka.memory.restoreLatestBackup(host);
           if (!isCurrent()) return;
           setState(result.state);
           setDraft(result.state.content);
@@ -281,7 +283,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
           });
           if (!ok) return;
           if (!isCurrent()) return;
-          const result = await window.maka.memory.restoreBackup(backup.kind);
+          const result = await window.maka.memory.restoreBackup(backup.kind, host);
           if (!isCurrent()) return;
           setState(result.state);
           setDraft(result.state.content);
@@ -301,7 +303,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
   async function openFile() {
     await runMemoryAction('memory:file:open', async (isCurrent) => {
       try {
-        const result = await window.maka.memory.openFile();
+        const result = await window.maka.memory.openFile(host);
         if (!isCurrent()) return;
         if (!result.ok) toast.error(copy.text.openFailed, memoryResultMessage(result.message, locale, copy.text.openFailed));
       } catch (error) {
@@ -313,7 +315,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
   async function openLatestBackup() {
     await runMemoryAction('backup:latest:open', async (isCurrent) => {
       try {
-        const result = await window.maka.memory.openLatestBackup();
+        const result = await window.maka.memory.openLatestBackup(host);
         if (!isCurrent()) return;
         if (!result.ok) toast.error(copy.text.openPreviousFailed, memoryResultMessage(result.message, locale, copy.text.openPreviousFailed));
       } catch (error) {
@@ -325,7 +327,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
   async function openBackupCandidate(backup: NonNullable<LocalMemoryState['latestBackup']>) {
     await runMemoryAction(`backup:${backup.kind}:open`, async (isCurrent) => {
       try {
-        const result = await window.maka.memory.openBackup(backup.kind);
+        const result = await window.maka.memory.openBackup(backup.kind, host);
         if (!isCurrent()) return;
         if (!result.ok) {
           toast.error(copy.openBackupFailed(localMemoryBackupKindLabel(backup.kind, copy)), memoryResultMessage(result.message, locale, copy.text.openFailed));
@@ -448,7 +450,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
     }
     try {
       await runMemoryWriteAction('save', async (isCurrent) => {
-        const next = await window.maka.memory.save(result.draft);
+        const next = await window.maka.memory.save(result.draft, host);
         if (!isCurrent()) return;
         setState(next);
         setDraft(next.content);
@@ -490,7 +492,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
 
     try {
       await runMemoryWriteAction('entry-status', async (isCurrent) => {
-        const next = await window.maka.memory.save(result.draft);
+        const next = await window.maka.memory.save(result.draft, host);
         if (!isCurrent()) return;
         setState(next);
         setDraft(next.content);

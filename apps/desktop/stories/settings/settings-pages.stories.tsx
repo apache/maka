@@ -32,7 +32,10 @@ import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-
 import type { ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import type { ProjectRecord } from '@maka/core/project';
 import type { ArchivedTasksBridge } from '../../src/renderer/settings/tasks-settings-page';
-import type { DesktopSessionSummary } from '../../src/preload/bridge-contract.js';
+import type {
+  DesktopRuntimeHostProfileSnapshot,
+  DesktopSessionSummary,
+} from '../../src/preload/bridge-contract.js';
 import { withScopedMakaBridge } from '../maka-bridge';
 import { getDailyReviewSettingsCopy } from '../../src/renderer/locales/settings-daily-review-copy';
 
@@ -575,12 +578,41 @@ const healthSignals: HealthSignal[] = [
 
 const healthSnapshot: HealthSnapshot = buildHealthSnapshot(NOW - 45_000, healthSignals);
 
+const runtimeHostProfiles: DesktopRuntimeHostProfileSnapshot = {
+  defaultProfileId: 'local',
+  entries: [
+    {
+      profile: { id: 'local', name: 'Local', kind: 'local' },
+      enabled: true,
+      isDefault: true,
+      readiness: 'ready',
+      hostId: 'storybook-local-host',
+    },
+  ],
+};
+
 const makaBridge = {
+  runtimeHostProfiles: {
+    getSnapshot: async () => runtimeHostProfiles,
+    addAndEnable: async () => ({ kind: 'connected' as const, snapshot: runtimeHostProfiles }),
+    remove: async () => runtimeHostProfiles,
+    setEnabled: async () => runtimeHostProfiles,
+    setDefault: async () => runtimeHostProfiles,
+    subscribeChanges: () => () => undefined,
+  },
   settings: {
+    getClient: async () => createDefaultSettings(),
     get: async () => createDefaultSettings(),
+    updateClient: async (
+      patch: Parameters<typeof window.maka.settings.updateClient>[0],
+    ): Promise<UpdateAppSettingsResult> => {
+      return { settings: mergeSettings(createDefaultSettings(), patch) };
+    },
     update: async (patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult> => {
       return { settings: mergeSettings(createDefaultSettings(), patch) };
     },
+    subscribeClientChanged: () => () => undefined,
+    subscribeExternalChanged: () => () => undefined,
     usageStats: async (): Promise<UsageStats> => usageStats,
     bots: {
       listStatuses: async () => ({}),
@@ -1108,9 +1140,6 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
         }}
       >
         <SettingsSurface
-          connections={props.connections ?? connections}
-          defaultSlug={props.defaultSlug === undefined ? 'zai-live' : props.defaultSlug}
-          onRefresh={async () => undefined}
           onClose={noop}
           themePref={themePref}
           onThemeChange={setThemePref}

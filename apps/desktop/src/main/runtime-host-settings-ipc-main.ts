@@ -25,6 +25,10 @@ import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
+import {
+  clientOwnedSettingsPatch,
+  hasSettingsPatch,
+} from "../shared/settings-ownership.js";
 
 type RuntimeHostSettingsClient = Pick<
   DesktopRuntimeHostClient,
@@ -117,8 +121,8 @@ export async function updateRuntimeHostSettings(
   patch: UpdateAppSettingsInput,
 ): Promise<AppSettings> {
   await applyHostPatch(deps.client, patch);
-  const clientPatch = toClientOwnedPatch(patch);
-  const local = hasPatch(clientPatch)
+  const clientPatch = clientOwnedSettingsPatch(patch);
+  const local = hasSettingsPatch(clientPatch)
     ? await deps.settingsStore.update(clientPatch)
     : await deps.settingsStore.get();
   await deps.applyClientSettings(local);
@@ -367,34 +371,4 @@ function withoutSecret(
 ): Partial<RuntimePolicy["networkProxy"]> {
   const { password: _password, ...value } = patch;
   return value;
-}
-
-function toClientOwnedPatch(
-  patch: UpdateAppSettingsInput,
-): UpdateAppSettingsInput {
-  const personalization =
-    patch.personalization?.uiLocale === undefined &&
-    patch.personalization?.selectedPetId === undefined
-      ? undefined
-      : {
-          ...(patch.personalization.uiLocale === undefined
-            ? {}
-            : { uiLocale: patch.personalization.uiLocale }),
-          ...(patch.personalization.selectedPetId === undefined
-            ? {}
-            : { selectedPetId: patch.personalization.selectedPetId }),
-        };
-  return {
-    ...(patch.botChat ? { botChat: patch.botChat } : {}),
-    ...(patch.usage ? { usage: patch.usage } : {}),
-    ...(patch.appearance ? { appearance: patch.appearance } : {}),
-    ...(personalization ? { personalization } : {}),
-    ...(patch.notifications ? { notifications: patch.notifications } : {}),
-    ...(patch.projects ? { projects: patch.projects } : {}),
-    ...(patch.system ? { system: patch.system } : {}),
-  };
-}
-
-function hasPatch(patch: UpdateAppSettingsInput): boolean {
-  return Object.keys(patch).length > 0;
 }
