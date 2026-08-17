@@ -46,8 +46,16 @@ export function sessionEventErrorMessage(
   // Provider errors reach this boundary with a stable code plus the
   // allowlisted, redacted, bounded summary produced by ModelAdapter. Keep that
   // structured result authoritative instead of reclassifying words or HTTP
-  // status fragments in the presentation layer.
-  if (event.code !== undefined && event.message.length > 0) return event.message;
+  // status fragments in the presentation layer. The bounded marker is the only
+  // proof that `message` is safe to render verbatim: a code alone can be a Node
+  // transport code whose message is unbounded internal text.
+  if (
+    event.boundedProviderMessage === true &&
+    event.code !== undefined &&
+    event.message.length > 0
+  ) {
+    return event.message;
+  }
 
   const fallback = getDesktopConversationCopy(locale).actions.conversationErrorFallback;
   return fallback;
