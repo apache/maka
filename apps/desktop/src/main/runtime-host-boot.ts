@@ -75,6 +75,7 @@ import {
 import { registerNotificationsIpc } from "./notifications-ipc-main.js";
 import { registerMarkdownSaveIpc } from "./markdown-save-ipc-main.js";
 import { registerPetPackIpc } from "./pet-pack-import.js";
+import { registerWorkBoardIpc } from "./work-board-ipc-main.js";
 import {
   createPermissionOverlayMain,
   registerPermissionOverlayIpc,
@@ -493,6 +494,7 @@ mcpManager.onChange(() => {
 
 registerPersistentClientIpc();
 registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController, settingsStore });
+registerWorkBoardIpc({ ipcMain, workspaceRoot, mainWindowController });
 const browserIpc = registerBrowserIpc({
   mainWindowController,
   isHostActive: (scope) => runtimeHostManager?.ownsScope(scope) === true,
