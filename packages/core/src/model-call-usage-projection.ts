@@ -109,10 +109,14 @@ function tokens(attempt: ModelCallAttempt): {
   const input = attempt.inputTokens ?? 0;
   const output = attempt.outputTokens ?? 0;
   const cacheMiss = attempt.cacheMissInputTokens ?? 0;
-  const cacheRead = Math.min(attempt.cacheReadInputTokens ?? 0, input);
+  const cacheRead = clampCacheReadTokens(input, attempt.cacheReadInputTokens ?? 0);
   const cacheWrite = attempt.cacheWriteInputTokens ?? 0;
   const reasoning = attempt.reasoningTokens ?? 0;
   return { input, output, cacheMiss, cacheRead, cacheWrite, reasoning, total: input + output };
+}
+
+export function clampCacheReadTokens(inputTokens: number, cacheReadTokens: number): number {
+  return Math.min(cacheReadTokens, inputTokens);
 }
 
 /** Cost contributed by an attempt. Unpriced records contribute nothing to the

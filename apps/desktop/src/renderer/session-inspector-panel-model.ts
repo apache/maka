@@ -42,8 +42,7 @@ export interface InspectorStepRow {
 
 export interface InspectorTurnRow {
   turnId: string;
-  /** 1-based position in the session's turn order — the display name. */
-  index: number;
+  startedAt: number;
   durationMs: number;
   totals: TraceTotals;
   failed: boolean;
@@ -72,9 +71,9 @@ export interface InspectorPanelModel {
 export function deriveInspectorPanelModel(trace: SessionTrace | undefined): InspectorPanelModel {
   if (!trace) return { turns: [], empty: true };
 
-  const turns = trace.turns.map<InspectorTurnRow>((turn, index) => ({
+  const turns = trace.turns.map<InspectorTurnRow>((turn) => ({
     turnId: turn.turnId,
-    index: index + 1,
+    startedAt: turn.startedAt,
     durationMs: turn.durationMs,
     totals: turn.totals,
     failed: turn.failure !== undefined,

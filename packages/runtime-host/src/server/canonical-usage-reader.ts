@@ -28,14 +28,17 @@ export async function readCanonicalUsage(
     ? await repairPendingModelCallProjections({
         ledger: {
           record: (attempt) => stores.modelCalls.recordModelCallAttempt(attempt),
-          pending: () => stores.modelCalls.pendingReprojections(),
+          pending: () => stores.modelCalls.pendingReprojections(query.sessionId),
           clear: (sessionId, runId) => stores.modelCalls.clearPendingReprojection(sessionId, runId),
         },
         readRunEvents,
         limit: USAGE_REPAIR_RUNS_PER_QUERY,
       })
     : { remaining: 0, unreadableEvents: 0 };
-  const page = await stores.modelCalls.modelCallAttempts(resolveUsageRange(query.range, now));
+  const page = await stores.modelCalls.modelCallAttempts(
+    resolveUsageRange(query.range, now),
+    query.sessionId,
+  );
   return {
     attempts: page.attempts,
     unreadableRecords: page.unreadableRecords + repair.unreadableEvents,

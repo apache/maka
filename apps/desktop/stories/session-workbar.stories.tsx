@@ -8,7 +8,10 @@ import type { Task } from '@maka/core/task-ledger';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
-import type { DesktopSessionUsageSummary } from '../src/preload/bridge-contract';
+import type {
+  DesktopSessionUsageSummary,
+  MakaBridge,
+} from '../src/preload/bridge-contract';
 import { SessionWorkbar } from '../src/renderer/session-workbar';
 import {
   createSessionWorkbarPanelsState,
@@ -600,6 +603,7 @@ function bridge(options: {
   tasks?: Task[];
   tasksFail?: boolean;
   trace?: SessionTrace;
+  traceNextCursor?: string;
   traceFail?: boolean;
   /** The context snapshot the composition block reads (#2323). */
   context?: ContextDiagnosticsResult;
@@ -634,10 +638,21 @@ function bridge(options: {
       saveArtifactAs: async () => ({ ok: true, saved: 'slice-9-conversation.diff' }),
     },
     inspector: {
-      trace: async () =>
+      trace: async (_sessionId, cursor) =>
         options.traceFail
-          ? { ok: false, error: { message: '追踪读取失败：无法读取运行记录' } }
-          : { ok: true, data: options.trace ?? emptyTrace },
+          ? {
+              ok: false,
+              error: { code: 'TRACE_READ_FAILED', message: '追踪读取失败：无法读取运行记录' },
+            }
+          : {
+              ok: true,
+              data: cursor
+                ? { trace: emptyTrace, nextCursor: null }
+                : {
+                    trace: options.trace ?? emptyTrace,
+                    nextCursor: options.traceNextCursor ?? null,
+                  },
+            },
       summary: async () => ({
         ok: true,
         data:
@@ -649,7 +664,7 @@ function bridge(options: {
         ok: true,
         data: options.context ?? { status: 'unavailable', reason: 'no_completed_request' },
       }),
-    },
+    } satisfies MakaBridge['inspector'],
     gitReview: {
       read: async () => ({
         ok: true,
@@ -831,6 +846,20 @@ export const Files: Story = {
 // raises when records are missing.
 export const Trace: Story = {
   decorators: [bridge({ trace: populatedTrace, context: populatedContext })],
+  render: () => <Workbar tab="inspector" />,
+};
+
+// Real path: the first bounded page of a longer trace. The continuation control
+// sits before the ascending timeline because earlier records are inserted at
+// that edge, not after the newest turn.
+export const TraceMoreHistory: Story = {
+  decorators: [
+    bridge({
+      trace: populatedTrace,
+      traceNextCursor: 'older-session-trace-page',
+      context: populatedContext,
+    }),
+  ],
   render: () => <Workbar tab="inspector" />,
 };
 

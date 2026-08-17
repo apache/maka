@@ -201,8 +201,8 @@ export interface DesktopConversationCopy {
      * reader gets, with a plain fallback for a code nobody has named yet.
      */
     turnFailure: (code: string) => string;
-    /** Display name of one turn in the raw record: 第 N 轮 / Turn N. */
-    turnLabel: (index: number) => string;
+    /** Stable display name of one turn, qualified by its recorded start time. */
+    turnLabel: (startedAt: string) => string;
     /** Summary above the raw timeline. */
     overview: {
       context: string;
@@ -496,7 +496,7 @@ const COPY = {
       recoveredAs: (disposition) => `已恢复：${ZH_RECOVERED[disposition] ?? disposition}`,
       retries: (count) => `重试 ${count} 次`,
       turnFailure: (code) => ZH_TURN_FAILURE[code] ?? '本轮失败',
-      turnLabel: (index) => `第 ${index} 轮`,
+      turnLabel: (startedAt) => `轮次 · ${startedAt}`,
       overview: {
         context: '上下文窗口',
         segment: {
@@ -698,7 +698,7 @@ const COPY = {
       recoveredAs: (disposition) => `recovered as ${disposition}`,
       retries: (count) => `${count} retr${count === 1 ? 'y' : 'ies'}`,
       turnFailure: (code) => EN_TURN_FAILURE[code] ?? 'Turn failed',
-      turnLabel: (index) => `Turn ${index}`,
+      turnLabel: (startedAt) => `Turn · ${startedAt}`,
       overview: {
         context: 'Context window',
         segment: {

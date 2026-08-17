@@ -12,6 +12,7 @@ import {
   EXECUTION_INSPECT_EVIDENCE_MAX_BYTES,
   EXECUTION_INSPECT_RESULT_MAX_BYTES,
   EXECUTION_INSPECT_SESSION_MAX_RUNS,
+  EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS,
 } from '../protocol/index.js';
 import { HostExecutionInspectCoordinator } from '../server/execution-inspect-coordinator.js';
 
@@ -167,27 +168,12 @@ describe('HostExecutionInspectCoordinator', () => {
       );
       assert.equal(trace.ok, true);
       if (!trace.ok || trace.result.kind !== 'session_trace_page') return;
-      assert.equal(trace.result.turns.length, 1);
+      assert.deepEqual(
+        trace.result.turns.map((turn) => turn.runId),
+        ['older-run', 'shared-run'],
+      );
       assert.equal(trace.result.turns[0]?.steps[0]?.kind, 'error');
-      assert.ok(trace.result.nextCursor);
-
-      await stores.agentRunStore.createRun(runHeader(first.id, 'new-run', 5));
-      await stores.runtimeEventStore.appendRuntimeEvent(
-        first.id,
-        'new-run',
-        runtimeEvent(first.id, 'new-run', 5),
-      );
-      const older = await coordinator.handlers['execution.inspect.query'](
-        {
-          kind: 'session_trace_continue',
-          sessionId: first.id,
-          cursor: trace.result.nextCursor,
-        },
-        connectionContext(),
-      );
-      assert.equal(older.ok, true);
-      if (!older.ok || older.result.kind !== 'session_trace_page') return;
-      assert.equal(older.result.turns[0]?.runId, 'older-run');
+      assert.equal(trace.result.nextCursor, null);
     });
   });
 
@@ -217,6 +203,77 @@ describe('HostExecutionInspectCoordinator', () => {
       assert.equal(missing.ok, false);
       if (missing.ok) return;
       assert.equal(missing.error.code, 'not_found');
+    });
+  });
+
+  test('fills Session trace pages with complete runs up to the turn budget', async () => {
+    await withCoordinator(async ({ stores, coordinator }) => {
+      const session = await stores.sessionStore.create(sessionInput('Paged turns'));
+      const runCount = EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS + 8;
+      for (let index = 0; index < runCount; index += 1) {
+        const runId = `paged-run-${index}`;
+        await stores.agentRunStore.createRun(runHeader(session.id, runId, index));
+        await stores.runtimeEventStore.appendRuntimeEvent(
+          session.id,
+          runId,
+          runtimeEvent(session.id, runId, index),
+        );
+      }
+
+      const first = await coordinator.handlers['execution.inspect.query'](
+        { kind: 'session_trace_start', sessionId: session.id },
+        connectionContext(),
+      );
+      assert.equal(first.ok, true);
+      if (!first.ok || first.result.kind !== 'session_trace_page') return;
+      assert.equal(first.result.turns.length, EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS);
+      assert.ok(first.result.nextCursor);
+
+      const second = await coordinator.handlers['execution.inspect.query'](
+        {
+          kind: 'session_trace_continue',
+          sessionId: session.id,
+          cursor: first.result.nextCursor,
+        },
+        connectionContext(),
+      );
+      assert.equal(second.ok, true);
+      if (!second.ok || second.result.kind !== 'session_trace_page') return;
+      assert.equal(second.result.turns.length, 8);
+      assert.equal(second.result.nextCursor, null);
+      assert.equal(
+        new Set([...first.result.turns, ...second.result.turns].map((turn) => turn.runId)).size,
+        runCount,
+      );
+    });
+  });
+
+  test('continues from every finite AgentRun timestamp accepted by the storage contract', async () => {
+    await withCoordinator(async ({ stores, coordinator }) => {
+      const session = await stores.sessionStore.create(sessionInput('Legacy timestamps'));
+      for (let index = 0; index <= EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS; index += 1) {
+        await stores.agentRunStore.createRun(
+          runHeader(session.id, `legacy-run-${index}`, index + 0.5),
+        );
+      }
+
+      const first = await coordinator.handlers['execution.inspect.query'](
+        { kind: 'session_trace_start', sessionId: session.id },
+        connectionContext(),
+      );
+      assert.equal(first.ok, true);
+      if (!first.ok || first.result.kind !== 'session_trace_page' || !first.result.nextCursor)
+        return;
+
+      const second = await coordinator.handlers['execution.inspect.query'](
+        {
+          kind: 'session_trace_continue',
+          sessionId: session.id,
+          cursor: first.result.nextCursor,
+        },
+        connectionContext(),
+      );
+      assert.equal(second.ok, true);
     });
   });
 

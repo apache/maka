@@ -44,7 +44,10 @@ export interface ModelCallLedgerReader {
    * cost is now unknown, and a total that silently omits them overstates what
    * the ledger knows. One corrupt row must not fail the query (#1638).
    */
-  read(range: { readonly from: number; readonly to: number }): ModelCallLedgerPage;
+  read(
+    range: { readonly from: number; readonly to: number },
+    sessionId?: string,
+  ): ModelCallLedgerPage;
 }
 
 export interface ModelCallLedgerPage {
@@ -66,7 +69,7 @@ export interface ModelCallLedgerWriter extends ModelCallLedgerReader {
    * Best-effort: losing the marker costs a targeted repair, not the records.
    */
   markRunPendingReprojection(sessionId: string, runId: string): Promise<void>;
-  pendingReprojections(): PendingReprojection[];
+  pendingReprojections(sessionId?: string): PendingReprojection[];
   clearPendingReprojection(sessionId: string, runId: string): Promise<void>;
 }
 
@@ -120,13 +123,19 @@ class SqliteModelCallLedger implements ModelCallLedger {
     return this.write(() => {
       this.#lease.database
         .prepare(`
-          INSERT INTO usage_model_call_attempts(attempt_id, completed_at, record_json)
-          VALUES (?, ?, ?)
+          INSERT INTO usage_model_call_attempts(attempt_id, completed_at, record_json, session_id)
+          VALUES (?, ?, ?, ?)
           ON CONFLICT(attempt_id) DO UPDATE SET
             completed_at = excluded.completed_at,
-            record_json = excluded.record_json
+            record_json = excluded.record_json,
+            session_id = excluded.session_id
         `)
-        .run(admitted.attemptId, admitted.completedAt, JSON.stringify(admitted));
+        .run(
+          admitted.attemptId,
+          admitted.completedAt,
+          JSON.stringify(admitted),
+          admitted.sessionId,
+        );
     });
   }
 
@@ -155,13 +164,20 @@ class SqliteModelCallLedger implements ModelCallLedger {
     });
   }
 
-  pendingReprojections(): PendingReprojection[] {
+  pendingReprojections(sessionId?: string): PendingReprojection[] {
     if (this.#state !== 'open') throw new ModelCallLedgerClosedError();
     const rows = this.#lease.database
       .prepare(
-        'SELECT session_id, run_id, marked_at FROM usage_model_call_reprojection ORDER BY marked_at ASC',
+        sessionId
+          ? `SELECT session_id, run_id, marked_at FROM usage_model_call_reprojection
+             WHERE session_id = ? ORDER BY marked_at ASC`
+          : 'SELECT session_id, run_id, marked_at FROM usage_model_call_reprojection ORDER BY marked_at ASC',
       )
-      .all() as Array<{ session_id: string; run_id: string; marked_at: number }>;
+      .all(...(sessionId ? [sessionId] : [])) as Array<{
+      session_id: string;
+      run_id: string;
+      marked_at: number;
+    }>;
     return rows.map((row) => ({
       sessionId: row.session_id,
       runId: row.run_id,
@@ -178,15 +194,24 @@ class SqliteModelCallLedger implements ModelCallLedger {
     });
   }
 
-  read(range: { readonly from: number; readonly to: number }): ModelCallLedgerPage {
+  read(
+    range: { readonly from: number; readonly to: number },
+    sessionId?: string,
+  ): ModelCallLedgerPage {
     if (this.#state !== 'open') throw new ModelCallLedgerClosedError();
     const rows = this.#lease.database
-      .prepare(`
-        SELECT record_json FROM usage_model_call_attempts
-        WHERE completed_at >= ? AND completed_at <= ?
-        ORDER BY completed_at ASC, attempt_id ASC
-      `)
-      .all(range.from, range.to) as Array<{ record_json: string }>;
+      .prepare(
+        sessionId
+          ? `SELECT record_json FROM usage_model_call_attempts
+             WHERE session_id = ? AND completed_at >= ? AND completed_at <= ?
+             ORDER BY completed_at ASC, attempt_id ASC`
+          : `SELECT record_json FROM usage_model_call_attempts
+             WHERE completed_at >= ? AND completed_at <= ?
+             ORDER BY completed_at ASC, attempt_id ASC`,
+      )
+      .all(...(sessionId ? [sessionId, range.from, range.to] : [range.from, range.to])) as Array<{
+      record_json: string;
+    }>;
     const attempts: ModelCallAttempt[] = [];
     let unreadableRecords = 0;
     for (const row of rows) {

@@ -283,10 +283,44 @@ describe('InteractiveUsageStores', () => {
       await stores.telemetry.recordLlmCall(
         llmRecord({ id: 'cache-miss', inputTokens: 100, cacheHitInputTokens: 0 }),
       );
+      await stores.telemetry.recordLlmCall(
+        llmRecord({
+          id: 'impossible-cache-hit',
+          inputTokens: 0,
+          cacheHitInputTokens: 1,
+          cachedInputTokens: 1,
+          cacheMissInputTokens: 0,
+        }),
+      );
 
       const summary = await stores.telemetry.summary({ range: 'all' });
       assert.equal(summary.totalTokens.input, 200);
       assert.equal(summary.totalTokens.cacheRead, 100);
+      assert.equal(summary.cacheHitRequests, 1);
+
+      await stores.close();
+      await owner.close();
+    });
+  });
+
+  test('legacy summary reads only the requested Session', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      await stores.telemetry.recordLlmCall(
+        llmRecord({ id: 'session-a-call', sessionId: 'session-a', costUsd: 1 }),
+      );
+      await stores.telemetry.recordLlmCall(
+        llmRecord({ id: 'session-b-call', sessionId: 'session-b', costUsd: 9 }),
+      );
+
+      const summary = await stores.telemetry.summary({
+        range: 'all',
+        sessionId: 'session-a',
+      });
+      assert.equal(summary.totalRequests, 1);
+      assert.equal(summary.totalCostUsd, 1);
 
       await stores.close();
       await owner.close();

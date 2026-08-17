@@ -18,6 +18,7 @@ import {
 import {
   deriveInspectorOverviewModel,
   estimatedSessionCost,
+  hasUnavailableSessionUsage,
 } from './session-inspector-overview-model.js';
 import {
   deriveInspectorPanelModel,
@@ -222,6 +223,11 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
             {copy.summaryUnavailable}
           </Text>
         )}
+        {snapshot.summary && hasUnavailableSessionUsage(snapshot.summary) && (
+          <Text type="supporting" color="secondary">
+            {copy.summaryUnavailable}
+          </Text>
+        )}
         {(snapshot.summary || overview.context || overview.composition) && (
           <InspectorOverview
             copy={copy}
@@ -264,16 +270,6 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                 </p>
               )}
 
-              <ol className="maka-inspector-turns">
-                {model.turns.map((turn) => (
-                  <TurnRow
-                    key={turn.turnId}
-                    turn={turn}
-                    copy={copy}
-                    onCopyPricingKey={copyPricingKey}
-                  />
-                ))}
-              </ol>
               {snapshot.nextCursor && (
                 <Button
                   variant="ghost"
@@ -283,6 +279,17 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                   onClick={snapshot.loadEarlier}
                 />
               )}
+              <ol className="maka-inspector-turns">
+                {model.turns.map((turn) => (
+                  <TurnRow
+                    key={turn.turnId}
+                    turn={turn}
+                    copy={copy}
+                    locale={locale}
+                    onCopyPricingKey={copyPricingKey}
+                  />
+                ))}
+              </ol>
             </VStack>
           </div>
         )}
@@ -292,7 +299,7 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
 }
 
 /**
- * The glance layer: three figures, then the window.
+ * The glance layer: two figures, then the window.
  *
  * What survived a pass over "who reads this number, and to decide what":
  *
@@ -327,7 +334,7 @@ function InspectorOverview(props: {
   locale: UiLocale;
   summary: ReturnType<typeof useSessionTrace>['summary'];
   overview: ReturnType<typeof deriveInspectorOverviewModel>;
-  /** Trace-derived figures; absent when the trace is empty or failed to read. */
+  /** Session-usage figures; absent when no recorded request can support them. */
   showTotals: boolean;
 }) {
   const { copy, overview } = props;
@@ -584,6 +591,7 @@ function formatPercent(ratio: number): string {
 function TurnRow(props: {
   turn: InspectorTurnRow;
   copy: InspectorCopy;
+  locale: UiLocale;
   onCopyPricingKey: (key: string) => void | Promise<void>;
 }) {
   const { copy, turn } = props;
@@ -595,7 +603,7 @@ function TurnRow(props: {
     >
       <div className="maka-inspector-turn-head">
         <Text type="label" className="maka-inspector-turn-label">
-          {copy.turnLabel(turn.index)}
+          {copy.turnLabel(formatTurnStartedAt(turn.startedAt, props.locale))}
         </Text>
         {/* One phrase, not a label plus a raw code: `本轮失败 · tool_failed`
             said the same thing twice, once in engineering vocabulary. */}
@@ -630,6 +638,13 @@ function TurnRow(props: {
       </ol>
     </li>
   );
+}
+
+function formatTurnStartedAt(startedAt: number, locale: UiLocale): string {
+  return new Intl.DateTimeFormat(uiLocaleToIntlLocale(locale), {
+    dateStyle: 'short',
+    timeStyle: 'medium',
+  }).format(startedAt);
 }
 
 /**

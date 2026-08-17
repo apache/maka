@@ -23,6 +23,19 @@ export function isTraceRelevantEvent(event: SessionEvent): boolean {
   return TRACE_RELEVANT_EVENT_TYPES.has(event.type);
 }
 
+const USAGE_SUMMARY_RELEVANT_EVENT_TYPES: ReadonlySet<SessionEvent['type']> = new Set([
+  'token_usage',
+  'provider_retry',
+  'error',
+  'complete',
+  'abort',
+]);
+
+/** Events that can settle or change a model-call accounting record. */
+export function isUsageSummaryRelevantEvent(event: SessionEvent): boolean {
+  return USAGE_SUMMARY_RELEVANT_EVENT_TYPES.has(event.type);
+}
+
 export interface TraceRefreshCoalescer {
   /** Records an event; schedules a refresh when the event can change the trace. */
   observe(event: SessionEvent): void;

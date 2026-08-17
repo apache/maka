@@ -134,6 +134,15 @@ export function estimatedSessionCost(
     : undefined;
 }
 
+export function hasUnavailableSessionUsage(
+  summary: UsageSummaryV2 & { readonly provenance: UsageProvenance },
+): boolean {
+  return (
+    summary.totalRequests === 0 &&
+    (summary.provenance.unreadableRecords > 0 || summary.provenance.pendingRepairs > 0)
+  );
+}
+
 /**
  * The overview reads two owners, and keeps them apart.
  *
@@ -164,7 +173,7 @@ export function deriveInspectorOverviewModel(
 
 function usageCacheHitRate(usage: UsageSummaryV2 | undefined): number | undefined {
   if (!usage || usage.totalTokens.input === 0) return undefined;
-  return Math.min(usage.totalTokens.cacheRead, usage.totalTokens.input) / usage.totalTokens.input;
+  return usage.totalTokens.cacheRead / usage.totalTokens.input;
 }
 
 /**

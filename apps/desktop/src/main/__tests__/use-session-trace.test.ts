@@ -76,22 +76,6 @@ function usageSummary(
   };
 }
 
-function coverage(
-  modelCalls: SessionTrace['coverage']['modelCalls'],
-  input: {
-    missing?: string[];
-    short?: string[];
-    unreadable?: number;
-  } = {},
-): SessionTrace['coverage'] {
-  return {
-    modelCalls,
-    turnsMissingModelCalls: input.missing ?? [],
-    turnsWithFewerModelCallsThanSteps: input.short ?? [],
-    unreadableRecords: input.unreadable ?? 0,
-  };
-}
-
 interface TraceHarness {
   reads: string[];
   traceRequests: Array<{ sessionId: string; cursor?: string }>;
@@ -190,7 +174,6 @@ function tracePage(
   sessionId: string,
   runId: string,
   nextCursor: string | null,
-  coverage?: SessionTrace['coverage'],
 ): DesktopSessionTracePage {
   const startedAt = Number(runId.replace(/\D/g, ''));
   return {
@@ -207,7 +190,6 @@ function tracePage(
           totals: emptyTraceTotals(),
         },
       ],
-      ...(coverage ? { coverage } : {}),
     },
     nextCursor,
   };
@@ -265,6 +247,24 @@ describe('useSessionTrace', () => {
     await flushRefresh();
 
     assert.equal(harness.reads.length, 2, 'a closing burst is one re-read, not three');
+  });
+
+  it('does not rescan Session usage for an event that only changes the timeline', async () => {
+    const { root } = installReactRenderer();
+    const harness = installMakaBridge();
+    await act(async () => {
+      root.render(createElement(Probe, { sessionId: 'session-1', active: true }));
+    });
+    assert.equal(harness.summaryReads.length, 1);
+
+    await act(async () => harness.emit(event('tool_result')));
+    await flushRefresh();
+    assert.equal(harness.reads.length, 2);
+    assert.equal(harness.summaryReads.length, 1);
+
+    await act(async () => harness.emit(event('token_usage')));
+    await flushRefresh();
+    assert.equal(harness.summaryReads.length, 2);
   });
 
   it('does not re-read for streaming deltas', async () => {
@@ -341,15 +341,15 @@ describe('useSessionTrace', () => {
     })();
   });
 
-  it('reconnects refreshed history without skipping runs added while the panel was open', async () => {
+  it('rebuilds the requested page depth from the newest runs after a refresh', async () => {
     const { root } = installReactRenderer();
     const harness = installMakaBridge({
       tracePages: [
         tracePage('session-1', 'run-3', 'cursor-3'),
+        tracePage('session-1', 'run-3', 'cursor-3'),
         tracePage('session-1', 'run-2', 'cursor-2'),
         tracePage('session-1', 'run-5', 'cursor-5'),
         tracePage('session-1', 'run-4', 'cursor-4'),
-        tracePage('session-1', 'run-3', 'cursor-3'),
       ],
     });
     let snapshot: ReturnType<typeof useSessionTrace> | undefined;
@@ -376,40 +376,78 @@ describe('useSessionTrace', () => {
 
     assert.deepEqual(
       snapshot?.trace?.turns.map((turn) => turn.runId),
-      ['run-2', 'run-3', 'run-4', 'run-5'],
+      ['run-4', 'run-5'],
     );
     assert.deepEqual(
       harness.traceRequests.map((request) => request.cursor),
-      [undefined, 'cursor-3', undefined, 'cursor-5', 'cursor-4'],
+      [undefined, undefined, 'cursor-3', undefined, 'cursor-5'],
     );
   });
 
-  it('keeps an in-flight earlier page when a head refresh reconnects', async () => {
+  it('rebuilds the loaded window when a run is inserted behind an unchanged head cursor', async () => {
     const { root } = installReactRenderer();
-    let resolveEarlier: ((result: Result<DesktopSessionTracePage>) => void) | undefined;
-    const earlier = new Promise<Result<DesktopSessionTracePage>>((resolve) => {
-      resolveEarlier = resolve;
+    const harness = installMakaBridge({
+      tracePages: [
+        tracePage('session-1', 'run-z', 'cursor-z'),
+        tracePage('session-1', 'run-z', 'cursor-z'),
+        tracePage('session-1', 'run-m', null),
+        // The head page and its cursor are unchanged, but run-n now sorts
+        // between the two pages that were already loaded.
+        tracePage('session-1', 'run-z', 'cursor-z'),
+        tracePage('session-1', 'run-n', 'cursor-n'),
+      ],
+    });
+    let snapshot: ReturnType<typeof useSessionTrace> | undefined;
+    await act(async () => {
+      root.render(
+        createElement(Probe, {
+          sessionId: 'session-1',
+          active: true,
+          onHookSnapshot: (value) => {
+            snapshot = value;
+          },
+        }),
+      );
+    });
+
+    await act(async () => snapshot?.loadEarlier());
+    assert.deepEqual(
+      snapshot?.trace?.turns.map((turn) => turn.runId),
+      ['run-m', 'run-z'],
+    );
+
+    await act(async () => harness.emit(event('complete')));
+    await flushRefresh();
+
+    assert.deepEqual(
+      snapshot?.trace?.turns.map((turn) => turn.runId),
+      ['run-n', 'run-z'],
+      'an unchanged head cursor cannot justify reusing a stale older page',
+    );
+    assert.equal(snapshot?.nextCursor, 'cursor-n');
+  });
+
+  it('keeps the requested page depth when a head refresh supersedes load-earlier', async () => {
+    const { root } = installReactRenderer();
+    let resolveEarlierHead: ((result: Result<DesktopSessionTracePage>) => void) | undefined;
+    const earlierHead = new Promise<Result<DesktopSessionTracePage>>((resolve) => {
+      resolveEarlierHead = resolve;
     });
     let startReads = 0;
-    let earlierReads = 0;
     const harness = installMakaBridge({
       trace: async (sessionId, cursor) => {
         if (cursor === undefined) {
           startReads += 1;
-          return {
-            ok: true,
-            data:
-              startReads === 1
-                ? tracePage(sessionId, 'run-3', 'cursor-3')
-                : tracePage(sessionId, 'run-4', 'cursor-4'),
-          };
+          if (startReads === 1) {
+            return { ok: true, data: tracePage(sessionId, 'run-3', 'cursor-3') };
+          }
+          if (startReads === 2) return earlierHead;
+          return { ok: true, data: tracePage(sessionId, 'run-4', 'cursor-4') };
         }
         if (cursor === 'cursor-4') {
           return { ok: true, data: tracePage(sessionId, 'run-3', 'cursor-3') };
         }
-        earlierReads += 1;
-        if (earlierReads === 1) return earlier;
-        throw new Error('head refresh crossed the existing tail boundary');
+        throw new Error(`unexpected cursor ${cursor}`);
       },
     });
     let snapshot: ReturnType<typeof useSessionTrace> | undefined;
@@ -426,75 +464,22 @@ describe('useSessionTrace', () => {
     });
 
     await act(async () => snapshot?.loadEarlier());
+    assert.equal(snapshot?.loadingEarlier, true);
     await act(async () => harness.emit(event('complete')));
     await flushRefresh();
     await act(async () => {
-      resolveEarlier?.({ ok: true, data: tracePage('session-1', 'run-2', 'cursor-2') });
+      resolveEarlierHead?.({ ok: true, data: tracePage('session-1', 'run-3', 'cursor-3') });
     });
 
     assert.deepEqual(
       snapshot?.trace?.turns.map((turn) => turn.runId),
-      ['run-2', 'run-3', 'run-4'],
+      ['run-3', 'run-4'],
     );
-    assert.equal(earlierReads, 1, 'the head refresh stops at the already requested tail');
-  });
-
-  it('reports mixed model-call coverage as partial across loaded pages', async () => {
-    const { root } = installReactRenderer();
-    const harness = installMakaBridge({
-      tracePages: [
-        tracePage(
-          'session-1',
-          'run-2',
-          'cursor-2',
-          coverage('absent', { missing: ['turn-run-2'] }),
-        ),
-        tracePage('session-1', 'run-1', null, coverage('no_known_gap')),
-      ],
-    });
-    let snapshot: ReturnType<typeof useSessionTrace> | undefined;
-    await act(async () => {
-      root.render(
-        createElement(Probe, {
-          sessionId: 'session-1',
-          active: true,
-          onHookSnapshot: (value) => {
-            snapshot = value;
-          },
-        }),
-      );
-    });
-
-    await act(async () => snapshot?.loadEarlier());
-
-    assert.equal(snapshot?.trace?.coverage.modelCalls, 'partial');
-    assert.equal(harness.traceRequests.length, 2);
-  });
-
-  it('adds unreadable records from separately loaded pages', async () => {
-    const { root } = installReactRenderer();
-    installMakaBridge({
-      tracePages: [
-        tracePage('session-1', 'run-2', 'cursor-2', coverage('partial', { unreadable: 1 })),
-        tracePage('session-1', 'run-1', null, coverage('partial', { unreadable: 2 })),
-      ],
-    });
-    let snapshot: ReturnType<typeof useSessionTrace> | undefined;
-    await act(async () => {
-      root.render(
-        createElement(Probe, {
-          sessionId: 'session-1',
-          active: true,
-          onHookSnapshot: (value) => {
-            snapshot = value;
-          },
-        }),
-      );
-    });
-
-    await act(async () => snapshot?.loadEarlier());
-
-    assert.equal(snapshot?.trace?.coverage.unreadableRecords, 3);
+    assert.equal(snapshot?.loadingEarlier, false);
+    assert.deepEqual(
+      harness.traceRequests.map((request) => request.cursor),
+      [undefined, undefined, undefined, 'cursor-4'],
+    );
   });
 
   it('stops presenting an old Session summary when its refresh fails', async () => {

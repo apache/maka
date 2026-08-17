@@ -170,6 +170,34 @@ describe('canonical model call ledger', () => {
     });
   });
 
+  test('a Session-scoped read excludes another Session records and corruption', async () => {
+    await withLedger(async (ledger, root) => {
+      await ledger.record(attempt({ attemptId: 'session-a-call', sessionId: 'session-a' }));
+      await ledger.record(attempt({ attemptId: 'session-b-call', sessionId: 'session-b' }));
+      const lease = acquireOperationalStateDatabase(root);
+      try {
+        lease.transaction('write', () => {
+          lease.database
+            .prepare(
+              `INSERT INTO usage_model_call_attempts(
+                attempt_id, completed_at, record_json, session_id
+              ) VALUES (?, ?, ?, ?)`,
+            )
+            .run('session-b-corrupt', NOW - 400, '{', 'session-b');
+        });
+      } finally {
+        lease.close();
+      }
+
+      const page = ledger.read({ from: 0, to: NOW }, 'session-a');
+      assert.deepEqual(
+        page.attempts.map((row) => row.attemptId),
+        ['session-a-call'],
+      );
+      assert.equal(page.unreadableRecords, 0);
+    });
+  });
+
   test('reads and writes after close report the lifecycle rather than corrupting state', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-model-call-ledger-'));
     const ledger = createSqliteModelCallLedger(root);

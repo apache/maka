@@ -80,16 +80,19 @@ export interface TelemetryIndexWriter extends TelemetryIndexReader {
  * storage-root lease.
  */
 export interface ModelCallIndexReader {
-  modelCallAttempts(range: {
-    readonly from: number;
-    readonly to: number;
-  }): Promise<ModelCallLedgerPage>;
+  modelCallAttempts(
+    range: {
+      readonly from: number;
+      readonly to: number;
+    },
+    sessionId?: string,
+  ): Promise<ModelCallLedgerPage>;
 }
 
 export interface ModelCallIndexWriter extends ModelCallIndexReader {
   recordModelCallAttempt(attempt: ModelCallAttempt): Promise<void>;
   markRunPendingReprojection(sessionId: string, runId: string): Promise<void>;
-  pendingReprojections(): Promise<PendingReprojection[]>;
+  pendingReprojections(sessionId?: string): Promise<PendingReprojection[]>;
   clearPendingReprojection(sessionId: string, runId: string): Promise<void>;
 }
 
@@ -406,11 +409,11 @@ function createWriterFacade(
         admit(() => run(() => telemetry.insertToolInvocation(record))),
     },
     modelCalls: {
-      modelCallAttempts: (range) => read(() => modelCalls.read(range)),
+      modelCallAttempts: (range, sessionId) => read(() => modelCalls.read(range, sessionId)),
       recordModelCallAttempt: (attempt) => admit(() => run(() => modelCalls.record(attempt))),
       markRunPendingReprojection: (sessionId, runId) =>
         admit(() => run(() => modelCalls.markRunPendingReprojection(sessionId, runId))),
-      pendingReprojections: () => read(() => modelCalls.pendingReprojections()),
+      pendingReprojections: (sessionId) => read(() => modelCalls.pendingReprojections(sessionId)),
       clearPendingReprojection: (sessionId, runId) =>
         admit(() => run(() => modelCalls.clearPendingReprojection(sessionId, runId))),
     },

@@ -8,6 +8,7 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
+import { clampCacheReadTokens } from '@maka/core/model-call-usage-projection';
 import {
   canonicalPricingConfigsEqual,
   comparePricingModelKeys,
@@ -112,14 +113,21 @@ class SqliteTelemetryRepo implements TelemetryRepo {
     return this.enqueueMutation(() => {
       this.#lease.database
         .prepare(`
-          INSERT INTO usage_llm_calls(storage_key, id, ts, record_json)
-          VALUES (?, ?, ?, ?)
+          INSERT INTO usage_llm_calls(storage_key, id, ts, record_json, session_id)
+          VALUES (?, ?, ?, ?, ?)
           ON CONFLICT(storage_key) DO UPDATE SET
             id = excluded.id,
             ts = excluded.ts,
-            record_json = excluded.record_json
+            record_json = excluded.record_json,
+            session_id = excluded.session_id
         `)
-        .run(usageIdentityKey(admitted.id), admitted.id, admitted.ts, JSON.stringify(admitted));
+        .run(
+          usageIdentityKey(admitted.id),
+          admitted.id,
+          admitted.ts,
+          JSON.stringify(admitted),
+          admitted.sessionId ?? null,
+        );
     });
   }
 
@@ -156,12 +164,16 @@ class SqliteTelemetryRepo implements TelemetryRepo {
         input: sum(rows.map((row) => row.inputTokens)),
         output: sum(rows.map((row) => row.outputTokens)),
         cacheMiss: sum(rows.map((row) => row.cacheMissInputTokens)),
-        cacheRead: sum(rows.map((row) => Math.min(row.cacheHitInputTokens, row.inputTokens))),
+        cacheRead: sum(
+          rows.map((row) => clampCacheReadTokens(row.inputTokens, row.cacheHitInputTokens)),
+        ),
         cacheWrite: sum(rows.map((row) => row.cacheWriteInputTokens)),
         reasoning: sum(rows.map((row) => row.reasoningTokens)),
         total: sum(rows.map((row) => row.totalTokens)),
       },
-      cacheHitRequests: rows.filter((row) => row.cacheHitInputTokens > 0).length,
+      cacheHitRequests: rows.filter(
+        (row) => clampCacheReadTokens(row.inputTokens, row.cacheHitInputTokens) > 0,
+      ).length,
       cacheCreateRequests: rows.filter((row) => row.cacheWriteInputTokens > 0).length,
       errorRequests: rows.filter((row) => row.status === 'error').length,
     });
@@ -258,8 +270,7 @@ class SqliteTelemetryRepo implements TelemetryRepo {
   }
 
   private filteredUsageRows(query: UsageQuery, from: number, to: number) {
-    return this.readLlmRows().filter((row) => {
-      if (row.ts < from || row.ts > to) return false;
+    return this.readLlmRows(from, to, query.sessionId).filter((row) => {
       if (query.sessionId && row.sessionId !== query.sessionId) return false;
       if (query.connectionSlug && row.connectionSlug !== query.connectionSlug) return false;
       if (query.providerId && row.providerId !== query.providerId) return false;
@@ -278,9 +289,17 @@ class SqliteTelemetryRepo implements TelemetryRepo {
     });
   }
 
-  private readLlmRows(): PersistedLlmCallRecord[] {
+  private readLlmRows(from: number, to: number, sessionId?: string): PersistedLlmCallRecord[] {
     return (
-      this.#lease.database.prepare('SELECT record_json FROM usage_llm_calls').all() as Array<{
+      this.#lease.database
+        .prepare(
+          sessionId
+            ? `SELECT record_json FROM usage_llm_calls
+               WHERE session_id = ? AND ts >= ? AND ts <= ?`
+            : `SELECT record_json FROM usage_llm_calls
+               WHERE ts >= ? AND ts <= ?`,
+        )
+        .all(...(sessionId ? [sessionId, from, to] : [from, to])) as Array<{
         record_json: string;
       }>
     ).map((row) => decodePersistedLlmCallRecord(JSON.parse(row.record_json)));

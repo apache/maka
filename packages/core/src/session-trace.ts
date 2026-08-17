@@ -652,3 +652,36 @@ export function mergeDisjointTraceCoverage(
     unreadableRecords: base.unreadableRecords + next.unreadableRecords,
   };
 }
+
+/**
+ * Combines independently read pages of one Session trace.
+ *
+ * Page boundaries are transport detail: callers receive the same ordered,
+ * deduplicated trace they would have received from one bounded projection.
+ */
+export function mergeSessionTraces(traces: readonly SessionTrace[]): SessionTrace {
+  const first = traces[0];
+  if (!first) throw new Error('At least one Session trace page is required');
+  return traces.slice(1).reduce((current, page) => {
+    if (page.schemaVersion !== current.schemaVersion || page.sessionId !== current.sessionId) {
+      throw new Error('Session trace pages do not describe the same Session');
+    }
+    const turns = new Map(
+      current.turns.map((turn) => [`${turn.turnId}\0${turn.runId}`, turn] as const),
+    );
+    for (const turn of page.turns) turns.set(`${turn.turnId}\0${turn.runId}`, turn);
+    const ordered = [...turns.values()].sort(
+      (left, right) => left.startedAt - right.startedAt || left.runId.localeCompare(right.runId),
+    );
+    return {
+      schemaVersion: current.schemaVersion,
+      sessionId: current.sessionId,
+      turns: ordered,
+      totals: ordered.reduce(
+        (total, turn) => mergeTraceTotals(total, turn.totals),
+        emptyTraceTotals(),
+      ),
+      coverage: mergeDisjointTraceCoverage(current.coverage, page.coverage),
+    };
+  }, first);
+}

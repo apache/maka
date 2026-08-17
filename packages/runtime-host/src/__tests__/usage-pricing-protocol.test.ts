@@ -353,6 +353,47 @@ describe('Usage/Pricing protocol', () => {
     }
   });
 
+  test('a Session summary neither repairs nor reports another Session pending projection', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-session-usage-scope-'));
+    const capability = await resolveStorageRoot({
+      path: join(base, 'interactive-root'),
+      kind: 'interactive',
+    });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+    try {
+      await stores.modelCalls.markRunPendingReprojection('session-b', 'run-b');
+      const coordinator = new HostUsagePricingCoordinator(
+        stores,
+        () => {},
+        new RuntimePolicyActivationGate(),
+        () => {},
+        async () => {
+          throw new Error('another Session is not readable');
+        },
+      );
+
+      const outcome = await coordinator.handlers['usage.query'](
+        { kind: 'summary', query: { range: 'all', sessionId: 'session-a' } },
+        CONNECTION_CONTEXT,
+      );
+
+      assert.equal(outcome.ok, true);
+      if (!outcome.ok || outcome.result.kind !== 'summary') return;
+      assert.equal(outcome.result.provenance.pendingRepairs, 0);
+      assert.equal((await stores.modelCalls.pendingReprojections()).length, 1);
+    } finally {
+      await stores.close().catch(() => undefined);
+      await owner.close();
+      await rm(join(resolveRootControlNamespace(), capability.rootId), {
+        recursive: true,
+        force: true,
+      });
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
   test('decodes revision-pinned numeric-offset pricing pages and revision-CAS mutation', () => {
     assert.doesNotThrow(() => pricingRequest('pricing.query', { kind: 'start' }));
     assert.doesNotThrow(() =>

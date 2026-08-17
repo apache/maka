@@ -243,25 +243,62 @@ export class HostExecutionInspectCoordinator {
       input.kind === 'session_trace_continue' ? decodeTraceCursor(input.cursor) : undefined;
     const runPage = await this.#stores.agentRunStore.listSessionRunsPage(input.sessionId, {
       ...(before ? { before } : {}),
-      // A run is the smallest independently readable execution-evidence unit.
-      // Keeping one per page preserves the existing evidence cap without ever
-      // turning total Session length into a product limit.
-      limit: 1,
+      limit: EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS,
     });
     const budget = new InspectEvidenceBudget('Session');
     const runtimeEvents: RuntimeEvent[] = [];
     const modelCallAttempts: ModelCallAttempt[] = [];
     let unreadableRecords = 0;
+    let includedRuns = 0;
     for (const run of runPage.runs) {
-      const evidence = await this.#readRunTraceEvidence(input.sessionId, run.runId, budget).catch(
-        (error) => {
-          if (!isInspectQueryTooLargeError(error)) throw error;
-          return { runtimeEvents: [], modelCallAttempts: [], unreadableRecords: 1 };
-        },
-      );
+      let evidence: {
+        readonly runtimeEvents: RuntimeEvent[];
+        readonly modelCallAttempts: ModelCallAttempt[];
+        readonly unreadableRecords: number;
+      };
+      try {
+        evidence = await this.#readRunTraceEvidence(input.sessionId, run.runId, budget);
+      } catch (error) {
+        if (!isInspectQueryTooLargeError(error)) throw error;
+        if (includedRuns > 0) break;
+        return unreadableTracePage(
+          input.sessionId,
+          tracePageCursorAfter(runPage.runs, 1, runPage.nextCursor),
+        );
+      }
+      const candidateRuntimeEvents = [...runtimeEvents, ...evidence.runtimeEvents];
+      const candidateModelCallAttempts = [...modelCallAttempts, ...evidence.modelCallAttempts];
+      const candidateUnreadableRecords = unreadableRecords + evidence.unreadableRecords;
+      const candidateTrace = projectSessionTrace({
+        sessionId: input.sessionId,
+        runtimeEvents: candidateRuntimeEvents,
+        modelCallAttempts: candidateModelCallAttempts,
+        ...(candidateUnreadableRecords > 0
+          ? { unreadableRecords: candidateUnreadableRecords }
+          : {}),
+      });
+      const candidateRunCount = includedRuns + 1;
+      const candidatePage: ExecutionInspectQueryResult = {
+        kind: 'session_trace_page',
+        ...candidateTrace,
+        nextCursor: tracePageCursorAfter(runPage.runs, candidateRunCount, runPage.nextCursor),
+      };
+      if (
+        candidateTrace.turns.length > EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS ||
+        encodedBytes(candidatePage) > EXECUTION_INSPECT_RESULT_MAX_BYTES
+      ) {
+        if (includedRuns === 0) {
+          return unreadableTracePage(
+            input.sessionId,
+            tracePageCursorAfter(runPage.runs, 1, runPage.nextCursor),
+          );
+        }
+        break;
+      }
       runtimeEvents.push(...evidence.runtimeEvents);
       modelCallAttempts.push(...evidence.modelCallAttempts);
-      unreadableRecords += evidence.unreadableRecords;
+      unreadableRecords = candidateUnreadableRecords;
+      includedRuns = candidateRunCount;
     }
     const trace = projectSessionTrace({
       sessionId: input.sessionId,
@@ -272,14 +309,8 @@ export class HostExecutionInspectCoordinator {
     const page: ExecutionInspectQueryResult = {
       kind: 'session_trace_page',
       ...trace,
-      nextCursor: runPage.nextCursor ? encodeTraceCursor(runPage.nextCursor) : null,
+      nextCursor: tracePageCursorAfter(runPage.runs, includedRuns, runPage.nextCursor),
     };
-    if (
-      page.turns.length > EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS ||
-      encodedBytes(page) > EXECUTION_INSPECT_RESULT_MAX_BYTES
-    ) {
-      return unreadableTracePage(input.sessionId, page.nextCursor);
-    }
     return page;
   }
 
@@ -434,6 +465,17 @@ function unreadableTracePage(
   };
 }
 
+function tracePageCursorAfter(
+  runs: readonly { readonly runId: string; readonly createdAt: number }[],
+  includedRuns: number,
+  sourceNextCursor: { readonly createdAt: number; readonly runId: string } | null,
+): string | null {
+  const last = runs[includedRuns - 1];
+  if (!last) return null;
+  const hasMore = includedRuns < runs.length || sourceNextCursor !== null;
+  return hasMore ? encodeTraceCursor({ createdAt: last.createdAt, runId: last.runId }) : null;
+}
+
 function encodeTraceCursor(cursor: { readonly createdAt: number; readonly runId: string }): string {
   return Buffer.from(JSON.stringify({ v: 1, ...cursor }), 'utf8').toString('base64url');
 }
@@ -447,8 +489,7 @@ function decodeTraceCursor(cursor: string): { readonly createdAt: number; readon
     if (
       value.v !== 1 ||
       typeof value.createdAt !== 'number' ||
-      !Number.isSafeInteger(value.createdAt) ||
-      value.createdAt < 0 ||
+      !Number.isFinite(value.createdAt) ||
       typeof value.runId !== 'string' ||
       !/^[A-Za-z0-9_-]{1,128}$/.test(value.runId) ||
       Object.keys(value).length !== 3

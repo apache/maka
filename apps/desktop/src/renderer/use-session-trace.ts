@@ -2,9 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
 import { type UiLocale } from '@maka/core/ui-locale';
 import {
-  emptyTraceTotals,
-  mergeDisjointTraceCoverage,
-  mergeTraceTotals,
+  mergeSessionTraces,
   type SessionTrace,
 } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
@@ -12,17 +10,14 @@ import type {
   DesktopSessionTracePage,
   DesktopSessionUsageSummary,
 } from '../preload/bridge-contract.js';
-import { createTraceRefreshCoalescer } from './session-trace-refresh.js';
-
-interface SessionTracePageEntry {
-  /** `null` is the stable identity of the newest page. */
-  requestCursor: string | null;
-  response: DesktopSessionTracePage;
-}
+import {
+  createTraceRefreshCoalescer,
+  isUsageSummaryRelevantEvent,
+} from './session-trace-refresh.js';
 
 interface SessionTraceState {
   sessionId?: string;
-  tracePages?: readonly SessionTracePageEntry[];
+  tracePages?: readonly DesktopSessionTracePage[];
   /**
    * What the context is made of right now, from the Host operation that owns
    * that question (#2323). Read on the same signal as the trace but kept
@@ -69,95 +64,92 @@ export function useSessionTrace(
   // UI package behind it.
   copy: { loadFailed: string; locale: UiLocale },
 ): SessionTraceSnapshot & { retry: () => void; loadEarlier: () => void } {
-  const sessionEpochRef = useRef(0);
-  const headRevisionRef = useRef(0);
+  const traceRevisionRef = useRef(0);
+  const summaryRevisionRef = useRef(0);
+  const contextRevisionRef = useRef(0);
+  const desiredPageCountRef = useRef<{ sessionId: string; count: number } | undefined>(undefined);
   const traceWindowRef = useRef<
-    { sessionId: string; pages: readonly SessionTracePageEntry[] } | undefined
+    { sessionId: string; pages: readonly DesktopSessionTracePage[] } | undefined
   >(undefined);
   const [state, setState] = useState<SessionTraceState>(EMPTY_STATE);
 
-  const load = useCallback(
-    (targetSessionId: string) => {
-      const revision = ++headRevisionRef.current;
-      const existingPages =
-        traceWindowRef.current?.sessionId === targetSessionId
-          ? traceWindowRef.current.pages
-          : [];
-      setState((current) => ({
-        sessionId: targetSessionId,
-        // Keep BOTH reads on screen through every refresh. They settle
-        // independently, so preserving only the trace left the composition
-        // blank from the moment a read started until the second response
-        // landed — a flicker on every ledger event, on data that was still
-        // valid the whole time.
-        ...(current.sessionId === targetSessionId
+  const readTraceWindow = useCallback(
+    (targetSessionId: string, intent: 'refresh' | 'earlier') => {
+      const revision = ++traceRevisionRef.current;
+      const desired = desiredPageCountRef.current;
+      const pageCount = desired?.sessionId === targetSessionId ? desired.count : 1;
+      setState((current) =>
+        current.sessionId === targetSessionId
           ? {
-              tracePages: current.tracePages,
-              context: current.context,
-              summary: current.summary,
-              summaryError: current.summaryError,
+              ...current,
+              loading: intent === 'refresh' ? true : current.loading,
+              loadingEarlier: intent === 'earlier' ? true : current.loadingEarlier,
+              error: undefined,
             }
-          : {}),
-        loading: true,
-        summaryLoading: true,
-        summaryError: undefined,
-      }));
-      void readRefreshedTracePages(targetSessionId, existingPages, copy.loadFailed).then(
-        ({ prefix, reconnectCursor }) => {
-          if (revision !== headRevisionRef.current) return;
-          const latestPages =
-            traceWindowRef.current?.sessionId === targetSessionId
-              ? traceWindowRef.current.pages
-              : [];
-          const reconnectIndex =
-            reconnectCursor === null
-              ? -1
-              : latestPages.findIndex((entry) => entry.requestCursor === reconnectCursor);
-          const pages =
-            reconnectIndex >= 0
-              ? [...prefix, ...latestPages.slice(reconnectIndex)]
-              : prefix;
+          : {
+              sessionId: targetSessionId,
+              loading: intent === 'refresh',
+              loadingEarlier: intent === 'earlier',
+            },
+      );
+      void readTracePageWindow(
+        targetSessionId,
+        pageCount,
+        copy.loadFailed,
+        () => revision === traceRevisionRef.current,
+      ).then(
+        (pages) => {
+          if (revision !== traceRevisionRef.current) return;
           traceWindowRef.current = { sessionId: targetSessionId, pages };
-          setState((current) => ({
-            sessionId: targetSessionId,
-            tracePages: pages,
-            ...(current.sessionId === targetSessionId
+          setState((current) =>
+            current.sessionId === targetSessionId
               ? {
-                  context: current.context,
-                  summary: current.summary,
-                  summaryLoading: current.summaryLoading,
-                  summaryError: current.summaryError,
-                  loadingEarlier: current.loadingEarlier,
+                  ...current,
+                  tracePages: pages,
+                  loading: false,
+                  loadingEarlier: false,
                 }
-              : {}),
-            loading: false,
-          }));
+              : current,
+          );
         },
         (error: unknown) => {
-          if (revision !== headRevisionRef.current) return;
-          setState((current) => ({
-            sessionId: targetSessionId,
-            ...(current.sessionId === targetSessionId
+          if (revision !== traceRevisionRef.current) return;
+          if (intent === 'earlier') {
+            const loaded = traceWindowRef.current;
+            desiredPageCountRef.current = {
+              sessionId: targetSessionId,
+              count: loaded?.sessionId === targetSessionId ? Math.max(loaded.pages.length, 1) : 1,
+            };
+          }
+          setState((current) =>
+            current.sessionId === targetSessionId
               ? {
-                  tracePages: current.tracePages,
-                  context: current.context,
-                  summary: current.summary,
-                  summaryLoading: current.summaryLoading,
-                  summaryError: current.summaryError,
-                  loadingEarlier: current.loadingEarlier,
+                  ...current,
+                  loading: false,
+                  loadingEarlier: false,
+                  error:
+                    copy.locale === 'zh'
+                      ? generalizedErrorMessageChinese(error, copy.loadFailed)
+                      : generalizedErrorMessage(error, copy.loadFailed),
                 }
-              : {}),
-            loading: false,
-            error:
-              copy.locale === 'zh'
-                ? generalizedErrorMessageChinese(error, copy.loadFailed)
-                : generalizedErrorMessage(error, copy.loadFailed),
-          }));
+              : current,
+          );
         },
+      );
+    },
+    [copy.loadFailed, copy.locale],
+  );
+
+  const readSummary = useCallback((targetSessionId: string) => {
+      const summaryRevision = ++summaryRevisionRef.current;
+      setState((current) =>
+        current.sessionId === targetSessionId
+          ? { ...current, summaryLoading: true, summaryError: undefined }
+          : { sessionId: targetSessionId, loading: false, summaryLoading: true },
       );
       void window.maka.inspector.summary(targetSessionId).then(
         (result) => {
-          if (revision !== headRevisionRef.current) return;
+          if (summaryRevision !== summaryRevisionRef.current) return;
           setState((current) =>
             current.sessionId === targetSessionId
               ? {
@@ -171,7 +163,7 @@ export function useSessionTrace(
           );
         },
         () => {
-          if (revision !== headRevisionRef.current) return;
+          if (summaryRevision !== summaryRevisionRef.current) return;
           setState((current) =>
             current.sessionId === targetSessionId
               ? {
@@ -184,12 +176,16 @@ export function useSessionTrace(
           );
         },
       );
+    }, []);
+
+  const readContext = useCallback((targetSessionId: string) => {
+      const contextRevision = ++contextRevisionRef.current;
       // Enrichment, and read as such: the context snapshot has its own owner
       // and its own failure modes, so it lands when it lands and its absence
       // costs the composition block, never the trace.
       void window.maka.inspector.context(targetSessionId).then(
         (result) => {
-          if (revision !== headRevisionRef.current) return;
+          if (contextRevision !== contextRevisionRef.current) return;
           setState((current) =>
             current.sessionId === targetSessionId && result.ok
               ? { ...current, context: result.data }
@@ -202,37 +198,61 @@ export function useSessionTrace(
           // would report "no composition" for a read that simply failed.
         },
       );
+    }, []);
+
+  const load = useCallback(
+    (targetSessionId: string) => {
+      readTraceWindow(targetSessionId, 'refresh');
+      readSummary(targetSessionId);
+      readContext(targetSessionId);
     },
-    [copy.loadFailed, copy.locale],
+    [readContext, readSummary, readTraceWindow],
   );
 
   useEffect(() => {
-    sessionEpochRef.current += 1;
-    headRevisionRef.current += 1;
+    traceRevisionRef.current += 1;
+    summaryRevisionRef.current += 1;
+    contextRevisionRef.current += 1;
     if (!sessionId || !active) {
       if (!sessionId) {
         traceWindowRef.current = undefined;
+        desiredPageCountRef.current = undefined;
         setState(EMPTY_STATE);
       }
       return;
     }
-    const coalescer = createTraceRefreshCoalescer({
-      refresh: () => load(sessionId),
+    if (desiredPageCountRef.current?.sessionId !== sessionId) {
+      desiredPageCountRef.current = { sessionId, count: 1 };
+    }
+    const traceCoalescer = createTraceRefreshCoalescer({
+      refresh: () => {
+        readTraceWindow(sessionId, 'refresh');
+        readContext(sessionId);
+      },
+      delayMs: TRACE_REFRESH_DEBOUNCE_MS,
+      schedule: (callback, delayMs) => setTimeout(callback, delayMs),
+      cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    });
+    const summaryCoalescer = createTraceRefreshCoalescer({
+      refresh: () => readSummary(sessionId),
       delayMs: TRACE_REFRESH_DEBOUNCE_MS,
       schedule: (callback, delayMs) => setTimeout(callback, delayMs),
       cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
     });
     const unsubscribe = window.maka.sessions.subscribeEvents(sessionId, (event) => {
-      coalescer.observe(event);
+      traceCoalescer.observe(event);
+      if (isUsageSummaryRelevantEvent(event)) summaryCoalescer.observe(event);
     });
     load(sessionId);
     return () => {
-      sessionEpochRef.current += 1;
-      headRevisionRef.current += 1;
-      coalescer.cancel();
+      traceRevisionRef.current += 1;
+      summaryRevisionRef.current += 1;
+      contextRevisionRef.current += 1;
+      traceCoalescer.cancel();
+      summaryCoalescer.cancel();
       unsubscribe();
     };
-  }, [active, load, sessionId]);
+  }, [active, load, readContext, readSummary, readTraceWindow, sessionId]);
 
   const retry = useCallback(() => {
     if (sessionId) load(sessionId);
@@ -242,47 +262,17 @@ export function useSessionTrace(
     () => (state.tracePages ? mergeSessionTracePages(state.tracePages) : undefined),
     [state.tracePages],
   );
-  const nextCursor = state.tracePages?.at(-1)?.response.nextCursor;
+  const nextCursor = state.tracePages?.at(-1)?.nextCursor;
 
   const loadEarlier = useCallback(() => {
-    const cursor = state.sessionId === sessionId ? nextCursor : undefined;
-    if (!sessionId || !cursor || state.loadingEarlier) return;
-    const sessionEpoch = sessionEpochRef.current;
-    setState((current) => ({ ...current, loadingEarlier: true, error: undefined }));
-    void window.maka.inspector.trace(sessionId, cursor).then(
-      (result) => {
-        if (sessionEpoch !== sessionEpochRef.current) return;
-        if (!result.ok) {
-          setState((current) => ({
-            ...current,
-            loadingEarlier: false,
-            error: result.error.message || copy.loadFailed,
-          }));
-          return;
-        }
-        const currentWindow = traceWindowRef.current;
-        if (currentWindow?.sessionId !== sessionId) return;
-        const pages = upsertTracePage(currentWindow.pages, cursor, result.data);
-        traceWindowRef.current = { sessionId, pages };
-        setState((current) =>
-          current.sessionId === sessionId
-            ? { ...current, tracePages: pages, loadingEarlier: false }
-            : current,
-        );
-      },
-      (error: unknown) => {
-        if (sessionEpoch !== sessionEpochRef.current) return;
-        setState((current) => ({
-          ...current,
-          loadingEarlier: false,
-          error:
-            copy.locale === 'zh'
-              ? generalizedErrorMessageChinese(error, copy.loadFailed)
-              : generalizedErrorMessage(error, copy.loadFailed),
-        }));
-      },
-    );
-  }, [copy.loadFailed, copy.locale, nextCursor, sessionId, state.loadingEarlier, state.sessionId]);
+    if (!sessionId || !nextCursor || state.loadingEarlier) return;
+    const desired = desiredPageCountRef.current;
+    desiredPageCountRef.current = {
+      sessionId,
+      count: (desired?.sessionId === sessionId ? desired.count : 1) + 1,
+    };
+    readTraceWindow(sessionId, 'earlier');
+  }, [nextCursor, readTraceWindow, sessionId, state.loadingEarlier]);
 
   if (state.sessionId !== sessionId) {
     return { ...EMPTY_SNAPSHOT, loading: Boolean(sessionId) && active, retry, loadEarlier };
@@ -291,73 +281,32 @@ export function useSessionTrace(
   return { ...snapshot, trace, nextCursor, retry, loadEarlier };
 }
 
-async function readRefreshedTracePages(
+async function readTracePageWindow(
   sessionId: string,
-  existingPages: readonly SessionTracePageEntry[],
+  pageCount: number,
   loadFailed: string,
-): Promise<{
-  prefix: SessionTracePageEntry[];
-  reconnectCursor: string | null;
-}> {
-  const prefix: SessionTracePageEntry[] = [];
+  isCurrent: () => boolean,
+): Promise<DesktopSessionTracePage[]> {
+  const pages: DesktopSessionTracePage[] = [];
   const seen = new Set<string>();
   let requestCursor: string | null = null;
-  while (true) {
+  while (pages.length < pageCount) {
     const result = await window.maka.inspector.trace(
       sessionId,
       requestCursor === null ? undefined : requestCursor,
     );
     if (!result.ok) throw new Error(result.error.message || loadFailed);
-    prefix.push({ requestCursor, response: result.data });
+    pages.push(result.data);
+    if (!isCurrent()) return pages;
     const nextCursor = result.data.nextCursor;
-    if (existingPages.length === 0 || nextCursor === null) {
-      return { prefix, reconnectCursor: null };
-    }
+    if (nextCursor === null) return pages;
     if (seen.has(nextCursor)) throw new Error(loadFailed);
-    const reconnects =
-      existingPages.some((entry) => entry.requestCursor === nextCursor) ||
-      existingPages.at(-1)?.response.nextCursor === nextCursor;
-    if (reconnects) return { prefix, reconnectCursor: nextCursor };
     seen.add(nextCursor);
     requestCursor = nextCursor;
   }
+  return pages;
 }
 
-function upsertTracePage(
-  pages: readonly SessionTracePageEntry[],
-  requestCursor: string,
-  response: DesktopSessionTracePage,
-): readonly SessionTracePageEntry[] {
-  const entry = { requestCursor, response };
-  const existingIndex = pages.findIndex((page) => page.requestCursor === requestCursor);
-  if (existingIndex >= 0) {
-    return pages.map((page, index) => (index === existingIndex ? entry : page));
-  }
-  const parentIndex = pages.findIndex((page) => page.response.nextCursor === requestCursor);
-  if (parentIndex < 0) return pages;
-  return [...pages.slice(0, parentIndex + 1), entry];
-}
-
-function mergeSessionTracePages(pages: readonly SessionTracePageEntry[]): SessionTrace {
-  return pages
-    .map((entry) => entry.response.trace)
-    .reduce((current, page) => mergeSessionTrace(current, page));
-}
-
-function mergeSessionTrace(current: SessionTrace, page: SessionTrace): SessionTrace {
-  const turns = new Map(current.turns.map((turn) => [`${turn.turnId}\0${turn.runId}`, turn]));
-  for (const turn of page.turns) turns.set(`${turn.turnId}\0${turn.runId}`, turn);
-  const ordered = [...turns.values()].sort(
-    (left, right) => left.startedAt - right.startedAt || left.runId.localeCompare(right.runId),
-  );
-  return {
-    schemaVersion: current.schemaVersion,
-    sessionId: current.sessionId,
-    turns: ordered,
-    totals: ordered.reduce(
-      (total, turn) => mergeTraceTotals(total, turn.totals),
-      emptyTraceTotals(),
-    ),
-    coverage: mergeDisjointTraceCoverage(current.coverage, page.coverage),
-  };
+function mergeSessionTracePages(pages: readonly DesktopSessionTracePage[]): SessionTrace {
+  return mergeSessionTraces(pages.map((page) => page.trace));
 }
