@@ -236,6 +236,12 @@ function classifyTelegramSendResponse(response: any): TelegramSendClassification
   return { kind: 'fatal', description };
 }
 
+function telegramPollingFailureReadiness(
+  readiness: BotStatus['readiness'],
+): BotStatus['readiness'] {
+  return readiness === 'operational' ? 'degraded' : readiness;
+}
+
 export const __TEST__ = {
   utf16Len,
   prefixWithinUtf16,
@@ -245,6 +251,7 @@ export const __TEST__ = {
   normalizeTelegramPrivateChatId,
   isAllowedUser,
   classifyTelegramSendResponse,
+  telegramPollingFailureReadiness,
   createTelegramReplyStream,
   telegramDraftId,
 };
@@ -321,11 +328,23 @@ export class SimpleBotBridge extends BaseBotAdapter implements SendCapable {
       // Burst-send (agent emits 5 chunks back-to-back) is exactly the
       // case this targets — without the retry, chunk 2 silently drops
       // and the user sees a truncated reply.
-      let response = await telegramApi(this.settings.token, 'sendMessage', body);
+      let response = await telegramApi(
+        this.settings.token,
+        'sendMessage',
+        body,
+        undefined,
+        this.settings.proxyUrl,
+      );
       let classification = classifyTelegramSendResponse(response);
       if (classification.kind === 'retry') {
         await sleep(classification.delayMs);
-        response = await telegramApi(this.settings.token, 'sendMessage', body);
+        response = await telegramApi(
+          this.settings.token,
+          'sendMessage',
+          body,
+          undefined,
+          this.settings.proxyUrl,
+        );
         classification = classifyTelegramSendResponse(response);
       }
       if (classification.kind !== 'ok') {
@@ -352,10 +371,16 @@ export class SimpleBotBridge extends BaseBotAdapter implements SendCapable {
       const targetMessageId = lastMessageId;
       const targetChatId = chatId;
       setTimeout(() => {
-        void telegramApi(token, 'deleteMessage', {
-          chat_id: targetChatId,
-          message_id: Number(targetMessageId),
-        }).catch(() => undefined);
+        void telegramApi(
+          token,
+          'deleteMessage',
+          {
+            chat_id: targetChatId,
+            message_id: Number(targetMessageId),
+          },
+          undefined,
+          this.settings.proxyUrl,
+        ).catch(() => undefined);
       }, ephemeralDelay).unref?.();
     }
     return lastMessageId;
@@ -371,11 +396,17 @@ export class SimpleBotBridge extends BaseBotAdapter implements SendCapable {
       streamId: options.streamId,
       prepareDraftText: (text) => prefixWithinUtf16(text, TELEGRAM_MAX_UTF16_PER_MESSAGE),
       sendDraft: async (draftId, text) => {
-        const response = await telegramApi(token, 'sendMessageDraft', {
-          chat_id: privateChatId,
-          draft_id: draftId,
-          text,
-        });
+        const response = await telegramApi(
+          token,
+          'sendMessageDraft',
+          {
+            chat_id: privateChatId,
+            draft_id: draftId,
+            text,
+          },
+          undefined,
+          this.settings.proxyUrl,
+        );
         return response?.ok === true;
       },
       sendFinal: (text) => this.sendMessage(chatId, text, options),
@@ -391,10 +422,16 @@ export class SimpleBotBridge extends BaseBotAdapter implements SendCapable {
   async sendTypingIndicator(chatId: string): Promise<boolean> {
     if (this.platform !== 'telegram' || !this.running) return false;
     try {
-      const response = await telegramApi(this.settings.token, 'sendChatAction', {
-        chat_id: chatId,
-        action: 'typing',
-      });
+      const response = await telegramApi(
+        this.settings.token,
+        'sendChatAction',
+        {
+          chat_id: chatId,
+          action: 'typing',
+        },
+        undefined,
+        this.settings.proxyUrl,
+      );
       return response?.ok === true;
     } catch {
       return false;
@@ -403,7 +440,13 @@ export class SimpleBotBridge extends BaseBotAdapter implements SendCapable {
 
   private async startTelegram(): Promise<void> {
     try {
-      const me = await telegramApi(this.settings.token, 'getMe');
+      const me = await telegramApi(
+        this.settings.token,
+        'getMe',
+        undefined,
+        undefined,
+        this.settings.proxyUrl,
+      );
       if (!me.ok) {
         this.reason = me.description ?? 'get-me-failed';
         this.readiness = 'configured';
@@ -486,8 +529,13 @@ export class SimpleBotBridge extends BaseBotAdapter implements SendCapable {
             allowed_updates: ['message'],
           },
           this.abortController.signal,
+          this.settings.proxyUrl,
         );
         if (!updates.ok || !Array.isArray(updates.result)) {
+          this.reason =
+            typeof updates?.description === 'string' ? updates.description : 'polling-failed';
+          this.readiness = telegramPollingFailureReadiness(this.readiness);
+          this.emitStatusChange();
           await sleep(5_000);
           continue;
         }
@@ -498,6 +546,9 @@ export class SimpleBotBridge extends BaseBotAdapter implements SendCapable {
       } catch (error) {
         if (!this.running) return;
         if (error instanceof Error && error.name === 'AbortError') return;
+        this.reason = generalizedErrorMessage(error);
+        this.readiness = telegramPollingFailureReadiness(this.readiness);
+        this.emitStatusChange();
         await sleep(5_000);
       }
     }
@@ -680,6 +731,7 @@ async function telegramApi(
   method: string,
   body?: Record<string, unknown>,
   signal?: AbortSignal,
+  proxyUrl?: string,
 ): Promise<any> {
   const timeoutMs =
     typeof body?.timeout === 'number' ? (body.timeout + 5) * 1_000 : TELEGRAM_REQUEST_TIMEOUT_MS;
@@ -689,6 +741,7 @@ async function telegramApi(
     body: body ? JSON.stringify(body) : undefined,
     signal,
     timeoutMs,
+    proxyUrl,
   });
   return response.json();
 }

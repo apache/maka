@@ -87,6 +87,33 @@ function startStreamingProxy(): Promise<{
 }
 
 describe('proxiedFetch', () => {
+  test('uses a per-request proxy URL when no global proxy is active', async () => {
+    const proxy = await startStreamingProxy();
+    setActiveProxy(null);
+    try {
+      const response = await withTimeout(
+        proxiedFetch('http://example.test/channel-proxy', {
+          timeoutMs: 0,
+          proxyUrl: `http://127.0.0.1:${proxy.port}`,
+        }),
+        5_000,
+        'proxiedFetch did not use the per-request proxy URL',
+      );
+      assert.equal(response.status, 200);
+      assert.ok(response.body);
+      const reader = response.body.getReader();
+      const first = await withTimeout(reader.read(), 5_000, 'proxy body was not readable');
+      assert.equal(Buffer.from(first.value ?? []).toString(), 'hello world');
+      proxy.sendTail();
+      const tail = await withTimeout(reader.read(), 5_000, 'proxy body tail was not readable');
+      assert.equal(Buffer.from(tail.value ?? []).toString(), '-tail');
+      await reader.cancel();
+    } finally {
+      setActiveProxy(null);
+      await proxy.close();
+    }
+  });
+
   test('returns a streaming proxied response at headers, before body EOF', async () => {
     const proxy = await startStreamingProxy();
     setActiveProxy({

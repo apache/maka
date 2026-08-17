@@ -9,7 +9,7 @@ import {
   nonTextMessageAck,
   plaintextHelpReply,
 } from '@maka/core/bot-events';
-import { generalizedErrorMessage } from '@maka/core/redaction';
+import { generalizedErrorMessage, redactSecrets } from '@maka/core/redaction';
 import type { BotIncomingMessage, BotRegistry, BotReplyStream } from '@maka/runtime/bots';
 import type { BotSessionAdapter, BotSessionTurnResult } from './bot-session-adapter.js';
 import { isBotSessionUnavailableError } from './bot-session-adapter.js';
@@ -205,6 +205,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   ): Promise<void> {
     if (closed) return;
     let replyStream: BotReplyStream | null = null;
+    let processingStage = 'command-routing';
     // PR-BOT-EPHEMERAL-REPLY-0: TTL for system notices (help / reset ack /
     // fallback errors). Five minutes is long enough for the user to read
     // and process the notice on mobile; short enough that bot DMs do not
@@ -248,6 +249,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     let sessionId = botConversationSessions.get(conversationKey);
     try {
       if (!sessionId) {
+        processingStage = 'session-create';
         sessionId = await createBotConversationSession(
           conversationKey,
           message,
@@ -255,6 +257,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
         );
         if (!sessionId) return;
       } else {
+        processingStage = 'session-prepare';
         let rebound = false;
         try {
           const permissionModeOk = await ensureBotSessionExploreMode(
@@ -266,6 +269,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
         } catch (error) {
           if (!isBotSessionUnavailableError(error)) throw error;
           invalidateSessionBindings(sessionId);
+          processingStage = 'session-create';
           sessionId = await createBotConversationSession(
             conversationKey,
             message,
@@ -285,6 +289,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       }
 
       const turnId = randomUUID();
+      processingStage = 'turn-start';
       const replyOptions = message.sourceMessageId
         ? { replyToMessageId: message.sourceMessageId }
         : undefined;
@@ -344,6 +349,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       // bridge layer drops the field for non-Telegram platforms / multi-chunk
       // continuation pieces.
       if (reply.trim()) {
+        processingStage = 'reply-send';
         // Actual agent reply: NO ephemeral TTL. The answer must stay
         // visible — auto-deleting it would defeat the bot's purpose.
         const sent = replyStream
@@ -370,6 +376,12 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     } catch (error) {
       await replyStream?.abort().catch(() => {});
       if (closed) return;
+      const errorName = error instanceof Error ? error.name : typeof error;
+      const errorCode = readErrorCode(error);
+      const errorDetail = redactSecrets(error instanceof Error ? error.message : String(error));
+      console.error(
+        `[bot-incoming] conversation processing failed: stage=${processingStage} name=${errorName} code=${errorCode ?? 'unknown'} detail=${errorDetail}`,
+      );
       const detail = isSessionWorkspaceUnavailableError(error)
         ? '工作目录不可用，请在桌面端选择有效目录后重试'
         : generalizedErrorMessage(error, '机器人对话处理失败');
@@ -411,4 +423,10 @@ function botReply(result: BotSessionTurnResult): string {
   }
   if (result.kind === 'errored') return `Maka 处理失败：${result.reason}`;
   return result.text;
+}
+
+function readErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object' || !('code' in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' || typeof code === 'number' ? String(code) : undefined;
 }

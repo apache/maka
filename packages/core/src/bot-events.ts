@@ -142,6 +142,7 @@ export function isPlaintextResetCommand(
 }
 
 export const BOT_PLAINTEXT_HELP_COMMANDS: ReadonlyArray<string> = Object.freeze([
+  '/start',
   'help',
   '/help',
   '?',

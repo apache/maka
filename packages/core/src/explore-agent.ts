@@ -22,6 +22,11 @@ export interface SessionStartModeSpec {
 }
 
 export const SESSION_START_MODE_SPECS = {
+  bot_chat: {
+    name: 'Bot conversation',
+    labels: ['mode:bot_chat'],
+    permissionMode: 'explore',
+  },
   deep_research: {
     name: 'Deep Research',
     labels: ['mode:deep_research'],
