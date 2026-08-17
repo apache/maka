@@ -113,6 +113,7 @@ import {
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
 import { HostExtensionController } from './extension-controller.js';
+import { HostExtensionTimerScheduler } from './extension-timer-scheduler.js';
 import {
   InstalledToolPackageExtensionLoader,
   StaticTrustedToolExtensionLoader,
@@ -224,7 +225,11 @@ export async function createExecutionRuntimeHostComposition(
 ): Promise<ExecutionRuntimeHostComposition> {
   const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
   await stores.sessionStore.ready();
-  const extensions = new HostExtensionRuntime();
+  const extensionTimers = new HostExtensionTimerScheduler(
+    context.owner.controlDirectory,
+    async (scopeId) => (await stores.sessionStore.readHeaderSnapshot(scopeId)).cwd,
+  );
+  const extensions = new HostExtensionRuntime({}, extensionTimers);
   const toolPackageStore = new ToolPackageStore(context.owner.controlDirectory);
   const uiPackageStore = new UiPackageStore(context.owner.controlDirectory);
   const hookPackageStore = new HookPackageStore(context.owner.controlDirectory);
@@ -1225,6 +1230,22 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       workspaceResolver,
       requestDrain: context.requestDrain,
+      onCreated: async (sessionId, cwd) => {
+        await extensions.dispatchCoreEvent(
+          sessionId,
+          'maka.session.created',
+          { sessionId, cwd },
+          {
+            sessionId,
+            turnId: `session-created:${Date.now()}`,
+            cwd,
+            permissionMode: 'default',
+            origin: 'host',
+            configuration: Object.freeze({}),
+            signal: new AbortController().signal,
+          },
+        );
+      },
     });
     scheduledTasks = new HostScheduledTaskCoordinator({
       store: openedScheduledTaskStore,
@@ -1313,6 +1334,22 @@ export async function createExecutionRuntimeHostComposition(
       worktrees: worktreeChildExecutor,
       requestDrain: context.requestDrain,
       memoryExtractionLane,
+      onDisposed: async (sessionId, cwd) => {
+        await extensions.dispatchCoreEvent(
+          sessionId,
+          'maka.session.disposed',
+          { sessionId },
+          {
+            sessionId,
+            turnId: `session-disposed:${Date.now()}`,
+            cwd,
+            permissionMode: 'default',
+            origin: 'host',
+            configuration: Object.freeze({}),
+            signal: new AbortController().signal,
+          },
+        );
+      },
     });
     const hostedExecutionRunner = new HostHostedExecutionRunner({
       handlers: {

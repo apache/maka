@@ -62,6 +62,7 @@ test('production composition exposes trusted Extension control and restores it a
       composition.extensions.resolveTools('session-1', []).map(({ name }) => name),
       [
         'Weather',
+        'call_service',
         'define_event',
         'define_hook',
         'define_package',
@@ -82,6 +83,7 @@ test('production composition exposes trusted Extension control and restores it a
         'publish_ui_state',
         'test_hook',
         'test_listener',
+        'test_service',
         'test_tool',
         'test_ui',
       ],
@@ -107,6 +109,7 @@ test('production composition exposes trusted Extension control and restores it a
       composition.extensions.resolveTools('session-1', []).map(({ name }) => name),
       [
         'Weather',
+        'call_service',
         'define_event',
         'define_hook',
         'define_package',
@@ -127,6 +130,7 @@ test('production composition exposes trusted Extension control and restores it a
         'publish_ui_state',
         'test_hook',
         'test_listener',
+        'test_service',
         'test_tool',
         'test_ui',
       ],

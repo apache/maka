@@ -1095,6 +1095,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'WebSearch',
       'Write',
       'WriteStdin',
+      'call_service',
       'define_event',
       'define_hook',
       'define_package',
@@ -1123,6 +1124,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'task_update',
       'test_hook',
       'test_listener',
+      'test_service',
       'test_tool',
       'test_ui',
     ]);

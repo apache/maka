@@ -114,6 +114,7 @@ export interface HostSessionCatalogCoordinatorOptions {
   readonly continuity: SessionContinuity;
   readonly workspaceResolver: HostWorkspaceResolver;
   readonly requestDrain: () => void;
+  readonly onCreated?: (sessionId: string, cwd: string) => void | Promise<void>;
 }
 
 interface ResolvedSessionModel {
@@ -142,6 +143,7 @@ export class HostSessionCatalogCoordinator {
   readonly #continuity: SessionContinuity;
   readonly #workspaceResolver: HostWorkspaceResolver;
   readonly #requestDrain: () => void;
+  readonly #onCreated: HostSessionCatalogCoordinatorOptions['onCreated'];
 
   constructor(options: HostSessionCatalogCoordinatorOptions) {
     this.#stores = options.stores;
@@ -151,6 +153,7 @@ export class HostSessionCatalogCoordinator {
     this.#continuity = options.continuity;
     this.#workspaceResolver = options.workspaceResolver;
     this.#requestDrain = options.requestDrain;
+    this.#onCreated = options.onCreated;
   }
 
   async resolveExternalSessionImportTarget(): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
@@ -364,6 +367,9 @@ export class HostSessionCatalogCoordinator {
               );
             }
             await this.#continuity.refreshCanonical(input.sessionId, lease);
+            await Promise.resolve(this.#onCreated?.(input.sessionId, workspace.cwd)).catch(
+              () => undefined,
+            );
             return createSuccess(
               projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),
             );

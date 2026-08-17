@@ -107,6 +107,7 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly worktrees?: Pick<SubagentWorktreeExecutor, 'retire'>;
   readonly requestDrain: () => void;
   readonly memoryExtractionLane: MemoryExtractionSessionLane;
+  readonly onDisposed?: (sessionId: string, cwd: string) => void | Promise<void>;
 }
 
 interface StableFamily {
@@ -160,6 +161,7 @@ export class HostSessionRetirementCoordinator {
   readonly #worktrees: HostSessionRetirementCoordinatorOptions['worktrees'];
   readonly #requestDrain: () => void;
   readonly #memoryExtractionLane: MemoryExtractionSessionLane;
+  readonly #onDisposed: HostSessionRetirementCoordinatorOptions['onDisposed'];
   readonly #cleanupQueue = new Set<string>();
   readonly #retiredWorktrees = new Map<string, SubagentWorkspaceBinding>();
   #cleanupWorker: Promise<void> | null = null;
@@ -187,6 +189,7 @@ export class HostSessionRetirementCoordinator {
     this.#worktrees = options.worktrees;
     this.#requestDrain = options.requestDrain;
     this.#memoryExtractionLane = options.memoryExtractionLane;
+    this.#onDisposed = options.onDisposed;
   }
 
   async recover(): Promise<void> {
@@ -245,6 +248,13 @@ export class HostSessionRetirementCoordinator {
             'archived',
           );
           committed = true;
+          await Promise.all(
+            [...committable.records.values()].map((record) =>
+              Promise.resolve(this.#onDisposed?.(record.header.id, record.header.cwd)).catch(
+                () => undefined,
+              ),
+            ),
+          );
           handles.goal.commit();
           handles.scheduledTasks.commit();
           await this.#graphWake.retireSessions(family.sessionIds);
@@ -307,6 +317,13 @@ export class HostSessionRetirementCoordinator {
             versionedFamily(committable),
           );
           committed = true;
+          await Promise.all(
+            [...committable.records.values()].map((record) =>
+              Promise.resolve(this.#onDisposed?.(record.header.id, record.header.cwd)).catch(
+                () => undefined,
+              ),
+            ),
+          );
           handles.goal.commit();
           handles.scheduledTasks.commit();
           await this.#graphWake.retireSessions(family.sessionIds);

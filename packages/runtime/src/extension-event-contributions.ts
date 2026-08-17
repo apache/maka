@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import type { ExtensionActivationContext } from './extension-lifecycle-kernel.js';
+import type { ExtensionDispatchMode } from './extension-dispatch.js';
+
+export type ExtensionEventDispatchMode = ExtensionDispatchMode;
 
 export interface ExtensionEventInvocationContext {
   readonly sessionId: string;
@@ -17,7 +20,10 @@ export interface ExtensionEventInvocationContext {
 export interface ExtensionEventDefinition {
   readonly name: string;
   readonly description: string;
+  /** Legacy definitions default to notification-style emit. */
+  readonly mode?: ExtensionEventDispatchMode;
   readonly payloadSchema: Readonly<Record<string, unknown>>;
+  readonly resultSchema?: Readonly<Record<string, unknown>>;
 }
 
 export interface ExtensionEventListenerContribution {
@@ -26,10 +32,11 @@ export interface ExtensionEventListenerContribution {
   readonly handler: string;
   readonly priority: number;
   readonly timeoutMs: number;
-  invoke(payload: unknown, context: ExtensionEventInvocationContext): Promise<void>;
+  invoke(payload: unknown, context: ExtensionEventInvocationContext): Promise<unknown>;
 }
 
-export interface ExtensionEventDefinitionInspection extends ExtensionEventDefinition {
+export interface ExtensionEventDefinitionInspection extends Omit<ExtensionEventDefinition, 'mode'> {
+  readonly mode: ExtensionEventDispatchMode;
   readonly bindingId: string;
   readonly scopeId: string;
   readonly extensionId: string;
@@ -46,6 +53,7 @@ export interface ExtensionEventListenerInspection extends ExtensionEventListener
 interface RegisteredEvent extends ExtensionEventDefinitionInspection {
   readonly token: symbol;
   readonly schema: z.ZodType;
+  readonly resultValidator?: z.ZodType;
 }
 
 interface RegisteredListener extends ExtensionEventListenerInspection {
@@ -75,8 +83,10 @@ export class ExtensionEventContributionRegistry {
   ): () => void {
     validateExtensionEventDefinition(context.extensionId, definition);
     let schema: z.ZodType;
+    let resultValidator: z.ZodType | undefined;
     try {
       schema = z.fromJSONSchema(definition.payloadSchema);
+      if (definition.resultSchema) resultValidator = z.fromJSONSchema(definition.resultSchema);
     } catch (error) {
       throw new ExtensionEventContributionError(
         'invalid_event',
@@ -103,8 +113,13 @@ export class ExtensionEventContributionRegistry {
       revision: context.revision,
       name: definition.name,
       description: definition.description,
+      mode: definition.mode ?? 'emit',
       payloadSchema: structuredClone(definition.payloadSchema),
+      ...(definition.resultSchema
+        ? { resultSchema: structuredClone(definition.resultSchema) }
+        : {}),
       schema,
+      ...(resultValidator ? { resultValidator } : {}),
       token: Symbol(definition.name),
     });
     this.#events.set(context.scopeId, [...current, entry]);
@@ -155,7 +170,9 @@ export class ExtensionEventContributionRegistry {
     }
     return Object.freeze(
       [...resolved.values()]
-        .map(({ token: _token, schema: _schema, ...entry }) => Object.freeze(entry))
+        .map(({ token: _token, schema: _schema, resultValidator: _result, ...entry }) =>
+          Object.freeze(entry),
+        )
         .sort((left, right) => left.name.localeCompare(right.name)),
     );
   }
@@ -224,6 +241,72 @@ export class ExtensionEventContributionRegistry {
     }
     return structuredClone(parsed.data);
   }
+
+  resolveDefinition(
+    scopeIds: readonly string[],
+    committed: readonly { readonly bindingId: string; readonly revision: string }[],
+    event: string,
+  ): ExtensionEventDefinitionInspection {
+    const definition = this.#definition(scopeIds, committed, event);
+    const { token: _token, schema: _schema, resultValidator: _result, ...inspection } = definition;
+    return Object.freeze(inspection);
+  }
+
+  parseResult(
+    scopeIds: readonly string[],
+    committed: readonly { readonly bindingId: string; readonly revision: string }[],
+    event: string,
+    value: unknown,
+  ): unknown {
+    const definition = this.#definition(scopeIds, committed, event);
+    const validator =
+      definition.mode === 'transform' ? definition.schema : definition.resultValidator;
+    if (!validator) return structuredClone(value);
+    if ((definition.mode === 'parallel' || definition.mode === 'serial') && Array.isArray(value)) {
+      return Object.freeze(
+        value.map((item) => {
+          const parsed = validator.safeParse(item);
+          if (!parsed.success) {
+            throw new ExtensionEventContributionError(
+              'invalid_payload',
+              `Event result does not match ${event}: ${z.prettifyError(parsed.error)}`,
+            );
+          }
+          return structuredClone(parsed.data);
+        }),
+      );
+    }
+    const parsed = validator.safeParse(value);
+    if (!parsed.success) {
+      throw new ExtensionEventContributionError(
+        'invalid_payload',
+        `Event result does not match ${event}: ${z.prettifyError(parsed.error)}`,
+      );
+    }
+    return structuredClone(parsed.data);
+  }
+
+  #definition(
+    scopeIds: readonly string[],
+    committed: readonly { readonly bindingId: string; readonly revision: string }[],
+    event: string,
+  ): RegisteredEvent {
+    const revisions = committedRevisions(committed)!;
+    let definition: RegisteredEvent | undefined;
+    for (const scopeId of scopeIds) {
+      const candidate = (this.#events.get(scopeId) ?? []).find(
+        (entry) => entry.name === event && revisions.get(entry.bindingId) === entry.revision,
+      );
+      if (candidate) definition = candidate;
+    }
+    if (!definition) {
+      throw new ExtensionEventContributionError(
+        'event_not_found',
+        `Active Extension event is not defined: ${event}`,
+      );
+    }
+    return definition;
+  }
 }
 
 export function contributeExtensionEvent(
@@ -273,6 +356,25 @@ export function validateExtensionEventDefinition(
     });
   }
   if (Buffer.byteLength(encoded, 'utf8') > 64 * 1024) invalid('Event payload schema is too large');
+  const mode = definition.mode ?? 'emit';
+  if (!['emit', 'parallel', 'serial', 'bail', 'transform', 'observe', 'gate'].includes(mode)) {
+    invalid('Event dispatch mode is invalid');
+  }
+  if ((mode === 'parallel' || mode === 'serial' || mode === 'bail') && !definition.resultSchema) {
+    invalid(`${mode} Event requires a result schema`);
+  }
+  if (definition.resultSchema) {
+    let resultEncoded: string;
+    try {
+      resultEncoded = JSON.stringify(definition.resultSchema);
+    } catch (error) {
+      throw new ExtensionEventContributionError('invalid_event', 'Event result schema is invalid', {
+        cause: error,
+      });
+    }
+    if (Buffer.byteLength(resultEncoded, 'utf8') > 64 * 1024)
+      invalid('Event result schema is too large');
+  }
 }
 
 export function validateExtensionEventListener(listener: ExtensionEventListenerContribution): void {

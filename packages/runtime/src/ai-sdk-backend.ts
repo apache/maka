@@ -410,6 +410,97 @@ function transformedPromptText(payload: unknown, fallback: string): string {
     : fallback;
 }
 
+function transformedSystemPrompt(
+  payload: unknown,
+  fallback: string | undefined,
+): string | undefined {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return fallback;
+  const prompt = (payload as { prompt?: unknown }).prompt;
+  if (typeof prompt !== 'string' || Buffer.byteLength(prompt, 'utf8') > 2 * 1024 * 1024)
+    return fallback;
+  return prompt.length > 0 ? prompt : undefined;
+}
+
+function transformedRequestMessages(
+  payload: unknown,
+  fallback: readonly ModelMessage[],
+): ModelMessage[] {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [...fallback];
+  const messages = (payload as { messages?: unknown }).messages;
+  if (!Array.isArray(messages) || messages.length > 10_000) return [...fallback];
+  try {
+    const encoded = JSON.stringify(messages);
+    if (Buffer.byteLength(encoded, 'utf8') > 8 * 1024 * 1024) return [...fallback];
+    return structuredClone(messages) as ModelMessage[];
+  } catch {
+    return [...fallback];
+  }
+}
+
+function transformedProviderRequest(
+  payload: unknown,
+  fallback: {
+    readonly messages: readonly ModelMessage[];
+    readonly systemPrompt: string | undefined;
+    readonly activeTools: readonly string[];
+  },
+): { messages: ModelMessage[]; systemPrompt: string | undefined; activeTools: string[] } {
+  const record =
+    payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : undefined;
+  const messages = transformedRequestMessages(record, fallback.messages);
+  const systemPrompt = transformedSystemPrompt(
+    record && Object.hasOwn(record, 'systemPrompt')
+      ? { prompt: record.systemPrompt === null ? '' : record.systemPrompt }
+      : undefined,
+    fallback.systemPrompt,
+  );
+  const allowed = new Set(fallback.activeTools);
+  const activeTools =
+    Array.isArray(record?.activeTools) &&
+    record.activeTools.every((name) => typeof name === 'string' && allowed.has(name))
+      ? [...new Set(record.activeTools as string[])]
+      : [...fallback.activeTools];
+  return { messages, systemPrompt, activeTools };
+}
+
+function extensionRetryDecision(payload: unknown): { retry: boolean; delayMs?: number } {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { retry: false };
+  const record = payload as Record<string, unknown>;
+  const delayMs =
+    Number.isSafeInteger(record.delayMs) &&
+    (record.delayMs as number) >= 0 &&
+    (record.delayMs as number) <= 60_000
+      ? (record.delayMs as number)
+      : undefined;
+  return { retry: record.retry === true, ...(delayMs === undefined ? {} : { delayMs }) };
+}
+
+function extensionContinuationDecision(payload: unknown): {
+  continue: boolean;
+  instruction: string;
+} {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload))
+    return { continue: false, instruction: '' };
+  const record = payload as Record<string, unknown>;
+  if (
+    record.continue !== true ||
+    typeof record.instruction !== 'string' ||
+    record.instruction.length === 0 ||
+    Buffer.byteLength(record.instruction, 'utf8') > 64 * 1024
+  ) {
+    return { continue: false, instruction: '' };
+  }
+  return { continue: true, instruction: record.instruction };
+}
+
+function safeExtensionError(error: unknown): { name: string; message: string } {
+  const name = error instanceof Error ? error.name : 'Error';
+  const message = error instanceof Error ? error.message : String(error);
+  return { name: name.slice(0, 128), message: message.slice(0, 4_000) };
+}
+
 function providerWebSearchQuery(input: unknown): string {
   let value = input;
   if (typeof input === 'string') {
@@ -1269,7 +1360,46 @@ export class AiSdkBackend implements AgentBackend {
       ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
       materializeDefaultToolResultOutput: ({ toolCallId, output }) =>
         this.materializeToolResultOutput(identity.scope().imageBudget, output, false, toolCallId),
-      spawnChildAgent: input.spawnChildAgent,
+      ...(input.spawnChildAgent
+        ? {
+            spawnChildAgent: async (
+              childInput: Parameters<NonNullable<typeof input.spawnChildAgent>>[0],
+            ) => {
+              const scope = identity.scope();
+              await input.preToolUseHooks?.runCoreEvent?.(
+                'maka.subagent.start',
+                {
+                  parentRunId: childInput.parentRunId,
+                  name: childInput.spec.name,
+                  prompt: childInput.prompt,
+                },
+                childInput.abortSignal,
+                this.coreEventContext(scope),
+              );
+              let outcome: 'completed' | 'failed' = 'failed';
+              try {
+                const result = await input.spawnChildAgent!(childInput);
+                outcome = 'completed';
+                return result;
+              } finally {
+                try {
+                  await input.preToolUseHooks?.runCoreEvent?.(
+                    'maka.subagent.end',
+                    {
+                      parentRunId: childInput.parentRunId,
+                      name: childInput.spec.name,
+                      outcome,
+                    },
+                    new AbortController().signal,
+                    this.coreEventContext(scope),
+                  );
+                } catch {
+                  // Observe-only subagent events cannot replace child settlement.
+                }
+              }
+            },
+          }
+        : {}),
       spawnChildSession: input.spawnChildSession,
       prepareChildAgentResume: input.prepareChildAgentResume,
       resumeChildAgent: input.resumeChildAgent,
@@ -1377,6 +1507,12 @@ export class AiSdkBackend implements AgentBackend {
           new AbortController().signal,
           hookContext,
         );
+        await this.input.preToolUseHooks?.runCoreEvent?.(
+          'maka.agent.status',
+          { status: outcome, modelId: this.input.modelId },
+          new AbortController().signal,
+          hookContext,
+        );
       } catch {
         // Observe-only Extension Hooks are fail-open and cannot replace turn settlement.
       }
@@ -1396,7 +1532,32 @@ export class AiSdkBackend implements AgentBackend {
         scope.abortController.signal,
         hookContext,
       );
+      await this.input.preToolUseHooks?.runCoreEvent?.(
+        'maka.agent.status',
+        { status: 'running', modelId: this.input.modelId },
+        scope.abortController.signal,
+        hookContext,
+      );
       for await (const event of this.sendWithinScope(scope, preparedInput)) {
+        try {
+          await this.input.preToolUseHooks?.runCoreEvent?.(
+            'maka.session.event',
+            { event },
+            scope.abortController.signal,
+            hookContext,
+          );
+          if (event.type === 'complete') {
+            await this.input.preToolUseHooks?.runCoreEvent?.(
+              'maka.session.flush',
+              { stopReason: event.stopReason },
+              scope.abortController.signal,
+              hookContext,
+            );
+          }
+        } catch (error) {
+          if (scope.abortController.signal.aborted) throw error;
+          // Observability listeners are contained and cannot fail the Agent turn.
+        }
         if (event.type === 'complete') {
           outcome = 'completed';
           // The Flow forwards the terminal event to its own consumer. That
@@ -2146,6 +2307,7 @@ export class AiSdkBackend implements AgentBackend {
         let providerOutcome: ModelStepOutcome;
         let finishReason: ModelFinishReason = 'stop';
         let terminalProviderError: unknown;
+        let extensionContinuationCount = 0;
         agentLoop: for (;;) {
           await this.drainSteeringInto(scope, input, queue);
           if (this.input.loadTurnRuntimeEvents) {
@@ -2158,6 +2320,17 @@ export class AiSdkBackend implements AgentBackend {
             if (missingSteering.length > 0)
               requestMessages = [...requestMessages, ...missingSteering];
           }
+          const preStepResult = await this.input.preToolUseHooks?.runCoreEvent?.(
+            'maka.agent.pre-step',
+            {
+              stepNumber: runtimeSteps,
+              modelId: this.input.modelId,
+              messages: requestMessages,
+            },
+            turnAbortController.signal,
+            this.coreEventContext(scope),
+          );
+          requestMessages = transformedRequestMessages(preStepResult?.result, requestMessages);
           const shaped = requestProjection
             ? await requestProjection({
                 completedSteps: completedProviderSteps,
@@ -2232,11 +2405,32 @@ export class AiSdkBackend implements AgentBackend {
             // rebuilt in place by overflow recovery, and the boundary it folded
             // under must travel with that rebuild, not with the step.
             const historyCompactBoundary = requestHistoryCompactBoundary();
+            const requestHookResult = await this.input.preToolUseHooks?.runCoreEvent?.(
+              'maka.agent.request',
+              {
+                stepNumber: runtimeSteps,
+                attempt: providerAttempt,
+                modelId: this.input.modelId,
+                messages: attemptMessages,
+                systemPrompt: requestSystemPrompt ?? null,
+                activeTools: activeToolsForRequest,
+              },
+              turnAbortController.signal,
+              this.coreEventContext(scope),
+            );
+            const hookedRequest = transformedProviderRequest(requestHookResult?.result, {
+              messages: attemptMessages,
+              systemPrompt: requestSystemPrompt,
+              activeTools: activeToolsForRequest,
+            });
+            scope.memorySourceMessages = [...hookedRequest.messages];
+            scope.memorySourceSystemPrompt = hookedRequest.systemPrompt;
+            scope.memorySourceActiveTools = [...hookedRequest.activeTools];
             result = await this.modelAdapter.startStream({
               model,
-              messages: attemptMessages,
+              messages: hookedRequest.messages,
               tools: modelTools,
-              activeTools: activeToolsForRequest,
+              activeTools: hookedRequest.activeTools,
               onStreamActivity: () => requestWatchdog?.markActivity(),
               repairToolCall: async ({
                 toolCall,
@@ -2255,7 +2449,7 @@ export class AiSdkBackend implements AgentBackend {
                   error,
                 });
               },
-              system: requestSystemPrompt,
+              system: hookedRequest.systemPrompt,
               abortSignal: AbortSignal.any([
                 turnAbortController.signal,
                 providerRequestAbortController.signal,
@@ -2470,6 +2664,20 @@ export class AiSdkBackend implements AgentBackend {
                 settledWatchdogTimeout || providerOutcome.kind === 'completed'
                   ? this.modelAdapter.normalizeFailure(attemptFailure)
                   : providerOutcome.failure;
+              const requestErrorResult = await this.input.preToolUseHooks?.runCoreEvent?.(
+                'maka.agent.request-error',
+                {
+                  stepNumber: runtimeSteps,
+                  attempt: providerAttempt,
+                  modelId: this.input.modelId,
+                  error: safeExtensionError(failure),
+                  retryable: failure.retryable,
+                  noObservableOutput: attemptHasNoObservableOutput(),
+                },
+                turnAbortController.signal,
+                this.coreEventContext(scope),
+              );
+              const extensionRetry = extensionRetryDecision(requestErrorResult?.result);
               if (scope.loopStopRequested) {
                 terminalProviderError = settledWatchdogTimeout?.error ?? failure;
                 break agentLoop;
@@ -2524,7 +2732,10 @@ export class AiSdkBackend implements AgentBackend {
                 incompleteStreamRetryCount < MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP &&
                 incompleteStreamHasNoObservableOutput;
               if (
-                (failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery) &&
+                (failure.retryable ||
+                  extensionRetry.retry ||
+                  idleWatchdogRecovery ||
+                  incompleteStreamRecovery) &&
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
                 stepBudgetRemains &&
                 (attemptHasNoObservableOutput() || idleWatchdogRecovery || incompleteStreamRecovery)
@@ -2540,7 +2751,9 @@ export class AiSdkBackend implements AgentBackend {
                 // The failed request did not return authoritative usage. Keep
                 // effectiveness recoverable, but fail final metering closed.
                 sawUnusableStepUsage = true;
-                const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
+                const delayMs =
+                  extensionRetry.delayMs ??
+                  providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
                 const maxAttempts =
                   idleWatchdogRecovery || incompleteStreamRecovery
@@ -2724,6 +2937,29 @@ export class AiSdkBackend implements AgentBackend {
           ) {
             currentStepMessageId = this.newId();
             continue agentLoop;
+          }
+          if (!stepLimitReached && !scope.loopStopRequested && !scope.aborted) {
+            const stoppingResult = await this.input.preToolUseHooks?.runCoreEvent?.(
+              'maka.agent.turn-stopping',
+              {
+                stepNumber: runtimeSteps,
+                modelId: this.input.modelId,
+                finishReason,
+                assistantText: scope.finalAssistantText ?? '',
+              },
+              turnAbortController.signal,
+              this.coreEventContext(scope),
+            );
+            const continuation = extensionContinuationDecision(stoppingResult?.result);
+            if (continuation.continue && extensionContinuationCount < 3) {
+              extensionContinuationCount += 1;
+              requestMessages = [
+                ...requestMessages,
+                { role: 'user', content: continuation.instruction } satisfies ModelMessage,
+              ];
+              currentStepMessageId = this.newId();
+              continue agentLoop;
+            }
           }
           break agentLoop;
         }
@@ -4471,8 +4707,9 @@ export class AiSdkBackend implements AgentBackend {
 
   private async resolveSystemPrompt(scope: TurnScope): Promise<string | undefined> {
     const turnId = scope.turnId;
+    let prompt: string | undefined;
     if (typeof this.input.systemPrompt === 'function') {
-      return await this.input.systemPrompt({
+      prompt = await this.input.systemPrompt({
         sessionId: this.sessionId,
         turnId,
         ...(scope.runId ? { runId: scope.runId } : {}),
@@ -4481,8 +4718,28 @@ export class AiSdkBackend implements AgentBackend {
         emitSkillCatalogTrace: (message, data) =>
           scope.runTrace?.emit('skill', 'skill_catalog_built', message, data),
       });
+    } else {
+      prompt = this.input.systemPrompt;
     }
-    return this.input.systemPrompt;
+    const result = await this.input.preToolUseHooks?.runCoreEvent?.(
+      'maka.system-prompt.assemble',
+      { prompt: prompt ?? '', modelId: this.input.modelId },
+      scope.abortController.signal,
+      this.coreEventContext(scope),
+    );
+    return transformedSystemPrompt(result?.result, prompt);
+  }
+
+  private coreEventContext(scope: TurnScope) {
+    return {
+      invocationId: scope.runId ?? scope.turnId,
+      sessionId: this.sessionId,
+      runId: scope.runId ?? scope.turnId,
+      turnId: scope.turnId,
+      cwd: this.input.header.cwd,
+      permissionMode: this.input.header.permissionMode,
+      origin: 'provider' as const,
+    };
   }
 
   private async resolveTurnTailPrompt(turnId: string): Promise<string | undefined> {

@@ -1,7 +1,7 @@
 # Unified Extension Package Platform
 
 Maka Extensions have one product identity and one immutable content Revision.
-Tool, UI, Hook, Event, and Listener are typed Contributions of that Revision, not separate plugin
+Tool, UI, Hook, Event, Listener, Service, and Timer are typed Contributions of that Revision, not separate plugin
 products. `maka.extension.json` is the shared product contract; the existing
 `maka.tool.json`, `maka.ui.json`, `maka.hook.json`, and `maka.event.json` remain the typed execution
 manifests.
@@ -21,10 +21,10 @@ returns one typed Contribution Catalog. Agent `inspect_package`,
 authoring starts from one source of truth instead of domain-specific guesses.
 
 `define_package` is the unified Agent authoring transaction. One call writes the
-shared metadata plus any combination of Tool, UI, Hook, and Event manifests, seals the
+shared metadata plus any combination of Tool, UI, Hook, Event, Service, and Timer manifests, seals the
 complete directory once, and installs every Contribution under the same content
 Revision. Source and UI documents are replaced by byte counts and SHA-256
-digests in model history. `manage_package` binds Tool and Hook Contributions to
+digests in model history. `manage_package` binds executable Contributions to
 the current Session and UI Contributions to `desktop-ui`; a partial multi-scope
 activation or update rolls back to the prior Bindings.
 
@@ -44,6 +44,8 @@ installed from the Desktop are bound to the persistent `profile` scope and are
 composed into every Session Tool snapshot. UI Contributions are independently
 bound to `desktop-ui`; a combined package therefore retains typed scope and
 permission separation while sharing one Revision.
+
+Service calls use the same dependency graph: a sandbox may call its own Service or a provider declared in `maka.extension.json`. Timer schedules are Host-owned and persistent; plugin code is cold-started per fire, so restart recovery does not require a resident Fiber.
 
 Profile entries participate in the exact Run Composition digest. Restart
 recovery restores desired/last-good Bindings, dependency Bindings, and
@@ -68,7 +70,7 @@ digest. Import rejects traversal, symlinks, corruption, duplicate paths, and
 oversized payloads before either typed Store installs the Revision. Export is
 exclusive and never overwrites an existing target.
 
-The Desktop Extensions page lists Tool, UI, Hook, Event, and Listener Contributions together and
+The Desktop Extensions page lists Tool, UI, Hook, Event, Listener, Service, and Timer Contributions together and
 supports directory/Bundle installation, Profile/Desktop activation, unified
 enable/disable, per-scope Schema-backed JSON configuration, export, and removal. Agent
 dynamic definitions write the same unified manifest and enter the same Store,

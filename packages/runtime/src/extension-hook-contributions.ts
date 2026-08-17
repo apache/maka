@@ -21,6 +21,7 @@ export interface ExtensionHookInvocationContext {
   readonly configuration: Readonly<Record<string, string | number | boolean>>;
   readonly signal: AbortSignal;
   readonly eventDepth?: number;
+  readonly serviceDepth?: number;
 }
 
 export interface ExtensionHookInvocationResult {

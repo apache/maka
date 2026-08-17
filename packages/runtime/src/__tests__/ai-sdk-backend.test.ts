@@ -125,6 +125,70 @@ describe('AiSdkBackend Extension Hook lifecycle', () => {
     assert.deepEqual(calls.at(-1)?.payload, { outcome: 'completed' });
   });
 
+  test('dispatches typed core seams and consumes their transformed request', async () => {
+    const model = completionModel();
+    const calls: Array<{ event: string; payload: unknown }> = [];
+    const preToolUseHooks: NonNullable<AiSdkBackendInput['preToolUseHooks']> = {
+      prepareTurn() {},
+      releaseTurn() {},
+      async runPreToolUse() {
+        return { denied: false, audits: [], auditWriteFailures: [] };
+      },
+      async runExtensionHook(_event, payload) {
+        return { denied: false, payload, audits: [], auditWriteFailures: [] };
+      },
+      async runCoreEvent(event, payload) {
+        calls.push({ event, payload: structuredClone(payload) });
+        if (event === 'maka.system-prompt.assemble') {
+          return {
+            result: { ...(payload as object), prompt: 'ASSEMBLED SYSTEM' },
+            delivered: 1,
+            failed: 0,
+          };
+        }
+        if (event === 'maka.agent.request') {
+          return {
+            result: { ...(payload as object), systemPrompt: 'REQUEST SYSTEM' },
+            delivered: 1,
+            failed: 0,
+          };
+        }
+        return { result: payload, delivered: 1, failed: 0 };
+      },
+    };
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      systemPrompt: 'BASE SYSTEM',
+      tools: [],
+      preToolUseHooks,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(backend.send({ turnId: 'turn-1', text: 'original prompt', context: [] }));
+
+    const events = calls.map(({ event }) => event);
+    for (const expected of [
+      'maka.system-prompt.assemble',
+      'maka.agent.pre-step',
+      'maka.agent.request',
+      'maka.agent.turn-stopping',
+      'maka.agent.status',
+      'maka.session.event',
+      'maka.session.flush',
+    ]) {
+      assert.equal(events.includes(expected), true, `missing core event: ${expected}`);
+    }
+    assert.equal(JSON.stringify(compactPrompt(model)).includes('REQUEST SYSTEM'), true);
+    assert.equal(JSON.stringify(compactPrompt(model)).includes('ASSEMBLED SYSTEM'), false);
+  });
+
   test('reports an abandoned provider stream as an aborted Run', async () => {
     const outcomes: unknown[] = [];
     const preToolUseHooks: NonNullable<AiSdkBackendInput['preToolUseHooks']> = {

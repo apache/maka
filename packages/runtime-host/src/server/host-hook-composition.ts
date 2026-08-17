@@ -21,6 +21,7 @@ import type {
   ExtensionHookContributionInspection,
   ExtensionHookEventName,
 } from '@maka/runtime/extension-hook-contributions';
+import { dispatchExtensionHandlers } from '@maka/runtime/extension-dispatch';
 import {
   createHookConfigStore,
   createHookTrustStore,
@@ -139,6 +140,24 @@ function createSessionHookDispatcher(input: {
       };
     },
     runExtensionHook,
+    async runCoreEvent(event, payload, abortSignal, context) {
+      if (!input.extensions) return { result: structuredClone(payload), delivered: 0, failed: 0 };
+      const dispatched = await input.extensions.dispatchCoreEvent(input.header.id, event, payload, {
+        sessionId: context.sessionId,
+        runId: context.runId,
+        turnId: context.turnId,
+        cwd: context.cwd,
+        permissionMode: context.permissionMode,
+        origin: context.origin,
+        configuration: Object.freeze({}),
+        signal: abortSignal,
+      });
+      return {
+        result: dispatched.result,
+        delivered: dispatched.delivered,
+        failed: dispatched.failed,
+      };
+    },
   };
 }
 
@@ -169,25 +188,42 @@ async function dispatchExtensionHooks(input: {
     let status: HookCompletedAudit['status'] = 'allowed';
     let message: string | undefined;
     try {
-      const result = await input.executionLimiter.run(() =>
-        hook.invoke(payload, {
-          sessionId: input.context.sessionId,
-          runId: input.context.runId,
-          turnId: input.context.turnId,
-          cwd: input.context.cwd,
-          permissionMode: input.context.permissionMode,
-          origin: input.context.origin,
-          configuration: Object.freeze({}),
-          signal: input.abortSignal,
-        }),
-      );
-      if (hook.mode === 'gate' && result?.decision === 'deny') {
+      const dispatched = await dispatchExtensionHandlers({
+        mode: hook.mode,
+        payload,
+        signal: input.abortSignal,
+        handlers: [
+          {
+            identity: hook.id,
+            invoke: async (current: unknown) => {
+              const result = await input.executionLimiter.run(() =>
+                hook.invoke(current, {
+                  sessionId: input.context.sessionId,
+                  runId: input.context.runId,
+                  turnId: input.context.turnId,
+                  cwd: input.context.cwd,
+                  permissionMode: input.context.permissionMode,
+                  origin: input.context.origin,
+                  configuration: Object.freeze({}),
+                  signal: input.abortSignal,
+                }),
+              );
+              return hook.mode === 'transform' && result && Object.hasOwn(result, 'payload')
+                ? result.payload
+                : result;
+            },
+          },
+        ],
+      });
+      const rejected = dispatched.settlements.find((item) => item.status === 'rejected');
+      if (rejected) throw rejected.error;
+      if (hook.mode === 'gate' && dispatched.denied) {
         denied = true;
         status = 'denied';
-        reason = result.reason ?? `Hook ${hook.id} denied ${input.event}.`;
+        reason = dispatched.reason ?? `Hook ${hook.id} denied ${input.event}.`;
         message = reason;
-      } else if (hook.mode === 'transform' && result && Object.hasOwn(result, 'payload')) {
-        payload = mergeTransformPayload(payload, result.payload);
+      } else if (hook.mode === 'transform') {
+        payload = mergeTransformPayload(payload, dispatched.value);
       }
     } catch (error) {
       if (input.abortSignal.aborted) throw error;

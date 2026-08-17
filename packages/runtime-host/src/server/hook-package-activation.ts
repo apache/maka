@@ -4,7 +4,11 @@ import type {
   ExtensionHookInvocationResult,
 } from '@maka/runtime/extension-hook-contributions';
 import type { InstalledToolPackage, ToolPackageManifest } from './tool-package-store.js';
-import { ToolPackageActivation, type PackageWorkerEventEmitter } from './tool-package-worker.js';
+import {
+  ToolPackageActivation,
+  type PackageWorkerEventEmitter,
+  type PackageWorkerServiceCaller,
+} from './tool-package-worker.js';
 import type { InstalledHookPackage } from './hook-package-store.js';
 
 const MAX_REASON_BYTES = 4_096;
@@ -15,6 +19,7 @@ export class HookPackageActivation {
     readonly packageRevision: InstalledHookPackage,
     readonly configuration: Readonly<Record<string, string | number | boolean>> = Object.freeze({}),
     private readonly emitEvent?: PackageWorkerEventEmitter,
+    private readonly callService?: PackageWorkerServiceCaller,
   ) {}
 
   contributions(): readonly ExtensionHookContribution[] {
@@ -71,6 +76,7 @@ export class HookPackageActivation {
           permissionMode: context.permissionMode,
           origin: context.origin,
           eventDepth: context.eventDepth,
+          serviceDepth: context.serviceDepth,
         },
         timeoutMs,
       );
@@ -88,6 +94,7 @@ export class HookPackageActivation {
         MAKA_HOOK_ACTIVE: '1',
       },
       this.emitEvent,
+      this.callService,
     );
   }
 }

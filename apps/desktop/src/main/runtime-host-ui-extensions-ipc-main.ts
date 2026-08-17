@@ -42,6 +42,8 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
             `${manifest.toolCount} Tool contribution${manifest.toolCount === 1 ? '' : 's'}`,
             `${manifest.hookCount} Hook contribution${manifest.hookCount === 1 ? '' : 's'}`,
             `${manifest.eventCount} Event/Listener contribution${manifest.eventCount === 1 ? '' : 's'}`,
+            `${manifest.serviceCount} Service contribution${manifest.serviceCount === 1 ? '' : 's'}`,
+            `${manifest.timerCount} Timer contribution${manifest.timerCount === 1 ? '' : 's'}`,
             `Host state: ${manifest.permissions.hostState ? 'allowed' : 'not allowed'}`,
             `Session control: ${manifest.permissions.sessionAccess ? 'allowed' : 'not allowed'}`,
             `Host methods: ${manifest.hostMethods.length === 0 ? 'none' : manifest.hostMethods.join(', ')}`,
@@ -57,7 +59,7 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
     const catalog = await input.client.request('extension.catalog.query', {});
     for (const scopeId of new Set([
       ...(installed.uiContributionIds.length > 0 ? [DESKTOP_UI_SCOPE] : []),
-      ...(installed.toolNames.length > 0 || installed.hookContributionIds.length > 0 || installed.eventContributionIds.length > 0
+      ...(installed.toolNames.length > 0 || installed.hookContributionIds.length > 0 || installed.eventContributionIds.length > 0 || (installed.serviceContributionIds?.length ?? 0) > 0 || (installed.timerContributionIds?.length ?? 0) > 0
         ? [PROFILE_EXTENSION_SCOPE]
         : []),
     ])) {
@@ -144,11 +146,15 @@ async function listUiExtensions(client: DesktopRuntimeHostClient) {
           ...revision.uiContributionIds,
           ...revision.hookContributionIds,
           ...revision.eventContributionIds,
+          ...(revision.serviceContributionIds ?? []),
+          ...(revision.timerContributionIds ?? []),
         ],
         toolNames: revision.toolNames,
         uiContributionIds: revision.uiContributionIds,
         hookContributionIds: revision.hookContributionIds,
         eventContributionIds: revision.eventContributionIds,
+        serviceContributionIds: revision.serviceContributionIds ?? [],
+        timerContributionIds: revision.timerContributionIds ?? [],
         dependencies: contract?.dependencies ?? [],
         configuration: contract?.configuration ?? { properties: {}, required: [] },
         bindings,
@@ -160,7 +166,7 @@ async function listUiExtensions(client: DesktopRuntimeHostClient) {
     });
 }
 
-async function previewPackage(sourcePath: string): Promise<{ id: string; version: string; uiCount: number; toolCount: number; hookCount: number; eventCount: number; hostMethods: string[]; permissions: { network: boolean; hostState: boolean; sessionAccess: boolean; workspace: string } }> {
+async function previewPackage(sourcePath: string): Promise<{ id: string; version: string; uiCount: number; toolCount: number; hookCount: number; eventCount: number; serviceCount: number; timerCount: number; hostMethods: string[]; permissions: { network: boolean; hostState: boolean; sessionAccess: boolean; workspace: string } }> {
   if (!(await stat(sourcePath)).isDirectory()) return previewBundle(sourcePath);
   let uiValue: Record<string, unknown> = {};
   let toolValue: Record<string, unknown> = {};
@@ -177,7 +183,9 @@ async function previewPackage(sourcePath: string): Promise<{ id: string; version
   const hooks = Array.isArray(hookValue.hooks) ? hookValue.hooks : [];
   const eventDefinitions = Array.isArray(eventValue.events) ? eventValue.events : [];
   const listeners = Array.isArray(eventValue.listeners) ? eventValue.listeners : [];
-  if (ui.length === 0 && tools.length === 0 && hooks.length === 0 && eventDefinitions.length === 0 && listeners.length === 0) throw new Error('Extension package has no contributions');
+  const services = Array.isArray(eventValue.services) ? eventValue.services : [];
+  const timers = Array.isArray(eventValue.timers) ? eventValue.timers : [];
+  if (ui.length === 0 && tools.length === 0 && hooks.length === 0 && eventDefinitions.length === 0 && listeners.length === 0 && services.length === 0 && timers.length === 0) throw new Error('Extension package has no contributions');
   const permissions = uiValue.permissions as Record<string, unknown> | undefined;
   const toolPermissions = toolValue.permissions as Record<string, unknown> | undefined;
   const hookPermissions = hookValue.permissions as Record<string, unknown> | undefined;
@@ -193,6 +201,8 @@ async function previewPackage(sourcePath: string): Promise<{ id: string; version
     toolCount: tools.length,
     hookCount: hooks.length,
     eventCount: eventDefinitions.length + listeners.length,
+    serviceCount: services.length,
+    timerCount: timers.length,
     hostMethods: hostMethods as string[],
     permissions: {
       network: permissions?.network === true || toolPermissions?.network === true || hookPermissions?.network === true || eventPermissions?.network === true,
@@ -239,6 +249,8 @@ async function previewBundle(sourcePath: string): ReturnType<typeof previewPacka
   const hooks = Array.isArray(hookValue.hooks) ? hookValue.hooks : [];
   const eventDefinitions = Array.isArray(eventValue.events) ? eventValue.events : [];
   const listeners = Array.isArray(eventValue.listeners) ? eventValue.listeners : [];
+  const services = Array.isArray(eventValue.services) ? eventValue.services : [];
+  const timers = Array.isArray(eventValue.timers) ? eventValue.timers : [];
   const permissions = uiValue.permissions as Record<string, unknown> | undefined;
   const toolPermissions = toolValue.permissions as Record<string, unknown> | undefined;
   const hookPermissions = hookValue.permissions as Record<string, unknown> | undefined;
@@ -256,6 +268,8 @@ async function previewBundle(sourcePath: string): ReturnType<typeof previewPacka
     toolCount: tools.length,
     hookCount: hooks.length,
     eventCount: eventDefinitions.length + listeners.length,
+    serviceCount: services.length,
+    timerCount: timers.length,
     hostMethods: hostMethods as string[],
     permissions: {
       network: permissions?.network === true || toolPermissions?.network === true || hookPermissions?.network === true || eventPermissions?.network === true,

@@ -12,7 +12,11 @@ import type {
   HostUiExtensionRevisionInput,
 } from './extension-runtime.js';
 import type { ExtensionEventInvocationContext } from '@maka/runtime/extension-event-contributions';
-import type { PackageWorkerInvocationContext } from './tool-package-worker.js';
+import type { ExtensionServiceInvocationContext } from '@maka/runtime/extension-service-contributions';
+import type {
+  PackageWorkerInvocationContext,
+  PackageWorkerServiceCaller,
+} from './tool-package-worker.js';
 import { ToolPackageActivation } from './tool-package-worker.js';
 import { HookPackageActivation } from './hook-package-activation.js';
 import {
@@ -76,6 +80,15 @@ export interface HostTrustedToolExtensionLoader {
       event: string,
       payload: unknown,
       context: ExtensionEventInvocationContext,
+    ) => Promise<unknown>,
+  ): void;
+  setServiceCaller?(
+    caller: (
+      scopeId: string,
+      service: string,
+      method: string,
+      input: unknown,
+      context: ExtensionServiceInvocationContext,
     ) => Promise<unknown>,
   ): void;
 }
@@ -192,6 +205,15 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
   ) => Promise<unknown> = async () => {
     throw new Error('Extension Event emission is unavailable');
   };
+  #callService: (
+    scopeId: string,
+    service: string,
+    method: string,
+    input: unknown,
+    context: ExtensionServiceInvocationContext,
+  ) => Promise<unknown> = async () => {
+    throw new Error('Extension Service calls are unavailable');
+  };
 
   constructor(
     private readonly statics: StaticTrustedToolExtensionLoader,
@@ -216,6 +238,18 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
     ) => Promise<unknown>,
   ): void {
     this.#emitEvent = emitter;
+  }
+
+  setServiceCaller(
+    caller: (
+      scopeId: string,
+      service: string,
+      method: string,
+      input: unknown,
+      context: ExtensionServiceInvocationContext,
+    ) => Promise<unknown>,
+  ): void {
+    this.#callService = caller;
   }
 
   async list(): Promise<readonly TrustedExtensionRevisionProjection[]> {
@@ -285,6 +319,7 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
         metadata,
         configurationFor: this.#configurationFor,
         emitEvent: (...args) => this.#emitEvent(...args),
+        callService: (...args) => this.#callService(...args),
       });
     }
     throw new HostExtensionLoaderError(
@@ -747,6 +782,20 @@ function projectEventPackage(installed: InstalledEventPackage): TrustedExtension
         ...installed.manifest.listeners.map(({ event, id }) => `listener:${event}:${id}`),
       ].sort(compareString),
     ),
+    ...(installed.manifest.services.length
+      ? {
+          serviceContributionIds: Object.freeze(
+            installed.manifest.services.map(({ name }) => name).sort(compareString),
+          ),
+        }
+      : {}),
+    ...(installed.manifest.timers.length
+      ? {
+          timerContributionIds: Object.freeze(
+            installed.manifest.timers.map(({ id }) => id).sort(compareString),
+          ),
+        }
+      : {}),
   });
 }
 
@@ -764,6 +813,13 @@ async function combinedPackageRevisionInput(input: {
     event: string,
     payload: unknown,
     context: ExtensionEventInvocationContext,
+  ) => Promise<unknown>;
+  readonly callService: (
+    scopeId: string,
+    service: string,
+    method: string,
+    payload: unknown,
+    context: ExtensionServiceInvocationContext,
   ) => Promise<unknown>;
 }): Promise<HostPreparedToolExtensionRevisionInput> {
   const installed = input.tool ?? input.ui?.installed ?? input.hook ?? input.event;
@@ -799,6 +855,20 @@ async function combinedPackageRevisionInput(input: {
             ...input.event.manifest.events.map(({ name }) => `event:${name}`),
             ...input.event.manifest.listeners.map(({ event, id }) => `listener:${event}:${id}`),
           ]),
+          ...(input.event.manifest.services.length
+            ? {
+                serviceContributionIds: Object.freeze(
+                  input.event.manifest.services.map(({ name }) => name),
+                ),
+              }
+            : {}),
+          ...(input.event.manifest.timers.length
+            ? {
+                timerContributionIds: Object.freeze(
+                  input.event.manifest.timers.map(({ id }) => id),
+                ),
+              }
+            : {}),
         }
       : {}),
     prepare: async (context: Parameters<HostPreparedToolExtensionRevisionInput['prepare']>[0]) => {
@@ -819,20 +889,55 @@ async function combinedPackageRevisionInput(input: {
           signal: workerContext.abortSignal,
           eventDepth: (workerContext.eventDepth ?? 0) + 1,
         });
+      const declaredDependencies = new Set(input.metadata?.dependencies.map(({ id }) => id) ?? []);
+      const callService: PackageWorkerServiceCaller = (service, method, payload, workerContext) => {
+        const ownsService = service.startsWith(`${workerContext.callerExtensionId}.`);
+        const declaredProvider = [...declaredDependencies].find((id) =>
+          service.startsWith(`${id}.`),
+        );
+        if (!ownsService && !declaredProvider) {
+          throw new Error(
+            `Extension Service provider must be declared as a dependency: ${service}`,
+          );
+        }
+        return input.callService(workerContext.sessionId, service, method, payload, {
+          sessionId: workerContext.sessionId,
+          ...(workerContext.runId ? { runId: workerContext.runId } : {}),
+          turnId: workerContext.turnId,
+          cwd: workerContext.cwd,
+          permissionMode: workerContext.permissionMode ?? 'default',
+          origin: workerContext.origin ?? 'provider',
+          configuration,
+          signal: workerContext.abortSignal,
+          callerExtensionId: workerContext.callerExtensionId,
+          serviceDepth: (workerContext.serviceDepth ?? 0) + 1,
+        });
+      };
       const toolActivation = input.tool
-        ? new ToolPackageActivation(input.tool, configuration, Object.freeze({}), emitEvent)
+        ? new ToolPackageActivation(
+            input.tool,
+            configuration,
+            Object.freeze({}),
+            emitEvent,
+            callService,
+          )
         : undefined;
       const hookActivation = input.hook
-        ? new HookPackageActivation(input.hook, configuration, emitEvent)
+        ? new HookPackageActivation(input.hook, configuration, emitEvent, callService)
         : undefined;
       const eventActivation = input.event
-        ? new EventPackageActivation(input.event, configuration, emitEvent)
+        ? new EventPackageActivation(input.event, configuration, emitEvent, callService)
         : undefined;
       return {
         tools: toolActivation?.tools() ?? Object.freeze([]),
         ...(hookActivation ? { hooks: hookActivation.contributions() } : {}),
         ...(eventActivation
-          ? { events: eventActivation.events(), listeners: eventActivation.listeners() }
+          ? {
+              events: eventActivation.events(),
+              listeners: eventActivation.listeners(),
+              services: eventActivation.services(),
+              timers: eventActivation.timers(),
+            }
           : {}),
         healthCheck: async () => {
           await toolActivation?.healthCheck();
@@ -873,6 +978,30 @@ function mergeProjection(
         compareString,
       ),
     ),
+    ...((left.serviceContributionIds?.length ?? 0) + (right.serviceContributionIds?.length ?? 0) > 0
+      ? {
+          serviceContributionIds: Object.freeze(
+            [
+              ...new Set([
+                ...(left.serviceContributionIds ?? []),
+                ...(right.serviceContributionIds ?? []),
+              ]),
+            ].sort(compareString),
+          ),
+        }
+      : {}),
+    ...((left.timerContributionIds?.length ?? 0) + (right.timerContributionIds?.length ?? 0) > 0
+      ? {
+          timerContributionIds: Object.freeze(
+            [
+              ...new Set([
+                ...(left.timerContributionIds ?? []),
+                ...(right.timerContributionIds ?? []),
+              ]),
+            ].sort(compareString),
+          ),
+        }
+      : {}),
   });
 }
 
@@ -958,6 +1087,7 @@ function projectContract(
           id: item.name,
           event: item.name,
           description: item.description,
+          ...(item.mode === 'emit' ? {} : { mode: item.mode }),
         }),
       ) ?? []),
       ...(event?.manifest.listeners.map((item) =>
@@ -965,6 +1095,22 @@ function projectContract(
           kind: 'listener' as const,
           id: item.id,
           event: item.event,
+        }),
+      ) ?? []),
+      ...(event?.manifest.services.map((item) =>
+        Object.freeze({
+          kind: 'service' as const,
+          id: item.name,
+          name: item.name,
+          description: item.description,
+        }),
+      ) ?? []),
+      ...(event?.manifest.timers.map((item) =>
+        Object.freeze({
+          kind: 'timer' as const,
+          id: item.id,
+          name: item.id,
+          description: `Every ${item.intervalMs}ms`,
         }),
       ) ?? []),
     ]),

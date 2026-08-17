@@ -117,7 +117,46 @@ const customEventName = z
 const eventContractDeclaration = z.object({
   name: customEventName,
   description: z.string().max(4096).default(''),
+  mode: z
+    .enum(['emit', 'parallel', 'serial', 'bail', 'transform', 'observe', 'gate'])
+    .default('emit'),
   payloadSchema: jsonSchema,
+  resultSchema: jsonSchema.optional(),
+});
+const serviceDeclaration = z.object({
+  name: customEventName,
+  version: z.string().min(1).max(128),
+  description: z.string().max(4096).default(''),
+  methods: z
+    .array(
+      z.object({
+        name: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
+        description: z.string().max(4096).default(''),
+        handler: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
+        inputSchema: jsonSchema,
+        outputSchema: jsonSchema,
+        timeoutMs: z.number().int().min(10).max(120_000).default(3_000),
+      }),
+    )
+    .min(1)
+    .max(64),
+});
+const timerDeclaration = z.object({
+  id: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
+  handler: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
+  intervalMs: z
+    .number()
+    .int()
+    .min(1_000)
+    .max(30 * 24 * 60 * 60 * 1_000),
+  initialDelayMs: z
+    .number()
+    .int()
+    .min(0)
+    .max(30 * 24 * 60 * 60 * 1_000)
+    .optional(),
+  timeoutMs: z.number().int().min(10).max(120_000).default(3_000),
+  payload: z.unknown().optional(),
 });
 const eventListenerDeclaration = z.object({
   id: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
@@ -204,16 +243,23 @@ const definePackageInput = z
           .max(256 * 1024),
         events: z.array(eventContractDeclaration).max(64).default([]),
         listeners: z.array(eventListenerDeclaration).max(64).default([]),
+        services: z.array(serviceDeclaration).max(64).default([]),
+        timers: z.array(timerDeclaration).max(64).default([]),
         permissions: z.object({
           workspace: z.enum(['none', 'read']),
           network: z.boolean(),
         }),
       })
       .superRefine((input, context) => {
-        if (input.events.length === 0 && input.listeners.length === 0) {
+        if (
+          input.events.length === 0 &&
+          input.listeners.length === 0 &&
+          input.services.length === 0 &&
+          input.timers.length === 0
+        ) {
           context.addIssue({
             code: z.ZodIssueCode.custom,
-            message: 'event requires at least one Event contract or Listener',
+            message: 'event requires at least one Event, Listener, Service, or Timer',
           });
         }
       })
@@ -274,7 +320,7 @@ export class HostExtensionPackageManagementTools {
     return Object.freeze({
       name: 'inspect_package',
       description:
-        'Inspect the unified immutable Extension package catalog and contracts before defining a package. One Revision may contain Tool, UI, Hook, Event, and Listener contributions together. Configuration properties with secret=true are declared in the contract but their configured values are redacted from query results.',
+        'Inspect the unified immutable Extension package catalog and contracts before defining a package. One Revision may contain Tool, UI, Hook, Event, Listener, Service, and Timer contributions together. Configuration properties with secret=true are declared in the contract but their configured values are redacted from query results.',
       parameters: z.object({}),
       categoryHint: 'read',
       recoveryMode: 'replay_safe',
@@ -293,7 +339,7 @@ export class HostExtensionPackageManagementTools {
     return Object.freeze({
       name: 'define_package',
       description:
-        'Validate, seal, and install one immutable Extension Revision containing any combination of Tool, UI, Hook, Event, and Listener contributions. All contributions share the same id, version, metadata, dependencies, configuration contract, and content Revision. After installation, test executable kinds, then activate the whole Revision with manage_package.',
+        'Validate, seal, and install one immutable Extension Revision containing any combination of Tool, UI, Hook, Event, Listener, typed Service, and durable host-owned Timer contributions. All contributions share the same id, version, metadata, dependencies, configuration contract, and content Revision.',
       parameters: definePackageInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
@@ -344,6 +390,8 @@ export class HostExtensionPackageManagementTools {
           ? {
               eventNames: input.event.events.map(({ name }) => name),
               eventListeners: input.event.listeners.map(({ id, event }) => ({ id, event })),
+              serviceNames: input.event.services.map(({ name }) => name),
+              timerIds: input.event.timers.map(({ id }) => id),
               eventSourceBytes: Buffer.byteLength(input.event.source),
               eventSourceSha256: digest(input.event.source),
               eventPermissions: input.event.permissions,
@@ -430,7 +478,9 @@ export class HostExtensionPackageManagementTools {
             needed:
               candidate.toolNames.length > 0 ||
               candidate.hookContributionIds.length > 0 ||
-              candidate.eventContributionIds.length > 0,
+              candidate.eventContributionIds.length > 0 ||
+              (candidate.serviceContributionIds?.length ?? 0) > 0 ||
+              (candidate.timerContributionIds?.length ?? 0) > 0,
           },
           { ...slots.desktop, needed: candidate.uiContributionIds.length > 0 },
         ];
@@ -640,6 +690,8 @@ export class HostExtensionPackageManagementTools {
       entry: 'dist/event.mjs',
       events: event.events,
       listeners: event.listeners,
+      services: event.services,
+      timers: event.timers,
       permissions: event.permissions,
     });
     await writeFile(join(draft, 'dist', 'event.mjs'), event.source, {

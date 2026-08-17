@@ -94,6 +94,9 @@ export class HostExtensionController {
     this.loader.setEventEmitter?.((scopeId, event, payload, context) =>
       this.runtime.emitEvent(scopeId, event, payload, context),
     );
+    this.loader.setServiceCaller?.((scopeId, service, method, input, context) =>
+      this.runtime.callService(scopeId, service, method, input, context),
+    );
   }
 
   /** Recovery is fail-open for the Host and fail-closed for Extension mutations. */

@@ -42,7 +42,11 @@ const abortController = new AbortController();
 let protocolAuth = '';
 const pendingCallbacks = new Map<
   string,
-  { resolve: (value: unknown) => void; reject: (error: Error) => void }
+  {
+    kind: 'emit_event' | 'call_service';
+    resolve: (value: unknown) => void;
+    reject: (error: Error) => void;
+  }
 >();
 let callbackProtocol = '';
 let callbackProtocolBytes = 0;
@@ -94,6 +98,7 @@ try {
         writeFrame({ kind: 'output', stream, chunk });
       },
       emitEvent,
+      callService,
     });
     const result = await handler(request.args, context);
     if (pendingCallbacks.size > 0) {
@@ -130,6 +135,7 @@ type ToolHandler = (
     readonly abortSignal: AbortSignal;
     readonly emitOutput: (stream: 'stdout' | 'stderr', chunk: string) => void;
     readonly emitEvent: (event: string, payload: unknown) => Promise<unknown>;
+    readonly callService: (service: string, method: string, input: unknown) => Promise<unknown>;
   },
 ) => unknown | Promise<unknown>;
 
@@ -280,19 +286,43 @@ async function emitEvent(event: string, payload: unknown): Promise<unknown> {
   }
   if (payload === undefined) throw new Error('Extension Event payload must be JSON');
   assertJsonValue(payload);
-  const id = randomBytes(16).toString('hex');
-  const encoded = `${JSON.stringify({
-    kind: 'emit_event',
-    id,
+  return await requestCallback('emit_event', {
     event,
     payload,
+  });
+}
+
+async function callService(service: string, method: string, input: unknown): Promise<unknown> {
+  if (
+    typeof service !== 'string' ||
+    !/^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$/u.test(service) ||
+    Buffer.byteLength(service, 'utf8') > 192 ||
+    typeof method !== 'string' ||
+    !/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u.test(method)
+  ) {
+    throw new Error('Extension Service identity is invalid');
+  }
+  if (input === undefined) throw new Error('Extension Service input must be JSON');
+  assertJsonValue(input);
+  return await requestCallback('call_service', { service, method, input });
+}
+
+async function requestCallback(
+  kind: 'emit_event' | 'call_service',
+  fields: Readonly<Record<string, unknown>>,
+): Promise<unknown> {
+  const id = randomBytes(16).toString('hex');
+  const encoded = `${JSON.stringify({
+    ...fields,
+    kind,
+    id,
     auth: protocolAuth,
   })}\n`;
   if (Buffer.byteLength(encoded, 'utf8') > MAX_REQUEST_BYTES) {
-    throw new Error('Extension Event payload exceeds its size limit');
+    throw new Error('Extension callback payload exceeds its size limit');
   }
   const result = new Promise<unknown>((resolve, reject) => {
-    pendingCallbacks.set(id, { resolve, reject });
+    pendingCallbacks.set(id, { kind, resolve, reject });
   });
   callbackOutput.write(encoded);
   return await result;
@@ -306,7 +336,6 @@ function settleCallback(value: unknown): void {
   const fields = ['kind', 'id', 'ok', frame.ok === true ? 'result' : 'error', 'auth'];
   exactKeys(frame, fields);
   if (
-    frame.kind !== 'emit_event_result' ||
     frame.auth !== protocolAuth ||
     typeof frame.id !== 'string' ||
     typeof frame.ok !== 'boolean'
@@ -315,6 +344,9 @@ function settleCallback(value: unknown): void {
   }
   const pending = pendingCallbacks.get(frame.id);
   if (!pending) throw new Error('Tool package callback response is unexpected');
+  if (frame.kind !== `${pending.kind}_result`) {
+    throw new Error('Tool package callback response kind is invalid');
+  }
   pendingCallbacks.delete(frame.id);
   if (frame.ok) {
     pending.resolve(frame.result);

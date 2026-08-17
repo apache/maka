@@ -10,6 +10,7 @@ import {
 } from './command-runner.js';
 import { hookMatcherMatches } from './matcher.js';
 import type { ExtensionHookEventName } from '../extension-hook-contributions.js';
+import type { ExtensionCoreEventName } from '../extension-core-events.js';
 
 const DEFAULT_CONCURRENCY = 8;
 const MAX_DENIAL_REASON_CHARS = 4_000;
@@ -37,6 +38,13 @@ export interface PreToolUseHookDispatcher {
     abortSignal: AbortSignal,
     context: ExtensionHookDispatchRuntimeContext,
   ): Promise<ExtensionHookDispatchResult>;
+  /** Typed Agent/Session seam dispatched through the unified Extension Event kernel. */
+  runCoreEvent?(
+    event: ExtensionCoreEventName,
+    payload: unknown,
+    abortSignal: AbortSignal,
+    context: ExtensionHookDispatchRuntimeContext,
+  ): Promise<ExtensionCoreEventDispatchResult>;
 }
 
 export interface HookDispatchRuntimeContext {
@@ -58,6 +66,12 @@ export interface ExtensionHookDispatchResult {
   readonly payload: unknown;
   readonly audits: readonly HookCompletedAudit[];
   readonly auditWriteFailures: readonly string[];
+}
+
+export interface ExtensionCoreEventDispatchResult {
+  readonly result: unknown;
+  readonly delivered: number;
+  readonly failed: number;
 }
 
 export interface PreToolUseHookDispatcherInput {

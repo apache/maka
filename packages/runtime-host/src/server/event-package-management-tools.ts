@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
+import { EXTENSION_CORE_EVENTS } from '@maka/runtime/extension-core-events';
 import { z } from 'zod';
 import type { OperationKey, OperationOutcome } from '../protocol/index.js';
 import type { ConnectionContext } from './operation-dispatcher.js';
@@ -17,7 +18,46 @@ const eventName = z
 const eventDefinition = z.object({
   name: eventName,
   description: z.string().max(4096).default(''),
+  mode: z
+    .enum(['emit', 'parallel', 'serial', 'bail', 'transform', 'observe', 'gate'])
+    .default('emit'),
   payloadSchema: z.record(z.string(), z.unknown()),
+  resultSchema: z.record(z.string(), z.unknown()).optional(),
+});
+const serviceDefinition = z.object({
+  name: eventName,
+  version: z.string().min(1).max(128),
+  description: z.string().max(4096).default(''),
+  methods: z
+    .array(
+      z.object({
+        name: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
+        description: z.string().max(4096).default(''),
+        handler: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
+        inputSchema: z.record(z.string(), z.unknown()),
+        outputSchema: z.record(z.string(), z.unknown()),
+        timeoutMs: z.number().int().min(10).max(120_000).default(3_000),
+      }),
+    )
+    .min(1)
+    .max(64),
+});
+const timerDefinition = z.object({
+  id: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
+  handler: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
+  intervalMs: z
+    .number()
+    .int()
+    .min(1_000)
+    .max(30 * 24 * 60 * 60 * 1_000),
+  initialDelayMs: z
+    .number()
+    .int()
+    .min(0)
+    .max(30 * 24 * 60 * 60 * 1_000)
+    .optional(),
+  timeoutMs: z.number().int().min(10).max(120_000).default(3_000),
+  payload: z.unknown().optional(),
 });
 const listenerDefinition = z.object({
   id: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
@@ -36,6 +76,8 @@ const defineInput = z
       .max(256 * 1024),
     events: z.array(eventDefinition).max(64).default([]),
     listeners: z.array(listenerDefinition).max(64).default([]),
+    services: z.array(serviceDefinition).max(64).default([]),
+    timers: z.array(timerDefinition).max(64).default([]),
     permissions: z.object({
       workspace: z.enum(['none', 'read']),
       network: z.boolean(),
@@ -67,11 +109,16 @@ const defineInput = z
       .optional(),
   })
   .superRefine((input, context) => {
-    if (input.events.length === 0 && input.listeners.length === 0) {
+    if (
+      input.events.length === 0 &&
+      input.listeners.length === 0 &&
+      input.services.length === 0 &&
+      input.timers.length === 0
+    ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['events'],
-        message: 'At least one Event or Listener is required',
+        message: 'At least one Event, Listener, Service, or Timer is required',
       });
     }
   });
@@ -85,6 +132,12 @@ const testInput = revisionInput.extend({
   payload: z.unknown(),
 });
 const emitInput = z.object({ event: eventName, payload: z.unknown() });
+const serviceCallInput = z.object({
+  service: eventName,
+  method: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
+  input: z.unknown(),
+});
+const serviceTestInput = revisionInput.extend(serviceCallInput.shape);
 const manageInput = z
   .object({
     action: z.enum(['activate', 'update', 'stop', 'delete']),
@@ -126,7 +179,9 @@ export class HostEventPackageManagementTools {
       this.#inspect(),
       this.#define(),
       this.#test(),
+      this.#testService(),
       this.#emit(),
+      this.#callService(),
       this.#manage(),
     ]);
   }
@@ -140,10 +195,15 @@ export class HostEventPackageManagementTools {
       categoryHint: 'read',
       recoveryMode: 'replay_safe',
       impl: async (_input: Record<string, never>, context: MakaToolContext) => ({
+        coreEvents: Object.entries(EXTENSION_CORE_EVENTS).map(([name, mode]) => ({ name, mode })),
         events: this.runtime.inspectEvents(context.sessionId),
         listeners: this.runtime
           .inspectEventListeners(context.sessionId)
           .map(({ invoke: _invoke, ...listener }) => listener),
+        services: this.runtime
+          .inspectServices(context.sessionId)
+          .map(({ invoke: _invoke, ...service }) => service),
+        timers: this.runtime.inspectTimers(context.sessionId),
         catalog: unwrap(
           await this.controller.handlers['extension.catalog.query']({}, this.#connection),
         ),
@@ -158,7 +218,7 @@ export class HostEventPackageManagementTools {
     return Object.freeze({
       name: 'define_event',
       description:
-        'Validate, seal, and install an immutable ESM package that provides namespaced JSON-schema Event contracts and/or isolated Listeners. It remains inactive until test_listener and manage_event.',
+        'Validate, seal, and install an immutable ESM package that provides typed Events, isolated Listeners, cross-plugin Services, and/or durable host-owned Timers. It remains inactive until tested and managed.',
       parameters: defineInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
@@ -175,6 +235,20 @@ export class HostEventPackageManagementTools {
             .digest('hex'),
         })),
         listeners: input.listeners,
+        services: (input.services ?? []).map(({ name, version, methods }) => ({
+          name,
+          version,
+          methods: methods.map(({ name: method, inputSchema, outputSchema }) => ({
+            name: method,
+            inputSchemaSha256: createHash('sha256')
+              .update(JSON.stringify(inputSchema))
+              .digest('hex'),
+            outputSchemaSha256: createHash('sha256')
+              .update(JSON.stringify(outputSchema))
+              .digest('hex'),
+          })),
+        })),
+        timers: input.timers ?? [],
         permissions: input.permissions,
       }),
       impl: async (input: z.infer<typeof defineInput>) => {
@@ -192,6 +266,8 @@ export class HostEventPackageManagementTools {
                 entry: 'dist/index.mjs',
                 events: input.events,
                 listeners: input.listeners,
+                services: input.services ?? [],
+                timers: input.timers ?? [],
                 permissions: input.permissions,
               },
               null,
@@ -266,7 +342,7 @@ export class HostEventPackageManagementTools {
     return Object.freeze({
       name: 'emit_event',
       description:
-        'Emit one active plugin-defined Event in the current session. The payload is schema-validated, Listeners run serially by priority in isolated workers, and failures are contained in the delivery report. This does not wake or create an Agent Turn.',
+        'Dispatch one active typed Event in the current session. Its declared mode controls parallel, serial, bail, transform, gate, observe, or fire-and-report delivery. This does not create an Agent Turn.',
       parameters: emitInput,
       categoryHint: 'shell_unsafe',
       recoveryMode: 'never_auto_retry',
@@ -282,6 +358,54 @@ export class HostEventPackageManagementTools {
           input.payload,
           invocationContext(context),
         ),
+    });
+  }
+
+  #testService(): MakaTool {
+    return Object.freeze({
+      name: 'test_service',
+      description:
+        'Invoke one Service method from an installed immutable revision in its real one-shot OS sandbox without activating it.',
+      parameters: serviceTestInput,
+      categoryHint: 'shell_unsafe',
+      recoveryMode: 'never_auto_retry',
+      permissionArgs: (input: z.infer<typeof serviceTestInput>) => input,
+      executionFacts: managementExecutionFacts(),
+      impl: async (input: z.infer<typeof serviceTestInput>, context: MakaToolContext) => {
+        const installed = await this.store.load(input.extensionId, input.revision);
+        const activation = new EventPackageActivation(installed);
+        try {
+          await activation.healthCheck();
+          const service = activation.services().find(({ name }) => name === input.service);
+          if (!service) throw new Error(`Event package does not declare ${input.service}`);
+          return {
+            result: await service.invoke(input.method, input.input, {
+              ...invocationContext(context),
+              callerExtensionId: input.extensionId,
+            }),
+          };
+        } finally {
+          await activation.dispose();
+        }
+      },
+    });
+  }
+
+  #callService(): MakaTool {
+    return Object.freeze({
+      name: 'call_service',
+      description:
+        'Call one active typed Extension Service method. Input and output are JSON-schema validated and execution uses a fresh OS sandbox.',
+      parameters: serviceCallInput,
+      categoryHint: 'shell_unsafe',
+      recoveryMode: 'never_auto_retry',
+      permissionArgs: (input: z.infer<typeof serviceCallInput>) => input,
+      executionFacts: managementExecutionFacts(),
+      impl: (input: z.infer<typeof serviceCallInput>, context: MakaToolContext) =>
+        this.runtime.callService(context.sessionId, input.service, input.method, input.input, {
+          ...invocationContext(context),
+          callerExtensionId: 'maka.host',
+        }),
     });
   }
 

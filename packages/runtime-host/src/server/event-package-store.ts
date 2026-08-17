@@ -4,9 +4,15 @@ import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isCanonicalExtensionId } from '@maka/runtime/extension-lifecycle-kernel';
 import {
+  type ExtensionEventDispatchMode,
   validateExtensionEventDefinition,
   validateExtensionEventListener,
 } from '@maka/runtime/extension-event-contributions';
+import {
+  validateExtensionServiceContribution,
+  type ExtensionServiceMethodDefinition,
+} from '@maka/runtime/extension-service-contributions';
+import { validateExtensionTimerContribution } from '@maka/runtime/extension-timer-contributions';
 import {
   boundedString,
   compareDirent,
@@ -31,7 +37,9 @@ const ID_PATTERN = /^[A-Za-z][A-Za-z0-9._-]{0,127}$/u;
 export interface EventPackageManifestEvent {
   readonly name: string;
   readonly description: string;
+  readonly mode: ExtensionEventDispatchMode;
   readonly payloadSchema: Readonly<Record<string, unknown>>;
+  readonly resultSchema?: Readonly<Record<string, unknown>>;
 }
 
 export interface EventPackageManifestListener {
@@ -42,6 +50,22 @@ export interface EventPackageManifestListener {
   readonly timeoutMs: number;
 }
 
+export interface EventPackageManifestService {
+  readonly name: string;
+  readonly version: string;
+  readonly description: string;
+  readonly methods: readonly ExtensionServiceMethodDefinition[];
+}
+
+export interface EventPackageManifestTimer {
+  readonly id: string;
+  readonly handler: string;
+  readonly intervalMs: number;
+  readonly initialDelayMs: number;
+  readonly timeoutMs: number;
+  readonly payload?: unknown;
+}
+
 export interface EventPackageManifest {
   readonly schemaVersion: 1;
   readonly id: string;
@@ -49,6 +73,8 @@ export interface EventPackageManifest {
   readonly entry: string;
   readonly events: readonly EventPackageManifestEvent[];
   readonly listeners: readonly EventPackageManifestListener[];
+  readonly services: readonly EventPackageManifestService[];
+  readonly timers: readonly EventPackageManifestTimer[];
   readonly permissions: {
     readonly workspace: 'none' | 'read';
     readonly network: boolean;
@@ -222,13 +248,15 @@ export class EventPackageStore {
 }
 
 export function decodeEventPackageManifest(value: unknown): EventPackageManifest {
-  const record = exactRecord(value, [
+  const record = optionalExactRecord(value, [
     'schemaVersion',
     'id',
     'version',
     'entry',
     'events',
     'listeners',
+    'services',
+    'timers',
     'permissions',
   ]);
   if (record.schemaVersion !== 1) throw invalidPackage('Event package schemaVersion must be 1');
@@ -243,12 +271,33 @@ export function decodeEventPackageManifest(value: unknown): EventPackageManifest
   if (!Array.isArray(record.listeners) || record.listeners.length > 64) {
     throw invalidPackage('Event package listeners must contain at most 64 definitions');
   }
-  if (record.events.length === 0 && record.listeners.length === 0) {
-    throw invalidPackage('Event package must declare at least one Event or Listener');
+  const servicesSource = record.services ?? [];
+  if (!Array.isArray(servicesSource) || servicesSource.length > 64) {
+    throw invalidPackage('Event package services must contain at most 64 definitions');
+  }
+  const timersSource = record.timers ?? [];
+  if (!Array.isArray(timersSource) || timersSource.length > 64) {
+    throw invalidPackage('Event package timers must contain at most 64 definitions');
+  }
+  if (
+    record.events.length === 0 &&
+    record.listeners.length === 0 &&
+    servicesSource.length === 0 &&
+    timersSource.length === 0
+  ) {
+    throw invalidPackage(
+      'Event package must declare at least one Event, Listener, Service, or Timer',
+    );
   }
   const eventNames = new Set<string>();
   const events = record.events.map((value, index): EventPackageManifestEvent => {
-    const event = exactRecord(value, ['name', 'description', 'payloadSchema']);
+    const event = optionalExactRecord(value, [
+      'name',
+      'description',
+      'mode',
+      'payloadSchema',
+      'resultSchema',
+    ]);
     const name = boundedString(event.name, `Event events[${index}].name`, 192);
     const description = boundedString(
       event.description,
@@ -256,9 +305,18 @@ export function decodeEventPackageManifest(value: unknown): EventPackageManifest
       4096,
     );
     const payloadSchema = requireJsonSchema(event.payloadSchema, name);
+    const mode = (event.mode ?? 'emit') as ExtensionEventDispatchMode;
+    const resultSchema =
+      event.resultSchema === undefined ? undefined : requireJsonSchema(event.resultSchema, name);
     if (eventNames.has(name)) throw invalidPackage(`Event definition repeats: ${name}`);
     eventNames.add(name);
-    const definition = Object.freeze({ name, description, payloadSchema });
+    const definition = Object.freeze({
+      name,
+      description,
+      mode,
+      payloadSchema,
+      ...(resultSchema ? { resultSchema } : {}),
+    });
     try {
       validateExtensionEventDefinition(id, definition);
     } catch (error) {
@@ -318,6 +376,107 @@ export function decodeEventPackageManifest(value: unknown): EventPackageManifest
   }
   if (typeof permissions.network !== 'boolean')
     throw invalidPackage('Event package network permission is invalid');
+  const serviceNames = new Set<string>();
+  const services = servicesSource.map((value, index): EventPackageManifestService => {
+    const service = optionalExactRecord(value, ['name', 'version', 'description', 'methods']);
+    const name = boundedString(service.name, `Event services[${index}].name`, 192);
+    const version = boundedString(service.version, `Event services[${index}].version`, 128);
+    const description =
+      service.description === undefined
+        ? ''
+        : boundedString(service.description, `Event services[${index}].description`, 4096);
+    if (
+      !Array.isArray(service.methods) ||
+      service.methods.length === 0 ||
+      service.methods.length > 64
+    )
+      throw invalidPackage(`Service methods are invalid: ${name}`);
+    if (serviceNames.has(name)) throw invalidPackage(`Service definition repeats: ${name}`);
+    serviceNames.add(name);
+    const methodNames = new Set<string>();
+    const methods = service.methods.map(
+      (methodValue, methodIndex): ExtensionServiceMethodDefinition => {
+        const method = optionalExactRecord(methodValue, [
+          'name',
+          'description',
+          'handler',
+          'inputSchema',
+          'outputSchema',
+          'timeoutMs',
+        ]);
+        const methodName = boundedString(
+          method.name,
+          `Event services[${index}].methods[${methodIndex}].name`,
+          128,
+        );
+        if (methodNames.has(methodName))
+          throw invalidPackage(`Service method repeats: ${name}.${methodName}`);
+        methodNames.add(methodName);
+        return Object.freeze({
+          name: methodName,
+          description:
+            method.description === undefined
+              ? ''
+              : boundedString(method.description, `Service method description`, 4096),
+          handler: boundedString(method.handler, `Service method handler`, 128),
+          inputSchema: requireJsonSchema(method.inputSchema, `${name}.${methodName}.input`),
+          outputSchema: requireJsonSchema(method.outputSchema, `${name}.${methodName}.output`),
+          timeoutMs: (method.timeoutMs ?? 3_000) as number,
+        });
+      },
+    );
+    const contribution = {
+      name,
+      version,
+      description,
+      methods,
+      invoke: async () => undefined,
+    };
+    try {
+      validateExtensionServiceContribution(id, contribution);
+    } catch (error) {
+      throw invalidPackage(
+        error instanceof Error ? error.message : `Service definition is invalid: ${name}`,
+        error,
+      );
+    }
+    return Object.freeze({ name, version, description, methods: Object.freeze(methods) });
+  });
+  const timerIds = new Set<string>();
+  const timers = timersSource.map((value, index): EventPackageManifestTimer => {
+    const timer = optionalExactRecord(value, [
+      'id',
+      'handler',
+      'intervalMs',
+      'initialDelayMs',
+      'timeoutMs',
+      'payload',
+    ]);
+    const id = boundedString(timer.id, `Event timers[${index}].id`, 128);
+    if (timerIds.has(id)) throw invalidPackage(`Timer definition repeats: ${id}`);
+    timerIds.add(id);
+    const definition = Object.freeze({
+      id,
+      handler: boundedString(timer.handler, `Event timers[${index}].handler`, 128),
+      intervalMs: (timer.intervalMs ?? 60_000) as number,
+      initialDelayMs: (timer.initialDelayMs ?? timer.intervalMs ?? 60_000) as number,
+      timeoutMs: (timer.timeoutMs ?? 3_000) as number,
+      ...(timer.payload === undefined ? {} : { payload: structuredClone(timer.payload) }),
+    });
+    try {
+      validateExtensionTimerContribution({
+        ...definition,
+        configuration: Object.freeze({}),
+        invoke: async () => undefined,
+      });
+    } catch (error) {
+      throw invalidPackage(
+        error instanceof Error ? error.message : `Timer definition is invalid: ${id}`,
+        error,
+      );
+    }
+    return definition;
+  });
   return Object.freeze({
     schemaVersion: 1,
     id,
@@ -332,6 +491,8 @@ export function decodeEventPackageManifest(value: unknown): EventPackageManifest
           compareString(left.id, right.id),
       ),
     ),
+    services: Object.freeze(services.sort((left, right) => compareString(left.name, right.name))),
+    timers: Object.freeze(timers.sort((left, right) => compareString(left.id, right.id))),
     permissions: Object.freeze({ workspace: permissions.workspace, network: permissions.network }),
   });
 }

@@ -49,6 +49,8 @@ export interface TrustedExtensionRevisionProjection {
   readonly uiContributionIds: readonly string[];
   readonly hookContributionIds: readonly string[];
   readonly eventContributionIds: readonly string[];
+  readonly serviceContributionIds?: readonly string[];
+  readonly timerContributionIds?: readonly string[];
 }
 
 export type ExtensionBindingStatus = 'disabled' | 'active' | 'waiting' | 'failed';
@@ -88,7 +90,7 @@ export interface ExtensionContractConfigurationProperty {
 }
 
 export interface ExtensionContractContribution {
-  readonly kind: 'tool' | 'ui' | 'hook' | 'event' | 'listener';
+  readonly kind: 'tool' | 'ui' | 'hook' | 'event' | 'listener' | 'service' | 'timer';
   readonly id: string;
   readonly name?: string;
   readonly description?: string;
@@ -96,7 +98,7 @@ export interface ExtensionContractContribution {
   readonly slot?: string;
   readonly slots?: readonly string[];
   readonly event?: string;
-  readonly mode?: 'observe' | 'gate' | 'transform';
+  readonly mode?: 'emit' | 'parallel' | 'serial' | 'bail' | 'observe' | 'gate' | 'transform';
 }
 
 export interface ExtensionPackageContractProjection {
@@ -664,9 +666,13 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
     'uiContributionIds',
     ...(Object.hasOwn(source, 'hookContributionIds') ? ['hookContributionIds'] : []),
     ...(Object.hasOwn(source, 'eventContributionIds') ? ['eventContributionIds'] : []),
+    ...(Object.hasOwn(source, 'serviceContributionIds') ? ['serviceContributionIds'] : []),
+    ...(Object.hasOwn(source, 'timerContributionIds') ? ['timerContributionIds'] : []),
   ]);
   const hookContributionIds = revision.hookContributionIds ?? [];
   const eventContributionIds = revision.eventContributionIds ?? [];
+  const serviceContributionIds = revision.serviceContributionIds ?? [];
+  const timerContributionIds = revision.timerContributionIds ?? [];
   if (
     !Array.isArray(revision.toolNames) ||
     revision.toolNames.length > 128 ||
@@ -675,7 +681,11 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
     !Array.isArray(hookContributionIds) ||
     hookContributionIds.length > 64 ||
     !Array.isArray(eventContributionIds) ||
-    eventContributionIds.length > 128
+    eventContributionIds.length > 128 ||
+    !Array.isArray(serviceContributionIds) ||
+    serviceContributionIds.length > 64 ||
+    !Array.isArray(timerContributionIds) ||
+    timerContributionIds.length > 64
   ) {
     throw invalidProtocolFrame('Invalid trusted extension contribution names');
   }
@@ -694,6 +704,20 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
     eventContributionIds: eventContributionIds.map((id) =>
       requireUtf8String(id, 'extension Event contribution id', 512),
     ),
+    ...(Object.hasOwn(source, 'serviceContributionIds')
+      ? {
+          serviceContributionIds: serviceContributionIds.map((id) =>
+            requireUtf8String(id, 'extension Service contribution id', 192),
+          ),
+        }
+      : {}),
+    ...(Object.hasOwn(source, 'timerContributionIds')
+      ? {
+          timerContributionIds: timerContributionIds.map((id) =>
+            requireUtf8String(id, 'extension Timer contribution id', 128),
+          ),
+        }
+      : {}),
   };
 }
 
@@ -834,7 +858,9 @@ function decodeContractContribution(value: unknown): ExtensionContractContributi
     contribution.kind !== 'ui' &&
     contribution.kind !== 'hook' &&
     contribution.kind !== 'event' &&
-    contribution.kind !== 'listener'
+    contribution.kind !== 'listener' &&
+    contribution.kind !== 'service' &&
+    contribution.kind !== 'timer'
   ) {
     throw invalidProtocolFrame('Invalid Extension contract contribution kind');
   }
@@ -848,18 +874,23 @@ function decodeContractContribution(value: unknown): ExtensionContractContributi
     typeof contribution.event === 'string' &&
     /^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$/u.test(contribution.event) &&
     Buffer.byteLength(contribution.event, 'utf8') <= 192;
+  const hookMode =
+    contribution.mode === 'observe' ||
+    contribution.mode === 'gate' ||
+    contribution.mode === 'transform';
+  const eventMode =
+    contribution.mode === 'emit' ||
+    contribution.mode === 'parallel' ||
+    contribution.mode === 'serial' ||
+    contribution.mode === 'bail' ||
+    hookMode;
+  if (contribution.mode !== undefined && !eventMode)
+    throw invalidProtocolFrame('Invalid Extension contract dispatch mode');
   if (
-    contribution.mode !== undefined &&
-    contribution.mode !== 'observe' &&
-    contribution.mode !== 'gate' &&
-    contribution.mode !== 'transform'
-  ) {
-    throw invalidProtocolFrame('Invalid Extension contract Hook mode');
-  }
-  if (
-    (contribution.kind === 'hook' && (!isHookEvent || contribution.mode === undefined)) ||
-    ((contribution.kind === 'event' || contribution.kind === 'listener') &&
-      (!isPluginEvent || contribution.mode !== undefined)) ||
+    (contribution.kind === 'hook' && (!isHookEvent || !hookMode)) ||
+    (contribution.kind === 'event' &&
+      (!isPluginEvent || (contribution.mode !== undefined && !eventMode))) ||
+    (contribution.kind === 'listener' && (!isPluginEvent || contribution.mode !== undefined)) ||
     (contribution.kind !== 'hook' &&
       contribution.kind !== 'event' &&
       contribution.kind !== 'listener' &&
@@ -907,7 +938,9 @@ function decodeContractContribution(value: unknown): ExtensionContractContributi
           ),
         }),
     ...(contribution.event === undefined ? {} : { event: contribution.event as string }),
-    ...(contribution.mode === undefined ? {} : { mode: contribution.mode }),
+    ...(contribution.mode === undefined
+      ? {}
+      : { mode: contribution.mode as ExtensionContractContribution['mode'] }),
   };
 }
 

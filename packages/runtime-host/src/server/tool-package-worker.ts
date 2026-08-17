@@ -30,6 +30,7 @@ export interface PackageWorkerInvocationContext {
   readonly permissionMode?: string;
   readonly origin?: 'provider' | 'code_mode' | 'host';
   readonly eventDepth?: number;
+  readonly serviceDepth?: number;
   readonly emitOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
 }
 
@@ -37,6 +38,13 @@ export type PackageWorkerEventEmitter = (
   event: string,
   payload: unknown,
   context: PackageWorkerInvocationContext,
+) => Promise<unknown>;
+
+export type PackageWorkerServiceCaller = (
+  service: string,
+  method: string,
+  input: unknown,
+  context: PackageWorkerInvocationContext & { readonly callerExtensionId: string },
 ) => Promise<unknown>;
 
 type WorkerRequest =
@@ -105,6 +113,7 @@ export class ToolPackageActivation {
     ),
     private readonly environment: Readonly<Record<string, string>> = Object.freeze({}),
     private readonly emitEvent?: PackageWorkerEventEmitter,
+    private readonly callService?: PackageWorkerServiceCaller,
   ) {}
 
   tools(): readonly MakaTool[] {
@@ -254,7 +263,11 @@ export class ToolPackageActivation {
     });
     this.#children.add(child);
     try {
-      return await exchange(child, request, context, timeoutMs, this.emitEvent);
+      return await exchange(child, request, context, timeoutMs, {
+        emitEvent: this.emitEvent,
+        callService: this.callService,
+        callerExtensionId: this.packageRevision.extensionId,
+      });
     } finally {
       this.#children.delete(child);
     }
@@ -275,7 +288,11 @@ async function exchange(
   request: WorkerRequest,
   context: PackageWorkerInvocationContext | undefined,
   timeoutMs: number,
-  emitEvent: PackageWorkerEventEmitter | undefined,
+  callbacks: {
+    readonly emitEvent?: PackageWorkerEventEmitter;
+    readonly callService?: PackageWorkerServiceCaller;
+    readonly callerExtensionId: string;
+  },
 ): Promise<unknown> {
   const auth = randomBytes(32).toString('hex');
   const input = child.stdio[3] as Writable | null;
@@ -360,7 +377,7 @@ async function exchange(
       const encoded = callbackProtocol.slice(0, newline);
       callbackProtocol = callbackProtocol.slice(newline + 1);
       if (!encoded) continue;
-      let frame: { id: string; event: string; payload: unknown };
+      let frame: PackageCallbackFrame;
       try {
         frame = decodeCallbackFrame(JSON.parse(encoded), auth);
       } catch (error) {
@@ -370,20 +387,28 @@ async function exchange(
       }
       void Promise.resolve()
         .then(async () => {
-          if (!context || !emitEvent) throw new Error('Extension Event emission is unavailable');
-          return await emitEvent(frame.event, frame.payload, context);
+          if (!context) throw new Error('Extension callback context is unavailable');
+          if (frame.kind === 'emit_event') {
+            if (!callbacks.emitEvent) throw new Error('Extension Event emission is unavailable');
+            return await callbacks.emitEvent(frame.event, frame.payload, context);
+          }
+          if (!callbacks.callService) throw new Error('Extension Service calls are unavailable');
+          return await callbacks.callService(frame.service, frame.method, frame.input, {
+            ...context,
+            callerExtensionId: callbacks.callerExtensionId,
+          });
         })
         .then(
           (result) =>
             writeCallbackFrame(callbackOutput, auth, {
-              kind: 'emit_event_result',
+              kind: `${frame.kind}_result`,
               id: frame.id,
               ok: true,
               result,
             }),
           (error) =>
             writeCallbackFrame(callbackOutput, auth, {
-              kind: 'emit_event_result',
+              kind: `${frame.kind}_result`,
               id: frame.id,
               ok: false,
               error: boundedCallbackError(error),
@@ -526,29 +551,69 @@ function decodeFrame(value: unknown, expectedAuth: string): WorkerFrame {
   throw new Error('Tool package worker frame kind is invalid');
 }
 
-function decodeCallbackFrame(
-  value: unknown,
-  expectedAuth: string,
-): { id: string; event: string; payload: unknown } {
+function decodeCallbackFrame(value: unknown, expectedAuth: string): PackageCallbackFrame {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Tool package callback frame is invalid');
   }
   const frame = value as Record<string, unknown>;
-  exactFrameKeys(frame, ['kind', 'id', 'event', 'payload', 'auth']);
   if (
-    frame.kind !== 'emit_event' ||
     typeof frame.auth !== 'string' ||
     frame.auth.length !== expectedAuth.length ||
     !timingSafeEqual(Buffer.from(frame.auth), Buffer.from(expectedAuth)) ||
     typeof frame.id !== 'string' ||
-    !/^[a-f0-9]{32}$/u.test(frame.id) ||
-    typeof frame.event !== 'string' ||
-    !/^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$/u.test(frame.event) ||
-    Buffer.byteLength(frame.event, 'utf8') > 192
+    !/^[a-f0-9]{32}$/u.test(frame.id)
   ) {
-    throw new Error('Tool package Event callback is invalid');
+    throw new Error('Tool package callback authentication is invalid');
   }
-  return { id: frame.id, event: frame.event, payload: frame.payload };
+  if (frame.kind === 'emit_event') {
+    exactFrameKeys(frame, ['kind', 'id', 'event', 'payload', 'auth']);
+    if (
+      typeof frame.event !== 'string' ||
+      !canonicalCapabilityName(frame.event) ||
+      Buffer.byteLength(frame.event, 'utf8') > 192
+    ) {
+      throw new Error('Tool package Event callback is invalid');
+    }
+    return { kind: 'emit_event', id: frame.id, event: frame.event, payload: frame.payload };
+  }
+  if (frame.kind === 'call_service') {
+    exactFrameKeys(frame, ['kind', 'id', 'service', 'method', 'input', 'auth']);
+    if (
+      typeof frame.service !== 'string' ||
+      !canonicalCapabilityName(frame.service) ||
+      typeof frame.method !== 'string' ||
+      !/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u.test(frame.method)
+    ) {
+      throw new Error('Tool package Service callback is invalid');
+    }
+    return {
+      kind: 'call_service',
+      id: frame.id,
+      service: frame.service,
+      method: frame.method,
+      input: frame.input,
+    };
+  }
+  throw new Error('Tool package callback kind is invalid');
+}
+
+type PackageCallbackFrame =
+  | {
+      readonly kind: 'emit_event';
+      readonly id: string;
+      readonly event: string;
+      readonly payload: unknown;
+    }
+  | {
+      readonly kind: 'call_service';
+      readonly id: string;
+      readonly service: string;
+      readonly method: string;
+      readonly input: unknown;
+    };
+
+function canonicalCapabilityName(value: string): boolean {
+  return /^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$/u.test(value);
 }
 
 function writeCallbackFrame(output: Writable, auth: string, frame: object): void {
