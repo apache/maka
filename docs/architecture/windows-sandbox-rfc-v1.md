@@ -147,10 +147,25 @@ Lexical prefix checks are never authorization evidence.
   there is no runnable pre-assignment window.
 - The Job kills all descendants when its owner closes and does not permit breakaway.
 - Only declared stdio/protocol handles are inherited through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`.
-- Non-interactive workers use a private desktop and cannot read the clipboard, broadcast window
-  messages, install global hooks, or interact with the user's desktop. _(Later gate: not yet
-  enforced in the shipped preview slice; the worker rides on AppContainer confinement rather than a
-  separate desktop — see §6.5.)_
+- Non-interactive workers run on a private desktop and cannot enumerate or post window messages to
+  the user's interactive windows, or install desktop hooks against them. _(Partially enforced as
+  initial-desktop **placement**, not escape-proof confinement: each launch and the readiness probe
+  create a per-launch alternate desktop whose DACL grants only the launching user, Local System, and
+  that launch's AppContainer SID — granting the AppContainer SID only the minimal non-interactive
+  rights, and leading with a deny ACE that strips `DESKTOP_SWITCHDESKTOP`, `DESKTOP_HOOKCONTROL`, and
+  the journal-record/playback rights from the launching-user SID, because the AppContainer child's
+  token still carries that SID as an effective SID and would otherwise be named a grantee of those
+  rights by the owner's full-control ACE.
+  The child is started with `STARTUPINFOW.lpDesktop` set to it, and fails closed if the desktop cannot
+  be created or the SID cannot be granted. `lpDesktop` selects only the child's *initial* desktop, so
+  this places the worker off the interactive `Default` desktop and DACL-protects the private one — it
+  does **not** structurally prevent in-process code from calling `OpenDesktopW("Default")` +
+  `SetThreadDesktop` to re-attach, because no no-Win32k mitigation, dedicated window station, or token
+  boundary is enforced yet. It also does **not** isolate the clipboard, which belongs to the window
+  station both desktops still share. An escape-proof boundary (a no-Win32k process mitigation, a
+  dedicated window station isolating the clipboard, and a verified Low mandatory-integrity label
+  proving the child's create-window/write rights are usable at Low IL) remains a later hardening gate
+  — see §6.5.)_
 - The token removes privileges and uses restricting SIDs; low integrity is defense in depth, not the
   filesystem policy by itself.
 - The child receives an allowlisted environment. Credentials, tokens, proxy variables, shell startup
@@ -165,10 +180,10 @@ Lexical prefix checks are never authorization evidence.
 - Readiness launches a real probe under the production identity, token, Job, desktop, handles,
   filesystem policy, and offline network policy. OS version checks alone are insufficient.
   _(Implemented: the preview's `--readiness-probe` stands up the real AppContainer identity and
-  token and a kill-on-close Job and launches a throwaway confined child, failing closed if the host
-  cannot create or enforce the boundary rather than trusting file presence alone. The private
-  desktop and the full per-profile filesystem/offline-network policy are not yet exercised at
-  readiness — see §6.5.)_
+  token, a kill-on-close Job, and a per-launch private desktop, then launches a throwaway confined
+  child on that desktop, failing closed if the host cannot create or enforce the boundary rather
+  than trusting file presence alone. The full per-profile filesystem policy and offline-network
+  policy are not yet exercised at readiness — see §6.5.)_
 - The readiness probe's throwaway profile lifecycle is isolated and fail-closed. _(Implemented: the
   probe profile lives under a dedicated `maka.readiness.` namespace that is structurally disjoint
   from the production `maka.sandbox.` namespace, and its reserved `requestId` is rejected by launch
@@ -204,12 +219,13 @@ Lexical prefix checks are never authorization evidence.
 The first product slice — the packaged Windows 11 x64 AppContainer backend in
 [#2961](https://github.com/maka-agent/maka-agent/pull/2961), merged 2026-08-17 — enforces a subset
 of the guarantees above. This subsection aligns the documented guarantees with what the code
-actually ships so the RFC does not overclaim. Bullets tagged `(#3161)` land in the readiness-probe
-follow-up rather than the merged #2961 slice; the rest are enforced by #2961 today. The remaining
-guarantees are designed but explicitly deferred as later gates, tracked by Phase 4 in
+actually ships so the RFC does not overclaim. Bullets tagged with a follow-up PR number
+(`(#3161)` readiness probe, `(#3174)` private-desktop placement) land in that PR rather than the
+merged #2961 slice; the untagged bullets are enforced by #2961 today. The remaining guarantees are
+designed but explicitly deferred as later gates, tracked by Phase 4 in
 [#2142](https://github.com/maka-agent/maka-agent/issues/2142).
 
-Enforced (merged in #2961 unless tagged otherwise):
+Enforced (merged in #2961 unless tagged with a follow-up PR):
 
 - default-deny filesystem with distinct read/write roots compiled from the exact profile (§6.1);
 - recursive reparse-point rejection and multi-hard-link rejection before ACL mutation (§5, §6.1);
@@ -220,11 +236,23 @@ Enforced (merged in #2961 unless tagged otherwise):
 - inheritance limited to declared stdio/protocol handles through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
   (§6.3);
 - a closed, sorted, allowlisted environment (§6.3);
+- per-launch private-desktop **placement** (§6.3) **(#3174)**: each production launch and the readiness probe
+  create an alternate desktop on the current window station whose DACL grants only the launching user,
+  Local System, and that launch's AppContainer SID — the SID getting only minimal non-interactive
+  rights, and a leading deny ACE stripping `DESKTOP_SWITCHDESKTOP`, `DESKTOP_HOOKCONTROL`, and journal
+  record/playback from the launching-user SID the AppContainer child effectively carries — and start
+  the child with `STARTUPINFOW.lpDesktop` pointing at it, failing closed if it cannot be created or
+  granted. Because `lpDesktop` selects only the *initial* desktop, this places the worker off the
+  interactive `Default` desktop and DACL-protects the private one; it is placement plus DACL
+  protection, **not** an escape-proof boundary — nothing structurally stops in-process code from
+  `OpenDesktopW("Default")` + `SetThreadDesktop`, and the clipboard is window-station-scoped and
+  remains shared (a no-Win32k mitigation, a dedicated window station, and a token boundary are deferred
+  gates below);
 - a production-identity readiness probe (§6.4) **(#3161)**: `--readiness-probe` stands up the real
-  AppContainer identity and token and a kill-on-close Job and launches a throwaway confined child
-  (`cmd.exe /d /c exit 0`, with AutoRun disabled so a host's shell customization cannot skew the
-  result), so availability fails closed on hosts where the OS cannot create the boundary rather than
-  on the packaged binary's presence alone;
+  AppContainer identity and token, a kill-on-close Job, and the private desktop, then launches a
+  throwaway confined child on that desktop (`cmd.exe /d /c exit 0`, with AutoRun disabled so a host's
+  shell customization cannot skew the result), so availability fails closed on hosts where the OS
+  cannot create the boundary rather than on the packaged binary's presence alone;
 - a dedicated, cross-process-serialized readiness profile lifecycle (§6.4) **(#3161)**: the probe profile lives
   in a namespace disjoint from production, its reserved `requestId` is rejected by validation, a
   DACL-hardened per-user named mutex serializes its delete→create→probe→drop cycle, an unsettled
@@ -236,13 +264,25 @@ Enforced (merged in #2961 unless tagged otherwise):
 
 Designed but deferred as later gates (not enforced in the preview slice):
 
-- Private desktop / window-station isolation (§6.3). The worker does not yet run on a separate
-  desktop; clipboard, window-message, and global-hook isolation currently ride on AppContainer
-  confinement rather than a dedicated desktop.
+- Full window-station separation and clipboard isolation (§6.3). The worker runs on a private
+  alternate desktop, but that desktop still lives on the launcher's window station rather than a
+  dedicated one. Because the clipboard is window-station-scoped, it is not isolated by the alternate
+  desktop; moving to a dedicated window station (and thereby isolating the clipboard) is a later
+  hardening gate.
+- Escape-proof desktop confinement: no-Win32k mitigation, token boundary, and usable Low-IL desktop
+  rights (§6.3). `STARTUPINFOW.lpDesktop` selects only the initial desktop, so absent a no-Win32k
+  process mitigation (or a separate window-station/token boundary) in-process code can
+  `OpenDesktopW("Default")` + `SetThreadDesktop` to re-attach to the interactive desktop; the shipped
+  contract is initial-desktop placement plus DACL protection, not structural confinement. Separately,
+  the private-desktop DACL grants the AppContainer SID create-window/write rights, but the desktop
+  carries no explicit Low mandatory-integrity label, so those rights are not proven usable by a Low-IL
+  AppContainer child. Enforcing a no-Win32k mitigation, plus a verified integrity label and a
+  child-side window-creation test, is deferred.
 - Full-policy readiness coverage (§6.4). The readiness probe already stands up the production
-  AppContainer identity, token, and kill-on-close Job and launches a confined child, but it does not
-  yet compile and exercise the exact per-profile filesystem roots, the offline-network policy, or a
-  private desktop at readiness; those are enforced per launch rather than re-proven at readiness.
+  AppContainer identity, token, kill-on-close Job, and private desktop and launches a confined child
+  on it, but it does not yet compile and exercise the exact per-profile filesystem roots or the
+  offline-network policy at readiness; those are enforced per launch rather than re-proven at
+  readiness.
 - Launcher signature/version verification at readiness (§6.4). The per-launch request digest is
   recomputed and enforced in-broker on every launch; verifying the launcher binary's Authenticode
   signature and version against packaged metadata is deferred together with Phase 3 signing.

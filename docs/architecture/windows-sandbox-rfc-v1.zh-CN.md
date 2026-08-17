@@ -125,7 +125,7 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - child 通过 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 在创建时进入 Job，不存在可运行的 pre-assignment window；
 - Job owner close 时杀死所有 descendant，禁止 breakaway；
 - 仅通过 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 继承声明的 stdio/protocol handle；
-- 非交互 worker 使用 private desktop，不能读 clipboard、广播 window message、装 global hook 或操作用户桌面； _(后续门禁：当前预览切片尚未强制；worker 依赖 AppContainer 约束而非独立 desktop —— 见 §6.5。)_
+- 非交互 worker 运行在 private desktop 上，不能枚举用户交互窗口、向其广播 window message，或对其装 desktop hook； _(部分强制，作为初始桌面**放置(placement)**而非防逃逸 confinement：每次启动与 readiness probe 均创建按启动的 alternate desktop，其 DACL 仅授予发起用户、Local System 与该次启动的 AppContainer SID；只给该 SID 最小非交互权限，并以前置 deny ACE 从发起用户 SID 上剥离 `DESKTOP_SWITCHDESKTOP`、`DESKTOP_HOOKCONTROL` 与 journal 录制/回放权限——因为 AppContainer 子进程的 token 仍有效携带该用户 SID，否则 owner 的全控 allow ACE 会把子进程列为这些权限的被授予者。子进程以 `STARTUPINFOW.lpDesktop` 指向它启动，桌面建不出或 SID 授不了即 fail closed。由于 `lpDesktop` 只选择*初始*桌面,这把 worker 放置到交互 `Default` 桌面之外并对私有桌面做 DACL 保护,但这是 placement 加 DACL 保护、**不是**防逃逸边界 —— 没有任何结构性机制阻止进程内代码调用 `OpenDesktopW("Default")` + `SetThreadDesktop` 重新挂回,且 clipboard 归 window station、两个桌面仍共用同一 window station 故不被隔离。防逃逸边界(no-Win32k mitigation、带独立 window station 的 clipboard 隔离,以及证明该 SID 的 create-window/write 权限在 Low IL 下确实可用的显式 Low mandatory-integrity label)均为后续硬化门禁 —— 见 §6.5。)_
 - token 移除 privilege 并使用 restricting SID；low integrity 只是 defense in depth，不是文件策略；
 - child 只接收 allowlist 环境，不隐式继承 credential、token、proxy、shell startup hook、用户 PATH 或 loader
   injection variable；
@@ -134,7 +134,7 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 
 ### 6.4 能力与失败
 
-- readiness 必须在生产 identity/token/Job/desktop/handle/filesystem/offline network 下启动真实 probe； _(已实现:预览版的 `--readiness-probe` 会真正建立 AppContainer identity/token 与 kill-on-close Job 并启动一个抛弃式受限子进程,宿主无法创建或强制边界时 fail closed,而非仅凭二进制存在即注册;private desktop 与完整的按 profile filesystem/offline network 策略尚未在 readiness 阶段演练 —— 见 §6.5。)_
+- readiness 必须在生产 identity/token/Job/desktop/handle/filesystem/offline network 下启动真实 probe； _(已实现:预览版的 `--readiness-probe` 会真正建立 AppContainer identity/token、kill-on-close Job 与按启动的 private desktop,并在该桌面上启动一个抛弃式受限子进程,宿主无法创建或强制边界时 fail closed,而非仅凭二进制存在即注册;完整的按 profile filesystem 策略与 offline network 策略尚未在 readiness 阶段演练 —— 见 §6.5。)_
 - readiness probe 的抛弃式 profile 生命周期必须隔离且 fail closed； _(已实现:probe profile 位于专属 `maka.readiness.` 命名空间,与生产 `maka.sandbox.` 命名空间结构性不相交,其保留的 `requestId` 被 launch validation 拒绝,任何生产启动都无法解析到 probe 删除并重建的那个 profile;整个 delete→create→probe→settle→drop 生命周期由一个 DACL 加固的按用户命名互斥量跨进程串行——与 ACL ledger 复用同一原语——使并发 probe 不会互删对方的 active 注册;当 probe 无法证明其 Job 清空时按该周期 fail closed(报告不可用),固定的 readiness identity 并不被持久隔离——清理依赖 kill-on-close Job 的整树终止,且因该 probe 不授任何 filesystem root,一个假设存活的子进程也继承不到任何 ACE 权限;消费侧对负可用性结果只按有界 TTL 缓存,以限制一次瞬时失败毒化 module 缓存的时长:由**下一次 composition 构建**重探,而非运行中的宿主原地恢复——filesystem worker 在 composition 构建时一次性发布,故一个已判负的宿主只在新 composition 或 Runtime Host 重启时恢复,正结果则按进程生命周期缓存。未证清空 identity 的持久隔离,以及运行中宿主的主动 readiness 恢复,均为后续门禁——见 §6.5。)_
 - launcher signature/version/digest 必须与 package metadata 一致； _(后续门禁：每次启动的 request digest 目前已在 broker 内重算并强制；对照打包 metadata 校验 launcher 二进制的 signature 与 version 随 Phase 3 签名一并暂缓 —— 见 §6.5。)_
 - setup 缺失、identity drift、ACL state 损坏、网络策略无效、文件系统不支持、helper 不匹配、probe 失败都返回
@@ -156,14 +156,16 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - 创建时原子附加、close 时杀整棵树的 kill-on-close Job（§6.3）；
 - 仅通过 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 继承声明的 handle（§6.3）；
 - 封闭、排序后的 allowlist 环境（§6.3）；
-- 生产 identity readiness probe（§6.4）**(#3161)**:`--readiness-probe` 真正建立 AppContainer identity/token 与 kill-on-close Job 并启动抛弃式受限子进程（`cmd.exe /d /c exit 0`,以 `/d` 关闭 AutoRun 使宿主 shell 定制不能扭曲结果）,使可用性在宿主无法创建边界时 fail closed,而非仅凭打包二进制存在;
+- 按启动的 private desktop **放置(placement)**（§6.3）**(#3174)**:每次生产启动与 readiness probe 均在当前 window station 上创建 alternate desktop,其 DACL 仅授予发起用户、Local System 与该次启动的 AppContainer SID(且只给该 SID 最小非交互权限;并以前置 deny ACE 从 AppContainer 子进程有效携带的发起用户 SID 上剥离 `DESKTOP_SWITCHDESKTOP`/`DESKTOP_HOOKCONTROL`/journal 录制回放),并以 `STARTUPINFOW.lpDesktop` 指向它启动子进程,建不出或授不了即 fail closed。由于 `lpDesktop` 只选择*初始*桌面,这把 worker 放置到交互 `Default` 桌面之外并对私有桌面做 DACL 保护;这是 placement 加 DACL 保护、**不是**防逃逸边界——没有结构性机制阻止进程内代码 `OpenDesktopW("Default")` + `SetThreadDesktop` 重新挂回,clipboard 也归 window station、仍为共用(no-Win32k mitigation、独立 window station 与 token 边界见下方暂缓门禁);
+- 生产 identity readiness probe（§6.4）**(#3161)**:`--readiness-probe` 真正建立 AppContainer identity/token、kill-on-close Job 与 private desktop 并在该桌面上启动抛弃式受限子进程（`cmd.exe /d /c exit 0`,以 `/d` 关闭 AutoRun 使宿主 shell 定制不能扭曲结果）,使可用性在宿主无法创建边界时 fail closed,而非仅凭打包二进制存在;
 - 专属且跨进程串行的 readiness profile 生命周期（§6.4）**(#3161)**:probe profile 位于与生产不相交的命名空间,其保留 `requestId` 被 validation 拒绝,一个 DACL 加固的按用户命名互斥量串行其 delete→create→probe→drop 生命周期,未证清空的 probe 按周期 fail closed 而非宣称边界干净(清理依赖 kill-on-close Job 与零权限 identity,而非持久隔离),负可用性按有界 TTL 缓存以限制一次瞬时失败毒化 module 缓存的时长——由下一次 composition 构建重探,而非运行中宿主原地恢复;
 - fail-closed capability check，绝不 unsandboxed fallback（§6.4）。
 
 **已设计但作为后续门禁暂缓（预览切片尚未强制）：**
 
-- private desktop / window station（§6.3）；
-- readiness 阶段的完整策略覆盖（§6.4):readiness probe 已建立生产 AppContainer identity/token 与 kill-on-close Job 并启动受限子进程,但尚未在 readiness 阶段编译并演练按 profile 的精确 filesystem 根、offline network 策略与 private desktop —— 这些目前按每次启动强制,而非在 readiness 阶段复证;
+- 完整 window station 分离与 clipboard 隔离（§6.3）:worker 已运行在私有 alternate desktop 上,但该桌面仍位于 launcher 的 window station 上。由于 clipboard 归 window station 所有,alternate desktop 并不隔离它;迁移到独立 window station(从而隔离 clipboard)为后续硬化门禁;
+- 防逃逸桌面 confinement:no-Win32k mitigation、token 边界与可用的 Low-IL 桌面权限（§6.3）:`STARTUPINFOW.lpDesktop` 只选择初始桌面,故在没有 no-Win32k process mitigation(或独立 window station/token 边界)时,进程内代码可 `OpenDesktopW("Default")` + `SetThreadDesktop` 重新挂回交互桌面;当前落地契约仅为初始桌面 placement 加 DACL 保护,而非结构性 confinement。另外,private-desktop 的 DACL 给 AppContainer SID 授了 create-window/write 权限,但该桌面没有显式 Low mandatory-integrity label,因此这些权限对 Low IL 的 AppContainer 子进程未被证明可用。强制 no-Win32k mitigation,以及经验证的 integrity label 加 child 侧 window-creation 测试,均暂缓;
+- readiness 阶段的完整策略覆盖（§6.4):readiness probe 已建立生产 AppContainer identity/token、kill-on-close Job 与 private desktop 并在其上启动受限子进程,但尚未在 readiness 阶段编译并演练按 profile 的精确 filesystem 根与 offline network 策略 —— 这些目前按每次启动强制,而非在 readiness 阶段复证;
 - 随 Phase 3 签名一并落地的 launcher signature/version 校验（§6.4）。
 - 结构化 unavailable reason 与 diagnostics（§6.4）:readiness probe 以单一 fail-closed 布尔(呈现为
   `backend_not_available`)收敛所有失败;stable typed unavailable reason 与 setup-version/failure-stage

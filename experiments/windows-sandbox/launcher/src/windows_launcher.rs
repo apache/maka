@@ -4,22 +4,25 @@ use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::Foundation::{
     CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, GENERIC_READ, GENERIC_WRITE, HANDLE,
     INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
-use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+use windows_sys::Win32::Security::Authorization::{
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::{
     CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, DuplicateTokenEx, EqualSid, FreeSid,
-    GetTokenInformation, IsTokenRestricted, LUA_TOKEN, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES,
-    SecurityImpersonation, TOKEN_ALL_ACCESS, TOKEN_APPCONTAINER_INFORMATION, TOKEN_DUPLICATE,
-    TOKEN_QUERY, TOKEN_USER, TokenAppContainerSid, TokenIsAppContainer, TokenPrimary, TokenUser,
+    GetTokenInformation, IsTokenRestricted, LUA_TOKEN, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+    SECURITY_CAPABILITIES, SecurityImpersonation, TOKEN_ALL_ACCESS, TOKEN_APPCONTAINER_INFORMATION,
+    TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER, TokenAppContainerSid, TokenIsAppContainer,
+    TokenPrimary, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -32,6 +35,11 @@ use windows_sys::Win32::System::JobObjects::{
     JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+};
+use windows_sys::Win32::System::StationsAndDesktops::{
+    CloseDesktop, CreateDesktopW, DESKTOP_CREATEMENU, DESKTOP_CREATEWINDOW, DESKTOP_ENUMERATE,
+    DESKTOP_HOOKCONTROL, DESKTOP_JOURNALPLAYBACK, DESKTOP_JOURNALRECORD, DESKTOP_READOBJECTS,
+    DESKTOP_SWITCHDESKTOP, DESKTOP_WRITEOBJECTS, HDESK,
 };
 use windows_sys::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
@@ -258,6 +266,11 @@ unsafe fn probe_appcontainer_child(
         .map(|parent| wide(&parent.to_string_lossy()));
     let cwd_ptr = cwd.as_ref().map_or(null(), |value| value.as_ptr());
 
+    // Readiness must exercise the same controls production launches apply, so
+    // the throwaway child is placed on a private desktop too (RFC §6.4). Held
+    // until the child is reaped below.
+    let desktop = unsafe { create_confined_desktop(app_container_sid) }?;
+
     let mut attribute_size = 0usize;
     unsafe { InitializeProcThreadAttributeList(null_mut(), 2, 0, &mut attribute_size) };
     if attribute_size == 0 {
@@ -321,6 +334,7 @@ unsafe fn probe_appcontainer_child(
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.lpAttributeList = attribute_list;
+    startup.StartupInfo.lpDesktop = desktop.name.as_ptr() as *mut u16;
     let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
     let creation_flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW;
     let created = unsafe {
@@ -590,6 +604,138 @@ pub(crate) fn appcontainer_readiness_profile_name() -> Vec<u16> {
     wide(&format!("maka.readiness.{}", &digest[..32]))
 }
 
+/// Minimal desktop rights the confined child needs to run non-interactively:
+/// read the desktop object, create its own windows and menus, write back, and
+/// enumerate. Deliberately excludes `DESKTOP_SWITCHDESKTOP` (the worker can
+/// never bring itself to the foreground), `DESKTOP_HOOKCONTROL`, and
+/// `DESKTOP_JOURNALRECORD`/`DESKTOP_JOURNALPLAYBACK`, so even on its own desktop
+/// the worker cannot install the global-hook / input-journaling GUI attack
+/// surface RFC §6.3 forbids.
+const CONFINED_DESKTOP_APP_MASK: u32 = DESKTOP_READOBJECTS
+    | DESKTOP_CREATEWINDOW
+    | DESKTOP_CREATEMENU
+    | DESKTOP_WRITEOBJECTS
+    | DESKTOP_ENUMERATE;
+
+/// Interactive-control desktop rights no sandboxed principal may hold on the
+/// private desktop: desktop switching, hook control, and input-journal
+/// record/playback (0x138). Denied to the launching-user SID explicitly because
+/// the AppContainer child's token still carries that SID as an *effective* SID —
+/// without the deny ACE, the owner `GA` allow below would name the child as a
+/// grantee of these rights, and "never SWITCHDESKTOP/HOOKCONTROL/journal" would
+/// rest solely on the lowbox dual access check (user grant ∩ package grant)
+/// rather than on the DACL itself.
+const DENIED_DESKTOP_INTERACTIVE_MASK: u32 =
+    DESKTOP_SWITCHDESKTOP | DESKTOP_HOOKCONTROL | DESKTOP_JOURNALRECORD | DESKTOP_JOURNALPLAYBACK;
+
+/// DACL for the per-launch private desktop. A leading deny ACE strips the
+/// interactive-control rights from the launching-user SID (which the
+/// AppContainer child carries effectively); the launching user and Local System
+/// otherwise keep full control so the desktop can always be managed and cleaned
+/// up — the launcher itself only ever requests the minimal app mask, which the
+/// deny does not intersect. The per-launch AppContainer package SID gets only
+/// the minimal non-interactive rights above. `P` blocks inherited ACEs so the
+/// confined child shares this desktop with nothing else on the window station.
+pub(crate) fn desktop_sddl(owner_sid: &str, app_container_sid: &str) -> String {
+    format!(
+        "D:P(D;;0x{DENIED_DESKTOP_INTERACTIVE_MASK:x};;;{owner_sid})(A;;GA;;;{owner_sid})(A;;GA;;;SY)(A;;0x{CONFINED_DESKTOP_APP_MASK:x};;;{app_container_sid})"
+    )
+}
+
+/// Per-launch private desktop for the confined child. The open handle keeps the
+/// desktop alive; `Drop` closes it after the child has settled, at which point
+/// the kernel reclaims the now-unreferenced desktop.
+struct ConfinedDesktop {
+    handle: HDESK,
+    /// NUL-terminated wide name, handed to `STARTUPINFOW::lpDesktop`.
+    name: Vec<u16>,
+}
+
+impl Drop for ConfinedDesktop {
+    fn drop(&mut self) {
+        unsafe {
+            CloseDesktop(self.handle);
+        }
+    }
+}
+
+/// Create an alternate desktop on the current window station whose DACL grants
+/// only the launching user, Local System, and this launch's AppContainer SID
+/// (RFC §6.3). This is initial-desktop *placement* plus a DACL-protected
+/// desktop, not an escape-proof confinement boundary: `STARTUPINFOW::lpDesktop`
+/// only selects where the child *starts*, and nothing structural stops
+/// in-process code from calling `OpenDesktopW("Default")` +
+/// `SetThreadDesktop` to rejoin the interactive desktop — the escape-proof
+/// gates (a no-Win32k mitigation, a dedicated window station, a token
+/// boundary) are deferred (§6.5). What placement does buy: the child starts
+/// off the interactive desktop, so code that never re-attaches cannot
+/// enumerate or post messages to the user's windows, and the DACL keeps every
+/// *other* principal off this private desktop. It does NOT isolate the
+/// clipboard — the clipboard belongs to the window station, which this desktop
+/// still shares with `Default`. The create-window/write rights in the DACL are
+/// granted but not relied upon: an explicit Low mandatory-integrity label
+/// proving they are usable at AppContainer's Low IL is also deferred, so the
+/// shipped guarantee is placement, not GUI capability. Fails closed: if the
+/// desktop or its security descriptor cannot be built, the caller aborts the
+/// launch rather than fall back to the interactive desktop.
+unsafe fn create_confined_desktop(
+    app_container_sid: *mut c_void,
+) -> Result<ConfinedDesktop, String> {
+    let owner_sid = current_user_sid_string()?;
+    let package_sid = unsafe { sid_string(app_container_sid) }?;
+    // A per-launch name so concurrent sandboxes never share a desktop, and a
+    // name leaked by a killed launch never collides with a live one. Mirrors
+    // the readiness-probe profile nonce (§6.4).
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    let name = wide(&format!(
+        "maka-sandbox-desktop.{}.{nonce}",
+        std::process::id()
+    ));
+
+    let sddl = wide(&desktop_sddl(&owner_sid, &package_sid));
+    let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            null_mut(),
+        )
+    } == 0
+    {
+        return Err(last_error(
+            "ConvertStringSecurityDescriptorToSecurityDescriptorW(private desktop)",
+        ));
+    }
+    let security = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor as *mut c_void,
+        bInheritHandle: 0,
+    };
+    // The launching user holds GA minus the denied interactive-control bits in
+    // the DACL above, so requesting the minimal app mask (enough to keep a live
+    // handle and later close it; disjoint from the deny mask) always succeeds.
+    // No `DESKTOP_SWITCHDESKTOP`: the launcher never foregrounds it.
+    let handle = unsafe {
+        CreateDesktopW(
+            name.as_ptr(),
+            null(),
+            null(),
+            0,
+            CONFINED_DESKTOP_APP_MASK,
+            &security,
+        )
+    };
+    unsafe { LocalFree(descriptor as *mut c_void) };
+    if handle.is_null() {
+        return Err(last_error("CreateDesktopW(private desktop)"));
+    }
+    Ok(ConfinedDesktop { handle, name })
+}
+
 fn validate_appcontainer_policy(request: &LaunchRequest) -> Result<(), String> {
     if !matches!(request.network, NetworkMode::Restricted) {
         return Err("AppContainer backend only implements restricted networking".to_owned());
@@ -680,6 +826,11 @@ unsafe fn create_kill_on_close_job() -> Result<HANDLE, String> {
     Ok(job)
 }
 
+/// W0 restricted-token diagnostic path. NOT production: the packaged broker
+/// routes exclusively through `launch_appcontainer`. Children here run on the
+/// creator's interactive desktop — no private-desktop placement (RFC §6.3);
+/// reusing `create_confined_desktop` for these diagnostics is deliberately
+/// out of scope while they remain negative-evidence prototypes.
 unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> Result<u8, String> {
     let mut command = quote_command(&request.executable, &request.arguments);
     let mut executable = wide(&request.executable);
@@ -746,6 +897,8 @@ unsafe fn create_child(request: &LaunchRequest, token: HANDLE, job: HANDLE) -> R
     result
 }
 
+/// W0 restricted-token diagnostic path (atomic-Job variant). NOT production —
+/// same interactive-desktop caveat as `create_child` above (RFC §6.3).
 unsafe fn create_child_atomic(
     request: &LaunchRequest,
     token: HANDLE,
@@ -853,6 +1006,10 @@ unsafe fn create_appcontainer_child(
     let cwd = wide(&request.cwd);
     let environment = environment_block(&request.environment);
     let environment_ptr = environment.as_ptr() as *const c_void;
+    // Place the child on a private desktop (RFC §6.3). Held for the whole
+    // function so the desktop outlives the child; if its DACL never grants the
+    // AppContainer SID, CreateProcessW below fails ACCESS_DENIED — fail closed.
+    let desktop = unsafe { create_confined_desktop(app_container_sid) }?;
     let stdio = unsafe { InheritableStdio::capture() }?;
 
     let mut attribute_size = 0usize;
@@ -932,6 +1089,7 @@ unsafe fn create_appcontainer_child(
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.lpAttributeList = attribute_list;
+    startup.StartupInfo.lpDesktop = desktop.name.as_ptr() as *mut u16;
     startup.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
     startup.StartupInfo.hStdInput = stdio.handles[0];
     startup.StartupInfo.hStdOutput = stdio.handles[1];
