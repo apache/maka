@@ -186,11 +186,22 @@ function MarkdownCode(props: {
     );
   }
 
+  const codeLines = props.code.split('\n');
+  if (codeLines.length > 1 && codeLines.at(-1) === '') codeLines.pop();
+  const isSingleLine = codeLines.length === 1;
+
   return (
-    <div className={`maka-markdown-code maka-markdown-code-${props.density}`}>
+    <div
+      className={`maka-markdown-code maka-markdown-code-${props.density}`}
+      data-maka-code-layout={isSingleLine ? 'single-line' : 'multi-line'}>
       <CodeBlock
         code={props.code}
         language={props.language}
+        // Astryx otherwise overlays the copy button on headerless plaintext.
+        // An empty title deliberately enables its structural header without
+        // inventing a visible or unlocalised label; language fences still show
+        // their normal language label in the same toolbar.
+        title=""
         isCollapsible
       />
     </div>

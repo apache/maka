@@ -26,6 +26,36 @@ it('keeps raw HTML inert instead of expanding the Markdown trust surface', () =>
   assert.doesNotMatch(markup, /<details/);
 });
 
+it('keeps the copy control in a toolbar above a one-line code scroll viewport', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: ['```', `ssh-ed25519 ${'A'.repeat(200)}`, '```'].join('\n'),
+    }),
+  }));
+
+  const toolbarIndex = markup.indexOf('astryx-codeblock-header');
+  const copyButtonIndex = markup.indexOf('astryx-codeblock-copy-button');
+  const scrollViewportIndex = markup.indexOf('role="group"');
+
+  assert.match(markup, /data-maka-code-layout="single-line"/);
+  assert.doesNotMatch(markup, /maka-markdown-code-scrollbar-slot/);
+  assert.ok(toolbarIndex >= 0);
+  assert.ok(copyButtonIndex > toolbarIndex);
+  assert.ok(scrollViewportIndex > copyButtonIndex);
+});
+
+it('does not force the single-line scrollbar layout on multiline code', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: ['```ts', 'const first = 1;', 'const second = 2;', '```'].join('\n'),
+  }));
+
+  assert.match(markup, /data-maka-code-layout="multi-line"/);
+  assert.doesNotMatch(markup, /maka-markdown-code-scrollbar-slot/);
+  assert.match(markup, /astryx-codeblock-header/);
+  assert.match(markup, /astryx-codeblock-copy-button/);
+});
+
 it('keeps a lazy live stream behind the display cursor', () => {
   const markup = renderToStaticMarkup(createElement(Markdown, {
     text: 'live output that has not reached the display cursor',
