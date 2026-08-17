@@ -54,6 +54,7 @@ export async function recordLlmCallStrict(
   const reasoningTokens = record.reasoningTokens ?? 0;
   // Reasoning is an output-token detail, not an additional token class.
   const totalTokens = record.totalTokens ?? record.inputTokens + record.outputTokens;
+  const totalTokensSource = record.totalTokens === undefined ? 'derived' : 'reported';
   const costUsd =
     record.costUsd ??
     computeCost(
@@ -80,6 +81,7 @@ export async function recordLlmCallStrict(
     cacheWriteInputTokens,
     reasoningTokens,
     totalTokens,
+    totalTokensSource,
     costUsd,
     date: new Date(ts).toISOString().slice(0, 10),
     ts,

@@ -363,6 +363,17 @@ describe('InteractiveUsageStores', () => {
           cacheMissInputTokens: 0,
         }),
       );
+      await stores.telemetry.recordLlmCall(
+        llmRecord({
+          id: 'usage_3',
+          inputTokens: 20,
+          outputTokens: 8,
+          reasoningTokens: 2,
+          totalTokens: 30,
+          totalTokensSource: 'reported',
+          ts: Date.UTC(2026, 0, 3),
+        }),
+      );
 
       const summary = await stores.telemetry.summary({ range: 'all' });
       assert.equal(summary.totalTokens.input, 200);
