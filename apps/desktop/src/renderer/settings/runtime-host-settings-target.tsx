@@ -20,3 +20,7 @@ export function useRuntimeHostSettingsTarget(): DesktopRuntimeHostRef {
   if (!host) throw new Error("Runtime Host Settings target is unavailable");
   return host;
 }
+
+export function useOptionalRuntimeHostSettingsTarget(): DesktopRuntimeHostRef | undefined {
+  return useContext(RuntimeHostSettingsTargetContext) ?? undefined;
+}

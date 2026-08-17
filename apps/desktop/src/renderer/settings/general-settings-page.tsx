@@ -44,36 +44,61 @@ import { getSettingsPreferencesCopy } from "../locales/settings-preferences-copy
 import { settingsTestResultMessage } from "../locales/settings-test-result-copy.js";
 import { getShellCopy } from "../locales/shell-copy.js";
 import type { RuntimeHostSettingsConnectionsBridge } from './runtime-host-settings-bridge.js';
+import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 
 export function GeneralSettingsPage(props: {
   settings: AppSettings;
   connections: readonly LlmConnection[];
   defaultSlug: string | null;
-  connectionsBridge: Pick<RuntimeHostSettingsConnectionsBridge, 'setDefaultModel'>;
-  testNetworkProxy(input: TestProxyInput): Promise<import('@maka/core/settings').SettingsTestResult>;
+  connectionsBridge: Pick<RuntimeHostSettingsConnectionsBridge, 'setDefaultModel'> | undefined;
+  runtimeHostStatus: 'loading' | 'ready' | 'unavailable' | 'error';
+  testNetworkProxy?(input: TestProxyInput): Promise<import('@maka/core/settings').SettingsTestResult>;
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
   onRefreshConnections(): Promise<void>;
+  onRetryRuntimeHost(): Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).general;
   const sections = getSettingsPreferencesCopy(locale).sections;
+  const sharedCopy = getSettingsSharedCopy(locale);
   const toast = useToast();
+  const runtimeHostAvailable =
+    props.runtimeHostStatus === 'ready' &&
+    props.connectionsBridge !== undefined &&
+    props.testNetworkProxy !== undefined;
   return (
     <SettingsPage>
+      {!runtimeHostAvailable ? (
+        <Banner
+          status={props.runtimeHostStatus === 'error' ? 'error' : 'warning'}
+          title={props.runtimeHostStatus === 'loading'
+            ? sharedCopy.loading
+            : sharedCopy.runtimeHostUnavailable}
+          endContent={props.runtimeHostStatus === 'error' ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              label={sharedCopy.retry}
+              onClick={() => void props.onRetryRuntimeHost()}
+            />
+          ) : undefined}
+        />
+      ) : null}
       {/* Designer audit P2-13: identity fields (显示名称/界面语言/语气偏好)
           moved here from the 外观 page — they configure who you are to the
           app, not how the app looks. The component keeps its save flow. */}
       <PersonalizationSettingsSection
         settings={props.settings}
+        runtimeHostAvailable={runtimeHostAvailable}
         onUpdate={props.onUpdate}
       />
       <SettingsSection
         title={sections.privacy}
         description={sections.privacyHelp}
       >
-        <SettingsRow
+        {runtimeHostAvailable ? <SettingsRow
           label={copy.incognito}
           description={copy.incognitoHelp}
           end={
@@ -93,7 +118,7 @@ export function GeneralSettingsPage(props: {
               }}
             />
           }
-        />
+        /> : null}
         <SettingsRow
           label={copy.notifications}
           description={copy.notificationsHelp}
@@ -115,7 +140,7 @@ export function GeneralSettingsPage(props: {
             />
           }
         />
-        <SettingsRow
+        {runtimeHostAvailable ? <SettingsRow
           label={copy.workspaceInstructions}
           description={copy.workspaceInstructionsHelp}
           end={
@@ -135,27 +160,31 @@ export function GeneralSettingsPage(props: {
               }}
             />
           }
-        />
+        /> : null}
       </SettingsSection>
-      <GeneralDefaultsCard
-        connections={props.connections}
-        defaultSlug={props.defaultSlug}
-        connectionsBridge={props.connectionsBridge}
-        onRefresh={props.onRefreshConnections}
-        permissionMode={props.settings.chatDefaults.permissionMode}
-        thinkingLevel={props.settings.chatDefaults.thinkingLevel}
-        onUpdate={props.onUpdate}
-      />
-      <SettingsSection
-        title={sections.network}
-        description={sections.networkHelp}
-      >
-        <NetworkProxySection
-          settings={props.settings}
-          onUpdate={props.onUpdate}
-          testNetworkProxy={props.testNetworkProxy}
-        />
-      </SettingsSection>
+      {runtimeHostAvailable ? (
+        <>
+          <GeneralDefaultsCard
+            connections={props.connections}
+            defaultSlug={props.defaultSlug}
+            connectionsBridge={props.connectionsBridge!}
+            onRefresh={props.onRefreshConnections}
+            permissionMode={props.settings.chatDefaults.permissionMode}
+            thinkingLevel={props.settings.chatDefaults.thinkingLevel}
+            onUpdate={props.onUpdate}
+          />
+          <SettingsSection
+            title={sections.network}
+            description={sections.networkHelp}
+          >
+            <NetworkProxySection
+              settings={props.settings}
+              onUpdate={props.onUpdate}
+              testNetworkProxy={props.testNetworkProxy!}
+            />
+          </SettingsSection>
+        </>
+      ) : null}
     </SettingsPage>
   );
 }

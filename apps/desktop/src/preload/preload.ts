@@ -1905,7 +1905,12 @@ const makaBridge = {
       return invokeSelectedRuntimeHost(host, 'connections:setRequestHeaders', slug, headers);
     },
     subscribeEvents(handler: (event: ConnectionEvent) => void, host?: DesktopRuntimeHostRef): () => void {
-      return subscribeSelectedRuntimeHostEvent('connections:event', host, handler);
+      return host
+        ? subscribeSelectedRuntimeHostEvent('connections:event', host, handler)
+        : subscribeEveryRuntimeHostEvent(
+            'connections:event',
+            (_scope, event: ConnectionEvent) => handler(event),
+          );
     },
   },
   mcp: {

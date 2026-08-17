@@ -404,10 +404,16 @@ export function useAppShellBootstrapSubscriptions(options: {
     const unsubscribeConnections = window.maka.connections.subscribeEvents(handleConnectionSubscriptionEvent);
     const unsubscribeRuntimeHostChanges =
       window.maka.runtimeHostProfiles.subscribeChanges(handleRuntimeHostChange);
-    const unsubscribeSettingsExternal = window.maka.settings.subscribeExternalChanged(() => {
+    const refreshSettingsMirrors = () => {
       void options.refreshShellSettings();
       void options.refreshConnections();
-    });
+    };
+    const unsubscribeSettingsExternal = window.maka.settings.subscribeExternalChanged(
+      refreshSettingsMirrors,
+    );
+    const unsubscribeClientSettings = window.maka.settings.subscribeClientChanged(
+      refreshSettingsMirrors,
+    );
     const unsubscribeSessionChanges = window.maka.sessions.subscribeChanges(handleSessionChange);
     const unsubscribeScheduledTaskChanges = window.maka.scheduledTasks.subscribeChanges(handleScheduledTaskChange);
     const unsubscribeScheduledTaskDue = window.maka.scheduledTasks.subscribeDue(handleScheduledTaskDue);
@@ -419,6 +425,7 @@ export function useAppShellBootstrapSubscriptions(options: {
       unsubscribeConnections();
       unsubscribeRuntimeHostChanges();
       unsubscribeSettingsExternal();
+      unsubscribeClientSettings();
       unsubscribeSessionChanges();
       unsubscribeScheduledTaskChanges();
       unsubscribeScheduledTaskDue();

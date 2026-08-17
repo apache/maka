@@ -4,6 +4,7 @@ import type { ProjectRecord } from '@maka/core/project';
 import type { DesktopProjectCapabilities } from '../../preload/bridge-contract.js';
 import {
   Badge,
+  Banner,
   Button,
   EmptyState,
   MoreMenu,
@@ -20,7 +21,8 @@ import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
 import { RuntimeHostProfilesSection } from './runtime-host-profiles-section.js';
 import { useKeyedActionGuard } from './use-action-guard';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import { useOptionalRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 
 const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {
   chooseClientDirectory: false,
@@ -45,13 +47,16 @@ const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {
  */
 export function ProjectsSettingsPage(props: {
   settings: AppSettings;
+  runtimeHostStatus: 'loading' | 'ready' | 'unavailable' | 'error';
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
+  onRetryRuntimeHost(): Promise<void>;
 }) {
-  const host = useRuntimeHostSettingsTarget();
+  const host = useOptionalRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale);
+  const sharedCopy = getSettingsSharedCopy(locale);
   const toast = useToast();
   const mountedRef = useMountedRef();
   const actionGuard = useKeyedActionGuard<string>();
@@ -64,6 +69,7 @@ export function ProjectsSettingsPage(props: {
   const reloadGeneration = useRef(0);
 
   const reload = useCallback(async () => {
+    if (!host) return;
     const generation = ++reloadGeneration.current;
     const snapshot = await window.maka.projects.getSnapshot(undefined, host);
     if (mountedRef.current && generation === reloadGeneration.current) {
@@ -73,6 +79,11 @@ export function ProjectsSettingsPage(props: {
   }, [host, mountedRef]);
 
   useEffect(() => {
+    if (!host) {
+      setProjects([]);
+      setCapabilities(NO_PROJECT_CAPABILITIES);
+      return;
+    }
     void reload();
     const unsubscribeProjects = window.maka.projects.subscribeChanges(
       () => void reload(),
@@ -120,6 +131,28 @@ export function ProjectsSettingsPage(props: {
 
   async function setDefault(projectId: string | undefined) {
     await props.onUpdate({ projects: { defaultProjectId: projectId } });
+  }
+
+  if (!host) {
+    return (
+      <SettingsPage as="section" aria-label={copy.section}>
+        <RuntimeHostProfilesSection />
+        <Banner
+          status={props.runtimeHostStatus === 'error' ? 'error' : 'warning'}
+          title={props.runtimeHostStatus === 'loading'
+            ? sharedCopy.loading
+            : sharedCopy.runtimeHostUnavailable}
+          endContent={props.runtimeHostStatus === 'error' ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              label={sharedCopy.retry}
+              onClick={() => void props.onRetryRuntimeHost()}
+            />
+          ) : undefined}
+        />
+      </SettingsPage>
+    );
   }
 
   return (

@@ -591,6 +591,9 @@ const runtimeHostProfiles: DesktopRuntimeHostProfileSnapshot = {
   ],
 };
 
+let storyClientSettings = createDefaultSettings();
+let storyRuntimeHostSettings = createDefaultSettings();
+
 const makaBridge = {
   runtimeHostProfiles: {
     getSnapshot: async () => runtimeHostProfiles,
@@ -601,15 +604,17 @@ const makaBridge = {
     subscribeChanges: () => () => undefined,
   },
   settings: {
-    getClient: async () => createDefaultSettings(),
-    get: async () => createDefaultSettings(),
+    getClient: async () => storyClientSettings,
+    get: async () => storyRuntimeHostSettings,
     updateClient: async (
       patch: Parameters<typeof window.maka.settings.updateClient>[0],
     ): Promise<UpdateAppSettingsResult> => {
-      return { settings: mergeSettings(createDefaultSettings(), patch) };
+      storyClientSettings = mergeSettings(storyClientSettings, patch);
+      return { settings: storyClientSettings };
     },
     update: async (patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult> => {
-      return { settings: mergeSettings(createDefaultSettings(), patch) };
+      storyRuntimeHostSettings = mergeSettings(storyRuntimeHostSettings, patch);
+      return { settings: storyRuntimeHostSettings };
     },
     subscribeClientChanged: () => () => undefined,
     subscribeExternalChanged: () => () => undefined,

@@ -81,11 +81,11 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
 
 const SETTINGS_SECTION_SCOPES: Record<
   SettingsSection,
-  'client' | 'runtime-host'
+  'client' | 'mixed' | 'runtime-host'
 > = {
-  general: 'runtime-host',
+  general: 'mixed',
   appearance: 'client',
-  projects: 'runtime-host',
+  projects: 'mixed',
   models: 'runtime-host',
   subagents: 'runtime-host',
   memory: 'runtime-host',
@@ -134,6 +134,6 @@ export function navLabel(section: SettingsSection, locale: UiLocale): string {
 
 export function settingsSectionScope(
   section: SettingsSection,
-): 'client' | 'runtime-host' {
+): 'client' | 'mixed' | 'runtime-host' {
   return SETTINGS_SECTION_SCOPES[section];
 }
