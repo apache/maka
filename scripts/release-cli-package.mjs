@@ -6,6 +6,7 @@ import {
   cpSync,
   existsSync,
   lstatSync,
+  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -14,14 +15,20 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { npmSpawnOptions } from './npm-spawn.mjs';
+import {
+  isMakaDevelopmentArtifact,
+  isThirdPartyDevelopmentArtifact,
+} from './release-cli-file-policy.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const cliSource = join(repoRoot, 'packages/cli');
 const releaseRoot = join(cliSource, 'release');
 const stageRoot = join(releaseRoot, 'package');
 const allowDirty = process.argv.includes('--allow-dirty');
+const preparedTree = process.env.MAKA_CLI_RELEASE_PREPARED_TREE === '1';
 const unsupportedArguments = process.argv
   .slice(2)
   .filter((argument) => argument !== '--allow-dirty');
@@ -74,7 +81,22 @@ main();
 
 function main() {
   validateToolchain();
-  if (!allowDirty) validateCleanWorktree();
+  if (!preparedTree && !allowDirty) {
+    validateCleanWorktree();
+    buildFromCleanDependencyTree();
+    return;
+  }
+  if (preparedTree && allowDirty) {
+    throw new Error('--allow-dirty cannot be combined with a prepared release tree');
+  }
+  if (preparedTree && existsSync(join(repoRoot, '.git'))) {
+    throw new Error('A prepared release build must run inside the isolated source archive');
+  }
+  if (allowDirty) {
+    console.warn(
+      '[release-cli] WARNING: producing a private development tarball with publishing disabled',
+    );
+  }
   buildRuntimeWorkspaces();
   checkProductionAudit();
   runNpm(['run', 'check:cli-third-party-notices']);
@@ -89,7 +111,7 @@ function main() {
   const expectedDependencyManifests = copyDependencyClosure(cli);
   copyEvalMirror();
   copyReleaseDocuments();
-  writeReleaseManifest(cli);
+  writeReleaseManifest(cli, preparedTree);
   validateStaging();
 
   const [pack] = JSON.parse(
@@ -118,14 +140,52 @@ function main() {
   );
 }
 
+function buildFromCleanDependencyTree() {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-cli-release-build-'));
+  const archivePath = join(temporaryRoot, 'source.tar');
+  const cleanRoot = join(temporaryRoot, 'source');
+  try {
+    mkdirSync(cleanRoot, { recursive: true, mode: 0o755 });
+    execFileSync('git', ['archive', '--format=tar', `--output=${archivePath}`, 'HEAD'], {
+      cwd: repoRoot,
+      stdio: 'inherit',
+    });
+    execFileSync('tar', ['-xf', archivePath, '-C', cleanRoot], { stdio: 'inherit' });
+    console.log('[release-cli] installing the committed dependency tree with npm ci');
+    execFileSync('npm', ['ci'], npmSpawnOptions({ cwd: cleanRoot, stdio: 'inherit' }));
+    execFileSync(process.execPath, [join(cleanRoot, 'scripts/release-cli-package.mjs')], {
+      cwd: cleanRoot,
+      env: { ...process.env, MAKA_CLI_RELEASE_PREPARED_TREE: '1' },
+      stdio: 'inherit',
+    });
+
+    const cleanReleaseRoot = join(cleanRoot, 'packages/cli/release');
+    if (!existsSync(cleanReleaseRoot)) {
+      throw new Error('The isolated release build did not produce a release directory');
+    }
+    rmSync(releaseRoot, { recursive: true, force: true });
+    cpSync(cleanReleaseRoot, releaseRoot, { recursive: true, preserveTimestamps: true });
+    console.log(`[release-cli] copied the isolated release artifacts to ${releaseRoot}`);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
 function validateToolchain() {
   const [major = 0, minor = 0] = process.versions.node.split('.').map(Number);
   if (major < 22 || (major === 22 && minor < 19)) {
     throw new Error(`Node.js >=22.19.0 is required; found ${process.versions.node}`);
   }
+  const packageManager = readJson(join(repoRoot, 'package.json')).packageManager;
+  const requiredNpmVersion = /^npm@(.+)$/.exec(packageManager)?.[1];
+  if (!requiredNpmVersion) {
+    throw new Error(
+      `The root packageManager must pin an exact npm version; found ${packageManager}`,
+    );
+  }
   const npmVersion = runNpm(['--version'], { encoding: 'utf8' }).trim();
-  if (Number(npmVersion.split('.')[0]) !== 11) {
-    throw new Error(`npm 11 is required; found ${npmVersion}`);
+  if (npmVersion !== requiredNpmVersion) {
+    throw new Error(`npm ${requiredNpmVersion} is required; found ${npmVersion}`);
   }
 }
 
@@ -322,8 +382,14 @@ function copyThirdPartyPackage(source, destination) {
   cpSync(source, destination, {
     recursive: true,
     preserveTimestamps: true,
-    filter: (path) =>
-      path === source || !relative(source, path).split(sep).includes('node_modules'),
+    filter: (path) => {
+      if (path === source) return true;
+      const relativePath = relative(source, path);
+      return (
+        !relativePath.split(sep).includes('node_modules') &&
+        !isThirdPartyDevelopmentArtifact(relativePath)
+      );
+    },
   });
   stripReviewedInstallScripts(destination);
 }
@@ -379,7 +445,7 @@ function copyReleaseDocuments() {
   );
 }
 
-function writeReleaseManifest(cli) {
+function writeReleaseManifest(cli, publishable) {
   const source = readJson(join(cliSource, 'package.json'));
   const root = readJson(join(repoRoot, 'package.json'));
   if (source.version !== cli.version) {
@@ -406,14 +472,21 @@ function writeReleaseManifest(cli) {
     homepage: 'https://github.com/maka-agent/maka-agent#readme',
     bugs: { url: 'https://github.com/maka-agent/maka-agent/issues' },
     keywords: ['ai', 'agent', 'cli', 'tui', 'local-first'],
-    publishConfig: {
-      access: 'public',
-      registry: 'https://registry.npmjs.org/',
-      tag: source.version.includes('-') ? 'next' : 'latest',
-    },
+    publishConfig: publishable
+      ? {
+          access: 'public',
+          registry: 'https://registry.npmjs.org/',
+          tag: source.version.includes('-') ? 'next' : 'latest',
+        }
+      : {
+          access: 'restricted',
+          registry: 'http://127.0.0.1:9/',
+          tag: 'development',
+        },
     files: ['dist', 'packages/eval', 'README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.txt'],
     dependencies,
     bundledDependencies: Object.keys(dependencies).sort(),
+    ...(!publishable ? { private: true } : {}),
   };
   writeFileSync(join(stageRoot, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 }
@@ -495,14 +568,11 @@ function validatePackedFiles(files, expectedDependencyManifests) {
       path.startsWith('dist/') ||
       path.startsWith('packages/eval/') ||
       (segments[0] === 'node_modules' && segments[1] === '@maka' && segments[3] !== 'node_modules');
-    if (
-      makaOwned &&
-      (/(?:^|\/)(?:src|test|tests|__tests__|__fixtures__|fixtures)\//.test(path) ||
-        /(?:^|\/)dev-cli\.js$/.test(path) ||
-        /\.d\.ts(?:\.map)?$/.test(path) ||
-        /\.js\.map$/.test(path))
-    ) {
+    if (makaOwned && isMakaDevelopmentArtifact(path)) {
       throw new Error(`Development artifact escaped into the tarball: ${path}`);
+    }
+    if (!makaOwned && path.startsWith('node_modules/') && isThirdPartyDevelopmentArtifact(path)) {
+      throw new Error(`Third-party development artifact escaped into the tarball: ${path}`);
     }
     const fileName = basename(path).toLowerCase();
     if (
