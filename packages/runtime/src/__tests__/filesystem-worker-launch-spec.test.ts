@@ -93,7 +93,27 @@ test('Windows packaged worker grants only its product-owned application director
     assert.ok(result.spec.runtimeReadableRoots.includes(canonicalApplicationDirectory));
     assert.ok(result.spec.executableRoots.includes(canonicalApplicationDirectory));
     assert.ok(!result.spec.runtimeReadableRoots.includes(dirname(canonicalApplicationDirectory)));
+    // Electron's run-as-node entry aborts inside the AppContainer while
+    // backfilling standard handles from the NUL device, which the container
+    // denies. The broker always relays three valid handles, so the launch
+    // skips that initialization.
+    assert.equal(result.spec.args[0], '--no-stdio-init');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('a node runtime worker never receives the Electron-only stdio switch', async () => {
+  const getLaunchSpec = createFilesystemWorkerLaunchSpecProvider({
+    runtime: 'node',
+    platform: 'win32',
+    executable: process.execPath,
+    resourceLocation: { kind: 'runtime' },
+    rgCandidates: [],
+  });
+
+  const result = await getLaunchSpec();
+
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.spec.args.includes('--no-stdio-init'), false);
 });

@@ -136,7 +136,16 @@ async function resolveLaunchSpec(
       // bundle path. Inside the Windows AppContainer that realpath would
       // lstat every ancestor directory (up to the volume root), which the
       // sandbox grants deliberately do not allow.
+      //
+      // --no-stdio-init: Electron's run-as-node entry opens the NUL device to
+      // backfill missing standard handles before Node starts, and the
+      // AppContainer denies that device open, which aborts startup (FATAL
+      // node_main.cc "Unable to open nul device"). The broker always relays
+      // three valid standard handles into the child, so the backfill is
+      // unnecessary; the switch skips it and is consumed before Node's own
+      // option parsing.
       args: [
+        ...(input.runtime === 'electron' && platform === 'win32' ? ['--no-stdio-init'] : []),
         ...(platform === 'win32' ? ['--preserve-symlinks-main'] : []),
         bundle.path,
         ...(grep ? ['--grep-executable', grep.executable] : []),
