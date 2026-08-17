@@ -33,6 +33,14 @@ function builtinWindowsClientPath(
 const WINDOWS_READINESS_PROBE_TIMEOUT_MS = 15_000;
 
 /**
+ * Availability is a property of the host and the launcher binary, not of any one
+ * backend instance, so the probe result is cached at module scope keyed by the
+ * resolved client path. Two backends built for the same launcher share the one
+ * probe; distinct paths (tests, side-by-side installs) stay independent.
+ */
+const windowsReadinessCache = new Map<string, boolean>();
+
+/**
  * Production-identity readiness probe for the Windows backend (RFC §6.4).
  *
  * `existsSync` alone only proves the packaged launcher is present, not that the
@@ -44,26 +52,28 @@ const WINDOWS_READINESS_PROBE_TIMEOUT_MS = 15_000;
  * the sync `SandboxBackend.isAvailable` contract must stay cheap after the
  * first call. Anything other than a clean exit 0 fails closed.
  */
-function createWindowsReadinessProbe(clientPath: string): () => boolean {
-  let cached: boolean | undefined;
-  return () => {
-    if (cached !== undefined) return cached;
-    if (!existsSync(clientPath)) {
-      cached = false;
-      return cached;
-    }
+function probeWindowsReadiness(clientPath: string): boolean {
+  const cached = windowsReadinessCache.get(clientPath);
+  if (cached !== undefined) return cached;
+  let available = false;
+  if (existsSync(clientPath)) {
     try {
       const result = spawnSync(clientPath, ['--readiness-probe'], {
         timeout: WINDOWS_READINESS_PROBE_TIMEOUT_MS,
         windowsHide: true,
         stdio: 'ignore',
       });
-      cached = result.error === undefined && result.status === 0;
+      available = result.error === undefined && result.status === 0;
     } catch {
-      cached = false;
+      available = false;
     }
-    return cached;
-  };
+  }
+  windowsReadinessCache.set(clientPath, available);
+  return available;
+}
+
+function createWindowsReadinessProbe(clientPath: string): () => boolean {
+  return () => probeWindowsReadiness(clientPath);
 }
 
 function builtinWindowsBackend(

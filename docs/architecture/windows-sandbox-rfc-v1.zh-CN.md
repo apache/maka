@@ -2,7 +2,7 @@
 
 - 状态：实现基线已选定；首个预览切片（[#2961](https://github.com/maka-agent/maka-agent/pull/2961)）已于 2026-08-17 合并；产品接入继续做发布验证（预览范围见 §6.5）
 - 跟踪：[Issue #2142](https://github.com/maka-agent/maka-agent/issues/2142) Windows Phase 4
-- 更新日期：2026-08-14
+- 更新日期：2026-08-17
 - Owner：`@maka/runtime` sandbox boundary 与 Runtime Host execution composition
 - 英文版：[windows-sandbox-rfc-v1.md](./windows-sandbox-rfc-v1.md)
 

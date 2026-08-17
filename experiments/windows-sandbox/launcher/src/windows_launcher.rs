@@ -4,7 +4,7 @@ use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::Foundation::{
@@ -16,10 +16,10 @@ use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::{
-    CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, DuplicateTokenEx, FreeSid, GetTokenInformation,
-    IsTokenRestricted, LUA_TOKEN, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES,
-    SecurityImpersonation, TOKEN_ALL_ACCESS, TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER,
-    TokenIsAppContainer, TokenPrimary, TokenUser,
+    CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, DuplicateTokenEx, EqualSid, FreeSid,
+    GetTokenInformation, IsTokenRestricted, LUA_TOKEN, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES,
+    SecurityImpersonation, TOKEN_ALL_ACCESS, TOKEN_APPCONTAINER_INFORMATION, TOKEN_DUPLICATE,
+    TOKEN_QUERY, TOKEN_USER, TokenAppContainerSid, TokenIsAppContainer, TokenPrimary, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -164,9 +164,17 @@ pub fn readiness_probe() -> Result<u8, String> {
 
     unsafe {
         let job = create_kill_on_close_job()?;
-        // A per-process identity so concurrent probes never collide on a
-        // profile name; the profile is deleted when it drops.
-        let request_id = format!("readiness-probe.{}", std::process::id());
+        // A per-invocation identity so probes never collide on a profile name:
+        // the profile is deleted on drop, but if a probe is killed before that
+        // runs the profile leaks. A PID-only name would then make every later
+        // probe on a reused PID fail closed on `CreateAppContainerProfile`
+        // (already exists), so mix in the wall-clock nanos as a nonce; the PID
+        // stays only to disambiguate concurrent probes.
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let request_id = format!("readiness-probe.{}.{nonce}", std::process::id());
         let profile = match AppContainerProfile::create(&request_id) {
             Ok(profile) => profile,
             Err(error) => {
@@ -297,11 +305,16 @@ unsafe fn probe_appcontainer_child(
         if unsafe { ResumeThread(process.hThread) } == u32::MAX {
             return Err(last_error("ResumeThread(readiness)"));
         }
-        let child_app_container = unsafe { child_token_is_appcontainer(process.hProcess) }?;
-        let child_in_job = unsafe { child_process_is_in_job(process.hProcess) }?;
-        if !(child_app_container && child_in_job) {
+        // Verify the *requested* boundary, not just any confinement: match the
+        // child's AppContainer SID against the profile we created (a non-null
+        // match also proves it is an AppContainer token), and confirm membership
+        // in this probe's Job specifically rather than any ambient Job.
+        let child_sid_matches =
+            unsafe { child_token_appcontainer_sid_matches(process.hProcess, app_container_sid) }?;
+        let child_in_job = unsafe { child_process_is_in_specific_job(process.hProcess, job) }?;
+        if !(child_sid_matches && child_in_job) {
             return Err(
-                "readiness probe child did not establish the AppContainer token and Job boundary"
+                "readiness probe child did not run under the requested AppContainer SID and Job"
                     .to_owned(),
             );
         }
@@ -1071,6 +1084,68 @@ unsafe fn child_process_is_in_job(process: HANDLE) -> Result<bool, String> {
         return Err(last_error("IsProcessInJob(child)"));
     }
     Ok(in_job != 0)
+}
+
+/// Confirm the child belongs to `job` specifically. `IsProcessInJob` with a
+/// non-null Job handle answers "is the process in *this* Job", unlike the
+/// null-handle form which accepts membership in any ambient Job.
+unsafe fn child_process_is_in_specific_job(process: HANDLE, job: HANDLE) -> Result<bool, String> {
+    let mut in_job = 0;
+    if unsafe { IsProcessInJob(process, job, &mut in_job) } == 0 {
+        return Err(last_error("IsProcessInJob(child specific)"));
+    }
+    Ok(in_job != 0)
+}
+
+/// Confirm the child's token carries the exact AppContainer SID we created,
+/// proving the requested identity was applied rather than some other
+/// AppContainer. A non-null matching SID also implies the token is an
+/// AppContainer token, so this subsumes the `TokenIsAppContainer` check.
+unsafe fn child_token_appcontainer_sid_matches(
+    process: HANDLE,
+    expected_sid: *mut c_void,
+) -> Result<bool, String> {
+    let mut token = null_mut();
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return Err(last_error("OpenProcessToken(appcontainer sid)"));
+    }
+    let result = unsafe { token_appcontainer_sid_matches(token, expected_sid) };
+    unsafe { CloseHandle(token) };
+    result
+}
+
+unsafe fn token_appcontainer_sid_matches(
+    token: HANDLE,
+    expected_sid: *mut c_void,
+) -> Result<bool, String> {
+    // First call sizes the buffer; TokenAppContainerSid returns a variable-size
+    // TOKEN_APPCONTAINER_INFORMATION whose SID data trails the struct.
+    let mut needed = 0u32;
+    unsafe { GetTokenInformation(token, TokenAppContainerSid, null_mut(), 0, &mut needed) };
+    if needed == 0 {
+        return Err(last_error("GetTokenInformation(TokenAppContainerSid size)"));
+    }
+    let mut buffer = vec![0u8; needed as usize];
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenAppContainerSid,
+            buffer.as_mut_ptr() as *mut c_void,
+            needed,
+            &mut needed,
+        )
+    } == 0
+    {
+        return Err(last_error("GetTokenInformation(TokenAppContainerSid)"));
+    }
+    let info = buffer.as_ptr() as *const TOKEN_APPCONTAINER_INFORMATION;
+    let sid = unsafe { (*info).TokenAppContainer };
+    if sid.is_null() {
+        // A non-AppContainer token reports a null SID: the boundary was not
+        // applied, so fail the match rather than erroring.
+        return Ok(false);
+    }
+    Ok(unsafe { EqualSid(sid, expected_sid) } != 0)
 }
 
 fn quote_command(executable: &str, arguments: &[String]) -> Vec<u16> {
