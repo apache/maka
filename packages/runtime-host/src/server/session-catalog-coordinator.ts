@@ -38,7 +38,6 @@ import {
   SESSION_CATALOG_RESULT_MAX_BYTES,
   type OperationError,
   type OperationOutcome,
-  type SessionCatalogFilter,
   type SessionCatalogItem,
   type SessionCatalogProjection,
   type SessionCatalogQueryInput,
@@ -189,15 +188,8 @@ export class HostSessionCatalogCoordinator {
       if (input.kind === 'list_continue' && cursor === undefined) {
         return queryFailure('invalid_request', 'Session cursor is invalid');
       }
-      const filter =
-        input.kind === 'list_start'
-          ? canonicalFilter(input.filter)
-          : resolveContinuationFilter(input.filter, cursor);
-      if (filter === undefined) {
-        return queryFailure('invalid_request', 'Session cursor filter does not match');
-      }
       const pageResult = await this.#stores.listCatalogPage(
-        filter,
+        undefined,
         cursor,
         SESSION_CATALOG_PAGE_MAX_ITEMS,
         input.kind === 'list_continue' ? input.revision : undefined,
@@ -209,9 +201,7 @@ export class HostSessionCatalogCoordinator {
           actualRevision: pageResult.actualRevision,
         });
       }
-      return successQuery(
-        page(pageResult.records, pageResult.revision, pageResult.hasMore, filter),
-      );
+      return successQuery(page(pageResult.records, pageResult.revision, pageResult.hasMore));
     } catch {
       return queryFailure('persistence_failed', 'Session catalog is unavailable');
     }
@@ -943,7 +933,6 @@ function page(
   records: readonly SessionCatalogRecord[],
   revision: SessionCatalogRevision,
   hasMore: boolean,
-  filter: SessionCatalogFilter,
 ): SessionCatalogQueryResult {
   const items: SessionCatalogItem[] = [];
   for (let index = 0; index < records.length; index += 1) {
@@ -955,7 +944,7 @@ function page(
       kind: 'page' as const,
       revision,
       sessions: [...items, item],
-      nextCursor: moreItems ? encodeCursor(record, filter) : null,
+      nextCursor: moreItems ? encodeCursor(record) : null,
     };
     if (Buffer.byteLength(JSON.stringify(candidate), 'utf8') > SESSION_CATALOG_RESULT_MAX_BYTES) {
       break;
@@ -971,25 +960,22 @@ function page(
     kind: 'page',
     revision,
     sessions: items,
-    nextCursor: moreItems && lastRecord ? encodeCursor(lastRecord, filter) : null,
+    nextCursor: moreItems && lastRecord ? encodeCursor(lastRecord) : null,
   };
 }
 
-function encodeCursor(record: SessionCatalogRecord, filter: SessionCatalogFilter): string {
+function encodeCursor(record: SessionCatalogRecord): string {
   return Buffer.from(
     JSON.stringify({
       version: 1,
       activityAt: catalogActivityAt(record.header),
       sessionId: record.header.id,
-      filter,
     }),
     'utf8',
   ).toString('base64url');
 }
 
-interface DecodedSessionCatalogCursor extends SessionCatalogPageCursor {
-  readonly filter: SessionCatalogFilter;
-}
+type DecodedSessionCatalogCursor = SessionCatalogPageCursor;
 
 function decodeCursor(cursor: string): DecodedSessionCatalogCursor | undefined {
   if (!/^[A-Za-z0-9_-]+$/.test(cursor)) return undefined;
@@ -1001,7 +987,7 @@ function decodeCursor(cursor: string): DecodedSessionCatalogCursor | undefined {
       typeof value !== 'object' ||
       value === null ||
       Array.isArray(value) ||
-      Object.keys(value).sort().join(',') !== 'activityAt,filter,sessionId,version'
+      Object.keys(value).sort().join(',') !== 'activityAt,sessionId,version'
     ) {
       return undefined;
     }
@@ -1011,67 +997,17 @@ function decodeCursor(cursor: string): DecodedSessionCatalogCursor | undefined {
       !Number.isSafeInteger(record.activityAt) ||
       (record.activityAt as number) < 0 ||
       typeof record.sessionId !== 'string' ||
-      !/^[A-Za-z0-9_-]{1,128}$/.test(record.sessionId) ||
-      !isCursorFilter(record.filter)
+      !/^[A-Za-z0-9_-]{1,128}$/.test(record.sessionId)
     ) {
       return undefined;
     }
     return {
       activityAt: record.activityAt as number,
       sessionId: record.sessionId,
-      filter: record.filter,
     };
   } catch {
     return undefined;
   }
-}
-
-function canonicalFilter(filter: SessionCatalogFilter | undefined): SessionCatalogFilter {
-  return {
-    ...(filter?.isArchived === undefined ? {} : { isArchived: filter.isArchived }),
-    ...(filter?.isFlagged === undefined ? {} : { isFlagged: filter.isFlagged }),
-    ...(filter?.labelSlug === undefined ? {} : { labelSlug: filter.labelSlug }),
-  };
-}
-
-function resolveContinuationFilter(
-  requested: SessionCatalogFilter | undefined,
-  cursor: DecodedSessionCatalogCursor | undefined,
-): SessionCatalogFilter | undefined {
-  if (!cursor) return undefined;
-  if (requested === undefined) return cursor.filter;
-  const filter = canonicalFilter(requested);
-  return filtersEqual(filter, cursor.filter) ? filter : undefined;
-}
-
-function filtersEqual(left: SessionCatalogFilter, right: SessionCatalogFilter): boolean {
-  return (
-    left.isArchived === right.isArchived &&
-    left.isFlagged === right.isFlagged &&
-    left.labelSlug === right.labelSlug
-  );
-}
-
-function isCursorFilter(value: unknown): value is SessionCatalogFilter {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  if (
-    Object.keys(record).some(
-      (key) => key !== 'isArchived' && key !== 'isFlagged' && key !== 'labelSlug',
-    ) ||
-    (Object.hasOwn(record, 'isArchived') && typeof record.isArchived !== 'boolean') ||
-    (Object.hasOwn(record, 'isFlagged') && typeof record.isFlagged !== 'boolean')
-  ) {
-    return false;
-  }
-  if (!Object.hasOwn(record, 'labelSlug')) return true;
-  return (
-    typeof record.labelSlug === 'string' &&
-    record.labelSlug.length > 0 &&
-    Buffer.byteLength(record.labelSlug, 'utf8') <= SESSION_CATALOG_LABEL_MAX_BYTES &&
-    record.labelSlug.trim() === record.labelSlug &&
-    !/[\u0000-\u001f\u007f]/.test(record.labelSlug)
-  );
 }
 
 function catalogActivityAt(header: SessionHeader): number {

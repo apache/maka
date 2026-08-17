@@ -106,17 +106,10 @@ const PROJECTION_FIELDS = [
 
 export type SessionCatalogRevision = `sha256:${string}`;
 
-export interface SessionCatalogFilter {
-  readonly isArchived?: boolean;
-  readonly isFlagged?: boolean;
-  readonly labelSlug?: string;
-}
-
 export type SessionCatalogQueryInput =
-  | { readonly kind: 'list_start'; readonly filter?: SessionCatalogFilter }
+  | { readonly kind: 'list_start' }
   | {
       readonly kind: 'list_continue';
-      readonly filter?: SessionCatalogFilter;
       readonly revision: SessionCatalogRevision;
       readonly cursor: string;
     }
@@ -383,27 +376,17 @@ export function decodeExecutionBoundarySummary(value: unknown): ExecutionBoundar
 export function decodeSessionCatalogQueryInput(value: unknown): SessionCatalogQueryInput {
   const input = requireRecord(value, 'Session catalog query input');
   if (input.kind === 'list_start') {
-    const exact = requireShapedRecord(
-      input,
-      'Session catalog list start input',
-      ['kind'],
-      ['filter'],
-    );
-    return {
-      kind: 'list_start',
-      ...(Object.hasOwn(exact, 'filter') ? { filter: decodeFilter(exact.filter) } : {}),
-    };
+    requireExactRecord(input, 'Session catalog list start input', ['kind']);
+    return { kind: 'list_start' };
   }
   if (input.kind === 'list_continue') {
-    const exact = requireShapedRecord(
-      input,
-      'Session catalog list continuation input',
-      ['kind', 'revision', 'cursor'],
-      ['filter'],
-    );
+    const exact = requireExactRecord(input, 'Session catalog list continuation input', [
+      'kind',
+      'revision',
+      'cursor',
+    ]);
     return {
       kind: 'list_continue',
-      ...(Object.hasOwn(exact, 'filter') ? { filter: decodeFilter(exact.filter) } : {}),
       revision: catalogRevision(exact.revision),
       cursor: requireUtf8String(
         exact.cursor,
@@ -695,32 +678,6 @@ export function decodeSessionCatalogItem(value: unknown): SessionCatalogItem {
     id: requireEntityId(exact.id, 'Session id'),
     revision: positiveRevision(exact.revision, 'Session revision'),
     reason: exact.reason,
-  };
-}
-
-function decodeFilter(value: unknown): SessionCatalogFilter {
-  const filter = requireShapedRecord(
-    value,
-    'Session catalog filter',
-    [],
-    ['isArchived', 'isFlagged', 'labelSlug'],
-  );
-  return {
-    ...(Object.hasOwn(filter, 'isArchived')
-      ? { isArchived: boolean(filter.isArchived, 'Session archived filter') }
-      : {}),
-    ...(Object.hasOwn(filter, 'isFlagged')
-      ? { isFlagged: boolean(filter.isFlagged, 'Session flagged filter') }
-      : {}),
-    ...(Object.hasOwn(filter, 'labelSlug')
-      ? {
-          labelSlug: boundedText(
-            filter.labelSlug,
-            'Session label filter',
-            SESSION_CATALOG_LABEL_MAX_BYTES,
-          ),
-        }
-      : {}),
   };
 }
 

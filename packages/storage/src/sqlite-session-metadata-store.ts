@@ -150,7 +150,6 @@ function loadSqliteModule(): typeof import('node:sqlite') {
 
 export type SqliteSessionMetadataStoreFailpoint =
   | 'after_session_row_write'
-  | 'after_session_labels_write'
   | 'after_agent_graph_intent_claim_write'
   | 'after_agent_graph_schedule_update_write'
   | 'after_agent_graph_operator_provision_write'
@@ -3543,8 +3542,6 @@ export class SqliteSessionMetadataStore {
       );
     if (result.changes !== 1) return undefined;
     this.options.failpoint?.('after_session_row_write');
-    this.replaceLabels(header);
-    this.options.failpoint?.('after_session_labels_write');
     this.ensureGenesisExecutionBoundary(header, initialBoundary);
     return { header, metadataVersion, committedAt };
   }
@@ -3727,7 +3724,6 @@ export class SqliteSessionMetadataStore {
     if (next.id !== sessionId) {
       throw new SessionMetadataConflictError('Session metadata identity cannot be changed');
     }
-    const labelsChanged = !isDeepStrictEqual(next.labels, current.header.labels);
     const currentPreview =
       options.catalogPreview === undefined ? undefined : this.readCatalogPreviewSync(sessionId);
     const previewChanged =
@@ -3793,10 +3789,6 @@ export class SqliteSessionMetadataStore {
       );
     }
     this.options.failpoint?.('after_session_row_write');
-    if (labelsChanged) {
-      this.replaceLabels(next);
-      this.options.failpoint?.('after_session_labels_write');
-    }
     if (options.catalogPreview) {
       const preview = this.db
         .prepare(
@@ -3922,17 +3914,6 @@ export class SqliteSessionMetadataStore {
       skipNoop: true,
     });
     return { boundary, record: updated };
-  }
-
-  private replaceLabels(header: SessionHeader): void {
-    this.db.prepare('DELETE FROM session_metadata_labels WHERE session_id = ?').run(header.id);
-    const insert = this.db.prepare(`
-      INSERT INTO session_metadata_labels(session_id, label_index, label)
-      VALUES (?, ?, ?)
-    `);
-    for (let index = 0; index < header.labels.length; index += 1) {
-      insert.run(header.id, index, header.labels[index]!);
-    }
   }
 
   private readRecordSync(sessionId: string): SessionMetadataRecord | undefined {
@@ -4810,25 +4791,6 @@ function buildSessionListPredicate(filter: SessionListFilter): {
 } {
   const where: string[] = [];
   const parameters: Array<string | number> = [];
-  if (filter.isArchived !== undefined) {
-    where.push('metadata.is_archived = ?');
-    parameters.push(filter.isArchived ? 1 : 0);
-  }
-  if (filter.isFlagged !== undefined) {
-    where.push('metadata.is_flagged = ?');
-    parameters.push(filter.isFlagged ? 1 : 0);
-  }
-  if (filter.labelSlug !== undefined) {
-    where.push(`
-      EXISTS (
-        SELECT 1
-        FROM session_metadata_labels labels
-        WHERE labels.session_id = metadata.session_id
-          AND labels.label = ?
-      )
-    `);
-    parameters.push(filter.labelSlug);
-  }
   if (filter.subagentParentSessionId !== undefined) {
     assertSafeSessionId(filter.subagentParentSessionId);
     where.push('metadata.subagent_parent_session_id = ?');

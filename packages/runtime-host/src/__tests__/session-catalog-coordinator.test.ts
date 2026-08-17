@@ -862,6 +862,32 @@ test('catalog paging stops before the encoded 48 KiB result boundary', async () 
   );
 });
 
+test('rejects a legacy cursor that carries a Session catalog filter', async () => {
+  const fixture = createFixture();
+  const cursor = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      activityAt: 1,
+      sessionId: 'session-1',
+      filter: { isArchived: false },
+    }),
+    'utf8',
+  ).toString('base64url');
+
+  const outcome = await fixture.coordinator.handlers['session.catalog.query'](
+    {
+      kind: 'list_continue',
+      revision: 'sha256:test',
+      cursor,
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) assert.fail('Legacy filtered cursor must be rejected');
+  assert.equal(outcome.error.code, 'invalid_request');
+});
+
 function createFixture(
   options: {
     readonly labels?: readonly string[];

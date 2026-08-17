@@ -71,7 +71,6 @@ import {
   type ProjectDirectoryRoot,
   type QueueRetractInput,
   type QueueRetractResult,
-  type SessionCatalogFilter,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
@@ -529,12 +528,10 @@ export class DesktopRuntimeHostClient {
     }
   }
 
-  async listSessions(
-    filter?: SessionCatalogFilter,
-  ): Promise<SessionCatalogProjection[]> {
+  async listSessions(): Promise<SessionCatalogProjection[]> {
     this.#assertOpen();
     try {
-      return (await readRuntimeHostSessions(this.connection, filter)).map(requireSessionProjection);
+      return (await readRuntimeHostSessions(this.connection)).map(requireSessionProjection);
     } catch (error) {
       if (error instanceof DesktopRuntimeHostClientError) throw error;
       if (!(error instanceof RuntimeHostCatalogReadError)) throw error;

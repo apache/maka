@@ -6,7 +6,6 @@ import { isThinkingLevel } from '@maka/core/model-thinking';
 import { type CreateSessionRequestInput, type SessionListFilter } from '@maka/core/runtime-inputs';
 import { type SessionChangedEvent, type SessionChangedReason, type SessionSummary } from '@maka/core/session';
 import type {
-  SessionCatalogFilter,
   SessionCatalogProjection,
   SessionCreateInput,
   WorkspaceTarget,
@@ -70,7 +69,7 @@ export function registerRuntimeHostSessionCatalogIpc(
   const listSessions = async (filter?: SessionListFilter): Promise<DesktopHostSessionSummary[]> => {
     await recoveryTask;
     const parentSessionId = normalizeParentSessionFilter(filter?.subagentParentSessionId);
-    const sessions = await deps.client.listSessions(toHostCatalogFilter(filter));
+    const sessions = await deps.client.listSessions();
     return sessions
       .filter((session) => !pendingCleanup.has(session.id))
       .filter((session) =>
@@ -81,8 +80,8 @@ export function registerRuntimeHostSessionCatalogIpc(
   const actionIds = (sessionId: string, options: unknown) =>
     resolveSessionActionIds(() => listSessions(), sessionId, options);
 
-  handleReconnectableRead(ipcMain, 'sessions:list', (_event, filter?: SessionListFilter) =>
-    listSessions(filter),
+  handleReconnectableRead(ipcMain, 'sessions:list', (_event, filter?: unknown) =>
+    listSessions(normalizeSessionListFilter(filter)),
   );
   ipcMain.handle('sessions:cleanupSessionCopy', async (_event, sessionId: string) => {
     await deps.sessionCopyCleanup.cleanup(sessionId);
@@ -245,22 +244,32 @@ async function updateConfiguration(
   return toDesktopHostSessionSummary(session);
 }
 
-function toHostCatalogFilter(filter: SessionListFilter | undefined): SessionCatalogFilter | undefined {
-  if (!filter) return undefined;
-  const result: SessionCatalogFilter = {
-    ...(filter.isArchived === undefined ? {} : { isArchived: filter.isArchived }),
-    ...(filter.isFlagged === undefined ? {} : { isFlagged: filter.isFlagged }),
-    ...(filter.labelSlug === undefined ? {} : { labelSlug: filter.labelSlug }),
-  };
-  return Object.keys(result).length === 0 ? undefined : result;
-}
-
 function normalizeParentSessionFilter(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error('Invalid subagent parent Session filter');
   }
   return value;
+}
+
+function normalizeSessionListFilter(value: unknown): SessionListFilter | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Invalid Session list filter');
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== 'subagentParentSessionId')) {
+    throw new Error('Invalid Session list filter keys');
+  }
+  return {
+    ...(record.subagentParentSessionId === undefined
+      ? {}
+      : {
+          subagentParentSessionId: normalizeParentSessionFilter(
+            record.subagentParentSessionId,
+          ),
+        }),
+  };
 }
 
 function normalizeModelTarget(input: CreateSessionRequestInput | undefined): SessionModelTarget {

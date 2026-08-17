@@ -138,9 +138,6 @@ export interface ReviseBeforeTurnInput {
 }
 
 export interface SessionListFilter {
-  isArchived?: boolean;
-  isFlagged?: boolean;
-  labelSlug?: string;
   /** Return linked subagent sessions owned by this parent session. */
   subagentParentSessionId?: string;
 }

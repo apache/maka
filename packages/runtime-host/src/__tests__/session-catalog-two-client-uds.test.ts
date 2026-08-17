@@ -434,41 +434,6 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         bulk.length + catalogBeforeBulk.sessions.length,
       );
 
-      const filteredStart = await desktop.request('session.catalog.query', {
-        kind: 'list_start',
-        filter: { labelSlug: 'paged' },
-      });
-      assert.equal(filteredStart.kind, 'page');
-      if (filteredStart.kind !== 'page' || !filteredStart.nextCursor) {
-        assert.fail('Filtered Session catalog must provide a continuation');
-      }
-      assert.equal(filteredStart.sessions.length, 32);
-      const filteredContinuation = await tui.request('session.catalog.query', {
-        kind: 'list_continue',
-        revision: filteredStart.revision,
-        cursor: filteredStart.nextCursor,
-      });
-      assert.equal(filteredContinuation.kind, 'page');
-      if (filteredContinuation.kind !== 'page') {
-        assert.fail('Filtered Session catalog continuation must return a page');
-      }
-      assert.equal(filteredContinuation.sessions.length, 2);
-      assert.equal(
-        [...filteredStart.sessions, ...filteredContinuation.sessions].every((session) =>
-          requireSessionProjection(session).labels.includes('paged'),
-        ),
-        true,
-      );
-      await assert.rejects(
-        desktop.request('session.catalog.query', {
-          kind: 'list_continue',
-          filter: { isFlagged: true },
-          revision: filteredStart.revision,
-          cursor: filteredStart.nextCursor,
-        }),
-        operationError('invalid_request'),
-      );
-
       const staleStart = await desktop.request('session.catalog.query', {
         kind: 'list_start',
       });
@@ -489,16 +454,6 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         cursor: staleStart.nextCursor,
       });
       assert.equal(staleContinuation.kind, 'revision_changed');
-      const flagged = await tui.request('session.catalog.query', {
-        kind: 'list_start',
-        filter: { isFlagged: true },
-      });
-      assert.equal(flagged.kind, 'page');
-      if (flagged.kind !== 'page') assert.fail('Flagged Session query must return a page');
-      assert.deepEqual(
-        flagged.sessions.map((session) => session.id).sort(),
-        [created.id, bulkSession.id, oversizedSessionId].sort(),
-      );
 
       await subscription.close();
       const retirementSubscription = await tui.openSessionSubscription({

@@ -254,6 +254,16 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
 
     const created = await ipc.invoke('sessions:create', undefined);
     assert.deepEqual((await ipc.invoke('sessions:list')) as unknown[], [created]);
+    for (const staleFilter of [
+      { isArchived: false },
+      { isFlagged: true },
+      { labelSlug: 'paged' },
+    ]) {
+      await assert.rejects(
+        ipc.invoke('sessions:list', staleFilter),
+        /Invalid Session list filter/,
+      );
+    }
     assert.equal(
       (await ipc.invoke('sessions:setPermissionMode', 'session-ipc', 'execute') as {
         permissionMode: string;

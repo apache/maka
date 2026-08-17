@@ -125,6 +125,18 @@ describe('SqliteSessionMetadataStore', () => {
           schema.prepare('PRAGMA foreign_key_list(agent_graph_client_terminal_activity)').all(),
           [],
         );
+        assert.deepEqual(
+          schema
+            .prepare(`
+              SELECT name
+              FROM sqlite_schema
+              WHERE type = 'table'
+                AND name IN ('session_metadata_labels', 'session_catalog_label_projection')
+              ORDER BY name
+            `)
+            .all(),
+          [],
+        );
       } finally {
         schema.close();
       }
@@ -222,7 +234,7 @@ describe('SqliteSessionMetadataStore', () => {
       const migrationStartedAt = Date.now();
       const migrated = createSqliteSessionMetadataStore(path, { now: () => 20 });
       try {
-        assert.equal(migrated.schemaVersion(), 25);
+        assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
         assert.deepEqual((await migrated.read('legacy-review')).header.status, 'active');
         assert.deepEqual((await migrated.read('legacy-done')).header.status, 'active');
         assert.deepEqual((await migrated.read('legacy-both')).header.status, 'active');
@@ -1197,7 +1209,7 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('filters indexed flags, archive state, and normalized labels in recency order', async () => {
+  test('lists sessions in recency order with readable flags, archive state, and labels', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
       await store.create(
@@ -1233,19 +1245,25 @@ describe('SqliteSessionMetadataStore', () => {
         }),
       );
 
+      const listed = await store.list();
       assert.deepEqual(
-        (await store.list({ isArchived: false })).map((record) => record.header.id),
-        ['newer', 'older'],
+        listed.map((record) => record.header.id),
+        ['archived', 'newer', 'older'],
       );
       assert.deepEqual(
-        (await store.list({ isArchived: false, isFlagged: true, labelSlug: 'shared' })).map(
-          (record) => record.header.id,
-        ),
-        ['newer', 'older'],
+        listed.map((record) => record.header.labels),
+        [['shared'], ['shared'], ['alpha', 'shared']],
       );
       assert.deepEqual(
-        (await store.list({ labelSlug: 'alpha' })).map((record) => record.header.id),
-        ['older'],
+        listed.map((record) => ({
+          archived: record.header.isArchived,
+          flagged: record.header.isFlagged,
+        })),
+        [
+          { archived: true, flagged: false },
+          { archived: false, flagged: true },
+          { archived: false, flagged: true },
+        ],
       );
     } finally {
       store.close();
@@ -1486,11 +1504,7 @@ describe('SqliteSessionMetadataStore', () => {
       assert.equal(updated.header.name, 'Renamed');
       assert.deepEqual(updated.header.labels, ['replacement']);
       assert.equal(updated.header.lastReadMessageId, 'message-2');
-      assert.deepEqual(
-        (await store.list({ labelSlug: 'replacement' })).map((record) => record.header.id),
-        ['session-1'],
-      );
-      assert.deepEqual(await store.list({ labelSlug: 'alpha' }), []);
+      assert.deepEqual((await store.read('session-1')).header.labels, ['replacement']);
 
       await assert.rejects(
         () => store.update('session-1', { name: 'Stale' }, { expectedVersion: 1 }),
@@ -1703,10 +1717,9 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('rolls back row and label changes at every injected transaction failure', async () => {
+  test('rolls back row changes at every injected transaction failure', async () => {
     for (const failpoint of [
       'after_session_row_write',
-      'after_session_labels_write',
     ] satisfies SqliteSessionMetadataStoreFailpoint[]) {
       let armed = true;
       const store = createSqliteSessionMetadataStore(':memory:', {
@@ -1729,14 +1742,13 @@ describe('SqliteSessionMetadataStore', () => {
         assert.equal(current.metadataVersion, 1);
         assert.equal(current.header.name, 'Session');
         assert.deepEqual(current.header.labels, ['alpha', 'beta']);
-        assert.deepEqual(await store.list({ labelSlug: 'lost' }), []);
       } finally {
         store.close();
       }
     }
   });
 
-  test('deletes metadata and its label projection atomically', async () => {
+  test('deletes metadata atomically', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
       await store.create(fullHeader());
@@ -1744,7 +1756,6 @@ describe('SqliteSessionMetadataStore', () => {
       assert.equal(await store.remove('session-1'), false);
       assert.equal(await store.has('session-1'), false);
       assert.equal(await store.isTombstoned('session-1'), true);
-      assert.deepEqual(await store.list({ labelSlug: 'alpha' }), []);
       await assert.rejects(() => store.create(fullHeader()), /tombstoned/);
     } finally {
       store.close();

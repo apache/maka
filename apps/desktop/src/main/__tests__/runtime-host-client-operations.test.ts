@@ -45,32 +45,30 @@ test('restarts a paginated catalog read instead of mixing revisions', async () =
   ]);
 
   assert.deepEqual(
-    (await client.listSessions({ isArchived: false })).map(({ id }) => id),
+    (await client.listSessions()).map(({ id }) => id),
     ['fresh-1', 'fresh-2'],
   );
   assert.deepEqual(requests, [
     {
       operation: 'session.catalog.query',
-      input: { kind: 'list_start', filter: { isArchived: false } },
+      input: { kind: 'list_start' },
     },
     {
       operation: 'session.catalog.query',
       input: {
         kind: 'list_continue',
-        filter: { isArchived: false },
         revision: revisionOne,
         cursor: 'stale-cursor',
       },
     },
     {
       operation: 'session.catalog.query',
-      input: { kind: 'list_start', filter: { isArchived: false } },
+      input: { kind: 'list_start' },
     },
     {
       operation: 'session.catalog.query',
       input: {
         kind: 'list_continue',
-        filter: { isArchived: false },
         revision: revisionTwo,
         cursor: 'fresh-cursor',
       },
