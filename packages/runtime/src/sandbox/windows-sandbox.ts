@@ -171,7 +171,11 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
         exactReadRoots: policy.exactReadRoots,
         exactWriteRoots: policy.exactWriteRoots,
         network: policy.network,
-        environment: sortEnvironment(policy.environment),
+        // The marker tells the worker it runs inside the AppContainer, where
+        // spawning ripgrep is impossible and Grep must fail closed instead of
+        // approximating its contract. Only the broker path sets it, so an
+        // unsandboxed worker keeps the full ripgrep behavior.
+        environment: sortEnvironment({ ...policy.environment, MAKA_WINDOWS_SANDBOX: '1' }),
         timeoutMs: this.options.timeoutMs ?? DEFAULT_WINDOWS_BROKER_TIMEOUT_MS,
       };
       manifestPath = this.options.writeManifest({

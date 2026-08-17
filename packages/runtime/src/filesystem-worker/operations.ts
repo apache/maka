@@ -1,8 +1,7 @@
 import { spawn } from 'node:child_process';
-import { createReadStream, promises as fs } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import { glob as nodeGlob } from 'node:fs/promises';
 import { dirname, isAbsolute, parse, resolve } from 'node:path';
-import { createInterface } from 'node:readline';
 import { isPathInside } from '../path-containment.js';
 import { sandboxPathApi } from './sandbox-paths.js';
 import { sandboxBoundaryExpansionAllowsPath } from '@maka/core/sandbox-boundary';
@@ -35,14 +34,12 @@ const { realpath, realpathAllowMissing, resolveCanonicalDirectoryEntryTarget } =
 const DEFAULT_GLOB_LIMIT = 200;
 const MAX_GREP_OUTPUT_BYTES = 8 * 1024 * 1024;
 const MAX_GREP_STDERR_BYTES = 16 * 1024;
-const MAX_IN_PROCESS_GREP_PATTERN_CHARS = 1_024;
-const MAX_IN_PROCESS_GREP_FILE_BYTES = 16 * 1024 * 1024;
-const MAX_IN_PROCESS_GREP_LINE_BYTES = 1024 * 1024;
-const MAX_IN_PROCESS_GREP_FILES = 10_000;
 
 export interface FilesystemWorkerOperationDependencies {
   grepExecutable?: string;
   runGrep?: FilesystemWorkerGrepRunner;
+  /** Set when the worker runs inside the Windows AppContainer sandbox. */
+  windowsSandboxed?: boolean;
 }
 
 export interface FilesystemWorkerGrepRunInput {
@@ -288,13 +285,19 @@ export async function executeFilesystemOperation(
         operationBoundary,
       );
       // The Windows AppContainer cannot create grandchild processes (the
-      // desktop object is not granted to the container SID), so grep runs
-      // in-process there instead of spawning ripgrep.
-      if (process.platform === 'win32' && !dependencies.runGrep) {
-        return {
-          kind: 'grep',
-          matches: (await runInProcessGrep(path, operation)).slice(0, operation.limit),
-        };
+      // desktop object is not granted to the container SID), so ripgrep
+      // cannot run there — and no in-process substitute preserves Grep's
+      // advertised regex/ripgrep contract (pattern dialect, gitignore
+      // filtering, glob and truncation behavior). The Windows sandbox
+      // preview therefore does not expose Grep: failing closed keeps the
+      // public contract honest until a contract-preserving search engine
+      // exists. Glob and Read remain available; an unsandboxed Windows
+      // worker never carries this marker and keeps full ripgrep behavior.
+      if (dependencies.windowsSandboxed) {
+        throw operationError(
+          'grep_unavailable',
+          'Grep is not available inside the Windows sandbox preview; use Glob and Read instead.',
+        );
       }
       if (!dependencies.grepExecutable)
         throw operationError('grep_unavailable', 'Grep is unavailable in this runtime.');
@@ -327,138 +330,6 @@ export async function executeFilesystemOperation(
       };
     }
   }
-}
-
-/**
- * In-process grep for sandboxes that cannot spawn ripgrep. Output mirrors
- * `rg -n --no-heading`: `path:line:text` with absolute paths. Unlike ripgrep
- * it does not honor .gitignore, so it may return a superset of matches.
- */
-async function runInProcessGrep(
-  path: string,
-  operation: Extract<FilesystemWorkerOperation, { kind: 'grep' }>,
-): Promise<string[]> {
-  let literalPattern: string;
-  try {
-    literalPattern = boundedInProcessGrepLiteral(operation.pattern);
-  } catch {
-    throw operationError(
-      'invalid_request',
-      'Windows Grep accepts only bounded literal patterns; regular-expression operators are unsupported.',
-    );
-  }
-  if (operation.glob) assertContainedGlobPattern(operation.glob);
-  const deadline = Date.now() + operation.timeoutMs;
-  const matches: string[] = [];
-  const metadata = await fs.stat(path);
-  if (metadata.isFile()) {
-    await searchInProcessGrepFile(path, literalPattern, operation, deadline, matches);
-  } else {
-    let fileCount = 0;
-    for await (const entry of nodeGlob(operation.glob ?? '**/*', {
-      cwd: path,
-      withFileTypes: true,
-    })) {
-      if (!entry.isFile()) continue;
-      if (Date.now() > deadline) {
-        throw operationError('filesystem_error', 'Grep timed out while enumerating files.');
-      }
-      const candidate = await realpath(resolve(entry.parentPath, entry.name));
-      if (!isPathInside(path, candidate)) {
-        throw operationError('path_denied', 'Grep candidate escaped its approved search root.');
-      }
-      await searchInProcessGrepFile(candidate, literalPattern, operation, deadline, matches);
-      fileCount += 1;
-      if (matches.length >= operation.limit || fileCount >= MAX_IN_PROCESS_GREP_FILES) break;
-    }
-  }
-  return matches;
-}
-
-async function searchInProcessGrepFile(
-  file: string,
-  literalPattern: string,
-  operation: Extract<FilesystemWorkerOperation, { kind: 'grep' }>,
-  deadline: number,
-  matches: string[],
-): Promise<void> {
-  const metadata = await fs.stat(file);
-  if (metadata.size > MAX_IN_PROCESS_GREP_FILE_BYTES) {
-    throw operationError('filesystem_error', 'Windows Grep input file exceeds the bounded size.');
-  }
-  const stream = createReadStream(file, { encoding: 'utf8' });
-  const lines = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
-  const fileMatches: string[] = [];
-  let lineNumber = 0;
-  let bytesRead = 0;
-  try {
-    for await (const line of lines) {
-      lineNumber += 1;
-      if (Date.now() > deadline) {
-        throw operationError('filesystem_error', 'Grep timed out while searching files.');
-      }
-      const lineBytes = Buffer.byteLength(line, 'utf8');
-      bytesRead += lineBytes + 1;
-      if (bytesRead > MAX_IN_PROCESS_GREP_FILE_BYTES) {
-        throw operationError(
-          'filesystem_error',
-          'Windows Grep input file exceeds the bounded size.',
-        );
-      }
-      if (lineBytes > MAX_IN_PROCESS_GREP_LINE_BYTES) {
-        throw operationError(
-          'filesystem_error',
-          'Windows Grep input line exceeds the bounded size.',
-        );
-      }
-      // Match ripgrep's binary skip without publishing matches collected before
-      // the first NUL byte in a file.
-      if (line.includes('\0')) return;
-      if (!line.includes(literalPattern)) continue;
-      fileMatches.push(`${file}:${lineNumber}:${line}`);
-      if (
-        fileMatches.length >= operation.maxCountPerFile ||
-        matches.length + fileMatches.length >= operation.limit
-      ) {
-        break;
-      }
-    }
-  } finally {
-    lines.close();
-    stream.destroy();
-  }
-  matches.push(...fileMatches);
-}
-
-export function assertBoundedInProcessGrepPattern(pattern: string): void {
-  boundedInProcessGrepLiteral(pattern);
-}
-
-function boundedInProcessGrepLiteral(pattern: string): string {
-  if (pattern.length === 0 || pattern.length > MAX_IN_PROCESS_GREP_PATTERN_CHARS) {
-    throw new Error('pattern length is outside the bounded range');
-  }
-  const operators = new Set(['.', '^', '$', '[', ']', '(', ')', '|', '*', '+', '?', '{', '}']);
-  let literal = '';
-  let escaped = false;
-  for (const character of pattern) {
-    if (escaped) {
-      if (character !== '\\' && !operators.has(character)) {
-        throw new Error('escape sequences are not supported');
-      }
-      literal += character;
-      escaped = false;
-      continue;
-    }
-    if (character === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (operators.has(character)) throw new Error('regular-expression operators are not supported');
-    literal += character;
-  }
-  if (escaped) throw new Error('trailing escape is not supported');
-  return literal;
 }
 
 class FilesystemOperationError extends Error {

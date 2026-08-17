@@ -93,7 +93,10 @@ test('transforms a Windows managed profile into a broker-client invocation', () 
     exactReadRoots: [],
     exactWriteRoots: [],
     network: 'restricted' as const,
-    environment: { SystemRoot: String.raw`C:\Windows` },
+    // Sorted like sortEnvironment emits it — the digest hashes this order.
+    // The broker-injected marker tells the worker it is sandboxed, so Grep
+    // fails closed there instead of approximating ripgrep.
+    environment: { MAKA_WINDOWS_SANDBOX: '1', SystemRoot: String.raw`C:\Windows` },
     // Serialized last so pre-timeout manifests keep their historical digest.
     timeoutMs: 130_000,
   };

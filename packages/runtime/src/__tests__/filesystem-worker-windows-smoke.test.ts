@@ -99,7 +99,7 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
     if (read.kind === 'read') assert.match(read.content, /windows-relay-ok/);
   });
 
-  test('runs glob and grep inside the operation-scoped sandbox', async () => {
+  test('runs glob inside the operation-scoped sandbox and keeps grep fail-closed', async () => {
     const sourceDirectory = join(workspace, 'src');
     await mkdir(sourceDirectory, { recursive: true });
     await writeFile(join(sourceDirectory, 'health.ts'), 'export const healthSignal = true;\n');
@@ -115,23 +115,25 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
       assert.match(globResult.files[0] ?? '', /health\.ts$/);
     }
 
-    const grepResult = await client.execute({
-      operation: {
-        kind: 'grep',
-        path: sourceDirectory,
-        pattern: 'healthSignal',
-        maxCountPerFile: 50,
-        limit: 200,
-        timeoutMs: 10_000,
-      },
-      cwd: workspace,
-      mode: 'ask',
-    });
-    assert.equal(grepResult.kind, 'grep');
-    if (grepResult.kind === 'grep') {
-      assert.equal(grepResult.matches.length, 1);
-      assert.match(grepResult.matches[0] ?? '', /healthSignal/);
-    }
+    // The sandbox preview does not expose Grep: no in-process substitute
+    // preserves the advertised regex/ripgrep contract, so the worker fails
+    // closed instead of returning contract-divergent matches.
+    await assert.rejects(
+      client.execute({
+        operation: {
+          kind: 'grep',
+          path: sourceDirectory,
+          pattern: 'healthSignal',
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 10_000,
+        },
+        cwd: workspace,
+        mode: 'ask',
+      }),
+      (error: unknown) =>
+        error instanceof FilesystemWorkerClientError && error.reason === 'grep_unavailable',
+    );
   });
 
   test('fails closed for unapproved outside paths', async () => {
