@@ -352,6 +352,15 @@ function createWriterFacade(
     barrier = Promise.all([barrier, observed]).then(() => undefined);
     return admitted;
   };
+  const admitSessionUsageMutation = <T>(
+    sessionId: string | undefined,
+    operation: () => T | Promise<T>,
+  ): Promise<T> =>
+    admit(async () => {
+      const result = await run(operation);
+      if (sessionId) publishSessionUsageChange(sessionId);
+      return result;
+    });
   const read = <T>(operation: () => T): Promise<T> => {
     assertOpen();
     return run(operation);
@@ -418,25 +427,23 @@ function createWriterFacade(
       latestLlmRuntimeProbe: (connectionSlug, modelId) =>
         read(() => telemetry.latestLlmRuntimeProbe(connectionSlug, modelId)),
       recordLlmCall: (record) =>
-        admit(async () => {
-          await run(() => telemetry.insertLlmCall(record));
-          if (record.sessionId) publishSessionUsageChange(record.sessionId);
-        }),
+        admitSessionUsageMutation(record.sessionId, () => telemetry.insertLlmCall(record)),
       recordToolInvocation: (record) =>
         admit(() => run(() => telemetry.insertToolInvocation(record))),
     },
     modelCalls: {
       modelCallAttempts: (range, sessionId) => read(() => modelCalls.read(range, sessionId)),
       recordModelCallAttempt: (attempt) =>
-        admit(async () => {
-          await run(() => modelCalls.record(attempt));
-          publishSessionUsageChange(attempt.sessionId);
-        }),
+        admitSessionUsageMutation(attempt.sessionId, () => modelCalls.record(attempt)),
       markRunPendingReprojection: (sessionId, runId) =>
-        admit(() => run(() => modelCalls.markRunPendingReprojection(sessionId, runId))),
+        admitSessionUsageMutation(sessionId, () =>
+          modelCalls.markRunPendingReprojection(sessionId, runId),
+        ),
       pendingReprojections: (sessionId) => read(() => modelCalls.pendingReprojections(sessionId)),
       clearPendingReprojection: (sessionId, runId) =>
-        admit(() => run(() => modelCalls.clearPendingReprojection(sessionId, runId))),
+        admitSessionUsageMutation(sessionId, () =>
+          modelCalls.clearPendingReprojection(sessionId, runId),
+        ),
     },
     pricing: {
       snapshot: () => read(() => pricing.snapshot()),

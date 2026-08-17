@@ -152,6 +152,28 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('publishes the owning Session across the pending usage repair lifecycle', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      const changed: string[] = [];
+      const unsubscribe = stores.subscribeSessionUsageChanges((sessionId) =>
+        changed.push(sessionId),
+      );
+      try {
+        await stores.modelCalls.markRunPendingReprojection('session-pending', 'run-1');
+        assert.deepEqual(changed, ['session-pending']);
+        await stores.modelCalls.clearPendingReprojection('session-pending', 'run-1');
+        assert.deepEqual(changed, ['session-pending', 'session-pending']);
+      } finally {
+        unsubscribe();
+        await stores.close();
+        await owner.close();
+      }
+    });
+  });
+
   test('classifies a renamed or replaced live root as a draining persistence failure', {
     skip:
       process.platform === 'win32'
