@@ -5,7 +5,7 @@ Each row is one on-disk product surface file. Regenerated inventory must stay in
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 187 files — blocker 0, polish 0, aligned 187.
+**Totals:** 188 files — blocker 0, polish 0, aligned 188.
 
 ## Exclusions (explicit)
 
@@ -52,6 +52,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/plan-mode-panel.tsx` | shell-chrome-or-panel | Badge, Banner, Button, Collapsible | aligned — uses Astryx (Badge, Banner, Button, Collapsible) | aligned |
 | `apps/desktop/src/renderer/quote-companion-panel.tsx` | shell-chrome-or-panel | Banner, Spinner | aligned — uses Astryx (Banner, Spinner) | aligned |
 | `apps/desktop/src/renderer/reference-shell.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
+| `apps/desktop/src/renderer/remote-project-directory-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Text | aligned — uses Astryx (Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Text) | aligned |
 | `apps/desktop/src/renderer/session-inspector-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, HStack, Heading, Section, Text, TextInput, ToggleButton, Tooltip, VStack | aligned — uses Astryx (Banner, Button, EmptyState, HStack, Heading, Section, Text, TextInput) | aligned |
 | `apps/desktop/src/renderer/session-review-panel.tsx` | shell-chrome-or-panel | Banner, Button, Collapsible, EmptyState, HStack, Section, Text, VStack | aligned — uses Astryx (Banner, Button, Collapsible, EmptyState, HStack, Section, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/session-terminal-panel.tsx` | shell-chrome-or-panel | Banner, EmptyState | aligned — uses Astryx (Banner, EmptyState) | aligned |

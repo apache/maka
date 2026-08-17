@@ -123,18 +123,24 @@ export function RemoteProjectDirectoryDialog(props: {
           <LayoutContent padding={4}>
             <div className="remoteProjectDirectoryBody">
               <nav className="remoteProjectDirectoryBreadcrumbs" aria-label={copy.currentProject}>
-                <button type="button" onClick={() => void navigate([])} disabled={loading}>
-                  {copy.remoteDirectoryHome}
-                </button>
+                <Button
+                  className="remoteProjectDirectoryBreadcrumb"
+                  variant="ghost"
+                  size="sm"
+                  label={copy.remoteDirectoryHome}
+                  isDisabled={loading}
+                  onClick={() => void navigate([])}
+                />
                 {segments.map((segment, index) => (
-                  <button
-                    type="button"
+                  <Button
+                    className="remoteProjectDirectoryBreadcrumb"
                     key={`${index}:${segment}`}
+                    variant="ghost"
+                    size="sm"
+                    label={segment}
+                    isDisabled={loading}
                     onClick={() => void navigate(segments.slice(0, index + 1))}
-                    disabled={loading}
-                  >
-                    {segment}
-                  </button>
+                  />
                 ))}
               </nav>
               {error ? (
@@ -149,14 +155,14 @@ export function RemoteProjectDirectoryDialog(props: {
               ) : (
                 <div className="remoteProjectDirectoryEntries">
                   {entries.map((entry) => (
-                    <button
-                      type="button"
+                    <Button
+                      className="remoteProjectDirectoryEntry"
                       key={entry.name}
+                      variant="ghost"
+                      label={entry.name}
+                      icon={<FolderOpen size={18} aria-hidden="true" />}
                       onClick={() => void navigate([...segments, entry.name])}
-                    >
-                      <FolderOpen size={18} aria-hidden="true" />
-                      <span>{entry.name}</span>
-                    </button>
+                    />
                   ))}
                 </div>
               )}
