@@ -125,6 +125,43 @@ test('Host Project Catalog relink merges identities and reassigns every affected
   }
 });
 
+test('directory resolution failures cannot enter the unknown-commit drain path', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-project-directory-failure-'));
+  const catalog = createProjectCatalog(join(base, 'storage'));
+  let drains = 0;
+  const coordinator = new HostProjectCatalogCoordinator(
+    catalog,
+    new HostProjectCatalogChangeService(),
+    new HostSessionCatalogChangeService(),
+    new HostProjectMembershipGate(),
+    () => {
+      drains += 1;
+    },
+    {
+      resolveRegistration: async () => {
+        throw Object.assign(new Error('Path is too long'), { code: 'ENAMETOOLONG' });
+      },
+    } as never,
+  );
+
+  try {
+    assert.deepEqual(
+      await coordinator.handlers['project.catalog.mutate'](
+        { kind: 'register_directory', rootId: 'home', segments: ['project'] },
+        connection(),
+      ),
+      {
+        ok: false,
+        error: { code: 'invalid_request', message: 'Project directory is unavailable' },
+      },
+    );
+    assert.equal(drains, 0);
+  } finally {
+    catalog.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 function sessionInput(cwd: string, projectId: string) {
   return {
     cwd,

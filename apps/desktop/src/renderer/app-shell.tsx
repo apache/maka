@@ -1906,10 +1906,10 @@ function AppShellContent({
         selectedProjectId,
         onSelectProject: (projectId: string) => newTask.selectProject(host, projectId),
         ...(host.capabilities.chooseClientDirectory || host.capabilities.chooseHostDirectory
-          ? {
-              onAdd: () => void newTask.addProject(host),
-              onRelink: (projectId: string) => void newTask.relinkProject(host, projectId),
-            }
+          ? { onAdd: () => void newTask.addProject(host) }
+          : {}),
+        ...(host.capabilities.chooseClientDirectory
+          ? { onRelink: (projectId: string) => void newTask.relinkProject(host, projectId) }
           : {}),
         ...(host.capabilities.selectNoProject
           ? { onSelectNoProject: () => newTask.selectNoProject(host) }
@@ -3535,8 +3535,8 @@ function AppShellContent({
           name: newTask.directoryHost.profile.name,
         } : undefined}
         onClose={newTask.closeDirectoryPicker}
-        onRegistered={(project) => {
-          void newTask.acceptRegisteredProject(project).catch((error) => {
+        onRegistered={(project, host) => {
+          void newTask.acceptRegisteredProject(project, host).catch((error) => {
             toastApi.error(
               projectActionsCopy.projectUpdateFailedTitle,
               localizedShellErrorMessage(

@@ -10,11 +10,15 @@ test('Project directory authority exposes folders without crossing its published
   const home = join(base, 'home');
   const project = join(home, 'work', 'project');
   const hidden = join(home, '.hidden');
+  const doubleDot = join(home, '..project');
+  const tripleDot = join(home, '...cache');
   const outside = join(base, 'outside');
   const shared = join(outside, 'shared');
   await Promise.all([
     mkdir(project, { recursive: true }),
     mkdir(hidden, { recursive: true }),
+    mkdir(doubleDot, { recursive: true }),
+    mkdir(tripleDot, { recursive: true }),
     mkdir(shared, { recursive: true }),
   ]);
   await symlink(outside, join(home, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
@@ -44,27 +48,75 @@ test('Project directory authority exposes folders without crossing its published
         kind: 'directory_page',
         rootId: homeRoot.id,
         segments: [],
-        entries: [{ name: '.hidden' }, { name: 'work' }],
+        entries: [
+          { name: '...cache' },
+          { name: '..project' },
+          { name: '.hidden' },
+          { name: 'work' },
+        ],
         nextCursor: null,
       },
     );
     assert.equal(
-      await authority.resolveRegistration({
-        rootId: homeRoot.id,
-        segments: ['work', 'project'],
-      }),
+      (
+        await authority.resolveRegistration({
+          rootId: homeRoot.id,
+          segments: ['work', 'project'],
+        })
+      ).path,
       await realpath(project),
     );
     assert.equal(
-      await authority.resolveRegistration({
-        rootId: sharedRoot.id,
-        segments: ['shared'],
-      }),
+      (
+        await authority.resolveRegistration({
+          rootId: sharedRoot.id,
+          segments: ['shared'],
+        })
+      ).path,
       await realpath(shared),
     );
     await assert.rejects(
       () => authority.resolveRegistration({ rootId: homeRoot.id, segments: ['escape'] }),
       TypeError,
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('Project directory continuation returns each contained folder once', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-directory-page-'));
+  const root = join(base, 'root');
+  const names = Array.from(
+    { length: 130 },
+    (_, index) => `folder-${String(index).padStart(3, '0')}`,
+  );
+  await Promise.all(names.map((name) => mkdir(join(root, name), { recursive: true })));
+  const authority = new HostProjectDirectoryAuthority([{ label: 'Root', path: root }]);
+
+  try {
+    const roots = await authority.query({ kind: 'directory_roots' });
+    assert.equal(roots.kind, 'directory_roots');
+    const rootId = roots.roots[0]?.id;
+    assert.ok(rootId);
+    const first = await authority.query({
+      kind: 'directory_list_start',
+      rootId,
+      segments: [],
+    });
+    assert.equal(first.kind, 'directory_page');
+    assert.ok(first.nextCursor);
+    const second = await authority.query({
+      kind: 'directory_list_continue',
+      rootId,
+      segments: [],
+      cursor: first.nextCursor,
+    });
+    assert.equal(second.kind, 'directory_page');
+    assert.equal(second.nextCursor, null);
+    assert.deepEqual(
+      [...first.entries, ...second.entries].map((entry) => entry.name),
+      names,
     );
   } finally {
     await rm(base, { recursive: true, force: true });

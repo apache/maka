@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import { readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   PROJECT_DIRECTORY_PAGE_MAX_BYTES,
   PROJECT_DIRECTORY_PAGE_MAX_ITEMS,
@@ -23,6 +23,11 @@ interface ResolvedProjectDirectoryRoot {
   readonly id: string;
   readonly label: string;
   readonly path: string;
+}
+
+export interface ResolvedProjectDirectoryRegistration {
+  readonly path: string;
+  readonly rootPath: string;
 }
 
 export class HostProjectDirectoryAuthority {
@@ -53,42 +58,17 @@ export class HostProjectDirectoryAuthority {
     }
     const root = this.#requireRoot(input.rootId);
     const directory = await this.#resolveDirectory(root, input.segments);
-    const names = await this.#listContainedDirectories(root, directory);
-    const start = input.kind === 'directory_list_start' ? 0 : firstNameAfter(names, input.cursor);
-    const entries: { name: string }[] = [];
-    for (let index = start; index < names.length; index += 1) {
-      const name = names[index];
-      if (!name) continue;
-      const candidate: ProjectDirectoryQueryResult = {
-        kind: 'directory_page',
-        rootId: input.rootId,
-        segments: input.segments,
-        entries: [...entries, { name }],
-        nextCursor: index + 1 < names.length ? name : null,
-      };
-      if (
-        entries.length >= PROJECT_DIRECTORY_PAGE_MAX_ITEMS ||
-        Buffer.byteLength(JSON.stringify(candidate), 'utf8') > PROJECT_DIRECTORY_PAGE_MAX_BYTES
-      ) {
-        break;
-      }
-      entries.push({ name });
-    }
-    if (entries.length === 0 && start < names.length) {
-      throw new TypeError('Project directory entry exceeds the response limit');
-    }
-    const nextIndex = start + entries.length;
-    return {
-      kind: 'directory_page',
-      rootId: input.rootId,
-      segments: input.segments,
-      entries,
-      nextCursor: nextIndex < names.length ? (entries.at(-1)?.name ?? null) : null,
-    };
+    return this.#listContainedDirectoryPage(root, directory, input);
   }
 
-  resolveRegistration(input: ProjectDirectoryRegisterInput): Promise<string> {
-    return this.#resolveDirectory(this.#requireRoot(input.rootId), input.segments);
+  async resolveRegistration(
+    input: ProjectDirectoryRegisterInput,
+  ): Promise<ResolvedProjectDirectoryRegistration> {
+    const root = this.#requireRoot(input.rootId);
+    return {
+      path: await this.#resolveDirectory(root, input.segments),
+      rootPath: root.path,
+    };
   }
 
   #requireRoot(rootId: string): ResolvedProjectDirectoryRoot {
@@ -108,25 +88,64 @@ export class HostProjectDirectoryAuthority {
     return directory;
   }
 
-  async #listContainedDirectories(
+  async #listContainedDirectoryPage(
     root: ResolvedProjectDirectoryRoot,
     directory: string,
-  ): Promise<string[]> {
-    const entries = await readdir(directory, { withFileTypes: true });
-    const names: string[] = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    input: Exclude<ProjectDirectoryQueryInput, { readonly kind: 'directory_roots' }>,
+  ): Promise<ProjectDirectoryQueryResult> {
+    const candidates = (await readdir(directory, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+      .sort((left, right) => compareNames(left.name, right.name));
+    const names = candidates.map((entry) => entry.name);
+    const start = input.kind === 'directory_list_start' ? 0 : firstNameAfter(names, input.cursor);
+    const entries: { name: string }[] = [];
+    let lastScanned: string | undefined;
+    for (let index = start; index < candidates.length; index += 1) {
+      const entry = candidates[index];
+      if (!entry) continue;
+      let contained = false;
       try {
         const target = await realpath(join(directory, entry.name));
-        if (isWithin(root.path, target) && (await stat(target)).isDirectory()) {
-          names.push(entry.name);
-        }
+        contained = isWithin(root.path, target) && (await stat(target)).isDirectory();
       } catch {
         // Entries can disappear while a directory is being listed.
       }
+      if (!contained) {
+        lastScanned = entry.name;
+        continue;
+      }
+      const page = directoryPage(input, [...entries, { name: entry.name }], entry.name);
+      if (
+        entries.length >= PROJECT_DIRECTORY_PAGE_MAX_ITEMS ||
+        Buffer.byteLength(JSON.stringify(page), 'utf8') > PROJECT_DIRECTORY_PAGE_MAX_BYTES
+      ) {
+        if (entries.length === 0) {
+          throw new TypeError('Project directory entry exceeds the response limit');
+        }
+        return directoryPage(input, entries, lastScanned ?? null);
+      }
+      entries.push({ name: entry.name });
+      lastScanned = entry.name;
+      if (entries.length >= PROJECT_DIRECTORY_PAGE_MAX_ITEMS) {
+        return directoryPage(input, entries, index + 1 < candidates.length ? entry.name : null);
+      }
     }
-    return names.sort(compareNames);
+    return directoryPage(input, entries, null);
   }
+}
+
+function directoryPage(
+  input: Exclude<ProjectDirectoryQueryInput, { readonly kind: 'directory_roots' }>,
+  entries: readonly { readonly name: string }[],
+  nextCursor: string | null,
+): ProjectDirectoryQueryResult {
+  return {
+    kind: 'directory_page',
+    rootId: input.rootId,
+    segments: input.segments,
+    entries,
+    nextCursor,
+  };
 }
 
 function resolveRoot(
@@ -157,7 +176,7 @@ function resolveRoot(
 
 function isWithin(root: string, candidate: string): boolean {
   const path = relative(root, candidate);
-  return path === '' || (!path.startsWith('..') && !isAbsolute(path));
+  return path === '' || (!isAbsolute(path) && path !== '..' && !path.startsWith(`..${sep}`));
 }
 
 function firstNameAfter(names: readonly string[], cursor: string): number {

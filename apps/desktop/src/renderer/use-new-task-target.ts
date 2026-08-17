@@ -4,6 +4,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type {
   DesktopNewTaskCatalog,
   DesktopNewTaskHost,
+  DesktopRuntimeHostRef,
 } from '../preload/bridge-contract.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 
@@ -142,9 +143,16 @@ export function useNewTaskTarget(options: {
     }
   }
 
-  async function acceptRegisteredProject(project: ProjectRecord): Promise<void> {
+  async function acceptRegisteredProject(
+    project: ProjectRecord,
+    registeredHost: DesktopRuntimeHostRef,
+  ): Promise<void> {
     const host = directoryHost;
-    if (!host) return;
+    if (
+      !host ||
+      host.profile.id !== registeredHost.profileId ||
+      host.hostId !== registeredHost.hostId
+    ) return;
     setDirectoryHost(undefined);
     setSelectedProfileId(host.profile.id);
     setProjectSelections((current) => new Map(current).set(host.profile.id, project.id));

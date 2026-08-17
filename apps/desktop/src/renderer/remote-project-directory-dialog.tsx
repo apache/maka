@@ -15,10 +15,20 @@ import type {
 } from '../preload/bridge-contract.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 
+type DirectoryHost = DesktopRuntimeHostRef & { readonly name?: string };
+type DirectoryLoad =
+  | { readonly kind: 'initial'; readonly host: DirectoryHost }
+  | {
+      readonly kind: 'directory';
+      readonly host: DirectoryHost;
+      readonly root: DesktopProjectDirectoryRoot;
+      readonly segments: readonly string[];
+    };
+
 export function RemoteProjectDirectoryDialog(props: {
-  host?: DesktopRuntimeHostRef & { readonly name?: string };
+  host?: DirectoryHost;
   onClose(): void;
-  onRegistered(project: ProjectRecord): void;
+  onRegistered(project: ProjectRecord, host: DesktopRuntimeHostRef): void;
 }) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).projectActions;
@@ -31,53 +41,52 @@ export function RemoteProjectDirectoryDialog(props: {
   const [showHidden, setShowHidden] = useState(false);
   const [error, setError] = useState<string>();
   const request = useRef(0);
+  const lastLoad = useRef<DirectoryLoad | undefined>(undefined);
 
   useEffect(() => {
     const host = props.host;
     if (!host) return;
-    const sequence = ++request.current;
-    setRoots([]);
-    setRoot(undefined);
-    setSegments([]);
-    setEntries([]);
-    setShowHidden(false);
-    setError(undefined);
-    setLoading(true);
-    void window.maka.projects.getDirectoryRoots(host).then(async (nextRoots) => {
-      const nextRoot = nextRoots[0];
-      if (!nextRoot) throw new Error('Runtime Host did not publish a project directory');
-      const next = await window.maka.projects.listDirectory({
-        rootId: nextRoot.id,
-        segments: [],
-      }, host);
-      if (request.current !== sequence) return;
-      setRoots(nextRoots);
-      setRoot(nextRoot);
-      setEntries(next);
-    }).catch((cause) => {
-      if (request.current !== sequence) return;
-      setError(localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale));
-    }).finally(() => {
-      if (request.current === sequence) setLoading(false);
-    });
+    void load({ kind: 'initial', host });
     return () => {
       request.current += 1;
     };
   }, [props.host?.profileId, props.host?.hostId, locale]);
 
-  async function navigate(nextSegments: readonly string[]): Promise<void> {
-    const host = props.host;
-    if (!host || !root) return;
+  async function load(target: DirectoryLoad): Promise<void> {
     const sequence = ++request.current;
+    lastLoad.current = target;
+    if (target.kind === 'initial') {
+      setRoots([]);
+      setRoot(undefined);
+      setSegments([]);
+      setEntries([]);
+      setShowHidden(false);
+    }
     setLoading(true);
     setError(undefined);
     try {
+      if (target.kind === 'initial') {
+        const nextRoots = await window.maka.projects.getDirectoryRoots(target.host);
+        const nextRoot = nextRoots[0];
+        if (!nextRoot) throw new Error('Runtime Host did not publish a project directory');
+        const next = await window.maka.projects.listDirectory({
+          rootId: nextRoot.id,
+          segments: [],
+        }, target.host);
+        if (request.current !== sequence) return;
+        setRoots(nextRoots);
+        setRoot(nextRoot);
+        setSegments([]);
+        setEntries(next);
+        return;
+      }
       const next = await window.maka.projects.listDirectory({
-        rootId: root.id,
-        segments: nextSegments,
-      }, host);
+        rootId: target.root.id,
+        segments: target.segments,
+      }, target.host);
       if (request.current !== sequence) return;
-      setSegments(nextSegments);
+      setRoot(target.root);
+      setSegments(target.segments);
       setEntries(next);
     } catch (cause) {
       if (request.current !== sequence) return;
@@ -87,44 +96,51 @@ export function RemoteProjectDirectoryDialog(props: {
     }
   }
 
-  async function selectRoot(nextRoot: DesktopProjectDirectoryRoot): Promise<void> {
+  function navigate(nextSegments: readonly string[]): void {
     const host = props.host;
-    if (!host || loading || nextRoot.id === root?.id) return;
-    const sequence = ++request.current;
-    setLoading(true);
-    setError(undefined);
-    try {
-      const next = await window.maka.projects.listDirectory({
-        rootId: nextRoot.id,
-        segments: [],
-      }, host);
-      if (request.current !== sequence) return;
-      setRoot(nextRoot);
-      setSegments([]);
-      setEntries(next);
-    } catch (cause) {
-      if (request.current !== sequence) return;
-      setError(localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale));
-    } finally {
-      if (request.current === sequence) setLoading(false);
-    }
+    if (!host || !root || loading || registering) return;
+    void load({ kind: 'directory', host, root, segments: nextSegments });
+  }
+
+  function selectRoot(nextRoot: DesktopProjectDirectoryRoot): void {
+    const host = props.host;
+    if (!host || loading || registering || nextRoot.id === root?.id) return;
+    void load({ kind: 'directory', host, root: nextRoot, segments: [] });
   }
 
   async function register(): Promise<void> {
     const host = props.host;
-    if (!host || !root || registering) return;
+    if (!host || !root || loading || registering) return;
+    const sequence = ++request.current;
     setRegistering(true);
     setError(undefined);
     try {
-      props.onRegistered(await window.maka.projects.registerDirectory({
+      const project = await window.maka.projects.registerDirectory({
         rootId: root.id,
         segments,
-      }, host));
+      }, host);
+      if (request.current !== sequence) return;
+      props.onRegistered(project, host);
     } catch (cause) {
+      if (request.current !== sequence) return;
       setError(localizedShellErrorMessage(cause, copy.projectUpdateFailedFallback, locale));
     } finally {
-      setRegistering(false);
+      if (request.current === sequence) setRegistering(false);
     }
+  }
+
+  function retry(): void {
+    const target = lastLoad.current;
+    const host = props.host;
+    if (!target || !host || loading || registering || !sameHost(target.host, host)) return;
+    void load(target);
+  }
+
+  function dismiss(): void {
+    request.current += 1;
+    setLoading(false);
+    setRegistering(false);
+    props.onClose();
   }
 
   const host = props.host;
@@ -135,7 +151,7 @@ export function RemoteProjectDirectoryDialog(props: {
     <Dialog
       isOpen={host !== undefined}
       onOpenChange={(open) => {
-        if (!open) props.onClose();
+        if (!open) dismiss();
       }}
       purpose="form"
       width={560}
@@ -147,7 +163,7 @@ export function RemoteProjectDirectoryDialog(props: {
           <DialogHeader
             title={copy.remoteDirectoryTitle(host.name ?? 'Runtime Host')}
             onOpenChange={(open) => {
-              if (!open) props.onClose();
+              if (!open) dismiss();
             }}
           />
         ) : undefined}
@@ -163,7 +179,7 @@ export function RemoteProjectDirectoryDialog(props: {
                       variant: 'ghost',
                       size: 'sm',
                       label: root?.label ?? copy.remoteDirectoryHome,
-                      isDisabled: loading,
+                      isDisabled: loading || registering,
                     }}
                   >
                     {roots.map((candidate) => (
@@ -174,7 +190,7 @@ export function RemoteProjectDirectoryDialog(props: {
                         endContent={candidate.id === root?.id
                           ? <Check size={18} aria-hidden="true" />
                           : undefined}
-                        onClick={() => void selectRoot(candidate)}
+                        onClick={() => selectRoot(candidate)}
                       />
                     ))}
                   </DropdownMenu>
@@ -184,8 +200,8 @@ export function RemoteProjectDirectoryDialog(props: {
                     variant="ghost"
                     size="sm"
                     label={root?.label ?? copy.remoteDirectoryHome}
-                    isDisabled={loading}
-                    onClick={() => void navigate([])}
+                    isDisabled={loading || registering}
+                    onClick={() => navigate([])}
                   />
                 )}
                 {segments.map((segment, index) => (
@@ -195,15 +211,15 @@ export function RemoteProjectDirectoryDialog(props: {
                     variant="ghost"
                     size="sm"
                     label={segment}
-                    isDisabled={loading}
-                    onClick={() => void navigate(segments.slice(0, index + 1))}
+                    isDisabled={loading || registering}
+                    onClick={() => navigate(segments.slice(0, index + 1))}
                   />
                 ))}
               </nav>
               {error ? (
                 <div className="remoteProjectDirectoryError" role="alert">
                   <Text type="body" color="secondary">{error}</Text>
-                  <Button label={copy.remoteDirectoryRetry} variant="ghost" onClick={() => void navigate(segments)} />
+                  <Button label={copy.remoteDirectoryRetry} variant="ghost" onClick={retry} />
                 </div>
               ) : loading ? (
                 <Text type="body" color="secondary">{copy.remoteDirectoryLoading}</Text>
@@ -218,7 +234,8 @@ export function RemoteProjectDirectoryDialog(props: {
                       variant="ghost"
                       label={entry.name}
                       icon={<FolderOpen size={18} aria-hidden="true" />}
-                      onClick={() => void navigate([...segments, entry.name])}
+                      isDisabled={registering}
+                      onClick={() => navigate([...segments, entry.name])}
                     />
                   ))}
                 </div>
@@ -240,10 +257,11 @@ export function RemoteProjectDirectoryDialog(props: {
                   ? <Eye size={18} aria-hidden="true" />
                   : <EyeOff size={18} aria-hidden="true" />}
                 aria-pressed={showHidden}
+                isDisabled={registering}
                 onClick={() => setShowHidden((current) => !current)}
               />
               <HStack gap={2}>
-                <Button variant="ghost" label={copy.remoteDirectoryCancel} onClick={props.onClose} />
+                <Button variant="ghost" label={copy.remoteDirectoryCancel} onClick={dismiss} />
                 <Button
                   variant="primary"
                   label={copy.remoteDirectorySelect}
@@ -258,4 +276,8 @@ export function RemoteProjectDirectoryDialog(props: {
       />
     </Dialog>
   );
+}
+
+function sameHost(left: DesktopRuntimeHostRef, right: DesktopRuntimeHostRef): boolean {
+  return left.profileId === right.profileId && left.hostId === right.hostId;
 }

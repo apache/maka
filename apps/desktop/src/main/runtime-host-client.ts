@@ -66,6 +66,7 @@ import {
   type ProjectCatalogMutateResult,
   type ProjectCatalogProject,
   type ProjectCatalogProjectDetails,
+  PROJECT_DIRECTORY_MAX_ENTRIES,
   type ProjectDirectoryEntry,
   type ProjectDirectoryRoot,
   type QueueRetractInput,
@@ -586,6 +587,9 @@ export class DesktopRuntimeHostClient {
       if (result.kind !== "directory_page") throw invalidProjection("Project directory");
       if (result.rootId !== rootId || !sameSegments(result.segments, segments)) {
         throw invalidProjection("Project directory identity");
+      }
+      if (entries.length + result.entries.length > PROJECT_DIRECTORY_MAX_ENTRIES) {
+        throw invalidProjection("Project directory has too many entries");
       }
       entries.push(...result.entries);
       if (result.nextCursor === null) return entries;

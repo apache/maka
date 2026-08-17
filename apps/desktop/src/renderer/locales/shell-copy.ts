@@ -740,7 +740,7 @@ const SHELL_COPY_BY_LOCALE = {
       remoteDirectoryRetry: '重试',
       remoteDirectoryLoading: '正在读取文件夹…',
       remoteDirectoryShowHidden: '显示隐藏目录',
-      remoteDirectoryHideHidden: '隐藏隐藏目录',
+      remoteDirectoryHideHidden: '不显示隐藏目录',
       runtimeHostReadiness: {
         connecting: '连接中',
         reconnecting: '正在重连',

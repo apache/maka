@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import {
   createProjectCatalog as createProjectCatalogBase,
   type ProjectCatalog,
+  ProjectPathBoundaryError,
   ProjectUnavailableError,
   ProjectPathMismatchError,
   type ResolvedProjectLocation,
@@ -150,6 +151,24 @@ test('registering a nested folder keeps that folder instead of the enclosing rep
       () => catalog.touch(childProject.id, parentPath),
       (error) => error instanceof ProjectPathMismatchError && error.projectId === childProject.id,
     );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('registration validates the final canonical path against its boundary', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-boundary-'));
+  try {
+    const publishedRoot = join(base, 'published');
+    const outside = join(base, 'outside');
+    await Promise.all([mkdir(publishedRoot), mkdir(outside)]);
+    const catalog = createProjectCatalog(join(base, 'storage'));
+
+    await assert.rejects(
+      () => catalog.register(outside, { withinRoot: publishedRoot }),
+      (error) => error instanceof ProjectPathBoundaryError,
+    );
+    assert.deepEqual(await catalog.list(), []);
   } finally {
     await rm(base, { recursive: true, force: true });
   }
