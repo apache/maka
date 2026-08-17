@@ -343,7 +343,6 @@ export function SettingsSurface(props: {
           message: settingsActionErrorMessage(error, locale),
         });
       }
-      throw error;
     }
   }
 
@@ -395,7 +394,6 @@ export function SettingsSurface(props: {
           message: settingsActionErrorMessage(error, locale),
         });
       }
-      throw error;
     }
   }
 
@@ -543,21 +541,13 @@ export function SettingsSurface(props: {
     void Promise.all([
       reloadRuntimeHostSettings(selectedRuntimeHost),
       reloadConnections(connectionsBridge, selectedRuntimeHost),
-    ]).catch((error) => {
-      if (settingsModalMountedRef.current) {
-        toast.error(copy.settingsLoadFailed, settingsActionErrorMessage(error, locale));
-      }
-    });
+    ]);
     const unsubscribeSettings = window.maka.settings.subscribeExternalChanged(
       () => void reloadRuntimeHostSettings(selectedRuntimeHost),
       selectedRuntimeHost,
     );
     const unsubscribeConnections = connectionsBridge.subscribeEvents?.(() => {
-      void reloadConnections(connectionsBridge, selectedRuntimeHost).catch((error) => {
-        if (settingsModalMountedRef.current) {
-          toast.error(copy.settingsLoadFailed, settingsActionErrorMessage(error, locale));
-        }
-      });
+      void reloadConnections(connectionsBridge, selectedRuntimeHost);
     });
     return () => {
       unsubscribeSettings();

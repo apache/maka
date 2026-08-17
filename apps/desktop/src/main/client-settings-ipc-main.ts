@@ -33,7 +33,7 @@ export function registerClientSettingsIpc(deps: {
         ? await deps.settingsStore.update(clientPatch)
         : await deps.settingsStore.get();
       await deps.apply(settings);
-      return buildSettingsUpdateResult(maskAppSettings(settings), clientPatch);
+      return buildSettingsUpdateResult(settings, clientPatch);
     },
   );
 }

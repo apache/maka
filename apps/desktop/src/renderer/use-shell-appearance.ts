@@ -48,14 +48,14 @@ export function useShellAppearance({
 
   async function refreshShellSettings() {
     const uiLocaleHydration = uiLocaleUpdateGate.beginHydration();
-    const [clientResult, runtimeHostResult, fixtureState] = await Promise.all([
+    const runtimeHostHydration = window.maka.settings.get().then(
+      (settings) => ({ ok: true as const, settings }),
+      () => ({ ok: false as const }),
+    );
+    const [clientResult, fixtureState] = await Promise.all([
       window.maka.settings.getClient().then(
         (settings) => ({ ok: true as const, settings }),
         (error: unknown) => ({ ok: false as const, error }),
-      ),
-      window.maka.settings.get().then(
-        (settings) => ({ ok: true as const, settings }),
-        () => ({ ok: false as const }),
       ),
       window.maka.e2eFixture.getState().catch(() => null),
     ]);
@@ -87,6 +87,7 @@ export function useShellAppearance({
       );
     }
 
+    const runtimeHostResult = await runtimeHostHydration;
     if (runtimeHostResult.ok) {
       const next = runtimeHostResult.settings;
       setUserLabel(next.personalization.displayName ?? '');
