@@ -165,7 +165,7 @@ test('active compaction kernel fails open on duplicate or missing tool identitie
       },
     });
 
-    assert.equal(selection.decision, 'failedOpen');
+    assert.ok(selection.decision === 'failedOpen');
     assert.equal(selection.reason, 'tool_pair_split');
   }
 });

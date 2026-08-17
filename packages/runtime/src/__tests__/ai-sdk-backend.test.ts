@@ -8916,6 +8916,7 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(model.doGenerateCalls.length, 1);
     assert.equal(recordedBlocks.length, 1);
     assert.equal(recordedBlocks[0]?.kind, 'maka.semantic_compact_block');
+    assert.equal(recordedBlocks[0]?.projection?.format, 'structured');
     const projectedPrompt = JSON.stringify(model.doStreamCalls[2]?.prompt ?? []);
     assert.match(projectedPrompt, /maka_semantic_compact_block/);
     assert.match(projectedPrompt, /Continue from the preserved latest tool episode/);
