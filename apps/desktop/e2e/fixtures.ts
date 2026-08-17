@@ -14,7 +14,7 @@ import {
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
-import { buildFixtureEnv, isCiLinuxDisplay } from '../../../scripts/fixture-env.mjs';
+import { buildFixtureEnv, isCiIsolatedDisplay } from '../../../scripts/fixture-env.mjs';
 import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mjs';
 
 const DESKTOP_ROOT = process.cwd();
@@ -290,9 +290,9 @@ async function withE2eWindow(
         locale,
         platform,
         scrollMotion,
-        // xvfb throttles a hidden window's compositor to ~1fps. Geometry
-        // fixtures opt in locally; every fixture is visible on isolated CI X.
-        showWindow: showWindow || isCiLinuxDisplay(),
+        // Isolated CI displays throttle a hidden window's compositor. Geometry
+        // fixtures opt in locally; every fixture is visible on those runners.
+        showWindow: showWindow || isCiIsolatedDisplay(),
       }),
     });
     app.on('console', (message) => {

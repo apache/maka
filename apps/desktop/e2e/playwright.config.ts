@@ -14,8 +14,8 @@ import { defineConfig } from '@playwright/test';
  * outlived two rounds of pruning. `playwright test --list` is the only figure
  * that cannot rot.
  *
- * CI shards run on isolated X displays, so jobs still overlap without sharing
- * focus or a compositor. Local parallelism is opt-in for the same reason.
+ * Linux CI uses an isolated X display; macOS CI shows the window so App Nap
+ * cannot throttle the compositor. Local parallelism is still opt-in.
  *
  * Run from apps/desktop via `npm run e2e`, which builds the app first.
  */

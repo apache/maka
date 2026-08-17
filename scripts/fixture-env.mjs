@@ -81,7 +81,7 @@ export function buildFixtureEnv(userDataDir, homeDir, options = {}) {
   if (options.timezone) env.MAKA_E2E_FIXTURE_TIMEZONE = options.timezone;
   // Windows launch hidden so a run never steals the developer's focus; a
   // caller that needs the compositor (hit testing, real input) or a throttled
-  // headless display (see isCiLinuxDisplay) asks for a visible window
+  // headless display (see isCiIsolatedDisplay) asks for a visible window
   // explicitly. The decision stays with the caller: this builder is a pure
   // function of its arguments, so a test asserting "hidden run stays hidden"
   // means the same thing on a laptop and on a CI runner.
@@ -111,4 +111,16 @@ export function buildFixtureEnv(userDataDir, homeDir, options = {}) {
  */
 export function isCiLinuxDisplay(env = process.env, platform = process.platform) {
   return Boolean(env.CI) && platform === 'linux';
+}
+
+/**
+ * Isolated CI displays that throttle a hidden Electron window. Linux CI uses
+ * xvfb; GitHub's macOS runners App-Nap background windows the same way. Local
+ * developer machines stay hidden so a suite does not steal focus.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {NodeJS.Platform} [platform]
+ */
+export function isCiIsolatedDisplay(env = process.env, platform = process.platform) {
+  return isCiLinuxDisplay(env, platform) || (Boolean(env.CI) && platform === 'darwin');
 }

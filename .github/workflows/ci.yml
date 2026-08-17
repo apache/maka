@@ -216,6 +216,35 @@ jobs:
         run: xvfb-run -a npm --workspace @maka/desktop run e2e
       - name: Alignment audit
         run: xvfb-run -a node scripts/audit-alignment.mjs
+
+  # macOS compositor, overlay scrollbars, and post-scroll hit testing do not
+  # exist on the xvfb lane. Keep the Linux job name so the required check is
+  # unchanged; this sibling is the platform lane #2342 asked for.
+  e2e_macos:
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Restore Electron artifact cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ github.workspace }}/.cache/electron
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: electron-${{ runner.os }}-
+      - run: npm ci
+      - name: Desktop e2e
+        run: npm --workspace @maka/desktop run e2e
+      - name: Alignment audit
+        run: node scripts/audit-alignment.mjs
+
   # Storybook build + initial render smoke. Embedded mode disables every play
   # function, so this lane never duplicates desktop interaction or layout E2E.
   # It launches Chromium only to catch catalog runtime errors. See FIDELITY.md.
