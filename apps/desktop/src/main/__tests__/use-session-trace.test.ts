@@ -8,7 +8,10 @@ import {
 } from '@maka/core/session-trace';
 import type { SessionEvent } from '@maka/core/events';
 import type { Result } from '@maka/core/result';
-import type { DesktopSessionTracePage } from '../../preload/bridge-contract.js';
+import type {
+  DesktopSessionTracePage,
+  DesktopSessionUsageSummary,
+} from '../../preload/bridge-contract.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   TRACE_REFRESH_DEBOUNCE_MS,
@@ -37,8 +40,61 @@ function trace(sessionId: string): SessionTrace {
   };
 }
 
+function usageSummary(
+  totalRequests = 0,
+  totalCostUsd = 0,
+): DesktopSessionUsageSummary {
+  return {
+    range: { from: 0, to: 1 },
+    totalRequests,
+    totalCostUsd,
+    totalTokens: {
+      input: totalRequests,
+      output: 0,
+      cacheMiss: totalRequests,
+      cacheRead: 0,
+      cacheWrite: 0,
+      reasoning: 0,
+      total: totalRequests,
+    },
+    cacheHitRequests: 0,
+    cacheCreateRequests: 0,
+    errorRequests: 0,
+    provenance: {
+      coverage: {
+        attempts: totalRequests,
+        pricedAttempts: totalRequests,
+        unpricedAttempts: 0,
+        usageReportedAttempts: totalRequests,
+        usagePartialAttempts: 0,
+        usageMissingAttempts: 0,
+      },
+      legacyRecords: 0,
+      unreadableRecords: 0,
+      pendingRepairs: 0,
+    },
+  };
+}
+
+function coverage(
+  modelCalls: SessionTrace['coverage']['modelCalls'],
+  input: {
+    missing?: string[];
+    short?: string[];
+    unreadable?: number;
+  } = {},
+): SessionTrace['coverage'] {
+  return {
+    modelCalls,
+    turnsMissingModelCalls: input.missing ?? [],
+    turnsWithFewerModelCallsThanSteps: input.short ?? [],
+    unreadableRecords: input.unreadable ?? 0,
+  };
+}
+
 interface TraceHarness {
   reads: string[];
+  traceRequests: Array<{ sessionId: string; cursor?: string }>;
   contextReads: string[];
   summaryReads: string[];
   emit: (event: SessionEvent) => void;
@@ -46,10 +102,23 @@ interface TraceHarness {
   unsubscribes: number;
 }
 
-function installMakaBridge(): TraceHarness {
+function installMakaBridge(
+  options: {
+    tracePages?: DesktopSessionTracePage[];
+    trace?: (
+      sessionId: string,
+      cursor?: string,
+    ) => Promise<Result<DesktopSessionTracePage>>;
+    summary?: (
+      sessionId: string,
+      readIndex: number,
+    ) => Promise<Result<DesktopSessionUsageSummary>>;
+  } = {},
+): TraceHarness {
   const handlers = new Set<(event: SessionEvent) => void>();
   const harness: TraceHarness = {
     reads: [],
+    traceRequests: [],
     contextReads: [],
     summaryReads: [],
     emit: (event) => {
@@ -62,45 +131,22 @@ function installMakaBridge(): TraceHarness {
   // replaces `globalThis.window`, so building one here first would be clobbered.
   (globalThis.window as unknown as { maka: unknown }).maka = {
       inspector: {
-        trace: async (sessionId: string): Promise<Result<DesktopSessionTracePage>> => {
+        trace: async (
+          sessionId: string,
+          cursor?: string,
+        ): Promise<Result<DesktopSessionTracePage>> => {
           harness.reads.push(sessionId);
-          return { ok: true, data: { trace: trace(sessionId), nextCursor: null } };
+          harness.traceRequests.push({ sessionId, ...(cursor ? { cursor } : {}) });
+          if (options.trace) return options.trace(sessionId, cursor);
+          return {
+            ok: true,
+            data: options.tracePages?.shift() ?? { trace: trace(sessionId), nextCursor: null },
+          };
         },
         summary: async (sessionId: string) => {
           harness.summaryReads.push(sessionId);
-          return {
-            ok: true as const,
-            data: {
-              range: { from: 0, to: 1 },
-              totalRequests: 0,
-              totalCostUsd: 0,
-              totalTokens: {
-                input: 0,
-                output: 0,
-                cacheMiss: 0,
-                cacheRead: 0,
-                cacheWrite: 0,
-                reasoning: 0,
-                total: 0,
-              },
-              cacheHitRequests: 0,
-              cacheCreateRequests: 0,
-              errorRequests: 0,
-              provenance: {
-                coverage: {
-                  attempts: 0,
-                  pricedAttempts: 0,
-                  unpricedAttempts: 0,
-                  usageReportedAttempts: 0,
-                  usagePartialAttempts: 0,
-                  usageMissingAttempts: 0,
-                },
-                legacyRecords: 0,
-                unreadableRecords: 0,
-                pendingRepairs: 0,
-              },
-            },
-          };
+          if (options.summary) return options.summary(sessionId, harness.summaryReads.length);
+          return { ok: true as const, data: usageSummary() };
         },
         // The hook reads the context snapshot on the same signal (#2323). It
         // is counted separately: the assertions below are about how often the
@@ -132,10 +178,39 @@ function Probe(props: {
   sessionId?: string;
   active: boolean;
   onSnapshot?: (trace: SessionTrace | undefined) => void;
+  onHookSnapshot?: (snapshot: ReturnType<typeof useSessionTrace>) => void;
 }) {
   const snapshot = useSessionTrace(props.sessionId, props.active, COPY);
   props.onSnapshot?.(snapshot.trace);
+  props.onHookSnapshot?.(snapshot);
   return null;
+}
+
+function tracePage(
+  sessionId: string,
+  runId: string,
+  nextCursor: string | null,
+  coverage?: SessionTrace['coverage'],
+): DesktopSessionTracePage {
+  const startedAt = Number(runId.replace(/\D/g, ''));
+  return {
+    trace: {
+      ...trace(sessionId),
+      turns: [
+        {
+          turnId: `turn-${runId}`,
+          runId,
+          startedAt,
+          endedAt: startedAt,
+          durationMs: 0,
+          steps: [],
+          totals: emptyTraceTotals(),
+        },
+      ],
+      ...(coverage ? { coverage } : {}),
+    },
+    nextCursor,
+  };
 }
 
 async function flushRefresh(): Promise<void> {
@@ -264,5 +339,190 @@ describe('useSessionTrace', () => {
       );
       assert.equal(harness.reads.length, 2, 're-activation still re-reads');
     })();
+  });
+
+  it('reconnects refreshed history without skipping runs added while the panel was open', async () => {
+    const { root } = installReactRenderer();
+    const harness = installMakaBridge({
+      tracePages: [
+        tracePage('session-1', 'run-3', 'cursor-3'),
+        tracePage('session-1', 'run-2', 'cursor-2'),
+        tracePage('session-1', 'run-5', 'cursor-5'),
+        tracePage('session-1', 'run-4', 'cursor-4'),
+        tracePage('session-1', 'run-3', 'cursor-3'),
+      ],
+    });
+    let snapshot: ReturnType<typeof useSessionTrace> | undefined;
+    await act(async () => {
+      root.render(
+        createElement(Probe, {
+          sessionId: 'session-1',
+          active: true,
+          onHookSnapshot: (value) => {
+            snapshot = value;
+          },
+        }),
+      );
+    });
+
+    await act(async () => snapshot?.loadEarlier());
+    assert.deepEqual(
+      snapshot?.trace?.turns.map((turn) => turn.runId),
+      ['run-2', 'run-3'],
+    );
+
+    await act(async () => harness.emit(event('complete')));
+    await flushRefresh();
+
+    assert.deepEqual(
+      snapshot?.trace?.turns.map((turn) => turn.runId),
+      ['run-2', 'run-3', 'run-4', 'run-5'],
+    );
+    assert.deepEqual(
+      harness.traceRequests.map((request) => request.cursor),
+      [undefined, 'cursor-3', undefined, 'cursor-5', 'cursor-4'],
+    );
+  });
+
+  it('keeps an in-flight earlier page when a head refresh reconnects', async () => {
+    const { root } = installReactRenderer();
+    let resolveEarlier: ((result: Result<DesktopSessionTracePage>) => void) | undefined;
+    const earlier = new Promise<Result<DesktopSessionTracePage>>((resolve) => {
+      resolveEarlier = resolve;
+    });
+    let startReads = 0;
+    let earlierReads = 0;
+    const harness = installMakaBridge({
+      trace: async (sessionId, cursor) => {
+        if (cursor === undefined) {
+          startReads += 1;
+          return {
+            ok: true,
+            data:
+              startReads === 1
+                ? tracePage(sessionId, 'run-3', 'cursor-3')
+                : tracePage(sessionId, 'run-4', 'cursor-4'),
+          };
+        }
+        if (cursor === 'cursor-4') {
+          return { ok: true, data: tracePage(sessionId, 'run-3', 'cursor-3') };
+        }
+        earlierReads += 1;
+        if (earlierReads === 1) return earlier;
+        throw new Error('head refresh crossed the existing tail boundary');
+      },
+    });
+    let snapshot: ReturnType<typeof useSessionTrace> | undefined;
+    await act(async () => {
+      root.render(
+        createElement(Probe, {
+          sessionId: 'session-1',
+          active: true,
+          onHookSnapshot: (value) => {
+            snapshot = value;
+          },
+        }),
+      );
+    });
+
+    await act(async () => snapshot?.loadEarlier());
+    await act(async () => harness.emit(event('complete')));
+    await flushRefresh();
+    await act(async () => {
+      resolveEarlier?.({ ok: true, data: tracePage('session-1', 'run-2', 'cursor-2') });
+    });
+
+    assert.deepEqual(
+      snapshot?.trace?.turns.map((turn) => turn.runId),
+      ['run-2', 'run-3', 'run-4'],
+    );
+    assert.equal(earlierReads, 1, 'the head refresh stops at the already requested tail');
+  });
+
+  it('reports mixed model-call coverage as partial across loaded pages', async () => {
+    const { root } = installReactRenderer();
+    const harness = installMakaBridge({
+      tracePages: [
+        tracePage(
+          'session-1',
+          'run-2',
+          'cursor-2',
+          coverage('absent', { missing: ['turn-run-2'] }),
+        ),
+        tracePage('session-1', 'run-1', null, coverage('no_known_gap')),
+      ],
+    });
+    let snapshot: ReturnType<typeof useSessionTrace> | undefined;
+    await act(async () => {
+      root.render(
+        createElement(Probe, {
+          sessionId: 'session-1',
+          active: true,
+          onHookSnapshot: (value) => {
+            snapshot = value;
+          },
+        }),
+      );
+    });
+
+    await act(async () => snapshot?.loadEarlier());
+
+    assert.equal(snapshot?.trace?.coverage.modelCalls, 'partial');
+    assert.equal(harness.traceRequests.length, 2);
+  });
+
+  it('adds unreadable records from separately loaded pages', async () => {
+    const { root } = installReactRenderer();
+    installMakaBridge({
+      tracePages: [
+        tracePage('session-1', 'run-2', 'cursor-2', coverage('partial', { unreadable: 1 })),
+        tracePage('session-1', 'run-1', null, coverage('partial', { unreadable: 2 })),
+      ],
+    });
+    let snapshot: ReturnType<typeof useSessionTrace> | undefined;
+    await act(async () => {
+      root.render(
+        createElement(Probe, {
+          sessionId: 'session-1',
+          active: true,
+          onHookSnapshot: (value) => {
+            snapshot = value;
+          },
+        }),
+      );
+    });
+
+    await act(async () => snapshot?.loadEarlier());
+
+    assert.equal(snapshot?.trace?.coverage.unreadableRecords, 3);
+  });
+
+  it('stops presenting an old Session summary when its refresh fails', async () => {
+    const { root } = installReactRenderer();
+    const harness = installMakaBridge({
+      summary: async (_sessionId, readIndex) =>
+        readIndex === 1
+          ? { ok: true, data: usageSummary(1, 1) }
+          : { ok: false, error: { code: 'FAILED', message: 'failed' } },
+    });
+    let snapshot: ReturnType<typeof useSessionTrace> | undefined;
+    await act(async () => {
+      root.render(
+        createElement(Probe, {
+          sessionId: 'session-1',
+          active: true,
+          onHookSnapshot: (value) => {
+            snapshot = value;
+          },
+        }),
+      );
+    });
+    assert.equal(snapshot?.summary?.totalCostUsd, 1);
+
+    await act(async () => harness.emit(event('complete')));
+    await flushRefresh();
+
+    assert.equal(snapshot?.summary, undefined);
+    assert.equal(snapshot?.summaryError, true);
   });
 });

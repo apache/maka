@@ -1,14 +1,28 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
 import { type UiLocale } from '@maka/core/ui-locale';
-import type { SessionTrace, SessionTraceCoverage, TraceTotals } from '@maka/core/session-trace';
+import {
+  emptyTraceTotals,
+  mergeDisjointTraceCoverage,
+  mergeTraceTotals,
+  type SessionTrace,
+} from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
-import type { DesktopSessionUsageSummary } from '../preload/bridge-contract.js';
+import type {
+  DesktopSessionTracePage,
+  DesktopSessionUsageSummary,
+} from '../preload/bridge-contract.js';
 import { createTraceRefreshCoalescer } from './session-trace-refresh.js';
 
-interface SessionTraceSnapshot {
+interface SessionTracePageEntry {
+  /** `null` is the stable identity of the newest page. */
+  requestCursor: string | null;
+  response: DesktopSessionTracePage;
+}
+
+interface SessionTraceState {
   sessionId?: string;
-  trace?: SessionTrace;
+  tracePages?: readonly SessionTracePageEntry[];
   /**
    * What the context is made of right now, from the Host operation that owns
    * that question (#2323). Read on the same signal as the trace but kept
@@ -17,7 +31,6 @@ interface SessionTraceSnapshot {
    */
   context?: ContextDiagnosticsResult;
   summary?: DesktopSessionUsageSummary;
-  nextCursor?: string | null;
   loading: boolean;
   summaryLoading?: boolean;
   summaryError?: boolean;
@@ -25,6 +38,12 @@ interface SessionTraceSnapshot {
   error?: string;
 }
 
+interface SessionTraceSnapshot extends Omit<SessionTraceState, 'tracePages'> {
+  trace?: SessionTrace;
+  nextCursor?: string | null;
+}
+
+const EMPTY_STATE: SessionTraceState = { loading: false };
 const EMPTY_SNAPSHOT: SessionTraceSnapshot = { loading: false };
 
 /** Long enough to absorb a turn's closing burst, short enough to feel live. */
@@ -50,13 +69,21 @@ export function useSessionTrace(
   // UI package behind it.
   copy: { loadFailed: string; locale: UiLocale },
 ): SessionTraceSnapshot & { retry: () => void; loadEarlier: () => void } {
-  const revisionRef = useRef(0);
-  const [snapshot, setSnapshot] = useState<SessionTraceSnapshot>(EMPTY_SNAPSHOT);
+  const sessionEpochRef = useRef(0);
+  const headRevisionRef = useRef(0);
+  const traceWindowRef = useRef<
+    { sessionId: string; pages: readonly SessionTracePageEntry[] } | undefined
+  >(undefined);
+  const [state, setState] = useState<SessionTraceState>(EMPTY_STATE);
 
   const load = useCallback(
     (targetSessionId: string) => {
-      const revision = ++revisionRef.current;
-      setSnapshot((current) => ({
+      const revision = ++headRevisionRef.current;
+      const existingPages =
+        traceWindowRef.current?.sessionId === targetSessionId
+          ? traceWindowRef.current.pages
+          : [];
+      setState((current) => ({
         sessionId: targetSessionId,
         // Keep BOTH reads on screen through every refresh. They settle
         // independently, so preserving only the trace left the composition
@@ -65,71 +92,59 @@ export function useSessionTrace(
         // valid the whole time.
         ...(current.sessionId === targetSessionId
           ? {
-              trace: current.trace,
+              tracePages: current.tracePages,
               context: current.context,
               summary: current.summary,
               summaryError: current.summaryError,
-              nextCursor: current.nextCursor,
             }
           : {}),
         loading: true,
         summaryLoading: true,
         summaryError: undefined,
       }));
-      void window.maka.inspector.trace(targetSessionId).then(
-        (result) => {
-          if (revision !== revisionRef.current) return;
-          if (!result.ok) {
-            setSnapshot((current) => ({
-              sessionId: targetSessionId,
-              ...(current.sessionId === targetSessionId
-                ? {
-                    trace: current.trace,
-                    context: current.context,
-                    summary: current.summary,
-                    summaryLoading: current.summaryLoading,
-                    summaryError: current.summaryError,
-                    nextCursor: current.nextCursor,
-                  }
-                : {}),
-              loading: false,
-              error: result.error.message || copy.loadFailed,
-            }));
-            return;
-          }
-          setSnapshot((current) => ({
+      void readRefreshedTracePages(targetSessionId, existingPages, copy.loadFailed).then(
+        ({ prefix, reconnectCursor }) => {
+          if (revision !== headRevisionRef.current) return;
+          const latestPages =
+            traceWindowRef.current?.sessionId === targetSessionId
+              ? traceWindowRef.current.pages
+              : [];
+          const reconnectIndex =
+            reconnectCursor === null
+              ? -1
+              : latestPages.findIndex((entry) => entry.requestCursor === reconnectCursor);
+          const pages =
+            reconnectIndex >= 0
+              ? [...prefix, ...latestPages.slice(reconnectIndex)]
+              : prefix;
+          traceWindowRef.current = { sessionId: targetSessionId, pages };
+          setState((current) => ({
             sessionId: targetSessionId,
-            trace:
-              current.sessionId === targetSessionId && current.trace
-                ? mergeSessionTrace(current.trace, result.data.trace)
-                : result.data.trace,
-            nextCursor:
-              current.sessionId === targetSessionId && current.trace
-                ? current.nextCursor
-                : result.data.nextCursor,
+            tracePages: pages,
             ...(current.sessionId === targetSessionId
               ? {
                   context: current.context,
                   summary: current.summary,
                   summaryLoading: current.summaryLoading,
                   summaryError: current.summaryError,
+                  loadingEarlier: current.loadingEarlier,
                 }
               : {}),
             loading: false,
           }));
         },
         (error: unknown) => {
-          if (revision !== revisionRef.current) return;
-          setSnapshot((current) => ({
+          if (revision !== headRevisionRef.current) return;
+          setState((current) => ({
             sessionId: targetSessionId,
             ...(current.sessionId === targetSessionId
               ? {
-                  trace: current.trace,
+                  tracePages: current.tracePages,
                   context: current.context,
                   summary: current.summary,
                   summaryLoading: current.summaryLoading,
                   summaryError: current.summaryError,
-                  nextCursor: current.nextCursor,
+                  loadingEarlier: current.loadingEarlier,
                 }
               : {}),
             loading: false,
@@ -142,24 +157,29 @@ export function useSessionTrace(
       );
       void window.maka.inspector.summary(targetSessionId).then(
         (result) => {
-          if (revision !== revisionRef.current) return;
-          setSnapshot((current) =>
+          if (revision !== headRevisionRef.current) return;
+          setState((current) =>
             current.sessionId === targetSessionId
               ? {
                   ...current,
                   ...(result.ok
                     ? { summary: result.data, summaryError: undefined }
-                    : { summaryError: true }),
+                    : { summary: undefined, summaryError: true }),
                   summaryLoading: false,
                 }
               : current,
           );
         },
         () => {
-          if (revision !== revisionRef.current) return;
-          setSnapshot((current) =>
+          if (revision !== headRevisionRef.current) return;
+          setState((current) =>
             current.sessionId === targetSessionId
-              ? { ...current, summaryLoading: false, summaryError: true }
+              ? {
+                  ...current,
+                  summary: undefined,
+                  summaryLoading: false,
+                  summaryError: true,
+                }
               : current,
           );
         },
@@ -169,8 +189,8 @@ export function useSessionTrace(
       // costs the composition block, never the trace.
       void window.maka.inspector.context(targetSessionId).then(
         (result) => {
-          if (revision !== revisionRef.current) return;
-          setSnapshot((current) =>
+          if (revision !== headRevisionRef.current) return;
+          setState((current) =>
             current.sessionId === targetSessionId && result.ok
               ? { ...current, context: result.data }
               : current,
@@ -187,9 +207,13 @@ export function useSessionTrace(
   );
 
   useEffect(() => {
-    revisionRef.current += 1;
+    sessionEpochRef.current += 1;
+    headRevisionRef.current += 1;
     if (!sessionId || !active) {
-      if (!sessionId) setSnapshot(EMPTY_SNAPSHOT);
+      if (!sessionId) {
+        traceWindowRef.current = undefined;
+        setState(EMPTY_STATE);
+      }
       return;
     }
     const coalescer = createTraceRefreshCoalescer({
@@ -203,7 +227,8 @@ export function useSessionTrace(
     });
     load(sessionId);
     return () => {
-      revisionRef.current += 1;
+      sessionEpochRef.current += 1;
+      headRevisionRef.current += 1;
       coalescer.cancel();
       unsubscribe();
     };
@@ -213,34 +238,41 @@ export function useSessionTrace(
     if (sessionId) load(sessionId);
   }, [load, sessionId]);
 
+  const trace = useMemo(
+    () => (state.tracePages ? mergeSessionTracePages(state.tracePages) : undefined),
+    [state.tracePages],
+  );
+  const nextCursor = state.tracePages?.at(-1)?.response.nextCursor;
+
   const loadEarlier = useCallback(() => {
-    const cursor = snapshot.sessionId === sessionId ? snapshot.nextCursor : undefined;
-    if (!sessionId || !cursor || snapshot.loadingEarlier) return;
-    const revision = revisionRef.current;
-    setSnapshot((current) => ({ ...current, loadingEarlier: true, error: undefined }));
+    const cursor = state.sessionId === sessionId ? nextCursor : undefined;
+    if (!sessionId || !cursor || state.loadingEarlier) return;
+    const sessionEpoch = sessionEpochRef.current;
+    setState((current) => ({ ...current, loadingEarlier: true, error: undefined }));
     void window.maka.inspector.trace(sessionId, cursor).then(
       (result) => {
-        if (revision !== revisionRef.current) return;
+        if (sessionEpoch !== sessionEpochRef.current) return;
         if (!result.ok) {
-          setSnapshot((current) => ({
+          setState((current) => ({
             ...current,
             loadingEarlier: false,
             error: result.error.message || copy.loadFailed,
           }));
           return;
         }
-        setSnapshot((current) => ({
-          ...current,
-          trace: current.trace
-            ? mergeSessionTrace(current.trace, result.data.trace)
-            : result.data.trace,
-          nextCursor: result.data.nextCursor,
-          loadingEarlier: false,
-        }));
+        const currentWindow = traceWindowRef.current;
+        if (currentWindow?.sessionId !== sessionId) return;
+        const pages = upsertTracePage(currentWindow.pages, cursor, result.data);
+        traceWindowRef.current = { sessionId, pages };
+        setState((current) =>
+          current.sessionId === sessionId
+            ? { ...current, tracePages: pages, loadingEarlier: false }
+            : current,
+        );
       },
       (error: unknown) => {
-        if (revision !== revisionRef.current) return;
-        setSnapshot((current) => ({
+        if (sessionEpoch !== sessionEpochRef.current) return;
+        setState((current) => ({
           ...current,
           loadingEarlier: false,
           error:
@@ -250,12 +282,66 @@ export function useSessionTrace(
         }));
       },
     );
-  }, [copy.loadFailed, copy.locale, sessionId, snapshot.loadingEarlier, snapshot.nextCursor, snapshot.sessionId]);
+  }, [copy.loadFailed, copy.locale, nextCursor, sessionId, state.loadingEarlier, state.sessionId]);
 
-  if (snapshot.sessionId !== sessionId) {
+  if (state.sessionId !== sessionId) {
     return { ...EMPTY_SNAPSHOT, loading: Boolean(sessionId) && active, retry, loadEarlier };
   }
-  return { ...snapshot, retry, loadEarlier };
+  const { tracePages: _tracePages, ...snapshot } = state;
+  return { ...snapshot, trace, nextCursor, retry, loadEarlier };
+}
+
+async function readRefreshedTracePages(
+  sessionId: string,
+  existingPages: readonly SessionTracePageEntry[],
+  loadFailed: string,
+): Promise<{
+  prefix: SessionTracePageEntry[];
+  reconnectCursor: string | null;
+}> {
+  const prefix: SessionTracePageEntry[] = [];
+  const seen = new Set<string>();
+  let requestCursor: string | null = null;
+  while (true) {
+    const result = await window.maka.inspector.trace(
+      sessionId,
+      requestCursor === null ? undefined : requestCursor,
+    );
+    if (!result.ok) throw new Error(result.error.message || loadFailed);
+    prefix.push({ requestCursor, response: result.data });
+    const nextCursor = result.data.nextCursor;
+    if (existingPages.length === 0 || nextCursor === null) {
+      return { prefix, reconnectCursor: null };
+    }
+    if (seen.has(nextCursor)) throw new Error(loadFailed);
+    const reconnects =
+      existingPages.some((entry) => entry.requestCursor === nextCursor) ||
+      existingPages.at(-1)?.response.nextCursor === nextCursor;
+    if (reconnects) return { prefix, reconnectCursor: nextCursor };
+    seen.add(nextCursor);
+    requestCursor = nextCursor;
+  }
+}
+
+function upsertTracePage(
+  pages: readonly SessionTracePageEntry[],
+  requestCursor: string,
+  response: DesktopSessionTracePage,
+): readonly SessionTracePageEntry[] {
+  const entry = { requestCursor, response };
+  const existingIndex = pages.findIndex((page) => page.requestCursor === requestCursor);
+  if (existingIndex >= 0) {
+    return pages.map((page, index) => (index === existingIndex ? entry : page));
+  }
+  const parentIndex = pages.findIndex((page) => page.response.nextCursor === requestCursor);
+  if (parentIndex < 0) return pages;
+  return [...pages.slice(0, parentIndex + 1), entry];
+}
+
+function mergeSessionTracePages(pages: readonly SessionTracePageEntry[]): SessionTrace {
+  return pages
+    .map((entry) => entry.response.trace)
+    .reduce((current, page) => mergeSessionTrace(current, page));
 }
 
 function mergeSessionTrace(current: SessionTrace, page: SessionTrace): SessionTrace {
@@ -268,53 +354,10 @@ function mergeSessionTrace(current: SessionTrace, page: SessionTrace): SessionTr
     schemaVersion: current.schemaVersion,
     sessionId: current.sessionId,
     turns: ordered,
-    totals: ordered.reduce<TraceTotals>((total, turn) => mergeTotals(total, turn.totals), emptyTotals()),
-    coverage: mergeCoverage(current.coverage, page.coverage),
-  };
-}
-
-function emptyTotals(): TraceTotals {
-  return {
-    durationMs: 0,
-    modelAttempts: 0,
-    retries: 0,
-    compactions: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    unpricedAttempts: 0,
-  };
-}
-
-function mergeTotals(left: TraceTotals, right: TraceTotals): TraceTotals {
-  return {
-    durationMs: left.durationMs + right.durationMs,
-    modelAttempts: left.modelAttempts + right.modelAttempts,
-    retries: left.retries + right.retries,
-    compactions: left.compactions + right.compactions,
-    inputTokens: left.inputTokens + right.inputTokens,
-    outputTokens: left.outputTokens + right.outputTokens,
-    ...(left.costUsd !== undefined || right.costUsd !== undefined
-      ? { costUsd: (left.costUsd ?? 0) + (right.costUsd ?? 0) }
-      : {}),
-    unpricedAttempts: left.unpricedAttempts + right.unpricedAttempts,
-  };
-}
-
-function mergeCoverage(
-  left: SessionTraceCoverage,
-  right: SessionTraceCoverage,
-): SessionTraceCoverage {
-  const rank = { none: 0, no_known_gap: 1, partial: 2, absent: 3 } as const;
-  const modelCalls = rank[left.modelCalls] >= rank[right.modelCalls] ? left.modelCalls : right.modelCalls;
-  return {
-    modelCalls,
-    turnsMissingModelCalls: [...new Set([...left.turnsMissingModelCalls, ...right.turnsMissingModelCalls])],
-    turnsWithFewerModelCallsThanSteps: [
-      ...new Set([
-        ...left.turnsWithFewerModelCallsThanSteps,
-        ...right.turnsWithFewerModelCallsThanSteps,
-      ]),
-    ],
-    unreadableRecords: Math.max(left.unreadableRecords, right.unreadableRecords),
+    totals: ordered.reduce(
+      (total, turn) => mergeTraceTotals(total, turn.totals),
+      emptyTraceTotals(),
+    ),
+    coverage: mergeDisjointTraceCoverage(current.coverage, page.coverage),
   };
 }

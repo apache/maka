@@ -616,3 +616,39 @@ export function mergeTraceTotals(base: TraceTotals, next: TraceTotals): TraceTot
     ...(costUsd !== undefined ? { costUsd } : {}),
   };
 }
+
+/**
+ * Combines coverage from disjoint trace partitions.
+ *
+ * Callers own the disjointness proof. Keeping that precondition explicit is
+ * what makes unreadable-record addition truthful: refreshing one partition
+ * must replace it before this fold runs, never merge it with its former value.
+ */
+export function mergeDisjointTraceCoverage(
+  base: SessionTraceCoverage,
+  next: SessionTraceCoverage,
+): SessionTraceCoverage {
+  const modelCalls =
+    base.modelCalls === 'none'
+      ? next.modelCalls
+      : next.modelCalls === 'none'
+        ? base.modelCalls
+        : base.modelCalls === 'absent' && next.modelCalls === 'absent'
+          ? 'absent'
+          : base.modelCalls === 'no_known_gap' && next.modelCalls === 'no_known_gap'
+            ? 'no_known_gap'
+            : 'partial';
+  return {
+    modelCalls,
+    turnsMissingModelCalls: [
+      ...new Set([...base.turnsMissingModelCalls, ...next.turnsMissingModelCalls]),
+    ],
+    turnsWithFewerModelCallsThanSteps: [
+      ...new Set([
+        ...base.turnsWithFewerModelCallsThanSteps,
+        ...next.turnsWithFewerModelCallsThanSteps,
+      ]),
+    ],
+    unreadableRecords: base.unreadableRecords + next.unreadableRecords,
+  };
+}
