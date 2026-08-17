@@ -104,6 +104,27 @@ async function loadPromptRailBeyondVirtualWindow(page: Page): Promise<void> {
     .toBeGreaterThan(100);
 }
 
+async function scrollTranscriptUntilTurn(page: Page, turnId: string): Promise<void> {
+  // One programmatic jump is not enough on a shown macOS window: a
+  // ResizeObserver can restore a top-of-transcript scroll anchor after we
+  // set scrollTop, and the virtualizer then keeps the head window. Re-apply
+  // the jump until the tail turn is actually mounted.
+  await expect.poll(async () => {
+    await scrollTranscriptTo(page, 'bottom');
+    await notifyTranscriptScrolled(page);
+    return page.evaluate((id) => {
+      const root = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+      const mounted = [...document.querySelectorAll<HTMLElement>('[data-virtual-turn-id]')]
+        .map((turn) => turn.dataset.virtualTurnId ?? '');
+      return {
+        hasTurn: mounted.includes(id),
+        scrollTop: root ? Math.round(root.scrollTop) : -1,
+        lastMounted: mounted.at(-1) ?? null,
+      };
+    }, turnId);
+  }, { message: `the transcript mounts ${turnId} at the bottom` }).toMatchObject({ hasTurn: true });
+}
+
 test('every tick paints a bar with a real box', async ({ promptRailWindow: page }) => {
   // Measured over ALL ticks, not a sample: a helper that skips what it cannot
   // evaluate creates its blind spot exactly where a regression lives.
@@ -300,10 +321,7 @@ test('evicting a turn-owned sibling interaction hands focus back to the transcri
   const scroller = page.locator('[data-chat-scroll-container="true"][data-turn-window="ready"]');
   await scroller.waitFor();
   await loadPromptRailBeyondVirtualWindow(page);
-  await scrollTranscriptTo(page, 'bottom');
-  await notifyTranscriptScrolled(page);
-  await waitForPaintedFrames(page);
-  await expect(page.locator('[data-virtual-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
+  await scrollTranscriptUntilTurn(page, 'turn-prompt-rail-120');
   const retainedTurnId = await page.evaluate(() => {
     const turns = document.querySelectorAll<HTMLElement>('[data-virtual-turn-id]');
     const turn = turns.item(turns.length - 1);
