@@ -22,7 +22,10 @@ import {
   type ReconnectableReadIpcMain,
   tryReconnectableReadResult,
 } from "./ipc-reconnect-policy.js";
-import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+import type {
+  DesktopPricingSnapshot,
+  DesktopRuntimeHostClient,
+} from "./runtime-host-client.js";
 
 interface RuntimeHostUsageIpcDeps {
   readonly ipcMain: ReconnectableReadIpcMain;
@@ -209,13 +212,20 @@ export async function loadUsageStatsSnapshot(
         loadAllBuckets(client, { ...query, groupBy: "model" }),
         loadAllLlmLogs(client, query),
         loadAllToolLogs(client, query),
+        client.loadPricingSnapshot(),
       ]);
     } catch (error) {
       if (error instanceof UsageSnapshotChangedError) continue;
       throw error;
     }
-    const [summaryResult, providerResult, modelResult, llmResult, toolResult] =
-      results;
+    const [
+      summaryResult,
+      providerResult,
+      modelResult,
+      llmResult,
+      toolResult,
+      pricingSnapshot,
+    ] = results;
     if (summaryResult.kind !== "summary") throw invalidUsageProjection();
     if (
       sameUsageSnapshot(
@@ -236,6 +246,7 @@ export async function loadUsageStatsSnapshot(
         modelResult.buckets,
         llmResult.rows,
         toolResult.rows,
+        projectCustomPricingRows(pricingSnapshot.entries),
       );
     }
   }
@@ -401,6 +412,7 @@ function projectUsageStats(
   modelBuckets: readonly UsageBucket[],
   llmRows: readonly LlmUsageLogProjection[],
   toolRows: readonly ToolUsageLogProjection[],
+  pricing: UsageStats["pricing"],
 ): UsageStats {
   return {
     provenance,
@@ -462,8 +474,28 @@ function projectUsageStats(
       ...projectLlmBucketValues(bucket),
     })),
     byTool: projectToolBuckets(toolRows),
-    pricing: [],
+    pricing,
   };
+}
+
+function projectCustomPricingRows(
+  entries: DesktopPricingSnapshot["entries"],
+): UsageStats["pricing"] {
+  return entries
+    .filter((entry) => entry.source === "custom")
+    .map((entry) => {
+      const separator = entry.pricing.modelKey.indexOf(":");
+      return {
+        provider:
+          separator > 0
+            ? entry.pricing.modelKey.slice(0, separator)
+            : entry.pricing.modelKey,
+        model:
+          separator >= 0 ? entry.pricing.modelKey.slice(separator + 1) : "",
+        inputPerMTokUsd: entry.pricing.inputUsdPer1M,
+        outputPerMTokUsd: entry.pricing.outputUsdPer1M,
+      };
+    });
 }
 
 function projectLlmBucketValues(bucket: UsageBucket) {

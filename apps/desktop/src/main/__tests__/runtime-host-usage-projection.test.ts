@@ -73,6 +73,41 @@ describe("Runtime Host Usage projection", () => {
     assert.equal(stats.summary.totalTokens, 5);
     assert.equal(stats.byProvider[0]?.tokens, 5);
   });
+
+  test("projects only custom pricing overrides for the pricing tab", async () => {
+    const client = usageClient({
+      pricingEntries: [
+        {
+          pricing: {
+            modelKey: "zai-coding-plan:glm-4.7",
+            inputUsdPer1M: 1.25,
+            outputUsdPer1M: 2.5,
+          },
+          source: "custom" as const,
+          resetEffect: "restore_builtin" as const,
+        },
+        {
+          pricing: {
+            modelKey: "anthropic:claude-test",
+            inputUsdPer1M: 3,
+            outputUsdPer1M: 15,
+          },
+          source: "builtin" as const,
+        },
+      ],
+    });
+
+    const stats = await loadUsageStatsSnapshot(client as never, "all", 2_000);
+
+    assert.deepEqual(stats.pricing, [
+      {
+        provider: "zai-coding-plan",
+        model: "glm-4.7",
+        inputPerMTokUsd: 1.25,
+        outputPerMTokUsd: 2.5,
+      },
+    ]);
+  });
 });
 
 function usageClient(options: {
@@ -81,6 +116,15 @@ function usageClient(options: {
   bucketRequests?: (groupBy: string) => number;
   bucketTokens?: (groupBy: string) => number;
   revision?: (input: Record<string, unknown>) => number;
+  pricingEntries?: readonly {
+    pricing: {
+      modelKey: string;
+      inputUsdPer1M: number;
+      outputUsdPer1M: number;
+    };
+    source: "custom" | "builtin";
+    resetEffect?: "restore_builtin" | "become_unpriced";
+  }[];
 }) {
   return {
     async queryUsage(input: Record<string, unknown>) {
@@ -136,6 +180,14 @@ function usageClient(options: {
         total: 2,
         nextOffset: null,
         provenance: provenance(),
+      };
+    },
+    async loadPricingSnapshot() {
+      return {
+        hostEpoch: "epoch",
+        connectionId: "connection",
+        revision: 0,
+        entries: options.pricingEntries ?? [],
       };
     },
   };
