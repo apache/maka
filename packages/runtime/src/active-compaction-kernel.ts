@@ -100,7 +100,20 @@ export interface ActiveCompactionSourceIndex {
   stepNumber?: number;
   providerMessageCount: number;
   entries: ActiveCompactionSourceEntry[];
+  toolLedger: ActiveCompactionToolLedger;
   estimatedTokens: number;
+}
+
+export interface ActiveCompactionToolEpisode {
+  toolCallId: string;
+  callSourceIds: string[];
+  resultSourceIds: string[];
+  valid: boolean;
+}
+
+export interface ActiveCompactionToolLedger {
+  episodes: ActiveCompactionToolEpisode[];
+  missingIdentitySourceIds: string[];
 }
 
 export interface ActiveCompactionCoverage {
@@ -258,6 +271,7 @@ export function buildActiveCompactionSourceIndex(
     });
   });
 
+  const toolLedger = buildActiveCompactionToolLedger(entries);
   return {
     sessionId: input.sessionId,
     turnId: input.turnId,
@@ -266,6 +280,7 @@ export function buildActiveCompactionSourceIndex(
     ...(input.stepNumber !== undefined ? { stepNumber: input.stepNumber } : {}),
     providerMessageCount: input.messages.length,
     entries,
+    toolLedger,
     estimatedTokens: estimateActiveCompactionTokens(entries),
   };
 }
@@ -331,6 +346,9 @@ export function selectActiveCompactionSafeSpan(input: {
     headAnchor.messageIndex + 1,
     (input.afterMessageIndex ?? headAnchor.messageIndex) + 1,
   );
+  if (toolLedgerHasInvalidSourceAtOrAfter(index, firstCandidateMessageIndex)) {
+    return safeSpanSkipped('failedOpen', 'tool_pair_split');
+  }
   let cursor = firstCandidateMessageIndex;
   const completedEpisodes: Array<{ startMessageIndex: number; endMessageIndex: number }> = [];
   while (cursor < index.providerMessageCount) {
@@ -422,7 +440,7 @@ function safeSpanSelected(
   ) {
     return safeSpanSkipped('failedOpen', 'provider_message_only_when_runtime_required');
   }
-  if (toolPairSplit(entries, index.entries))
+  if (toolPairIntegrityViolation(entries, index.toolLedger))
     return safeSpanSkipped('failedOpen', 'tool_pair_split');
   const estimatedTokens = estimateActiveCompactionTokens(entries);
   const minSafePrefixEstimatedTokens = Math.max(
@@ -521,7 +539,7 @@ export function validateActiveCompactionCoverageForSourceIndex(
   for (const hash of coverage.bodySha256) {
     if (!selectedEntries.some((entry) => entry.bodySha256 === hash)) add('source_hash_mismatch');
   }
-  if (toolPairSplit(selectedEntries, index.entries)) add('tool_pair_split');
+  if (toolPairIntegrityViolation(selectedEntries, index.toolLedger)) add('tool_pair_split');
   for (const ref of options.archiveRefs ?? []) {
     if (!selectedEntries.some((entry) => archiveRefsEqual(entry.archiveRef, ref))) {
       add('archive_mismatch');
@@ -556,6 +574,8 @@ function entryFromProviderPart(input: {
   const runtimeEvent = matchRuntimeEvent(input.runtimeIndex, {
     bodySha256,
     toolCallId: input.toolCallId,
+    toolName: input.toolName,
+    role: input.role,
     contentKind: input.contentKind,
   });
   const contentKind = input.placeholder
@@ -671,6 +691,7 @@ function activePlaceholderFromPayload(
 interface RuntimeEventIndex {
   byToolCallId: Map<string, RuntimeEvent[]>;
   byBodySha256: Map<string, RuntimeEvent[]>;
+  consumedEventIds: Set<string>;
 }
 
 function buildRuntimeEventIndex(events: readonly RuntimeEvent[]): RuntimeEventIndex {
@@ -681,24 +702,46 @@ function buildRuntimeEventIndex(events: readonly RuntimeEvent[]): RuntimeEventIn
     if (toolCallId) pushMap(byToolCallId, toolCallId, event);
     pushMap(byBodySha256, runtimeEventBodySha256(event), event);
   }
-  return { byToolCallId, byBodySha256 };
+  return { byToolCallId, byBodySha256, consumedEventIds: new Set() };
 }
 
 function matchRuntimeEvent(
   index: RuntimeEventIndex,
-  input: { bodySha256: string; toolCallId?: string; contentKind: ActiveCompactionContentKind },
+  input: {
+    bodySha256: string;
+    toolCallId?: string;
+    toolName?: string;
+    role: ActiveCompactionProviderRole;
+    contentKind: ActiveCompactionContentKind;
+  },
 ): RuntimeEvent | undefined {
-  const toolMatches = input.toolCallId ? (index.byToolCallId.get(input.toolCallId) ?? []) : [];
-  const bodyMatches = index.byBodySha256.get(input.bodySha256) ?? [];
-  const candidates = [...toolMatches, ...bodyMatches];
-  if (candidates.length === 0) return undefined;
   const preferredKind =
     input.contentKind === 'function_call'
       ? 'function_call'
       : input.contentKind === 'tool_result' || input.contentKind === 'active_archive_placeholder'
         ? 'function_response'
         : input.contentKind;
-  return candidates.find((event) => event.content?.kind === preferredKind);
+  const expectedRole = runtimeRoleForProviderRole(input.role);
+  const candidates = (
+    input.toolCallId
+      ? (index.byToolCallId.get(input.toolCallId) ?? [])
+      : (index.byBodySha256.get(input.bodySha256) ?? [])
+  ).filter(
+    (event) =>
+      !index.consumedEventIds.has(event.id) &&
+      event.role === expectedRole &&
+      event.content?.kind === preferredKind &&
+      (!input.toolName || !runtimeToolName(event) || runtimeToolName(event) === input.toolName),
+  );
+  const uniqueCandidates = [...new Map(candidates.map((event) => [event.id, event])).values()];
+  if (uniqueCandidates.length !== 1) return undefined;
+  const matched = uniqueCandidates[0]!;
+  index.consumedEventIds.add(matched.id);
+  return matched;
+}
+
+function runtimeRoleForProviderRole(role: ActiveCompactionProviderRole): RuntimeEvent['role'] {
+  return role === 'assistant' ? 'model' : role;
 }
 
 function runtimeEventBodySha256(event: RuntimeEvent): string {
@@ -731,39 +774,85 @@ function runtimeToolName(event: RuntimeEvent | undefined): string | undefined {
   return undefined;
 }
 
-function toolPairSplit(
+function buildActiveCompactionToolLedger(
+  entries: readonly ActiveCompactionSourceEntry[],
+): ActiveCompactionToolLedger {
+  const missingIdentitySourceIds: string[] = [];
+  const byToolCallId = new Map<
+    string,
+    { calls: ActiveCompactionSourceEntry[]; results: ActiveCompactionSourceEntry[] }
+  >();
+  for (const entry of entries) {
+    const isCall = entry.contentKind === 'function_call';
+    const isResult = isToolResultKind(entry.contentKind);
+    if (!isCall && !isResult) continue;
+    if (!entry.toolCallId) {
+      missingIdentitySourceIds.push(entry.sourceId);
+      continue;
+    }
+    const group = byToolCallId.get(entry.toolCallId) ?? { calls: [], results: [] };
+    if (isCall) group.calls.push(entry);
+    else group.results.push(entry);
+    byToolCallId.set(entry.toolCallId, group);
+  }
+  return {
+    episodes: [...byToolCallId.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([toolCallId, group]) => {
+        const toolNames = uniqueSorted(
+          [...group.calls, ...group.results].map((entry) => entry.toolName).filter(nonEmpty),
+        );
+        return {
+          toolCallId,
+          callSourceIds: group.calls.map((entry) => entry.sourceId),
+          resultSourceIds: group.results.map((entry) => entry.sourceId),
+          valid: group.calls.length === 1 && group.results.length <= 1 && toolNames.length <= 1,
+        };
+      }),
+    missingIdentitySourceIds: uniqueSorted(missingIdentitySourceIds),
+  };
+}
+
+function toolLedgerHasInvalidSourceAtOrAfter(
+  index: ActiveCompactionSourceIndex,
+  firstCandidateMessageIndex: number,
+): boolean {
+  const sourceMessageIndex = new Map(
+    index.entries.map((entry) => [entry.sourceId, entry.messageIndex]),
+  );
+  const atOrAfter = (sourceId: string) =>
+    (sourceMessageIndex.get(sourceId) ?? -1) >= firstCandidateMessageIndex;
+  if (index.toolLedger.missingIdentitySourceIds.some(atOrAfter)) return true;
+  return index.toolLedger.episodes.some(
+    (episode) =>
+      !episode.valid && [...episode.callSourceIds, ...episode.resultSourceIds].some(atOrAfter),
+  );
+}
+
+function toolPairIntegrityViolation(
   selectedEntries: readonly ActiveCompactionSourceEntry[],
-  allEntries: readonly ActiveCompactionSourceEntry[],
+  ledger: ActiveCompactionToolLedger,
 ): boolean {
   const selectedSourceIds = new Set(selectedEntries.map((entry) => entry.sourceId));
-  const toolCallIds = uniqueSorted(
-    selectedEntries.map((entry) => entry.toolCallId).filter(nonEmpty),
-  );
-  for (const toolCallId of toolCallIds) {
-    const allKinds = allEntries
-      .filter((entry) => entry.toolCallId === toolCallId)
-      .map((entry) => entry.contentKind);
-    const hasCall = allKinds.includes('function_call');
-    const hasResult = allKinds.some(
-      (kind) =>
-        kind === 'function_response' ||
-        kind === 'tool_result' ||
-        kind === 'active_archive_placeholder',
-    );
-    if (!hasCall || !hasResult) continue;
-    const selectedKinds = allEntries
-      .filter((entry) => entry.toolCallId === toolCallId && selectedSourceIds.has(entry.sourceId))
-      .map((entry) => entry.contentKind);
-    const selectedHasCall = selectedKinds.includes('function_call');
-    const selectedHasResult = selectedKinds.some(
-      (kind) =>
-        kind === 'function_response' ||
-        kind === 'tool_result' ||
-        kind === 'active_archive_placeholder',
-    );
-    if (selectedHasCall !== selectedHasResult) return true;
+  if (ledger.missingIdentitySourceIds.some((sourceId) => selectedSourceIds.has(sourceId))) {
+    return true;
+  }
+  for (const episode of ledger.episodes) {
+    const episodeSourceIds = [...episode.callSourceIds, ...episode.resultSourceIds];
+    const selectedCount = episodeSourceIds.filter((sourceId) =>
+      selectedSourceIds.has(sourceId),
+    ).length;
+    if (selectedCount === 0) continue;
+    if (!episode.valid || episode.resultSourceIds.length !== 1) return true;
+    if (selectedCount !== episodeSourceIds.length) return true;
   }
   return false;
+}
+
+function isToolResultKind(kind: ActiveCompactionContentKind): boolean {
+  return (
+    kind === 'function_response' || kind === 'tool_result' || kind === 'active_archive_placeholder'
+  );
 }
 
 function archiveRefsEqual(

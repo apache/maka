@@ -8792,6 +8792,160 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(usageMessage?.contextBudget?.activeDuplicateToolResults, undefined);
   });
 
+  test('semantic compact projects a recorded block through the real backend request pipeline', async () => {
+    const durable = durableTurnHarness('turn-1', 'inspect the repository');
+    const messages: unknown[] = [];
+    const events: SessionEvent[] = [];
+    const recordedBlocks: SemanticCompactBlock[] = [];
+    const largeBody = 'SEMANTIC_RAW_TOOL_OUTPUT'.repeat(200);
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doGenerate: {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              established_findings: ['The repository inspection completed.'],
+              decisions: [],
+              failed_paths: [],
+              partial_work_product: ['The earlier Read result was inspected.'],
+              action_in_progress: 'Continue from the preserved latest tool episode.',
+            }),
+          },
+        ],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 12, text: 12, reasoning: 0 },
+        },
+        warnings: [],
+      },
+      doStream: async () => {
+        streamCalls += 1;
+        const toolCall = (toolCallId: string, toolName: string, input: unknown) =>
+          [
+            { type: 'stream-start', warnings: [] },
+            { type: 'tool-call', toolCallId, toolName, input: JSON.stringify(input) },
+            {
+              type: 'finish',
+              finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+              usage: {
+                inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                outputTokens: { total: 1, text: 1, reasoning: 0 },
+              },
+            },
+          ] as LanguageModelV4StreamPart[];
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? toolCall('tool-read', 'Read', { path: 'notes.md' })
+            : streamCalls === 2
+              ? toolCall('tool-bash', 'Bash', { cmd: 'continue' })
+              : [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: {
+                      inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                      outputTokens: { total: 1, text: 1, reasoning: 0 },
+                    },
+                  },
+                ];
+        return {
+          stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        messages.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          name: 'Read',
+          description: 'Read description',
+          parameters: z.object({ path: z.string() }),
+          impl: async () => ({ body: largeBody }),
+        },
+        {
+          name: 'Bash',
+          description: 'Bash description',
+          parameters: z.object({ cmd: z.string() }),
+          impl: async () => ({ body: 'latest tool episode' }),
+        },
+      ],
+      contextBudget: {
+        charsPerToken: 1,
+        activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
+        semanticCompact: {
+          enabled: true,
+          mode: 'replace',
+          minStepNumber: 1,
+          highWaterRatio: 0.1,
+          maxActiveEstimatedTokens: 1,
+          minSafePrefixEstimatedTokens: 1,
+          maxAcceptedProjectionEstimatedTokens: 2048,
+          minSavingsTokens: 1,
+          minSavingsRatio: 0,
+        },
+      },
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async () => ({ artifactId: 'artifact-tool-read' }),
+      }),
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      recordSemanticCompactBlock: (block) => {
+        recordedBlocks.push(block);
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    for await (const event of backend.send(durable.input())) {
+      durable.record(event);
+      events.push(event);
+    }
+    await Promise.resolve();
+
+    assert.equal(streamCalls, 3);
+    assert.equal(model.doGenerateCalls.length, 1);
+    assert.equal(recordedBlocks.length, 1);
+    assert.equal(recordedBlocks[0]?.kind, 'maka.semantic_compact_block');
+    const projectedPrompt = JSON.stringify(model.doStreamCalls[2]?.prompt ?? []);
+    assert.match(projectedPrompt, /maka_semantic_compact_block/);
+    assert.match(projectedPrompt, /Continue from the preserved latest tool episode/);
+    assert.doesNotMatch(projectedPrompt, /SEMANTIC_RAW_TOOL_OUTPUT/);
+    assert.match(projectedPrompt, /latest tool episode/);
+
+    const usageMessage = messages.find(
+      (message) => (message as { type?: string }).type === 'token_usage',
+    ) as { contextBudget?: Record<string, unknown> } | undefined;
+    const usageEvent = events.find((event) => event.type === 'token_usage') as
+      | (Extract<SessionEvent, { type: 'token_usage' }> & {
+          contextBudget?: Record<string, unknown>;
+        })
+      | undefined;
+    for (const contextBudget of [usageMessage?.contextBudget, usageEvent?.contextBudget]) {
+      const decisions = contextBudget?.compactionDecisions as
+        | Array<Record<string, unknown>>
+        | undefined;
+      assert.equal(
+        decisions?.some(
+          (decision) =>
+            decision.boundaryKind === 'semanticCompact' && decision.decision === 'replaced',
+        ),
+        true,
+      );
+      assert.equal(typeof contextBudget?.highWaterRequestShapeHashBefore, 'string');
+      assert.equal(typeof contextBudget?.highWaterRequestShapeHashAfter, 'string');
+    }
+  });
+
   test('normalizes cache and reasoning tokens to messages, events, and telemetry', async () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
