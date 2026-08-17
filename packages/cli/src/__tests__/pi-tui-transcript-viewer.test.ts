@@ -101,6 +101,27 @@ describe('TranscriptViewerOverlay', () => {
     ]);
   });
 
+  test('keeps following after a no-op upward scroll on a short transcript', () => {
+    const document = ['line 1', 'line 2'];
+    const viewer = new TranscriptViewerOverlay({
+      renderTranscript: () => document,
+      viewportRows: () => 6,
+      onChange: () => {},
+      onClose: () => {},
+    });
+
+    viewer.render(30);
+    viewer.handleInput('\x1b[A');
+    for (let index = 3; index <= 10; index += 1) document.push(`line ${index}`);
+
+    assert.deepEqual(plain(viewer.render(30)).slice(1, -1).map(trim), [
+      'line 7',
+      'line 8',
+      'line 9',
+      'line 10',
+    ]);
+  });
+
   test('closes with q or Escape', () => {
     let closed = 0;
     const viewer = new TranscriptViewerOverlay({

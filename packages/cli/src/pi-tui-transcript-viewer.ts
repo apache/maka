@@ -106,7 +106,10 @@ export class TranscriptViewerOverlay implements Component {
   private scrollBy(delta: number): void {
     const maxTop = this.maxTop();
     this.top = clamp(this.top + delta, 0, maxTop);
-    this.followsEnd = delta > 0 && this.top === maxTop;
+    // Follow the tail whenever the clamped position is the end, including the
+    // no-op case where a short transcript cannot move at all: a stray Up key
+    // must not pin the viewer at the head once the transcript grows.
+    this.followsEnd = this.top === maxTop;
     this.input.onChange();
   }
 
