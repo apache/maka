@@ -544,6 +544,10 @@ describe('useSessionTrace', () => {
     await act(async () => {
       resolveRetry?.({ ok: true, data: tracePage('session-1', 'run-4', 'cursor-4') });
     });
+    assert.deepEqual(
+      snapshot?.trace?.turns.map((turn) => turn.runId),
+      ['run-2', 'run-3'],
+    );
   });
 
   it('stops presenting an old Session summary when its refresh fails', async () => {
