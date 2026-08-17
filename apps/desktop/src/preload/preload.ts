@@ -17,6 +17,7 @@ import type {
   AppUpdateStatus,
   WindowCommand,
   PetPackChangedEvent,
+  WorkBoardChangedEvent,
   DesktopRuntimeHostProfileAddInput,
   DesktopRuntimeHostProfileChangedEvent,
   DesktopRuntimeHostProfileSnapshot,
@@ -1193,6 +1194,32 @@ const makaBridge = {
         handler(payload);
       ipcRenderer.on('pets:changed', listener);
       return () => ipcRenderer.off('pets:changed', listener);
+    },
+  },
+  workBoard: {
+    list(query) {
+      return ipcRenderer.invoke('workBoard:list', query);
+    },
+    create(item) {
+      return ipcRenderer.invoke('workBoard:create', item);
+    },
+    update(id, patch, options) {
+      return ipcRenderer.invoke('workBoard:update', id, patch, options);
+    },
+    archive(id, options) {
+      return ipcRenderer.invoke('workBoard:archive', id, options);
+    },
+    unarchive(id, options) {
+      return ipcRenderer.invoke('workBoard:unarchive', id, options);
+    },
+    remove(id, options) {
+      return ipcRenderer.invoke('workBoard:remove', id, options);
+    },
+    subscribeChanges(handler: (event: WorkBoardChangedEvent) => void): () => void {
+      const listener = (_event: Electron.IpcRendererEvent, payload: WorkBoardChangedEvent) =>
+        handler(payload);
+      ipcRenderer.on('workBoard:changed', listener);
+      return () => ipcRenderer.off('workBoard:changed', listener);
     },
   },
   tasks: {

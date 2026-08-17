@@ -8,21 +8,11 @@ import {
   type WorkBoardMutationOptions,
 } from '@maka/storage/work-board-store';
 import type { createMainWindowController } from './main-window.js';
+import type { WorkBoardChangedEvent, WorkBoardIpcResult } from '../shared/work-board-ipc.js';
+
+export type { WorkBoardChangedEvent, WorkBoardIpcResult } from '../shared/work-board-ipc.js';
 
 type MainWindowController = Pick<ReturnType<typeof createMainWindowController>, 'send'>;
-
-export type WorkBoardIpcResult<T> =
-  | { readonly ok: true; readonly value: T }
-  | {
-      readonly ok: false;
-      readonly code: WorkBoardStoreErrorCode | 'unknown';
-      readonly message: string;
-    };
-
-export interface WorkBoardChangedEvent {
-  readonly type: 'work_board_changed';
-  readonly ts: number;
-}
 
 /**
  * Desktop main process owns the Work Board store (the v1 mutation boundary).
