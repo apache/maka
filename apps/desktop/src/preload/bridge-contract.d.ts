@@ -315,6 +315,7 @@ export interface UiExtensionEntry {
   readonly toolNames: readonly string[];
   readonly uiContributionIds: readonly string[];
   readonly hookContributionIds: readonly string[];
+  readonly eventContributionIds: readonly string[];
   readonly dependencies: readonly { readonly id: string; readonly version: string }[];
   readonly configuration: {
     readonly properties: Readonly<Record<string, {

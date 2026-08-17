@@ -11,6 +11,8 @@ import type {
   HostTrustedToolExtensionRevisionInput,
   HostUiExtensionRevisionInput,
 } from './extension-runtime.js';
+import type { ExtensionEventInvocationContext } from '@maka/runtime/extension-event-contributions';
+import type { PackageWorkerInvocationContext } from './tool-package-worker.js';
 import { ToolPackageActivation } from './tool-package-worker.js';
 import { HookPackageActivation } from './hook-package-activation.js';
 import {
@@ -18,6 +20,12 @@ import {
   HookPackageStore,
   HookPackageStoreError,
 } from './hook-package-store.js';
+import { EventPackageActivation } from './event-package-activation.js';
+import {
+  type InstalledEventPackage,
+  EventPackageStore,
+  EventPackageStoreError,
+} from './event-package-store.js';
 import {
   type InstalledToolPackage,
   ToolPackageStore,
@@ -62,6 +70,14 @@ export interface HostTrustedToolExtensionLoader {
   setConfigurationResolver?(
     resolver: (bindingId: string) => Readonly<Record<string, ExtensionConfigurationScalar>>,
   ): void;
+  setEventEmitter?(
+    emitter: (
+      scopeId: string,
+      event: string,
+      payload: unknown,
+      context: ExtensionEventInvocationContext,
+    ) => Promise<unknown>,
+  ): void;
 }
 
 /**
@@ -95,6 +111,7 @@ export class StaticTrustedToolExtensionLoader implements HostTrustedToolExtensio
             toolNames: Object.freeze(definition.tools.map(({ name }) => name).sort(compareString)),
             uiContributionIds: Object.freeze([]),
             hookContributionIds: Object.freeze([]),
+            eventContributionIds: Object.freeze([]),
           }),
         )
         .sort(
@@ -167,18 +184,38 @@ export class StaticTrustedToolExtensionLoader implements HostTrustedToolExtensio
 export class InstalledToolPackageExtensionLoader implements HostTrustedToolExtensionLoader {
   #configurationFor: (bindingId: string) => Readonly<Record<string, ExtensionConfigurationScalar>> =
     () => Object.freeze({});
+  #emitEvent: (
+    scopeId: string,
+    event: string,
+    payload: unknown,
+    context: ExtensionEventInvocationContext,
+  ) => Promise<unknown> = async () => {
+    throw new Error('Extension Event emission is unavailable');
+  };
 
   constructor(
     private readonly statics: StaticTrustedToolExtensionLoader,
     private readonly packages: ToolPackageStore,
     private readonly uiPackages?: UiPackageStore,
     private readonly hookPackages?: HookPackageStore,
+    private readonly eventPackages?: EventPackageStore,
   ) {}
 
   setConfigurationResolver(
     resolver: (bindingId: string) => Readonly<Record<string, ExtensionConfigurationScalar>>,
   ): void {
     this.#configurationFor = resolver;
+  }
+
+  setEventEmitter(
+    emitter: (
+      scopeId: string,
+      event: string,
+      payload: unknown,
+      context: ExtensionEventInvocationContext,
+    ) => Promise<unknown>,
+  ): void {
+    this.#emitEvent = emitter;
   }
 
   async list(): Promise<readonly TrustedExtensionRevisionProjection[]> {
@@ -199,6 +236,14 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
     if (this.hookPackages) {
       for (const installed of await this.hookPackages.list()) {
         const projection = projectHookPackage(installed);
+        const key = revisionKey(projection.extensionId, projection.revision);
+        const current = installedByRevision.get(key);
+        installedByRevision.set(key, current ? mergeProjection(current, projection) : projection);
+      }
+    }
+    if (this.eventPackages) {
+      for (const installed of await this.eventPackages.list()) {
+        const projection = projectEventPackage(installed);
         const key = revisionKey(projection.extensionId, projection.revision);
         const current = installedByRevision.get(key);
         installedByRevision.set(key, current ? mergeProjection(current, projection) : projection);
@@ -228,15 +273,18 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
     const tool = await this.#loadTool(extensionId, revision);
     const ui = await this.#loadUi(extensionId, revision);
     const hook = await this.#loadHook(extensionId, revision);
-    const root = tool?.root ?? ui?.root ?? hook?.root;
-    const metadata = root ? await loadAndValidateMetadata(root, tool, ui, hook) : undefined;
+    const event = await this.#loadEvent(extensionId, revision);
+    const root = tool?.root ?? ui?.root ?? hook?.root ?? event?.root;
+    const metadata = root ? await loadAndValidateMetadata(root, tool, ui, hook, event) : undefined;
     if (root) {
       return combinedPackageRevisionInput({
         tool,
         ui: ui && this.uiPackages ? { installed: ui, store: this.uiPackages } : undefined,
         hook,
+        event,
         metadata,
         configurationFor: this.#configurationFor,
+        emitEvent: (...args) => this.#emitEvent(...args),
       });
     }
     throw new HostExtensionLoaderError(
@@ -255,9 +303,11 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
     let installedTool: InstalledToolPackage | undefined;
     let installedUi: InstalledUiPackage | undefined;
     let installedHook: InstalledHookPackage | undefined;
+    let installedEvent: InstalledEventPackage | undefined;
     let toolsBefore = new Set<string>();
     let uiBefore = new Set<string>();
     let hooksBefore = new Set<string>();
+    let eventsBefore = new Set<string>();
     try {
       toolsBefore = new Set(
         (await this.packages.list()).map((item) => revisionKey(item.extensionId, item.revision)),
@@ -276,24 +326,41 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
             )
           : [],
       );
+      eventsBefore = new Set(
+        this.eventPackages
+          ? (await this.eventPackages.list()).map((item) =>
+              revisionKey(item.extensionId, item.revision),
+            )
+          : [],
+      );
       const packageRoot = materialized.root;
       const hasUi = Boolean(this.uiPackages && (await exists(join(packageRoot, 'maka.ui.json'))));
       const hasTool = await exists(join(packageRoot, 'maka.tool.json'));
       const hasHook = Boolean(
         this.hookPackages && (await exists(join(packageRoot, 'maka.hook.json'))),
       );
-      if (!hasUi && !hasTool && !hasHook) {
+      const hasEvent = Boolean(
+        this.eventPackages && (await exists(join(packageRoot, 'maka.event.json'))),
+      );
+      if (!hasUi && !hasTool && !hasHook && !hasEvent) {
         throw new HostExtensionLoaderError(
           'invalid_definition',
-          'Extension package must contain maka.ui.json, maka.tool.json, maka.hook.json, or a combination',
+          'Extension package must contain maka.ui.json, maka.tool.json, maka.hook.json, maka.event.json, or a combination',
         );
       }
       installedTool = hasTool ? await this.packages.install(packageRoot) : undefined;
       installedUi = hasUi ? await this.uiPackages!.install(packageRoot) : undefined;
       installedHook = hasHook ? await this.hookPackages!.install(packageRoot) : undefined;
-      const installed = installedTool ?? installedUi ?? installedHook!;
+      installedEvent = hasEvent ? await this.eventPackages!.install(packageRoot) : undefined;
+      const installed = installedTool ?? installedUi ?? installedHook ?? installedEvent!;
       try {
-        await loadAndValidateMetadata(installed.root, installedTool, installedUi, installedHook);
+        await loadAndValidateMetadata(
+          installed.root,
+          installedTool,
+          installedUi,
+          installedHook,
+          installedEvent,
+        );
       } catch (error) {
         if (installedTool) {
           await this.packages
@@ -311,10 +378,16 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
             installedHook.revision,
           ).catch(() => undefined);
         }
+        if (installedEvent) {
+          await this.eventPackages!.uninstall(
+            installedEvent.extensionId,
+            installedEvent.revision,
+          ).catch(() => undefined);
+        }
         throw error;
       }
       if (
-        [installedTool, installedUi, installedHook]
+        [installedTool, installedUi, installedHook, installedEvent]
           .filter((item): item is NonNullable<typeof item> => Boolean(item))
           .some(
             (item) =>
@@ -334,9 +407,14 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
             installedHook.extensionId,
             installedHook.revision,
           ).catch(() => undefined);
+        if (installedEvent)
+          await this.eventPackages!.uninstall(
+            installedEvent.extensionId,
+            installedEvent.revision,
+          ).catch(() => undefined);
         throw new HostExtensionLoaderError(
           'invalid_definition',
-          'Tool, UI, and Hook manifests in one package must declare the same id and content Revision',
+          'Tool, UI, Hook, and Event manifests in one package must declare the same id and content Revision',
         );
       }
       const staticConflict = (await this.statics.list()).some(
@@ -356,6 +434,10 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
           await this.hookPackages!.uninstall(installed.extensionId, installed.revision).catch(
             () => undefined,
           );
+        if (installedEvent)
+          await this.eventPackages!.uninstall(installed.extensionId, installed.revision).catch(
+            () => undefined,
+          );
         throw new HostExtensionLoaderError(
           'invalid_definition',
           `Installed package conflicts with a static revision: ${installed.extensionId}@${installed.revision}`,
@@ -364,7 +446,8 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
       const toolProjection = installedTool ? projectPackage(installedTool) : undefined;
       const uiProjection = installedUi ? projectUiPackage(installedUi) : undefined;
       const hookProjection = installedHook ? projectHookPackage(installedHook) : undefined;
-      const projections = [toolProjection, uiProjection, hookProjection].filter(
+      const eventProjection = installedEvent ? projectEventPackage(installedEvent) : undefined;
+      const projections = [toolProjection, uiProjection, hookProjection, eventProjection].filter(
         (item): item is TrustedExtensionRevisionProjection => Boolean(item),
       );
       return projections.reduce(mergeProjection);
@@ -387,6 +470,15 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
           .catch(() => undefined);
       }
       if (
+        installedEvent &&
+        this.eventPackages &&
+        !eventsBefore.has(revisionKey(installedEvent.extensionId, installedEvent.revision))
+      ) {
+        await this.eventPackages
+          .uninstall(installedEvent.extensionId, installedEvent.revision)
+          .catch(() => undefined);
+      }
+      if (
         installedUi &&
         this.uiPackages &&
         !uiBefore.has(revisionKey(installedUi.extensionId, installedUi.revision))
@@ -405,7 +497,12 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
     const contracts = [...(await this.statics.contracts())];
     const installed = new Map<
       string,
-      { tool?: InstalledToolPackage; ui?: InstalledUiPackage; hook?: InstalledHookPackage }
+      {
+        tool?: InstalledToolPackage;
+        ui?: InstalledUiPackage;
+        hook?: InstalledHookPackage;
+        event?: InstalledEventPackage;
+      }
     >();
     for (const tool of await this.packages.list()) {
       installed.set(revisionKey(tool.extensionId, tool.revision), { tool });
@@ -422,11 +519,17 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
         installed.set(key, { ...installed.get(key), hook });
       }
     }
-    for (const { tool, ui, hook } of installed.values()) {
-      const root = tool?.root ?? ui?.root ?? hook?.root;
+    if (this.eventPackages) {
+      for (const event of await this.eventPackages.list()) {
+        const key = revisionKey(event.extensionId, event.revision);
+        installed.set(key, { ...installed.get(key), event });
+      }
+    }
+    for (const { tool, ui, hook, event } of installed.values()) {
+      const root = tool?.root ?? ui?.root ?? hook?.root ?? event?.root;
       if (!root) continue;
-      const metadata = await loadAndValidateMetadata(root, tool, ui, hook);
-      contracts.push(projectContract(tool, ui, hook, metadata));
+      const metadata = await loadAndValidateMetadata(root, tool, ui, hook, event);
+      contracts.push(projectContract(tool, ui, hook, event, metadata));
     }
     return Object.freeze(
       contracts.sort(
@@ -441,7 +544,8 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
     const tool = await this.#loadTool(extensionId, revision);
     const ui = await this.#loadUi(extensionId, revision);
     const hook = await this.#loadHook(extensionId, revision);
-    const installed = tool ?? ui ?? hook;
+    const event = await this.#loadEvent(extensionId, revision);
+    const installed = tool ?? ui ?? hook ?? event;
     if (!installed) {
       throw new HostExtensionLoaderError(
         'not_found',
@@ -467,13 +571,18 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
       const tool = await this.#loadTool(extensionId, revision);
       const ui = await this.#loadUi(extensionId, revision);
       const hook = await this.#loadHook(extensionId, revision);
-      if (!tool && !ui && !hook)
+      const event = await this.#loadEvent(extensionId, revision);
+      if (!tool && !ui && !hook && !event)
         throw new HostExtensionLoaderError(
           'not_found',
           `Extension revision is not installed: ${extensionId}@${revision}`,
         );
-      const restoreSource = tool?.root ?? ui?.root ?? hook!.root;
+      const restoreSource = tool?.root ?? ui?.root ?? hook?.root ?? event!.root;
       const removed: Array<() => Promise<void>> = [];
+      if (event && this.eventPackages) {
+        await this.eventPackages.uninstall(extensionId, revision);
+        removed.push(() => this.eventPackages!.install(restoreSource).then(() => undefined));
+      }
       if (hook && this.hookPackages) {
         await this.hookPackages.uninstall(extensionId, revision);
         removed.push(() => this.hookPackages!.install(restoreSource).then(() => undefined));
@@ -534,6 +643,19 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
       throw translatePackageError(error);
     }
   }
+
+  async #loadEvent(
+    extensionId: string,
+    revision: string,
+  ): Promise<InstalledEventPackage | undefined> {
+    if (!this.eventPackages) return undefined;
+    try {
+      return await this.eventPackages.load(extensionId, revision);
+    } catch (error) {
+      if (error instanceof EventPackageStoreError && error.code === 'not_found') return undefined;
+      throw translatePackageError(error);
+    }
+  }
 }
 
 function projectPackage(installed: InstalledToolPackage): TrustedExtensionRevisionProjection {
@@ -543,6 +665,7 @@ function projectPackage(installed: InstalledToolPackage): TrustedExtensionRevisi
     toolNames: Object.freeze(installed.manifest.tools.map(({ name }) => name).sort(compareString)),
     uiContributionIds: Object.freeze([]),
     hookContributionIds: Object.freeze([]),
+    eventContributionIds: Object.freeze([]),
   });
 }
 
@@ -594,6 +717,7 @@ function projectUiPackage(installed: InstalledUiPackage): TrustedExtensionRevisi
     toolNames: Object.freeze([]),
     uiContributionIds: Object.freeze(installed.manifest.ui.map(({ id }) => id).sort(compareString)),
     hookContributionIds: Object.freeze([]),
+    eventContributionIds: Object.freeze([]),
   });
 }
 
@@ -606,6 +730,23 @@ function projectHookPackage(installed: InstalledHookPackage): TrustedExtensionRe
     hookContributionIds: Object.freeze(
       installed.manifest.hooks.map(({ event, id }) => `${event}:${id}`).sort(compareString),
     ),
+    eventContributionIds: Object.freeze([]),
+  });
+}
+
+function projectEventPackage(installed: InstalledEventPackage): TrustedExtensionRevisionProjection {
+  return Object.freeze({
+    extensionId: installed.extensionId,
+    revision: installed.revision,
+    toolNames: Object.freeze([]),
+    uiContributionIds: Object.freeze([]),
+    hookContributionIds: Object.freeze([]),
+    eventContributionIds: Object.freeze(
+      [
+        ...installed.manifest.events.map(({ name }) => `event:${name}`),
+        ...installed.manifest.listeners.map(({ event, id }) => `listener:${event}:${id}`),
+      ].sort(compareString),
+    ),
   });
 }
 
@@ -613,12 +754,19 @@ async function combinedPackageRevisionInput(input: {
   readonly tool?: InstalledToolPackage;
   readonly ui?: { readonly installed: InstalledUiPackage; readonly store: UiPackageStore };
   readonly hook?: InstalledHookPackage;
+  readonly event?: InstalledEventPackage;
   readonly metadata?: ExtensionPackageManifest;
   readonly configurationFor: (
     bindingId: string,
   ) => Readonly<Record<string, ExtensionConfigurationScalar>>;
+  readonly emitEvent: (
+    scopeId: string,
+    event: string,
+    payload: unknown,
+    context: ExtensionEventInvocationContext,
+  ) => Promise<unknown>;
 }): Promise<HostPreparedToolExtensionRevisionInput> {
-  const installed = input.tool ?? input.ui?.installed ?? input.hook;
+  const installed = input.tool ?? input.ui?.installed ?? input.hook ?? input.event;
   if (!installed) throw new HostExtensionLoaderError('not_found', 'Extension package is missing');
   const uiInput = input.ui
     ? await uiPackageRevisionInput(input.ui.store, input.ui.installed, input.metadata)
@@ -645,26 +793,58 @@ async function combinedPackageRevisionInput(input: {
           ),
         }
       : {}),
+    ...(input.event
+      ? {
+          eventContributionIds: Object.freeze([
+            ...input.event.manifest.events.map(({ name }) => `event:${name}`),
+            ...input.event.manifest.listeners.map(({ event, id }) => `listener:${event}:${id}`),
+          ]),
+        }
+      : {}),
     prepare: async (context: Parameters<HostPreparedToolExtensionRevisionInput['prepare']>[0]) => {
       const configuration = configurationFor(context.bindingId);
+      const emitEvent = (
+        event: string,
+        payload: unknown,
+        workerContext: PackageWorkerInvocationContext,
+      ) =>
+        input.emitEvent(workerContext.sessionId, event, payload, {
+          sessionId: workerContext.sessionId,
+          ...(workerContext.runId ? { runId: workerContext.runId } : {}),
+          turnId: workerContext.turnId,
+          cwd: workerContext.cwd,
+          permissionMode: workerContext.permissionMode ?? 'default',
+          origin: workerContext.origin ?? 'provider',
+          configuration,
+          signal: workerContext.abortSignal,
+          eventDepth: (workerContext.eventDepth ?? 0) + 1,
+        });
       const toolActivation = input.tool
-        ? new ToolPackageActivation(input.tool, configuration)
+        ? new ToolPackageActivation(input.tool, configuration, Object.freeze({}), emitEvent)
         : undefined;
       const hookActivation = input.hook
-        ? new HookPackageActivation(input.hook, configuration)
+        ? new HookPackageActivation(input.hook, configuration, emitEvent)
+        : undefined;
+      const eventActivation = input.event
+        ? new EventPackageActivation(input.event, configuration, emitEvent)
         : undefined;
       return {
         tools: toolActivation?.tools() ?? Object.freeze([]),
         ...(hookActivation ? { hooks: hookActivation.contributions() } : {}),
+        ...(eventActivation
+          ? { events: eventActivation.events(), listeners: eventActivation.listeners() }
+          : {}),
         healthCheck: async () => {
           await toolActivation?.healthCheck();
           await uiInput?.healthCheck?.();
           await hookActivation?.healthCheck();
+          await eventActivation?.healthCheck();
         },
         dispose: async () => {
           await Promise.allSettled([
             ...(toolActivation ? [toolActivation.dispose()] : []),
             ...(hookActivation ? [hookActivation.dispose()] : []),
+            ...(eventActivation ? [eventActivation.dispose()] : []),
           ]);
         },
       };
@@ -688,6 +868,11 @@ function mergeProjection(
     hookContributionIds: Object.freeze(
       [...new Set([...left.hookContributionIds, ...right.hookContributionIds])].sort(compareString),
     ),
+    eventContributionIds: Object.freeze(
+      [...new Set([...left.eventContributionIds, ...right.eventContributionIds])].sort(
+        compareString,
+      ),
+    ),
   });
 }
 
@@ -696,10 +881,11 @@ async function loadAndValidateMetadata(
   tool: InstalledToolPackage | undefined,
   ui: InstalledUiPackage | undefined,
   hook: InstalledHookPackage | undefined,
+  event: InstalledEventPackage | undefined,
 ): Promise<ExtensionPackageManifest | undefined> {
   const metadata = await loadExtensionPackageManifest(root);
   if (!metadata) return undefined;
-  const manifests = [tool?.manifest, ui?.manifest, hook?.manifest].filter(
+  const manifests = [tool?.manifest, ui?.manifest, hook?.manifest, event?.manifest].filter(
     (manifest): manifest is NonNullable<typeof manifest> => Boolean(manifest),
   );
   if (
@@ -719,12 +905,17 @@ function projectContract(
   tool: InstalledToolPackage | undefined,
   ui: InstalledUiPackage | undefined,
   hook: InstalledHookPackage | undefined,
+  event: InstalledEventPackage | undefined,
   metadata: ExtensionPackageManifest | undefined,
 ): ExtensionPackageContractProjection {
-  const installed = tool ?? ui ?? hook;
+  const installed = tool ?? ui ?? hook ?? event;
   if (!installed) throw new HostExtensionLoaderError('not_found', 'Extension package is missing');
   const version =
-    metadata?.version ?? tool?.manifest.version ?? ui?.manifest.version ?? hook!.manifest.version;
+    metadata?.version ??
+    tool?.manifest.version ??
+    ui?.manifest.version ??
+    hook?.manifest.version ??
+    event!.manifest.version;
   return Object.freeze({
     extensionId: installed.extensionId,
     revision: installed.revision,
@@ -761,6 +952,21 @@ function projectContract(
           mode: item.mode,
         }),
       ) ?? []),
+      ...(event?.manifest.events.map((item) =>
+        Object.freeze({
+          kind: 'event' as const,
+          id: item.name,
+          event: item.name,
+          description: item.description,
+        }),
+      ) ?? []),
+      ...(event?.manifest.listeners.map((item) =>
+        Object.freeze({
+          kind: 'listener' as const,
+          id: item.id,
+          event: item.event,
+        }),
+      ) ?? []),
     ]),
   });
 }
@@ -790,6 +996,17 @@ function translatePackageError(error: unknown): HostExtensionLoaderError {
     );
   }
   if (error instanceof HookPackageStoreError) {
+    return new HostExtensionLoaderError(
+      error.code === 'not_found'
+        ? 'not_found'
+        : error.code === 'invalid_package' || error.code === 'already_installed'
+          ? 'invalid_definition'
+          : 'load_failed',
+      error.message,
+      { cause: error },
+    );
+  }
+  if (error instanceof EventPackageStoreError) {
     return new HostExtensionLoaderError(
       error.code === 'not_found'
         ? 'not_found'

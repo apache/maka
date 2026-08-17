@@ -30,6 +30,16 @@ import {
   type ExtensionHookContribution,
   type ExtensionHookContributionInspection,
 } from '@maka/runtime/extension-hook-contributions';
+import {
+  contributeExtensionEvent,
+  contributeExtensionEventListener,
+  ExtensionEventContributionRegistry,
+  type ExtensionEventDefinition,
+  type ExtensionEventDefinitionInspection,
+  type ExtensionEventInvocationContext,
+  type ExtensionEventListenerContribution,
+  type ExtensionEventListenerInspection,
+} from '@maka/runtime/extension-event-contributions';
 import { createHash } from 'node:crypto';
 
 export type HostTrustedToolExtensionRevisionInput = Omit<
@@ -46,9 +56,13 @@ export interface HostPreparedToolExtensionRevisionInput {
   readonly ui?: readonly ExtensionUiContribution[];
   /** Runtime Hook contribution identities carried by the exact same immutable package Revision. */
   readonly hookContributionIds?: readonly string[];
+  /** Plugin-defined Event and Listener identities carried by the same immutable Revision. */
+  readonly eventContributionIds?: readonly string[];
   readonly prepare: (context: ExtensionPreparationContext) => Promise<{
     readonly tools: readonly MakaTool[];
     readonly hooks?: readonly ExtensionHookContribution[];
+    readonly events?: readonly ExtensionEventDefinition[];
+    readonly listeners?: readonly ExtensionEventListenerContribution[];
     readonly healthCheck?: () => void | Promise<void>;
     readonly dispose?: () => void | Promise<void>;
   }>;
@@ -85,6 +99,18 @@ export interface HostExtensionToolResolutionOptions {
 
 export const PROFILE_EXTENSION_SCOPE = 'profile';
 
+export interface HostExtensionEventDispatchResult {
+  readonly event: string;
+  readonly listenerCount: number;
+  readonly delivered: number;
+  readonly failed: number;
+  readonly failures: readonly {
+    readonly extensionId: string;
+    readonly listenerId: string;
+    readonly diagnostic: string;
+  }[];
+}
+
 /**
  * Runtime Host-owned Extension authority.
  *
@@ -97,6 +123,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
   readonly #tools: ExtensionToolContributionRegistry;
   readonly #ui = new ExtensionUiContributionRegistry();
   readonly #hooks = new ExtensionHookContributionRegistry();
+  readonly #events = new ExtensionEventContributionRegistry();
   readonly #scopeIds = new Set<string>();
   #hostTools: readonly MakaTool[] = Object.freeze([]);
   #draining = false;
@@ -137,6 +164,9 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
         ...(input.hookContributionIds ?? []).map((_, index) =>
           Object.freeze({ id: `${input.extensionId}.hook-${index + 1}`, kind: 'hook' }),
         ),
+        ...(input.eventContributionIds ?? []).map((_, index) =>
+          Object.freeze({ id: `${input.extensionId}.event-${index + 1}`, kind: 'event' }),
+        ),
       ]),
       prepare: async (context: ExtensionPreparationContext) => {
         const prepared = await input.prepare(context);
@@ -149,6 +179,10 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
               contributeExtensionUi(activation, this.#ui, contribution);
             for (const contribution of prepared.hooks ?? [])
               contributeExtensionHook(activation, this.#hooks, contribution);
+            for (const definition of prepared.events ?? [])
+              contributeExtensionEvent(activation, this.#events, definition);
+            for (const listener of prepared.listeners ?? [])
+              contributeExtensionEventListener(activation, this.#events, listener);
           },
           ...(prepared.dispose ? { dispose: prepared.dispose } : {}),
         };
@@ -256,6 +290,61 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     return Object.freeze([...resolved.values()].sort(compareHookContribution));
   }
 
+  inspectEvents(scopeId: string): readonly ExtensionEventDefinitionInspection[] {
+    const { scopeIds, committed } = this.#resolvedScopeState(scopeId);
+    return this.#events.inspectEvents(scopeIds, committed);
+  }
+
+  inspectEventListeners(scopeId: string): readonly ExtensionEventListenerInspection[] {
+    const { scopeIds, committed } = this.#resolvedScopeState(scopeId);
+    return this.#events.inspectListeners(scopeIds, committed);
+  }
+
+  async emitEvent(
+    scopeId: string,
+    event: string,
+    payload: unknown,
+    context: ExtensionEventInvocationContext,
+  ): Promise<HostExtensionEventDispatchResult> {
+    if (this.#closed) throw new Error('Runtime Host Extension authority is closed');
+    if (this.#draining) throw new Error('Runtime Host Extension authority is draining');
+    if (context.signal.aborted)
+      throw context.signal.reason ?? new Error('Event emission was aborted');
+    if ((context.eventDepth ?? 0) > 8) throw new Error('Extension Event recursion limit exceeded');
+    const { scopeIds, committed } = this.#resolvedScopeState(scopeId);
+    const parsed = this.#events.parsePayload(scopeIds, committed, event, payload);
+    const listeners = this.#events
+      .inspectListeners(scopeIds, committed)
+      .filter((listener) => listener.event === event);
+    const failures: Array<{
+      extensionId: string;
+      listenerId: string;
+      diagnostic: string;
+    }> = [];
+    let delivered = 0;
+    for (const listener of listeners) {
+      if (context.signal.aborted)
+        throw context.signal.reason ?? new Error('Event emission was aborted');
+      try {
+        await listener.invoke(structuredClone(parsed), context);
+        delivered += 1;
+      } catch (error) {
+        failures.push({
+          extensionId: listener.extensionId,
+          listenerId: listener.id,
+          diagnostic: boundedDiagnostic(error),
+        });
+      }
+    }
+    return Object.freeze({
+      event,
+      listenerCount: listeners.length,
+      delivered,
+      failed: failures.length,
+      failures: Object.freeze(failures.map((failure) => Object.freeze(failure))),
+    });
+  }
+
   installedRevisions(): readonly {
     readonly extensionId: string;
     readonly revision: string;
@@ -299,6 +388,24 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     if (this.#hostTools.length > 0)
       throw new Error('Runtime Host Extension Tools are already registered');
     this.#hostTools = Object.freeze(tools.map((tool) => Object.freeze({ ...tool })));
+  }
+
+  #resolvedScopeState(scopeId: string): {
+    scopeIds: readonly string[];
+    committed: readonly { readonly bindingId: string; readonly revision: string }[];
+  } {
+    const scopeIds =
+      scopeId === PROFILE_EXTENSION_SCOPE ? [scopeId] : [PROFILE_EXTENSION_SCOPE, scopeId];
+    const committed = scopeIds.flatMap((resolvedScopeId) =>
+      this.#lifecycle
+        .inspectScope(resolvedScopeId)
+        .flatMap((binding) =>
+          binding.current
+            ? [{ bindingId: binding.bindingId, revision: binding.current.revision }]
+            : [],
+        ),
+    );
+    return { scopeIds, committed };
   }
 
   beginDrain(): void {
@@ -360,4 +467,14 @@ function compareHookContribution(
     compareString(left.revision, right.revision) ||
     compareString(left.id, right.id)
   );
+}
+
+function boundedDiagnostic(error: unknown): string {
+  const value = error instanceof Error ? error.message : String(error);
+  const encoded = Buffer.from(value || 'Event Listener failed', 'utf8');
+  if (encoded.byteLength <= 4096) return value || 'Event Listener failed';
+  return `${encoded
+    .subarray(0, 4093)
+    .toString('utf8')
+    .replace(/\uFFFD$/u, '')}...`;
 }

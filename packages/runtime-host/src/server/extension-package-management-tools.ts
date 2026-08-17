@@ -110,6 +110,22 @@ const hookDeclaration = z.object({
   priority: z.number().int().min(-10_000).max(10_000).default(0),
   timeoutMs: z.number().int().min(10).max(120_000).default(3_000),
 });
+const customEventName = z
+  .string()
+  .regex(/^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$/u)
+  .max(192);
+const eventContractDeclaration = z.object({
+  name: customEventName,
+  description: z.string().max(4096).default(''),
+  payloadSchema: jsonSchema,
+});
+const eventListenerDeclaration = z.object({
+  id: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
+  event: customEventName,
+  handler: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
+  priority: z.number().int().min(-10_000).max(10_000).default(0),
+  timeoutMs: z.number().int().min(10).max(120_000).default(3_000),
+});
 
 const definePackageInput = z
   .object({
@@ -180,12 +196,34 @@ const definePackageInput = z
         }),
       })
       .optional(),
+    event: z
+      .object({
+        source: z
+          .string()
+          .min(1)
+          .max(256 * 1024),
+        events: z.array(eventContractDeclaration).max(64).default([]),
+        listeners: z.array(eventListenerDeclaration).max(64).default([]),
+        permissions: z.object({
+          workspace: z.enum(['none', 'read']),
+          network: z.boolean(),
+        }),
+      })
+      .superRefine((input, context) => {
+        if (input.events.length === 0 && input.listeners.length === 0) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'event requires at least one Event contract or Listener',
+          });
+        }
+      })
+      .optional(),
   })
   .superRefine((input, context) => {
-    if (!input.tool && !input.ui && !input.hook) {
+    if (!input.tool && !input.ui && !input.hook && !input.event) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'define_package requires at least one of tool, ui, or hook',
+        message: 'define_package requires at least one of tool, ui, hook, or event',
       });
     }
   });
@@ -236,7 +274,7 @@ export class HostExtensionPackageManagementTools {
     return Object.freeze({
       name: 'inspect_package',
       description:
-        'Inspect the unified immutable Extension package catalog and contracts before defining a package. One Revision may contain Tool, UI, and Hook contributions together. Configuration properties with secret=true are declared in the contract but their configured values are redacted from query results.',
+        'Inspect the unified immutable Extension package catalog and contracts before defining a package. One Revision may contain Tool, UI, Hook, Event, and Listener contributions together. Configuration properties with secret=true are declared in the contract but their configured values are redacted from query results.',
       parameters: z.object({}),
       categoryHint: 'read',
       recoveryMode: 'replay_safe',
@@ -255,7 +293,7 @@ export class HostExtensionPackageManagementTools {
     return Object.freeze({
       name: 'define_package',
       description:
-        'Validate, seal, and install one immutable Extension Revision containing any combination of Tool, UI, and Hook contributions. All contributions share the same id, version, metadata, dependencies, configuration contract, and content Revision. Source and UI documents must be complete; successful history contains only accepted/redacted hashes. Secret configuration is declared with secret=true and must not include a default value. After installation, test each included kind with test_tool, test_ui, or test_hook, then activate the whole Revision with manage_package.',
+        'Validate, seal, and install one immutable Extension Revision containing any combination of Tool, UI, Hook, Event, and Listener contributions. All contributions share the same id, version, metadata, dependencies, configuration contract, and content Revision. After installation, test executable kinds, then activate the whole Revision with manage_package.',
       parameters: definePackageInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
@@ -266,6 +304,7 @@ export class HostExtensionPackageManagementTools {
           ...(input.tool ? ['tool'] : []),
           ...(input.ui ? ['ui'] : []),
           ...(input.hook ? ['hook'] : []),
+          ...(input.event ? ['event'] : []),
         ],
         ...(input.tool
           ? {
@@ -301,6 +340,15 @@ export class HostExtensionPackageManagementTools {
               hookPermissions: input.hook.permissions,
             }
           : {}),
+        ...(input.event
+          ? {
+              eventNames: input.event.events.map(({ name }) => name),
+              eventListeners: input.event.listeners.map(({ id, event }) => ({ id, event })),
+              eventSourceBytes: Buffer.byteLength(input.event.source),
+              eventSourceSha256: digest(input.event.source),
+              eventPermissions: input.event.permissions,
+            }
+          : {}),
         configurationKeys: Object.keys(input.configuration?.properties ?? {}),
         secretConfigurationKeys: Object.entries(input.configuration?.properties ?? {})
           .filter(([, property]) => property.secret === true)
@@ -311,6 +359,7 @@ export class HostExtensionPackageManagementTools {
       impl: async (input: z.infer<typeof definePackageInput>) => {
         if (input.tool) assertSupportedSource(input.tool.source, 'Tool');
         if (input.hook) assertSupportedSource(input.hook.source, 'Hook');
+        if (input.event) assertSupportedSource(input.event.source, 'Event');
         if (input.ui?.host) assertSupportedSource(input.ui.host.source, 'UI Host');
         const draft = join(this.#draftRoot, randomUUID());
         try {
@@ -327,6 +376,7 @@ export class HostExtensionPackageManagementTools {
           if (input.tool) await this.#writeTool(draft, input);
           if (input.ui) await this.#writeUi(draft, input);
           if (input.hook) await this.#writeHook(draft, input);
+          if (input.event) await this.#writeEvent(draft, input);
           return unwrap(
             await this.controller.handlers['extension.package.install'](
               { sourcePath: draft },
@@ -377,7 +427,10 @@ export class HostExtensionPackageManagementTools {
         const desired = [
           {
             ...slots.session,
-            needed: candidate.toolNames.length > 0 || candidate.hookContributionIds.length > 0,
+            needed:
+              candidate.toolNames.length > 0 ||
+              candidate.hookContributionIds.length > 0 ||
+              candidate.eventContributionIds.length > 0,
           },
           { ...slots.desktop, needed: candidate.uiContributionIds.length > 0 },
         ];
@@ -572,6 +625,24 @@ export class HostExtensionPackageManagementTools {
       permissions: hook.permissions,
     });
     await writeFile(join(draft, 'dist', 'hook.mjs'), hook.source, {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+  }
+
+  async #writeEvent(draft: string, input: z.infer<typeof definePackageInput>): Promise<void> {
+    const event = input.event!;
+    await mkdir(join(draft, 'dist'), { recursive: true, mode: 0o700 });
+    await writeJson(draft, 'maka.event.json', {
+      schemaVersion: 1,
+      id: input.id,
+      version: input.version,
+      entry: 'dist/event.mjs',
+      events: event.events,
+      listeners: event.listeners,
+      permissions: event.permissions,
+    });
+    await writeFile(join(draft, 'dist', 'event.mjs'), event.source, {
       encoding: 'utf8',
       mode: 0o600,
     });

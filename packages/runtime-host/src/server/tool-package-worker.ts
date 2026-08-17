@@ -27,8 +27,17 @@ export interface PackageWorkerInvocationContext {
   readonly toolCallId: string;
   readonly operationId?: string;
   readonly abortSignal: AbortSignal;
+  readonly permissionMode?: string;
+  readonly origin?: 'provider' | 'code_mode' | 'host';
+  readonly eventDepth?: number;
   readonly emitOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
 }
+
+export type PackageWorkerEventEmitter = (
+  event: string,
+  payload: unknown,
+  context: PackageWorkerInvocationContext,
+) => Promise<unknown>;
 
 type WorkerRequest =
   | { readonly kind: 'health'; readonly handlers: readonly string[] }
@@ -95,6 +104,7 @@ export class ToolPackageActivation {
       {},
     ),
     private readonly environment: Readonly<Record<string, string>> = Object.freeze({}),
+    private readonly emitEvent?: PackageWorkerEventEmitter,
   ) {}
 
   tools(): readonly MakaTool[] {
@@ -240,11 +250,11 @@ export class ToolPackageActivation {
     const child = spawn(program, args, {
       cwd: transformed.exec.cwd,
       env: normalizedEnvironment(transformed.exec.env),
-      stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
     });
     this.#children.add(child);
     try {
-      return await exchange(child, request, context, timeoutMs);
+      return await exchange(child, request, context, timeoutMs, this.emitEvent);
     } finally {
       this.#children.delete(child);
     }
@@ -265,11 +275,15 @@ async function exchange(
   request: WorkerRequest,
   context: PackageWorkerInvocationContext | undefined,
   timeoutMs: number,
+  emitEvent: PackageWorkerEventEmitter | undefined,
 ): Promise<unknown> {
   const auth = randomBytes(32).toString('hex');
   const input = child.stdio[3] as Writable | null;
   const output = child.stdio[4] as Readable | null;
-  if (!input || !output) {
+  const childStdio = child.stdio as Array<Readable | Writable | null | undefined>;
+  const callbackInput = childStdio[5] as Readable | null | undefined;
+  const callbackOutput = childStdio[6] as Writable | null | undefined;
+  if (!input || !output || !callbackInput || !callbackOutput) {
     terminate(child);
     throw new ToolPackageWorkerError(
       'worker_failed',
@@ -278,6 +292,8 @@ async function exchange(
   }
   input.on('error', () => terminate(child));
   output.on('error', () => terminate(child));
+  callbackInput.on('error', () => terminate(child));
+  callbackOutput.on('error', () => terminate(child));
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
   let stdoutBytes = 0;
@@ -313,12 +329,70 @@ async function exchange(
         const frame = decodeFrame(JSON.parse(encoded), auth);
         if (frame.kind === 'output') context?.emitOutput?.(frame.stream, frame.chunk);
         else if (terminal) throw new Error('Tool package worker emitted multiple terminal frames');
-        else terminal = frame;
+        else {
+          terminal = frame;
+          // No callback can be initiated after the handler's terminal frame.
+          // Closing the parent-to-worker lane lets the worker's callback reader
+          // observe EOF and release its final event-loop handle.
+          callbackOutput.end();
+        }
       } catch (error) {
         protocolFailure = error instanceof Error ? error : new Error(String(error));
         terminate(child);
         return;
       }
+    }
+  });
+
+  let callbackProtocol = '';
+  let callbackBytes = 0;
+  callbackInput.on('data', (chunk: Buffer) => {
+    if (protocolFailure) return;
+    callbackBytes += chunk.byteLength;
+    if (callbackBytes > MAX_PROTOCOL_BYTES) {
+      protocolFailure = new Error('Tool package callback protocol exceeds its size limit');
+      terminate(child);
+      return;
+    }
+    callbackProtocol += chunk.toString('utf8');
+    let newline: number;
+    while ((newline = callbackProtocol.indexOf('\n')) >= 0) {
+      const encoded = callbackProtocol.slice(0, newline);
+      callbackProtocol = callbackProtocol.slice(newline + 1);
+      if (!encoded) continue;
+      let frame: { id: string; event: string; payload: unknown };
+      try {
+        frame = decodeCallbackFrame(JSON.parse(encoded), auth);
+      } catch (error) {
+        protocolFailure = error instanceof Error ? error : new Error(String(error));
+        terminate(child);
+        return;
+      }
+      void Promise.resolve()
+        .then(async () => {
+          if (!context || !emitEvent) throw new Error('Extension Event emission is unavailable');
+          return await emitEvent(frame.event, frame.payload, context);
+        })
+        .then(
+          (result) =>
+            writeCallbackFrame(callbackOutput, auth, {
+              kind: 'emit_event_result',
+              id: frame.id,
+              ok: true,
+              result,
+            }),
+          (error) =>
+            writeCallbackFrame(callbackOutput, auth, {
+              kind: 'emit_event_result',
+              id: frame.id,
+              ok: false,
+              error: boundedCallbackError(error),
+            }),
+        )
+        .catch((error) => {
+          protocolFailure = error instanceof Error ? error : new Error(String(error));
+          terminate(child);
+        });
     }
   });
 
@@ -450,6 +524,56 @@ function decodeFrame(value: unknown, expectedAuth: string): WorkerFrame {
     };
   }
   throw new Error('Tool package worker frame kind is invalid');
+}
+
+function decodeCallbackFrame(
+  value: unknown,
+  expectedAuth: string,
+): { id: string; event: string; payload: unknown } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Tool package callback frame is invalid');
+  }
+  const frame = value as Record<string, unknown>;
+  exactFrameKeys(frame, ['kind', 'id', 'event', 'payload', 'auth']);
+  if (
+    frame.kind !== 'emit_event' ||
+    typeof frame.auth !== 'string' ||
+    frame.auth.length !== expectedAuth.length ||
+    !timingSafeEqual(Buffer.from(frame.auth), Buffer.from(expectedAuth)) ||
+    typeof frame.id !== 'string' ||
+    !/^[a-f0-9]{32}$/u.test(frame.id) ||
+    typeof frame.event !== 'string' ||
+    !/^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$/u.test(frame.event) ||
+    Buffer.byteLength(frame.event, 'utf8') > 192
+  ) {
+    throw new Error('Tool package Event callback is invalid');
+  }
+  return { id: frame.id, event: frame.event, payload: frame.payload };
+}
+
+function writeCallbackFrame(output: Writable, auth: string, frame: object): void {
+  const encoded = `${JSON.stringify({ ...frame, auth })}\n`;
+  if (Buffer.byteLength(encoded, 'utf8') > 1024 * 1024) {
+    throw new Error('Tool package callback response exceeds its size limit');
+  }
+  output.write(encoded);
+}
+
+function boundedCallbackError(error: unknown): { name: string; message: string } {
+  const value = error instanceof Error ? error : new Error(String(error));
+  return {
+    name: boundedText(value.name || 'Error', 128),
+    message: boundedText(value.message || 'Extension Event emission failed', 4096),
+  };
+}
+
+function boundedText(value: string, maxBytes: number): string {
+  const encoded = Buffer.from(value, 'utf8');
+  if (encoded.byteLength <= maxBytes) return value;
+  return `${encoded
+    .subarray(0, maxBytes - 3)
+    .toString('utf8')
+    .replace(/\uFFFD$/u, '')}...`;
 }
 
 function exactFrameKeys(frame: Record<string, unknown>, keys: readonly string[]): void {

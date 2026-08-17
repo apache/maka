@@ -48,6 +48,7 @@ export interface TrustedExtensionRevisionProjection {
   readonly toolNames: readonly string[];
   readonly uiContributionIds: readonly string[];
   readonly hookContributionIds: readonly string[];
+  readonly eventContributionIds: readonly string[];
 }
 
 export type ExtensionBindingStatus = 'disabled' | 'active' | 'waiting' | 'failed';
@@ -87,14 +88,14 @@ export interface ExtensionContractConfigurationProperty {
 }
 
 export interface ExtensionContractContribution {
-  readonly kind: 'tool' | 'ui' | 'hook';
+  readonly kind: 'tool' | 'ui' | 'hook' | 'event' | 'listener';
   readonly id: string;
   readonly name?: string;
   readonly description?: string;
   readonly surface?: 'app.root' | 'app.overlay' | 'app.slot';
   readonly slot?: string;
   readonly slots?: readonly string[];
-  readonly event?: 'UserPromptSubmit' | 'RunStart' | 'PreToolUse' | 'PostToolUse' | 'RunEnd';
+  readonly event?: string;
   readonly mode?: 'observe' | 'gate' | 'transform';
 }
 
@@ -662,15 +663,19 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
     'toolNames',
     'uiContributionIds',
     ...(Object.hasOwn(source, 'hookContributionIds') ? ['hookContributionIds'] : []),
+    ...(Object.hasOwn(source, 'eventContributionIds') ? ['eventContributionIds'] : []),
   ]);
   const hookContributionIds = revision.hookContributionIds ?? [];
+  const eventContributionIds = revision.eventContributionIds ?? [];
   if (
     !Array.isArray(revision.toolNames) ||
     revision.toolNames.length > 128 ||
     !Array.isArray(revision.uiContributionIds) ||
     revision.uiContributionIds.length > 64 ||
     !Array.isArray(hookContributionIds) ||
-    hookContributionIds.length > 64
+    hookContributionIds.length > 64 ||
+    !Array.isArray(eventContributionIds) ||
+    eventContributionIds.length > 128
   ) {
     throw invalidProtocolFrame('Invalid trusted extension contribution names');
   }
@@ -685,6 +690,9 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
     ),
     hookContributionIds: hookContributionIds.map((id) =>
       requireUtf8String(id, 'extension Hook contribution id', 256),
+    ),
+    eventContributionIds: eventContributionIds.map((id) =>
+      requireUtf8String(id, 'extension Event contribution id', 512),
     ),
   };
 }
@@ -704,7 +712,7 @@ function decodePackageContract(value: unknown): ExtensionPackageContractProjecti
     !Array.isArray(contract.dependencies) ||
     contract.dependencies.length > 64 ||
     !Array.isArray(contract.contributions) ||
-    contract.contributions.length > 192
+    contract.contributions.length > 320
   )
     throw invalidProtocolFrame('Invalid Extension package contract collections');
   const configuration = requireExactRecord(
@@ -821,19 +829,25 @@ function decodeContractContribution(value: unknown): ExtensionContractContributi
     ...(Object.hasOwn(source, 'mode') ? ['mode'] : []),
   ];
   const contribution = requireExactRecord(source, 'Extension contract contribution', fields);
-  if (contribution.kind !== 'tool' && contribution.kind !== 'ui' && contribution.kind !== 'hook') {
+  if (
+    contribution.kind !== 'tool' &&
+    contribution.kind !== 'ui' &&
+    contribution.kind !== 'hook' &&
+    contribution.kind !== 'event' &&
+    contribution.kind !== 'listener'
+  ) {
     throw invalidProtocolFrame('Invalid Extension contract contribution kind');
   }
-  if (
-    contribution.event !== undefined &&
-    contribution.event !== 'UserPromptSubmit' &&
-    contribution.event !== 'RunStart' &&
-    contribution.event !== 'PreToolUse' &&
-    contribution.event !== 'PostToolUse' &&
-    contribution.event !== 'RunEnd'
-  ) {
-    throw invalidProtocolFrame('Invalid Extension contract Hook event');
-  }
+  const isHookEvent =
+    contribution.event === 'UserPromptSubmit' ||
+    contribution.event === 'RunStart' ||
+    contribution.event === 'PreToolUse' ||
+    contribution.event === 'PostToolUse' ||
+    contribution.event === 'RunEnd';
+  const isPluginEvent =
+    typeof contribution.event === 'string' &&
+    /^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$/u.test(contribution.event) &&
+    Buffer.byteLength(contribution.event, 'utf8') <= 192;
   if (
     contribution.mode !== undefined &&
     contribution.mode !== 'observe' &&
@@ -843,9 +857,12 @@ function decodeContractContribution(value: unknown): ExtensionContractContributi
     throw invalidProtocolFrame('Invalid Extension contract Hook mode');
   }
   if (
-    (contribution.kind === 'hook' &&
-      (contribution.event === undefined || contribution.mode === undefined)) ||
+    (contribution.kind === 'hook' && (!isHookEvent || contribution.mode === undefined)) ||
+    ((contribution.kind === 'event' || contribution.kind === 'listener') &&
+      (!isPluginEvent || contribution.mode !== undefined)) ||
     (contribution.kind !== 'hook' &&
+      contribution.kind !== 'event' &&
+      contribution.kind !== 'listener' &&
       (contribution.event !== undefined || contribution.mode !== undefined))
   ) {
     throw invalidProtocolFrame('Invalid Extension contract Hook fields');
@@ -889,7 +906,7 @@ function decodeContractContribution(value: unknown): ExtensionContractContributi
             requireUtf8String(slot, 'Extension UI child slot', 128),
           ),
         }),
-    ...(contribution.event === undefined ? {} : { event: contribution.event }),
+    ...(contribution.event === undefined ? {} : { event: contribution.event as string }),
     ...(contribution.mode === undefined ? {} : { mode: contribution.mode }),
   };
 }

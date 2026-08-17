@@ -49,6 +49,17 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
           contributions: [
             { kind: 'ui', id: 'root', surface: 'app.root', slots: ['weather.details'] },
             { kind: 'hook', id: 'policy', event: 'PreToolUse', mode: 'gate' },
+            {
+              kind: 'event',
+              id: 'dev.maka.weather.changed',
+              event: 'dev.maka.weather.changed',
+              description: 'Weather changed.',
+            },
+            {
+              kind: 'listener',
+              id: 'refresh',
+              event: 'dev.maka.weather.changed',
+            },
           ],
         },
       ],
@@ -71,6 +82,29 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
       ],
     }).packages[0]?.contributions[0]?.event,
     'PreToolUse',
+  );
+  assert.equal(
+    decodeExtensionContractQueryResult({
+      packages: [
+        {
+          extensionId: 'dev.maka.events',
+          revision: 'sha256-demo',
+          version: '1.0.0',
+          displayName: 'Events',
+          description: '',
+          dependencies: [],
+          configuration: { properties: {}, required: [] },
+          contributions: [
+            {
+              kind: 'listener',
+              id: 'observe',
+              event: 'dev.maka.events.changed',
+            },
+          ],
+        },
+      ],
+    }).packages[0]?.contributions[0]?.event,
+    'dev.maka.events.changed',
   );
   assert.deepEqual(
     decodeExtensionConfigurationMutateInput({
@@ -178,6 +212,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
           toolNames: ['Weather'],
           uiContributionIds: [],
           hookContributionIds: [],
+          eventContributionIds: [],
         },
       ],
       bindings: [
@@ -201,6 +236,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
           toolNames: ['Weather'],
           uiContributionIds: [],
           hookContributionIds: [],
+          eventContributionIds: [],
         },
       ],
       bindings: [

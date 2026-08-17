@@ -20,6 +20,7 @@ export interface ExtensionHookInvocationContext {
   readonly origin: 'provider' | 'code_mode' | 'host';
   readonly configuration: Readonly<Record<string, string | number | boolean>>;
   readonly signal: AbortSignal;
+  readonly eventDepth?: number;
 }
 
 export interface ExtensionHookInvocationResult {

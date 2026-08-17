@@ -35,6 +35,7 @@
     "./extension-tool-contributions": "./dist/extension-tool-contributions.js",
     "./extension-ui-contributions": "./dist/extension-ui-contributions.js",
     "./extension-hook-contributions": "./dist/extension-hook-contributions.js",
+    "./extension-event-contributions": "./dist/extension-event-contributions.js",
     "./invocation-context": "./dist/invocation-context.js",
     "./ai-sdk-flow": "./dist/ai-sdk-flow.js",
     "./stream-graph-readiness": "./dist/stream-graph-readiness.js",

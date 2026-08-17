@@ -37,6 +37,7 @@ export {
   type HostTrustedToolExtensionRevisionInput,
   type HostUiExtensionRevisionInput,
   type HostExtensionRevisionInput,
+  type HostExtensionEventDispatchResult,
 } from './extension-runtime.js';
 export {
   HostExtensionLoaderError,
@@ -71,6 +72,17 @@ export {
 } from './hook-package-store.js';
 export { HookPackageActivation } from './hook-package-activation.js';
 export { HostHookPackageManagementTools } from './hook-package-management-tools.js';
+export {
+  EventPackageStore,
+  EventPackageStoreError,
+  decodeEventPackageManifest,
+  type InstalledEventPackage,
+  type EventPackageManifest,
+  type EventPackageManifestEvent,
+  type EventPackageManifestListener,
+} from './event-package-store.js';
+export { EventPackageActivation } from './event-package-activation.js';
+export { HostEventPackageManagementTools } from './event-package-management-tools.js';
 export { HostExtensionPackageManagementTools } from './extension-package-management-tools.js';
 export {
   compareExtensionVersions,

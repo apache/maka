@@ -70,6 +70,7 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
           toolNames: ['Weather'],
           uiContributionIds: [],
           hookContributionIds: [],
+          eventContributionIds: [],
         },
         {
           extensionId: 'weather',
@@ -77,6 +78,7 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
           toolNames: ['Weather'],
           uiContributionIds: [],
           hookContributionIds: [],
+          eventContributionIds: [],
         },
         {
           extensionId: 'weather',
@@ -84,6 +86,7 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
           toolNames: ['Weather'],
           uiContributionIds: [],
           hookContributionIds: [],
+          eventContributionIds: [],
         },
       ],
       bindings: [],

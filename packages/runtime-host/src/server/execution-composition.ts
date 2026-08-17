@@ -126,6 +126,8 @@ import { HostToolPackageManagementTools } from './tool-package-management-tools.
 import { UiPackageStore } from './ui-package-store.js';
 import { HookPackageStore } from './hook-package-store.js';
 import { HostHookPackageManagementTools } from './hook-package-management-tools.js';
+import { EventPackageStore } from './event-package-store.js';
+import { HostEventPackageManagementTools } from './event-package-management-tools.js';
 import { HostExtensionPackageManagementTools } from './extension-package-management-tools.js';
 import { HostUiPackageManagementTools } from './ui-package-management-tools.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
@@ -226,11 +228,13 @@ export async function createExecutionRuntimeHostComposition(
   const toolPackageStore = new ToolPackageStore(context.owner.controlDirectory);
   const uiPackageStore = new UiPackageStore(context.owner.controlDirectory);
   const hookPackageStore = new HookPackageStore(context.owner.controlDirectory);
+  const eventPackageStore = new EventPackageStore(context.owner.controlDirectory);
   const extensionLoader = new InstalledToolPackageExtensionLoader(
     new StaticTrustedToolExtensionLoader(options.trustedToolExtensions),
     toolPackageStore,
     uiPackageStore,
     hookPackageStore,
+    eventPackageStore,
   );
   const extensionController = new HostExtensionController(
     extensions,
@@ -258,6 +262,12 @@ export async function createExecutionRuntimeHostComposition(
     extensions,
     hookPackageStore,
   );
+  const eventPackageManagement = new HostEventPackageManagementTools(
+    context.owner.controlDirectory,
+    extensionController,
+    extensions,
+    eventPackageStore,
+  );
   const extensionPackageManagement = new HostExtensionPackageManagementTools(
     context.owner.controlDirectory,
     extensionController,
@@ -267,6 +277,7 @@ export async function createExecutionRuntimeHostComposition(
     ...toolPackageManagement.tools(),
     ...uiPackageManagement.tools(),
     ...hookPackageManagement.tools(),
+    ...eventPackageManagement.tools(),
   ]);
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let taskLedgerStore:

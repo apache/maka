@@ -7,7 +7,7 @@ import type { IpcHandler } from '../ipc-reconnect-policy.js';
 import type { DesktopRuntimeHostClient } from '../runtime-host-client.js';
 import { registerRuntimeHostUiExtensionsIpc } from '../runtime-host-ui-extensions-ipc-main.js';
 
-test('user import previews, confirms, installs, and enables one UI and Hook package', async () => {
+test('user import previews, confirms, installs, and enables one UI, Hook, and Event package', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-ui-import-'));
   try {
     await mkdir(join(root, 'documents'));
@@ -45,13 +45,31 @@ test('user import previews, confirms, installs, and enables one UI and Hook pack
       join(root, 'dist', 'index.mjs'),
       'export default { policy: () => ({ decision: "allow" }) };',
     );
+    await writeFile(
+      join(root, 'maka.event.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        id: 'dev.maka.user.ui',
+        version: '1',
+        entry: 'dist/index.mjs',
+        events: [
+          {
+            name: 'dev.maka.user.ui.changed',
+            description: 'UI changed.',
+            payloadSchema: { type: 'object' },
+          },
+        ],
+        listeners: [],
+        permissions: { workspace: 'none', network: false },
+      }),
+    );
     const handlers = new Map<string, IpcHandler>();
     const requests: Array<{ operation: string; input: unknown }> = [];
     const client = {
       request: async (operation: string, input: unknown) => {
         requests.push({ operation, input });
         if (operation === 'extension.package.install') {
-          return { extensionId: 'dev.maka.user.ui', revision: 'sha256-demo', toolNames: [], uiContributionIds: ['root'], hookContributionIds: ['PreToolUse:policy'] };
+          return { extensionId: 'dev.maka.user.ui', revision: 'sha256-demo', toolNames: [], uiContributionIds: ['root'], hookContributionIds: ['PreToolUse:policy'], eventContributionIds: ['event:dev.maka.user.ui.changed'] };
         }
         if (operation === 'extension.catalog.query') return { revisions: [], bindings: [] };
         if (operation === 'extension.catalog.mutate') return { binding: null };

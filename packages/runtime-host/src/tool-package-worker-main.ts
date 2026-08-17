@@ -1,13 +1,19 @@
 import { Console } from 'node:console';
+import { randomBytes } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
+import { Socket } from 'node:net';
 import { pathToFileURL } from 'node:url';
 
 const MAX_REQUEST_BYTES = 512 * 1024;
 const MAX_FRAME_BYTES = 1024 * 1024;
 const protocolInput = createReadStream('', { fd: 3, autoClose: false });
 const protocolOutput = createWriteStream('', { fd: 4, autoClose: false });
+const callbackOutput = new Socket({ fd: 5, readable: false, writable: true });
+const callbackInput = new Socket({ fd: 6, readable: true, writable: false });
 protocolInput.on('error', () => process.exit(1));
 protocolOutput.on('error', () => process.exit(1));
+callbackOutput.on('error', () => process.exit(1));
+callbackInput.on('error', () => process.exit(1));
 
 // Package diagnostics belong on stderr. Direct stdout writes are captured by
 // the parent but can never corrupt the dedicated protocol descriptor.
@@ -34,6 +40,34 @@ type WorkerRequest =
 
 const abortController = new AbortController();
 let protocolAuth = '';
+const pendingCallbacks = new Map<
+  string,
+  { resolve: (value: unknown) => void; reject: (error: Error) => void }
+>();
+let callbackProtocol = '';
+let callbackProtocolBytes = 0;
+callbackInput.on('data', (chunk: Buffer) => {
+  callbackProtocolBytes += chunk.byteLength;
+  if (callbackProtocolBytes > 2 * 1024 * 1024) {
+    failPendingCallbacks(new Error('Tool package callback input exceeds its size limit'));
+    process.exit(1);
+    return;
+  }
+  callbackProtocol += chunk.toString('utf8');
+  let newline: number;
+  while ((newline = callbackProtocol.indexOf('\n')) >= 0) {
+    const encoded = callbackProtocol.slice(0, newline);
+    callbackProtocol = callbackProtocol.slice(newline + 1);
+    if (!encoded) continue;
+    try {
+      settleCallback(JSON.parse(encoded));
+    } catch (error) {
+      failPendingCallbacks(error instanceof Error ? error : new Error(String(error)));
+      process.exit(1);
+      return;
+    }
+  }
+});
 process.once('SIGTERM', () => abortController.abort(new Error('Tool invocation was terminated')));
 process.once('SIGINT', () => abortController.abort(new Error('Tool invocation was interrupted')));
 
@@ -59,8 +93,12 @@ try {
         if (typeof chunk !== 'string') throw new Error('Tool package output must be a string');
         writeFrame({ kind: 'output', stream, chunk });
       },
+      emitEvent,
     });
     const result = await handler(request.args, context);
+    if (pendingCallbacks.size > 0) {
+      throw new Error('Extension Event emissions must be awaited before the handler returns');
+    }
     assertJsonValue(result);
     writeFrame({ kind: 'result', result: result ?? null });
   }
@@ -68,6 +106,9 @@ try {
   writeFrame({ kind: 'error', error: serializeError(error) });
   process.exitCode = 1;
 } finally {
+  failPendingCallbacks(new Error('Tool package worker is closing'));
+  callbackInput.destroy();
+  callbackOutput.end();
   protocolOutput.end();
 }
 
@@ -88,6 +129,7 @@ type ToolHandler = (
   context: WorkerContext & {
     readonly abortSignal: AbortSignal;
     readonly emitOutput: (stream: 'stdout' | 'stderr', chunk: string) => void;
+    readonly emitEvent: (event: string, payload: unknown) => Promise<unknown>;
   },
 ) => unknown | Promise<unknown>;
 
@@ -226,6 +268,72 @@ function writeFrame(frame: unknown): void {
     throw new Error('Tool package worker response is too large');
   }
   protocolOutput.write(encoded);
+}
+
+async function emitEvent(event: string, payload: unknown): Promise<unknown> {
+  if (
+    typeof event !== 'string' ||
+    !/^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$/u.test(event) ||
+    Buffer.byteLength(event, 'utf8') > 192
+  ) {
+    throw new Error('Extension Event name is invalid');
+  }
+  if (payload === undefined) throw new Error('Extension Event payload must be JSON');
+  assertJsonValue(payload);
+  const id = randomBytes(16).toString('hex');
+  const encoded = `${JSON.stringify({
+    kind: 'emit_event',
+    id,
+    event,
+    payload,
+    auth: protocolAuth,
+  })}\n`;
+  if (Buffer.byteLength(encoded, 'utf8') > MAX_REQUEST_BYTES) {
+    throw new Error('Extension Event payload exceeds its size limit');
+  }
+  const result = new Promise<unknown>((resolve, reject) => {
+    pendingCallbacks.set(id, { resolve, reject });
+  });
+  callbackOutput.write(encoded);
+  return await result;
+}
+
+function settleCallback(value: unknown): void {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Tool package callback response is invalid');
+  }
+  const frame = value as Record<string, unknown>;
+  const fields = ['kind', 'id', 'ok', frame.ok === true ? 'result' : 'error', 'auth'];
+  exactKeys(frame, fields);
+  if (
+    frame.kind !== 'emit_event_result' ||
+    frame.auth !== protocolAuth ||
+    typeof frame.id !== 'string' ||
+    typeof frame.ok !== 'boolean'
+  ) {
+    throw new Error('Tool package callback response identity is invalid');
+  }
+  const pending = pendingCallbacks.get(frame.id);
+  if (!pending) throw new Error('Tool package callback response is unexpected');
+  pendingCallbacks.delete(frame.id);
+  if (frame.ok) {
+    pending.resolve(frame.result);
+    return;
+  }
+  if (!frame.error || typeof frame.error !== 'object' || Array.isArray(frame.error)) {
+    throw new Error('Tool package callback error is invalid');
+  }
+  const error = frame.error as Record<string, unknown>;
+  exactKeys(error, ['name', 'message']);
+  if (typeof error.name !== 'string' || typeof error.message !== 'string') {
+    throw new Error('Tool package callback error fields are invalid');
+  }
+  pending.reject(Object.assign(new Error(error.message), { name: error.name }));
+}
+
+function failPendingCallbacks(error: Error): void {
+  for (const pending of pendingCallbacks.values()) pending.reject(error);
+  pendingCallbacks.clear();
 }
 
 function assertJsonValue(value: unknown): void {

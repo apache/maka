@@ -91,6 +91,9 @@ export class HostExtensionController {
     this.loader.setConfigurationResolver?.(
       (bindingId) => this.#configuration.get(bindingId) ?? Object.freeze({}),
     );
+    this.loader.setEventEmitter?.((scopeId, event, payload, context) =>
+      this.runtime.emitEvent(scopeId, event, payload, context),
+    );
   }
 
   /** Recovery is fail-open for the Host and fail-closed for Extension mutations. */

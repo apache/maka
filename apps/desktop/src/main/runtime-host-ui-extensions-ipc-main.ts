@@ -41,6 +41,7 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
             `${manifest.uiCount} UI contribution${manifest.uiCount === 1 ? '' : 's'}`,
             `${manifest.toolCount} Tool contribution${manifest.toolCount === 1 ? '' : 's'}`,
             `${manifest.hookCount} Hook contribution${manifest.hookCount === 1 ? '' : 's'}`,
+            `${manifest.eventCount} Event/Listener contribution${manifest.eventCount === 1 ? '' : 's'}`,
             `Host state: ${manifest.permissions.hostState ? 'allowed' : 'not allowed'}`,
             `Session control: ${manifest.permissions.sessionAccess ? 'allowed' : 'not allowed'}`,
             `Host methods: ${manifest.hostMethods.length === 0 ? 'none' : manifest.hostMethods.join(', ')}`,
@@ -56,7 +57,7 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
     const catalog = await input.client.request('extension.catalog.query', {});
     for (const scopeId of new Set([
       ...(installed.uiContributionIds.length > 0 ? [DESKTOP_UI_SCOPE] : []),
-      ...(installed.toolNames.length > 0 || installed.hookContributionIds.length > 0
+      ...(installed.toolNames.length > 0 || installed.hookContributionIds.length > 0 || installed.eventContributionIds.length > 0
         ? [PROFILE_EXTENSION_SCOPE]
         : []),
     ])) {
@@ -142,10 +143,12 @@ async function listUiExtensions(client: DesktopRuntimeHostClient) {
           ...revision.toolNames,
           ...revision.uiContributionIds,
           ...revision.hookContributionIds,
+          ...revision.eventContributionIds,
         ],
         toolNames: revision.toolNames,
         uiContributionIds: revision.uiContributionIds,
         hookContributionIds: revision.hookContributionIds,
+        eventContributionIds: revision.eventContributionIds,
         dependencies: contract?.dependencies ?? [],
         configuration: contract?.configuration ?? { properties: {}, required: [] },
         bindings,
@@ -157,23 +160,28 @@ async function listUiExtensions(client: DesktopRuntimeHostClient) {
     });
 }
 
-async function previewPackage(sourcePath: string): Promise<{ id: string; version: string; uiCount: number; toolCount: number; hookCount: number; hostMethods: string[]; permissions: { network: boolean; hostState: boolean; sessionAccess: boolean; workspace: string } }> {
+async function previewPackage(sourcePath: string): Promise<{ id: string; version: string; uiCount: number; toolCount: number; hookCount: number; eventCount: number; hostMethods: string[]; permissions: { network: boolean; hostState: boolean; sessionAccess: boolean; workspace: string } }> {
   if (!(await stat(sourcePath)).isDirectory()) return previewBundle(sourcePath);
   let uiValue: Record<string, unknown> = {};
   let toolValue: Record<string, unknown> = {};
   let hookValue: Record<string, unknown> = {};
+  let eventValue: Record<string, unknown> = {};
   try { uiValue = JSON.parse(await readFile(join(sourcePath, 'maka.ui.json'), 'utf8')) as Record<string, unknown>; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   try { toolValue = JSON.parse(await readFile(join(sourcePath, 'maka.tool.json'), 'utf8')) as Record<string, unknown>; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   try { hookValue = JSON.parse(await readFile(join(sourcePath, 'maka.hook.json'), 'utf8')) as Record<string, unknown>; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  const value = Object.keys(uiValue).length ? uiValue : Object.keys(toolValue).length ? toolValue : hookValue;
+  try { eventValue = JSON.parse(await readFile(join(sourcePath, 'maka.event.json'), 'utf8')) as Record<string, unknown>; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  const value = Object.keys(uiValue).length ? uiValue : Object.keys(toolValue).length ? toolValue : Object.keys(hookValue).length ? hookValue : eventValue;
   if (typeof value.id !== 'string' || typeof value.version !== 'string') throw new Error('Extension manifest is invalid');
   const ui = Array.isArray(uiValue.ui) ? uiValue.ui : [];
   const tools = Array.isArray(toolValue.tools) ? toolValue.tools : [];
   const hooks = Array.isArray(hookValue.hooks) ? hookValue.hooks : [];
-  if (ui.length === 0 && tools.length === 0 && hooks.length === 0) throw new Error('Extension package has no contributions');
+  const eventDefinitions = Array.isArray(eventValue.events) ? eventValue.events : [];
+  const listeners = Array.isArray(eventValue.listeners) ? eventValue.listeners : [];
+  if (ui.length === 0 && tools.length === 0 && hooks.length === 0 && eventDefinitions.length === 0 && listeners.length === 0) throw new Error('Extension package has no contributions');
   const permissions = uiValue.permissions as Record<string, unknown> | undefined;
   const toolPermissions = toolValue.permissions as Record<string, unknown> | undefined;
   const hookPermissions = hookValue.permissions as Record<string, unknown> | undefined;
+  const eventPermissions = eventValue.permissions as Record<string, unknown> | undefined;
   const host = uiValue.host as Record<string, unknown> | undefined;
   const methods = Array.isArray(host?.methods) ? host.methods : [];
   const hostMethods = methods.map((item) => (item as Record<string, unknown>)?.name);
@@ -184,12 +192,13 @@ async function previewPackage(sourcePath: string): Promise<{ id: string; version
     uiCount: ui.length,
     toolCount: tools.length,
     hookCount: hooks.length,
+    eventCount: eventDefinitions.length + listeners.length,
     hostMethods: hostMethods as string[],
     permissions: {
-      network: permissions?.network === true || toolPermissions?.network === true || hookPermissions?.network === true,
+      network: permissions?.network === true || toolPermissions?.network === true || hookPermissions?.network === true || eventPermissions?.network === true,
       hostState: permissions?.hostState === true,
       sessionAccess: permissions?.sessionAccess === true,
-      workspace: typeof toolPermissions?.workspace === 'string' ? toolPermissions.workspace : typeof hookPermissions?.workspace === 'string' ? hookPermissions.workspace : 'none',
+      workspace: typeof toolPermissions?.workspace === 'string' ? toolPermissions.workspace : typeof hookPermissions?.workspace === 'string' ? hookPermissions.workspace : typeof eventPermissions?.workspace === 'string' ? eventPermissions.workspace : 'none',
     },
   };
 }
@@ -205,7 +214,7 @@ async function previewBundle(sourcePath: string): ReturnType<typeof previewPacka
     if (typeof file.path !== 'string' || typeof file.content !== 'string') {
       throw new Error('Extension Bundle file is invalid');
     }
-    if (file.path === 'maka.ui.json' || file.path === 'maka.tool.json' || file.path === 'maka.hook.json') {
+    if (file.path === 'maka.ui.json' || file.path === 'maka.tool.json' || file.path === 'maka.hook.json' || file.path === 'maka.event.json') {
       files.set(file.path, Buffer.from(file.content, 'base64').toString('utf8'));
     }
   }
@@ -218,16 +227,22 @@ async function previewBundle(sourcePath: string): ReturnType<typeof previewPacka
   const hookValue = files.has('maka.hook.json')
     ? (JSON.parse(files.get('maka.hook.json')!) as Record<string, unknown>)
     : {};
-  const value = Object.keys(uiValue).length ? uiValue : Object.keys(toolValue).length ? toolValue : hookValue;
+  const eventValue = files.has('maka.event.json')
+    ? (JSON.parse(files.get('maka.event.json')!) as Record<string, unknown>)
+    : {};
+  const value = Object.keys(uiValue).length ? uiValue : Object.keys(toolValue).length ? toolValue : Object.keys(hookValue).length ? hookValue : eventValue;
   if (typeof value.id !== 'string' || typeof value.version !== 'string') {
     throw new Error(`Extension Bundle is missing manifests: ${basename(sourcePath)}`);
   }
   const ui = Array.isArray(uiValue.ui) ? uiValue.ui : [];
   const tools = Array.isArray(toolValue.tools) ? toolValue.tools : [];
   const hooks = Array.isArray(hookValue.hooks) ? hookValue.hooks : [];
+  const eventDefinitions = Array.isArray(eventValue.events) ? eventValue.events : [];
+  const listeners = Array.isArray(eventValue.listeners) ? eventValue.listeners : [];
   const permissions = uiValue.permissions as Record<string, unknown> | undefined;
   const toolPermissions = toolValue.permissions as Record<string, unknown> | undefined;
   const hookPermissions = hookValue.permissions as Record<string, unknown> | undefined;
+  const eventPermissions = eventValue.permissions as Record<string, unknown> | undefined;
   const host = uiValue.host as Record<string, unknown> | undefined;
   const methods = Array.isArray(host?.methods) ? host.methods : [];
   const hostMethods = methods.map((item) => (item as Record<string, unknown>)?.name);
@@ -240,12 +255,13 @@ async function previewBundle(sourcePath: string): ReturnType<typeof previewPacka
     uiCount: ui.length,
     toolCount: tools.length,
     hookCount: hooks.length,
+    eventCount: eventDefinitions.length + listeners.length,
     hostMethods: hostMethods as string[],
     permissions: {
-      network: permissions?.network === true || toolPermissions?.network === true || hookPermissions?.network === true,
+      network: permissions?.network === true || toolPermissions?.network === true || hookPermissions?.network === true || eventPermissions?.network === true,
       hostState: permissions?.hostState === true,
       sessionAccess: permissions?.sessionAccess === true,
-      workspace: typeof toolPermissions?.workspace === 'string' ? toolPermissions.workspace : typeof hookPermissions?.workspace === 'string' ? hookPermissions.workspace : 'none',
+      workspace: typeof toolPermissions?.workspace === 'string' ? toolPermissions.workspace : typeof hookPermissions?.workspace === 'string' ? hookPermissions.workspace : typeof eventPermissions?.workspace === 'string' ? eventPermissions.workspace : 'none',
     },
   };
 }

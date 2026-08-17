@@ -10,7 +10,7 @@ MAKA Extensions have three peer contribution types:
 - UI contributes a product surface the host can compose.
 - Hook contributes typed middleware at a curated Runtime lifecycle seam.
 
-Hook is not a second event bus, scheduler, or agent-to-agent transport. It is an adapter over the existing Runtime and existing Extension lifecycle. ScheduledTask remains the sole time-based scheduling authority, RuntimeEvent remains the durable execution ledger, and agent communication remains owned by the agent/subagent protocols.
+Hook is not a second event bus, scheduler, or agent-to-agent transport. It is an adapter over the existing Runtime and existing Extension lifecycle. Plugin-defined notifications use the separate Event/Listener contribution described in `extension-event-listener-contributions.md`. ScheduledTask remains the sole time-based scheduling authority, RuntimeEvent remains the durable execution ledger, and agent communication remains owned by the agent/subagent protocols.
 
 One package may carry `maka.tool.json`, `maka.ui.json`, `maka.hook.json`, and `maka.extension.json`. Every typed manifest in that package must have the same product identity, version, and content-derived immutable Revision.
 
@@ -133,7 +133,7 @@ These are lifecycle control tools. They cannot synthesize Runtime lifecycle even
 ## Deliberate non-goals
 
 - No arbitrary internal callback export. `AgentRunHooks`, compaction projections, UI overlay callbacks, and private coordinator events remain implementation details.
-- No plugin-defined event names or event emission.
+- No plugin-defined event names inside the Hook API; those belong to Event/Listener contributions.
 - No new timer. Scheduled execution uses ScheduledTask.
 - No detached background service or long-lived plugin process.
 - No Hook-driven direct Session wake, agent-to-agent message, or unrestricted Host RPC.
@@ -143,4 +143,4 @@ New public events require a typed payload, an authority owner, an exact before/a
 
 ## DSH relationship
 
-DSH Cordis exposes a broad dynamic event/service surface with emit, serial, bail, waterfall, and parallel dispatch. MAKA now provides the equivalent useful plugin pattern at the agent/tool lifecycle—observe, gate, and waterfall transform—through five stable public events. MAKA intentionally does not expose Cordis's unrestricted internal namespace or in-memory dynamic service graph. In exchange, Hook contributions gain immutable package Revisions, persisted Bindings, atomic update/rollback, restart recovery, dependency handling, a product catalog, and an OS sandbox.
+DSH Cordis exposes a broad dynamic event/service surface with emit, serial, bail, waterfall, and parallel dispatch. MAKA provides the useful agent/tool middleware pattern—observe, gate, and waterfall transform—through five stable public Hooks, while a separate namespaced Event/Listener surface covers plugin notifications. MAKA intentionally does not expose Cordis's unrestricted internal namespace or in-memory dynamic service graph. In exchange, contributions gain immutable package Revisions, persisted Bindings, atomic update/rollback, restart recovery, dependency handling, a product catalog, and an OS sandbox.
