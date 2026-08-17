@@ -256,6 +256,7 @@ export type DesktopNewTaskHost =
       readonly projects: readonly ProjectRecord[];
       readonly capabilities: DesktopProjectCapabilities;
       readonly selectedProjectId: string | null | undefined;
+      readonly defaultProjectId?: string;
       readonly chatDefaults: ChatDefaultsSettings;
       readonly projectPath?: string;
       readonly branch?: string;

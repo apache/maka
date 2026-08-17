@@ -229,7 +229,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   pendingTurnActionsRef: RefBox<Set<string>>;
   projectPickerPendingRef: RefBox<boolean>;
   projectPickerRequestRef: RefBox<number>;
-  refreshConnections: (sessionId?: string) => Promise<void>;
+  refreshConnections: () => Promise<void>;
   refreshMemoryActive: (failureContext?: 'load') => Promise<void>;
   refreshMessages: (sessionId: string) => Promise<boolean>;
   refreshScheduledTasks: (options?: { shouldShowError?: () => boolean }) => Promise<void>;
@@ -270,7 +270,7 @@ export function useAppShellBootstrapSubscriptions(options: {
     if (event.readiness !== 'ready') return;
     if (!event.isDefault) return;
     void options.refreshProjects();
-    void options.refreshConnections(options.activeIdRef.current);
+    void options.refreshConnections();
     void options.refreshMemoryActive('load');
     void options.refreshSkills();
     void options.refreshManagedSkillSources();
@@ -406,7 +406,7 @@ export function useAppShellBootstrapSubscriptions(options: {
       window.maka.runtimeHostProfiles.subscribeChanges(handleRuntimeHostChange);
     const unsubscribeSettingsExternal = window.maka.settings.subscribeExternalChanged(() => {
       void options.refreshShellSettings();
-      void options.refreshConnections(options.activeIdRef.current);
+      void options.refreshConnections();
     });
     const unsubscribeSessionChanges = window.maka.sessions.subscribeChanges(handleSessionChange);
     const unsubscribeScheduledTaskChanges = window.maka.scheduledTasks.subscribeChanges(handleScheduledTaskChange);

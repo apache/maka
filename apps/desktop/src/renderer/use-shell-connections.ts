@@ -17,7 +17,13 @@ const EMPTY_SNAPSHOT: DesktopConnectionSnapshot = {
   chatModelChoices: [],
 };
 
+const DEFAULT_HOST_KEY = 'default';
 const NO_HOST_KEY = 'none';
+
+type ShellConnectionTarget =
+  | { readonly kind: 'default' }
+  | { readonly kind: 'new-task'; readonly host?: DesktopNewTaskHostRef }
+  | { readonly kind: 'session'; readonly sessionId?: string };
 
 /**
  * Owns one Host's atomic connection projection and refresh lifecycle.
@@ -25,20 +31,17 @@ const NO_HOST_KEY = 'none';
 export function useShellConnections(options: {
   toastApi: ToastApi;
   uiLocale: UiLocale;
-  activeSessionId?: string;
-  newTaskHost?: DesktopNewTaskHostRef;
+  target: ShellConnectionTarget;
 }): {
   snapshot: DesktopConnectionSnapshot;
   hasSnapshot: boolean;
   seedSnapshot: (next: DesktopConnectionSnapshot) => void;
-  refreshConnections: (sessionId?: string) => Promise<void>;
+  refreshConnections: () => Promise<void>;
   handleConnectionEvent: (event: ConnectionEvent) => void;
 } {
   const { toastApi, uiLocale } = options;
   const copy = getShellRemainingCopy(uiLocale).connections;
-  const snapshotKey = options.activeSessionId
-    ? parseDesktopSessionKey(options.activeSessionId).hostId
-    : options.newTaskHost?.hostId ?? NO_HOST_KEY;
+  const snapshotKey = connectionTargetKey(options.target);
   const currentKey = useRef(snapshotKey);
   useLayoutEffect(() => {
     currentKey.current = snapshotKey;
@@ -49,10 +52,8 @@ export function useShellConnections(options: {
   const refreshSequence = useRef(new Map<string, number>());
 
   useLayoutEffect(() => {
-    if (!options.activeSessionId && options.newTaskHost) {
-      void refreshConnections();
-    }
-  }, [options.activeSessionId, options.newTaskHost?.hostId]);
+    if (snapshotKey !== NO_HOST_KEY) void refreshConnections();
+  }, [snapshotKey]);
 
   function seedSnapshot(next: DesktopConnectionSnapshot) {
     setSnapshots((previous) =>
@@ -60,23 +61,21 @@ export function useShellConnections(options: {
     );
   }
 
-  async function refreshConnections(sessionId?: string) {
-    const newTaskHost = options.newTaskHost;
-    const key = sessionId
-      ? parseDesktopSessionKey(sessionId).hostId
-      : newTaskHost?.hostId ?? NO_HOST_KEY;
-    if (!sessionId && !newTaskHost) return;
+  async function refreshConnections() {
+    const target = options.target;
+    const key = connectionTargetKey(target);
+    if (key === NO_HOST_KEY) return;
     const sequence = (refreshSequence.current.get(key) ?? 0) + 1;
     refreshSequence.current.set(key, sequence);
     try {
       let next: DesktopConnectionSnapshot;
-      if (sessionId) {
-        next = await window.maka.connections.getSnapshot(sessionId);
-      } else if (newTaskHost) {
-        next = await window.maka.newTasks.getConnections(newTaskHost);
-      } else {
-        return;
-      }
+      if (target.kind === 'session' && target.sessionId) {
+        next = await window.maka.connections.getSnapshot(target.sessionId);
+      } else if (target.kind === 'new-task' && target.host) {
+        next = await window.maka.newTasks.getConnections(target.host);
+      } else if (target.kind === 'default') {
+        next = await window.maka.connections.getSnapshot();
+      } else return;
       if (refreshSequence.current.get(key) !== sequence) return;
       setSnapshots((previous) => new Map(previous).set(key, next));
     } catch (error) {
@@ -91,7 +90,7 @@ export function useShellConnections(options: {
   function handleConnectionEvent(event: ConnectionEvent) {
     switch (event.type) {
       case 'connection_list_changed':
-        void refreshConnections(options.activeSessionId);
+        void refreshConnections();
         break;
     }
   }
@@ -103,4 +102,17 @@ export function useShellConnections(options: {
     refreshConnections,
     handleConnectionEvent,
   };
+}
+
+function connectionTargetKey(target: ShellConnectionTarget): string {
+  switch (target.kind) {
+    case 'default':
+      return DEFAULT_HOST_KEY;
+    case 'new-task':
+      return target.host?.hostId ?? NO_HOST_KEY;
+    case 'session':
+      return target.sessionId
+        ? parseDesktopSessionKey(target.sessionId).hostId
+        : NO_HOST_KEY;
+  }
 }

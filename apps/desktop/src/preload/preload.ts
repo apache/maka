@@ -366,6 +366,9 @@ async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
             projects: snapshot.projects,
             capabilities: snapshot.capabilities,
             selectedProjectId: info.projectId,
+            ...(settings.projects.defaultProjectId
+              ? { defaultProjectId: settings.projects.defaultProjectId }
+              : {}),
             chatDefaults: settings.chatDefaults,
             ...(snapshot.capabilities.viewClientPath && info.projectPath
               ? { projectPath: info.projectPath }

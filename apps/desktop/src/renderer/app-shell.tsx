@@ -467,46 +467,38 @@ function AppShellContent({
   const newTaskHost = newTask.selectedHost
     ? { profileId: newTask.selectedHost.profile.id, hostId: newTask.selectedHost.hostId }
     : undefined;
-  const defaultNewTaskHost = newTask.catalog.hosts.find(
-    (host) => host.profile.id === newTask.catalog.defaultProfileId,
-  );
-  const defaultHostRef = defaultNewTaskHost && 'hostId' in defaultNewTaskHost
-    ? { profileId: defaultNewTaskHost.profile.id, hostId: defaultNewTaskHost.hostId }
-    : undefined;
   const newTaskConnections = useShellConnections({
     toastApi,
     uiLocale,
-    newTaskHost,
+    target: { kind: 'new-task', host: newTaskHost },
   });
   const defaultHostConnections = useShellConnections({
     toastApi,
     uiLocale,
-    newTaskHost: defaultHostRef,
+    target: { kind: 'default' },
   });
   const sessionHostConnections = useShellConnections({
     toastApi,
     uiLocale,
-    activeSessionId: activeId,
+    target: { kind: 'session', sessionId: activeId },
   });
   const startupConnectionSnapshot =
     initialOnboardingSnapshot ?? onboarding.mountedSnapshotHandoff;
   const newTaskUsesDefaultHost =
     newTask.catalog.hosts.length === 0 ||
     newTask.selectedProfileId === newTask.catalog.defaultProfileId;
-  const newTaskConnectionSnapshot =
-    newTaskUsesDefaultHost &&
-      !newTaskConnections.hasSnapshot &&
-      !defaultHostConnections.hasSnapshot &&
-      startupConnectionSnapshot
-      ? {
-          connections: startupConnectionSnapshot.connections,
-          defaultConnection: startupConnectionSnapshot.defaultSlug,
-          chatModelChoices: startupConnectionSnapshot.chatModelChoices,
-        }
-      : newTaskConnections.hasSnapshot ||
-          newTask.selectedProfileId !== newTask.catalog.defaultProfileId
-      ? newTaskConnections.snapshot
-      : defaultHostConnections.snapshot;
+  let newTaskConnectionSnapshot = newTaskConnections.snapshot;
+  if (!newTaskConnections.hasSnapshot && newTaskUsesDefaultHost) {
+    newTaskConnectionSnapshot = defaultHostConnections.hasSnapshot
+      ? defaultHostConnections.snapshot
+      : startupConnectionSnapshot
+        ? {
+            connections: startupConnectionSnapshot.connections,
+            defaultConnection: startupConnectionSnapshot.defaultSlug,
+            chatModelChoices: startupConnectionSnapshot.chatModelChoices,
+          }
+        : defaultHostConnections.snapshot;
+  }
   const activeConnectionSnapshot = activeId
     ? sessionHostConnections.snapshot
     : newTaskConnectionSnapshot;
@@ -514,13 +506,13 @@ function AppShellContent({
   const defaultConnection = activeConnectionSnapshot.defaultConnection;
   const connectionModelChoices = activeConnectionSnapshot.chatModelChoices;
   const refreshConnections = activeId
-    ? () => sessionHostConnections.refreshConnections(activeId)
-    : () => newTaskConnections.refreshConnections();
-  function refreshConnectionProjections(sessionId?: string): Promise<void> {
+    ? sessionHostConnections.refreshConnections
+    : newTaskConnections.refreshConnections;
+  function refreshConnectionProjections(): Promise<void> {
     return Promise.all([
       defaultHostConnections.refreshConnections(),
       newTaskConnections.refreshConnections(),
-      ...(sessionId ? [sessionHostConnections.refreshConnections(sessionId)] : []),
+      ...(activeId ? [sessionHostConnections.refreshConnections()] : []),
     ]).then(() => undefined);
   }
   function handleConnectionEvent(event: ConnectionEvent): void {
@@ -528,9 +520,6 @@ function AppShellContent({
     newTaskConnections.handleConnectionEvent(event);
     if (activeId) sessionHostConnections.handleConnectionEvent(event);
   }
-  useLayoutEffect(() => {
-    if (activeId) void sessionHostConnections.refreshConnections(activeId);
-  }, [activeId]);
   const onboardingState = onboarding.snapshot?.state;
   const onboardingSettled = hasSettledInitialOnboarding(onboarding.snapshot?.milestones ?? []);
   const onboardingActivationCandidate = getOnboardingActivationCandidate(
@@ -1413,14 +1402,13 @@ function AppShellContent({
   }, [initialOnboardingSnapshot, onboarding.mountedSnapshotHandoff, onboarding.error]);
   useEffect(() => {
     const snapshot = initialOnboardingSnapshot ?? onboarding.mountedSnapshotHandoff;
-    if (!snapshot || !defaultHostRef) return;
+    if (!snapshot) return;
     defaultHostConnections.seedSnapshot({
       connections: snapshot.connections,
       defaultConnection: snapshot.defaultSlug,
       chatModelChoices: snapshot.chatModelChoices,
     });
   }, [
-    defaultHostRef?.hostId,
     initialOnboardingSnapshot,
     onboarding.mountedSnapshotHandoff,
   ]);
@@ -1892,7 +1880,7 @@ function AppShellContent({
       ? { hostBadge: selectedNewTaskHost.profile.name }
       : {}),
     branch: newTask.selectedProjectId === null ? null : selectedNewTaskBranch,
-    pending: newTask.pending || newTask.refreshing,
+    pending: newTask.pending || (newTask.refreshing && newTask.catalog.hosts.length === 0),
     selectedGroupId: newTask.selectedProfileId,
     groups: newTask.catalog.hosts.map((host) => {
       if (host.readiness !== 'ready' || host.state !== 'available') {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { act, createElement, useEffect } from 'react';
+import { act, createElement } from 'react';
 import type { DesktopConnectionSnapshot } from '../../shared/desktop-connection-snapshot.js';
 import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
 import { useShellConnections } from '../../renderer/use-shell-connections.js';
@@ -44,12 +44,9 @@ test('keeps connection projections isolated and cached by owning Host', async ()
     const connections = useShellConnections({
       toastApi: { error: assert.fail },
       uiLocale: 'en',
-      activeSessionId: props.sessionId,
+      target: { kind: 'session', sessionId: props.sessionId },
     });
     seen.push(connections.snapshot.defaultConnection);
-    useEffect(() => {
-      void connections.refreshConnections(props.sessionId);
-    }, [props.sessionId]);
     return null;
   }
 
@@ -69,6 +66,36 @@ test('keeps connection projections isolated and cached by owning Host', async ()
   });
   assert.equal(seen.at(-1), 'connection-b');
 
+});
+
+test('loads the default Host projection without waiting for the new-task catalog', async () => {
+  const { root } = installReactRenderer();
+  const requestedSessions: Array<string | undefined> = [];
+  (globalThis.window as unknown as { maka: unknown }).maka = {
+    connections: {
+      getSnapshot: async (sessionId?: string) => {
+        requestedSessions.push(sessionId);
+        return snapshot('default-connection');
+      },
+    },
+  };
+  let current: DesktopConnectionSnapshot = EMPTY;
+
+  function Probe() {
+    current = useShellConnections({
+      toastApi: { error: assert.fail },
+      uiLocale: 'en',
+      target: { kind: 'default' },
+    }).snapshot;
+    return null;
+  }
+
+  await act(async () => {
+    root.render(createElement(Probe));
+  });
+
+  assert.deepEqual(requestedSessions, [undefined]);
+  assert.equal(current.defaultConnection, 'default-connection');
 });
 
 afterEach(() => {

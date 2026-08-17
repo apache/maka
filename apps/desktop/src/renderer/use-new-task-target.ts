@@ -206,14 +206,14 @@ function resolveProjectSelection(
     const project = findProjectByIdentity(host.projects, requested);
     if (project?.available && project.archivedAt === undefined) return project.id;
   }
+  if (host.defaultProjectId) {
+    const project = findProjectByIdentity(host.projects, host.defaultProjectId);
+    if (project?.available && project.archivedAt === undefined) return project.id;
+  }
   if (host.selectedProjectId === null && host.capabilities.selectNoProject) return null;
   if (typeof host.selectedProjectId === 'string') {
     const project = findProjectByIdentity(host.projects, host.selectedProjectId);
     if (project?.available && project.archivedAt === undefined) return project.id;
   }
-  const project = host.projects.find(
-    (candidate) => candidate.available && candidate.archivedAt === undefined,
-  );
-  if (project) return project.id;
   return host.capabilities.selectNoProject ? null : undefined;
 }
