@@ -2,9 +2,12 @@ import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import type { ExperimentSpec, JsonObject } from './experiment.js';
-import { createHarnessPreparationEnvironment } from './harness-environment.js';
+import {
+  BUNDLED_HARNESS_RELAY_ROOT,
+  createHarnessPreparationEnvironment,
+  resolvePathWithinRoot,
+} from './harness-environment.js';
+import type { HarnessFramework, HarnessOptions } from './harness-executor.js';
 
 const PREFLIGHT_TIMEOUT_MS = 10_000;
 const PREFLIGHT_OUTPUT_LIMIT_BYTES = 16 * 1024;
@@ -18,104 +21,122 @@ const PYTHON_FRAMEWORK_PROBE = [
   'import_module(f"{sys.argv[3]}.models.trial.config")',
 ].join('\n');
 
-interface PreflightDependencies {
+export interface HarnessPreflightDependencies {
   readonly runCommand: (
     command: string,
     args: readonly string[],
     environment: NodeJS.ProcessEnv,
     cwd: string,
+    signal?: AbortSignal,
   ) => Promise<void>;
 }
 
-export async function preflightBuiltinExecutor(
-  spec: ExperimentSpec,
-  specPath: string,
-  dependencies: Partial<PreflightDependencies> = {},
+interface HarnessPreflightInput {
+  readonly framework: HarnessFramework;
+  readonly options: HarnessOptions;
+  readonly specPath: string;
+  readonly subjectCredentialNames: readonly string[];
+  readonly signal?: AbortSignal;
+}
+
+export async function preflightHarnessInstallation(
+  input: HarnessPreflightInput,
+  dependencies: Partial<HarnessPreflightDependencies> = {},
 ): Promise<void> {
-  if (spec.executor.kind !== 'harbor' && spec.executor.kind !== 'pier') {
-    throw new Error(`unsupported executor: ${spec.executor.kind}`);
-  }
-  const config = spec.executor.config;
-  const pythonPathEnv = configText(config, 'pythonPathEnv');
-  const trialsRootEnv = configText(config, 'trialsRootEnv');
-  const pythonPath = pythonCommand(pythonPathEnv, specPath);
-  const trialsRoot = machinePath(trialsRootEnv);
+  input.signal?.throwIfAborted();
+  const { framework, options, specPath } = input;
+  const pythonPath = pythonCommand(options.pythonPathEnv, specPath);
+  const trialsRoot = machinePath(options.trialsRootEnv);
 
   if (isAbsolute(pythonPath)) {
-    await requirePath(pythonPath, `machine path ${pythonPathEnv}`, 'file');
+    await requirePath(pythonPath, `machine path ${options.pythonPathEnv}`, 'file');
     await access(pythonPath, constants.X_OK).catch(() => {
-      throw new Error(`machine path ${pythonPathEnv} is not executable: ${pythonPath}`);
+      throw new Error(`machine path ${options.pythonPathEnv} is not executable: ${pythonPath}`);
     });
   }
-  await optionalDirectory(trialsRoot, `machine path ${trialsRootEnv}`);
+  await optionalDirectory(trialsRoot, `machine path ${options.trialsRootEnv}`);
 
-  if (spec.executor.kind === 'pier') {
-    const tasksRootEnv = configText(config, 'tasksRootEnv');
-    await requirePath(machinePath(tasksRootEnv), `machine path ${tasksRootEnv}`, 'directory');
-  }
-
-  for (const [index, mount] of configArray(config, 'mounts').entries()) {
-    const sourceEnv = configText(configObject(mount, `mounts[${index}]`), 'sourceEnv');
-    await requirePath(machinePath(sourceEnv), `machine path ${sourceEnv}`, 'any');
-  }
-
-  const egressProxy = config.egressProxy;
-  if (egressProxy !== undefined) {
-    const proxy = configObject(egressProxy, 'egressProxy');
-    const sourceEnv = configText(proxy, 'composeSourceEnv');
-    const source = machinePath(sourceEnv);
-    await requirePath(source, `machine path ${sourceEnv}`, 'directory');
+  if (options.tasksRootEnv) {
     await requirePath(
-      resolve(source, configText(proxy, 'composeRelativePath')),
-      'Eval egress Compose overlay',
-      'file',
-    );
-    await requirePath(
-      resolve(source, configText(proxy, 'networkPolicyRelativePath')),
-      'Eval egress network policy',
-      'file',
+      machinePath(options.tasksRootEnv),
+      `machine path ${options.tasksRootEnv}`,
+      'directory',
     );
   }
 
-  const relayRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../harbor');
+  for (const mount of options.mounts) {
+    await requirePath(machinePath(mount.sourceEnv), `machine path ${mount.sourceEnv}`, 'any');
+  }
+
+  let networkPolicyPath: string | undefined;
+  if (options.egressProxy) {
+    const source = machinePath(options.egressProxy.composeSourceEnv);
+    await requirePath(source, `machine path ${options.egressProxy.composeSourceEnv}`, 'directory');
+    const composePath = resolvePathWithinRoot(
+      source,
+      options.egressProxy.composeRelativePath,
+      'egress proxy compose path',
+    );
+    networkPolicyPath = resolvePathWithinRoot(
+      source,
+      options.egressProxy.networkPolicyRelativePath,
+      'egress network policy path',
+    );
+    await requirePath(composePath, 'Eval egress Compose overlay', 'file');
+    await requirePath(networkPolicyPath, 'Eval egress network policy', 'file');
+  }
+
   for (const asset of ['eval_framework.py', 'relay_agent.py', 'run_trial.py']) {
-    await requirePath(resolve(relayRoot, asset), `bundled Eval runtime ${asset}`, 'file');
+    await requirePath(
+      resolve(BUNDLED_HARNESS_RELAY_ROOT, asset),
+      `bundled Eval runtime ${asset}`,
+      'file',
+    );
   }
 
+  input.signal?.throwIfAborted();
   const runCommand = dependencies.runCommand ?? runCheckedCommand;
-  const preparationEnvironment = configArray(config, 'preparationEnvironment').map((value, index) =>
-    configValueText(value, `preparationEnvironment[${index}]`),
-  );
-  const environment = createHarnessPreparationEnvironment(
-    relayRoot,
-    spec.subjects.flatMap((subject) => subject.credentials),
-    preparationEnvironment,
-  );
+  const environment = createHarnessPreparationEnvironment({
+    subjectCredentialNames: input.subjectCredentialNames,
+    declared: options.preparationEnvironment,
+    ...(options.egressProxy && networkPolicyPath
+      ? {
+          egress: {
+            allowedHost: options.egressProxy.allowedHost,
+            networkPolicyPath,
+          },
+        }
+      : {}),
+  });
   const workingDirectory = dirname(specPath);
-  const frameworkVersion = configText(config, 'frameworkVersion');
-  const distribution = spec.executor.kind === 'harbor' ? 'harbor' : 'datacurve-pier';
+  const distribution = framework === 'harbor' ? 'harbor' : 'datacurve-pier';
   try {
     await runCommand(
       pythonPath,
-      ['-c', PYTHON_FRAMEWORK_PROBE, distribution, frameworkVersion, spec.executor.kind],
+      ['-c', PYTHON_FRAMEWORK_PROBE, distribution, options.frameworkVersion, framework],
       environment,
       workingDirectory,
+      input.signal,
     );
   } catch (error) {
+    if (input.signal?.aborted) input.signal.throwIfAborted();
     throw new Error(
-      `${spec.executor.kind} Python environment ${pythonPathEnv} is unavailable or does not provide ${distribution}@${frameworkVersion}: ${errorMessage(error)}`,
+      `${framework} Python environment ${options.pythonPathEnv} is unavailable or does not provide ${distribution}@${options.frameworkVersion}: ${errorMessage(error)}`,
     );
   }
 
-  if (configObject(config.environment, 'environment').type === 'docker') {
+  input.signal?.throwIfAborted();
+  if (options.environment.type === 'docker') {
     try {
       await runCommand(
         'docker',
         ['version', '--format', '{{.Server.Version}}'],
         environment,
         workingDirectory,
+        input.signal,
       );
     } catch (error) {
+      if (input.signal?.aborted) input.signal.throwIfAborted();
       throw new Error(`Docker daemon is unavailable: ${errorMessage(error)}`);
     }
   }
@@ -126,7 +147,9 @@ async function runCheckedCommand(
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
   cwd: string,
+  signal?: AbortSignal,
 ): Promise<void> {
+  signal?.throwIfAborted();
   await new Promise<void>((resolvePromise, rejectPromise) => {
     execFile(
       command,
@@ -138,6 +161,7 @@ async function runCheckedCommand(
         killSignal: 'SIGKILL',
         maxBuffer: PREFLIGHT_OUTPUT_LIMIT_BYTES,
         encoding: 'utf8',
+        ...(signal ? { signal } : {}),
       },
       (error, _stdout, stderr) => {
         if (!error) {
@@ -171,13 +195,14 @@ async function requirePath(
 }
 
 async function optionalDirectory(path: string, label: string): Promise<void> {
+  let metadata;
   try {
-    const metadata = await stat(path);
-    if (!metadata.isDirectory()) throw new Error(`${label} is not a directory: ${path}`);
+    metadata = await stat(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-    throw error;
+    throw new Error(`${label} is inaccessible: ${path}: ${errorMessage(error)}`);
   }
+  if (!metadata.isDirectory()) throw new Error(`${label} is not a directory: ${path}`);
 }
 
 function machinePath(name: string): string {
@@ -191,30 +216,6 @@ function pythonCommand(name: string, specPath: string): string {
   if (!value) throw new Error(`machine path ${name} is unavailable`);
   if (isAbsolute(value)) return value;
   return value.includes('/') || value.includes('\\') ? resolve(dirname(specPath), value) : value;
-}
-
-function configObject(value: unknown, label: string): JsonObject {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`executor.config.${label} must be an object`);
-  }
-  return value as JsonObject;
-}
-
-function configText(config: JsonObject, field: string): string {
-  return configValueText(config[field], field);
-}
-
-function configValueText(value: unknown, field: string): string {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`executor.config.${field} is required`);
-  }
-  return value;
-}
-
-function configArray(config: JsonObject, field: string): readonly unknown[] {
-  const value = config[field];
-  if (!Array.isArray(value)) throw new Error(`executor.config.${field} must be an array`);
-  return value;
 }
 
 function errorMessage(error: unknown): string {

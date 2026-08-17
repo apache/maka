@@ -6,9 +6,16 @@ import { chmod, lstat, mkdir, readFile, readdir, unlink, writeFile } from 'node:
 import { createServer, type Server, type Socket } from 'node:net';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
 import { decodeJsonObject, type ExperimentCell, type JsonObject } from './experiment.js';
-import { createHarnessPreparationEnvironment } from './harness-environment.js';
+import {
+  BUNDLED_HARNESS_RELAY_ROOT,
+  createHarnessPreparationEnvironment,
+  resolvePathWithinRoot,
+} from './harness-environment.js';
+import {
+  preflightHarnessInstallation,
+  type HarnessPreflightDependencies,
+} from './install-preflight.js';
 import {
   MAKA_RUNTIME_ARTIFACT_PATH,
   MAKA_SUBJECT_STDERR_PATH,
@@ -23,7 +30,7 @@ import {
 } from './runner.js';
 import type { EvalResult } from './result.js';
 
-type Framework = 'harbor' | 'pier';
+export type HarnessFramework = 'harbor' | 'pier';
 type RelayTransportStage = 'ready' | 'execute' | 'receive' | 'decision';
 
 interface RelayTransportFailure {
@@ -63,22 +70,43 @@ type SubjectProcessDiagnostic = NonNullable<
   Awaited<ReturnType<SubjectExecutionContext['execute']>>['diagnostic']
 >;
 
-export function createHarborExecutor(config: JsonObject, specPath: string): ExperimentExecutor {
+export interface HarnessExecutor extends ExperimentExecutor {
+  preflight(
+    input: {
+      readonly subjectCredentialNames: readonly string[];
+      readonly signal?: AbortSignal;
+    },
+    dependencies?: Partial<HarnessPreflightDependencies>,
+  ): Promise<void>;
+}
+
+export function createHarborExecutor(config: JsonObject, specPath: string): HarnessExecutor {
   return createHarnessExecutor('harbor', config, specPath);
 }
 
-export function createPierExecutor(config: JsonObject, specPath: string): ExperimentExecutor {
+export function createPierExecutor(config: JsonObject, specPath: string): HarnessExecutor {
   return createHarnessExecutor('pier', config, specPath);
 }
 
 function createHarnessExecutor(
-  framework: Framework,
+  framework: HarnessFramework,
   config: JsonObject,
   specPath: string,
-): ExperimentExecutor {
-  const options = decodeOptions(config, framework);
-  const executor: ExperimentExecutor = {
+): HarnessExecutor {
+  const options = decodeHarnessOptions(config, framework);
+  const executor: HarnessExecutor = {
     kind: framework,
+    preflight: (input, dependencies) =>
+      preflightHarnessInstallation(
+        {
+          framework,
+          options,
+          specPath,
+          subjectCredentialNames: input.subjectCredentialNames,
+          ...(input.signal ? { signal: input.signal } : {}),
+        },
+        dependencies,
+      ),
     validate: (cell) => {
       decodeTask(framework, options, cell);
     },
@@ -89,7 +117,7 @@ function createHarnessExecutor(
 }
 
 async function runHarnessAttempt(
-  framework: Framework,
+  framework: HarnessFramework,
   options: HarnessOptions,
   specPath: string,
   {
@@ -332,7 +360,7 @@ function validProcessDiagnostic(value: unknown): value is {
 }
 
 async function startTrial(
-  framework: Framework,
+  framework: HarnessFramework,
   options: HarnessOptions,
   specPath: string,
   cell: ExperimentCell,
@@ -354,18 +382,22 @@ async function startTrial(
   const timeoutMultiplier = positive(cell.budget.timeoutMultiplier, 'budget.timeoutMultiplier');
   const environmentConfig = resolveEnvironmentConfig(options);
   const networkPolicyPath = resolveNetworkPolicyPath(options);
-  const relayPath = resolve(dirname(fileURLToPath(import.meta.url)), '../harbor');
   const executionEnvironment = {
     ...UNATTENDED_EXECUTION_ENVIRONMENT,
     ...egressExecutionEnvironment(options.egressProxy),
   };
-  const environment = createHarnessPreparationEnvironment(
-    relayPath,
-    [...subjectCredentialNames, ...cell.subject.credentials],
-    options.preparationEnvironment,
-    options.egressProxy?.allowedHost,
-    networkPolicyPath,
-  );
+  const environment = createHarnessPreparationEnvironment({
+    subjectCredentialNames: [...subjectCredentialNames, ...cell.subject.credentials],
+    declared: options.preparationEnvironment,
+    ...(options.egressProxy && networkPolicyPath
+      ? {
+          egress: {
+            allowedHost: options.egressProxy.allowedHost,
+            networkPolicyPath,
+          },
+        }
+      : {}),
+  });
   const server = createServer();
   const connections = new Set<Socket>();
   server.on('connection', (socket) => {
@@ -421,7 +453,12 @@ async function startTrial(
     );
     child = spawn(
       process.env[options.pythonPathEnv]!,
-      [join(relayPath, 'run_trial.py'), framework, options.frameworkVersion, configPath],
+      [
+        join(BUNDLED_HARNESS_RELAY_ROOT, 'run_trial.py'),
+        framework,
+        options.frameworkVersion,
+        configPath,
+      ],
       { cwd: dirname(specPath), env: environment, stdio: 'ignore' },
     );
     await once(child, 'spawn', signal ? { signal } : undefined);
@@ -806,7 +843,7 @@ async function walkCollectedArtifacts(
   }
 }
 
-interface HarnessOptions {
+export interface HarnessOptions {
   readonly frameworkVersion: string;
   readonly pythonPathEnv: string;
   readonly trialsRootEnv: string;
@@ -828,7 +865,7 @@ interface HarnessOptions {
   }[];
 }
 
-function decodeOptions(value: JsonObject, framework: Framework): HarnessOptions {
+function decodeHarnessOptions(value: JsonObject, framework: HarnessFramework): HarnessOptions {
   if (!Object.hasOwn(value, 'preparationEnvironment')) {
     throw new Error('executor.config.preparationEnvironment is required');
   }
@@ -938,24 +975,25 @@ function resolveEnvironmentConfig(options: HarnessOptions): JsonObject {
   const base = { ...options.environment, mounts: resolveMounts(options.mounts) };
   if (!options.egressProxy) return base;
   const source = resolve(process.env[options.egressProxy.composeSourceEnv]!);
-  const composePath = resolve(source, options.egressProxy.composeRelativePath);
-  if (relative(source, composePath).startsWith(`..${sep}`)) {
-    throw new Error('egress proxy compose path escapes its source root');
-  }
+  const composePath = resolvePathWithinRoot(
+    source,
+    options.egressProxy.composeRelativePath,
+    'egress proxy compose path',
+  );
   return { ...base, extra_docker_compose: [composePath] };
 }
 
 function resolveNetworkPolicyPath(options: HarnessOptions): string | undefined {
   if (!options.egressProxy) return undefined;
   const source = resolve(process.env[options.egressProxy.composeSourceEnv]!);
-  const policyPath = resolve(source, options.egressProxy.networkPolicyRelativePath);
-  if (relative(source, policyPath).startsWith(`..${sep}`)) {
-    throw new Error('egress network policy path escapes its source root');
-  }
-  return policyPath;
+  return resolvePathWithinRoot(
+    source,
+    options.egressProxy.networkPolicyRelativePath,
+    'egress network policy path',
+  );
 }
 
-function decodeTask(framework: Framework, options: HarnessOptions, cell: ExperimentCell) {
+function decodeTask(framework: HarnessFramework, options: HarnessOptions, cell: ExperimentCell) {
   if (framework === 'harbor') {
     const benchmark = exact(cell.benchmark.config, ['repository'], 'benchmark.config');
     const task = exact(cell.task.config, ['harbor'], 'task.config');

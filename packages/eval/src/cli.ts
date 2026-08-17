@@ -1,8 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createExternalSubjectAdapter } from './external-subject.js';
-import { createHarborExecutor, createPierExecutor } from './harness-executor.js';
-import { preflightBuiltinExecutor } from './install-preflight.js';
+import {
+  createHarborExecutor,
+  createPierExecutor,
+  type HarnessExecutor,
+} from './harness-executor.js';
 import { openExperimentDirectory } from './experiment-directory.js';
 import type { ExperimentSpec } from './experiment.js';
 import { createMakaSubjectAdapter } from './maka-subject.js';
@@ -47,9 +50,19 @@ export async function runMakaEvalCli(
     const specPath = resolve(command.specPath);
     const spec = parseExperimentSpec(JSON.parse(await readFile(specPath, 'utf8')) as unknown);
     const directory = await openExperimentDirectory(resolve(command.outDir), spec);
-    const loadExecutor = overrides.loadExecutor ?? builtinExecutor;
-    const executor = loadExecutor(spec, specPath);
-    if (!overrides.loadExecutor) await preflightBuiltinExecutor(spec, specPath);
+    let executor: ExperimentExecutor;
+    if (overrides.loadExecutor) {
+      executor = overrides.loadExecutor(spec, specPath);
+    } else {
+      const builtin = builtinExecutor(spec, specPath);
+      await builtin.preflight({
+        subjectCredentialNames: [
+          ...new Set(spec.subjects.flatMap((subject) => subject.credentials)),
+        ],
+        ...(signal ? { signal } : {}),
+      });
+      executor = builtin;
+    }
     const results = await runExperiment({
       spec,
       store: directory.attempts,
@@ -76,7 +89,7 @@ export async function runMakaEvalCli(
   }
 }
 
-function builtinExecutor(spec: ExperimentSpec, specPath: string): ExperimentExecutor {
+function builtinExecutor(spec: ExperimentSpec, specPath: string): HarnessExecutor {
   if (spec.executor.kind === 'harbor') return createHarborExecutor(spec.executor.config, specPath);
   if (spec.executor.kind === 'pier') return createPierExecutor(spec.executor.config, specPath);
   throw new Error(`unsupported executor: ${spec.executor.kind}`);

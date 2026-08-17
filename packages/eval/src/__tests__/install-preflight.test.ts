@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { preflightBuiltinExecutor } from '../install-preflight.js';
+import { createHarborExecutor } from '../harness-executor.js';
+import type { HarnessPreflightDependencies } from '../install-preflight.js';
+import type { ExperimentSpec } from '../experiment.js';
 import { parseExperimentSpec } from '../spec.js';
 
 test('preflights the pinned Python framework and Docker before execution', async (t) => {
@@ -11,11 +13,17 @@ test('preflights the pinned Python framework and Docker before execution', async
   t.after(() => rm(root, { recursive: true, force: true }));
   const trials = join(root, 'trials');
   const mount = join(root, 'mount');
-  await Promise.all([mkdir(trials), mkdir(mount)]);
+  const egress = join(root, 'egress');
+  await Promise.all([mkdir(trials), mkdir(mount), mkdir(egress)]);
+  await Promise.all([
+    writeFile(join(egress, 'compose.yaml'), 'services: {}\n'),
+    writeFile(join(egress, 'network-policy.json'), '{}\n'),
+  ]);
   const restore = setMachinePaths({
     MAKA_TEST_PREFLIGHT_PYTHON: process.execPath,
     MAKA_TEST_PREFLIGHT_TRIALS: trials,
     MAKA_TEST_PREFLIGHT_MOUNT: mount,
+    MAKA_TEST_PREFLIGHT_EGRESS: egress,
     MAKA_TEST_PREFLIGHT_SECRET: 'must-not-reach-preflight-processes',
   });
   t.after(restore);
@@ -26,20 +34,22 @@ test('preflights the pinned Python framework and Docker before execution', async
     cwd: string;
   }[] = [];
 
-  await preflightBuiltinExecutor(
-    experiment('MAKA_TEST_PREFLIGHT_SECRET'),
-    join(root, 'spec.json'),
-    {
-      runCommand: async (command, args, environment, cwd) => {
-        calls.push({ command, args, environment, cwd });
-      },
+  await preflight(experiment('MAKA_TEST_PREFLIGHT_SECRET', true), join(root, 'spec.json'), {
+    runCommand: async (command, args, environment, cwd) => {
+      calls.push({ command, args, environment, cwd });
     },
-  );
+  });
 
   assert.equal(calls.length, 2);
   assert.equal(calls[0]?.command, process.execPath);
   assert.deepEqual(calls[0]?.args.slice(-3), ['harbor', '0.20.0', 'harbor']);
   assert.equal(calls[0]?.environment.MAKA_TEST_PREFLIGHT_SECRET, undefined);
+  assert.equal(calls[0]?.environment.MAKA_EVAL_EGRESS_REQUIRED, '1');
+  assert.equal(calls[0]?.environment.MAKA_EVAL_EGRESS_ALLOWED_HOST, 'api.example.test');
+  assert.equal(
+    calls[0]?.environment.MAKA_EVAL_NETWORK_POLICY_PATH,
+    join(egress, 'network-policy.json'),
+  );
   assert.deepEqual(calls[1], {
     command: 'docker',
     args: ['version', '--format', '{{.Server.Version}}'],
@@ -62,7 +72,7 @@ test('reports a missing machine mount before invoking external prerequisites', a
   let commands = 0;
 
   await assert.rejects(
-    preflightBuiltinExecutor(experiment(), join(root, 'spec.json'), {
+    preflight(experiment(), join(root, 'spec.json'), {
       runCommand: async () => {
         commands += 1;
       },
@@ -86,7 +96,7 @@ test('identifies a mismatched Python framework environment', async (t) => {
   t.after(restore);
 
   await assert.rejects(
-    preflightBuiltinExecutor(experiment(), join(root, 'spec.json'), {
+    preflight(experiment(), join(root, 'spec.json'), {
       runCommand: async () => {
         throw new Error('installed 0.19.0, expected 0.20.0');
       },
@@ -95,7 +105,69 @@ test('identifies a mismatched Python framework environment', async (t) => {
   );
 });
 
-function experiment(credential?: string) {
+test('rejects egress assets that escape their declared source root', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-eval-install-egress-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const trials = join(root, 'trials');
+  const mount = join(root, 'mount');
+  const egress = join(root, 'egress');
+  await Promise.all([mkdir(trials), mkdir(mount), mkdir(egress)]);
+  const restore = setMachinePaths({
+    MAKA_TEST_PREFLIGHT_PYTHON: process.execPath,
+    MAKA_TEST_PREFLIGHT_TRIALS: trials,
+    MAKA_TEST_PREFLIGHT_MOUNT: mount,
+    MAKA_TEST_PREFLIGHT_EGRESS: egress,
+  });
+  t.after(restore);
+  let commands = 0;
+
+  await assert.rejects(
+    preflight(experiment(undefined, true, 'nested/../../compose.yaml'), join(root, 'spec.json'), {
+      runCommand: async () => {
+        commands += 1;
+      },
+    }),
+    /egress proxy compose path escapes its source root/,
+  );
+  assert.equal(commands, 0);
+});
+
+test('propagates cancellation to an active prerequisite probe', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-eval-install-cancel-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const trials = join(root, 'trials');
+  const mount = join(root, 'mount');
+  await Promise.all([mkdir(trials), mkdir(mount)]);
+  const restore = setMachinePaths({
+    MAKA_TEST_PREFLIGHT_PYTHON: process.execPath,
+    MAKA_TEST_PREFLIGHT_TRIALS: trials,
+    MAKA_TEST_PREFLIGHT_MOUNT: mount,
+  });
+  t.after(restore);
+  const controller = new AbortController();
+  const reason = new Error('preflight cancelled');
+  let commands = 0;
+
+  await assert.rejects(
+    preflight(
+      experiment(),
+      join(root, 'spec.json'),
+      {
+        runCommand: async (_command, _args, _environment, _cwd, signal) => {
+          commands += 1;
+          assert.equal(signal, controller.signal);
+          controller.abort(reason);
+          signal?.throwIfAborted();
+        },
+      },
+      controller.signal,
+    ),
+    reason,
+  );
+  assert.equal(commands, 1);
+});
+
+function experiment(credential?: string, egress = false, composeRelativePath = 'compose.yaml') {
   return parseExperimentSpec({
     schemaVersion: 'maka.eval.v1',
     id: 'preflight',
@@ -115,6 +187,18 @@ function experiment(credential?: string) {
             readOnly: true,
           },
         ],
+        ...(egress
+          ? {
+              egressProxy: {
+                composeSourceEnv: 'MAKA_TEST_PREFLIGHT_EGRESS',
+                composeRelativePath,
+                networkPolicyRelativePath: 'network-policy.json',
+                proxyUrl: 'http://maka-eval-mitmproxy:8080',
+                allowedHost: 'api.example.test',
+                containerCaPath: '/opt/maka/ca.pem',
+              },
+            }
+          : {}),
       },
     },
     subjects: [
@@ -130,6 +214,23 @@ function experiment(credential?: string) {
     budget: {},
     verifier: {},
   });
+}
+
+function preflight(
+  spec: ExperimentSpec,
+  specPath: string,
+  dependencies: Partial<HarnessPreflightDependencies>,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (spec.executor.kind !== 'harbor') throw new Error('test requires Harbor');
+  const executor = createHarborExecutor(spec.executor.config, specPath);
+  return executor.preflight(
+    {
+      subjectCredentialNames: spec.subjects.flatMap((subject) => subject.credentials),
+      ...(signal ? { signal } : {}),
+    },
+    dependencies,
+  );
 }
 
 function setMachinePaths(values: Readonly<Record<string, string>>): () => void {

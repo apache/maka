@@ -21,6 +21,7 @@ describe('Maka CLI args', () => {
     assert.deepEqual(manifest.exports, {});
     assert.equal(Object.hasOwn(manifest, 'main'), false);
     assert.equal(Object.hasOwn(manifest, 'types'), false);
+    await assert.rejects(access(new URL('../index.js', import.meta.url)), { code: 'ENOENT' });
   });
 
   test('publishes the supported release command surface', () => {
