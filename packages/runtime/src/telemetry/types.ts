@@ -13,6 +13,7 @@ export type PersistedLlmCallRecord = LlmCallRecord & {
   cacheWriteInputTokens: number;
   reasoningTokens: number;
   totalTokens: number;
+  totalTokensSource?: 'reported' | 'derived';
   costUsd: number;
   date: string;
   ts: number;

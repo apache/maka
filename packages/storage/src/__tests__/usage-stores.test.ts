@@ -289,18 +289,31 @@ describe('InteractiveUsageStores', () => {
           ts: Date.UTC(2026, 0, 2),
         }),
       );
+      await stores.telemetry.recordLlmCall(
+        llmRecord({
+          id: 'usage_3',
+          inputTokens: 20,
+          outputTokens: 8,
+          reasoningTokens: 2,
+          totalTokens: 30,
+          totalTokensSource: 'reported',
+          ts: Date.UTC(2026, 0, 3),
+        }),
+      );
 
       const summary = await stores.telemetry.summary({ range: 'all' });
       const buckets = await stores.telemetry.buckets({ range: 'all' }, 'model');
       const logs = await stores.telemetry.logs({ range: 'all' });
 
-      assert.equal(summary.totalTokens.reasoning, 14);
-      assert.equal(summary.totalTokens.total, 70);
-      assert.equal(buckets[0]?.reasoningTokens, 14);
-      assert.equal(buckets[0]?.totalTokens, 70);
-      assert.equal(logs.rows[0]?.reasoningTokens, 7);
-      assert.equal(logs.rows[0]?.totalTokens, 40);
-      assert.equal(logs.rows[1]?.totalTokens, 30);
+      assert.equal(summary.totalTokens.reasoning, 16);
+      assert.equal(summary.totalTokens.total, 100);
+      assert.equal(buckets[0]?.reasoningTokens, 16);
+      assert.equal(buckets[0]?.totalTokens, 100);
+      assert.equal(logs.rows[0]?.reasoningTokens, 2);
+      assert.equal(logs.rows[0]?.totalTokens, 30);
+      assert.equal(logs.rows[1]?.reasoningTokens, 7);
+      assert.equal(logs.rows[1]?.totalTokens, 40);
+      assert.equal(logs.rows[2]?.totalTokens, 30);
       await stores.close();
       await owner.close();
     });

@@ -587,10 +587,14 @@ function usageBucket(key: string, rows: readonly PersistedLlmCallRecord[]): Usag
 }
 
 function canonicalTotalTokens(row: PersistedLlmCallRecord): number {
+  // Rows written by the current recorder carry explicit provenance. Trust it:
+  // a provider total can coincide with input + output + reasoning without
+  // being the legacy derived fallback.
+  if (row.totalTokensSource !== undefined) return row.totalTokens;
   const inputAndOutput = row.inputTokens + row.outputTokens;
-  // The frozen recorder used input + output + reasoning only when its caller
-  // omitted totalTokens. Preserve provider-owned totals (and unknown token
-  // remainders); normalize only the exact legacy fallback shape.
+  // Legacy rows never carried a source. The frozen recorder used input +
+  // output + reasoning only when its caller omitted totalTokens, so that exact
+  // shape is the artifact to normalize at the frozen read boundary.
   return row.rawUsage?.total_tokens === undefined &&
     row.totalTokens === inputAndOutput + row.reasoningTokens
     ? inputAndOutput
