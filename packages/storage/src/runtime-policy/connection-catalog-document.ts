@@ -452,8 +452,7 @@ export class ConnectionCatalogDocumentOwner {
       modelSource: result.source,
       modelsFetchedAt: result.fetchedAt,
     };
-    // Onboarding only seeds the first default, so the short-circuit has to ask
-    // what the constructor would: an already-doomed target is still a write.
+    // Onboarding only seeds the first default.
     const defaultTarget = current.defaultTarget ?? {
       connectionId,
       modelId: changes.enabledModelIds[0]!,
@@ -465,7 +464,6 @@ export class ConnectionCatalogDocumentOwner {
       previous.modelSource === result.source &&
       previous.modelsFetchedAt === result.fetchedAt &&
       isDeepStrictEqual(current.defaultTarget, defaultTarget) &&
-      retainedDefaultTarget(defaultTarget, current.connections) === defaultTarget &&
       (!invalidateLastTest || previous.lastTest === undefined)
     ) {
       return { kind: 'ready', document: current, changed: false };
