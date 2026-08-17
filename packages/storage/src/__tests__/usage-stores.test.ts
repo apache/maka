@@ -325,6 +325,27 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('legacy usage buckets clamp each cache reading to its own input', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      await stores.telemetry.recordLlmCall(
+        llmRecord({
+          inputTokens: 100,
+          cacheHitInputTokens: 200,
+          cachedInputTokens: 200,
+        }),
+      );
+
+      const buckets = await stores.telemetry.buckets({ range: 'all' }, 'model');
+      assert.equal(buckets[0]?.cacheReadTokens, 100);
+
+      await stores.close();
+      await owner.close();
+    });
+  });
+
   test('legacy summary reads only the requested Session', async () => {
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);

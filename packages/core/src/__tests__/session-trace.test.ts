@@ -75,6 +75,33 @@ test('page merge orders and deduplicates turns while recomputing totals', () => 
   assert.equal(merged.totals.inputTokens, 3);
 });
 
+test('page merge has a stable order when run timestamps and identities tie', () => {
+  const page = (turnId: string): SessionTrace => ({
+    schemaVersion: SESSION_TRACE_SCHEMA_VERSION,
+    sessionId: 'session-1',
+    turns: [
+      {
+        turnId,
+        runId: 'run-1',
+        startedAt: 1,
+        endedAt: 1,
+        durationMs: 0,
+        steps: [],
+        totals: emptyTraceTotals(),
+      },
+    ],
+    totals: emptyTraceTotals(),
+    coverage: coverage('no_known_gap'),
+  });
+
+  const merged = mergeSessionTraces([page('turn-b'), page('turn-a')]);
+
+  assert.deepEqual(
+    merged.turns.map((turn) => turn.turnId),
+    ['turn-a', 'turn-b'],
+  );
+});
+
 test('coverage merge keeps equal turn ids from distinct runs separate', () => {
   const first = coverage('partial');
   first.turnsMissingModelCalls = [{ runId: 'run-1', turnId: 'turn-1' }];

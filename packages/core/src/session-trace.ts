@@ -683,7 +683,10 @@ export function mergeSessionTraces(traces: readonly SessionTrace[]): SessionTrac
     const turns = new Map(current.turns.map((turn) => [traceTurnIdentityKey(turn), turn] as const));
     for (const turn of page.turns) turns.set(traceTurnIdentityKey(turn), turn);
     const ordered = [...turns.values()].sort(
-      (left, right) => left.startedAt - right.startedAt || left.runId.localeCompare(right.runId),
+      (left, right) =>
+        left.startedAt - right.startedAt ||
+        left.runId.localeCompare(right.runId) ||
+        left.turnId.localeCompare(right.turnId),
     );
     return {
       schemaVersion: current.schemaVersion,

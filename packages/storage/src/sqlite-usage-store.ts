@@ -593,7 +593,9 @@ function usageBucket(key: string, rows: readonly PersistedLlmCallRecord[]): Usag
     inputTokens: sum(rows.map((row) => row.inputTokens)),
     outputTokens: sum(rows.map((row) => row.outputTokens)),
     cacheMissTokens: sum(rows.map((row) => row.cacheMissInputTokens)),
-    cacheReadTokens: sum(rows.map((row) => row.cacheHitInputTokens)),
+    cacheReadTokens: sum(
+      rows.map((row) => clampCacheReadTokens(row.inputTokens, row.cacheHitInputTokens)),
+    ),
     cacheWriteTokens: sum(rows.map((row) => row.cacheWriteInputTokens)),
     reasoningTokens: sum(rows.map((row) => row.reasoningTokens)),
     totalTokens: sum(rows.map((row) => row.totalTokens)),

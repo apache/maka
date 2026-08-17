@@ -159,7 +159,7 @@ export function useSessionTrace(
           desiredPageCountRef.current = { sessionId: targetSessionId, count: pages.length };
           setState((current) =>
             current.sessionId === targetSessionId
-              ? { ...current, tracePages: pages, loadingEarlier: false }
+              ? { ...current, tracePages: pages, loading: false, loadingEarlier: false }
               : current,
           );
         } catch (error) {
@@ -173,6 +173,7 @@ export function useSessionTrace(
             current.sessionId === targetSessionId
               ? {
                   ...current,
+                  loading: false,
                   loadingEarlier: false,
                   error:
                     copy.locale === 'zh'

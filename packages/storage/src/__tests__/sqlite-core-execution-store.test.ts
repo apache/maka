@@ -70,6 +70,23 @@ describe('SQLite core execution stores', () => {
     });
   });
 
+  test('rejects a non-finite AgentRun page cursor', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      try {
+        await assert.rejects(
+          store.listSessionRunsPage('session-1', {
+            limit: 1,
+            before: { createdAt: Number.NaN, runId: 'run-1' },
+          }),
+          /Invalid AgentRun page cursor/u,
+        );
+      } finally {
+        store.close?.();
+      }
+    });
+  });
+
   test('preserves provider failure diagnostics in the AgentRun authority after reopen', async () => {
     await withRoot(async (root) => {
       const store = createSqliteAgentRunStore(root);

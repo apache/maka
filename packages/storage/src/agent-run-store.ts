@@ -438,7 +438,12 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
   ): Promise<AgentRunPageResult> {
     assertSafeId(sessionId, 'Invalid session id');
     assertIdentitySearchLimit(input.limit);
-    if (input.before) assertSafeId(input.before.runId, 'Invalid AgentRun page cursor');
+    if (input.before) {
+      assertSafeId(input.before.runId, 'Invalid AgentRun page cursor');
+      if (!Number.isFinite(input.before.createdAt)) {
+        throw new Error('Invalid AgentRun page cursor');
+      }
+    }
     const rows = this.#lease.database
       .prepare(
         input.before

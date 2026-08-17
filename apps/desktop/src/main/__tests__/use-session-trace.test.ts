@@ -494,6 +494,58 @@ describe('useSessionTrace', () => {
     );
   });
 
+  it('settles loading when load-earlier supersedes an in-flight retry', async () => {
+    const { root } = installReactRenderer();
+    let resolveRetry: ((result: Result<DesktopSessionTracePage>) => void) | undefined;
+    const retryPage = new Promise<Result<DesktopSessionTracePage>>((resolve) => {
+      resolveRetry = resolve;
+    });
+    let headReads = 0;
+    installMakaBridge({
+      trace: async (sessionId, cursor) => {
+        if (cursor === undefined) {
+          headReads += 1;
+          return headReads === 1
+            ? { ok: true, data: tracePage(sessionId, 'run-3', 'cursor-3') }
+            : retryPage;
+        }
+        if (cursor === 'cursor-3') {
+          return { ok: true, data: tracePage(sessionId, 'run-2', 'cursor-2') };
+        }
+        throw new Error(`unexpected cursor ${cursor}`);
+      },
+    });
+    let snapshot: ReturnType<typeof useSessionTrace> | undefined;
+    await act(async () => {
+      root.render(
+        createElement(Probe, {
+          sessionId: 'session-1',
+          active: true,
+          onHookSnapshot: (value) => {
+            snapshot = value;
+          },
+        }),
+      );
+    });
+
+    await act(async () => {
+      snapshot?.retry();
+      snapshot?.loadEarlier();
+      await Promise.resolve();
+    });
+
+    assert.equal(snapshot?.loading, false);
+    assert.equal(snapshot?.loadingEarlier, false);
+    assert.deepEqual(
+      snapshot?.trace?.turns.map((turn) => turn.runId),
+      ['run-2', 'run-3'],
+    );
+
+    await act(async () => {
+      resolveRetry?.({ ok: true, data: tracePage('session-1', 'run-4', 'cursor-4') });
+    });
+  });
+
   it('stops presenting an old Session summary when its refresh fails', async () => {
     const { root } = installReactRenderer();
     const harness = installMakaBridge({
