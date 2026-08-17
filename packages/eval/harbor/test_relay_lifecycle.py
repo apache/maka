@@ -356,7 +356,10 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
                 relay._settle_or_destroy(
                     HangingStopEnvironment(), "/", "/tmp/missing", execution, 0.01
                 ),
-                timeout=0.1,
+                # The deadline under test is 10ms. The outer bound only has to
+                # prove destroy does not wait out the 60s subject; 100ms is
+                # inside GitHub runner scheduling noise.
+                timeout=1.0,
             )
         finally:
             execution.cancel()
