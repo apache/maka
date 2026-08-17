@@ -474,20 +474,25 @@ describe('HostExecutionInspectCoordinator', () => {
       const session = await stores.sessionStore.create(sessionInput('Aggregate evidence'));
       for (const [index, runId] of ['aggregate-run-1', 'aggregate-run-2'].entries()) {
         await stores.agentRunStore.createRun(runHeader(session.id, runId, index + 1));
-        for (let eventIndex = 0; eventIndex < 1_400; eventIndex += 1) {
-          await stores.runtimeEventStore.appendRuntimeEvent(session.id, runId, {
-            id: `aggregate-event-${index + 1}-${eventIndex}`,
-            invocationId: runId,
-            sessionId: session.id,
-            turnId: `turn-${runId}`,
-            runId,
-            ts: index * 2_000 + eventIndex,
-            partial: false,
-            role: 'model',
-            author: 'agent',
-            content: { kind: 'text', text: 'fixture' },
-          });
-        }
+        await stores.runtimeEventStore.appendRuntimeEvent(session.id, runId, {
+          id: `aggregate-event-${index + 1}`,
+          invocationId: runId,
+          sessionId: session.id,
+          turnId: `turn-${runId}`,
+          runId,
+          ts: index + 1,
+          // Partial transport evidence is read and charged to the Host budget,
+          // then intentionally omitted from the causal projection. Two such
+          // runs exceed one old whole-Session budget without also exercising
+          // the separate result-size fallback.
+          partial: true,
+          role: 'model',
+          author: 'agent',
+          content: {
+            kind: 'text',
+            text: 'x'.repeat(Math.floor(EXECUTION_INSPECT_EVIDENCE_MAX_BYTES * 0.55)),
+          },
+        });
       }
 
       const first = await coordinator.handlers['execution.inspect.query'](
@@ -496,7 +501,7 @@ describe('HostExecutionInspectCoordinator', () => {
       );
       assert.equal(first.ok, true);
       if (!first.ok || first.result.kind !== 'session_trace_page') return;
-      assert.ok(first.result.turns.length > 0);
+      assert.equal(first.result.turns.length, 0);
       assert.ok(first.result.nextCursor !== null);
     });
   });

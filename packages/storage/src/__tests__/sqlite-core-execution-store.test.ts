@@ -39,6 +39,37 @@ describe('SQLite core execution stores', () => {
     });
   });
 
+  test('pages AgentRuns by stable creation and run identity order', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      try {
+        await store.createRun(runHeader({ runId: 'run-a', turnId: 'turn-a', createdAt: 1 }));
+        await store.createRun(runHeader({ runId: 'run-b', turnId: 'turn-b', createdAt: 2 }));
+        await store.createRun(runHeader({ runId: 'run-c', turnId: 'turn-c', createdAt: 2 }));
+
+        const first = await store.listSessionRunsPage('session-1', { limit: 2 });
+        assert.deepEqual(
+          first.runs.map((run) => run.runId),
+          ['run-c', 'run-b'],
+        );
+        assert.deepEqual(first.nextCursor, { createdAt: 2, runId: 'run-b' });
+
+        await store.createRun(runHeader({ runId: 'run-d', turnId: 'turn-d', createdAt: 3 }));
+        const older = await store.listSessionRunsPage('session-1', {
+          limit: 2,
+          before: first.nextCursor ?? undefined,
+        });
+        assert.deepEqual(
+          older.runs.map((run) => run.runId),
+          ['run-a'],
+        );
+        assert.equal(older.nextCursor, null);
+      } finally {
+        store.close?.();
+      }
+    });
+  });
+
   test('preserves provider failure diagnostics in the AgentRun authority after reopen', async () => {
     await withRoot(async (root) => {
       const store = createSqliteAgentRunStore(root);
@@ -235,7 +266,7 @@ async function withRoot(run: (root: string) => Promise<void>): Promise<void> {
   }
 }
 
-function runHeader(): AgentRunHeader {
+function runHeader(overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
   return {
     runId: 'run-1',
     sessionId: 'session-1',
@@ -248,6 +279,7 @@ function runHeader(): AgentRunHeader {
     permissionMode: 'ask',
     createdAt: 1,
     updatedAt: 1,
+    ...overrides,
   };
 }
 
