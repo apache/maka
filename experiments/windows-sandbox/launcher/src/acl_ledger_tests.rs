@@ -5,8 +5,11 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
+    use sha2::{Digest, Sha256};
+
     use crate::acl_ledger::{
-        LEDGER_VERSION, Ledger, LedgerRoot, collect_roots, recover_stale, write_ledger,
+        LEDGER_VERSION, LaunchFailure, Ledger, LedgerRoot, collect_roots, recover_stale,
+        with_acl_grants, write_ledger,
     };
     use crate::protocol::{LaunchRequest, NetworkMode};
 
@@ -391,6 +394,88 @@ mod tests {
         .expect("exact root skips tree scan");
         assert_eq!(roots.len(), 1);
         assert!(!roots[0].read_recursive);
+    }
+
+    fn shared_ledger_dir() -> PathBuf {
+        std::env::temp_dir().join("maka-sandbox-acl-ledgers")
+    }
+
+    fn remove_recursive_grant(path: &Path, sid: &str) {
+        let principal = format!("*{sid}");
+        icacls(&[
+            path.to_str().expect("path"),
+            "/remove",
+            &principal,
+            "/L",
+            "/Q",
+            "/T",
+        ]);
+    }
+
+    #[test]
+    fn unsettled_launch_preserves_grants_and_quarantines_the_ledger() {
+        let fixture = Fixture::new("unsettled-launch");
+        let root = fixture.target_str();
+        let mut request = launch_request(vec![root], Vec::new(), Vec::new(), Vec::new());
+        request.request_id = format!("unsettled-injection-{}", std::process::id());
+        let ledger_name = format!("{:x}.json", Sha256::digest(request.request_id.as_bytes()));
+        let ledger_path = shared_ledger_dir().join(&ledger_name);
+        let quarantined = shared_ledger_dir().join(format!("{ledger_name}.quarantined"));
+
+        let result = with_acl_grants(&request, APP_SID, || -> Result<(), LaunchFailure> {
+            assert!(
+                sid_listed(&fixture.target, APP_SID),
+                "grant must be live while the child runs"
+            );
+            Err(LaunchFailure::Unsettled(
+                "injected settlement failure".to_owned(),
+            ))
+        });
+
+        let message = match result {
+            Err(LaunchFailure::Unsettled(message)) => message,
+            other => panic!("expected an unsettled failure, got {other:?}"),
+        };
+        assert!(message.contains("injected settlement failure"), "{message}");
+        assert!(message.contains("preserved"), "{message}");
+        // Processes may still hold the launch identity: the grant must stay
+        // and the ledger must survive as a quarantined recovery record.
+        assert!(sid_listed(&fixture.target, APP_SID));
+        assert!(!ledger_path.exists());
+        assert!(quarantined.exists());
+
+        let _ = fs::remove_file(&quarantined);
+        remove_recursive_grant(&fixture.target, APP_SID);
+    }
+
+    #[test]
+    fn settled_launch_failure_still_releases_grants_and_ledger() {
+        let fixture = Fixture::new("settled-launch");
+        let root = fixture.target_str();
+        let mut request = launch_request(vec![root], Vec::new(), Vec::new(), Vec::new());
+        request.request_id = format!("settled-injection-{}", std::process::id());
+        let ledger_name = format!("{:x}.json", Sha256::digest(request.request_id.as_bytes()));
+
+        let result = with_acl_grants(&request, APP_SID, || -> Result<(), LaunchFailure> {
+            Err(LaunchFailure::Settled(
+                "injected settled failure".to_owned(),
+            ))
+        });
+
+        match result {
+            Err(LaunchFailure::Settled(message)) => {
+                assert!(message.contains("injected settled failure"), "{message}");
+            }
+            other => panic!("expected a settled failure, got {other:?}"),
+        }
+        // A proven-empty Job enters normal cleanup: no grant, no ledger.
+        assert!(!sid_listed(&fixture.target, APP_SID));
+        assert!(!shared_ledger_dir().join(&ledger_name).exists());
+        assert!(
+            !shared_ledger_dir()
+                .join(format!("{ledger_name}.quarantined"))
+                .exists()
+        );
     }
 
     #[test]

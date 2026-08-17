@@ -43,7 +43,7 @@ use windows_sys::Win32::System::Threading::{
     UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
-use crate::acl_ledger::with_acl_grants;
+use crate::acl_ledger::{LaunchFailure, with_acl_grants};
 use crate::protocol::{DEFAULT_LAUNCH_TIMEOUT_MS, LaunchRequest, NetworkMode};
 
 pub fn self_probe() -> Result<u8, String> {
@@ -118,8 +118,22 @@ pub fn launch_appcontainer(request: &LaunchRequest) -> Result<u8, String> {
         let result = with_acl_grants(request, &sid, || {
             create_appcontainer_child(request, job, profile.sid)
         });
+        // The kill-on-close Job is the kernel backstop either way: closing the
+        // last handle terminates whatever the settlement pass could not prove
+        // drained.
         CloseHandle(job);
-        result
+        match result {
+            Ok(value) => Ok(value),
+            Err(LaunchFailure::Settled(message)) => Err(message),
+            Err(failure @ LaunchFailure::Unsettled(_)) => {
+                // Processes may still carry this AppContainer identity, and
+                // its quarantined ledger still names the profile. Deleting
+                // the profile now would strip the only remaining handle on
+                // that authority, so it is preserved alongside the ledger.
+                std::mem::forget(profile);
+                Err(failure.into_message())
+            }
+        }
     }
 }
 
@@ -472,7 +486,10 @@ unsafe fn create_child_atomic(
             Err("atomic launch did not establish the required token and Job boundary".to_owned())
         }
     })();
-    let result = unsafe { settle_job(result, job, process.hProcess) };
+    // The atomic candidate probe holds no ACL grants, so a settled/unsettled
+    // distinction carries no recovery state; the outcome is flattened.
+    let result = unsafe { settle_job(result, job, process.hProcess) }
+        .map_err(|failure| failure.into_message());
     unsafe {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
@@ -490,7 +507,7 @@ unsafe fn create_appcontainer_child(
     request: &LaunchRequest,
     job: HANDLE,
     app_container_sid: *mut c_void,
-) -> Result<u8, String> {
+) -> Result<u8, LaunchFailure> {
     let mut command = quote_command(&request.executable, &request.arguments);
     let executable = wide(&request.executable);
     let cwd = wide(&request.cwd);
@@ -501,18 +518,14 @@ unsafe fn create_appcontainer_child(
     let mut attribute_size = 0usize;
     unsafe { InitializeProcThreadAttributeList(null_mut(), 3, 0, &mut attribute_size) };
     if attribute_size == 0 {
-        return Err(last_error(
-            "InitializeProcThreadAttributeList(appcontainer size)",
-        ));
+        return Err(last_error("InitializeProcThreadAttributeList(appcontainer size)").into());
     }
     let words = attribute_size.div_ceil(size_of::<usize>());
     let mut attribute_storage = vec![0usize; words];
     let attribute_list = attribute_storage.as_mut_ptr() as *mut c_void;
     if unsafe { InitializeProcThreadAttributeList(attribute_list, 3, 0, &mut attribute_size) } == 0
     {
-        return Err(last_error(
-            "InitializeProcThreadAttributeList(appcontainer)",
-        ));
+        return Err(last_error("InitializeProcThreadAttributeList(appcontainer)").into());
     }
 
     let mut job_value = job;
@@ -573,7 +586,7 @@ unsafe fn create_appcontainer_child(
     })();
     if let Err(error) = attributes {
         unsafe { DeleteProcThreadAttributeList(attribute_list) };
-        return Err(error);
+        return Err(error.into());
     }
 
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
@@ -607,7 +620,7 @@ unsafe fn create_appcontainer_child(
     // response stream.
     drop(stdio);
     if created == 0 {
-        return Err(last_error("CreateProcessW(appcontainer atomic-job)"));
+        return Err(last_error("CreateProcessW(appcontainer atomic-job)").into());
     }
 
     let result = (|| -> Result<u8, String> {
@@ -771,24 +784,34 @@ unsafe fn terminate_and_drain_job(job: HANDLE, root_process: HANDLE) -> Result<(
 /// the launch identity. Error paths terminate the entire Job; successful root
 /// exits get a bounded grace period for Job accounting and descendants to
 /// drain, then fail closed and terminate any process tree that remains.
+///
+/// The outcome distinguishes settled from unsettled failures: only when the
+/// Job is proven empty (directly, or after a successful terminate-and-drain)
+/// may the caller run normal ACL/ledger cleanup. When termination or Job
+/// accounting itself fails, processes may still hold the launch identity and
+/// the recovery state must be preserved instead.
 unsafe fn settle_job(
     result: Result<u8, String>,
     job: HANDLE,
     root_process: HANDLE,
-) -> Result<u8, String> {
+) -> Result<u8, LaunchFailure> {
     match result {
         Ok(exit_code) => match unsafe { wait_for_empty_job(job, Duration::from_secs(5)) } {
             Ok(()) => Ok(exit_code),
             Err(drain) => match unsafe { terminate_and_drain_job(job, root_process) } {
-                Ok(()) => Err(format!(
+                Ok(()) => Err(LaunchFailure::Settled(format!(
                     "child exited while its Job still contained processes: {drain}"
-                )),
-                Err(cleanup) => Err(format!("{drain}; Job cleanup also failed: {cleanup}")),
+                ))),
+                Err(cleanup) => Err(LaunchFailure::Unsettled(format!(
+                    "{drain}; Job cleanup also failed: {cleanup}"
+                ))),
             },
         },
         Err(error) => match unsafe { terminate_and_drain_job(job, root_process) } {
-            Ok(()) => Err(error),
-            Err(cleanup) => Err(format!("{error}; Job cleanup also failed: {cleanup}")),
+            Ok(()) => Err(LaunchFailure::Settled(error)),
+            Err(cleanup) => Err(LaunchFailure::Unsettled(format!(
+                "{error}; Job cleanup also failed: {cleanup}"
+            ))),
         },
     }
 }

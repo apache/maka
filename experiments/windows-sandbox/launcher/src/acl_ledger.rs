@@ -44,6 +44,34 @@ pub(crate) fn acl_mutex_name(user_sid: &str) -> String {
     format!(r"Global\Maka.WindowsSandbox.AclLedger.v2.{user_sid}")
 }
 
+/// Distinguishes launch failures by whether the Job was proven empty.
+/// Cleanup semantics differ: a settled failure may release grants and
+/// ledger normally, while an unsettled one must preserve its recovery
+/// state because processes may still hold the launch identity.
+#[derive(Debug)]
+pub enum LaunchFailure {
+    /// The failure completed with the Job proven empty.
+    Settled(String),
+    /// Termination, waiting or Job accounting failed: the Job could not be
+    /// proven empty.
+    Unsettled(String),
+}
+
+impl From<String> for LaunchFailure {
+    fn from(message: String) -> Self {
+        Self::Settled(message)
+    }
+}
+
+impl LaunchFailure {
+    pub fn into_message(self) -> String {
+        match self {
+            Self::Settled(message) => message,
+            Self::Unsettled(message) => format!("launch left an unsettled Job: {message}"),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Ledger {
@@ -70,8 +98,8 @@ pub(crate) struct LedgerRoot {
 pub fn with_acl_grants<T>(
     request: &LaunchRequest,
     app_container_sid: &str,
-    launch: impl FnOnce() -> Result<T, String>,
-) -> Result<T, String> {
+    launch: impl FnOnce() -> Result<T, LaunchFailure>,
+) -> Result<T, LaunchFailure> {
     if request.read_roots.is_empty() && request.write_roots.is_empty() {
         return launch();
     }
@@ -110,14 +138,42 @@ pub fn with_acl_grants<T>(
             if restore.is_ok() {
                 let _ = fs::remove_file(&ledger_path);
             }
-            return match restore {
-                Ok(()) => Err(error),
-                Err(restore) => Err(format!("{error}; ACL cleanup also failed: {restore}")),
-            };
+            return Err(LaunchFailure::Settled(match restore {
+                Ok(()) => error,
+                Err(restore) => format!("{error}; ACL cleanup also failed: {restore}"),
+            }));
         }
     }
 
-    let launch_result = launch();
+    // Only a launch whose Job is proven empty may enter normal cleanup. An
+    // unsettled Job may still contain processes holding this launch identity,
+    // so its grants stay in place and the ledger is quarantined — preserving
+    // the recovery record for inspection instead of erasing it while the
+    // boundary might still be live. Recovery never interprets quarantined
+    // ledgers, and every launch uses a fresh AppContainer identity, so no
+    // later child can inherit this authority.
+    let launch_result = match launch() {
+        Err(LaunchFailure::Unsettled(error)) => {
+            let quarantine = {
+                let _lock = LedgerLock::acquire(
+                    &acl_mutex_name(&user_sid),
+                    &user_sid,
+                    ACL_MUTEX_TIMEOUT_MS,
+                )?;
+                quarantine_ledger(
+                    &ledger_path,
+                    &format!("launch left an unsettled Job: {error}"),
+                )
+            };
+            return Err(LaunchFailure::Unsettled(match quarantine {
+                Ok(()) => format!("{error}; recovery state preserved for inspection"),
+                Err(quarantine) => {
+                    format!("{error}; quarantining recovery state also failed: {quarantine}")
+                }
+            }));
+        }
+        other => other,
+    };
     let restore_result = {
         let _lock =
             LedgerLock::acquire(&acl_mutex_name(&user_sid), &user_sid, ACL_MUTEX_TIMEOUT_MS)?;
@@ -131,8 +187,11 @@ pub fn with_acl_grants<T>(
     match (launch_result, restore_result) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(restore)) => Err(restore),
-        (Err(error), Err(restore)) => Err(format!("{error}; ACL cleanup also failed: {restore}")),
+        (Ok(_), Err(restore)) => Err(LaunchFailure::Settled(restore)),
+        (Err(error), Err(restore)) => Err(LaunchFailure::Settled(format!(
+            "{}; ACL cleanup also failed: {restore}",
+            error.into_message()
+        ))),
     }
 }
 
