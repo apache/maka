@@ -34,7 +34,7 @@ test('Project directory authority exposes folders without crossing its published
         kind: 'directory_page',
         rootId: 'home',
         segments: [],
-        entries: [{ name: 'work' }],
+        entries: [{ name: '.hidden' }, { name: 'work' }],
         nextCursor: null,
       },
     );
