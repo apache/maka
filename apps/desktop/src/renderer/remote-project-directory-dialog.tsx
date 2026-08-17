@@ -118,7 +118,6 @@ export function RemoteProjectDirectoryDialog(props: {
         header={host ? (
           <DialogHeader
             title={copy.remoteDirectoryTitle(host.name ?? 'Runtime Host')}
-            subtitle={copy.remoteDirectoryDescription}
             onOpenChange={(open) => {
               if (!open) props.onClose();
             }}
