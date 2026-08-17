@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createExternalSubjectAdapter } from './external-subject.js';
 import { createHarborExecutor, createPierExecutor } from './harness-executor.js';
+import { preflightBuiltinExecutor } from './install-preflight.js';
 import { openExperimentDirectory } from './experiment-directory.js';
 import type { ExperimentSpec } from './experiment.js';
 import { createMakaSubjectAdapter } from './maka-subject.js';
@@ -47,10 +48,12 @@ export async function runMakaEvalCli(
     const spec = parseExperimentSpec(JSON.parse(await readFile(specPath, 'utf8')) as unknown);
     const directory = await openExperimentDirectory(resolve(command.outDir), spec);
     const loadExecutor = overrides.loadExecutor ?? builtinExecutor;
+    const executor = loadExecutor(spec, specPath);
+    if (!overrides.loadExecutor) await preflightBuiltinExecutor(spec, specPath);
     const results = await runExperiment({
       spec,
       store: directory.attempts,
-      executor: loadExecutor(spec, specPath),
+      executor,
       subjects: overrides.subjects ?? [createMakaSubjectAdapter(), createExternalSubjectAdapter()],
       ...(command.cellIds.length > 0 ? { cellIds: command.cellIds } : {}),
       ...(signal ? { signal } : {}),

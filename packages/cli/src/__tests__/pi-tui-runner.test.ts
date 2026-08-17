@@ -6601,7 +6601,7 @@ async function runSignalExitProbe(
   stdout: string;
 }> {
   const runnerUrl = new URL('../pi-tui-runner.js', import.meta.url).href;
-  const cliUrl = new URL('../cli.js', import.meta.url).href;
+  const cliUrl = new URL('../cli-core.js', import.meta.url).href;
   const terminalUrl = new URL('./tui-terminal-mock.js', import.meta.url).href;
   const childSource = `
     import { runMakaPiTui } from ${JSON.stringify(runnerUrl)};
@@ -6696,7 +6696,7 @@ async function runFatalExitProbe(
   stderr: string;
 }> {
   const runnerUrl = new URL('../pi-tui-runner.js', import.meta.url).href;
-  const cliUrl = new URL('../cli.js', import.meta.url).href;
+  const cliUrl = new URL('../cli-core.js', import.meta.url).href;
   const terminalUrl = new URL('./tui-terminal-mock.js', import.meta.url).href;
   const trigger =
     kind === 'uncaughtException'

@@ -5,7 +5,7 @@ export {
 export {
   parseMakaCliArgs,
   type MakaCliCommand,
-} from './cli.js';
+} from './cli-core.js';
 export {
   parseMakaRunArgs,
   type MakaRunDeps,

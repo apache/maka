@@ -7,9 +7,35 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { parseMakaCliArgs, runMakaCli } from '../cli.js';
+import { parseMakaCliArgs, runMakaCli } from '../cli-core.js';
 
 describe('Maka CLI args', () => {
+  test('declares a bin-only package surface', async () => {
+    const manifest = JSON.parse(
+      await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+    ) as Record<string, unknown>;
+    assert.deepEqual(manifest.bin, {
+      maka: './dist/cli.js',
+      'maka-agent': './dist/cli.js',
+    });
+    assert.deepEqual(manifest.exports, {});
+    assert.equal(Object.hasOwn(manifest, 'main'), false);
+    assert.equal(Object.hasOwn(manifest, 'types'), false);
+  });
+
+  test('publishes the supported release command surface', () => {
+    const help = parseMakaCliArgs(['--help'], '0.1.0');
+    assert.equal(help.kind, 'help');
+    if (help.kind !== 'help') return;
+    assert.match(help.text, /^  maka              Start the TUI$/m);
+    assert.match(help.text, /^  maka-agent        Start the TUI$/m);
+    assert.match(help.text, /^  maka run /m);
+    assert.match(help.text, /^  maka activate /m);
+    assert.match(help.text, /^  maka eval /m);
+    assert.match(help.text, /^  maka runtime-host serve /m);
+    assert.doesNotMatch(help.text, /cli:dev/);
+  });
+
   test('selects a Runtime Host and Project for TUI startup', () => {
     assert.deepEqual(parseMakaCliArgs(['--host', 'office', '--project', 'project-1'], '0.1.0'), {
       kind: 'tui',
@@ -47,7 +73,7 @@ describe('Maka CLI args', () => {
   });
 
   test('establishes the fatal exit before reporting can throw', async () => {
-    const cliUrl = new URL('../cli.js', import.meta.url).href;
+    const cliUrl = new URL('../cli-core.js', import.meta.url).href;
     const childSource = `
       import { handleMakaCliProcessExit } from ${JSON.stringify(cliUrl)};
       try {
