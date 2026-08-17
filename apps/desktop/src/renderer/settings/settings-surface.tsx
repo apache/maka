@@ -86,6 +86,22 @@ type RuntimeHostCatalogState =
   | { status: 'ready'; snapshot: DesktopRuntimeHostProfileSnapshot }
   | { status: 'error'; message: string };
 
+function beginResourceLoad<T>(current: ResourceState<T>, key: string): ResourceState<T> {
+  return current.status === 'ready' && current.key === key
+    ? current
+    : { status: 'loading', key };
+}
+
+function failResourceLoad<T>(
+  current: ResourceState<T>,
+  key: string,
+  message: string,
+): ResourceState<T> {
+  return current.status === 'ready' && current.key === key
+    ? current
+    : { status: 'error', key, message };
+}
+
 function runtimeHostKey(host: DesktopRuntimeHostRef): string {
   return `${host.profileId}:${host.hostId}`;
 }
@@ -296,7 +312,9 @@ export function SettingsSurface(props: {
     (!sectionNeedsConnections || selectedConnections),
   );
   const runtimeHostContentStatus: 'loading' | 'ready' | 'unavailable' | 'error' =
-    runtimeHostCatalogFailed || runtimeHostDataFailed
+    runtimeHostCatalog.status === 'loading'
+      ? 'loading'
+      : runtimeHostCatalogFailed || runtimeHostDataFailed
       ? 'error'
       : !selectedRuntimeHost
         ? selectedRuntimeHostEntry?.readiness === 'connecting' ||
@@ -308,8 +326,7 @@ export function SettingsSurface(props: {
           : 'ready';
   const loading =
     clientLoading ||
-    (requiresRuntimeHost &&
-      (runtimeHostCatalog.status === 'loading' || runtimeHostDataLoading));
+    (requiresRuntimeHost && runtimeHostContentStatus === 'loading');
 
   useEffect(() => {
     if (!loading && section === 'models' && providerCatalogRequested) {
@@ -321,7 +338,7 @@ export function SettingsSurface(props: {
     if (!host) return;
     const key = runtimeHostKey(host);
     const ticket = ++runtimeHostSettingsTicketRef.current;
-    setRuntimeHostSettings({ status: 'loading', key });
+    setRuntimeHostSettings((current) => beginResourceLoad(current, key));
     try {
       const next = await window.maka.settings.get(host);
       if (
@@ -337,11 +354,8 @@ export function SettingsSurface(props: {
         ticket === runtimeHostSettingsTicketRef.current &&
         selectedRuntimeHostKeyRef.current === key
       ) {
-        setRuntimeHostSettings({
-          status: 'error',
-          key,
-          message: settingsActionErrorMessage(error, locale),
-        });
+        const message = settingsActionErrorMessage(error, locale);
+        setRuntimeHostSettings((current) => failResourceLoad(current, key, message));
       }
     }
   }
@@ -366,7 +380,7 @@ export function SettingsSurface(props: {
     if (!bridge || !host) return;
     const key = runtimeHostKey(host);
     const ticket = ++runtimeHostConnectionsTicketRef.current;
-    setRuntimeHostConnections({ status: 'loading', key });
+    setRuntimeHostConnections((current) => beginResourceLoad(current, key));
     try {
       const snapshot = await bridge.getSnapshot();
       if (
@@ -388,11 +402,8 @@ export function SettingsSurface(props: {
         ticket === runtimeHostConnectionsTicketRef.current &&
         selectedRuntimeHostKeyRef.current === key
       ) {
-        setRuntimeHostConnections({
-          status: 'error',
-          key,
-          message: settingsActionErrorMessage(error, locale),
-        });
+        const message = settingsActionErrorMessage(error, locale);
+        setRuntimeHostConnections((current) => failResourceLoad(current, key, message));
       }
     }
   }
@@ -891,7 +902,12 @@ function SettingsPageBody(props: {
     case 'import-tasks':
       return <ImportTasksSettingsPage onImported={props.onTaskImported} />;
     case 'data':
-      return <DataSettingsPage />;
+      return (
+        <DataSettingsPage
+          runtimeHostStatus={props.runtimeHostStatus}
+          onRetryRuntimeHost={props.onRetryRuntimeHost}
+        />
+      );
     case 'permissions':
       return <PermissionCenterPage />;
     case 'health':

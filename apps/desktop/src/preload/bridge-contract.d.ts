@@ -621,15 +621,15 @@ export interface MakaBridge {
     ): Promise<DesktopTranscriptHandle>;
   };
   externalSessions: {
-    listSources(): Promise<{ adapterIds: string[] }>;
-    list(input: { adapterId: string; includeArchived?: boolean; cursor?: string }): Promise<{
+    listSources(host?: DesktopRuntimeHostRef): Promise<{ adapterIds: string[] }>;
+    list(input: { adapterId: string; includeArchived?: boolean; cursor?: string }, host?: DesktopRuntimeHostRef): Promise<{
       sessions: ExternalSessionSummary[];
       nextCursor: string | null;
     }>;
     import(input: {
       adapterId: string;
       sourceSessionId: string;
-    }): Promise<ExternalSessionImportIpcResult<DesktopSessionSummary>>;
+    }, host?: DesktopRuntimeHostRef): Promise<ExternalSessionImportIpcResult<DesktopSessionSummary>>;
   };
   projects: {
     getDefaultContext(): Promise<{
@@ -770,22 +770,22 @@ export interface MakaBridge {
     ): Promise<import('@maka/core/task-submission-readiness').TaskSubmissionReadinessSnapshot>;
   };
   permissions: {
-    getSnapshot(): Promise<PermissionSnapshot>;
-    openSystemSettings(permId: string): Promise<PermissionActionResult>;
-    requestAccess(permId: string): Promise<PermissionActionResult>;
+    getSnapshot(host?: DesktopRuntimeHostRef): Promise<PermissionSnapshot>;
+    openSystemSettings(permId: string, host?: DesktopRuntimeHostRef): Promise<PermissionActionResult>;
+    requestAccess(permId: string, host?: DesktopRuntimeHostRef): Promise<PermissionActionResult>;
     /**
      * macOS drag-to-grant onboarding: opens the right Privacy pane and
      * floats a card the user can drag the app bundle out of. Only
      * `accessibility` and `screen_recording` — the two permissions with
      * no programmatic consent dialog.
      */
-    startDragOnboarding(permId: string): Promise<PermissionOverlayStartResult>;
+    startDragOnboarding(permId: string, host?: DesktopRuntimeHostRef): Promise<PermissionOverlayStartResult>;
   };
   capabilities: {
-    getSnapshot(): Promise<CapabilitySnapshotCollection>;
+    getSnapshot(host?: DesktopRuntimeHostRef): Promise<CapabilitySnapshotCollection>;
   };
   health: {
-    getSnapshot(): Promise<HealthSnapshot>;
+    getSnapshot(host?: DesktopRuntimeHostRef): Promise<HealthSnapshot>;
   };
   memory: {
     getState(sessionId?: string, host?: DesktopRuntimeHostRef): Promise<LocalMemoryState>;
@@ -963,11 +963,11 @@ export interface MakaBridge {
     subscribeCommand(handler: (command: WindowCommand) => void): () => void;
   };
   config: {
-    export(input: { categories: ConfigCategory[] }): Promise<
+    export(input: { categories: ConfigCategory[] }, host?: DesktopRuntimeHostRef): Promise<
       | { ok: false; reason: 'no_categories' | 'canceled' }
       | { ok: true; path: string; includedData: ConfigCategory[] }
     >;
-    import(input: { strategy: 'skip' | 'overwrite' }): Promise<
+    import(input: { strategy: 'skip' | 'overwrite' }, host?: DesktopRuntimeHostRef): Promise<
       | { ok: false; reason: 'canceled' | 'not_json' | 'malformed' | 'unsupported_version'; message?: string }
       | {
           ok: true;
@@ -986,7 +986,7 @@ export interface MakaBridge {
     >;
   };
   app: {
-    info(): Promise<DesktopAppInfo>;
+    info(host?: DesktopRuntimeHostRef): Promise<DesktopAppInfo>;
     subscribeUpdateStatus(handler: (status: AppUpdateStatus) => void): () => void;
     updateStatus(): Promise<AppUpdateStatus>;
     checkForUpdates(): Promise<AppUpdateStatus>;
@@ -999,6 +999,7 @@ export interface MakaBridge {
     openPath(
       key: 'workspace' | 'skills' | 'memory' | 'project',
       sessionId?: string,
+      host?: DesktopRuntimeHostRef,
     ): Promise<
       | { ok: true; opened: string }
       | {

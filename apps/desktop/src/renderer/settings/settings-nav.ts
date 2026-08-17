@@ -93,11 +93,11 @@ const SETTINGS_SECTION_SCOPES: Record<
   search: 'runtime-host',
   usage: 'client',
   'archived-tasks': 'client',
-  'import-tasks': 'client',
+  'import-tasks': 'runtime-host',
   'daily-review': 'runtime-host',
-  data: 'client',
-  permissions: 'client',
-  health: 'client',
+  data: 'mixed',
+  permissions: 'runtime-host',
+  health: 'runtime-host',
   about: 'client',
 };
 

@@ -35,6 +35,7 @@ import { RelativeTime, StatusDot, useMountedRef, useToast, useUiLocale } from '@
 import { SettingsPage, SettingsSection } from './settings-section';
 import { getPermissionCenterCopy, type PermissionCenterCopy } from '../locales/permission-center-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
+import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 import { dotForStatus } from '@maka/ui';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { useActionGuard } from './use-action-guard';
@@ -66,6 +67,7 @@ const OS_PERMISSION_ICONS: Record<OsPermissionId, ComponentType<LucideProps>> = 
 };
 
 export function PermissionCenterPage() {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getPermissionCenterCopy(locale);
   const [permissions, setPermissions] = useState<PermissionSnapshot | null>(null);
@@ -83,8 +85,8 @@ export function PermissionCenterPage() {
     setLoading(true);
     setError(null);
     Promise.all([
-      window.maka.permissions.getSnapshot(),
-      window.maka.capabilities.getSnapshot(),
+      window.maka.permissions.getSnapshot(host),
+      window.maka.capabilities.getSnapshot(host),
     ])
       .then(([perm, caps]) => {
         if (cancelled) return;
@@ -100,7 +102,7 @@ export function PermissionCenterPage() {
     return () => {
       cancelled = true;
     };
-  }, [locale, refreshTick]);
+  }, [host, locale, refreshTick]);
 
   useEffect(() => {
     const refreshAfterSystemSettings = () => {
@@ -126,10 +128,10 @@ export function PermissionCenterPage() {
     try {
       const result =
         kind === 'request'
-          ? await window.maka.permissions.requestAccess(permId)
+          ? await window.maka.permissions.requestAccess(permId, host)
           : kind === 'dragGrant'
-            ? await window.maka.permissions.startDragOnboarding(permId)
-            : await window.maka.permissions.openSystemSettings(permId);
+            ? await window.maka.permissions.startDragOnboarding(permId, host)
+            : await window.maka.permissions.openSystemSettings(permId, host);
       if (result.ok) {
         // A direct request resolves after the user has answered, so refresh
         // now. Deep links and the drag guide resolve as soon as System

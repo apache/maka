@@ -14,6 +14,7 @@ import { ICON_SIZE, MessageSquare } from '@maka/ui/icons';
 import { getExternalSessionImportCopy } from '../locales/external-session-import-copy.js';
 import { localizedShellErrorMessage } from '../locales/shell-copy.js';
 import { SettingsPage, SettingsSection } from './settings-section';
+import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 type CatalogState = {
   sessions: ExternalSessionSummary[];
@@ -72,6 +73,7 @@ export function ImportTasksSettingsPage(props: {
   /** Hands the freshly imported task to the shell, which opens it. */
   onImported(session: DesktopSessionSummary): void;
 }) {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getExternalSessionImportCopy(locale);
   const mountedRef = useMountedRef();
@@ -115,7 +117,7 @@ export function ImportTasksSettingsPage(props: {
     setAdapterId(null);
     setCatalog(EMPTY_CATALOG);
     try {
-      const result = await window.maka.externalSessions.listSources();
+      const result = await window.maka.externalSessions.listSources(host);
       if (generation !== requestGeneration.current) return;
       setAdapterIds(result.adapterIds);
       setAdapterId(result.adapterIds[0] ?? null);
@@ -128,7 +130,7 @@ export function ImportTasksSettingsPage(props: {
         setSourceResolved(true);
       }
     }
-  }, [copy.loadFailedFallback, locale]);
+  }, [copy.loadFailedFallback, host, locale]);
 
   const loadCatalog = useCallback(
     async (sourceId: string, cursor?: string) => {
@@ -146,7 +148,7 @@ export function ImportTasksSettingsPage(props: {
           adapterId: sourceId,
           includeArchived,
           ...(cursor === undefined ? {} : { cursor }),
-        });
+        }, host);
         if (generation !== requestGeneration.current) return;
         setCatalog((current) => ({
           sessions: append ? [...current.sessions, ...result.sessions] : result.sessions,
@@ -162,7 +164,7 @@ export function ImportTasksSettingsPage(props: {
         }
       }
     },
-    [copy.loadFailedFallback, includeArchived, locale],
+    [copy.loadFailedFallback, host, includeArchived, locale],
   );
 
   useEffect(() => {
@@ -197,7 +199,7 @@ export function ImportTasksSettingsPage(props: {
         const outcome = await window.maka.externalSessions.import({
           adapterId: attempt.adapterId,
           sourceSessionId: attempt.sourceSessionId,
-        });
+        }, host);
         // Navigating away from Settings unmounts this page while the import is
         // still in Desktop Main's hands. The conversion itself completes and is
         // stored either way; what must not happen is a completion from a page
@@ -215,7 +217,7 @@ export function ImportTasksSettingsPage(props: {
         if (mountedRef.current) setActiveImport(null);
       }
     },
-    [activeImport, adapterId, copy.importFailedFallback, locale, mountedRef, props],
+    [activeImport, adapterId, copy.importFailedFallback, host, locale, mountedRef, props],
   );
 
   const noSource = sourceResolved && !sourceLoading && !sourceError && adapterIds.length === 0;

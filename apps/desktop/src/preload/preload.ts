@@ -1666,21 +1666,24 @@ const makaBridge = {
     },
   },
   externalSessions: {
-    listSources(): Promise<{ adapterIds: string[] }> {
-      return invokeActiveRuntimeHost('external-sessions:listSources');
+    listSources(host?: DesktopRuntimeHostRef): Promise<{ adapterIds: string[] }> {
+      return invokeSelectedRuntimeHost(host, 'external-sessions:listSources');
     },
     list(input: {
       adapterId: string;
       includeArchived?: boolean;
       cursor?: string;
-    }): Promise<{ sessions: ExternalSessionSummary[]; nextCursor: string | null }> {
-      return invokeActiveRuntimeHost('external-sessions:list', input);
+    }, host?: DesktopRuntimeHostRef): Promise<{
+      sessions: ExternalSessionSummary[];
+      nextCursor: string | null;
+    }> {
+      return invokeSelectedRuntimeHost(host, 'external-sessions:list', input);
     },
     async import(input: {
       adapterId: string;
       sourceSessionId: string;
-    }): Promise<ExternalSessionImportIpcResult<DesktopSessionSummary>> {
-      const scope = await activeRuntimeHostRef();
+    }, host?: DesktopRuntimeHostRef): Promise<ExternalSessionImportIpcResult<DesktopSessionSummary>> {
+      const scope = await selectedRuntimeHostScope(host);
       const result = await ipcRenderer.invoke(
         'external-sessions:import', scope, input,
       ) as ExternalSessionImportIpcResult;
@@ -1969,27 +1972,27 @@ const makaBridge = {
     },
   },
   permissions: {
-    getSnapshot(): Promise<PermissionSnapshot> {
-      return invokeActiveRuntimeHost('permissions:getSnapshot');
+    getSnapshot(host?: DesktopRuntimeHostRef): Promise<PermissionSnapshot> {
+      return invokeSelectedRuntimeHost(host, 'permissions:getSnapshot');
     },
-    openSystemSettings(permId: string): Promise<PermissionActionResult> {
-      return invokeActiveRuntimeHost('permissions:openSystemSettings', permId);
+    openSystemSettings(permId: string, host?: DesktopRuntimeHostRef): Promise<PermissionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'permissions:openSystemSettings', permId);
     },
-    requestAccess(permId: string): Promise<PermissionActionResult> {
-      return invokeActiveRuntimeHost('permissions:requestAccess', permId);
+    requestAccess(permId: string, host?: DesktopRuntimeHostRef): Promise<PermissionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'permissions:requestAccess', permId);
     },
-    startDragOnboarding(permId: string): Promise<PermissionOverlayStartResult> {
-      return invokeActiveRuntimeHost('permissions:startDragOnboarding', permId);
+    startDragOnboarding(permId: string, host?: DesktopRuntimeHostRef): Promise<PermissionOverlayStartResult> {
+      return invokeSelectedRuntimeHost(host, 'permissions:startDragOnboarding', permId);
     },
   },
   capabilities: {
-    getSnapshot(): Promise<CapabilitySnapshotCollection> {
-      return invokeActiveRuntimeHost('capabilities:getSnapshot');
+    getSnapshot(host?: DesktopRuntimeHostRef): Promise<CapabilitySnapshotCollection> {
+      return invokeSelectedRuntimeHost(host, 'capabilities:getSnapshot');
     },
   },
   health: {
-    getSnapshot(): Promise<HealthSnapshot> {
-      return invokeActiveRuntimeHost('health:getSnapshot');
+    getSnapshot(host?: DesktopRuntimeHostRef): Promise<HealthSnapshot> {
+      return invokeSelectedRuntimeHost(host, 'health:getSnapshot');
     },
   },
   memory: {
@@ -2466,13 +2469,13 @@ const makaBridge = {
     },
   },
   config: {
-    export(input: { categories: ConfigCategory[] }): Promise<
+    export(input: { categories: ConfigCategory[] }, host?: DesktopRuntimeHostRef): Promise<
       | { ok: false; reason: 'no_categories' | 'canceled' }
       | { ok: true; path: string; includedData: ConfigCategory[] }
     > {
-      return invokeActiveRuntimeHost('config:export', input);
+      return invokeSelectedRuntimeHost(host, 'config:export', input);
     },
-    import(input: { strategy: 'skip' | 'overwrite' }): Promise<
+    import(input: { strategy: 'skip' | 'overwrite' }, host?: DesktopRuntimeHostRef): Promise<
       | { ok: false; reason: 'canceled' | 'not_json' | 'malformed' | 'unsupported_version'; message?: string }
       | {
           ok: true;
@@ -2489,12 +2492,12 @@ const makaBridge = {
           };
         }
     > {
-      return invokeActiveRuntimeHost('config:import', input);
+      return invokeSelectedRuntimeHost(host, 'config:import', input);
     },
   },
   app: {
-    info(): Promise<DesktopAppInfo> {
-      return invokeActiveRuntimeHost('app:info');
+    info(host?: DesktopRuntimeHostRef): Promise<DesktopAppInfo> {
+      return invokeSelectedRuntimeHost(host, 'app:info');
     },
     subscribeUpdateStatus(handler: (status: AppUpdateStatus) => void): () => void {
       const listener = (_event: Electron.IpcRendererEvent, status: AppUpdateStatus) => handler(status);
@@ -2522,6 +2525,7 @@ const makaBridge = {
     openPath(
       key: 'workspace' | 'skills' | 'memory' | 'project',
       sessionId?: string,
+      host?: DesktopRuntimeHostRef,
     ): Promise<
       | { ok: true; opened: string }
       | {
@@ -2529,7 +2533,7 @@ const makaBridge = {
           reason: 'unknown-key' | 'not-allowed' | 'missing' | 'not-a-directory' | 'open-failed';
         }
     > {
-      if (!sessionId) return invokeActiveRuntimeHost('app:openPath', key, undefined);
+      if (!sessionId) return invokeSelectedRuntimeHost(host, 'app:openPath', key, undefined);
       return runtimeHostSessionRef(sessionId).then((session) =>
         ipcRenderer.invoke('app:openPath', session.scope, key, session.sessionId),
       );
