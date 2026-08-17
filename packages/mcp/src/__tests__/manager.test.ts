@@ -296,6 +296,51 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assert.equal(countProtocolMethod(fixture, 'tools/list') - listsBefore, 2);
     });
 
+    test('starts a fresh list for a refresh queued during snapshot publication', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+      const listsBefore = countProtocolMethod(fixture, 'tools/list');
+
+      fixture.setToolListMode('replacement');
+      let queued: Promise<unknown> | undefined;
+      manager.onChange((status) => {
+        if (
+          status.serverId === 'remote' &&
+          status.tools[0]?.name === 'replacement' &&
+          queued === undefined
+        ) {
+          queued = Promise.resolve().then(() => manager.refreshTools('remote'));
+        }
+      });
+
+      await manager.refreshTools('remote');
+      await queued;
+
+      assert.equal(countProtocolMethod(fixture, 'tools/list') - listsBefore, 2);
+      assert.deepEqual(
+        manager.status('remote')?.tools.map((tool) => tool.name),
+        ['replacement'],
+      );
+    });
+
+    test('releases a failed refresh so the next one can publish a replacement', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+
+      fixture.setToolListMode('duplicate');
+      await assert.rejects(manager.refreshTools('remote'), /duplicate tool/u);
+
+      fixture.setToolListMode('replacement');
+      await manager.refreshTools('remote');
+      assert.equal(manager.status('remote')?.error, undefined);
+      assert.deepEqual(
+        manager.status('remote')?.tools.map((tool) => tool.name),
+        ['replacement'],
+      );
+    });
+
     test('bounds response-followed-by-notification rediscovery during initial sync', async () => {
       const fixture = await createRemoteFixture('sse');
       const manager = createManager();

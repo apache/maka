@@ -124,7 +124,6 @@ export class McpClientManager {
   private readonly clientName: string;
   private readonly clientVersion: string;
   private readonly excludedStdioEnvironmentKeys: readonly string[];
-  private toolSnapshotRevisionValue = 0;
   private readonly toolCallPreparer = new McpToolCallPreparer();
   private readonly bindingManagerId = randomBytes(16).toString('base64url');
   private lastConnectionGeneration = 0;
@@ -320,9 +319,7 @@ export class McpClientManager {
       pendingNotification: notification,
       promise: Promise.resolve([]),
     };
-    state.promise = this.refreshToolLoop(serverId, entry, state).finally(() => {
-      if (entry.refreshState === state) entry.refreshState = undefined;
-    });
+    state.promise = this.refreshToolLoop(serverId, entry, state);
     entry.refreshState = state;
     return state.promise;
   }
@@ -682,80 +679,88 @@ export class McpClientManager {
     entry: Connection,
     state: ToolRefreshState,
   ): Promise<McpToolDescriptor[]> {
-    while (true) {
-      const notificationPass = state.pendingNotification;
-      state.pending = false;
-      state.pendingNotification = false;
-      if (notificationPass) {
-        const notificationState = entry.refreshNotificationState;
+    try {
+      while (true) {
+        const notificationPass = state.pendingNotification;
+        state.pending = false;
+        state.pendingNotification = false;
+        if (notificationPass) {
+          const notificationState = entry.refreshNotificationState;
+          if (
+            notificationState?.client !== state.client ||
+            notificationState.connectionGeneration !== state.connectionGeneration
+          ) {
+            throw safeMcpOperationError(
+              serverId,
+              'connection changed during tool refresh',
+              undefined,
+            );
+          }
+          if (notificationState.suppressed) {
+            throw this.toolRefreshFrequencyError(serverId);
+          }
+          if (notificationState.refreshPasses >= MAX_TOOL_REFRESH_PASSES) {
+            notificationState.suppressed = true;
+            throw this.toolRefreshFrequencyError(serverId);
+          }
+          notificationState.refreshPasses += 1;
+        }
+        let definitions: McpDiscoveredTool[] | undefined;
+        let failure: unknown;
+        try {
+          definitions = await listAllTools(state.client, serverId, this.timeouts.listToolsMs);
+        } catch (error) {
+          failure = error;
+        }
         if (
-          notificationState?.client !== state.client ||
-          notificationState.connectionGeneration !== state.connectionGeneration
+          this.connections.get(serverId) !== entry ||
+          entry.client !== state.client ||
+          entry.connectionGeneration !== state.connectionGeneration ||
+          entry.status.state !== 'connected'
         ) {
-          throw safeMcpOperationError(
-            serverId,
-            'connection changed during tool refresh',
-            undefined,
-          );
+          throw safeMcpOperationError(serverId, 'connection changed during tool refresh', failure);
         }
-        if (notificationState.suppressed) {
-          throw this.toolRefreshFrequencyError(serverId);
+        const notificationState = entry.refreshNotificationState;
+        const notificationStateMatches =
+          notificationState?.client === state.client &&
+          notificationState.connectionGeneration === state.connectionGeneration;
+        const refreshSuppressed = notificationStateMatches && notificationState.suppressed;
+        if (failure !== undefined) {
+          if (refreshSuppressed) throw this.toolRefreshFrequencyError(serverId);
+          if (state.pending) continue;
+          throw safeMcpOperationError(serverId, 'tool refresh failed', failure);
         }
-        if (notificationState.refreshPasses >= MAX_TOOL_REFRESH_PASSES) {
-          notificationState.suppressed = true;
-          throw this.toolRefreshFrequencyError(serverId);
+        if (!definitions) {
+          if (refreshSuppressed) throw this.toolRefreshFrequencyError(serverId);
+          if (state.pending) continue;
+          throw new Error(`MCP server "${serverId}" returned no tool definitions`);
         }
-        notificationState.refreshPasses += 1;
-      }
-      let definitions: McpDiscoveredTool[] | undefined;
-      let failure: unknown;
-      try {
-        definitions = await listAllTools(state.client, serverId, this.timeouts.listToolsMs);
-      } catch (error) {
-        failure = error;
-      }
-      if (
-        this.connections.get(serverId) !== entry ||
-        entry.client !== state.client ||
-        entry.connectionGeneration !== state.connectionGeneration ||
-        entry.status.state !== 'connected'
-      ) {
-        throw safeMcpOperationError(serverId, 'connection changed during tool refresh', failure);
-      }
-      const notificationState = entry.refreshNotificationState;
-      const notificationStateMatches =
-        notificationState?.client === state.client &&
-        notificationState.connectionGeneration === state.connectionGeneration;
-      const refreshSuppressed = notificationStateMatches && notificationState.suppressed;
-      if (failure !== undefined) {
-        if (refreshSuppressed) throw this.toolRefreshFrequencyError(serverId);
-        if (state.pending) continue;
-        throw safeMcpOperationError(serverId, 'tool refresh failed', failure);
-      }
-      if (!definitions) {
-        if (refreshSuppressed) throw this.toolRefreshFrequencyError(serverId);
-        if (state.pending) continue;
-        throw new Error(`MCP server "${serverId}" returned no tool definitions`);
-      }
 
-      const snapshot = createToolSnapshot(
-        serverId,
-        definitions,
-        this.bindingManagerId,
-        state.connectionGeneration,
-        entry.toolSnapshot,
-      );
-      this.replaceToolSnapshot(entry, snapshot.entries);
-      this.update(entry, {
-        ...entry.status,
-        tools: snapshot.descriptors,
-        toolCount: snapshot.descriptors.length,
-        error: undefined,
-        updatedAt: this.now(),
-      });
-      if (refreshSuppressed) throw this.toolRefreshFrequencyError(serverId);
-      if (state.pending) continue;
-      return snapshot.descriptors.map(cloneTool);
+        const snapshot = createToolSnapshot(
+          serverId,
+          definitions,
+          this.bindingManagerId,
+          state.connectionGeneration,
+          entry.toolSnapshot,
+        );
+        this.replaceToolSnapshot(entry, snapshot.entries);
+        this.update(entry, {
+          ...entry.status,
+          tools: snapshot.descriptors,
+          toolCount: snapshot.descriptors.length,
+          error: undefined,
+          updatedAt: this.now(),
+        });
+        if (refreshSuppressed) throw this.toolRefreshFrequencyError(serverId);
+        if (state.pending) continue;
+        return snapshot.descriptors.map(cloneTool);
+      }
+    } finally {
+      // Release the gate synchronously on every exit. A promise `.finally`
+      // runs one microtask after settlement, so a refresh requested in that
+      // window would join a settled promise and receive descriptors from a
+      // list that started before it asked.
+      if (entry.refreshState === state) entry.refreshState = undefined;
     }
   }
 
