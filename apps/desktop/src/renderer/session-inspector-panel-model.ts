@@ -1,5 +1,4 @@
 import {
-  emptyTraceTotals,
   type SessionTrace,
   type TraceModelCallStep,
   type TraceStep,
@@ -61,7 +60,6 @@ export interface InspectorCoverageNotice {
 
 export interface InspectorPanelModel {
   turns: InspectorTurnRow[];
-  totals: TraceTotals;
   /**
    * Present only when the trace itself reports a gap. A notice that always
    * shows is a notice nobody reads.
@@ -72,7 +70,7 @@ export interface InspectorPanelModel {
 }
 
 export function deriveInspectorPanelModel(trace: SessionTrace | undefined): InspectorPanelModel {
-  if (!trace) return { turns: [], totals: emptyTraceTotals(), empty: true };
+  if (!trace) return { turns: [], empty: true };
 
   const turns = trace.turns.map<InspectorTurnRow>((turn, index) => ({
     turnId: turn.turnId,
@@ -87,7 +85,6 @@ export function deriveInspectorPanelModel(trace: SessionTrace | undefined): Insp
   const coverage = coverageNotice(trace);
   return {
     turns,
-    totals: trace.totals,
     ...(coverage ? { coverage } : {}),
     // A session whose every record failed to decode has no turns *and* a gap to
     // report. Calling that empty would hide exactly what this panel exists to

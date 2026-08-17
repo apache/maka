@@ -166,9 +166,8 @@ export interface DesktopConversationCopy {
     loadingEarlier: string;
     loadingSummary: string;
     summaryUnavailable: string;
-    /** Labels for the two headline figures the trace always states. */
+    /** Label for the complete Session cost estimate. */
     totals: {
-      duration: string;
       cost: string;
     };
     /**
@@ -484,7 +483,6 @@ const COPY = {
       loadingSummary: '正在估算完整会话用量…',
       summaryUnavailable: '完整会话用量暂时无法估算。',
       totals: {
-        duration: '总耗时',
         cost: '估算成本',
       },
       coveragePartial: (parts) => `部分调用没有留下记录，下面的数字只少不多${zhDetail(parts)}`,
@@ -685,7 +683,6 @@ const COPY = {
       loadingSummary: 'Estimating full-session usage…',
       summaryUnavailable: 'Full-session usage is temporarily unavailable.',
       totals: {
-        duration: 'Duration',
         cost: 'Estimated cost',
       },
       coveragePartial: (parts) =>
@@ -781,9 +778,8 @@ export type InspectorCopy = DesktopConversationCopy['inspector'];
  * The name a step falls back to when it has no identifier of its own. A model
  * call and a tool call always carry one, so they never reach here.
  *
- * It lives beside the words rather than in the panel because the filter needs
- * the same string: what the reader searches has to be what the reader sees, and
- * that correspondence breaks the moment two places decide the wording.
+ * It lives beside the words rather than in the panel so fallback labels stay
+ * part of the locale's vocabulary instead of being reconstructed by the view.
  */
 export function inspectorStepKindLabel(copy: InspectorCopy, kind: string): string {
   if (kind === 'permission') return copy.stepKind.permission;

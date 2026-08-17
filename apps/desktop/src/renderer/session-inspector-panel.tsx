@@ -74,8 +74,8 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
   });
   const model = useMemo(() => deriveInspectorPanelModel(snapshot.trace), [snapshot.trace]);
   const overview = useMemo(
-    () => deriveInspectorOverviewModel(snapshot.trace, snapshot.context, snapshot.summary),
-    [snapshot.trace, snapshot.context, snapshot.summary],
+    () => deriveInspectorOverviewModel(snapshot.context, snapshot.summary),
+    [snapshot.context, snapshot.summary],
   );
 
   // The record file is a fact about the workspace, not about the session's
@@ -193,9 +193,8 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
           />
         )}
 
-        {/* A session that did nothing, which is not the same silence as a read
-            that failed (the Banner above) or a filter that matches nothing
-            (announced down in the timeline, next to the rows it is about). */}
+        {/* A session that did nothing is not the same silence as a read that
+            failed in the Banner above. */}
         <div
           role="status"
           aria-live="polite"
@@ -211,10 +210,8 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
           )}
         </div>
 
-        {/* The two halves answer to different owners, so they are gated
-            separately: totals come from the trace, the context block from the
-            diagnostics query. A successful snapshot beside an empty or failed
-            trace used to be hidden entirely (#2323). */}
+        {/* Usage and context answer to different owners, so a successful
+            snapshot beside an empty or failed trace remains visible (#2323). */}
         {snapshot.summaryLoading && !snapshot.summary && (
           <Text type="supporting" color="secondary">
             {copy.loadingSummary}
@@ -238,7 +235,7 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
         {(!model.empty || snapshot.nextCursor) && (
           <div className="maka-inspector-raw" data-maka-contract="session-inspector-raw">
             <VStack gap={2}>
-              <div className="maka-inspector-section-head maka-inspector-timeline-head">
+              <div className="maka-inspector-section-head">
                 <Heading level={3} className="maka-inspector-section-title">
                   {copy.overview.timelineTab}
                 </Heading>

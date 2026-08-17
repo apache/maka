@@ -2,7 +2,6 @@ import type {
   ContextDiagnosticsResult,
   ContextDiagnosticsSegment,
 } from '@maka/runtime-host/protocol';
-import type { SessionTrace } from '@maka/core/session-trace';
 import type { UsageSummaryV2 } from '@maka/core/usage-stats/types';
 import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
 
@@ -145,7 +144,6 @@ export function estimatedSessionCost(
  * another, so one unavailable source cannot falsify the others.
  */
 export function deriveInspectorOverviewModel(
-  trace: SessionTrace | undefined,
   diagnostics?: ContextDiagnosticsResult,
   usage?: UsageSummaryV2,
 ): InspectorOverviewModel {
@@ -157,14 +155,6 @@ export function deriveInspectorOverviewModel(
   const composition = compositionState(diagnostics);
   const context = contextBudget(diagnostics);
   const cacheHitRate = usageCacheHitRate(usage);
-  if (!trace || trace.turns.length === 0) {
-    return {
-      ...(context ? { context } : {}),
-      ...(composition ? { composition } : {}),
-      ...(cacheHitRate !== undefined ? { cacheHitRate } : {}),
-    };
-  }
-
   return {
     ...(context ? { context } : {}),
     ...(composition ? { composition } : {}),
