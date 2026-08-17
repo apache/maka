@@ -1,3 +1,4 @@
+import { realpath } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -55,9 +56,24 @@ export function createHarnessPreparationEnvironment(
 
 export function resolvePathWithinRoot(root: string, path: string, label: string): string {
   const resolved = resolve(root, path);
-  const fromRoot = relative(root, resolved);
+  assertPathWithinRoot(root, resolved, label);
+  return resolved;
+}
+
+export async function resolveRealPathWithinRoot(
+  root: string,
+  path: string,
+  label: string,
+): Promise<string> {
+  const resolved = resolvePathWithinRoot(root, path, label);
+  const [canonicalRoot, canonicalPath] = await Promise.all([realpath(root), realpath(resolved)]);
+  assertPathWithinRoot(canonicalRoot, canonicalPath, label);
+  return canonicalPath;
+}
+
+function assertPathWithinRoot(root: string, path: string, label: string): void {
+  const fromRoot = relative(root, path);
   if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
     throw new Error(`${label} escapes its source root`);
   }
-  return resolved;
 }

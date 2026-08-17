@@ -6,6 +6,7 @@ import {
   BUNDLED_HARNESS_RELAY_ROOT,
   createHarnessPreparationEnvironment,
   resolvePathWithinRoot,
+  resolveRealPathWithinRoot,
 } from './harness-environment.js';
 import type { HarnessFramework, HarnessOptions } from './harness-executor.js';
 
@@ -72,18 +73,30 @@ export async function preflightHarnessInstallation(
   if (options.egressProxy) {
     const source = machinePath(options.egressProxy.composeSourceEnv);
     await requirePath(source, `machine path ${options.egressProxy.composeSourceEnv}`, 'directory');
-    const composePath = resolvePathWithinRoot(
+    const composeCandidate = resolvePathWithinRoot(
       source,
       options.egressProxy.composeRelativePath,
       'egress proxy compose path',
     );
-    networkPolicyPath = resolvePathWithinRoot(
+    const networkPolicyCandidate = resolvePathWithinRoot(
       source,
       options.egressProxy.networkPolicyRelativePath,
       'egress network policy path',
     );
-    await requirePath(composePath, 'Eval egress Compose overlay', 'file');
-    await requirePath(networkPolicyPath, 'Eval egress network policy', 'file');
+    await requirePath(composeCandidate, 'Eval egress Compose overlay', 'file');
+    await requirePath(networkPolicyCandidate, 'Eval egress network policy', 'file');
+    [, networkPolicyPath] = await Promise.all([
+      resolveRealPathWithinRoot(
+        source,
+        options.egressProxy.composeRelativePath,
+        'egress proxy compose path',
+      ),
+      resolveRealPathWithinRoot(
+        source,
+        options.egressProxy.networkPolicyRelativePath,
+        'egress network policy path',
+      ),
+    ]);
   }
 
   for (const asset of ['eval_framework.py', 'relay_agent.py', 'run_trial.py']) {

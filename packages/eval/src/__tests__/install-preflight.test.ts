@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -130,6 +130,42 @@ test('rejects egress assets that escape their declared source root', async (t) =
     /egress proxy compose path escapes its source root/,
   );
   assert.equal(commands, 0);
+});
+
+test('rejects egress assets that escape through a symlink', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-eval-install-egress-link-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const trials = join(root, 'trials');
+  const mount = join(root, 'mount');
+  const egress = join(root, 'egress');
+  await Promise.all([mkdir(trials), mkdir(mount), mkdir(egress)]);
+  await Promise.all([
+    writeFile(join(root, 'outside-compose.yaml'), 'services: {}\n'),
+    writeFile(join(egress, 'network-policy.json'), '{}\n'),
+  ]);
+  try {
+    await symlink('../outside-compose.yaml', join(egress, 'compose-link.yaml'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') {
+      t.skip('symlinks require additional privileges on this platform');
+      return;
+    }
+    throw error;
+  }
+  const restore = setMachinePaths({
+    MAKA_TEST_PREFLIGHT_PYTHON: process.execPath,
+    MAKA_TEST_PREFLIGHT_TRIALS: trials,
+    MAKA_TEST_PREFLIGHT_MOUNT: mount,
+    MAKA_TEST_PREFLIGHT_EGRESS: egress,
+  });
+  t.after(restore);
+
+  await assert.rejects(
+    preflight(experiment(undefined, true, 'compose-link.yaml'), join(root, 'spec.json'), {
+      runCommand: async () => assert.fail('symlink escape must fail before external probes'),
+    }),
+    /egress proxy compose path escapes its source root/,
+  );
 });
 
 test('propagates cancellation to an active prerequisite probe', async (t) => {

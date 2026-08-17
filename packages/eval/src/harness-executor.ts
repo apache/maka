@@ -10,7 +10,7 @@ import { decodeJsonObject, type ExperimentCell, type JsonObject } from './experi
 import {
   BUNDLED_HARNESS_RELAY_ROOT,
   createHarnessPreparationEnvironment,
-  resolvePathWithinRoot,
+  resolveRealPathWithinRoot,
 } from './harness-environment.js';
 import {
   preflightHarnessInstallation,
@@ -380,8 +380,9 @@ async function startTrial(
   const trialPath = join(trialsRoot, trialName);
   const task = decodeTask(framework, options, cell);
   const timeoutMultiplier = positive(cell.budget.timeoutMultiplier, 'budget.timeoutMultiplier');
-  const environmentConfig = resolveEnvironmentConfig(options);
-  const networkPolicyPath = resolveNetworkPolicyPath(options);
+  const egressPaths = await resolveEgressPaths(options);
+  const environmentConfig = resolveEnvironmentConfig(options, egressPaths);
+  const networkPolicyPath = egressPaths?.networkPolicyPath;
   const executionEnvironment = {
     ...UNATTENDED_EXECUTION_ENVIRONMENT,
     ...egressExecutionEnvironment(options.egressProxy),
@@ -971,26 +972,39 @@ function resolveMounts(mounts: HarnessOptions['mounts']) {
   }));
 }
 
-function resolveEnvironmentConfig(options: HarnessOptions): JsonObject {
-  const base = { ...options.environment, mounts: resolveMounts(options.mounts) };
-  if (!options.egressProxy) return base;
-  const source = resolve(process.env[options.egressProxy.composeSourceEnv]!);
-  const composePath = resolvePathWithinRoot(
-    source,
-    options.egressProxy.composeRelativePath,
-    'egress proxy compose path',
-  );
-  return { ...base, extra_docker_compose: [composePath] };
+interface ResolvedEgressPaths {
+  readonly composePath: string;
+  readonly networkPolicyPath: string;
 }
 
-function resolveNetworkPolicyPath(options: HarnessOptions): string | undefined {
+function resolveEnvironmentConfig(
+  options: HarnessOptions,
+  egressPaths: ResolvedEgressPaths | undefined,
+): JsonObject {
+  const base = { ...options.environment, mounts: resolveMounts(options.mounts) };
+  if (!options.egressProxy) return base;
+  if (!egressPaths) throw new Error('egress proxy paths are unavailable');
+  return { ...base, extra_docker_compose: [egressPaths.composePath] };
+}
+
+async function resolveEgressPaths(
+  options: HarnessOptions,
+): Promise<ResolvedEgressPaths | undefined> {
   if (!options.egressProxy) return undefined;
   const source = resolve(process.env[options.egressProxy.composeSourceEnv]!);
-  return resolvePathWithinRoot(
-    source,
-    options.egressProxy.networkPolicyRelativePath,
-    'egress network policy path',
-  );
+  const [composePath, networkPolicyPath] = await Promise.all([
+    resolveRealPathWithinRoot(
+      source,
+      options.egressProxy.composeRelativePath,
+      'egress proxy compose path',
+    ),
+    resolveRealPathWithinRoot(
+      source,
+      options.egressProxy.networkPolicyRelativePath,
+      'egress network policy path',
+    ),
+  ]);
+  return { composePath, networkPolicyPath };
 }
 
 function decodeTask(framework: HarnessFramework, options: HarnessOptions, cell: ExperimentCell) {
