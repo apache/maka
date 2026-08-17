@@ -66,7 +66,11 @@ export interface BotSendOptions {
 export interface BotReplyStreamOptions extends BotSendOptions {
   /** Whether the reply target is a group/channel rather than a direct chat. */
   readonly isGroup: boolean;
-  /** Stable identity of the Runtime Host Turn being projected. */
+  /**
+   * Stable identity of the reply being projected. The Desktop carries the
+   * canonical source-message id when the Host has not yet selected a Turn id,
+   * so draft updates and the final send share one identity.
+   */
   readonly streamId: string;
 }
 
