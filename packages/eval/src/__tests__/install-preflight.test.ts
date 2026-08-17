@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -78,6 +78,34 @@ test('reports a missing machine mount before invoking external prerequisites', a
       },
     }),
     /machine path MAKA_TEST_PREFLIGHT_MOUNT does not exist/,
+  );
+  assert.equal(commands, 0);
+});
+
+test('rejects an unusable trials root before invoking external prerequisites', {
+  skip: process.platform === 'win32' || process.geteuid?.() === 0,
+}, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-eval-install-trials-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const trials = join(root, 'trials');
+  const mount = join(root, 'mount');
+  await Promise.all([mkdir(trials), mkdir(mount)]);
+  await chmod(trials, 0o500);
+  const restore = setMachinePaths({
+    MAKA_TEST_PREFLIGHT_PYTHON: process.execPath,
+    MAKA_TEST_PREFLIGHT_TRIALS: trials,
+    MAKA_TEST_PREFLIGHT_MOUNT: mount,
+  });
+  t.after(restore);
+  let commands = 0;
+
+  await assert.rejects(
+    preflight(experiment(), join(root, 'spec.json'), {
+      runCommand: async () => {
+        commands += 1;
+      },
+    }),
+    /machine path MAKA_TEST_PREFLIGHT_TRIALS is not writable and searchable/,
   );
   assert.equal(commands, 0);
 });

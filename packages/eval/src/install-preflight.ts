@@ -55,7 +55,7 @@ export async function preflightHarnessInstallation(
       throw new Error(`machine path ${options.pythonPathEnv} is not executable: ${pythonPath}`);
     });
   }
-  await optionalDirectory(trialsRoot, `machine path ${options.trialsRootEnv}`);
+  await requireUsableDirectory(trialsRoot, `machine path ${options.trialsRootEnv}`);
 
   if (options.tasksRootEnv) {
     await requirePath(
@@ -150,7 +150,7 @@ export async function preflightHarnessInstallation(
       );
     } catch (error) {
       if (input.signal?.aborted) input.signal.throwIfAborted();
-      throw new Error(`Docker daemon is unavailable: ${errorMessage(error)}`);
+      throw new Error(`Docker CLI or daemon is unavailable: ${errorMessage(error)}`);
     }
   }
 }
@@ -207,15 +207,34 @@ async function requirePath(
   }
 }
 
-async function optionalDirectory(path: string, label: string): Promise<void> {
-  let metadata;
-  try {
-    metadata = await stat(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-    throw new Error(`${label} is inaccessible: ${path}: ${errorMessage(error)}`);
+async function requireUsableDirectory(path: string, label: string): Promise<void> {
+  let candidate = path;
+  while (true) {
+    let metadata;
+    try {
+      metadata = await stat(candidate);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error(`${label} is inaccessible: ${candidate}: ${errorMessage(error)}`);
+      }
+      const parent = dirname(candidate);
+      if (parent === candidate) {
+        throw new Error(`${label} has no accessible parent directory: ${path}`);
+      }
+      candidate = parent;
+      continue;
+    }
+
+    if (!metadata.isDirectory()) {
+      const subject = candidate === path ? label : `${label} parent`;
+      throw new Error(`${subject} is not a directory: ${candidate}`);
+    }
+    await access(candidate, constants.W_OK | constants.X_OK).catch(() => {
+      const subject = candidate === path ? label : `${label} nearest existing parent`;
+      throw new Error(`${subject} is not writable and searchable: ${candidate}`);
+    });
+    return;
   }
-  if (!metadata.isDirectory()) throw new Error(`${label} is not a directory: ${path}`);
 }
 
 function machinePath(name: string): string {

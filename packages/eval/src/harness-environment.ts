@@ -66,7 +66,14 @@ export async function resolveRealPathWithinRoot(
   label: string,
 ): Promise<string> {
   const resolved = resolvePathWithinRoot(root, path, label);
-  const [canonicalRoot, canonicalPath] = await Promise.all([realpath(root), realpath(resolved)]);
+  let canonicalRoot: string;
+  let canonicalPath: string;
+  try {
+    [canonicalRoot, canonicalPath] = await Promise.all([realpath(root), realpath(resolved)]);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label} cannot be resolved: ${reason}`, { cause: error });
+  }
   assertPathWithinRoot(canonicalRoot, canonicalPath, label);
   return canonicalPath;
 }
