@@ -336,6 +336,7 @@ export interface DesktopProjectCapabilities {
 
 export interface DesktopProjectDirectoryRoot {
   readonly id: string;
+  readonly label: string;
 }
 
 export interface DesktopProjectDirectoryEntry {

@@ -236,7 +236,7 @@ test('does not expose Client directory actions for a remote Host', async () => {
       restore: unexpected,
     },
     directoryCatalog: {
-      listDirectoryRoots: async () => [{ id: 'home' }],
+      listDirectoryRoots: async () => [{ id: 'home', label: '~' }],
       listDirectories: async (rootId, segments) => {
         directoryRequests.push({ rootId, segments });
         return [{ name: 'project' }];
@@ -271,7 +271,7 @@ test('does not expose Client directory actions for a remote Host', async () => {
     path: '/host/project',
   });
   assert.equal(pickerCalls, 0);
-  assert.deepEqual(await service.directoryRoots(), [{ id: 'home' }]);
+  assert.deepEqual(await service.directoryRoots(), [{ id: 'home', label: '~' }]);
   assert.deepEqual(
     await service.listDirectory({ rootId: 'home', segments: ['work'] }),
     [{ name: 'project' }],

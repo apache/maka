@@ -456,11 +456,12 @@
   gap: var(--space-1);
 }
 
+.remoteProjectDirectoryRoot,
 .remoteProjectDirectoryBreadcrumb {
   color: var(--muted-foreground);
 }
 
-.remoteProjectDirectoryBreadcrumb + .remoteProjectDirectoryBreadcrumb::before {
+.remoteProjectDirectoryBreadcrumb::before {
   margin-right: var(--space-1);
   content: '/';
 }

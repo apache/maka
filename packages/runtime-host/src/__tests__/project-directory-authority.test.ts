@@ -11,28 +11,38 @@ test('Project directory authority exposes folders without crossing its published
   const project = join(home, 'work', 'project');
   const hidden = join(home, '.hidden');
   const outside = join(base, 'outside');
+  const shared = join(outside, 'shared');
   await Promise.all([
     mkdir(project, { recursive: true }),
     mkdir(hidden, { recursive: true }),
-    mkdir(outside, { recursive: true }),
+    mkdir(shared, { recursive: true }),
   ]);
   await symlink(outside, join(home, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
-  const authority = new HostProjectDirectoryAuthority(home);
+  const authority = new HostProjectDirectoryAuthority([
+    { label: 'Home', path: home },
+    { label: 'Shared', path: outside },
+  ]);
 
   try {
-    assert.deepEqual(await authority.query({ kind: 'directory_roots' }), {
-      kind: 'directory_roots',
-      roots: [{ id: 'home' }],
-    });
+    const roots = await authority.query({ kind: 'directory_roots' });
+    assert.equal(roots.kind, 'directory_roots');
+    assert.deepEqual(
+      roots.roots.map((root) => root.label),
+      ['Home', 'Shared'],
+    );
+    assert.equal(new Set(roots.roots.map((root) => root.id)).size, 2);
+    const homeRoot = roots.roots[0];
+    const sharedRoot = roots.roots[1];
+    assert.ok(homeRoot && sharedRoot);
     assert.deepEqual(
       await authority.query({
         kind: 'directory_list_start',
-        rootId: 'home',
+        rootId: homeRoot.id,
         segments: [],
       }),
       {
         kind: 'directory_page',
-        rootId: 'home',
+        rootId: homeRoot.id,
         segments: [],
         entries: [{ name: '.hidden' }, { name: 'work' }],
         nextCursor: null,
@@ -40,13 +50,20 @@ test('Project directory authority exposes folders without crossing its published
     );
     assert.equal(
       await authority.resolveRegistration({
-        rootId: 'home',
+        rootId: homeRoot.id,
         segments: ['work', 'project'],
       }),
       await realpath(project),
     );
+    assert.equal(
+      await authority.resolveRegistration({
+        rootId: sharedRoot.id,
+        segments: ['shared'],
+      }),
+      await realpath(shared),
+    );
     await assert.rejects(
-      () => authority.resolveRegistration({ rootId: 'home', segments: ['escape'] }),
+      () => authority.resolveRegistration({ rootId: homeRoot.id, segments: ['escape'] }),
       TypeError,
     );
   } finally {

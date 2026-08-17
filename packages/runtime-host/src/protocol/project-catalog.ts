@@ -17,7 +17,9 @@ export const PROJECT_CATALOG_NAME_MAX_BYTES = 16 * 1024;
 export const PROJECT_CATALOG_PATH_MAX_BYTES = 4 * 1024;
 export const PROJECT_DIRECTORY_PAGE_MAX_ITEMS = 128;
 export const PROJECT_DIRECTORY_PAGE_MAX_BYTES = 32 * 1024;
+export const PROJECT_DIRECTORY_MAX_ROOTS = 8;
 export const PROJECT_DIRECTORY_MAX_SEGMENTS = 64;
+export const PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES = 128;
 export const PROJECT_DIRECTORY_SEGMENT_MAX_BYTES = 255;
 
 const QUERY_ERRORS = [
@@ -128,6 +130,7 @@ export type ProjectCatalogMutateResult = {
 
 export interface ProjectDirectoryRoot {
   readonly id: string;
+  readonly label: string;
 }
 
 export interface ProjectDirectoryEntry {
@@ -244,14 +247,17 @@ export function decodeProjectDirectoryQueryResult(value: unknown): ProjectDirect
   const record = requireRecord(value, 'project directory query result');
   if (record.kind === 'directory_roots') {
     const result = requireExactRecord(record, 'project directory roots result', ['kind', 'roots']);
-    if (!Array.isArray(result.roots) || result.roots.length > 8) {
+    if (!Array.isArray(result.roots) || result.roots.length > PROJECT_DIRECTORY_MAX_ROOTS) {
       throw invalidProtocolFrame('Invalid project directory roots');
     }
     return {
       kind: 'directory_roots',
       roots: result.roots.map((value) => {
-        const root = requireExactRecord(value, 'project directory root', ['id']);
-        return { id: projectDirectoryRootId(root.id) };
+        const root = requireExactRecord(value, 'project directory root', ['id', 'label']);
+        return {
+          id: projectDirectoryRootId(root.id),
+          label: projectDirectoryRootLabel(root.label),
+        };
       }),
     };
   }
@@ -283,6 +289,18 @@ export function decodeProjectDirectoryQueryResult(value: unknown): ProjectDirect
   };
   requireEncodedByteLimit(decoded, 'project directory page', PROJECT_DIRECTORY_PAGE_MAX_BYTES);
   return decoded;
+}
+
+function projectDirectoryRootLabel(value: unknown): string {
+  const label = requireUtf8String(
+    value,
+    'project directory root label',
+    PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
+  );
+  if (label !== label.trim() || /[\u0000-\u001f\u007f]/u.test(label)) {
+    throw invalidProtocolFrame('Invalid project directory root label');
+  }
+  return label;
 }
 
 export function decodeProjectDirectoryRegisterInput(value: unknown): ProjectDirectoryRegisterInput {

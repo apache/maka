@@ -123,6 +123,7 @@ function helpText(cliCommand: string): string {
     '',
     'Runtime Host service options:',
     '  --root <path>                 Select the canonical data root',
+    '  --project-root <label>=<path> Publish a project directory root (repeatable)',
     '  --websocket-port <port>       Enable an authenticated WebSocket listener',
     '  --websocket-host <host>       Bind host (default: 127.0.0.1)',
     '  --websocket-path <path>       Upgrade path (default: /runtime-host)',
@@ -187,6 +188,9 @@ export async function runMakaCli(
       return runRuntimeHostServiceCli({
         rootPath: command.rootPath ?? dataRoots.workspaceRoot,
         json: command.json,
+        ...(command.projectDirectoryRoots
+          ? { projectDirectoryRoots: command.projectDirectoryRoots }
+          : {}),
         ...(command.websocket ? { websocket: command.websocket } : {}),
       });
     }

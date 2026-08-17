@@ -1,3 +1,9 @@
+import { isAbsolute } from 'node:path';
+import {
+  PROJECT_DIRECTORY_MAX_ROOTS,
+  PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
+} from '@maka/runtime-host/protocol';
+
 type RuntimeHostCliError = { kind: 'error'; message: string; exitCode: number };
 
 export type RuntimeHostCliCommand =
@@ -5,6 +11,7 @@ export type RuntimeHostCliCommand =
       kind: 'runtime-host-serve';
       rootPath?: string;
       json: boolean;
+      projectDirectoryRoots?: { label: string; path: string }[];
       websocket?: {
         host: string;
         port: number;
@@ -293,6 +300,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   let tlsPrivateKeyPath: string | undefined;
   let allowInsecureRemote = false;
   const allowedOrigins: string[] = [];
+  const projectDirectoryRoots: { label: string; path: string }[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--json') {
@@ -308,6 +316,21 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
       const parsed = optionValue(argv, index, argument);
       if (typeof parsed !== 'string') return parsed;
       rootPath = parsed;
+      index += 1;
+      continue;
+    }
+    if (argument === '--project-root') {
+      const parsed = optionValue(argv, index, argument);
+      if (typeof parsed !== 'string') return parsed;
+      const root = parseProjectRoot(parsed);
+      if ('kind' in root) return root;
+      if (projectDirectoryRoots.length >= PROJECT_DIRECTORY_MAX_ROOTS) {
+        return error(`--project-root may be provided at most ${PROJECT_DIRECTORY_MAX_ROOTS} times`);
+      }
+      if (projectDirectoryRoots.some((candidate) => candidate.label === root.label)) {
+        return error(`Duplicate --project-root label: ${root.label}`);
+      }
+      projectDirectoryRoots.push(root);
       index += 1;
       continue;
     }
@@ -370,6 +393,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
     kind: 'runtime-host-serve',
     json,
     ...(rootPath ? { rootPath } : {}),
+    ...(projectDirectoryRoots.length > 0 ? { projectDirectoryRoots } : {}),
     ...(websocketPort === undefined
       ? {}
       : {
@@ -384,6 +408,24 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
           },
         }),
   };
+}
+
+function parseProjectRoot(value: string): { label: string; path: string } | RuntimeHostCliError {
+  const separator = value.indexOf('=');
+  if (separator <= 0 || separator === value.length - 1) {
+    return error('--project-root must use <label>=<absolute-path>');
+  }
+  const label = value.slice(0, separator).trim();
+  const path = value.slice(separator + 1);
+  if (
+    label.length === 0 ||
+    Buffer.byteLength(label, 'utf8') > PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES ||
+    /[\u0000-\u001f\u007f]/u.test(label)
+  ) {
+    return error('--project-root label is invalid');
+  }
+  if (!isAbsolute(path)) return error('--project-root path must be absolute');
+  return { label, path };
 }
 
 function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {

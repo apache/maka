@@ -12,6 +12,7 @@ import { readFile } from 'node:fs/promises';
 export interface RuntimeHostServiceCliOptions {
   readonly rootPath: string;
   readonly json?: boolean;
+  readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly websocket?: {
     readonly host: string;
     readonly port: number;
@@ -48,6 +49,9 @@ export async function runRuntimeHostServiceCli(
     : undefined;
   const host = await startExecutionRuntimeHostService({
     rootPath: options.rootPath,
+    ...(options.projectDirectoryRoots
+      ? { projectDirectoryRoots: options.projectDirectoryRoots }
+      : {}),
     ...(websocket ? { websocket } : {}),
   });
   await runRuntimeHostProcessLifecycle(host, {

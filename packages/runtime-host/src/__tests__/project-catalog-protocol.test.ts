@@ -151,6 +151,30 @@ describe('Project catalog protocol', () => {
       HOST_OPERATION_SPECS['project.catalog.query'].usesHostPaths?.({ kind: 'directory_roots' }),
       false,
     );
+    assert.deepEqual(
+      decodeProjectCatalogQueryResult({
+        kind: 'directory_roots',
+        roots: [
+          { id: 'root-a', label: 'Projects' },
+          { id: 'root-b', label: 'Shared data' },
+        ],
+      }),
+      {
+        kind: 'directory_roots',
+        roots: [
+          { id: 'root-a', label: 'Projects' },
+          { id: 'root-b', label: 'Shared data' },
+        ],
+      },
+    );
+    assert.throws(
+      () =>
+        decodeProjectCatalogQueryResult({
+          kind: 'directory_roots',
+          roots: [{ id: 'root-a' }],
+        }),
+      isProtocolError,
+    );
     assert.equal(
       HOST_OPERATION_SPECS['project.catalog.mutate'].usesHostPaths?.({
         kind: 'register_directory',

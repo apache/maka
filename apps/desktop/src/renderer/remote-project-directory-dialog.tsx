@@ -2,13 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import { Button } from '@astryxdesign/core/Button';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
+import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { HStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
 import { useUiLocale } from '@maka/ui';
-import { Eye, EyeOff, FolderOpen } from '@maka/ui/icons';
+import { Check, Eye, EyeOff, FolderOpen } from '@maka/ui/icons';
 import type {
   DesktopProjectDirectoryEntry,
+  DesktopProjectDirectoryRoot,
   DesktopRuntimeHostRef,
 } from '../preload/bridge-contract.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
@@ -20,7 +22,8 @@ export function RemoteProjectDirectoryDialog(props: {
 }) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).projectActions;
-  const [rootId, setRootId] = useState<string>();
+  const [roots, setRoots] = useState<readonly DesktopProjectDirectoryRoot[]>([]);
+  const [root, setRoot] = useState<DesktopProjectDirectoryRoot>();
   const [segments, setSegments] = useState<readonly string[]>([]);
   const [entries, setEntries] = useState<readonly DesktopProjectDirectoryEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -33,21 +36,23 @@ export function RemoteProjectDirectoryDialog(props: {
     const host = props.host;
     if (!host) return;
     const sequence = ++request.current;
-    setRootId(undefined);
+    setRoots([]);
+    setRoot(undefined);
     setSegments([]);
     setEntries([]);
     setShowHidden(false);
     setError(undefined);
     setLoading(true);
-    void window.maka.projects.getDirectoryRoots(host).then(async (roots) => {
-      const root = roots[0];
-      if (!root) throw new Error('Runtime Host did not publish a project directory');
+    void window.maka.projects.getDirectoryRoots(host).then(async (nextRoots) => {
+      const nextRoot = nextRoots[0];
+      if (!nextRoot) throw new Error('Runtime Host did not publish a project directory');
       const next = await window.maka.projects.listDirectory({
-        rootId: root.id,
+        rootId: nextRoot.id,
         segments: [],
       }, host);
       if (request.current !== sequence) return;
-      setRootId(root.id);
+      setRoots(nextRoots);
+      setRoot(nextRoot);
       setEntries(next);
     }).catch((cause) => {
       if (request.current !== sequence) return;
@@ -62,13 +67,13 @@ export function RemoteProjectDirectoryDialog(props: {
 
   async function navigate(nextSegments: readonly string[]): Promise<void> {
     const host = props.host;
-    if (!host || !rootId) return;
+    if (!host || !root) return;
     const sequence = ++request.current;
     setLoading(true);
     setError(undefined);
     try {
       const next = await window.maka.projects.listDirectory({
-        rootId,
+        rootId: root.id,
         segments: nextSegments,
       }, host);
       if (request.current !== sequence) return;
@@ -82,14 +87,37 @@ export function RemoteProjectDirectoryDialog(props: {
     }
   }
 
+  async function selectRoot(nextRoot: DesktopProjectDirectoryRoot): Promise<void> {
+    const host = props.host;
+    if (!host || loading || nextRoot.id === root?.id) return;
+    const sequence = ++request.current;
+    setLoading(true);
+    setError(undefined);
+    try {
+      const next = await window.maka.projects.listDirectory({
+        rootId: nextRoot.id,
+        segments: [],
+      }, host);
+      if (request.current !== sequence) return;
+      setRoot(nextRoot);
+      setSegments([]);
+      setEntries(next);
+    } catch (cause) {
+      if (request.current !== sequence) return;
+      setError(localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale));
+    } finally {
+      if (request.current === sequence) setLoading(false);
+    }
+  }
+
   async function register(): Promise<void> {
     const host = props.host;
-    if (!host || !rootId || registering) return;
+    if (!host || !root || registering) return;
     setRegistering(true);
     setError(undefined);
     try {
       props.onRegistered(await window.maka.projects.registerDirectory({
-        rootId,
+        rootId: root.id,
         segments,
       }, host));
     } catch (cause) {
@@ -127,14 +155,39 @@ export function RemoteProjectDirectoryDialog(props: {
           <LayoutContent padding={4}>
             <div className="remoteProjectDirectoryBody">
               <nav className="remoteProjectDirectoryBreadcrumbs" aria-label={copy.currentProject}>
-                <Button
-                  className="remoteProjectDirectoryBreadcrumb"
-                  variant="ghost"
-                  size="sm"
-                  label={copy.remoteDirectoryHome}
-                  isDisabled={loading}
-                  onClick={() => void navigate([])}
-                />
+                {roots.length > 1 ? (
+                  <DropdownMenu
+                    placement="below"
+                    button={{
+                      className: 'remoteProjectDirectoryRoot',
+                      variant: 'ghost',
+                      size: 'sm',
+                      label: root?.label ?? copy.remoteDirectoryHome,
+                      isDisabled: loading,
+                    }}
+                  >
+                    {roots.map((candidate) => (
+                      <DropdownMenuItem
+                        key={candidate.id}
+                        label={candidate.label}
+                        icon={<FolderOpen size={18} aria-hidden="true" />}
+                        endContent={candidate.id === root?.id
+                          ? <Check size={18} aria-hidden="true" />
+                          : undefined}
+                        onClick={() => void selectRoot(candidate)}
+                      />
+                    ))}
+                  </DropdownMenu>
+                ) : (
+                  <Button
+                    className="remoteProjectDirectoryRoot"
+                    variant="ghost"
+                    size="sm"
+                    label={root?.label ?? copy.remoteDirectoryHome}
+                    isDisabled={loading}
+                    onClick={() => void navigate([])}
+                  />
+                )}
                 {segments.map((segment, index) => (
                   <Button
                     className="remoteProjectDirectoryBreadcrumb"
@@ -194,7 +247,7 @@ export function RemoteProjectDirectoryDialog(props: {
                 <Button
                   variant="primary"
                   label={copy.remoteDirectorySelect}
-                  isDisabled={!rootId || loading || registering}
+                  isDisabled={!root || loading || registering}
                   isLoading={registering}
                   onClick={() => void register()}
                 />

@@ -139,6 +139,10 @@ import { HostOAuthExecutionAuthority } from './oauth-execution-authority.js';
 import { HostOAuthCoordinator, type HostOAuthCoordinatorInput } from './oauth-coordinator.js';
 import { HostPlanCoordinator } from './plan-coordinator.js';
 import { HostProjectCatalogChangeService } from './project-catalog-change-service.js';
+import {
+  HostProjectDirectoryAuthority,
+  type PublishedProjectDirectoryRoot,
+} from './project-directory-authority.js';
 import { HostProjectCatalogCoordinator } from './project-catalog-coordinator.js';
 import { HostProjectMembershipGate } from './project-membership-gate.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
@@ -183,6 +187,7 @@ export interface CreateExecutionRuntimeHostCompositionOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
+  readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
 }
 
 export interface ExecutionRuntimeHostCompositionDependencies {
@@ -461,6 +466,7 @@ export async function createExecutionRuntimeHostComposition(
       sessionCatalogChanges,
       projectMembership,
       context.requestDrain,
+      new HostProjectDirectoryAuthority(options.projectDirectoryRoots),
     );
     let rootCoordinator: RootTurnCoordinator | undefined;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;

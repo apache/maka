@@ -14,6 +14,18 @@ npm --workspace maka-agent exec -- maka runtime-host project add /srv/projects/e
 npm --workspace maka-agent exec -- maka runtime-host project list --root /srv/maka
 ```
 
+Desktop 目录选择器默认发布运行服务的用户主目录。如需改为明确的目录 allowlist，可在启动服务时传入一个或多个命名根目录：
+
+```sh
+npm --workspace maka-agent exec -- maka runtime-host serve \
+  --root /srv/maka \
+  --project-root projects=/srv/projects \
+  --project-root data=/mnt/data \
+  --websocket-port 7443
+```
+
+只要提供了 `--project-root <label>=<absolute-path>`，远程目录浏览就只会显示这些根目录。该参数最多可重复八次。Maka 会在启动时解析每个根目录，并确保浏览和注册始终限制在当前选择的根目录内。
+
 Project path 始终留在 Host。为每个 Client 签发 credential：
 
 ```sh
