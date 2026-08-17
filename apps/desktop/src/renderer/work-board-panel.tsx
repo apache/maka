@@ -207,7 +207,7 @@ export function WorkBoardPanel(props: { projectId: string | null }) {
           isDisabled={newTitle.trim().length === 0}
         />
       </div>
-      {board.error ? (
+      {board.error && board.items.length === 0 ? (
         <Banner
           status="error"
           role="alert"
@@ -218,19 +218,38 @@ export function WorkBoardPanel(props: { projectId: string | null }) {
             <Button size="sm" variant="ghost" label={copy.retry} onClick={board.retry} />
           }
         />
-      ) : board.loading && board.items.length === 0 ? (
-        <Spinner size="sm" shade="subtle" label={copy.loading} className="maka-work-board-message" />
       ) : (
         <>
-          {activeItems.length === 0 && archivedItems.length === 0 ? (
-            <EmptyState
-              isCompact
-              className="maka-work-board-empty"
-              icon={<ListTodo size={24} aria-hidden="true" />}
-              title={copy.empty}
+          {board.continuationError && (
+            <Banner
+              status="error"
+              role="alert"
+              className="maka-work-board-message"
+              title={copy.loadFailed}
+              description={board.continuationError}
+              endContent={
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  label={copy.retry}
+                  onClick={board.retryContinuation}
+                />
+              }
             />
+          )}
+          {board.loading && board.items.length === 0 ? (
+            <Spinner size="sm" shade="subtle" label={copy.loading} className="maka-work-board-message" />
           ) : (
-            <ul className="maka-work-board-list">
+            <>
+              {activeItems.length === 0 && archivedItems.length === 0 ? (
+                <EmptyState
+                  isCompact
+                  className="maka-work-board-empty"
+                  icon={<ListTodo size={24} aria-hidden="true" />}
+                  title={copy.empty}
+                />
+              ) : (
+                <ul className="maka-work-board-list">
               {activeItems.map((item) => (
                 <WorkBoardRow
                   key={item.id}
@@ -275,16 +294,18 @@ export function WorkBoardPanel(props: { projectId: string | null }) {
                   onRemove={() => void runAction(() => board.remove(item.id))}
                 />
               ))}
-            </ul>
-          )}
-          {board.nextCursor && (
-            <Button
-              size="sm"
-              variant="ghost"
-              label={copy.loadMore}
-              onClick={board.loadMore}
-              isDisabled={board.loading}
-            />
+                </ul>
+              )}
+              {board.nextCursor && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  label={copy.loadMore}
+                  onClick={board.loadMore}
+                  isDisabled={board.loading}
+                />
+              )}
+            </>
           )}
         </>
       )}
