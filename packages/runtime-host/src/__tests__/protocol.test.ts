@@ -1603,6 +1603,8 @@ describe('Runtime Host bootstrap protocol', () => {
         terminalEventId: 'event-1',
         failureClass: 'unknown',
         failureMessage: 'Provider request failed',
+        failureCode: 'permission_error',
+        boundedProviderMessage: true,
       },
     };
 
@@ -1614,6 +1616,28 @@ describe('Runtime Host bootstrap protocol', () => {
           result: {
             ...response.result,
             failureMessage: '界'.repeat(TURN_FAILURE_MESSAGE_MAX_BYTES),
+          },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...response,
+          result: {
+            ...response.result,
+            failureCode: 'x'.repeat(129),
+          },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...response,
+          result: {
+            ...response.result,
+            boundedProviderMessage: 'true',
           },
         }),
       isInvalidFrame,
