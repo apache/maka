@@ -180,6 +180,8 @@ export async function runMakaCli(
       return runMakaActivationCli(command.args);
     }
     case 'eval': {
+      const { configureInstalledEvalBundle } = await import('./eval-bundle-path.js');
+      configureInstalledEvalBundle();
       const { runMakaEvalCli } = await import('@maka/eval');
       return runMakaEvalCli(command.args);
     }
