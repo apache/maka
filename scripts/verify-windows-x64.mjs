@@ -172,9 +172,13 @@ export async function verifyPackagedWindowsApp(
       sandboxExecutable,
     ]);
 
-    step('running real filesystem-worker operations through the packaged sandbox');
+    step('running real filesystem-worker operations through the packaged app');
+    // The evidence executes the packaged artifacts themselves: the packaged
+    // broker, the packaged Electron executable as the worker runtime and the
+    // packaged worker bundle under resources — not the repository dist worker
+    // on a copied node.exe.
     const { verifyWindowsSandboxWorkerE2E } = await import('./verify-windows-sandbox-e2e.mjs');
-    await verifyWindowsSandboxWorkerE2E(sandboxExecutable);
+    await verifyWindowsSandboxWorkerE2E(appDirectory);
   }
 
   step('reading the product version resource');
