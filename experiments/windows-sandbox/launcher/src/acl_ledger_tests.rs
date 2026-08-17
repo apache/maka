@@ -1,10 +1,14 @@
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    use crate::acl_ledger::{LEDGER_VERSION, Ledger, LedgerRoot, recover_stale, write_ledger};
+    use crate::acl_ledger::{
+        LEDGER_VERSION, Ledger, LedgerRoot, collect_roots, recover_stale, write_ledger,
+    };
+    use crate::protocol::{LaunchRequest, NetworkMode};
 
     // Synthetic AppContainer-shaped SIDs so the tests never touch the real
     // per-app profile. icacls accepts arbitrary `*SID` principals and renders
@@ -81,6 +85,10 @@ mod tests {
         icacls(&[path.to_str().expect("path")]).contains(sid)
     }
 
+    fn user_sid() -> String {
+        crate::windows_launcher::current_user_sid_string().expect("current user SID")
+    }
+
     fn ledger(request_id: &str, roots: Vec<LedgerRoot>) -> Ledger {
         Ledger {
             version: LEDGER_VERSION,
@@ -108,7 +116,7 @@ mod tests {
         )
         .expect("write old-format ledger");
 
-        recover_stale(&fixture.ledger_dir).expect("quarantine old-format ledger");
+        recover_stale(&fixture.ledger_dir, &user_sid()).expect("quarantine old-format ledger");
 
         assert!(sid_listed(&fixture.target, APP_SID));
         assert!(sid_listed(&fixture.target.join("child"), APP_SID));
@@ -140,7 +148,7 @@ mod tests {
         )
         .expect("write ledger");
 
-        recover_stale(&fixture.ledger_dir).expect("recover ledger with backup");
+        recover_stale(&fixture.ledger_dir, &user_sid()).expect("recover ledger with backup");
 
         assert!(!sid_listed(&fixture.target, APP_SID));
         assert!(sid_listed(&fixture.target, MARKER_SID));
@@ -170,7 +178,7 @@ mod tests {
         )
         .expect("write ledger");
 
-        recover_stale(&fixture.ledger_dir).expect("recover ledger with missing root");
+        recover_stale(&fixture.ledger_dir, &user_sid()).expect("recover ledger with missing root");
 
         assert!(!ledger_path.exists());
     }
@@ -198,7 +206,8 @@ mod tests {
         )
         .expect("write valid ledger");
 
-        recover_stale(&fixture.ledger_dir).expect("recovery continues past corrupt ledger");
+        recover_stale(&fixture.ledger_dir, &user_sid())
+            .expect("recovery continues past corrupt ledger");
 
         assert!(!corrupt.exists());
         assert!(fixture.ledger_path("corrupt.json.quarantined").exists());
@@ -223,7 +232,8 @@ mod tests {
         )
         .expect("write future-version ledger");
 
-        recover_stale(&fixture.ledger_dir).expect("recovery quarantines future version");
+        recover_stale(&fixture.ledger_dir, &user_sid())
+            .expect("recovery quarantines future version");
 
         assert!(!ledger_path.exists());
         assert!(fixture.ledger_path("future.json.quarantined").exists());
@@ -249,7 +259,8 @@ mod tests {
         )
         .expect("write ledger with unknown field");
 
-        recover_stale(&fixture.ledger_dir).expect("recovery quarantines unknown fields");
+        recover_stale(&fixture.ledger_dir, &user_sid())
+            .expect("recovery quarantines unknown fields");
 
         assert!(!ledger_path.exists());
         assert!(fixture.ledger_path("extra.json.quarantined").exists());
@@ -279,10 +290,127 @@ mod tests {
         )
         .expect("write stuck ledger");
 
-        recover_stale(&fixture.ledger_dir).expect("recovery continues past stuck ledger");
+        recover_stale(&fixture.ledger_dir, &user_sid())
+            .expect("recovery continues past stuck ledger");
 
         assert!(!ledger_path.exists());
         assert!(fixture.ledger_path("stuck.json.quarantined").exists());
+    }
+
+    fn launch_request(
+        read_roots: Vec<String>,
+        exact_read_roots: Vec<String>,
+        write_roots: Vec<String>,
+        exact_write_roots: Vec<String>,
+    ) -> LaunchRequest {
+        LaunchRequest {
+            version: 1,
+            request_id: "hard-link-admission".to_owned(),
+            executable: "C:\\Windows\\System32\\cmd.exe".to_owned(),
+            arguments: Vec::new(),
+            cwd: "C:\\".to_owned(),
+            read_roots,
+            write_roots,
+            exact_read_roots,
+            exact_write_roots,
+            network: NetworkMode::Restricted,
+            environment: BTreeMap::new(),
+            timeout_ms: None,
+        }
+    }
+
+    #[test]
+    fn multi_link_file_root_fails_closed() {
+        let fixture = Fixture::new("hardlink-root");
+        let original = fixture.target.join("child").join("file.txt");
+        let alias = fixture.target.join("alias.txt");
+        fs::hard_link(&original, &alias).expect("create hard link");
+        let root = original.to_string_lossy().into_owned();
+        let request = launch_request(vec![root.clone()], vec![root], Vec::new(), Vec::new());
+
+        let error = collect_roots(&request).expect_err("multi-link file root must fail closed");
+
+        assert!(error.contains("multi-link"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn multi_link_file_inside_recursive_root_fails_closed() {
+        let fixture = Fixture::new("hardlink-tree");
+        // The alias inside the granted tree shares its file object with a
+        // name outside it; an (OI)(CI) grant would follow that object out.
+        let outside = fixture
+            .target
+            .parent()
+            .expect("fixture base")
+            .join("outside.txt");
+        fs::write(&outside, "outside payload").expect("seed outside file");
+        fs::hard_link(&outside, fixture.target.join("child").join("linked.txt"))
+            .expect("create hard link into tree");
+        let request = launch_request(
+            vec![fixture.target_str()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let error = collect_roots(&request).expect_err("multi-link file in tree must fail closed");
+
+        assert!(error.contains("multi-link"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn single_link_tree_admits_and_multi_link_below_exact_root_is_out_of_scope() {
+        let fixture = Fixture::new("hardlink-exact");
+        let roots = collect_roots(&launch_request(
+            vec![fixture.target_str()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .expect("single-link tree admits");
+        assert_eq!(roots.len(), 1);
+        assert!(roots[0].read_recursive);
+
+        // An exact grant mutates only the directory object itself; entries
+        // below it receive no ACE, so aliases deeper in the tree stay out of
+        // admission scope exactly like reparse points already do.
+        let outside = fixture
+            .target
+            .parent()
+            .expect("fixture base")
+            .join("exact-outside.txt");
+        fs::write(&outside, "outside payload").expect("seed outside file");
+        fs::hard_link(&outside, fixture.target.join("child").join("linked.txt"))
+            .expect("create hard link into tree");
+        let roots = collect_roots(&launch_request(
+            vec![fixture.target_str()],
+            vec![fixture.target_str()],
+            Vec::new(),
+            Vec::new(),
+        ))
+        .expect("exact root skips tree scan");
+        assert_eq!(roots.len(), 1);
+        assert!(!roots[0].read_recursive);
+    }
+
+    #[test]
+    fn lock_names_are_machine_wide_and_scoped_to_the_owning_user() {
+        // The ledger directory, icacls grants and AppContainer profiles are
+        // shared across sessions; a `Local\` lock would let a concurrent
+        // console/RDP session mistake a live lease for a stale one.
+        let sid = user_sid();
+        let mutex_name = crate::acl_ledger::acl_mutex_name(&sid);
+        let lease_name = crate::acl_ledger::ledger_lease_name(&sid, "request");
+        for name in [&mutex_name, &lease_name] {
+            assert!(name.starts_with(r"Global\Maka.WindowsSandbox."), "{name}");
+            assert!(name.contains(&sid), "{name}");
+        }
+        assert!(lease_name.contains(".AclLease."), "{lease_name}");
+        // Distinct request ids must never share a lease object.
+        assert_ne!(
+            lease_name,
+            crate::acl_ledger::ledger_lease_name(&sid, "request-2")
+        );
     }
 
     #[test]

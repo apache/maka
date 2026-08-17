@@ -10,18 +10,39 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_ABANDONED, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
+};
+use windows_sys::Win32::Security::Authorization::{
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows_sys::Win32::Security::Isolation::DeleteAppContainerProfile;
-use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+use windows_sys::Win32::Storage::FileSystem::{
+    BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, GetFileInformationByHandle, OPEN_EXISTING,
+};
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 
+use crate::broker_pipe_security::pipe_security_sddl;
 use crate::protocol::LaunchRequest;
-use crate::windows_launcher::appcontainer_profile_name;
+use crate::windows_launcher::{appcontainer_profile_name, current_user_sid_string};
 
 pub(crate) const LEDGER_VERSION: u8 = 2;
 const ACL_MUTEX_TIMEOUT_MS: u32 = 30_000;
-const ACL_MUTEX_NAME: &str = r"Local\Maka.WindowsSandbox.AclLedger.v2";
+
+/// The ledger directory, the icacls grants and the AppContainer profiles are
+/// all shared across every session of the user, so the locks that arbitrate
+/// them must be machine-wide too. A `Local\` object would be private to one
+/// Terminal Services session: a concurrent console/RDP session could not see
+/// a live lease and would recover grants that are still in use. The names are
+/// scoped by the owning user's SID and the objects carry an explicit
+/// SYSTEM+user-only DACL, so another user can neither open them nor learn
+/// anything from them; a squatted name fails closed at acquisition.
+pub(crate) fn acl_mutex_name(user_sid: &str) -> String {
+    format!(r"Global\Maka.WindowsSandbox.AclLedger.v2.{user_sid}")
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -54,6 +75,7 @@ pub fn with_acl_grants<T>(
     if request.read_roots.is_empty() && request.write_roots.is_empty() {
         return launch();
     }
+    let user_sid = current_user_sid_string()?;
     let ledger_root = std::env::temp_dir().join("maka-sandbox-acl-ledgers");
     fs::create_dir_all(&ledger_root)
         .map_err(|error| format!("create ACL ledger directory failed: {error}"))?;
@@ -70,7 +92,8 @@ pub fn with_acl_grants<T>(
     // Recovery can therefore distinguish a live ledger from one abandoned by
     // a crashed process without serializing unrelated launches.
     let _lease = LedgerLock::acquire(
-        &ledger_lease_name(&request.request_id),
+        &ledger_lease_name(&user_sid, &request.request_id),
+        &user_sid,
         ACL_MUTEX_TIMEOUT_MS,
     )?;
     {
@@ -78,8 +101,9 @@ pub fn with_acl_grants<T>(
         // the next waiter acquires it without parsing a PID file. It protects
         // only ACL/ledger mutation, never the child lifetime, so independent
         // per-launch AppContainer identities can execute concurrently.
-        let _lock = LedgerLock::acquire(ACL_MUTEX_NAME, ACL_MUTEX_TIMEOUT_MS)?;
-        recover_stale(&ledger_root)?;
+        let _lock =
+            LedgerLock::acquire(&acl_mutex_name(&user_sid), &user_sid, ACL_MUTEX_TIMEOUT_MS)?;
+        recover_stale(&ledger_root, &user_sid)?;
         write_ledger(&ledger_path, &ledger)?;
         if let Err(error) = grant_roots(app_container_sid, &ledger.roots) {
             let restore = remove_grants(&ledger);
@@ -95,7 +119,8 @@ pub fn with_acl_grants<T>(
 
     let launch_result = launch();
     let restore_result = {
-        let _lock = LedgerLock::acquire(ACL_MUTEX_NAME, ACL_MUTEX_TIMEOUT_MS)?;
+        let _lock =
+            LedgerLock::acquire(&acl_mutex_name(&user_sid), &user_sid, ACL_MUTEX_TIMEOUT_MS)?;
         let result = remove_grants(&ledger);
         if result.is_ok() {
             fs::remove_file(&ledger_path)
@@ -116,21 +141,39 @@ struct LedgerLock {
 }
 
 impl LedgerLock {
-    fn acquire(name: &str, timeout_ms: u32) -> Result<Self, String> {
-        Self::try_acquire(name, timeout_ms)?.ok_or_else(|| {
-            if name == ACL_MUTEX_NAME {
-                "acquire ACL ledger mutex timed out".to_owned()
-            } else {
+    fn acquire(name: &str, user_sid: &str, timeout_ms: u32) -> Result<Self, String> {
+        Self::try_acquire(name, user_sid, timeout_ms)?.ok_or_else(|| {
+            if name.contains(".AclLease.") {
                 "acquire ACL ledger lease timed out".to_owned()
+            } else {
+                "acquire ACL ledger mutex timed out".to_owned()
             }
         })
     }
 
-    fn try_acquire(name: &str, timeout_ms: u32) -> Result<Option<Self>, String> {
+    fn try_acquire(name: &str, user_sid: &str, timeout_ms: u32) -> Result<Option<Self>, String> {
+        // Machine-wide named objects are creatable by any local user, so the
+        // lock is born with an explicit SYSTEM+owner-only DACL instead of the
+        // default token DACL. If another principal squatted the name first,
+        // opening it fails and the launch fails closed rather than sharing an
+        // arbitration object with an untrusted owner.
+        let sddl = pipe_security_sddl(user_sid)
+            .map_err(|error| format!("invalid ACL lock owner SID: {error:?}"))?;
+        let descriptor = lock_security_descriptor(&sddl)?;
+        let mut attributes: SECURITY_ATTRIBUTES = unsafe { std::mem::zeroed() };
+        attributes.nLength = size_of::<SECURITY_ATTRIBUTES>() as u32;
+        attributes.lpSecurityDescriptor = descriptor as *mut std::ffi::c_void;
+        attributes.bInheritHandle = 0;
         let name = wide(name);
-        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
-        if handle.is_null() {
-            return Err(last_error("CreateMutexW(ACL ledger mutex)"));
+        let handle = unsafe { CreateMutexW(&attributes, 0, name.as_ptr()) };
+        let create_error = if handle.is_null() {
+            Some(last_error("CreateMutexW(ACL ledger mutex)"))
+        } else {
+            None
+        };
+        unsafe { LocalFree(descriptor as *mut std::ffi::c_void) };
+        if let Some(error) = create_error {
+            return Err(error);
         }
         let wait = unsafe { WaitForSingleObject(handle, timeout_ms) };
         if wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED {
@@ -144,6 +187,25 @@ impl LedgerLock {
     }
 }
 
+fn lock_security_descriptor(sddl: &str) -> Result<PSECURITY_DESCRIPTOR, String> {
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    let sddl_wide = wide(sddl);
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl_wide.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(last_error(
+            "ConvertStringSecurityDescriptorToSecurityDescriptorW(ACL lock)",
+        ));
+    }
+    Ok(descriptor)
+}
+
 impl Drop for LedgerLock {
     fn drop(&mut self) {
         unsafe {
@@ -153,7 +215,7 @@ impl Drop for LedgerLock {
     }
 }
 
-fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, String> {
+pub(crate) fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, String> {
     let mut roots = Vec::new();
     for path in request.read_roots.iter().chain(&request.write_roots) {
         if roots
@@ -176,8 +238,17 @@ fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, String> {
         if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err(format!("ACL root contains a reparse point: {path}"));
         }
+        // An icacls grant lands on the file object, not the name: every NTFS
+        // hard link — including aliases outside the declared root — shares the
+        // DACL that the grant mutates. Path-keyed admission cannot enumerate
+        // those aliases, so multi-link files fail closed here; handle/file-ID
+        // keyed admission is follow-up work. Directories cannot be
+        // hard-linked on NTFS, so only files need the check.
+        if !metadata.is_dir() {
+            reject_multi_link_file(Path::new(path))?;
+        }
         // Only a recursive grant extends into the tree, so only a recursive
-        // grant requires the tree to be reparse-free. Exact roots (e.g. the
+        // grant requires the tree to be alias-free. Exact roots (e.g. the
         // cwd metadata anchor) may legitimately contain junctions deeper in
         // the workspace that the sandbox never grants.
         let recursive_read = contains_path(&request.read_roots, path)
@@ -185,7 +256,7 @@ fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, String> {
         let recursive_write = contains_path(&request.write_roots, path)
             && !contains_path(&request.exact_write_roots, path);
         if metadata.is_dir() && (recursive_read || recursive_write) {
-            reject_reparse_tree(Path::new(path))?;
+            reject_aliased_entries(Path::new(path))?;
         }
         roots.push(LedgerRoot {
             path: path.clone(),
@@ -203,7 +274,11 @@ fn contains_path(paths: &[String], path: &str) -> bool {
     paths.iter().any(|entry| entry.eq_ignore_ascii_case(path))
 }
 
-fn reject_reparse_tree(path: &Path) -> Result<fs::Metadata, String> {
+/// Rejects reparse points and multi-link files anywhere in a recursively
+/// granted tree. An `(OI)(CI)` grant propagates inherited ACEs onto the
+/// existing children at grant time, so a file inside the tree that also has a
+/// hard link outside it would carry the grant past the declared root.
+fn reject_aliased_entries(path: &Path) -> Result<fs::Metadata, String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("inspect ACL root {} failed: {error}", path.display()))?;
     if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
@@ -217,10 +292,52 @@ fn reject_reparse_tree(path: &Path) -> Result<fs::Metadata, String> {
             .map_err(|error| format!("scan ACL root {} failed: {error}", path.display()))?
         {
             let entry = entry.map_err(|error| format!("scan ACL root failed: {error}"))?;
-            reject_reparse_tree(&entry.path())?;
+            reject_aliased_entries(&entry.path())?;
         }
+    } else {
+        reject_multi_link_file(path)?;
     }
     Ok(metadata)
+}
+
+/// Fails closed on files whose kernel link count exceeds one. The DACL that a
+/// grant mutates belongs to the file object shared by every hard link, so a
+/// path-keyed admission that only sees one alias must not grant through it.
+fn reject_multi_link_file(path: &Path) -> Result<(), String> {
+    let wide_path = wide(&path.to_string_lossy());
+    let handle = unsafe {
+        CreateFileW(
+            wide_path.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(last_error(&format!(
+            "CreateFileW(inspect ACL root {})",
+            path.display()
+        )));
+    }
+    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let queried = unsafe { GetFileInformationByHandle(handle, &mut information) };
+    unsafe { CloseHandle(handle) };
+    if queried == 0 {
+        return Err(last_error(&format!(
+            "GetFileInformationByHandle(ACL root {})",
+            path.display()
+        )));
+    }
+    if information.nNumberOfLinks > 1 {
+        return Err(format!(
+            "ACL root contains a multi-link file: {}",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn write_ledger(path: &Path, ledger: &Ledger) -> Result<(), String> {
@@ -235,7 +352,7 @@ pub(crate) fn write_ledger(path: &Path, ledger: &Ledger) -> Result<(), String> {
         .map_err(|error| format!("persist ACL ledger failed: {error}"))
 }
 
-pub(crate) fn recover_stale(root: &Path) -> Result<(), String> {
+pub(crate) fn recover_stale(root: &Path, user_sid: &str) -> Result<(), String> {
     for entry in fs::read_dir(root).map_err(|error| format!("read ACL ledgers failed: {error}"))? {
         let path = entry
             .map_err(|error| format!("read ACL ledger entry failed: {error}"))?
@@ -259,8 +376,8 @@ pub(crate) fn recover_stale(root: &Path) -> Result<(), String> {
             )?;
             continue;
         }
-        let lease_name = ledger_lease_name(&ledger.request_id);
-        let Some(_stale_lease) = LedgerLock::try_acquire(&lease_name, 0)? else {
+        let lease_name = ledger_lease_name(user_sid, &ledger.request_id);
+        let Some(_stale_lease) = LedgerLock::try_acquire(&lease_name, user_sid, 0)? else {
             // The owner keeps this request-specific mutex for the entire child
             // and cleanup lifetime. A busy lease means this is an active
             // ledger, not stale recovery work.
@@ -295,9 +412,9 @@ fn grant_roots(sid: &str, ledger_roots: &[LedgerRoot]) -> Result<(), String> {
     Ok(())
 }
 
-fn ledger_lease_name(request_id: &str) -> String {
+pub(crate) fn ledger_lease_name(user_sid: &str, request_id: &str) -> String {
     format!(
-        r"Local\Maka.WindowsSandbox.AclLease.{:x}",
+        r"Global\Maka.WindowsSandbox.AclLease.{user_sid}.{:x}",
         Sha256::digest(request_id.as_bytes())
     )
 }
