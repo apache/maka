@@ -158,6 +158,7 @@ type SemanticConnectionBasis =
       readonly kind: 'connection_test';
       readonly requestBodyOverlayJson: string;
       readonly model: ConnectionTestModelBasis;
+      readonly modelFactsGeneration: number;
     });
 
 interface ConnectionTicketRecord {
@@ -182,6 +183,7 @@ export class RuntimePolicyCoordinator {
   private readonly catalog = new ConnectionCatalogDocumentOwner();
   private readonly vault = new CredentialVaultDocumentOwner();
   private readonly modelFacts = new ModelFactsDocumentOwner();
+  private modelFactsGeneration = 0;
   private readonly tickets = new WeakMap<object, OperationTicketRecord>();
   private onboardingRecoveryRequired = false;
 
@@ -219,16 +221,32 @@ export class RuntimePolicyCoordinator {
 
   replaceModelFacts(overrides: ModelFactOverrides) {
     return this.inLane(async (root) => {
-      const document = await this.modelFacts.replace(root, overrides);
+      const document = this.modelFacts.prepareReplacement(overrides);
+      let cleared = false;
       try {
-        await this.catalog.clearAllConnectionLastTests(root, await this.catalog.read(root));
+        cleared = await this.catalog.clearAllConnectionLastTests(
+          root,
+          await this.catalog.read(root),
+        );
       } catch (error) {
         throw commitOutcomeUnknown(
-          'Model facts were replaced before connection verification could be cleared',
+          'Connection verification clearing failed before model facts replacement',
           error,
         );
       }
-      return deepFreeze(document);
+      try {
+        const persisted = await this.modelFacts.writeReplacement(root, document);
+        this.modelFactsGeneration += 1;
+        return deepFreeze(persisted);
+      } catch (error) {
+        if (cleared) {
+          throw commitOutcomeUnknown(
+            'Connection verification was cleared before model facts replacement completed',
+            error,
+          );
+        }
+        throw error;
+      }
     });
   }
 
@@ -1035,7 +1053,10 @@ export class RuntimePolicyCoordinator {
           'Connection test model is not in the canonical model set',
         );
       }
-      const ticket = this.issueTicket('connection_test', connectionTestSemanticBasis(projected));
+      const ticket = this.issueTicket(
+        'connection_test',
+        connectionTestSemanticBasis(projected, this.modelFactsGeneration),
+      );
       return deepFreeze({
         kind: 'ready' as const,
         ticket: ticket as ConnectionTestTicket,
@@ -1212,6 +1233,12 @@ export class RuntimePolicyCoordinator {
   }> {
     const connection = findConnection(catalog, { connectionId: basis.connectionId });
     const changed: ConnectionEffectChangedDomain[] = [];
+    if (
+      basis.kind === 'connection_test' &&
+      basis.modelFactsGeneration !== this.modelFactsGeneration
+    ) {
+      changed.push('connection');
+    }
     const effectiveConnection =
       connection && basis.kind === 'connection_test'
         ? applyModelFactOverridesToConnection(
@@ -1461,12 +1488,14 @@ function modelFetchSemanticBasis(
 
 function connectionTestSemanticBasis(
   prepared: PreparedConnectionMaterial,
+  modelFactsGeneration: number,
 ): Extract<SemanticConnectionBasis, { readonly kind: 'connection_test' }> {
   return {
     kind: 'connection_test',
     ...commonSemanticConnectionBasis(prepared),
     requestBodyOverlayJson: JSON.stringify(prepared.connection.requestBodyOverlay ?? {}),
     model: connectionTestModelBasis(prepared.connection),
+    modelFactsGeneration,
   };
 }
 

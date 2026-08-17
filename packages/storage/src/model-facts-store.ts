@@ -42,13 +42,21 @@ export class ModelFactsDocumentOwner {
   }
 
   async replace(root: string, overrides: ModelFactOverrides): Promise<ModelFactsDocument> {
+    const validated = this.prepareReplacement(overrides);
+    return this.writeReplacement(root, validated);
+  }
+
+  prepareReplacement(overrides: ModelFactOverrides): ModelFactsDocument {
     const entries = Object.entries(overrides);
     if (entries.length > MODEL_FACTS_MAX_OVERRIDES) {
       throw new RuntimePolicyStoreError('invalid_policy_input', 'Too many model fact overrides');
     }
     let validated: ModelFactsDocument;
     try {
-      const normalized: Record<string, ReturnType<typeof normalizeModelFactOverride>> = {};
+      const normalized: Record<
+        string,
+        ReturnType<typeof normalizeModelFactOverride>
+      > = Object.create(null);
       for (const [key, value] of entries) normalized[key] = normalizeModelFactOverride(value);
       const document: ModelFactsDocument = {
         schemaVersion: MODEL_FACTS_SCHEMA_VERSION,
@@ -63,8 +71,12 @@ export class ModelFactsDocumentOwner {
         { cause: error },
       );
     }
-    await writeJsonDocument(root, FILE, validated, MODEL_FACTS_DOCUMENT_MAX_BYTES);
     return validated;
+  }
+
+  async writeReplacement(root: string, document: ModelFactsDocument): Promise<ModelFactsDocument> {
+    await writeJsonDocument(root, FILE, document, MODEL_FACTS_DOCUMENT_MAX_BYTES);
+    return document;
   }
 }
 

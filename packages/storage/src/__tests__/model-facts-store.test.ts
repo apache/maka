@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { ModelFactsDocumentOwner } from '../model-facts-store.js';
+import { RuntimePolicyStoreError } from '../runtime-policy/errors.js';
 import { cleanupRuntimePolicyDocumentTemps } from '../runtime-policy/document-io.js';
 
 test('model facts persist and malformed documents fail closed with a bounded diagnostic', async () => {
@@ -23,6 +24,22 @@ test('model facts persist and malformed documents fail closed with a bounded dia
       'utf8',
     );
     assert.equal((await owner.readWithDiagnostics(root)).diagnostic, 'malformed');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('model facts reject own prototype keys from JSON input', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-facts-prototype-'));
+  try {
+    const owner = new ModelFactsDocumentOwner();
+    const overrides = JSON.parse('{"__proto__":{"contextWindow":200000}}');
+    await assert.rejects(
+      () => owner.replace(root, overrides),
+      (error: unknown) =>
+        error instanceof RuntimePolicyStoreError && error.code === 'invalid_policy_input',
+    );
+    assert.deepEqual((await owner.read(root)).overrides, {});
   } finally {
     await rm(root, { recursive: true, force: true });
   }
