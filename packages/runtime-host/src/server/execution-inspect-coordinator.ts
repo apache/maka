@@ -24,6 +24,7 @@ import {
   EXECUTION_INSPECT_EVIDENCE_MAX_RECORDS,
   EXECUTION_INSPECT_RESULT_MAX_BYTES,
   EXECUTION_INSPECT_SESSION_MAX_RUNS,
+  EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS,
   type ExecutionInspectCandidate,
   type ExecutionInspectQueryInput,
   type ExecutionInspectQueryResult,
@@ -268,11 +269,18 @@ export class HostExecutionInspectCoordinator {
       modelCallAttempts,
       ...(unreadableRecords > 0 ? { unreadableRecords } : {}),
     });
-    return {
+    const page: ExecutionInspectQueryResult = {
       kind: 'session_trace_page',
       ...trace,
       nextCursor: runPage.nextCursor ? encodeTraceCursor(runPage.nextCursor) : null,
     };
+    if (
+      page.turns.length > EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS ||
+      encodedBytes(page) > EXECUTION_INSPECT_RESULT_MAX_BYTES
+    ) {
+      return unreadableTracePage(input.sessionId, page.nextCursor);
+    }
+    return page;
   }
 
   async #inspectTurnTrace(
@@ -410,6 +418,22 @@ function encodedBytes(result: ExecutionInspectQueryResult): number {
   return Buffer.byteLength(JSON.stringify(result), 'utf8');
 }
 
+function unreadableTracePage(
+  sessionId: string,
+  nextCursor: string | null,
+): ExecutionInspectQueryResult {
+  return {
+    kind: 'session_trace_page',
+    ...projectSessionTrace({
+      sessionId,
+      runtimeEvents: [],
+      modelCallAttempts: [],
+      unreadableRecords: 1,
+    }),
+    nextCursor,
+  };
+}
+
 function encodeTraceCursor(cursor: { readonly createdAt: number; readonly runId: string }): string {
   return Buffer.from(JSON.stringify({ v: 1, ...cursor }), 'utf8').toString('base64url');
 }
@@ -422,10 +446,11 @@ function decodeTraceCursor(cursor: string): { readonly createdAt: number; readon
     >;
     if (
       value.v !== 1 ||
-      !Number.isFinite(value.createdAt) ||
       typeof value.createdAt !== 'number' ||
+      !Number.isSafeInteger(value.createdAt) ||
+      value.createdAt < 0 ||
       typeof value.runId !== 'string' ||
-      value.runId.length === 0 ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(value.runId) ||
       Object.keys(value).length !== 3
     ) {
       throw new Error('invalid cursor');

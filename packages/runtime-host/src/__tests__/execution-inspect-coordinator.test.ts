@@ -10,6 +10,7 @@ import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
   EXECUTION_INSPECT_EVIDENCE_MAX_BYTES,
+  EXECUTION_INSPECT_RESULT_MAX_BYTES,
   EXECUTION_INSPECT_SESSION_MAX_RUNS,
 } from '../protocol/index.js';
 import { HostExecutionInspectCoordinator } from '../server/execution-inspect-coordinator.js';
@@ -360,6 +361,69 @@ describe('HostExecutionInspectCoordinator', () => {
       assert.equal(older.ok, true);
       if (!older.ok || older.result.kind !== 'session_trace_page') return;
       assert.equal(older.result.turns[0]?.runId, 'older-run');
+    });
+  });
+
+  test('keeps earlier Session history reachable when one projected page exceeds the result limit', async () => {
+    await withCoordinator(async ({ stores, coordinator }) => {
+      const session = await stores.sessionStore.create(sessionInput('Oversized trace result'));
+      await stores.agentRunStore.createRun(runHeader(session.id, 'oversized-result-run', 2));
+      for (let index = 0; index < 128; index += 1) {
+        await stores.runtimeEventStore.appendRuntimeEvent(session.id, 'oversized-result-run', {
+          ...runtimeEvent(session.id, 'oversized-result-run', index + 2),
+          id: `oversized-result-event-${index}`,
+          content: { kind: 'error', message: 'x'.repeat(EXECUTION_INSPECT_RESULT_MAX_BYTES / 64) },
+        });
+      }
+      await stores.agentRunStore.createRun(runHeader(session.id, 'older-run', 1));
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        'older-run',
+        runtimeEvent(session.id, 'older-run', 1),
+      );
+
+      const first = await coordinator.handlers['execution.inspect.query'](
+        { kind: 'session_trace_start', sessionId: session.id },
+        connectionContext(),
+      );
+
+      assert.equal(first.ok, true);
+      if (!first.ok || first.result.kind !== 'session_trace_page') return;
+      assert.equal(first.result.turns.length, 0);
+      assert.equal(first.result.coverage.modelCalls, 'partial');
+      assert.equal(first.result.coverage.unreadableRecords, 1);
+      assert.ok(first.result.nextCursor);
+
+      const older = await coordinator.handlers['execution.inspect.query'](
+        {
+          kind: 'session_trace_continue',
+          sessionId: session.id,
+          cursor: first.result.nextCursor,
+        },
+        connectionContext(),
+      );
+      assert.equal(older.ok, true);
+      if (!older.ok || older.result.kind !== 'session_trace_page') return;
+      assert.equal(older.result.turns[0]?.runId, 'older-run');
+    });
+  });
+
+  test('classifies a malformed opaque continuation cursor as invalid input', async () => {
+    await withCoordinator(async ({ stores, coordinator }) => {
+      const session = await stores.sessionStore.create(sessionInput('Malformed trace cursor'));
+      const cursor = Buffer.from(
+        JSON.stringify({ v: 1, createdAt: 1, runId: 'not/safe' }),
+        'utf8',
+      ).toString('base64url');
+
+      const result = await coordinator.handlers['execution.inspect.query'](
+        { kind: 'session_trace_continue', sessionId: session.id, cursor },
+        connectionContext(),
+      );
+
+      assert.equal(result.ok, false);
+      if (result.ok) return;
+      assert.equal(result.error.code, 'invalid_request');
     });
   });
 
