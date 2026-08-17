@@ -40,8 +40,24 @@ import {
 } from '../protocol/turn.js';
 
 describe('Runtime Host bootstrap protocol', () => {
-  test('publishes a new compatibility epoch for legacy Automation provenance', () => {
-    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 21);
+  test('publishes a new compatibility epoch for the narrowed connection update result', () => {
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 22);
+    // An epoch-21 Host still answers a connection update this way when the
+    // selection strands its default target. The handshake, not the decoder, is
+    // what keeps that Host away from this Client.
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          requestId: 'connection-update-legacy',
+          operation: 'connection.catalog.update',
+          ok: true,
+          result: {
+            kind: 'invalid_default_target',
+            target: { connectionId: '2a42da77-afac-4fb1-bff1-e7d6e6e55e9f', modelId: 'gpt-5' },
+          },
+        }),
+      isInvalidFrame,
+    );
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
