@@ -5,13 +5,13 @@ import type {
 } from '@maka/core/mcp';
 import { isMcpStdioConfig, resolveMcpRemoteProtocolPreference } from '@maka/core/mcp';
 import type { McpCopy } from './locales/mcp-copy.js';
+import { formatCommandLine, parseCommandLine } from './mcp-command-line.js';
 
 export type McpEditorDraft = {
   id: string;
   kind: 'stdio' | 'remote';
   enabled: boolean;
-  command: string;
-  args: string;
+  commandLine: string;
   cwd: string;
   env: string;
   url: string;
@@ -25,8 +25,7 @@ export function createEmptyMcpDraft(): McpEditorDraft {
     id: '',
     kind: 'stdio',
     enabled: true,
-    command: '',
-    args: '',
+    commandLine: '',
     cwd: '',
     env: '',
     url: '',
@@ -42,8 +41,7 @@ export function mcpDraftFromConfig(id: string, config: McpServerConfig): McpEdit
       ...createEmptyMcpDraft(),
       id,
       enabled: config.enabled !== false,
-      command: config.command,
-      args: (config.args ?? []).join('\n'),
+      commandLine: formatCommandLine(config.command, config.args ?? []),
       cwd: config.cwd ?? '',
       env: formatMap(config.env),
     };
@@ -78,10 +76,14 @@ export function withMcpDraftTransport(
 
 export function mcpConfigFromDraft(draft: McpEditorDraft, copy: McpCopy): McpServerConfig {
   if (draft.kind === 'stdio') {
+    const parsed = parseCommandLine(draft.commandLine);
+    // Validation runs before save, so an unbalanced quote cannot reach here
+    // through the dialog; the throw keeps other callers honest.
+    if (!parsed.ok) throw new Error(copy.editor.unbalancedQuote);
     return {
       enabled: draft.enabled,
-      command: draft.command.trim(),
-      args: draft.args.split(/\r?\n/u).filter((line) => line.length > 0),
+      command: parsed.command,
+      args: parsed.args,
       ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}),
       env: parseMap(draft.env, copy),
     };

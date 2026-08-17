@@ -88,7 +88,7 @@ test('selecting legacy SSE converges and persists the legacy preference', () => 
 
 test('stdio editing never adds a protocol preference in config version 2', () => {
   const saved = mcpConfigFromDraft(
-    { ...createEmptyMcpDraft(), id: 'local', command: ' node ' },
+    { ...createEmptyMcpDraft(), id: 'local', commandLine: ' node ' },
     copy,
   );
 
