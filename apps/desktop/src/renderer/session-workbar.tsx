@@ -614,27 +614,29 @@ function WorkbarLauncher(props: {
   ];
   return (
     <div className="maka-workbar-launcher">
-      <List
-        className="maka-workbar-launcher-list"
-        density="compact"
-        header={<Heading level={4}>{copy.openTools}</Heading>}
-      >
-        {actions.map((action) => (
-          <ListItem
-            key={action.kind}
-            startContent={<Icon icon={action.icon} size="sm" color="secondary" />}
-            label={action.label}
-            description={action.description}
-            endContent={
-              action.shortcut ? (
-                <Kbd keys={action.shortcut} />
-              ) : undefined
-            }
-            isDisabled={action.disabled}
-            onClick={() => props.onOpen(action.kind)}
-          />
-        ))}
-      </List>
+      <div className="maka-workbar-launcher-frame">
+        <List
+          className="maka-workbar-launcher-list"
+          density="compact"
+          header={<Heading level={4}>{copy.openTools}</Heading>}
+        >
+          {actions.map((action) => (
+            <ListItem
+              key={action.kind}
+              startContent={<Icon icon={action.icon} size="sm" color="secondary" />}
+              label={action.label}
+              description={action.description}
+              endContent={
+                action.shortcut ? (
+                  <Kbd keys={action.shortcut} />
+                ) : undefined
+              }
+              isDisabled={action.disabled}
+              onClick={() => props.onOpen(action.kind)}
+            />
+          ))}
+        </List>
+      </div>
     </div>
   );
 }

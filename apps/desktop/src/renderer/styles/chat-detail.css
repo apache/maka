@@ -298,8 +298,16 @@
   padding: var(--space-5);
 }
 
+.maka-workbar-launcher-frame {
+  width: 100%;
+  max-width: 360px;
+  min-width: 0;
+}
+
 .maka-workbar-launcher-list {
-  width: min(100%, 360px);
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 /* Session trace (#1625): a read-only causal timeline in the workbar.
