@@ -19,6 +19,7 @@ on:
       - 'scripts/verify-windows-sandbox-e2e.mjs'
       - 'scripts/prepare-bundled-git.mjs'
       - 'scripts/verify-windows-x64.mjs'
+      - 'scripts/verify-windows-sandbox-e2e.mjs'
       - 'scripts/verify-windows-installer-lifecycle.mjs'
       - 'scripts/prepare-windows-upgrade-baseline.mjs'
       - 'scripts/windows-upgrade-baseline.json'

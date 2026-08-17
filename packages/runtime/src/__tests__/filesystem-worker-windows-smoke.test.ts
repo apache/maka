@@ -81,8 +81,11 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
     ]);
   });
 
-  test('writes and reads back a workspace file through the sandboxed worker', async () => {
+  test('updates and reads back a pre-existing workspace file through the sandboxed worker', async () => {
+    // Exact writes stay exact in the preview: the target exists, so the
+    // grant covers only this file object and never its parent directory.
     const target = join(workspace, 'inside.txt');
+    await writeFile(target, 'seeded');
     await client.execute({
       operation: { kind: 'write', path: target, content: 'windows-relay-ok' },
       cwd: workspace,
@@ -97,6 +100,26 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
     });
     assert.equal(read.kind, 'read');
     if (read.kind === 'read') assert.match(read.content, /windows-relay-ok/);
+  });
+
+  test('fails closed on a write whose shape needs parent-entry authority', async () => {
+    // A missing target could only be enforced as recursive Modify on its
+    // existing parent — broader than the approved operation, so the preview
+    // refuses it before any process launches.
+    const missing = join(workspace, 'not-created-yet.txt');
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'write', path: missing, content: 'blocked' },
+        cwd: workspace,
+        mode: 'ask',
+      }),
+      (error: unknown) =>
+        error instanceof FilesystemWorkerClientError &&
+        error.reason === 'invalid_request' &&
+        error.stage === 'transform' &&
+        /parent-entry/.test(error.message),
+    );
+    assert.equal(existsSync(missing), false);
   });
 
   test('runs glob inside the operation-scoped sandbox and keeps grep fail-closed', async () => {

@@ -55,10 +55,17 @@ export function compileWindowsSandboxPolicy(command: SandboxCommand): WindowsSan
   ]) {
     addUnique(readRoots, canonicalWindowsPath(path));
   }
-  for (const path of pathContext.runtimeWritableRoots ?? []) {
-    const canonical = canonicalWindowsPath(path);
-    addUnique(readRoots, canonical);
-    addUnique(writeRoots, canonical);
+  // A write whose target does not exist yet — and directory-entry mutations
+  // such as ApplyPatch create/delete — can only be represented here as
+  // recursive Modify on the existing parent, a kernel boundary broader than
+  // the approved exact operation. The W0/W1 preview keeps exact writes exact
+  // and fails these shapes closed; precise parent-entry authority is
+  // follow-up work.
+  if ((pathContext.runtimeWritableRoots ?? []).length > 0) {
+    throw new Error(
+      'Windows sandbox cannot represent parent-entry write authority exactly; ' +
+        'creating or deleting directory entries fails closed in this preview.',
+    );
   }
 
   // The worker anchors every containment check on lstat(cwd), which the

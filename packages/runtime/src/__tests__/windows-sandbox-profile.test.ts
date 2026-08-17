@@ -22,7 +22,6 @@ function command(profile: PermissionProfileManaged): SandboxCommand {
       tmpdir: String.raw`C:\Users\user\AppData\Local\Temp`,
       runtimeReadableRoots: [String.raw`C:\runtime`],
       executableRoots: [String.raw`C:\Program Files\nodejs`],
-      runtimeWritableRoots: [String.raw`C:\runtime\state`],
     },
   };
 }
@@ -35,18 +34,31 @@ test('compiles workspace-write roots, runtime roots, network, and environment', 
       String.raw`C:\Users\user\AppData\Local\Temp`,
       String.raw`C:\runtime`,
       String.raw`C:\Program Files\nodejs`,
-      String.raw`C:\runtime\state`,
     ],
     writeRoots: [
       String.raw`C:\work\repo`,
       String.raw`C:\Users\user\AppData\Local\Temp`,
-      String.raw`C:\runtime\state`,
     ],
     exactReadRoots: [],
     exactWriteRoots: [],
     network: 'restricted',
     environment: { PATH: String.raw`C:\Windows\System32` },
   });
+});
+
+test('fails closed on write shapes that need parent-entry authority', () => {
+  // runtimeWritableRoots only exists for a missing write target or a
+  // directory-entry mutation; representing it would widen the kernel grant
+  // to recursive Modify on the parent, so the preview refuses instead.
+  const withParentRoot: SandboxCommand = {
+    ...command(createWorkspaceWritePermissionProfile()),
+    pathContext: {
+      workspaceRoots: [String.raw`C:\work\repo`],
+      tmpdir: String.raw`C:\Users\user\AppData\Local\Temp`,
+      runtimeWritableRoots: [String.raw`C:\work\repo\out`],
+    },
+  };
+  assert.throws(() => compileWindowsSandboxPolicy(withParentRoot), /parent-entry/);
 });
 
 test('fails closed for unsupported deny rules', () => {
@@ -84,12 +96,11 @@ test('compiles an exact file grant as a non-recursive broker root', () => {
     String.raw`C:\file.txt`,
     String.raw`C:\runtime`,
     String.raw`C:\Program Files\nodejs`,
-    String.raw`C:\runtime\state`,
     // cwd metadata anchor: added exactly (non-recursively) when no broader
     // grant already covers it, so the worker can lstat its own cwd.
     String.raw`C:\work\repo`,
   ]);
-  assert.deepEqual(policy.writeRoots, [String.raw`C:\runtime\state`]);
+  assert.deepEqual(policy.writeRoots, []);
   assert.deepEqual(policy.exactReadRoots, [String.raw`C:\file.txt`, String.raw`C:\work\repo`]);
   assert.deepEqual(policy.exactWriteRoots, []);
 });

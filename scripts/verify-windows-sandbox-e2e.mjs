@@ -90,11 +90,32 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
     });
     const execute = (operation) => client.execute({ operation, cwd: workspace, mode: 'ask' });
 
+    // Exact writes stay exact in the preview: the target is pre-seeded so the
+    // grant covers only this file object, never its parent directory.
     const insidePath = join(workspace, 'inside.txt');
+    await writeFile(insidePath, 'seeded');
     await execute({ kind: 'write', path: insidePath, content: 'packaged-relay-ok' });
     assertCondition(
       (await readFile(insidePath, 'utf8')) === 'packaged-relay-ok',
       'Sandboxed write did not land in the workspace.',
+    );
+
+    // A missing target would need recursive Modify on its parent — broader
+    // than the approved operation — so the preview fails it closed before
+    // any launch.
+    let parentEntryDenied = false;
+    try {
+      await execute({ kind: 'write', path: join(workspace, 'missing.txt'), content: 'x' });
+    } catch (error) {
+      parentEntryDenied =
+        error instanceof FilesystemWorkerClientError &&
+        error.reason === 'invalid_request' &&
+        /parent-entry/.test(error.message);
+    }
+    assertCondition(parentEntryDenied, 'Missing-target write did not fail closed.');
+    assertCondition(
+      !existsSync(join(workspace, 'missing.txt')),
+      'Failed-closed write still produced a file.',
     );
 
     const read = await execute({ kind: 'read', path: insidePath });
