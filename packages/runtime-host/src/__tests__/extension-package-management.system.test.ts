@@ -13,25 +13,22 @@ import {
 import { HostExtensionPackageManagementTools } from '../server/extension-package-management-tools.js';
 import { HostExtensionRuntime } from '../server/extension-runtime.js';
 import { HostExtensionStateStore } from '../server/extension-state-store.js';
-import { HookPackageStore } from '../server/hook-package-store.js';
 import { EventPackageStore } from '../server/event-package-store.js';
 import { ToolPackageStore } from '../server/tool-package-store.js';
 import { HostUiPackageManagementTools } from '../server/ui-package-management-tools.js';
 import { UiPackageStore } from '../server/ui-package-store.js';
 
-test('define_package installs Tool, UI, Hook, Event, dependencies, and secret configuration as one Revision', async () => {
+test('define_package installs Tool, UI, Event, dependencies, and secret configuration as one Revision', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-define-package-'));
   const control = join(root, 'control');
   const runtime = new HostExtensionRuntime();
   const toolStore = new ToolPackageStore(control);
   const uiStore = new UiPackageStore(control);
-  const hookStore = new HookPackageStore(control);
   const eventStore = new EventPackageStore(control);
   const loader = new InstalledToolPackageExtensionLoader(
     new StaticTrustedToolExtensionLoader(),
     toolStore,
     uiStore,
-    hookStore,
     eventStore,
   );
   const controller = new HostExtensionController(
@@ -45,7 +42,7 @@ test('define_package installs Tool, UI, Hook, Event, dependencies, and secret co
     await call(management.tools(), 'define_package', {
       id: 'dev.maka.base',
       version: '1.1.0',
-      tool: {
+      runtime: {
         source: 'export default { ping: async () => ({ pong: true }) };\n',
         tools: [
           {
@@ -71,8 +68,9 @@ test('define_package installs Tool, UI, Hook, Event, dependencies, and secret co
         },
         required: [],
       },
-      tool: {
-        source: 'export default { scan: async () => ({ issues: 1 }) };\n',
+      runtime: {
+        source:
+          'export default { scan: async () => ({ issues: 1 }), observe: async () => undefined, aroundTool: async (input, _context, next) => next(input) };\n',
         tools: [
           {
             name: 'codebase_scan',
@@ -80,6 +78,31 @@ test('define_package installs Tool, UI, Hook, Event, dependencies, and secret co
             handler: 'scan',
             inputSchema: { type: 'object', additionalProperties: false },
             visualization: { stateKey: 'scan.result' },
+          },
+        ],
+        events: [
+          {
+            name: 'dev.maka.codebase-studio.scan.completed',
+            description: 'A scan completed.',
+            payloadSchema: {
+              type: 'object',
+              properties: { issues: { type: 'number' } },
+              required: ['issues'],
+              additionalProperties: false,
+            },
+          },
+        ],
+        listeners: [
+          {
+            id: 'safe-write',
+            event: 'maka.tools.execute',
+            handler: 'aroundTool',
+            priority: 100,
+          },
+          {
+            id: 'observe-scan',
+            event: 'dev.maka.codebase-studio.scan.completed',
+            handler: 'observe',
           },
         ],
         permissions: { workspace: 'read', network: false },
@@ -96,59 +119,21 @@ test('define_package installs Tool, UI, Hook, Event, dependencies, and secret co
         ],
         permissions: { network: false, hostState: true, sessionAccess: false },
       },
-      hook: {
-        source: 'export default { gate: async () => ({ allow: true }) };\n',
-        hooks: [
-          {
-            id: 'safe-write',
-            event: 'PreToolUse',
-            handler: 'gate',
-            matcher: 'Write|Edit',
-            priority: 100,
-            timeoutMs: 3_000,
-          },
-        ],
-        permissions: { workspace: 'read', network: false },
-      },
-      event: {
-        source: 'export default { observe: async () => undefined };\n',
-        events: [
-          {
-            name: 'dev.maka.codebase-studio.scan.completed',
-            description: 'A scan completed.',
-            payloadSchema: {
-              type: 'object',
-              properties: { issues: { type: 'number' } },
-              required: ['issues'],
-              additionalProperties: false,
-            },
-          },
-        ],
-        listeners: [
-          {
-            id: 'observe-scan',
-            event: 'dev.maka.codebase-studio.scan.completed',
-            handler: 'observe',
-          },
-        ],
-        permissions: { workspace: 'none', network: false },
-      },
     })) as {
       extensionId: string;
       revision: string;
       toolNames: string[];
       uiContributionIds: string[];
-      hookContributionIds: string[];
       eventContributionIds: string[];
     };
 
     assert.equal(result.extensionId, 'dev.maka.codebase-studio');
     assert.deepEqual(result.toolNames, ['codebase_scan']);
     assert.deepEqual(result.uiContributionIds, ['studio-panel']);
-    assert.deepEqual(result.hookContributionIds, ['PreToolUse:safe-write']);
     assert.deepEqual(result.eventContributionIds, [
       'event:dev.maka.codebase-studio.scan.completed',
       'listener:dev.maka.codebase-studio.scan.completed:observe-scan',
+      'listener:maka.tools.execute:safe-write',
     ]);
     const uiManagement = new HostUiPackageManagementTools(control, controller, runtime, uiStore);
     const testedUi = (await call(uiManagement.tools(), 'test_ui', {
@@ -160,18 +145,13 @@ test('define_package installs Tool, UI, Hook, Event, dependencies, and secret co
       testedUi.contributions.map(({ id }) => id),
       ['studio-panel'],
     );
-    const revisions = await Promise.all([
-      toolStore.list(),
-      uiStore.list(),
-      hookStore.list(),
-      eventStore.list(),
-    ]);
+    const revisions = await Promise.all([toolStore.list(), uiStore.list(), eventStore.list()]);
     assert.deepEqual(
       revisions.map(
         (installed) =>
           installed.find(({ extensionId }) => extensionId === result.extensionId)?.revision,
       ),
-      [result.revision, result.revision, result.revision, result.revision],
+      [result.revision, result.revision, result.revision],
     );
 
     const inspected = (await call(management.tools(), 'inspect_package', {})) as {
@@ -204,9 +184,9 @@ test('define_package installs Tool, UI, Hook, Event, dependencies, and secret co
       [
         { kind: 'tool', id: 'codebase_scan' },
         { kind: 'ui', id: 'studio-panel' },
-        { kind: 'hook', id: 'safe-write' },
         { kind: 'event', id: 'dev.maka.codebase-studio.scan.completed' },
         { kind: 'listener', id: 'observe-scan' },
+        { kind: 'listener', id: 'safe-write' },
       ],
     );
 
@@ -225,11 +205,6 @@ test('define_package installs Tool, UI, Hook, Event, dependencies, and secret co
     assert.ok(
       runtime
         .inspectTools('session-package-test')
-        .some(({ extensionId }) => extensionId === result.extensionId),
-    );
-    assert.ok(
-      runtime
-        .inspectHooks('session-package-test')
         .some(({ extensionId }) => extensionId === result.extensionId),
     );
     assert.ok(

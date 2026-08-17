@@ -134,6 +134,7 @@ import type { SubagentExecutionRef } from './subagent-execution.js';
 import {
   ModelAdapter,
   type ModelFactoryInput,
+  type ModelAdapterStreamInput,
   type NormalizedAiSdkUsage,
   type ModelStreamResult,
   type RepairableAiSdkToolCall,
@@ -1501,12 +1502,6 @@ export class AiSdkBackend implements AgentBackend {
       if (runEndDispatched) return;
       runEndDispatched = true;
       try {
-        await this.input.preToolUseHooks?.runExtensionHook?.(
-          'RunEnd',
-          { outcome },
-          new AbortController().signal,
-          hookContext,
-        );
         await this.input.preToolUseHooks?.runCoreEvent?.(
           'maka.agent.status',
           { status: outcome, modelId: this.input.modelId },
@@ -1518,20 +1513,14 @@ export class AiSdkBackend implements AgentBackend {
       }
     };
     try {
-      const promptResult = await this.input.preToolUseHooks?.runExtensionHook?.(
-        'UserPromptSubmit',
+      const promptResult = await this.input.preToolUseHooks?.runCoreEvent?.(
+        'maka.user-prompt.submit',
         { text: input.text },
         scope.abortController.signal,
         hookContext,
       );
-      const transformedText = transformedPromptText(promptResult?.payload, input.text);
+      const transformedText = transformedPromptText(promptResult?.result, input.text);
       if (transformedText !== input.text) preparedInput = { ...input, text: transformedText };
-      await this.input.preToolUseHooks?.runExtensionHook?.(
-        'RunStart',
-        { modelId: this.input.modelId, text: transformedText },
-        scope.abortController.signal,
-        hookContext,
-      );
       await this.input.preToolUseHooks?.runCoreEvent?.(
         'maka.agent.status',
         { status: 'running', modelId: this.input.modelId },
@@ -2426,7 +2415,7 @@ export class AiSdkBackend implements AgentBackend {
             scope.memorySourceMessages = [...hookedRequest.messages];
             scope.memorySourceSystemPrompt = hookedRequest.systemPrompt;
             scope.memorySourceActiveTools = [...hookedRequest.activeTools];
-            result = await this.modelAdapter.startStream({
+            const streamInput: ModelAdapterStreamInput = {
               model,
               messages: hookedRequest.messages,
               tools: modelTools,
@@ -2457,7 +2446,22 @@ export class AiSdkBackend implements AgentBackend {
               ...(providerRequestTracker ? { providerRequestTracker } : {}),
               ...(historyCompactBoundary ? { historyCompactBoundary } : {}),
               continuationKey: scope.turnId,
-            });
+            };
+            const startStream = (value: unknown): Promise<ModelStreamResult> => {
+              if (!value || typeof value !== 'object' || Array.isArray(value)) {
+                throw new Error('llm/stream middleware payload must be a request object');
+              }
+              return this.modelAdapter.startStream(value as ModelAdapterStreamInput);
+            };
+            result = this.input.preToolUseHooks?.runCoreMiddleware
+              ? ((await this.input.preToolUseHooks.runCoreMiddleware(
+                  'maka.llm.stream',
+                  streamInput,
+                  turnAbortController.signal,
+                  this.coreEventContext(scope),
+                  startStream,
+                )) as ModelStreamResult)
+              : await startStream(streamInput);
 
             for await (const event of result.events) {
               if (scope.aborted) break;

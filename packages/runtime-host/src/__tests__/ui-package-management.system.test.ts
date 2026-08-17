@@ -260,13 +260,17 @@ test('UI package Store rejects symlinks and detects installed content corruption
     const source = join(root, 'source');
     await mkdir(join(source, 'documents'), { recursive: true });
     await writeFile(
-      join(source, 'maka.ui.json'),
+      join(source, 'maka.extension.json'),
       JSON.stringify({
         schemaVersion: 1,
         id: 'dev.maka.ui.integrity',
         version: '1',
-        ui: [{ id: 'root', surface: 'app.root', priority: 1, document: 'documents/root.html' }],
-        permissions: { network: false },
+        ui: {
+          contributions: [
+            { id: 'root', surface: 'app.root', priority: 1, document: 'documents/root.html' },
+          ],
+          permissions: { network: false },
+        },
       }),
     );
     await writeFile(join(source, 'documents', 'root.html'), '<main>safe</main>');
@@ -280,28 +284,30 @@ test('UI package Store rejects symlinks and detects installed content corruption
 
     const linked = join(root, 'linked');
     await mkdir(linked);
-    await writeFile(join(linked, 'maka.ui.json'), '{}');
+    await writeFile(join(linked, 'maka.extension.json'), '{}');
     await symlink(join(source, 'documents', 'root.html'), join(linked, 'root.html'));
     await assert.rejects(store.install(linked), /may not contain symlinks/);
 
     const unsupported = join(root, 'unsupported-slot');
     await mkdir(join(unsupported, 'documents'), { recursive: true });
     await writeFile(
-      join(unsupported, 'maka.ui.json'),
+      join(unsupported, 'maka.extension.json'),
       JSON.stringify({
         schemaVersion: 1,
         id: 'dev.maka.ui.unsupported-slot',
         version: '1',
-        ui: [
-          {
-            id: 'unknown',
-            surface: 'app.slot',
-            slot: 'unknown.area',
-            priority: 1,
-            document: 'documents/unknown.html',
-          },
-        ],
-        permissions: { network: false },
+        ui: {
+          contributions: [
+            {
+              id: 'unknown',
+              surface: 'app.slot',
+              slot: 'unknown.area',
+              priority: 1,
+              document: 'documents/unknown.html',
+            },
+          ],
+          permissions: { network: false },
+        },
       }),
     );
     await writeFile(join(unsupported, 'documents', 'unknown.html'), '<main>unknown</main>');
@@ -323,42 +329,42 @@ test('one immutable package Revision carries a Tool and a complete Maka root sna
     await mkdir(join(source, '.git'), { recursive: true });
     await writeFile(join(source, '.git', 'HEAD'), 'ref: refs/heads/main\n');
     await writeFile(
-      join(source, 'maka.ui.json'),
+      join(source, 'maka.extension.json'),
       JSON.stringify({
         schemaVersion: 1,
         id: 'dev.maka.project-canvas',
         version: '1',
-        ui: [
-          {
-            id: 'project-canvas',
-            surface: 'app.root',
-            priority: 200,
-            document: 'documents/project-canvas.html',
-          },
-        ],
-        permissions: { network: false, hostState: true, sessionAccess: true },
+        runtime: {
+          entry: 'dist/index.mjs',
+          tools: [
+            {
+              name: 'project_plan_commit',
+              description: 'Commit a project plan snapshot',
+              handler: 'projectPlanCommit',
+              inputSchema: { type: 'object', additionalProperties: true },
+              visualization: { stateKey: 'project-plan' },
+            },
+          ],
+          events: [],
+          listeners: [],
+          services: [],
+          timers: [],
+          permissions: { workspace: 'none', network: false },
+        },
+        ui: {
+          contributions: [
+            {
+              id: 'project-canvas',
+              surface: 'app.root',
+              priority: 200,
+              document: 'documents/project-canvas.html',
+            },
+          ],
+          permissions: { network: false, hostState: true, sessionAccess: true },
+        },
       }),
     );
     await writeFile(join(source, 'documents', 'project-canvas.html'), '<main>canvas</main>');
-    await writeFile(
-      join(source, 'maka.tool.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        id: 'dev.maka.project-canvas',
-        version: '1',
-        entry: 'dist/index.mjs',
-        tools: [
-          {
-            name: 'project_plan_commit',
-            description: 'Commit a project plan snapshot',
-            handler: 'projectPlanCommit',
-            inputSchema: { type: 'object', additionalProperties: true },
-            visualization: { stateKey: 'project-plan' },
-          },
-        ],
-        permissions: { workspace: 'none', network: false },
-      }),
-    );
     await writeFile(
       join(source, 'dist', 'index.mjs'),
       'export default { projectPlanCommit: (input) => input };\n',

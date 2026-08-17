@@ -19,7 +19,7 @@ const eventDefinition = z.object({
   name: eventName,
   description: z.string().max(4096).default(''),
   mode: z
-    .enum(['emit', 'parallel', 'serial', 'bail', 'transform', 'observe', 'gate'])
+    .enum(['emit', 'parallel', 'serial', 'bail', 'transform', 'observe', 'gate', 'around'])
     .default('emit'),
   payloadSchema: z.record(z.string(), z.unknown()),
   resultSchema: z.record(z.string(), z.unknown()).optional(),
@@ -218,7 +218,7 @@ export class HostEventPackageManagementTools {
     return Object.freeze({
       name: 'define_event',
       description:
-        'Validate, seal, and install an immutable ESM package that provides typed Events, isolated Listeners, cross-plugin Services, and/or durable host-owned Timers. It remains inactive until tested and managed.',
+        'Validate, seal, and install an immutable trusted ESM package that provides typed Events, in-process Listeners, cross-plugin Services, and/or durable host-owned Timers. It remains inactive until tested and managed.',
       parameters: defineInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
@@ -257,25 +257,6 @@ export class HostEventPackageManagementTools {
         try {
           await mkdir(join(draft, 'dist'), { recursive: true, mode: 0o700 });
           await writeFile(
-            join(draft, 'maka.event.json'),
-            `${JSON.stringify(
-              {
-                schemaVersion: 1,
-                id: input.id,
-                version: input.version,
-                entry: 'dist/index.mjs',
-                events: input.events,
-                listeners: input.listeners,
-                services: input.services ?? [],
-                timers: input.timers ?? [],
-                permissions: input.permissions,
-              },
-              null,
-              2,
-            )}\n`,
-            { encoding: 'utf8', mode: 0o600 },
-          );
-          await writeFile(
             join(draft, 'maka.extension.json'),
             `${JSON.stringify(
               {
@@ -286,6 +267,15 @@ export class HostEventPackageManagementTools {
                 ...(input.description !== undefined ? { description: input.description } : {}),
                 ...(input.dependencies ? { dependencies: input.dependencies } : {}),
                 ...(input.configuration ? { configuration: input.configuration } : {}),
+                runtime: {
+                  entry: 'dist/index.mjs',
+                  tools: [],
+                  events: input.events,
+                  listeners: input.listeners,
+                  services: input.services ?? [],
+                  timers: input.timers ?? [],
+                  permissions: input.permissions,
+                },
               },
               null,
               2,
@@ -313,7 +303,7 @@ export class HostEventPackageManagementTools {
     return Object.freeze({
       name: 'test_listener',
       description:
-        'Invoke one installed Event Listener once in its real OS sandbox without activating or publishing the revision.',
+        'Invoke one installed trusted Event Listener once in the Runtime Host process without activating or publishing the revision.',
       parameters: testInput,
       categoryHint: 'shell_unsafe',
       recoveryMode: 'never_auto_retry',
@@ -365,7 +355,7 @@ export class HostEventPackageManagementTools {
     return Object.freeze({
       name: 'test_service',
       description:
-        'Invoke one Service method from an installed immutable revision in its real one-shot OS sandbox without activating it.',
+        'Invoke one Service method from an installed trusted revision in the Runtime Host process without activating it.',
       parameters: serviceTestInput,
       categoryHint: 'shell_unsafe',
       recoveryMode: 'never_auto_retry',
@@ -395,7 +385,7 @@ export class HostEventPackageManagementTools {
     return Object.freeze({
       name: 'call_service',
       description:
-        'Call one active typed Extension Service method. Input and output are JSON-schema validated and execution uses a fresh OS sandbox.',
+        'Call one active typed trusted Extension Service method in the Runtime Host process. Input and output are JSON-schema validated.',
       parameters: serviceCallInput,
       categoryHint: 'shell_unsafe',
       recoveryMode: 'never_auto_retry',
@@ -518,10 +508,10 @@ function unwrap<K extends OperationKey>(
 
 function managementExecutionFacts(): NonNullable<MakaTool['executionFacts']> {
   return Object.freeze({
-    isolation: 'container',
+    isolation: 'none',
     writesAffectHost: true,
     writeBack: 'direct',
-    network: 'sandbox',
-    secrets: 'none',
+    network: 'host',
+    secrets: 'host_env',
   });
 }

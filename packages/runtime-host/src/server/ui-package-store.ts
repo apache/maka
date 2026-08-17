@@ -9,7 +9,7 @@ import {
   type ExtensionUiSurface,
 } from '@maka/runtime/extension-ui-contributions';
 
-const MANIFEST_FILE = 'maka.ui.json';
+const MANIFEST_FILE = 'maka.extension.json';
 const STORE_DIRECTORY = 'ui-packages-v1';
 const MAX_FILES = 64;
 const MAX_FILE_BYTES = EXTENSION_UI_DOCUMENT_MAX_BYTES;
@@ -213,21 +213,45 @@ export class UiPackageStore {
 }
 
 export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
-  const candidate = value as Record<string, unknown> | null;
+  const root = exactRecord(value, [
+    'schemaVersion',
+    'id',
+    'version',
+    ...(value && typeof value === 'object' && Object.hasOwn(value, 'displayName')
+      ? ['displayName']
+      : []),
+    ...(value && typeof value === 'object' && Object.hasOwn(value, 'description')
+      ? ['description']
+      : []),
+    ...(value && typeof value === 'object' && Object.hasOwn(value, 'dependencies')
+      ? ['dependencies']
+      : []),
+    ...(value && typeof value === 'object' && Object.hasOwn(value, 'configuration')
+      ? ['configuration']
+      : []),
+    ...(value && typeof value === 'object' && Object.hasOwn(value, 'runtime') ? ['runtime'] : []),
+    'ui',
+  ]);
+  const uiValue = root.ui as Record<string, unknown> | null;
+  const candidate = uiValue;
   const record = exactRecord(
-    value,
+    uiValue,
     candidate && Object.hasOwn(candidate, 'host')
-      ? ['schemaVersion', 'id', 'version', 'ui', 'host', 'permissions']
-      : ['schemaVersion', 'id', 'version', 'ui', 'permissions'],
+      ? ['contributions', 'host', 'permissions']
+      : ['contributions', 'permissions'],
   );
-  if (record.schemaVersion !== 1) throw invalidPackage('UI package schemaVersion must be 1');
-  const id = requireId(record.id);
-  const version = boundedString(record.version, 'version', 128);
-  if (!Array.isArray(record.ui) || record.ui.length === 0 || record.ui.length > 16) {
+  if (root.schemaVersion !== 1) throw invalidPackage('Extension schemaVersion must be 1');
+  const id = requireId(root.id);
+  const version = boundedString(root.version, 'version', 128);
+  if (
+    !Array.isArray(record.contributions) ||
+    record.contributions.length === 0 ||
+    record.contributions.length > 16
+  ) {
     throw invalidPackage('UI package must declare between 1 and 16 contributions');
   }
   const ids = new Set<string>();
-  const ui = record.ui.map((value, index): UiPackageManifestContribution => {
+  const ui = record.contributions.map((value, index): UiPackageManifestContribution => {
     const candidate = value as Record<string, unknown> | null;
     const item = exactRecord(value, [
       'id',

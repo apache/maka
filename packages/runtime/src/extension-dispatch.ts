@@ -6,13 +6,14 @@ export const EXTENSION_DISPATCH_MODES = [
   'transform',
   'observe',
   'gate',
+  'around',
 ] as const;
 
 export type ExtensionDispatchMode = (typeof EXTENSION_DISPATCH_MODES)[number];
 
 export interface ExtensionDispatchHandler<TIdentity> {
   readonly identity: TIdentity;
-  invoke(value: unknown): Promise<unknown>;
+  invoke(value: unknown, next?: (value?: unknown) => unknown | Promise<unknown>): Promise<unknown>;
 }
 
 export interface ExtensionDispatchSettlement<TIdentity> {
@@ -43,11 +44,13 @@ export async function dispatchExtensionHandlers<TIdentity>(input: {
   readonly payload: unknown;
   readonly handlers: readonly ExtensionDispatchHandler<TIdentity>[];
   readonly signal: AbortSignal;
+  readonly final?: (value: unknown) => unknown | Promise<unknown>;
 }): Promise<ExtensionDispatchResult<TIdentity>> {
   if (!EXTENSION_DISPATCH_MODES.includes(input.mode)) {
     throw new Error(`Unsupported Extension dispatch mode: ${String(input.mode)}`);
   }
   throwIfAborted(input.signal);
+  if (input.mode === 'around') return await dispatchAround(input);
   if (input.mode === 'parallel') return await dispatchParallel(input);
 
   const settlements: ExtensionDispatchSettlement<TIdentity>[] = [];
@@ -112,6 +115,49 @@ export async function dispatchExtensionHandlers<TIdentity>(input: {
     stopped,
     denied,
     ...(reason ? { reason } : {}),
+    settlements: Object.freeze(settlements),
+  });
+}
+
+async function dispatchAround<TIdentity>(input: {
+  readonly mode: 'around' | ExtensionDispatchMode;
+  readonly payload: unknown;
+  readonly handlers: readonly ExtensionDispatchHandler<TIdentity>[];
+  readonly signal: AbortSignal;
+  readonly final?: (value: unknown) => unknown | Promise<unknown>;
+}): Promise<ExtensionDispatchResult<TIdentity>> {
+  const settlements: ExtensionDispatchSettlement<TIdentity>[] = [];
+  let reachedFinal = false;
+  const invokeAt = async (index: number, value: unknown): Promise<unknown> => {
+    throwIfAborted(input.signal);
+    const handler = input.handlers[index];
+    if (!handler) {
+      reachedFinal = true;
+      return input.final ? await input.final(value) : value;
+    }
+    let nextCalled = false;
+    const next = async (nextValue: unknown = value): Promise<unknown> => {
+      if (nextCalled) throw new Error('Extension middleware next() may only be called once');
+      nextCalled = true;
+      return await invokeAt(index + 1, nextValue);
+    };
+    try {
+      const result = await handler.invoke(value, next);
+      settlements.push(
+        Object.freeze({ identity: handler.identity, status: 'fulfilled', value: result }),
+      );
+      return result;
+    } catch (error) {
+      settlements.push(Object.freeze({ identity: handler.identity, status: 'rejected', error }));
+      throw error;
+    }
+  };
+  const value = await invokeAt(0, input.payload);
+  return Object.freeze({
+    mode: 'around',
+    value,
+    stopped: !reachedFinal,
+    denied: false,
     settlements: Object.freeze(settlements),
   });
 }

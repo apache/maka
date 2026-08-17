@@ -9,7 +9,6 @@ import {
   type HookCommandRunner,
 } from './command-runner.js';
 import { hookMatcherMatches } from './matcher.js';
-import type { ExtensionHookEventName } from '../extension-hook-contributions.js';
 import type { ExtensionCoreEventName } from '../extension-core-events.js';
 
 const DEFAULT_CONCURRENCY = 8;
@@ -31,13 +30,6 @@ export interface PreToolUseHookDispatcher {
     abortSignal: AbortSignal,
     context: HookDispatchRuntimeContext,
   ): Promise<HookDispatchResult>;
-  /** Host-composed Extension Hook lane; absent for command-only dispatchers. */
-  runExtensionHook?(
-    event: ExtensionHookEventName,
-    payload: unknown,
-    abortSignal: AbortSignal,
-    context: ExtensionHookDispatchRuntimeContext,
-  ): Promise<ExtensionHookDispatchResult>;
   /** Typed Agent/Session seam dispatched through the unified Extension Event kernel. */
   runCoreEvent?(
     event: ExtensionCoreEventName,
@@ -45,6 +37,14 @@ export interface PreToolUseHookDispatcher {
     abortSignal: AbortSignal,
     context: ExtensionHookDispatchRuntimeContext,
   ): Promise<ExtensionCoreEventDispatchResult>;
+  /** Trusted in-process around middleware. The final continuation owns the real operation. */
+  runCoreMiddleware?(
+    event: 'maka.tools.execute' | 'maka.llm.stream',
+    payload: unknown,
+    abortSignal: AbortSignal,
+    context: ExtensionHookDispatchRuntimeContext,
+    final: (value: unknown) => unknown | Promise<unknown>,
+  ): Promise<unknown>;
 }
 
 export interface HookDispatchRuntimeContext {
@@ -58,14 +58,6 @@ export interface ExtensionHookDispatchRuntimeContext extends HookDispatchRuntime
   cwd: string;
   permissionMode: string;
   origin: 'provider' | 'code_mode';
-}
-
-export interface ExtensionHookDispatchResult {
-  readonly denied: boolean;
-  readonly reason?: string;
-  readonly payload: unknown;
-  readonly audits: readonly HookCompletedAudit[];
-  readonly auditWriteFailures: readonly string[];
 }
 
 export interface ExtensionCoreEventDispatchResult {

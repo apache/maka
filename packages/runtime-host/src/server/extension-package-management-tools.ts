@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { EXTENSION_HOOK_EVENTS, modeForEvent } from '@maka/runtime/extension-hook-contributions';
 import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { z } from 'zod';
 import type { OperationKey, OperationOutcome } from '../protocol/index.js';
@@ -102,14 +101,6 @@ const uiContribution = z
     }
   });
 
-const hookDeclaration = z.object({
-  id: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
-  event: z.enum(EXTENSION_HOOK_EVENTS),
-  handler: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
-  matcher: z.string().min(1).max(256).optional(),
-  priority: z.number().int().min(-10_000).max(10_000).default(0),
-  timeoutMs: z.number().int().min(10).max(120_000).default(3_000),
-});
 const customEventName = z
   .string()
   .regex(/^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$/u)
@@ -118,7 +109,7 @@ const eventContractDeclaration = z.object({
   name: customEventName,
   description: z.string().max(4096).default(''),
   mode: z
-    .enum(['emit', 'parallel', 'serial', 'bail', 'transform', 'observe', 'gate'])
+    .enum(['emit', 'parallel', 'serial', 'bail', 'transform', 'observe', 'gate', 'around'])
     .default('emit'),
   payloadSchema: jsonSchema,
   resultSchema: jsonSchema.optional(),
@@ -182,17 +173,35 @@ const definePackageInput = z
         required: z.array(z.string()).max(128).optional(),
       })
       .optional(),
-    tool: z
+    runtime: z
       .object({
         source: z
           .string()
           .min(1)
           .max(256 * 1024),
-        tools: z.array(toolDeclaration).min(1).max(64),
+        tools: z.array(toolDeclaration).max(64).default([]),
+        events: z.array(eventContractDeclaration).max(64).default([]),
+        listeners: z.array(eventListenerDeclaration).max(64).default([]),
+        services: z.array(serviceDeclaration).max(64).default([]),
+        timers: z.array(timerDeclaration).max(64).default([]),
         permissions: z.object({
           workspace: z.enum(['none', 'read', 'write']),
           network: z.boolean(),
         }),
+      })
+      .superRefine((input, context) => {
+        if (
+          input.tools.length === 0 &&
+          input.events.length === 0 &&
+          input.listeners.length === 0 &&
+          input.services.length === 0 &&
+          input.timers.length === 0
+        ) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'runtime requires at least one Tool, Event, Listener, Service, or Timer',
+          });
+        }
       })
       .optional(),
     ui: z
@@ -222,54 +231,12 @@ const definePackageInput = z
           .optional(),
       })
       .optional(),
-    hook: z
-      .object({
-        source: z
-          .string()
-          .min(1)
-          .max(256 * 1024),
-        hooks: z.array(hookDeclaration).min(1).max(64),
-        permissions: z.object({
-          workspace: z.enum(['none', 'read']),
-          network: z.boolean(),
-        }),
-      })
-      .optional(),
-    event: z
-      .object({
-        source: z
-          .string()
-          .min(1)
-          .max(256 * 1024),
-        events: z.array(eventContractDeclaration).max(64).default([]),
-        listeners: z.array(eventListenerDeclaration).max(64).default([]),
-        services: z.array(serviceDeclaration).max(64).default([]),
-        timers: z.array(timerDeclaration).max(64).default([]),
-        permissions: z.object({
-          workspace: z.enum(['none', 'read']),
-          network: z.boolean(),
-        }),
-      })
-      .superRefine((input, context) => {
-        if (
-          input.events.length === 0 &&
-          input.listeners.length === 0 &&
-          input.services.length === 0 &&
-          input.timers.length === 0
-        ) {
-          context.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'event requires at least one Event, Listener, Service, or Timer',
-          });
-        }
-      })
-      .optional(),
   })
   .superRefine((input, context) => {
-    if (!input.tool && !input.ui && !input.hook && !input.event) {
+    if (!input.runtime && !input.ui) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'define_package requires at least one of tool, ui, hook, or event',
+        message: 'define_package requires runtime or ui contributions',
       });
     }
   });
@@ -320,7 +287,7 @@ export class HostExtensionPackageManagementTools {
     return Object.freeze({
       name: 'inspect_package',
       description:
-        'Inspect the unified immutable Extension package catalog and contracts before defining a package. One Revision may contain Tool, UI, Hook, Event, Listener, Service, and Timer contributions together. Configuration properties with secret=true are declared in the contract but their configured values are redacted from query results.',
+        'Inspect the unified immutable Extension package catalog and contracts before defining a package. One Revision may contain Tool, UI, Event, Listener, Service, and Timer contributions together. Configuration properties with secret=true are declared in the contract but their configured values are redacted from query results.',
       parameters: z.object({}),
       categoryHint: 'read',
       recoveryMode: 'replay_safe',
@@ -339,25 +306,24 @@ export class HostExtensionPackageManagementTools {
     return Object.freeze({
       name: 'define_package',
       description:
-        'Validate, seal, and install one immutable Extension Revision containing any combination of Tool, UI, Hook, Event, Listener, typed Service, and durable host-owned Timer contributions. All contributions share the same id, version, metadata, dependencies, configuration contract, and content Revision.',
+        'Validate, seal, and install one immutable Extension Revision containing any combination of Tool, UI, Event, Listener, typed Service, and durable host-owned Timer contributions. Trusted executable contributions run in the Runtime Host process and have the same authority as local application or Bash code. All contributions share the same id, version, metadata, dependencies, configuration contract, and content Revision.',
       parameters: definePackageInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
       permissionArgs: (input: z.infer<typeof definePackageInput>) => ({
         id: input.id,
         version: input.version,
-        contributionKinds: [
-          ...(input.tool ? ['tool'] : []),
-          ...(input.ui ? ['ui'] : []),
-          ...(input.hook ? ['hook'] : []),
-          ...(input.event ? ['event'] : []),
-        ],
-        ...(input.tool
+        contributionKinds: [...(input.runtime ? ['runtime'] : []), ...(input.ui ? ['ui'] : [])],
+        ...(input.runtime
           ? {
-              toolNames: input.tool.tools.map(({ name }) => name),
-              toolSourceBytes: Buffer.byteLength(input.tool.source),
-              toolSourceSha256: digest(input.tool.source),
-              toolPermissions: input.tool.permissions,
+              toolNames: input.runtime.tools.map(({ name }) => name),
+              eventNames: input.runtime.events.map(({ name }) => name),
+              eventListeners: input.runtime.listeners.map(({ id, event }) => ({ id, event })),
+              serviceNames: input.runtime.services.map(({ name }) => name),
+              timerIds: input.runtime.timers.map(({ id }) => id),
+              runtimeSourceBytes: Buffer.byteLength(input.runtime.source),
+              runtimeSourceSha256: digest(input.runtime.source),
+              runtimePermissions: input.runtime.permissions,
             }
           : {}),
         ...(input.ui
@@ -378,53 +344,22 @@ export class HostExtensionPackageManagementTools {
                 : {}),
             }
           : {}),
-        ...(input.hook
-          ? {
-              hooks: input.hook.hooks.map(({ id, event }) => ({ id, event })),
-              hookSourceBytes: Buffer.byteLength(input.hook.source),
-              hookSourceSha256: digest(input.hook.source),
-              hookPermissions: input.hook.permissions,
-            }
-          : {}),
-        ...(input.event
-          ? {
-              eventNames: input.event.events.map(({ name }) => name),
-              eventListeners: input.event.listeners.map(({ id, event }) => ({ id, event })),
-              serviceNames: input.event.services.map(({ name }) => name),
-              timerIds: input.event.timers.map(({ id }) => id),
-              eventSourceBytes: Buffer.byteLength(input.event.source),
-              eventSourceSha256: digest(input.event.source),
-              eventPermissions: input.event.permissions,
-            }
-          : {}),
         configurationKeys: Object.keys(input.configuration?.properties ?? {}),
         secretConfigurationKeys: Object.entries(input.configuration?.properties ?? {})
           .filter(([, property]) => property.secret === true)
           .map(([key]) => key),
         historyProjectionNotice:
-          'Full Tool and Hook source plus UI documents and Host source were accepted and intentionally redacted from model history.',
+          'Full trusted Extension source plus UI documents were accepted and intentionally redacted from model history.',
       }),
       impl: async (input: z.infer<typeof definePackageInput>) => {
-        if (input.tool) assertSupportedSource(input.tool.source, 'Tool');
-        if (input.hook) assertSupportedSource(input.hook.source, 'Hook');
-        if (input.event) assertSupportedSource(input.event.source, 'Event');
+        if (input.runtime) assertSupportedSource(input.runtime.source, 'Runtime');
         if (input.ui?.host) assertSupportedSource(input.ui.host.source, 'UI Host');
         const draft = join(this.#draftRoot, randomUUID());
         try {
           await mkdir(draft, { recursive: true, mode: 0o700 });
-          await writeJson(draft, 'maka.extension.json', {
-            schemaVersion: 1,
-            id: input.id,
-            version: input.version,
-            ...(input.displayName ? { displayName: input.displayName } : {}),
-            ...(input.description !== undefined ? { description: input.description } : {}),
-            ...(input.dependencies ? { dependencies: input.dependencies } : {}),
-            ...(input.configuration ? { configuration: input.configuration } : {}),
-          });
-          if (input.tool) await this.#writeTool(draft, input);
+          if (input.runtime) await this.#writeRuntime(draft, input);
           if (input.ui) await this.#writeUi(draft, input);
-          if (input.hook) await this.#writeHook(draft, input);
-          if (input.event) await this.#writeEvent(draft, input);
+          await this.#writeManifest(draft, input);
           return unwrap(
             await this.controller.handlers['extension.package.install'](
               { sourcePath: draft },
@@ -442,7 +377,7 @@ export class HostExtensionPackageManagementTools {
     return Object.freeze({
       name: 'manage_package',
       description:
-        'Activate, update, stop, or delete one unified Extension package. Tool and Hook contributions bind once to the current Session; UI contributions bind once to the Desktop UI scope. Multi-scope activation and update roll back to the prior bindings if either scope fails, so a combined package never remains half-switched.',
+        'Activate, update, stop, or delete one trusted Extension package. Tool, Event, Listener, Service, and Timer contributions bind once to the current Session; UI contributions bind once to the Desktop UI scope. Activation executes package code in the Runtime Host process with application-level authority. Multi-scope activation and update roll back to the prior bindings if either scope fails, so a combined package never remains half-switched.',
       parameters: managePackageInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
@@ -477,7 +412,6 @@ export class HostExtensionPackageManagementTools {
             ...slots.session,
             needed:
               candidate.toolNames.length > 0 ||
-              candidate.hookContributionIds.length > 0 ||
               candidate.eventContributionIds.length > 0 ||
               (candidate.serviceContributionIds?.length ?? 0) > 0 ||
               (candidate.timerContributionIds?.length ?? 0) > 0,
@@ -611,18 +545,10 @@ export class HostExtensionPackageManagementTools {
     }
   }
 
-  async #writeTool(draft: string, input: z.infer<typeof definePackageInput>): Promise<void> {
-    const tool = input.tool!;
+  async #writeRuntime(draft: string, input: z.infer<typeof definePackageInput>): Promise<void> {
+    const runtime = input.runtime!;
     await mkdir(join(draft, 'dist'), { recursive: true, mode: 0o700 });
-    await writeJson(draft, 'maka.tool.json', {
-      schemaVersion: 1,
-      id: input.id,
-      version: input.version,
-      entry: 'dist/tool.mjs',
-      tools: tool.tools,
-      permissions: tool.permissions,
-    });
-    await writeFile(join(draft, 'dist', 'tool.mjs'), tool.source, {
+    await writeFile(join(draft, 'dist', 'runtime.mjs'), runtime.source, {
       encoding: 'utf8',
       mode: 0o600,
     });
@@ -632,21 +558,6 @@ export class HostExtensionPackageManagementTools {
     const ui = input.ui!;
     await mkdir(join(draft, 'documents'), { recursive: true, mode: 0o700 });
     if (ui.host) await mkdir(join(draft, 'host'), { mode: 0o700 });
-    await writeJson(draft, 'maka.ui.json', {
-      schemaVersion: 1,
-      id: input.id,
-      version: input.version,
-      ui: ui.contributions.map((item, index) => ({
-        id: item.id,
-        surface: item.surface,
-        ...(item.slot ? { slot: item.slot } : {}),
-        ...(item.slots ? { slots: item.slots } : {}),
-        priority: item.priority,
-        document: `documents/${index + 1}.html`,
-      })),
-      ...(ui.host ? { host: { entry: 'host/service.mjs', methods: ui.host.methods } } : {}),
-      permissions: ui.permissions,
-    });
     await Promise.all(
       ui.contributions.map((item, index) =>
         writeFile(join(draft, 'documents', `${index + 1}.html`), item.document, {
@@ -663,40 +574,46 @@ export class HostExtensionPackageManagementTools {
     }
   }
 
-  async #writeHook(draft: string, input: z.infer<typeof definePackageInput>): Promise<void> {
-    const hook = input.hook!;
-    await mkdir(join(draft, 'dist'), { recursive: true, mode: 0o700 });
-    await writeJson(draft, 'maka.hook.json', {
+  async #writeManifest(draft: string, input: z.infer<typeof definePackageInput>): Promise<void> {
+    await writeJson(draft, 'maka.extension.json', {
       schemaVersion: 1,
       id: input.id,
       version: input.version,
-      entry: 'dist/hook.mjs',
-      hooks: hook.hooks.map((item) => ({ ...item, mode: modeForEvent(item.event) })),
-      permissions: hook.permissions,
-    });
-    await writeFile(join(draft, 'dist', 'hook.mjs'), hook.source, {
-      encoding: 'utf8',
-      mode: 0o600,
-    });
-  }
-
-  async #writeEvent(draft: string, input: z.infer<typeof definePackageInput>): Promise<void> {
-    const event = input.event!;
-    await mkdir(join(draft, 'dist'), { recursive: true, mode: 0o700 });
-    await writeJson(draft, 'maka.event.json', {
-      schemaVersion: 1,
-      id: input.id,
-      version: input.version,
-      entry: 'dist/event.mjs',
-      events: event.events,
-      listeners: event.listeners,
-      services: event.services,
-      timers: event.timers,
-      permissions: event.permissions,
-    });
-    await writeFile(join(draft, 'dist', 'event.mjs'), event.source, {
-      encoding: 'utf8',
-      mode: 0o600,
+      ...(input.displayName ? { displayName: input.displayName } : {}),
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      ...(input.dependencies ? { dependencies: input.dependencies } : {}),
+      ...(input.configuration ? { configuration: input.configuration } : {}),
+      ...(input.runtime
+        ? {
+            runtime: {
+              entry: 'dist/runtime.mjs',
+              tools: input.runtime.tools,
+              events: input.runtime.events,
+              listeners: input.runtime.listeners,
+              services: input.runtime.services,
+              timers: input.runtime.timers,
+              permissions: input.runtime.permissions,
+            },
+          }
+        : {}),
+      ...(input.ui
+        ? {
+            ui: {
+              contributions: input.ui.contributions.map((item, index) => ({
+                id: item.id,
+                surface: item.surface,
+                ...(item.slot ? { slot: item.slot } : {}),
+                ...(item.slots ? { slots: item.slots } : {}),
+                priority: item.priority,
+                document: `documents/${index + 1}.html`,
+              })),
+              ...(input.ui.host
+                ? { host: { entry: 'host/service.mjs', methods: input.ui.host.methods } }
+                : {}),
+              permissions: input.ui.permissions,
+            },
+          }
+        : {}),
     });
   }
 }

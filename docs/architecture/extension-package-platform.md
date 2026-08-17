@@ -1,77 +1,86 @@
-# Unified Extension Package Platform
+# Trusted In-Process Extension Platform
 
-Maka Extensions have one product identity and one immutable content Revision.
-Tool, UI, Hook, Event, Listener, Service, and Timer are typed Contributions of that Revision, not separate plugin
-products. `maka.extension.json` is the shared product contract; the existing
-`maka.tool.json`, `maka.ui.json`, `maka.hook.json`, and `maka.event.json` remain the typed execution
-manifests.
+Maka has one Extension product, one immutable content Revision, one lifecycle,
+and one package manifest: `maka.extension.json`. A Revision may contribute
+Tools, UI, Events, Listeners, Services, and durable Host-owned Timers. The old
+per-contribution manifests and remote Worker protocol do not exist.
 
-## Unified contract
+## Trust model
 
-`maka.extension.json` declares:
+Enabling executable Extension code is equivalent to running a local
+application or Bash command. It may read credentials, access files and the
+network, modify Maka behavior, block the event loop, or terminate the Runtime
+Host. Manifest permissions, schema validation, and the read-only context API
+are approval, audit, and accidental-misuse guardrails; they are not a security
+boundary against malicious code.
 
-- canonical `id`, semantic `version`, display name, and description;
-- required package dependencies with exact, `^`, `~`, `*`, or `latest` ranges;
-- a bounded, flat configuration Schema with defaults, required keys, enums,
-  and secret markers.
+Installation only validates, seals, and stores bytes. Desktop import shows the
+trust warning before install and enable. Activation imports the ESM entry in the
+Runtime Host process. One activation owns one module instance, and its Tool,
+Listener, Service, and Timer handlers share live module state.
 
-`extension.contract.query` joins this metadata with every typed manifest and
-returns one typed Contribution Catalog. Agent `inspect_package`,
-`inspect_tools`, `inspect_ui`, and `inspect_hooks` expose the same Catalog, so
-authoring starts from one source of truth instead of domain-specific guesses.
+## Manifest
 
-`define_package` is the unified Agent authoring transaction. One call writes the
-shared metadata plus any combination of Tool, UI, Hook, Event, Service, and Timer manifests, seals the
-complete directory once, and installs every Contribution under the same content
-Revision. Source and UI documents are replaced by byte counts and SHA-256
-digests in model history. `manage_package` binds executable Contributions to
-the current Session and UI Contributions to `desktop-ui`; a partial multi-scope
-activation or update rolls back to the prior Bindings.
+`maka.extension.json` contains product metadata plus optional `runtime` and
+`ui` sections:
 
-## Profile installation and dependencies
+```json
+{
+  "schemaVersion": 1,
+  "id": "dev.example.notes",
+  "version": "1.0.0",
+  "dependencies": [],
+  "configuration": { "properties": {}, "required": [] },
+  "runtime": {
+    "entry": "dist/runtime.mjs",
+    "tools": [],
+    "events": [],
+    "listeners": [],
+    "services": [],
+    "timers": [],
+    "permissions": { "workspace": "write", "network": true }
+  },
+  "ui": {
+    "contributions": [],
+    "permissions": {
+      "network": false,
+      "hostState": false,
+      "sessionAccess": false
+    }
+  }
+}
+```
 
-`extension.package.install` accepts either a safe local directory or a
-`.maka-extension` Bundle. Package bytes are copied into root-private,
-content-addressed storage. Installation never activates code.
+The Runtime entry exports one default handler object. It is loaded once per
+activation. Objects are passed directly: functions, `AbortSignal`, async
+iterables, and streams no longer cross a JSON or RPC boundary.
 
-Enabling a Revision resolves its declared dependency versions from installed
-contracts, creates deterministic dependency Bindings in the same scope, and
-converges dependencies before the requester. Cycles, missing versions, invalid
-configuration, and conflicting scope ownership fail closed. A dependency in use
-cannot be disabled or removed; deterministic dependency Bindings are reclaimed
-after their final enabled requester is disabled or removed. Tool Contributions
-installed from the Desktop are bound to the persistent `profile` scope and are
-composed into every Session Tool snapshot. UI Contributions are independently
-bound to `desktop-ui`; a combined package therefore retains typed scope and
-permission separation while sharing one Revision.
+## Composition
 
-Service calls use the same dependency graph: a sandbox may call its own Service or a provider declared in `maka.extension.json`. Timer schedules are Host-owned and persistent; plugin code is cold-started per fire, so restart recovery does not require a resident Fiber.
+The dispatch kernel supports `emit`, `parallel`, `serial`, `bail`, `transform`,
+`observe`, `gate`, and `around`. Around listeners receive `(value, context,
+next)`, may wrap downstream execution before and after, transform its value, or
+short-circuit it. `next()` is single-use.
 
-Profile entries participate in the exact Run Composition digest. Restart
-recovery restores desired/last-good Bindings, dependency Bindings, and
-configuration before new Tool resolution.
+`maka.tools.execute` wraps the real Tool implementation. `maka.llm.stream`
+wraps the live model stream, so a listener can transform streaming events with
+native async-iterable backpressure and cancellation. Other Agent, Session, and
+Subagent seams use the same Event registry. There is no second Extension Hook
+registry; external command `PreToolUse` hooks remain a separate user/project
+automation adapter.
 
-## Configuration
+## Lifecycle and persistence
 
-Configuration is stored per Binding, allowing the same package to have
-different settings in different scopes. Mutation is Schema-validated and
-persisted before the Binding is restarted. Tool workers receive the complete
-configuration inside their isolated invocation context. UI frames receive only
-non-secret keys through `window.makaUI.getConfig()`; secret values never cross
-into the Renderer. Unified Agent-authored packages declare secrets with
-`secret: true`; secret properties cannot carry manifest defaults, so a secret
-never enters an immutable Bundle or model-visible contract as a value.
+Revisions remain content-addressed and immutable. Bindings retain activation,
+update, last-good rollback, dependency ordering, recovery, and per-scope
+configuration. Runtime contributions bind to the Session/Profile scope; UI
+contributions bind to `desktop-ui`. A combined transition rolls back if either
+scope fails.
 
-## Distribution and management
+Timer schedules remain Host-owned and durable. Timer handlers run through the
+same live activation as every other Runtime contribution. Stop/update removes
+the registry generation; Turns that already captured a snapshot retain their
+generation lease until they finish.
 
-`extension.package.export` emits a deterministic `.maka-extension` Bundle. It
-contains bounded, path-safe files, per-file SHA-256 values, and a whole-package
-digest. Import rejects traversal, symlinks, corruption, duplicate paths, and
-oversized payloads before either typed Store installs the Revision. Export is
-exclusive and never overwrites an existing target.
-
-The Desktop Extensions page lists Tool, UI, Hook, Event, Listener, Service, and Timer Contributions together and
-supports directory/Bundle installation, Profile/Desktop activation, unified
-enable/disable, per-scope Schema-backed JSON configuration, export, and removal. Agent
-dynamic definitions write the same unified manifest and enter the same Store,
-Catalog, lifecycle, dependency, configuration, and distribution paths.
+This design deliberately provides no crash containment or hard timeout for
+trusted Extension code. Cancellation is cooperative through `AbortSignal`.

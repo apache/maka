@@ -250,24 +250,22 @@ async function writeToolPackage(
       id: input.id,
       version: input.version,
       ...input.metadata,
-    }),
-  );
-  await writeFile(
-    join(root, 'maka.tool.json'),
-    JSON.stringify({
-      schemaVersion: 1,
-      id: input.id,
-      version: input.version,
-      entry: 'dist/index.mjs',
-      tools: [
-        {
-          name: input.toolName,
-          description: input.toolName,
-          handler: input.handler,
-          inputSchema: { type: 'object', additionalProperties: false },
-        },
-      ],
-      permissions: { workspace: 'none', network: false },
+      runtime: {
+        entry: 'dist/index.mjs',
+        tools: [
+          {
+            name: input.toolName,
+            description: input.toolName,
+            handler: input.handler,
+            inputSchema: { type: 'object', additionalProperties: false },
+          },
+        ],
+        events: [],
+        listeners: [],
+        services: [],
+        timers: [],
+        permissions: { workspace: 'none', network: false },
+      },
     }),
   );
   await writeFile(join(root, 'dist', 'index.mjs'), input.source);
@@ -301,26 +299,21 @@ test('combined package installation rolls back a newly installed Tool when UI pe
       toolName: 'combined_ping',
       handler: 'ping',
       source: 'export default { ping: () => ({ pong: true }) };\n',
-      metadata: {},
+      metadata: {
+        ui: {
+          contributions: [
+            {
+              id: 'combined-root',
+              surface: 'app.root',
+              priority: 0,
+              document: 'documents/root.html',
+            },
+          ],
+          permissions: { network: false },
+        },
+      },
     });
     await mkdir(join(source, 'documents'), { recursive: true });
-    await writeFile(
-      join(source, 'maka.ui.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        id: 'dev.maka.platform.combined',
-        version: '1.0.0',
-        ui: [
-          {
-            id: 'combined-root',
-            surface: 'app.root',
-            priority: 0,
-            document: 'documents/root.html',
-          },
-        ],
-        permissions: { network: false },
-      }),
-    );
     await writeFile(
       join(source, 'documents', 'root.html'),
       '<!doctype html><title>Combined</title>',

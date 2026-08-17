@@ -35,6 +35,8 @@ export interface ExtensionPackageManifest {
   readonly description: string;
   readonly dependencies: readonly ExtensionPackageDependency[];
   readonly configuration: ExtensionConfigurationSchema;
+  readonly runtime?: unknown;
+  readonly ui?: unknown;
 }
 
 export class ExtensionPackageManifestError extends Error {
@@ -70,7 +72,7 @@ export function decodeExtensionPackageManifest(value: unknown): ExtensionPackage
   exactOptional(
     source,
     ['schemaVersion', 'id', 'version'],
-    ['displayName', 'description', 'dependencies', 'configuration'],
+    ['displayName', 'description', 'dependencies', 'configuration', 'runtime', 'ui'],
   );
   if (source.schemaVersion !== 1) throw invalid('Extension manifest schemaVersion must be 1');
   const id = extensionId(source.id);
@@ -89,6 +91,8 @@ export function decodeExtensionPackageManifest(value: unknown): ExtensionPackage
     description,
     dependencies,
     configuration,
+    ...(source.runtime === undefined ? {} : { runtime: source.runtime }),
+    ...(source.ui === undefined ? {} : { ui: source.ui }),
   });
 }
 

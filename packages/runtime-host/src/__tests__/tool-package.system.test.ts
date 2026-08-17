@@ -13,7 +13,7 @@ import {
 import { HostExtensionRuntime } from '../server/extension-runtime.js';
 import { HostExtensionStateStore } from '../server/extension-state-store.js';
 import { ToolPackageStore } from '../server/tool-package-store.js';
-import { ToolPackageActivation } from '../server/tool-package-worker.js';
+import { InProcessPackageActivation } from '../server/in-process-package-runtime.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 
 const connection: ConnectionContext = {
@@ -24,7 +24,7 @@ const connection: ConnectionContext = {
   acquireResidency: () => ({ release: () => undefined }),
 };
 
-test('real Tool package installs, runs in a sandboxed process, updates, drains, and uninstalls', {
+test('real Tool package installs, runs in process, updates, drains, and uninstalls', {
   timeout: 60_000,
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-tool-package-'));
@@ -170,28 +170,40 @@ test('Tool package install rejects traversal, unknown fields, and missing entrie
   try {
     await mkdir(source, { recursive: true });
     await writeFile(
-      join(source, 'maka.tool.json'),
+      join(source, 'maka.extension.json'),
       JSON.stringify({
         schemaVersion: 1,
         id: 'invalid',
         version: '1.0.0',
-        entry: '../escape.mjs',
-        tools: [toolManifest()],
-        permissions: { workspace: 'none', network: false },
+        runtime: {
+          entry: '../escape.mjs',
+          tools: [toolManifest()],
+          events: [],
+          listeners: [],
+          services: [],
+          timers: [],
+          permissions: { workspace: 'none', network: false },
+        },
       }),
     );
     await assert.rejects(store.install(source), /entry is invalid/u);
 
     await writeFile(
-      join(source, 'maka.tool.json'),
+      join(source, 'maka.extension.json'),
       JSON.stringify({
         schemaVersion: 1,
         id: 'invalid',
         version: '1.0.0',
-        entry: 'dist/missing.mjs',
-        tools: [toolManifest()],
-        permissions: { workspace: 'none', network: false },
-        unexpected: true,
+        runtime: {
+          entry: 'dist/missing.mjs',
+          tools: [toolManifest()],
+          events: [],
+          listeners: [],
+          services: [],
+          timers: [],
+          permissions: { workspace: 'none', network: false },
+          unexpected: true,
+        },
       }),
     );
     await assert.rejects(store.install(source), /unknown fields/u);
@@ -216,16 +228,16 @@ test('Tool package Store detects post-install content corruption', async () => {
   }
 });
 
-test('Tool worker contains crashes, honors abort, and enforces denied network', {
+test('trusted Tool activation shares in-process state, host network, and cancellation', {
   timeout: 30_000,
 }, async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-tool-worker-faults-'));
+  const root = await mkdtemp(join(tmpdir(), 'maka-tool-in-process-'));
   const source = join(root, 'source');
   const store = new ToolPackageStore(join(root, 'control'));
   let networkRequests = 0;
   const server = createServer((_request, response) => {
     networkRequests += 1;
-    response.end('unexpected');
+    response.end('trusted-host-network');
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -237,34 +249,35 @@ test('Tool worker contains crashes, honors abort, and enforces denied network', 
   const address = server.address();
   assert.ok(address && typeof address === 'object');
   try {
-    await createFaultPackage(source, `http://127.0.0.1:${address.port}/denied`);
-    const activation = new ToolPackageActivation(await store.install(source));
+    process.env.MAKA_TEST_PLUGIN_SECRET = 'visible-to-trusted-plugin';
+    await createTrustedPackage(source, `http://127.0.0.1:${address.port}/allowed`);
+    const installed = await store.install(source);
+    const activation = new InProcessPackageActivation(installed);
     try {
-      await activation.healthCheck();
+      await activation.healthCheck(installed.manifest.tools.map(({ handler }) => handler));
       const tools = new Map(activation.tools().map((tool) => [tool.name, tool]));
       const context = invocationContext(root);
 
-      await assert.rejects(
-        async () => await tools.get('Crash')?.impl({}, context),
-        /without a result/u,
-      );
-      assert.deepEqual(await tools.get('Echo')?.impl({ value: 'alive' }, context), {
-        value: 'alive',
+      assert.deepEqual(await tools.get('Identity')?.impl({}, context), {
+        pid: process.pid,
+        secret: 'visible-to-trusted-plugin',
       });
-      await assert.rejects(
-        async () => await tools.get('Network')?.impl({}, context),
-        /fetch|network|operation not permitted|failed/u,
-      );
-      assert.equal(networkRequests, 0);
+      assert.deepEqual(await tools.get('Counter')?.impl({}, context), { value: 1 });
+      assert.deepEqual(await tools.get('Counter')?.impl({}, context), { value: 2 });
+      assert.deepEqual(await tools.get('Network')?.impl({}, context), {
+        body: 'trusted-host-network',
+      });
+      assert.equal(networkRequests, 1);
 
       const abort = new AbortController();
       const hanging = tools.get('Hang')?.impl({}, { ...context, abortSignal: abort.signal });
       setTimeout(() => abort.abort(new Error('test abort')), 50).unref();
-      await assert.rejects(async () => await hanging, /aborted/u);
+      await assert.rejects(async () => await hanging, /test abort|aborted/u);
     } finally {
       await activation.dispose();
     }
   } finally {
+    delete process.env.MAKA_TEST_PLUGIN_SECRET;
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );
@@ -276,15 +289,21 @@ async function createPackage(root: string, label: string, temperature: number): 
   const source = join(root, `source-${label}`);
   await mkdir(join(source, 'dist'), { recursive: true });
   await writeFile(
-    join(source, 'maka.tool.json'),
+    join(source, 'maka.extension.json'),
     `${JSON.stringify(
       {
         schemaVersion: 1,
         id: 'weather',
         version: `1.0.${temperature}`,
-        entry: 'dist/index.mjs',
-        tools: [toolManifest()],
-        permissions: { workspace: 'write', network: false },
+        runtime: {
+          entry: 'dist/index.mjs',
+          tools: [toolManifest()],
+          events: [],
+          listeners: [],
+          services: [],
+          timers: [],
+          permissions: { workspace: 'write', network: false },
+        },
       },
       null,
       2,
@@ -327,7 +346,7 @@ function toolManifest(): Record<string, unknown> {
   };
 }
 
-async function createFaultPackage(source: string, deniedUrl: string): Promise<void> {
+async function createTrustedPackage(source: string, allowedUrl: string): Promise<void> {
   await mkdir(join(source, 'dist'), { recursive: true });
   const declaration = (name: string): Record<string, unknown> => ({
     name,
@@ -338,22 +357,29 @@ async function createFaultPackage(source: string, deniedUrl: string): Promise<vo
     recoveryMode: 'never_auto_retry',
   });
   await writeFile(
-    join(source, 'maka.tool.json'),
+    join(source, 'maka.extension.json'),
     JSON.stringify({
       schemaVersion: 1,
-      id: 'faults',
+      id: 'trusted-runtime',
       version: '1.0.0',
-      entry: 'dist/index.mjs',
-      tools: ['Crash', 'Echo', 'Network', 'Hang'].map(declaration),
-      permissions: { workspace: 'none', network: false },
+      runtime: {
+        entry: 'dist/index.mjs',
+        tools: ['Identity', 'Counter', 'Network', 'Hang'].map(declaration),
+        events: [],
+        listeners: [],
+        services: [],
+        timers: [],
+        permissions: { workspace: 'none', network: true },
+      },
     }),
   );
   await writeFile(
     join(source, 'dist', 'index.mjs'),
-    `export default {
-  Crash: () => process.exit(23),
-  Echo: ({ value }) => ({ value }),
-  Network: async () => ({ body: await (await fetch(${JSON.stringify(deniedUrl)})).text() }),
+    `let calls = 0;
+export default {
+  Identity: () => ({ pid: process.pid, secret: process.env.MAKA_TEST_PLUGIN_SECRET }),
+  Counter: () => ({ value: ++calls }),
+  Network: async () => ({ body: await (await fetch(${JSON.stringify(allowedUrl)})).text() }),
   Hang: async (_args, context) => await new Promise((_resolve, reject) => context.abortSignal.addEventListener('abort', () => reject(context.abortSignal.reason), { once: true })),
 };
 `,

@@ -34,13 +34,12 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
     const confirmation = input.automatedImportSourcePath
       ? { response: 0 }
       : await input.mainWindowController.showMessageBox({
-          type: 'question',
+          type: 'warning',
           title: `Import ${manifest.id}`,
           message: `Install Extension “${manifest.id}” ${manifest.version}?`,
           detail: [
             `${manifest.uiCount} UI contribution${manifest.uiCount === 1 ? '' : 's'}`,
             `${manifest.toolCount} Tool contribution${manifest.toolCount === 1 ? '' : 's'}`,
-            `${manifest.hookCount} Hook contribution${manifest.hookCount === 1 ? '' : 's'}`,
             `${manifest.eventCount} Event/Listener contribution${manifest.eventCount === 1 ? '' : 's'}`,
             `${manifest.serviceCount} Service contribution${manifest.serviceCount === 1 ? '' : 's'}`,
             `${manifest.timerCount} Timer contribution${manifest.timerCount === 1 ? '' : 's'}`,
@@ -49,6 +48,8 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
             `Host methods: ${manifest.hostMethods.length === 0 ? 'none' : manifest.hostMethods.join(', ')}`,
             `Network: ${manifest.permissions.network ? 'allowed' : 'blocked'}`,
             `Workspace: ${manifest.permissions.workspace}`,
+            '',
+            'Trusted code warning: enabling this Extension executes its code inside the Runtime Host process. It has the same authority as a local application or Bash command and may read credentials, access files and the network, change MAKA behavior, block, or terminate the Runtime. Manifest permissions are approval and audit metadata, not a security boundary against malicious code.',
           ].join('\n'),
           buttons: ['Install and enable', 'Cancel'],
           defaultId: 0,
@@ -59,7 +60,7 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
     const catalog = await input.client.request('extension.catalog.query', {});
     for (const scopeId of new Set([
       ...(installed.uiContributionIds.length > 0 ? [DESKTOP_UI_SCOPE] : []),
-      ...(installed.toolNames.length > 0 || installed.hookContributionIds.length > 0 || installed.eventContributionIds.length > 0 || (installed.serviceContributionIds?.length ?? 0) > 0 || (installed.timerContributionIds?.length ?? 0) > 0
+      ...(installed.toolNames.length > 0 || installed.eventContributionIds.length > 0 || (installed.serviceContributionIds?.length ?? 0) > 0 || (installed.timerContributionIds?.length ?? 0) > 0
         ? [PROFILE_EXTENSION_SCOPE]
         : []),
     ])) {
@@ -144,14 +145,12 @@ async function listUiExtensions(client: DesktopRuntimeHostClient) {
         contributionIds: [
           ...revision.toolNames,
           ...revision.uiContributionIds,
-          ...revision.hookContributionIds,
           ...revision.eventContributionIds,
           ...(revision.serviceContributionIds ?? []),
           ...(revision.timerContributionIds ?? []),
         ],
         toolNames: revision.toolNames,
         uiContributionIds: revision.uiContributionIds,
-        hookContributionIds: revision.hookContributionIds,
         eventContributionIds: revision.eventContributionIds,
         serviceContributionIds: revision.serviceContributionIds ?? [],
         timerContributionIds: revision.timerContributionIds ?? [],
@@ -166,51 +165,10 @@ async function listUiExtensions(client: DesktopRuntimeHostClient) {
     });
 }
 
-async function previewPackage(sourcePath: string): Promise<{ id: string; version: string; uiCount: number; toolCount: number; hookCount: number; eventCount: number; serviceCount: number; timerCount: number; hostMethods: string[]; permissions: { network: boolean; hostState: boolean; sessionAccess: boolean; workspace: string } }> {
+async function previewPackage(sourcePath: string): Promise<{ id: string; version: string; uiCount: number; toolCount: number; eventCount: number; serviceCount: number; timerCount: number; hostMethods: string[]; permissions: { network: boolean; hostState: boolean; sessionAccess: boolean; workspace: string } }> {
   if (!(await stat(sourcePath)).isDirectory()) return previewBundle(sourcePath);
-  let uiValue: Record<string, unknown> = {};
-  let toolValue: Record<string, unknown> = {};
-  let hookValue: Record<string, unknown> = {};
-  let eventValue: Record<string, unknown> = {};
-  try { uiValue = JSON.parse(await readFile(join(sourcePath, 'maka.ui.json'), 'utf8')) as Record<string, unknown>; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  try { toolValue = JSON.parse(await readFile(join(sourcePath, 'maka.tool.json'), 'utf8')) as Record<string, unknown>; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  try { hookValue = JSON.parse(await readFile(join(sourcePath, 'maka.hook.json'), 'utf8')) as Record<string, unknown>; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  try { eventValue = JSON.parse(await readFile(join(sourcePath, 'maka.event.json'), 'utf8')) as Record<string, unknown>; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  const value = Object.keys(uiValue).length ? uiValue : Object.keys(toolValue).length ? toolValue : Object.keys(hookValue).length ? hookValue : eventValue;
-  if (typeof value.id !== 'string' || typeof value.version !== 'string') throw new Error('Extension manifest is invalid');
-  const ui = Array.isArray(uiValue.ui) ? uiValue.ui : [];
-  const tools = Array.isArray(toolValue.tools) ? toolValue.tools : [];
-  const hooks = Array.isArray(hookValue.hooks) ? hookValue.hooks : [];
-  const eventDefinitions = Array.isArray(eventValue.events) ? eventValue.events : [];
-  const listeners = Array.isArray(eventValue.listeners) ? eventValue.listeners : [];
-  const services = Array.isArray(eventValue.services) ? eventValue.services : [];
-  const timers = Array.isArray(eventValue.timers) ? eventValue.timers : [];
-  if (ui.length === 0 && tools.length === 0 && hooks.length === 0 && eventDefinitions.length === 0 && listeners.length === 0 && services.length === 0 && timers.length === 0) throw new Error('Extension package has no contributions');
-  const permissions = uiValue.permissions as Record<string, unknown> | undefined;
-  const toolPermissions = toolValue.permissions as Record<string, unknown> | undefined;
-  const hookPermissions = hookValue.permissions as Record<string, unknown> | undefined;
-  const eventPermissions = eventValue.permissions as Record<string, unknown> | undefined;
-  const host = uiValue.host as Record<string, unknown> | undefined;
-  const methods = Array.isArray(host?.methods) ? host.methods : [];
-  const hostMethods = methods.map((item) => (item as Record<string, unknown>)?.name);
-  if (hostMethods.some((name) => typeof name !== 'string')) throw new Error('UI Extension Host methods are invalid');
-  return {
-    id: value.id,
-    version: value.version,
-    uiCount: ui.length,
-    toolCount: tools.length,
-    hookCount: hooks.length,
-    eventCount: eventDefinitions.length + listeners.length,
-    serviceCount: services.length,
-    timerCount: timers.length,
-    hostMethods: hostMethods as string[],
-    permissions: {
-      network: permissions?.network === true || toolPermissions?.network === true || hookPermissions?.network === true || eventPermissions?.network === true,
-      hostState: permissions?.hostState === true,
-      sessionAccess: permissions?.sessionAccess === true,
-      workspace: typeof toolPermissions?.workspace === 'string' ? toolPermissions.workspace : typeof hookPermissions?.workspace === 'string' ? hookPermissions.workspace : typeof eventPermissions?.workspace === 'string' ? eventPermissions.workspace : 'none',
-    },
-  };
+  const encoded = await readFile(join(sourcePath, 'maka.extension.json'), 'utf8');
+  return previewManifest(JSON.parse(encoded) as Record<string, unknown>);
 }
 
 async function previewBundle(sourcePath: string): ReturnType<typeof previewPackage> {
@@ -218,44 +176,47 @@ async function previewBundle(sourcePath: string): ReturnType<typeof previewPacka
   if (encoded.byteLength > 32 * 1024 * 1024) throw new Error('Extension Bundle is too large');
   const bundle = JSON.parse(encoded.toString('utf8')) as { files?: unknown };
   if (!Array.isArray(bundle.files)) throw new Error('Extension Bundle is invalid');
-  const files = new Map<string, string>();
+  let manifest: string | undefined;
   for (const value of bundle.files) {
     const file = value as { path?: unknown; content?: unknown };
     if (typeof file.path !== 'string' || typeof file.content !== 'string') {
       throw new Error('Extension Bundle file is invalid');
     }
-    if (file.path === 'maka.ui.json' || file.path === 'maka.tool.json' || file.path === 'maka.hook.json' || file.path === 'maka.event.json') {
-      files.set(file.path, Buffer.from(file.content, 'base64').toString('utf8'));
+    if (file.path === 'maka.extension.json') {
+      manifest = Buffer.from(file.content, 'base64').toString('utf8');
     }
   }
-  const uiValue = files.has('maka.ui.json')
-    ? (JSON.parse(files.get('maka.ui.json')!) as Record<string, unknown>)
-    : {};
-  const toolValue = files.has('maka.tool.json')
-    ? (JSON.parse(files.get('maka.tool.json')!) as Record<string, unknown>)
-    : {};
-  const hookValue = files.has('maka.hook.json')
-    ? (JSON.parse(files.get('maka.hook.json')!) as Record<string, unknown>)
-    : {};
-  const eventValue = files.has('maka.event.json')
-    ? (JSON.parse(files.get('maka.event.json')!) as Record<string, unknown>)
-    : {};
-  const value = Object.keys(uiValue).length ? uiValue : Object.keys(toolValue).length ? toolValue : Object.keys(hookValue).length ? hookValue : eventValue;
-  if (typeof value.id !== 'string' || typeof value.version !== 'string') {
+  if (!manifest) {
     throw new Error(`Extension Bundle is missing manifests: ${basename(sourcePath)}`);
   }
-  const ui = Array.isArray(uiValue.ui) ? uiValue.ui : [];
-  const tools = Array.isArray(toolValue.tools) ? toolValue.tools : [];
-  const hooks = Array.isArray(hookValue.hooks) ? hookValue.hooks : [];
-  const eventDefinitions = Array.isArray(eventValue.events) ? eventValue.events : [];
-  const listeners = Array.isArray(eventValue.listeners) ? eventValue.listeners : [];
-  const services = Array.isArray(eventValue.services) ? eventValue.services : [];
-  const timers = Array.isArray(eventValue.timers) ? eventValue.timers : [];
-  const permissions = uiValue.permissions as Record<string, unknown> | undefined;
-  const toolPermissions = toolValue.permissions as Record<string, unknown> | undefined;
-  const hookPermissions = hookValue.permissions as Record<string, unknown> | undefined;
-  const eventPermissions = eventValue.permissions as Record<string, unknown> | undefined;
-  const host = uiValue.host as Record<string, unknown> | undefined;
+  return previewManifest(JSON.parse(manifest) as Record<string, unknown>);
+}
+
+function previewManifest(value: Record<string, unknown>): Awaited<ReturnType<typeof previewPackage>> {
+  if (typeof value.id !== 'string' || typeof value.version !== 'string') {
+    throw new Error('Extension manifest is invalid');
+  }
+  const runtime = value.runtime as Record<string, unknown> | undefined;
+  const uiValue = value.ui as Record<string, unknown> | undefined;
+  const ui = Array.isArray(uiValue?.contributions) ? uiValue.contributions : [];
+  const tools = Array.isArray(runtime?.tools) ? runtime.tools : [];
+  const eventDefinitions = Array.isArray(runtime?.events) ? runtime.events : [];
+  const listeners = Array.isArray(runtime?.listeners) ? runtime.listeners : [];
+  const services = Array.isArray(runtime?.services) ? runtime.services : [];
+  const timers = Array.isArray(runtime?.timers) ? runtime.timers : [];
+  if (
+    ui.length === 0 &&
+    tools.length === 0 &&
+    eventDefinitions.length === 0 &&
+    listeners.length === 0 &&
+    services.length === 0 &&
+    timers.length === 0
+  ) {
+    throw new Error('Extension package has no contributions');
+  }
+  const permissions = uiValue?.permissions as Record<string, unknown> | undefined;
+  const runtimePermissions = runtime?.permissions as Record<string, unknown> | undefined;
+  const host = uiValue?.host as Record<string, unknown> | undefined;
   const methods = Array.isArray(host?.methods) ? host.methods : [];
   const hostMethods = methods.map((item) => (item as Record<string, unknown>)?.name);
   if (hostMethods.some((name) => typeof name !== 'string')) {
@@ -266,16 +227,16 @@ async function previewBundle(sourcePath: string): ReturnType<typeof previewPacka
     version: value.version,
     uiCount: ui.length,
     toolCount: tools.length,
-    hookCount: hooks.length,
     eventCount: eventDefinitions.length + listeners.length,
     serviceCount: services.length,
     timerCount: timers.length,
     hostMethods: hostMethods as string[],
     permissions: {
-      network: permissions?.network === true || toolPermissions?.network === true || hookPermissions?.network === true || eventPermissions?.network === true,
+      network: permissions?.network === true || runtimePermissions?.network === true,
       hostState: permissions?.hostState === true,
       sessionAccess: permissions?.sessionAccess === true,
-      workspace: typeof toolPermissions?.workspace === 'string' ? toolPermissions.workspace : typeof hookPermissions?.workspace === 'string' ? hookPermissions.workspace : typeof eventPermissions?.workspace === 'string' ? eventPermissions.workspace : 'none',
+      workspace:
+        typeof runtimePermissions?.workspace === 'string' ? runtimePermissions.workspace : 'none',
     },
   };
 }

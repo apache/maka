@@ -2,7 +2,7 @@
 
 UI is the second typed Extension contribution adapter. It is not a Tool view,
 does not depend on Agent Graph, and may be the only contribution in a package.
-Tool, UI, and future Hook adapters share only the Extension identity, immutable
+Tool, UI, Event, Service, and Timer adapters share the Extension identity, immutable
 Revision, Binding, Scope, current/candidate commit, recovery, and cleanup model.
 
 ## Product shape
@@ -57,15 +57,13 @@ mutate the current Composition.
 `Cmd/Ctrl+Shift+Backspace` enters renderer-local safe mode without mutating the
 installed Binding.
 
-## Package and isolation
+## Package and trust
 
-A package may contain only `maka.ui.json`, or carry `maka.ui.json` and
-`maka.tool.json` together. In the combined form, both manifests declare the
-same Extension identity and the complete directory produces one content hash,
-one immutable Revision and one lifecycle commit. UI and Tool remain typed,
-independent contributions; separate Bindings may project that exact Revision
-into the Desktop UI scope and a Session scope. Installation does not render or
-execute package code.
+A package has one `maka.extension.json`; its optional `ui` and `runtime`
+sections share one Extension identity, content hash, immutable Revision, and
+lifecycle commit. Separate Bindings may project that exact Revision into the
+Desktop UI and Session scopes. Installation does not render or execute package
+code.
 
 Dynamic documents render in Chromium sandboxed iframes with an opaque origin.
 They receive neither Electron APIs nor the Maka preload bridge. A Host-injected
@@ -91,9 +89,9 @@ Overlay and slot contributions cannot exercise this capability.
 
 Packages may also declare an allowlist of Host method names and an ES module
 that implements them. `window.makaUI.invoke(name, args)` crosses the same
-per-frame broker and exact active Binding/Revision check. The selected handler
-runs in a one-shot managed sandbox with no workspace access, no secrets, and
-network disabled unless declared. Its JSON result returns to that frame only.
+per-frame broker and exact active Binding/Revision check. The selected trusted
+handler runs in the Runtime Host process. Its JSON result returns to that frame
+only.
 The UI document and Host service belong to the same content-addressed Revision,
 so update, failed health check, rollback, stop, uninstall, and restart recovery
 cannot mix frontend and backend versions.

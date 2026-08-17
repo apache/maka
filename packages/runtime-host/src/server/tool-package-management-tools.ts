@@ -13,7 +13,7 @@ import type {
 import type { ConnectionContext } from './operation-dispatcher.js';
 import type { HostExtensionController } from './extension-controller.js';
 import type { HostExtensionRuntime } from './extension-runtime.js';
-import { ToolPackageActivation } from './tool-package-worker.js';
+import { InProcessPackageActivation } from './in-process-package-runtime.js';
 import { ToolPackageStore } from './tool-package-store.js';
 
 const MANAGEMENT_TOOL_NAMES = new Set([
@@ -214,22 +214,6 @@ export class HostToolPackageManagementTools {
         try {
           await mkdir(join(draft, 'dist'), { recursive: true, mode: 0o700 });
           await writeFile(
-            join(draft, 'maka.tool.json'),
-            `${JSON.stringify(
-              {
-                schemaVersion: 1,
-                id: input.id,
-                version: input.version,
-                entry: 'dist/index.mjs',
-                tools: input.tools,
-                permissions: input.permissions,
-              },
-              null,
-              2,
-            )}\n`,
-            { encoding: 'utf8', mode: 0o600 },
-          );
-          await writeFile(
             join(draft, 'maka.extension.json'),
             `${JSON.stringify(
               {
@@ -240,6 +224,15 @@ export class HostToolPackageManagementTools {
                 ...(input.description !== undefined ? { description: input.description } : {}),
                 ...(input.dependencies ? { dependencies: input.dependencies } : {}),
                 ...(input.configuration ? { configuration: input.configuration } : {}),
+                runtime: {
+                  entry: 'dist/index.mjs',
+                  tools: input.tools,
+                  events: [],
+                  listeners: [],
+                  services: [],
+                  timers: [],
+                  permissions: input.permissions,
+                },
               },
               null,
               2,
@@ -267,7 +260,7 @@ export class HostToolPackageManagementTools {
     return Object.freeze({
       name: 'test_tool',
       description:
-        'Run one installed Tool revision in its real isolated sandbox without publishing it to the session Tool catalog.',
+        'Run one installed trusted Tool revision in the Runtime Host process without publishing it to the session Tool catalog.',
       parameters: testInput,
       categoryHint: 'shell_unsafe',
       recoveryMode: 'never_auto_retry',
@@ -275,9 +268,9 @@ export class HostToolPackageManagementTools {
       executionFacts: managementExecutionFacts(),
       impl: async (input: z.infer<typeof testInput>, context: MakaToolContext) => {
         const installed = await this.store.load(input.extensionId, input.revision);
-        const activation = new ToolPackageActivation(installed);
+        const activation = new InProcessPackageActivation(installed);
         try {
-          await activation.healthCheck();
+          await activation.healthCheck(installed.manifest.tools.map(({ handler }) => handler));
           const tool = activation.tools().find(({ name }) => name === input.toolName);
           if (!tool) throw new Error(`Tool package does not declare Tool: ${input.toolName}`);
           await validateArgs(tool, input.args);
@@ -487,10 +480,10 @@ function bindingIdFor(sessionId: string, extensionId: string): string {
 
 function managementExecutionFacts(): NonNullable<MakaTool['executionFacts']> {
   return Object.freeze({
-    isolation: 'container',
+    isolation: 'none',
     writesAffectHost: true,
     writeBack: 'direct',
-    network: 'sandbox',
-    secrets: 'none',
+    network: 'host',
+    secrets: 'host_env',
   });
 }

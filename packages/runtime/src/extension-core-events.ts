@@ -2,7 +2,10 @@ import type { ExtensionDispatchMode } from './extension-dispatch.js';
 
 export const EXTENSION_CORE_EVENTS = Object.freeze({
   'maka.agent.pre-step': 'transform',
+  'maka.user-prompt.submit': 'transform',
   'maka.agent.request': 'transform',
+  'maka.tools.execute': 'around',
+  'maka.llm.stream': 'around',
   'maka.agent.request-error': 'bail',
   'maka.system-prompt.assemble': 'transform',
   'maka.agent.turn-stopping': 'bail',
@@ -25,6 +28,7 @@ export function validateExtensionCoreEventPayload(
   event: ExtensionCoreEventName,
   payload: unknown,
 ): unknown {
+  if (EXTENSION_CORE_EVENTS[event] === 'around') return payload;
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new Error(`Core Extension Event payload must be an object: ${event}`);
   }

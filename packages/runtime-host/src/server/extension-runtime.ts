@@ -25,12 +25,6 @@ import {
   type ExtensionUiContributionInspection,
 } from '@maka/runtime/extension-ui-contributions';
 import {
-  contributeExtensionHook,
-  ExtensionHookContributionRegistry,
-  type ExtensionHookContribution,
-  type ExtensionHookContributionInspection,
-} from '@maka/runtime/extension-hook-contributions';
-import {
   contributeExtensionEvent,
   contributeExtensionEventListener,
   ExtensionEventContributionRegistry,
@@ -74,15 +68,12 @@ export interface HostPreparedToolExtensionRevisionInput {
   readonly dependencies?: readonly ExtensionDependencyDefinition[];
   /** Optional client contribution carried by the exact same immutable package Revision. */
   readonly ui?: readonly ExtensionUiContribution[];
-  /** Runtime Hook contribution identities carried by the exact same immutable package Revision. */
-  readonly hookContributionIds?: readonly string[];
   /** Plugin-defined Event and Listener identities carried by the same immutable Revision. */
   readonly eventContributionIds?: readonly string[];
   readonly serviceContributionIds?: readonly string[];
   readonly timerContributionIds?: readonly string[];
   readonly prepare: (context: ExtensionPreparationContext) => Promise<{
     readonly tools: readonly MakaTool[];
-    readonly hooks?: readonly ExtensionHookContribution[];
     readonly events?: readonly ExtensionEventDefinition[];
     readonly listeners?: readonly ExtensionEventListenerContribution[];
     readonly services?: readonly ExtensionServiceContribution[];
@@ -148,7 +139,6 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
   readonly #lifecycle = new ExtensionLifecycleKernel();
   readonly #tools: ExtensionToolContributionRegistry;
   readonly #ui = new ExtensionUiContributionRegistry();
-  readonly #hooks = new ExtensionHookContributionRegistry();
   readonly #events = new ExtensionEventContributionRegistry();
   readonly #services = new ExtensionServiceContributionRegistry();
   readonly #scopeIds = new Set<string>();
@@ -195,9 +185,6 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
           Object.freeze({ id: `${input.extensionId}.tool-${index + 1}`, kind: 'tool' }),
         ),
         ...(input.ui ?? []).map(({ id }) => Object.freeze({ id, kind: 'ui' })),
-        ...(input.hookContributionIds ?? []).map((_, index) =>
-          Object.freeze({ id: `${input.extensionId}.hook-${index + 1}`, kind: 'hook' }),
-        ),
         ...(input.eventContributionIds ?? []).map((_, index) =>
           Object.freeze({ id: `${input.extensionId}.event-${index + 1}`, kind: 'event' }),
         ),
@@ -217,8 +204,6 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
               contributeExtensionTool(activation, this.#tools, tool);
             for (const contribution of input.ui ?? [])
               contributeExtensionUi(activation, this.#ui, contribution);
-            for (const contribution of prepared.hooks ?? [])
-              contributeExtensionHook(activation, this.#hooks, contribution);
             for (const definition of prepared.events ?? [])
               contributeExtensionEvent(activation, this.#events, definition);
             for (const listener of prepared.listeners ?? [])
@@ -312,28 +297,6 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
           : [],
       );
     return this.#ui.inspect(scopeId, committed);
-  }
-
-  inspectHooks(scopeId: string): readonly ExtensionHookContributionInspection[] {
-    const scopeIds =
-      scopeId === PROFILE_EXTENSION_SCOPE ? [scopeId] : [PROFILE_EXTENSION_SCOPE, scopeId];
-    const committed = scopeIds.flatMap((resolvedScopeId) =>
-      this.#lifecycle
-        .inspectScope(resolvedScopeId)
-        .flatMap((binding) =>
-          binding.current
-            ? [{ bindingId: binding.bindingId, revision: binding.current.revision }]
-            : [],
-        ),
-    );
-    if (scopeId === PROFILE_EXTENSION_SCOPE) return this.#hooks.inspect(scopeIds, committed);
-    const resolved = new Map<string, ExtensionHookContributionInspection>();
-    for (const hook of this.#hooks.inspect(scopeIds, committed)) {
-      const key = `${hook.event}\0${hook.extensionId}\0${hook.id}`;
-      const current = resolved.get(key);
-      if (!current || hook.scopeId === scopeId) resolved.set(key, hook);
-    }
-    return Object.freeze([...resolved.values()].sort(compareHookContribution));
   }
 
   inspectEvents(scopeId: string): readonly ExtensionEventDefinitionInspection[] {
@@ -474,6 +437,34 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     });
   }
 
+  async dispatchCoreMiddleware(
+    scopeId: string,
+    event: 'maka.tools.execute' | 'maka.llm.stream',
+    payload: unknown,
+    context: ExtensionEventInvocationContext,
+    final: (value: unknown) => unknown | Promise<unknown>,
+  ): Promise<unknown> {
+    if (this.#closed) throw new Error('Runtime Host Extension authority is closed');
+    if (this.#draining) throw new Error('Runtime Host Extension authority is draining');
+    if (context.signal.aborted)
+      throw context.signal.reason ?? new Error('Core Extension Middleware was aborted');
+    const { scopeIds, committed } = this.#resolvedScopeState(scopeId);
+    const listeners = this.#events
+      .inspectListeners(scopeIds, committed)
+      .filter((listener) => listener.event === event);
+    const dispatched = await dispatchExtensionHandlers({
+      mode: 'around',
+      payload,
+      signal: context.signal,
+      handlers: listeners.map((listener) => ({
+        identity: listener,
+        invoke: (value, next) => listener.invoke(value, context, next),
+      })),
+      final,
+    });
+    return dispatched.value;
+  }
+
   installedRevisions(): readonly {
     readonly extensionId: string;
     readonly revision: string;
@@ -585,19 +576,6 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
 
 function compareString(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function compareHookContribution(
-  left: ExtensionHookContributionInspection,
-  right: ExtensionHookContributionInspection,
-): number {
-  return (
-    compareString(left.event, right.event) ||
-    right.priority - left.priority ||
-    compareString(left.extensionId, right.extensionId) ||
-    compareString(left.revision, right.revision) ||
-    compareString(left.id, right.id)
-  );
 }
 
 function boundedDiagnostic(error: unknown): string {

@@ -260,26 +260,6 @@ export class HostUiPackageManagementTools {
             document: `documents/${index + 1}.html`,
           }));
           await writeFile(
-            join(draft, 'maka.ui.json'),
-            `${JSON.stringify(
-              {
-                schemaVersion: 1,
-                id: input.id,
-                version: input.version,
-                ui: manifestUi,
-                ...(input.host
-                  ? {
-                      host: { entry: 'host/service.mjs', methods: input.host.methods },
-                    }
-                  : {}),
-                permissions: input.permissions,
-              },
-              null,
-              2,
-            )}\n`,
-            { encoding: 'utf8', mode: 0o600 },
-          );
-          await writeFile(
             join(draft, 'maka.extension.json'),
             `${JSON.stringify(
               {
@@ -290,6 +270,15 @@ export class HostUiPackageManagementTools {
                 ...(input.description !== undefined ? { description: input.description } : {}),
                 ...(input.dependencies ? { dependencies: input.dependencies } : {}),
                 ...(input.configuration ? { configuration: input.configuration } : {}),
+                ui: {
+                  contributions: manifestUi,
+                  ...(input.host
+                    ? {
+                        host: { entry: 'host/service.mjs', methods: input.host.methods },
+                      }
+                    : {}),
+                  permissions: input.permissions,
+                },
               },
               null,
               2,

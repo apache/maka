@@ -47,7 +47,6 @@ export interface TrustedExtensionRevisionProjection {
   readonly revision: string;
   readonly toolNames: readonly string[];
   readonly uiContributionIds: readonly string[];
-  readonly hookContributionIds: readonly string[];
   readonly eventContributionIds: readonly string[];
   readonly serviceContributionIds?: readonly string[];
   readonly timerContributionIds?: readonly string[];
@@ -98,7 +97,15 @@ export interface ExtensionContractContribution {
   readonly slot?: string;
   readonly slots?: readonly string[];
   readonly event?: string;
-  readonly mode?: 'emit' | 'parallel' | 'serial' | 'bail' | 'observe' | 'gate' | 'transform';
+  readonly mode?:
+    | 'emit'
+    | 'parallel'
+    | 'serial'
+    | 'bail'
+    | 'observe'
+    | 'gate'
+    | 'transform'
+    | 'around';
 }
 
 export interface ExtensionPackageContractProjection {
@@ -664,12 +671,10 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
     'revision',
     'toolNames',
     'uiContributionIds',
-    ...(Object.hasOwn(source, 'hookContributionIds') ? ['hookContributionIds'] : []),
     ...(Object.hasOwn(source, 'eventContributionIds') ? ['eventContributionIds'] : []),
     ...(Object.hasOwn(source, 'serviceContributionIds') ? ['serviceContributionIds'] : []),
     ...(Object.hasOwn(source, 'timerContributionIds') ? ['timerContributionIds'] : []),
   ]);
-  const hookContributionIds = revision.hookContributionIds ?? [];
   const eventContributionIds = revision.eventContributionIds ?? [];
   const serviceContributionIds = revision.serviceContributionIds ?? [];
   const timerContributionIds = revision.timerContributionIds ?? [];
@@ -678,8 +683,6 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
     revision.toolNames.length > 128 ||
     !Array.isArray(revision.uiContributionIds) ||
     revision.uiContributionIds.length > 64 ||
-    !Array.isArray(hookContributionIds) ||
-    hookContributionIds.length > 64 ||
     !Array.isArray(eventContributionIds) ||
     eventContributionIds.length > 128 ||
     !Array.isArray(serviceContributionIds) ||
@@ -697,9 +700,6 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
     ),
     uiContributionIds: revision.uiContributionIds.map((id) =>
       requireUtf8String(id, 'extension UI contribution id', 128),
-    ),
-    hookContributionIds: hookContributionIds.map((id) =>
-      requireUtf8String(id, 'extension Hook contribution id', 256),
     ),
     eventContributionIds: eventContributionIds.map((id) =>
       requireUtf8String(id, 'extension Event contribution id', 512),

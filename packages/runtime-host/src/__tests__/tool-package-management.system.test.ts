@@ -165,7 +165,7 @@ test('Agent can inspect, define, test, activate, immediately invoke, update safe
   }
 });
 
-test('child author installs and sandbox-tests a candidate before the parent accepts it', {
+test('child author installs and in-process-tests a trusted candidate before the parent accepts it', {
   timeout: 60_000,
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-child-tool-author-'));

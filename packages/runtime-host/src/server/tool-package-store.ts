@@ -6,7 +6,7 @@ import type { ToolCategory } from '@maka/core/permission';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
 import { isCanonicalExtensionId } from '@maka/runtime/extension-lifecycle-kernel';
 
-const MANIFEST_FILE = 'maka.tool.json';
+const MANIFEST_FILE = 'maka.extension.json';
 const STORE_DIRECTORY = 'tool-packages-v1';
 const MAX_FILES = 128;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
@@ -246,14 +246,34 @@ export class ToolPackageStore {
 }
 
 export function decodeToolPackageManifest(value: unknown): ToolPackageManifest {
-  const record = exactRecord(value, [
+  const root = optionalExactRecord(value, [
     'schemaVersion',
     'id',
     'version',
+    'displayName',
+    'description',
+    'dependencies',
+    'configuration',
+    'runtime',
+    'ui',
+  ]);
+  const runtime = exactRecord(root.runtime, [
     'entry',
     'tools',
+    'events',
+    'listeners',
+    'services',
+    'timers',
     'permissions',
   ]);
+  const record = {
+    schemaVersion: root.schemaVersion,
+    id: root.id,
+    version: root.version,
+    entry: runtime.entry,
+    tools: runtime.tools,
+    permissions: runtime.permissions,
+  };
   if (record.schemaVersion !== 1) throw invalidPackage('Tool package schemaVersion must be 1');
   const id = requireId(record.id);
   const version = boundedString(record.version, 'version', 128);

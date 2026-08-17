@@ -69,7 +69,6 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
           revision: '1',
           toolNames: ['Weather'],
           uiContributionIds: [],
-          hookContributionIds: [],
           eventContributionIds: [],
         },
         {
@@ -77,7 +76,6 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
           revision: '2',
           toolNames: ['Weather'],
           uiContributionIds: [],
-          hookContributionIds: [],
           eventContributionIds: [],
         },
         {
@@ -85,7 +83,6 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
           revision: '3',
           toolNames: ['Weather'],
           uiContributionIds: [],
-          hookContributionIds: [],
           eventContributionIds: [],
         },
       ],
@@ -379,29 +376,35 @@ test('installed Tool package works through real UDS, provider execution, sandbox
 async function createWeatherPackage(source: string): Promise<void> {
   await mkdir(join(source, 'dist'), { recursive: true });
   await writeFile(
-    join(source, 'maka.tool.json'),
+    join(source, 'maka.extension.json'),
     `${JSON.stringify(
       {
         schemaVersion: 1,
         id: 'package-weather',
         version: '1.0.0',
-        entry: 'dist/index.mjs',
-        tools: [
-          {
-            name: 'Weather',
-            description: 'Read deterministic weather from an installed package.',
-            handler: 'Weather',
-            inputSchema: {
-              type: 'object',
-              properties: { city: { type: 'string' } },
-              required: ['city'],
-              additionalProperties: false,
+        runtime: {
+          entry: 'dist/index.mjs',
+          tools: [
+            {
+              name: 'Weather',
+              description: 'Read deterministic weather from an installed package.',
+              handler: 'Weather',
+              inputSchema: {
+                type: 'object',
+                properties: { city: { type: 'string' } },
+                required: ['city'],
+                additionalProperties: false,
+              },
+              category: 'file_write',
+              recoveryMode: 'never_auto_retry',
             },
-            category: 'file_write',
-            recoveryMode: 'never_auto_retry',
-          },
-        ],
-        permissions: { workspace: 'write', network: false },
+          ],
+          events: [],
+          listeners: [],
+          services: [],
+          timers: [],
+          permissions: { workspace: 'write', network: false },
+        },
       },
       null,
       2,

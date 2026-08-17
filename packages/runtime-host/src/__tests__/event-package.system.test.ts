@@ -14,7 +14,6 @@ import { HostExtensionStateStore } from '../server/extension-state-store.js';
 import { EventPackageStore } from '../server/event-package-store.js';
 import { HostEventPackageManagementTools } from '../server/event-package-management-tools.js';
 import { HostExtensionTimerScheduler } from '../server/extension-timer-scheduler.js';
-import { HookPackageStore } from '../server/hook-package-store.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { ToolPackageStore } from '../server/tool-package-store.js';
 import { UiPackageStore } from '../server/ui-package-store.js';
@@ -27,7 +26,7 @@ const connection: ConnectionContext = {
   acquireResidency: () => ({ release: () => undefined }),
 };
 
-test('cross-plugin Event contracts dispatch isolated Listeners and recover bindings', {
+test('cross-plugin Event contracts dispatch trusted in-process Listeners and recover bindings', {
   timeout: 60_000,
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-event-package-'));
@@ -401,7 +400,7 @@ test('Agent Event tools define, test, activate, emit, inspect, and stop a packag
             },
             {
               name: 'dev.maka.dynamic.events.timer.fired',
-              description: 'A Timer sandbox fired.',
+              description: 'A trusted in-process Timer fired.',
               payloadSchema: {
                 type: 'object',
                 properties: { pid: { type: 'integer' } },
@@ -546,7 +545,12 @@ test('Agent Event tools define, test, activate, emit, inspect, and stop a packag
       /recursion limit exceeded/u,
     );
     await waitFor(() => timerPids.length >= 2);
-    assert.equal(new Set(timerPids.slice(0, 2)).size, 2, 'Timer fires reused one worker process');
+    assert.equal(
+      new Set(timerPids.slice(0, 2)).size,
+      1,
+      'Timer fires did not reuse the plugin Fiber',
+    );
+    assert.equal(timerPids[0], process.pid);
     assert.deepEqual(
       await tools
         .find(({ name }) => name === 'emit_event')!
@@ -575,7 +579,7 @@ test('Agent Event tools define, test, activate, emit, inspect, and stop a packag
     assert.equal(inspected.listeners.length, 2);
     assert.equal(inspected.services.length, 1);
     assert.equal(inspected.timers.length, 1);
-    assert.equal(inspected.coreEvents.length, 12);
+    assert.equal(inspected.coreEvents.length, 15);
     await tools
       .find(({ name }) => name === 'manage_event')!
       .impl({ action: 'stop', extensionId: 'dev.maka.dynamic.events' } as never, context);
@@ -596,7 +600,6 @@ function createFixture(control: string) {
     new StaticTrustedToolExtensionLoader(),
     new ToolPackageStore(control),
     new UiPackageStore(control),
-    new HookPackageStore(control),
     eventStore,
   );
   const controller = new HostExtensionController(
@@ -623,62 +626,66 @@ async function writeProvider(root: string): Promise<void> {
     JSON.stringify({ schemaVersion: 1, id: 'dev.maka.notes', version: '1.0.0' }),
   );
   await writeFile(
-    join(root, 'maka.event.json'),
+    join(root, 'maka.extension.json'),
     JSON.stringify({
       schemaVersion: 1,
       id: 'dev.maka.notes',
       version: '1.0.0',
-      entry: 'dist/events.mjs',
-      events: [
-        {
-          name: 'dev.maka.notes.audit.logged',
-          description: 'An audit marker was emitted.',
-          payloadSchema: {
-            type: 'object',
-            properties: { id: { type: 'string' } },
-            required: ['id'],
-            additionalProperties: false,
-          },
-        },
-        {
-          name: 'dev.maka.notes.note.changed',
-          description: 'A note changed.',
-          payloadSchema: {
-            type: 'object',
-            properties: { id: { type: 'string' }, value: { type: 'number' } },
-            required: ['id', 'value'],
-            additionalProperties: false,
-          },
-        },
-      ],
-      listeners: [],
-      services: [
-        {
-          name: 'dev.maka.notes.metrics',
-          version: '1.0.0',
-          description: 'Typed note metrics.',
-          methods: [
-            {
-              name: 'score',
-              description: 'Score a note value.',
-              handler: 'score',
-              inputSchema: {
-                type: 'object',
-                properties: { value: { type: 'number' } },
-                required: ['value'],
-                additionalProperties: false,
-              },
-              outputSchema: {
-                type: 'object',
-                properties: { score: { type: 'number' } },
-                required: ['score'],
-                additionalProperties: false,
-              },
+      runtime: {
+        entry: 'dist/events.mjs',
+        tools: [],
+        events: [
+          {
+            name: 'dev.maka.notes.audit.logged',
+            description: 'An audit marker was emitted.',
+            payloadSchema: {
+              type: 'object',
+              properties: { id: { type: 'string' } },
+              required: ['id'],
+              additionalProperties: false,
             },
-          ],
-        },
-      ],
-      permissions: { workspace: 'none', network: false },
+          },
+          {
+            name: 'dev.maka.notes.note.changed',
+            description: 'A note changed.',
+            payloadSchema: {
+              type: 'object',
+              properties: { id: { type: 'string' }, value: { type: 'number' } },
+              required: ['id', 'value'],
+              additionalProperties: false,
+            },
+          },
+        ],
+        listeners: [],
+        services: [
+          {
+            name: 'dev.maka.notes.metrics',
+            version: '1.0.0',
+            description: 'Typed note metrics.',
+            methods: [
+              {
+                name: 'score',
+                description: 'Score a note value.',
+                handler: 'score',
+                inputSchema: {
+                  type: 'object',
+                  properties: { value: { type: 'number' } },
+                  required: ['value'],
+                  additionalProperties: false,
+                },
+                outputSchema: {
+                  type: 'object',
+                  properties: { score: { type: 'number' } },
+                  required: ['score'],
+                  additionalProperties: false,
+                },
+              },
+            ],
+          },
+        ],
+        timers: [],
+        permissions: { workspace: 'none', network: false },
+      },
     }),
   );
   await writeFile(
@@ -699,34 +706,40 @@ async function writeConsumer(root: string): Promise<void> {
     }),
   );
   await writeFile(
-    join(root, 'maka.event.json'),
+    join(root, 'maka.extension.json'),
     JSON.stringify({
       schemaVersion: 1,
       id: 'dev.maka.notes.consumer',
       version: '1.0.0',
-      entry: 'dist/listeners.mjs',
-      events: [],
-      listeners: [
-        {
-          id: 'audit-record',
-          event: 'dev.maka.notes.audit.logged',
-          handler: 'auditRecord',
-          priority: 100,
-        },
-        {
-          id: 'record-change',
-          event: 'dev.maka.notes.note.changed',
-          handler: 'recordChange',
-          priority: 100,
-        },
-        {
-          id: 'reject-zero',
-          event: 'dev.maka.notes.note.changed',
-          handler: 'rejectZero',
-          priority: 0,
-        },
-      ],
-      permissions: { workspace: 'none', network: false },
+      dependencies: [{ id: 'dev.maka.notes', version: '^1.0.0' }],
+      runtime: {
+        entry: 'dist/listeners.mjs',
+        tools: [],
+        events: [],
+        listeners: [
+          {
+            id: 'audit-record',
+            event: 'dev.maka.notes.audit.logged',
+            handler: 'auditRecord',
+            priority: 100,
+          },
+          {
+            id: 'record-change',
+            event: 'dev.maka.notes.note.changed',
+            handler: 'recordChange',
+            priority: 100,
+          },
+          {
+            id: 'reject-zero',
+            event: 'dev.maka.notes.note.changed',
+            handler: 'rejectZero',
+            priority: 0,
+          },
+        ],
+        services: [],
+        timers: [],
+        permissions: { workspace: 'none', network: false },
+      },
     }),
   );
   await writeFile(
@@ -754,41 +767,45 @@ async function writeRogueServiceConsumer(root: string): Promise<void> {
     JSON.stringify({ schemaVersion: 1, id: 'dev.maka.rogue', version: '1.0.0' }),
   );
   await writeFile(
-    join(root, 'maka.event.json'),
+    join(root, 'maka.extension.json'),
     JSON.stringify({
       schemaVersion: 1,
       id: 'dev.maka.rogue',
       version: '1.0.0',
-      entry: 'dist/events.mjs',
-      events: [],
-      listeners: [],
-      services: [
-        {
-          name: 'dev.maka.rogue.probe',
-          version: '1.0.0',
-          description: 'Attempt an undeclared foreign Service call.',
-          methods: [
-            {
-              name: 'score',
-              description: 'Proxy note scoring.',
-              handler: 'score',
-              inputSchema: {
-                type: 'object',
-                properties: { value: { type: 'number' } },
-                required: ['value'],
-                additionalProperties: false,
+      runtime: {
+        entry: 'dist/events.mjs',
+        tools: [],
+        events: [],
+        listeners: [],
+        services: [
+          {
+            name: 'dev.maka.rogue.probe',
+            version: '1.0.0',
+            description: 'Attempt an undeclared foreign Service call.',
+            methods: [
+              {
+                name: 'score',
+                description: 'Proxy note scoring.',
+                handler: 'score',
+                inputSchema: {
+                  type: 'object',
+                  properties: { value: { type: 'number' } },
+                  required: ['value'],
+                  additionalProperties: false,
+                },
+                outputSchema: {
+                  type: 'object',
+                  properties: { score: { type: 'number' } },
+                  required: ['score'],
+                  additionalProperties: false,
+                },
               },
-              outputSchema: {
-                type: 'object',
-                properties: { score: { type: 'number' } },
-                required: ['score'],
-                additionalProperties: false,
-              },
-            },
-          ],
-        },
-      ],
-      permissions: { workspace: 'none', network: false },
+            ],
+          },
+        ],
+        timers: [],
+        permissions: { workspace: 'none', network: false },
+      },
     }),
   );
   await writeFile(

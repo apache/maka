@@ -32,7 +32,11 @@ export interface ExtensionEventListenerContribution {
   readonly handler: string;
   readonly priority: number;
   readonly timeoutMs: number;
-  invoke(payload: unknown, context: ExtensionEventInvocationContext): Promise<unknown>;
+  invoke(
+    payload: unknown,
+    context: ExtensionEventInvocationContext,
+    next?: (value?: unknown) => unknown | Promise<unknown>,
+  ): Promise<unknown>;
 }
 
 export interface ExtensionEventDefinitionInspection extends Omit<ExtensionEventDefinition, 'mode'> {

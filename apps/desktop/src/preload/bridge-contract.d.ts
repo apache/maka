@@ -314,7 +314,6 @@ export interface UiExtensionEntry {
   readonly contributionIds: readonly string[];
   readonly toolNames: readonly string[];
   readonly uiContributionIds: readonly string[];
-  readonly hookContributionIds: readonly string[];
   readonly eventContributionIds: readonly string[];
   readonly serviceContributionIds: readonly string[];
   readonly timerContributionIds: readonly string[];

@@ -1,16 +1,17 @@
 import type { MakaToolContext } from '@maka/runtime/tool-runtime';
 import { join } from 'node:path';
-import { ToolPackageActivation } from './tool-package-worker.js';
+import { InProcessPackageActivation } from './in-process-package-runtime.js';
 import type { InstalledToolPackage, ToolPackageManifest } from './tool-package-store.js';
 import type { InstalledUiPackage } from './ui-package-store.js';
 
-/** Executes a UI revision's package-private Host methods in one-shot Tool sandboxes. */
+/** Executes a trusted UI revision's package-private Host methods in process. */
 export class UiPackageService {
   async healthCheck(installed: InstalledUiPackage): Promise<void> {
     if (!installed.manifest.host) return;
-    const activation = new ToolPackageActivation(asWorkerPackage(installed));
+    const packageRevision = asRuntimePackage(installed);
+    const activation = new InProcessPackageActivation(packageRevision);
     try {
-      await activation.healthCheck();
+      await activation.healthCheck(packageRevision.manifest.tools.map(({ handler }) => handler));
     } finally {
       await activation.dispose();
     }
@@ -24,7 +25,7 @@ export class UiPackageService {
   ): Promise<unknown> {
     const declaration = installed.manifest.host?.methods.find(({ name }) => name === methodName);
     if (!declaration) throw new Error(`UI Host method is not declared: ${methodName}`);
-    const activation = new ToolPackageActivation(asWorkerPackage(installed));
+    const activation = new InProcessPackageActivation(asRuntimePackage(installed));
     const context: MakaToolContext = {
       sessionId: `ui:${installed.extensionId}`,
       turnId: installed.revision,
@@ -41,7 +42,7 @@ export class UiPackageService {
   }
 }
 
-function asWorkerPackage(installed: InstalledUiPackage): InstalledToolPackage {
+function asRuntimePackage(installed: InstalledUiPackage): InstalledToolPackage {
   const host = installed.manifest.host;
   if (!host) throw new Error('UI package does not declare a Host service');
   const manifest: ToolPackageManifest = {

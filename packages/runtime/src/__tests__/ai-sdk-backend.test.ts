@@ -81,7 +81,42 @@ import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-contin
 import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
 import { getAIModel } from '../model-factory.js';
 
-describe('AiSdkBackend Extension Hook lifecycle', () => {
+describe('AiSdkBackend Extension middleware lifecycle', () => {
+  test('wraps the live LLM stream through core around middleware', async () => {
+    let observedLiveStream = false;
+    const preToolUseHooks: NonNullable<AiSdkBackendInput['preToolUseHooks']> = {
+      prepareTurn() {},
+      releaseTurn() {},
+      async runPreToolUse() {
+        return { denied: false, audits: [], auditWriteFailures: [] };
+      },
+      async runCoreMiddleware(event, payload, _signal, _context, next) {
+        assert.equal(event, 'maka.llm.stream');
+        assert.ok(payload && typeof payload === 'object');
+        const result = (await next(payload)) as ModelStreamResult;
+        observedLiveStream = typeof result.events[Symbol.asyncIterator] === 'function';
+        return result;
+      },
+    };
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      preToolUseHooks,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(backend.send({ turnId: 'turn-1', text: 'hello', context: [] }));
+
+    assert.equal(observedLiveStream, true);
+  });
+
   test('transforms the provider prompt and observes a completed Run', async () => {
     const model = completionModel();
     const calls: Array<{ event: string; payload: unknown }> = [];
@@ -91,13 +126,12 @@ describe('AiSdkBackend Extension Hook lifecycle', () => {
       async runPreToolUse() {
         return { denied: false, audits: [], auditWriteFailures: [] };
       },
-      async runExtensionHook(event, payload) {
+      async runCoreEvent(event, payload) {
         calls.push({ event, payload: structuredClone(payload) });
         return {
-          denied: false,
-          payload: event === 'UserPromptSubmit' ? { text: 'hooked prompt' } : payload,
-          audits: [],
-          auditWriteFailures: [],
+          result: event === 'maka.user-prompt.submit' ? { text: 'hooked prompt' } : payload,
+          delivered: 1,
+          failed: 0,
         };
       },
     };
@@ -117,12 +151,18 @@ describe('AiSdkBackend Extension Hook lifecycle', () => {
 
     await drain(backend.send({ turnId: 'turn-1', text: 'original prompt', context: [] }));
 
-    assert.deepEqual(
-      calls.map(({ event }) => event),
-      ['UserPromptSubmit', 'RunStart', 'RunEnd'],
+    assert.equal(
+      calls.some(({ event }) => event === 'maka.user-prompt.submit'),
+      true,
     );
     assert.equal(JSON.stringify(compactPrompt(model)).includes('hooked prompt'), true);
-    assert.deepEqual(calls.at(-1)?.payload, { outcome: 'completed' });
+    assert.equal(
+      calls.some(
+        ({ event, payload }) =>
+          event === 'maka.agent.status' && (payload as { status?: unknown }).status === 'completed',
+      ),
+      true,
+    );
   });
 
   test('dispatches typed core seams and consumes their transformed request', async () => {
@@ -133,9 +173,6 @@ describe('AiSdkBackend Extension Hook lifecycle', () => {
       releaseTurn() {},
       async runPreToolUse() {
         return { denied: false, audits: [], auditWriteFailures: [] };
-      },
-      async runExtensionHook(_event, payload) {
-        return { denied: false, payload, audits: [], auditWriteFailures: [] };
       },
       async runCoreEvent(event, payload) {
         calls.push({ event, payload: structuredClone(payload) });
@@ -198,9 +235,6 @@ describe('AiSdkBackend Extension Hook lifecycle', () => {
       async runPreToolUse() {
         return { denied: false, audits: [], auditWriteFailures: [] };
       },
-      async runExtensionHook(_event, payload) {
-        return { denied: false, payload, audits: [], auditWriteFailures: [] };
-      },
       async runCoreEvent(event, payload) {
         if (event === 'maka.agent.turn-stopping') {
           stoppingCalls += 1;
@@ -242,9 +276,6 @@ describe('AiSdkBackend Extension Hook lifecycle', () => {
       releaseTurn() {},
       async runPreToolUse() {
         return { denied: false, audits: [], auditWriteFailures: [] };
-      },
-      async runExtensionHook(_event, payload) {
-        return { denied: false, payload, audits: [], auditWriteFailures: [] };
       },
       async runCoreEvent(event, payload) {
         if (event === 'maka.subagent.start' || event === 'maka.subagent.end') {
@@ -326,9 +357,6 @@ describe('AiSdkBackend Extension Hook lifecycle', () => {
       async runPreToolUse() {
         return { denied: false, audits: [], auditWriteFailures: [] };
       },
-      async runExtensionHook(_event, payload) {
-        return { denied: false, payload, audits: [], auditWriteFailures: [] };
-      },
       async runCoreEvent(event, payload) {
         if (event === 'maka.agent.request-error') requestErrors.push(structuredClone(payload));
         return { result: undefined, delivered: 0, failed: 0 };
@@ -372,9 +400,9 @@ describe('AiSdkBackend Extension Hook lifecycle', () => {
       async runPreToolUse() {
         return { denied: false, audits: [], auditWriteFailures: [] };
       },
-      async runExtensionHook(event, payload) {
-        if (event === 'RunEnd') outcomes.push(structuredClone(payload));
-        return { denied: false, payload, audits: [], auditWriteFailures: [] };
+      async runCoreEvent(event, payload) {
+        if (event === 'maka.agent.status') outcomes.push(structuredClone(payload));
+        return { result: payload, delivered: 1, failed: 0 };
       },
     };
     const backend = createTestAiSdkBackend({
@@ -398,7 +426,10 @@ describe('AiSdkBackend Extension Hook lifecycle', () => {
     assert.equal(first.done, false);
     await iterator.return?.();
 
-    assert.deepEqual(outcomes, [{ outcome: 'aborted' }]);
+    assert.equal(
+      outcomes.some((value) => (value as { status?: unknown }).status === 'aborted'),
+      true,
+    );
   });
 
   test('settles RunEnd before exposing the terminal complete event', async () => {
@@ -409,9 +440,15 @@ describe('AiSdkBackend Extension Hook lifecycle', () => {
       async runPreToolUse() {
         return { denied: false, audits: [], auditWriteFailures: [] };
       },
-      async runExtensionHook(event, payload) {
-        calls.push(event);
-        return { denied: false, payload, audits: [], auditWriteFailures: [] };
+      async runCoreEvent(event, payload) {
+        if (event === 'maka.user-prompt.submit' || event === 'maka.agent.status') {
+          calls.push(
+            event === 'maka.agent.status'
+              ? `${event}:${String((payload as { status?: unknown }).status)}`
+              : event,
+          );
+        }
+        return { result: payload, delivered: 1, failed: 0 };
       },
     };
     const backend = createTestAiSdkBackend({
@@ -436,7 +473,9 @@ describe('AiSdkBackend Extension Hook lifecycle', () => {
         const next = await iterator.next();
         assert.equal(next.done, false);
         if (next.value.type !== 'complete') continue;
-        assert.deepEqual(calls, ['UserPromptSubmit', 'RunStart', 'RunEnd']);
+        assert.equal(calls.includes('maka.user-prompt.submit'), true);
+        assert.equal(calls.includes('maka.agent.status:running'), true);
+        assert.equal(calls.includes('maka.agent.status:completed'), true);
         break;
       }
     } finally {

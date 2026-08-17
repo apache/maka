@@ -56,14 +56,14 @@ export function UiExtensionsPage({ hubHeader }: { hubHeader: ModuleHubHeader }) 
       >
         {error ? <div role="alert" className="maka-module-error">{error}</div> : null}
         {latest.length === 0 && busy === null ? (
-          <EmptyState icon={<Monitor size={ICON_SIZE.empty} />} title="还没有插件" description="安装插件目录或 .maka-extension Bundle；一个插件可同时提供 Tool、UI、Hook、Event、Service 和 Timer。" />
+          <EmptyState icon={<Monitor size={ICON_SIZE.empty} />} title="还没有插件" description="安装插件目录或 .maka-extension Bundle；一个插件可同时提供 Tool、UI、Event、Service 和 Timer。" />
         ) : (
           <List aria-label="已安装插件">
             {latest.map((entry) => (
               <ListItem
                 key={entry.extensionId}
                 label={`${entry.displayName} · ${entry.version}`}
-                description={`${entry.toolNames.length} Tools · ${entry.uiContributionIds.length} UI · ${entry.hookContributionIds.length} Hooks · ${entry.eventContributionIds.length} Events/Listeners · ${entry.serviceContributionIds.length} Services · ${entry.timerContributionIds.length} Timers · ${entry.dependencies.length} 依赖 · ${entry.revision.slice(0, 20)}…${entry.error ? ` · ${entry.error}` : ''}`}
+                description={`${entry.toolNames.length} Tools · ${entry.uiContributionIds.length} UI · ${entry.eventContributionIds.length} Events/Listeners · ${entry.serviceContributionIds.length} Services · ${entry.timerContributionIds.length} Timers · ${entry.dependencies.length} 依赖 · ${entry.revision.slice(0, 20)}…${entry.error ? ` · ${entry.error}` : ''}`}
                 startContent={<StatusDot variant={dotForStatus(entry.status === 'active' ? 'success' : entry.status === 'failed' ? 'error' : 'neutral')} label={entry.status} />}
                 endContent={<div className="maka-module-main-actions">
                   <Switch
@@ -77,7 +77,7 @@ export function UiExtensionsPage({ hubHeader }: { hubHeader: ModuleHubHeader }) 
                         <Button
                           key={binding.bindingId}
                           variant="ghost"
-                          label={`配置${binding.scopeId === 'profile' ? ' Tool / Hook / Event / Service / Timer' : ' UI'}`}
+                          label={`配置${binding.scopeId === 'profile' ? ' Tool / Event / Service / Timer' : ' UI'}`}
                           isDisabled={busy !== null}
                           onClick={() =>
                             void act(`configure:${binding.bindingId}`, async () => {

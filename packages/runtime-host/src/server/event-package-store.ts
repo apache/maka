@@ -28,7 +28,7 @@ import {
   writeStoredFile,
 } from './tool-package-store.js';
 
-export const EVENT_PACKAGE_MANIFEST_FILE = 'maka.event.json';
+export const EVENT_PACKAGE_MANIFEST_FILE = 'maka.extension.json';
 const STORE_DIRECTORY = 'event-packages-v1';
 const MAX_MANIFEST_BYTES = 512 * 1024;
 const REVISION_PATTERN = /^sha256-[a-f0-9]{64}$/u;
@@ -76,7 +76,7 @@ export interface EventPackageManifest {
   readonly services: readonly EventPackageManifestService[];
   readonly timers: readonly EventPackageManifestTimer[];
   readonly permissions: {
-    readonly workspace: 'none' | 'read';
+    readonly workspace: 'none' | 'read' | 'write';
     readonly network: boolean;
   };
 }
@@ -248,17 +248,37 @@ export class EventPackageStore {
 }
 
 export function decodeEventPackageManifest(value: unknown): EventPackageManifest {
-  const record = optionalExactRecord(value, [
+  const root = optionalExactRecord(value, [
     'schemaVersion',
     'id',
     'version',
+    'displayName',
+    'description',
+    'dependencies',
+    'configuration',
+    'runtime',
+    'ui',
+  ]);
+  const runtime = optionalExactRecord(root.runtime, [
     'entry',
+    'tools',
     'events',
     'listeners',
     'services',
     'timers',
     'permissions',
   ]);
+  const record = {
+    schemaVersion: root.schemaVersion,
+    id: root.id,
+    version: root.version,
+    entry: runtime.entry,
+    events: runtime.events ?? [],
+    listeners: runtime.listeners ?? [],
+    services: runtime.services ?? [],
+    timers: runtime.timers ?? [],
+    permissions: runtime.permissions,
+  };
   if (record.schemaVersion !== 1) throw invalidPackage('Event package schemaVersion must be 1');
   const id = boundedString(record.id, 'Event id', 128);
   if (!isCanonicalExtensionId(id)) throw invalidPackage('Event package id is invalid');
@@ -371,8 +391,12 @@ export function decodeEventPackageManifest(value: unknown): EventPackageManifest
     });
   });
   const permissions = exactRecord(record.permissions, ['workspace', 'network']);
-  if (permissions.workspace !== 'none' && permissions.workspace !== 'read') {
-    throw invalidPackage('Event package workspace permission must be none or read');
+  if (
+    permissions.workspace !== 'none' &&
+    permissions.workspace !== 'read' &&
+    permissions.workspace !== 'write'
+  ) {
+    throw invalidPackage('Extension Runtime workspace permission is invalid');
   }
   if (typeof permissions.network !== 'boolean')
     throw invalidPackage('Event package network permission is invalid');

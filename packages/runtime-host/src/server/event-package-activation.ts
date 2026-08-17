@@ -13,20 +13,35 @@ import type {
 } from '@maka/runtime/extension-timer-contributions';
 import type { InstalledToolPackage, ToolPackageManifest } from './tool-package-store.js';
 import {
-  ToolPackageActivation,
-  type PackageWorkerEventEmitter,
-  type PackageWorkerServiceCaller,
-} from './tool-package-worker.js';
+  InProcessPackageActivation,
+  type PackageContinuation,
+  type PackageEventEmitter,
+  type PackageServiceCaller,
+} from './in-process-package-runtime.js';
 import type { InstalledEventPackage } from './event-package-store.js';
 
-/** One Event Extension activation backed by isolated one-shot Listener workers. */
+/** One trusted Event Extension activation backed by a live in-process module. */
 export class EventPackageActivation {
+  readonly #runtime: InProcessPackageActivation;
+  readonly #ownsRuntime: boolean;
+
   constructor(
     readonly packageRevision: InstalledEventPackage,
     readonly configuration: Readonly<Record<string, string | number | boolean>> = Object.freeze({}),
-    private readonly emitEvent?: PackageWorkerEventEmitter,
-    private readonly callService?: PackageWorkerServiceCaller,
-  ) {}
+    emitEvent?: PackageEventEmitter,
+    callService?: PackageServiceCaller,
+    runtime?: InProcessPackageActivation,
+  ) {
+    this.#runtime =
+      runtime ??
+      new InProcessPackageActivation(
+        asToolPackage(packageRevision),
+        configuration,
+        emitEvent,
+        callService,
+      );
+    this.#ownsRuntime = runtime === undefined;
+  }
 
   events(): readonly ExtensionEventDefinition[] {
     return Object.freeze(
@@ -39,8 +54,11 @@ export class EventPackageActivation {
       this.packageRevision.manifest.listeners.map((declaration) =>
         Object.freeze({
           ...declaration,
-          invoke: (payload: unknown, context: ExtensionEventInvocationContext) =>
-            this.#invoke(declaration.handler, declaration.timeoutMs, payload, context),
+          invoke: (
+            payload: unknown,
+            context: ExtensionEventInvocationContext,
+            next?: PackageContinuation,
+          ) => this.#invoke(declaration.handler, payload, context, next),
         }),
       ),
     );
@@ -55,7 +73,7 @@ export class EventPackageActivation {
             const definition = service.methods.find((candidate) => candidate.name === method);
             if (!definition)
               throw new Error(`Service method is not declared: ${service.name}.${method}`);
-            return this.#invokeService(definition.handler, definition.timeoutMs, input, context);
+            return this.#invokeService(definition.handler, input, context);
           },
         }),
       ),
@@ -69,7 +87,7 @@ export class EventPackageActivation {
           ...timer,
           configuration: this.configuration,
           invoke: (payload: unknown, context: ExtensionTimerInvocationContext) =>
-            this.#invokeTimer(timer.handler, timer.timeoutMs, payload, context),
+            this.#invokeTimer(timer.handler, payload, context),
         }),
       ),
     );
@@ -82,114 +100,75 @@ export class EventPackageActivation {
       this.packageRevision.manifest.timers.length === 0
     )
       return;
-    const worker = this.#newWorker();
-    try {
-      await worker.healthCheck();
-    } finally {
-      await worker.dispose();
-    }
+    await this.#runtime.healthCheck([
+      ...this.packageRevision.manifest.listeners.map(({ handler }) => handler),
+      ...this.packageRevision.manifest.services.flatMap(({ methods }) =>
+        methods.map(({ handler }) => handler),
+      ),
+      ...this.packageRevision.manifest.timers.map(({ handler }) => handler),
+    ]);
   }
 
   async dispose(): Promise<void> {
-    // Listener workers are one-shot. In-flight immutable Revision snapshots own their invocation.
+    if (this.#ownsRuntime) await this.#runtime.dispose();
   }
 
   async #invoke(
     handler: string,
-    timeoutMs: number,
     payload: unknown,
     context: ExtensionEventInvocationContext,
+    next?: PackageContinuation,
   ): Promise<unknown> {
-    const worker = this.#newWorker();
-    try {
-      const result = await worker.invokeRaw(
-        handler,
-        payload,
-        {
-          sessionId: context.sessionId,
-          ...(context.runId ? { runId: context.runId } : {}),
-          turnId: context.turnId,
-          cwd: context.cwd,
-          toolCallId: `event-listener:${handler}`,
-          abortSignal: context.signal,
-          permissionMode: context.permissionMode,
-          origin: context.origin,
-          eventDepth: context.eventDepth,
-        },
-        timeoutMs,
-      );
-      return result;
-    } finally {
-      await worker.dispose();
-    }
+    return await this.#runtime.invokeRaw(
+      handler,
+      payload,
+      {
+        sessionId: context.sessionId,
+        ...(context.runId ? { runId: context.runId } : {}),
+        turnId: context.turnId,
+        cwd: context.cwd,
+        toolCallId: `event-listener:${handler}`,
+        abortSignal: context.signal,
+        permissionMode: context.permissionMode,
+        origin: context.origin,
+        eventDepth: context.eventDepth,
+      },
+      next,
+    );
   }
 
   async #invokeService(
     handler: string,
-    timeoutMs: number,
     input: unknown,
     context: ExtensionServiceInvocationContext,
   ): Promise<unknown> {
-    const worker = this.#newWorker();
-    try {
-      return await worker.invokeRaw(
-        handler,
-        input,
-        {
-          sessionId: context.sessionId,
-          ...(context.runId ? { runId: context.runId } : {}),
-          turnId: context.turnId,
-          cwd: context.cwd,
-          toolCallId: `service:${handler}`,
-          abortSignal: context.signal,
-          permissionMode: context.permissionMode,
-          origin: context.origin,
-          serviceDepth: context.serviceDepth,
-        },
-        timeoutMs,
-      );
-    } finally {
-      await worker.dispose();
-    }
+    return await this.#runtime.invokeRaw(handler, input, {
+      sessionId: context.sessionId,
+      ...(context.runId ? { runId: context.runId } : {}),
+      turnId: context.turnId,
+      cwd: context.cwd,
+      toolCallId: `service:${handler}`,
+      abortSignal: context.signal,
+      permissionMode: context.permissionMode,
+      origin: context.origin,
+      serviceDepth: context.serviceDepth,
+    });
   }
 
   async #invokeTimer(
     handler: string,
-    timeoutMs: number,
     payload: unknown,
     context: ExtensionTimerInvocationContext,
   ): Promise<unknown> {
-    const worker = this.#newWorker();
-    try {
-      return await worker.invokeRaw(
-        handler,
-        payload,
-        {
-          sessionId: context.sessionId,
-          turnId: context.turnId,
-          cwd: context.cwd,
-          toolCallId: `timer:${handler}:${context.scheduledAt}`,
-          abortSignal: context.signal,
-          permissionMode: context.permissionMode,
-          origin: context.origin,
-        },
-        timeoutMs,
-      );
-    } finally {
-      await worker.dispose();
-    }
-  }
-
-  #newWorker(): ToolPackageActivation {
-    return new ToolPackageActivation(
-      asToolPackage(this.packageRevision),
-      this.configuration,
-      {
-        MAKA_EVENT_LISTENER_ACTIVE: '1',
-      },
-      this.emitEvent,
-      this.callService,
-    );
+    return await this.#runtime.invokeRaw(handler, payload, {
+      sessionId: context.sessionId,
+      turnId: context.turnId,
+      cwd: context.cwd,
+      toolCallId: `timer:${handler}:${context.scheduledAt}`,
+      abortSignal: context.signal,
+      permissionMode: context.permissionMode,
+      origin: context.origin,
+    });
   }
 }
 

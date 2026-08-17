@@ -212,3 +212,79 @@ test('dispatch clones handler inputs and propagates cancellation authority', asy
     /authority revoked/u,
   );
 });
+
+test('around middleware wraps the final continuation and can transform live values', async () => {
+  const order: string[] = [];
+  const live = new AbortController();
+  const result = await dispatchExtensionHandlers({
+    mode: 'around',
+    payload: { value: 1, signal: live.signal },
+    signal: live.signal,
+    handlers: [
+      {
+        identity: 'outer',
+        invoke: async (value, next) => {
+          order.push('outer:before');
+          const downstream = (await next?.({ ...(value as object), value: 2 })) as {
+            value: number;
+          };
+          order.push('outer:after');
+          return { value: downstream.value + 1 };
+        },
+      },
+      {
+        identity: 'inner',
+        invoke: async (value, next) => {
+          order.push('inner:before');
+          const downstream = await next?.(value);
+          order.push('inner:after');
+          return downstream;
+        },
+      },
+    ],
+    final: async (value) => {
+      order.push('final');
+      assert.equal((value as { signal: AbortSignal }).signal, live.signal);
+      return value;
+    },
+  });
+  assert.deepEqual(order, ['outer:before', 'inner:before', 'final', 'inner:after', 'outer:after']);
+  assert.deepEqual(result.value, { value: 3 });
+  assert.equal(result.stopped, false);
+});
+
+test('around middleware may short-circuit and next is single-use', async () => {
+  let reachedFinal = false;
+  const short = await dispatchExtensionHandlers({
+    mode: 'around',
+    payload: 'input',
+    signal: new AbortController().signal,
+    handlers: [{ identity: 'stop', invoke: async () => 'cached' }],
+    final: async () => {
+      reachedFinal = true;
+      return 'final';
+    },
+  });
+  assert.equal(short.value, 'cached');
+  assert.equal(short.stopped, true);
+  assert.equal(reachedFinal, false);
+
+  await assert.rejects(
+    dispatchExtensionHandlers({
+      mode: 'around',
+      payload: 'input',
+      signal: new AbortController().signal,
+      handlers: [
+        {
+          identity: 'twice',
+          invoke: async (value, next) => {
+            await next?.(value);
+            return await next?.(value);
+          },
+        },
+      ],
+      final: async (value) => value,
+    }),
+    /only be called once/u,
+  );
+});

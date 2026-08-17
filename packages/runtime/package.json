@@ -34,7 +34,6 @@
     "./extension-lifecycle-kernel": "./dist/extension-lifecycle-kernel.js",
     "./extension-tool-contributions": "./dist/extension-tool-contributions.js",
     "./extension-ui-contributions": "./dist/extension-ui-contributions.js",
-    "./extension-hook-contributions": "./dist/extension-hook-contributions.js",
     "./extension-event-contributions": "./dist/extension-event-contributions.js",
     "./extension-dispatch": "./dist/extension-dispatch.js",
     "./extension-core-events": "./dist/extension-core-events.js",

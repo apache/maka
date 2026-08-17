@@ -256,6 +256,99 @@ test('core Agent seams and typed Services share lifecycle-owned dispatch', async
   await extensions.close();
 });
 
+test('trusted core middleware wraps the live Tool and LLM continuations', async () => {
+  const extensions = new HostExtensionRuntime();
+  const order: string[] = [];
+  await extensions.installToolRevision({
+    extensionId: 'around-runtime',
+    revision: '1',
+    toolNames: [],
+    eventContributionIds: ['tools-around', 'llm-around'],
+    prepare: async () => ({
+      tools: [],
+      listeners: [
+        {
+          id: 'tools-around',
+          event: 'maka.tools.execute',
+          handler: 'toolsAround',
+          priority: 20,
+          timeoutMs: 1_000,
+          invoke: async (payload, _context, next) => {
+            order.push('tool:before');
+            const result = await next?.({ ...(payload as object), toolInput: { value: 2 } });
+            order.push('tool:after');
+            return { ...(result as object), wrapped: true };
+          },
+        },
+        {
+          id: 'llm-around',
+          event: 'maka.llm.stream',
+          handler: 'llmAround',
+          priority: 20,
+          timeoutMs: 1_000,
+          invoke: async (payload, _context, next) => {
+            order.push('llm:before');
+            const result = await next?.(payload);
+            order.push('llm:after');
+            return result;
+          },
+        },
+      ],
+    }),
+  });
+  await extensions.activate({
+    bindingId: 'around-runtime-binding',
+    scopeId: 'session-around',
+    extensionId: 'around-runtime',
+    revision: '1',
+  });
+  const context = {
+    sessionId: 'session-around',
+    runId: 'run-around',
+    turnId: 'turn-around',
+    cwd: process.cwd(),
+    permissionMode: 'default',
+    origin: 'host' as const,
+    configuration: Object.freeze({}),
+    signal: new AbortController().signal,
+  };
+  const toolResult = await extensions.dispatchCoreMiddleware(
+    'session-around',
+    'maka.tools.execute',
+    { toolName: 'Echo', toolInput: { value: 1 } },
+    context,
+    async (payload) => {
+      order.push('tool:impl');
+      return (payload as { toolInput: unknown }).toolInput;
+    },
+  );
+  assert.deepEqual(toolResult, { value: 2, wrapped: true });
+
+  const stream = { events: Symbol('live-stream') };
+  assert.equal(
+    await extensions.dispatchCoreMiddleware(
+      'session-around',
+      'maka.llm.stream',
+      { request: Symbol('live-request') },
+      context,
+      async () => {
+        order.push('llm:provider');
+        return stream;
+      },
+    ),
+    stream,
+  );
+  assert.deepEqual(order, [
+    'tool:before',
+    'tool:impl',
+    'tool:after',
+    'llm:before',
+    'llm:provider',
+    'llm:after',
+  ]);
+  await extensions.close();
+});
+
 test('custom Event modes honor priority, neutral bail, schemas, and lifecycle cleanup', async () => {
   const extensions = new HostExtensionRuntime();
   const calls: string[] = [];
