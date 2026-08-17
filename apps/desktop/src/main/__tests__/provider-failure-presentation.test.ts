@@ -50,11 +50,27 @@ describe('provider failure presentation', () => {
       ts: 1,
       recoverable: false,
       code: 'permission_error',
+      boundedProviderMessage: true,
       message,
     };
 
     assert.equal(sessionEventErrorMessage(event), message);
     assert.equal(sessionEventErrorMessage(event, 'en'), message);
+  });
+
+  test('does not render a coded message verbatim without the bounded-provider marker', () => {
+    const event: Extract<SessionEvent, { type: 'error' }> = {
+      type: 'error',
+      id: 'event-ecodes',
+      turnId: 'turn-ecodes',
+      ts: 1,
+      recoverable: false,
+      code: 'ECONNRESET',
+      message: 'socket hang up at internal-connect.ts:42 (raw internal text)',
+    };
+
+    assert.equal(sessionEventErrorMessage(event), '任务运行失败，请稍后重试。');
+    assert.equal(sessionEventErrorMessage(event, 'en'), 'The task run failed. Try again later.');
   });
 
   test('uses generic copy when an error has neither a known reason nor provider evidence', () => {
@@ -67,7 +83,7 @@ describe('provider failure presentation', () => {
       message: '403 permission denied',
     };
 
-    assert.equal(sessionEventErrorMessage(event), '对话运行失败，请稍后重试。');
-    assert.equal(sessionEventErrorMessage(event, 'en'), 'The conversation run failed. Try again later.');
+    assert.equal(sessionEventErrorMessage(event), '任务运行失败，请稍后重试。');
+    assert.equal(sessionEventErrorMessage(event, 'en'), 'The task run failed. Try again later.');
   });
 });
