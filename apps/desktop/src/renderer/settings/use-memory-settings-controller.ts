@@ -342,7 +342,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
   async function openFolder() {
     await runMemoryAction('memory:folder:open', async (isCurrent) => {
       try {
-        const result = await window.maka.app.openPath('memory');
+        const result = await window.maka.app.openPath('memory', undefined, host);
         if (!isCurrent()) return;
         if (!result.ok) {
           toast.error(copy.openBackupFailed(openPathActionLabel('memory', locale)), openPathFailureCopy(result.reason, locale));

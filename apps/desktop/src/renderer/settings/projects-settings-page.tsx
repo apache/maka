@@ -82,8 +82,11 @@ export function ProjectsSettingsPage(props: {
     if (!host) {
       setProjects([]);
       setCapabilities(NO_PROJECT_CAPABILITIES);
+      setHomePath(undefined);
       return;
     }
+    let cancelled = false;
+    setHomePath(undefined);
     void reload();
     const unsubscribeProjects = window.maka.projects.subscribeChanges(
       () => void reload(),
@@ -91,12 +94,14 @@ export function ProjectsSettingsPage(props: {
       host,
     );
     const unsubscribeHosts = window.maka.runtimeHostProfiles.subscribeChanges(() => void reload());
-    // Paths render unabbreviated until this lands, which is why
-    // `collapseHomePath` treats an unknown home as a no-op rather than a bug.
-    void window.maka.app.info().then((info) => {
-      if (mountedRef.current) setHomePath(info.homePath);
-    });
+    void window.maka.app.info(host).then(
+      (info) => {
+        if (!cancelled && mountedRef.current) setHomePath(info.homePath);
+      },
+      () => undefined,
+    );
     return () => {
+      cancelled = true;
       unsubscribeProjects();
       unsubscribeHosts();
     };

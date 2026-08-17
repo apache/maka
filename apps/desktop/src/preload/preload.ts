@@ -721,16 +721,13 @@ function subscribeSelectedRuntimeHostEvent<T extends readonly unknown[]>(
   handler: (...args: T) => void,
 ): () => void {
   if (!host) return subscribeActiveRuntimeHostEvent(channel, handler);
-  let disposed = false;
-  let unsubscribe = (): void => {};
-  void runtimeHostScope(host).then((scope) => {
-    if (disposed) return;
-    unsubscribe = subscribeRuntimeHostEvent(channel, scope, handler);
-  }).catch(() => undefined);
-  return () => {
-    disposed = true;
-    unsubscribe();
-  };
+  return subscribeEveryRuntimeHostEvent(channel, (scope, ...args: T) => {
+    if (
+      scope.hostId !== host.hostId ||
+      runtimeHostProfiles.get(host.profileId) !== scope.hostId
+    ) return;
+    handler(...args);
+  });
 }
 
 const runtimeHost: MakaBridge['runtimeHost'] = {
