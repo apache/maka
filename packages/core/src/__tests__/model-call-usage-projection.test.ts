@@ -119,6 +119,28 @@ describe('model-call usage projection', () => {
     assert.equal(summary.totalTokens.total, 0);
   });
 
+  test('does not let one malformed cache reading inflate the Session cache total', () => {
+    const summary = projectModelCallUsageSummary(
+      [
+        attempt({
+          attemptId: 'malformed-cache',
+          inputTokens: 100,
+          cacheReadInputTokens: 200,
+        }),
+        attempt({
+          attemptId: 'cache-miss',
+          inputTokens: 100,
+          cacheReadInputTokens: 0,
+        }),
+      ],
+      { range: 'all' },
+      NOW,
+    );
+
+    assert.equal(summary.totalTokens.input, 200);
+    assert.equal(summary.totalTokens.cacheRead, 100);
+  });
+
   test('a replayed attemptId is counted once', () => {
     const row = attempt({ attemptId: 'dup' });
     const summary = projectModelCallUsageSummary([row, row], { range: 'all' }, NOW);

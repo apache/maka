@@ -267,6 +267,32 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('legacy summary clamps each cache reading to its own input', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      await stores.telemetry.recordLlmCall(
+        llmRecord({
+          id: 'malformed-cache',
+          inputTokens: 100,
+          cacheHitInputTokens: 200,
+          cachedInputTokens: 200,
+        }),
+      );
+      await stores.telemetry.recordLlmCall(
+        llmRecord({ id: 'cache-miss', inputTokens: 100, cacheHitInputTokens: 0 }),
+      );
+
+      const summary = await stores.telemetry.summary({ range: 'all' });
+      assert.equal(summary.totalTokens.input, 200);
+      assert.equal(summary.totalTokens.cacheRead, 100);
+
+      await stores.close();
+      await owner.close();
+    });
+  });
+
   test('every facade read observes lease revocation', async () => {
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);

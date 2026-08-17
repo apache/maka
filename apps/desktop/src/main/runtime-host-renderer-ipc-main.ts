@@ -81,8 +81,6 @@ function request(
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'scheduled-task.query':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
-    case 'usage.query':
-      return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'web-search.execute':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
   }

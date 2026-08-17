@@ -833,14 +833,15 @@ async function loadSessionTracePage(
   return { trace, nextCursor: page.nextCursor };
 }
 
-async function loadSessionUsageSummary(sessionId: string): Promise<DesktopSessionUsageSummary> {
+async function loadSessionUsageSummary(
+  sessionId: string,
+): Promise<Result<DesktopSessionUsageSummary>> {
   const session = await runtimeHostSessionRef(sessionId);
-  const result = await scopedRuntimeHost(session.scope).query('usage.query', {
-    kind: 'summary',
-    query: { range: 'all', sessionId: session.sessionId },
-  });
-  if (result.kind !== 'summary') throw new Error('Invalid Session usage summary');
-  return { ...result.summary, provenance: result.provenance };
+  return ipcRenderer.invoke(
+    'usage:summary',
+    session.scope,
+    { range: 'all', sessionId: session.sessionId },
+  ) as Promise<Result<DesktopSessionUsageSummary>>;
 }
 
 async function updateDailyReviewConfig(
@@ -2377,7 +2378,7 @@ const makaBridge = {
       return bridgeResult(() => loadSessionTracePage(sessionId, cursor), 'INSPECTOR_TRACE_FAILED');
     },
     summary(sessionId: string): Promise<Result<DesktopSessionUsageSummary>> {
-      return bridgeResult(() => loadSessionUsageSummary(sessionId), 'INSPECTOR_SUMMARY_FAILED');
+      return loadSessionUsageSummary(sessionId);
     },
     /**
      * What the session's context is made of right now (#2323).

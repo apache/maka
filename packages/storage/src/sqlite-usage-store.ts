@@ -156,7 +156,7 @@ class SqliteTelemetryRepo implements TelemetryRepo {
         input: sum(rows.map((row) => row.inputTokens)),
         output: sum(rows.map((row) => row.outputTokens)),
         cacheMiss: sum(rows.map((row) => row.cacheMissInputTokens)),
-        cacheRead: sum(rows.map((row) => row.cacheHitInputTokens)),
+        cacheRead: sum(rows.map((row) => Math.min(row.cacheHitInputTokens, row.inputTokens))),
         cacheWrite: sum(rows.map((row) => row.cacheWriteInputTokens)),
         reasoning: sum(rows.map((row) => row.reasoningTokens)),
         total: sum(rows.map((row) => row.totalTokens)),

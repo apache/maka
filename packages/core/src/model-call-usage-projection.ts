@@ -109,7 +109,7 @@ function tokens(attempt: ModelCallAttempt): {
   const input = attempt.inputTokens ?? 0;
   const output = attempt.outputTokens ?? 0;
   const cacheMiss = attempt.cacheMissInputTokens ?? 0;
-  const cacheRead = attempt.cacheReadInputTokens ?? 0;
+  const cacheRead = Math.min(attempt.cacheReadInputTokens ?? 0, input);
   const cacheWrite = attempt.cacheWriteInputTokens ?? 0;
   const reasoning = attempt.reasoningTokens ?? 0;
   return { input, output, cacheMiss, cacheRead, cacheWrite, reasoning, total: input + output };
