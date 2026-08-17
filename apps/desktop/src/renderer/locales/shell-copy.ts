@@ -177,6 +177,7 @@ type ShellCopy = {
     remoteDirectoryRetry: string;
     remoteDirectoryLoading: string;
     remoteDirectoryShowHidden: string;
+    remoteDirectoryHideHidden: string;
     runtimeHostReadiness: Record<'connecting' | 'reconnecting' | 'unavailable', string>;
     openFailedTitle(path: string): string;
     openPathLabels: Record<'workspace' | 'skills' | 'memory' | 'project', string>;
@@ -741,6 +742,7 @@ const SHELL_COPY_BY_LOCALE = {
       remoteDirectoryRetry: '重试',
       remoteDirectoryLoading: '正在读取文件夹…',
       remoteDirectoryShowHidden: '显示隐藏目录',
+      remoteDirectoryHideHidden: '隐藏隐藏目录',
       runtimeHostReadiness: {
         connecting: '连接中',
         reconnecting: '正在重连',
@@ -1226,6 +1228,7 @@ const SHELL_COPY_BY_LOCALE = {
       remoteDirectoryRetry: 'Retry',
       remoteDirectoryLoading: 'Loading folders…',
       remoteDirectoryShowHidden: 'Show hidden folders',
+      remoteDirectoryHideHidden: 'Hide hidden folders',
       runtimeHostReadiness: {
         connecting: 'Connecting',
         reconnecting: 'Reconnecting',

@@ -4,10 +4,9 @@ import { Button } from '@astryxdesign/core/Button';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { HStack } from '@astryxdesign/core/Stack';
-import { Switch } from '@astryxdesign/core/Switch';
 import { Text } from '@astryxdesign/core/Text';
 import { useUiLocale } from '@maka/ui';
-import { FolderOpen } from '@maka/ui/icons';
+import { Eye, EyeOff, FolderOpen } from '@maka/ui/icons';
 import type {
   DesktopProjectDirectoryEntry,
   DesktopRuntimeHostRef,
@@ -178,10 +177,18 @@ export function RemoteProjectDirectoryDialog(props: {
         footer={
           <LayoutFooter hasDivider>
             <HStack gap={3} hAlign="between" vAlign="center" wrap="wrap">
-              <Switch
-                label={copy.remoteDirectoryShowHidden}
-                value={showHidden}
-                onChange={setShowHidden}
+              <Button
+                variant="ghost"
+                size="sm"
+                isIconOnly
+                label={showHidden
+                  ? copy.remoteDirectoryHideHidden
+                  : copy.remoteDirectoryShowHidden}
+                icon={showHidden
+                  ? <Eye size={18} aria-hidden="true" />
+                  : <EyeOff size={18} aria-hidden="true" />}
+                aria-pressed={showHidden}
+                onClick={() => setShowHidden((current) => !current)}
               />
               <HStack gap={2}>
                 <Button variant="ghost" label={copy.remoteDirectoryCancel} onClick={props.onClose} />
