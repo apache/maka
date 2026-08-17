@@ -4,7 +4,7 @@ Unit tests cannot see addon order: script `next_layer` runs before the built-in
 classifier assigns `TCPLayer`. This test starts the pinned proxy image and a
 local origin, then asserts what a live cell would observe.
 
-It needs Docker and the pinned image, so it is opt-in:
+It needs Docker, the pinned proxy image, and `python:3.12-slim`, so it is opt-in:
 
     MAKA_EVAL_EGRESS_PROXY_TEST=1 python3 harbor/test_egress_filter_live.py
 """
@@ -133,6 +133,15 @@ def docker_available() -> bool:
     return probe.returncode == 0
 
 
+def docker_image_present(image: str) -> bool:
+    inspect = subprocess.run(
+        ["docker", "image", "inspect", image],
+        capture_output=True,
+        timeout=COMMAND_TIMEOUT_S,
+    )
+    return inspect.returncode == 0
+
+
 @unittest.skipUnless(
     os.environ.get("MAKA_EVAL_EGRESS_PROXY_TEST") == "1",
     "set MAKA_EVAL_EGRESS_PROXY_TEST=1 to run the live mitmproxy proxy test",
@@ -148,13 +157,10 @@ class LiveEgressFilterTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         if not docker_available():
             raise unittest.SkipTest("Docker daemon is unavailable")
-        images = subprocess.run(
-            ["docker", "image", "inspect", PROXY_IMAGE],
-            capture_output=True,
-            timeout=COMMAND_TIMEOUT_S,
-        )
-        if images.returncode != 0:
+        if not docker_image_present(PROXY_IMAGE):
             raise unittest.SkipTest(f"{PROXY_IMAGE} is not present")
+        if not docker_image_present(ORIGIN_IMAGE):
+            raise unittest.SkipTest(f"{ORIGIN_IMAGE} is not present")
         run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
         cls.network = f"maka-eval-egress-live-{run_id}-net"
         cls.proxy = f"maka-eval-egress-live-{run_id}-proxy"
@@ -322,6 +328,8 @@ class LiveEgressFilterTest(unittest.TestCase):
             text=True,
             timeout=COMMAND_TIMEOUT_S,
         )
+        if listed.returncode != 0:
+            raise AssertionError(listed.stderr)
         return [json.loads(line) for line in listed.stdout.splitlines() if line.strip()]
 
     @classmethod
