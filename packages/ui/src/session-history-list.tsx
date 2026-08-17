@@ -345,7 +345,7 @@ function ProjectNavRow(props: {
           />
         }
       >
-        {/* Nest indent zeroed one level in sidebar.css (time-sort left edge). */}
+        {/* sidebar.css preserves one SideNav nesting step for project hierarchy. */}
         {hasSessions ? (
           <VStack gap={0.5}>{props.sessions.map((session) => props.renderSession(session))}</VStack>
         ) : undefined}

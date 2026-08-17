@@ -34,6 +34,14 @@ test('project navigation and actions remain adjacent keyboard controls', async (
   const controlledGroup = page.locator(`[id="${controlledGroupId}"]`);
   const firstSessionControl = controlledGroup.locator('[data-session-id] button').first();
 
+  const [projectNavigationBox, firstSessionBox] = await Promise.all([
+    navigation.boundingBox(),
+    firstSessionControl.boundingBox(),
+  ]);
+  expect(projectNavigationBox).not.toBeNull();
+  expect(firstSessionBox).not.toBeNull();
+  expect(firstSessionBox!.x - projectNavigationBox!.x).toBeGreaterThanOrEqual(20);
+
   await expect(projectRow.locator('button button')).toHaveCount(0);
   await expect(navigation).toHaveAttribute('aria-expanded', 'true');
 
