@@ -92,8 +92,7 @@ Do not approve anything on npm if the Stage workflow did not finish successfully
 
 ## Inspect and approve on npm
 
-Use Node.js 22.19.0 or newer and the npm version pinned in the repository's `packageManager`
-(currently npm 11.19.0). These are the reviewed release toolchain versions.
+Use Node.js 22.14.0 or newer and npm 11.15.0 or newer for the inspection and approval commands below. The Stage workflow uses its own reviewed toolchain: the Node.js version pinned in the workflow and the exact npm version pinned in the repository's `packageManager`.
 
 ```sh
 npm stage list maka-agent --registry https://registry.npmjs.org/

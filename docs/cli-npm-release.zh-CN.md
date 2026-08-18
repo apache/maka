@@ -90,8 +90,7 @@ Stage workflow 没有成功结束时，不得在 npm 上批准任何内容。
 
 ## 在 npm 上检查并批准
 
-使用 Node.js 22.19.0 或更高版本，并使用仓库 `packageManager` 固定的 npm 版本
-（当前为 npm 11.19.0）。这是经过审查的 release toolchain 版本。
+执行下面的检查和审批命令需使用 Node.js 22.14.0 或更高版本和 npm 11.15.0 或更高版本。Stage workflow 使用自身经过审查的工具链：workflow 固定的 Node.js 版本，以及仓库 `packageManager` 固定的精确 npm 版本。
 
 ```sh
 npm stage list maka-agent --registry https://registry.npmjs.org/
