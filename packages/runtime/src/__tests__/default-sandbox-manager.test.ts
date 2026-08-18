@@ -11,6 +11,7 @@ import {
   createDefaultSandboxManager,
   isBuiltinFilesystemWorkerSandboxAvailable,
   probeWindowsReadiness,
+  readCachedWindowsReadiness,
   type WindowsReadinessSpawn,
 } from '../sandbox/default-sandbox-manager.js';
 
@@ -172,5 +173,100 @@ describe('probeWindowsReadiness', () => {
     const missing = join(tmpdir(), 'maka-windows-readiness-missing', 'maka-windows-sandbox.exe');
     assert.equal(probeWindowsReadiness(missing, spawn), false);
     assert.equal(calls, 0);
+  });
+
+  it('re-probes a transient negative after its TTL but caches a positive permanently', async () => {
+    await withFakeLauncher((clientPath) => {
+      let now = 1_000;
+      const clock = () => now;
+      let calls = 0;
+      let status: number = 1;
+      const spawn: WindowsReadinessSpawn = () => {
+        calls += 1;
+        return { status };
+      };
+
+      // A transient failure is cached false, but only for the negative TTL.
+      assert.equal(probeWindowsReadiness(clientPath, spawn, clock), false);
+      assert.equal(calls, 1);
+      // Within the TTL the cached negative is reused, not re-probed.
+      now += 59_000;
+      assert.equal(probeWindowsReadiness(clientPath, spawn, clock), false);
+      assert.equal(calls, 1);
+
+      // Past the TTL it re-probes; the host has recovered, so it flips to true.
+      now += 2_000;
+      status = 0;
+      assert.equal(probeWindowsReadiness(clientPath, spawn, clock), true);
+      assert.equal(calls, 2);
+
+      // A positive result is cached permanently — no re-probe however far the
+      // clock advances.
+      now += 10 * 60_000;
+      assert.equal(probeWindowsReadiness(clientPath, spawn, clock), true);
+      assert.equal(calls, 2);
+    });
+  });
+
+  it('never re-poisons after a positive: only negatives expire', async () => {
+    await withFakeLauncher((clientPath) => {
+      let now = 5_000;
+      const clock = () => now;
+      let calls = 0;
+      const spawn: WindowsReadinessSpawn = () => {
+        calls += 1;
+        return { status: 0 };
+      };
+      assert.equal(probeWindowsReadiness(clientPath, spawn, clock), true);
+      // Even a subsequent spawn that *would* fail is never consulted, because the
+      // positive entry never expires.
+      const failing: WindowsReadinessSpawn = () => {
+        calls += 1;
+        return { status: 1 };
+      };
+      now += 24 * 60 * 60_000;
+      assert.equal(probeWindowsReadiness(clientPath, failing, clock), true);
+      assert.equal(calls, 1);
+    });
+  });
+});
+
+describe('readCachedWindowsReadiness', () => {
+  it('is strictly cache-only: never spawns, fails closed until the cache is warmed', async () => {
+    await withFakeLauncher((clientPath) => {
+      let now = 2_000;
+      const clock = () => now;
+
+      // Cold cache: the hot path must fail closed without any spawn (there is no
+      // spawn to inject — the read is structurally incapable of one).
+      assert.equal(readCachedWindowsReadiness(clientPath, clock), false);
+
+      // The warmer populates a positive entry; the hot path then reflects it.
+      let calls = 0;
+      const spawn: WindowsReadinessSpawn = () => {
+        calls += 1;
+        return { status: 0 };
+      };
+      assert.equal(probeWindowsReadiness(clientPath, spawn, clock), true);
+      assert.equal(readCachedWindowsReadiness(clientPath, clock), true);
+      assert.equal(calls, 1);
+    });
+  });
+
+  it('fails closed on an expired negative entry without re-probing on the hot path', async () => {
+    await withFakeLauncher((clientPath) => {
+      let now = 3_000;
+      const clock = () => now;
+      const spawn: WindowsReadinessSpawn = () => ({ status: 1 });
+
+      // Warm a negative entry via the spawning warmer.
+      assert.equal(probeWindowsReadiness(clientPath, spawn, clock), false);
+      // Before expiry the hot path returns the cached negative.
+      assert.equal(readCachedWindowsReadiness(clientPath, clock), false);
+      // After expiry the hot path still fails closed — it must NOT spawn to
+      // refresh; only the warmer may. The stale entry simply reads as false.
+      now += 61_000;
+      assert.equal(readCachedWindowsReadiness(clientPath, clock), false);
+    });
   });
 });

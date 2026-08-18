@@ -44,6 +44,23 @@ pub(crate) fn acl_mutex_name(user_sid: &str) -> String {
     format!(r"Global\Maka.WindowsSandbox.AclLedger.v2.{user_sid}")
 }
 
+/// Serializes the readiness probe's AppContainer profile lifecycle. The probe
+/// profile (`maka.readiness.<hash>`) is a per-user, machine-wide registration
+/// just like the ledger's objects, so two concurrent probes in different
+/// sessions would otherwise delete→create→drop each other's live profile. The
+/// lease is scoped by SID and carries the same SYSTEM+owner-only DACL as the
+/// ledger mutex (see [`acl_mutex_name`]), so it is `Global\` for the identical
+/// cross-session reason and fails closed against a squatted name.
+pub(crate) fn readiness_mutex_name(user_sid: &str) -> String {
+    format!(r"Global\Maka.WindowsSandbox.ReadinessProfile.v1.{user_sid}")
+}
+
+/// Timeout for acquiring the readiness profile lease. The readiness probe is a
+/// short throwaway `cmd.exe /c exit 0`, so a same-user contender releases the
+/// lease well within this bound; exceeding it means a stuck holder and the
+/// probe fails closed rather than racing the profile lifecycle unlocked.
+pub(crate) const READINESS_MUTEX_TIMEOUT_MS: u32 = 30_000;
+
 /// Distinguishes launch failures by whether the Job was proven empty.
 /// Cleanup semantics differ: a settled failure may release grants and
 /// ledger normally, while an unsettled one must preserve its recovery
@@ -195,15 +212,17 @@ pub fn with_acl_grants<T>(
     }
 }
 
-struct LedgerLock {
+pub(crate) struct LedgerLock {
     handle: HANDLE,
 }
 
 impl LedgerLock {
-    fn acquire(name: &str, user_sid: &str, timeout_ms: u32) -> Result<Self, String> {
+    pub(crate) fn acquire(name: &str, user_sid: &str, timeout_ms: u32) -> Result<Self, String> {
         Self::try_acquire(name, user_sid, timeout_ms)?.ok_or_else(|| {
             if name.contains(".AclLease.") {
                 "acquire ACL ledger lease timed out".to_owned()
+            } else if name.contains(".ReadinessProfile.") {
+                "acquire readiness profile lease timed out".to_owned()
             } else {
                 "acquire ACL ledger mutex timed out".to_owned()
             }

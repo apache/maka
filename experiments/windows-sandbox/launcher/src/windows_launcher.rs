@@ -43,8 +43,12 @@ use windows_sys::Win32::System::Threading::{
     TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
-use crate::acl_ledger::{LaunchFailure, with_acl_grants};
-use crate::protocol::{DEFAULT_LAUNCH_TIMEOUT_MS, LaunchRequest, NetworkMode};
+use crate::acl_ledger::{
+    LaunchFailure, LedgerLock, READINESS_MUTEX_TIMEOUT_MS, readiness_mutex_name, with_acl_grants,
+};
+use crate::protocol::{
+    DEFAULT_LAUNCH_TIMEOUT_MS, LaunchRequest, NetworkMode, RESERVED_READINESS_REQUEST_ID,
+};
 
 pub fn self_probe() -> Result<u8, String> {
     unsafe {
@@ -162,6 +166,22 @@ pub fn readiness_probe() -> Result<u8, String> {
     cmd_path.push("cmd.exe");
     let cmd_path = cmd_path.to_string_lossy().into_owned();
 
+    // Serialize the whole readiness profile lifecycle across processes. The
+    // profile name is fixed and the registration is per-user machine-wide, so
+    // two concurrent probes — side-by-side installs, or a direct
+    // `--readiness-probe` racing the memoized availability gate — would
+    // otherwise delete→create→drop each other's live profile. The lease is the
+    // same DACL-hardened named mutex the ACL ledger uses, scoped to a distinct
+    // readiness name, held (RAII) across the entire
+    // delete→create→probe→settle→drop window and failing closed on timeout so
+    // the lifecycle never runs unlocked.
+    let user_sid = current_user_sid_string()?;
+    let _lease = LedgerLock::acquire(
+        &readiness_mutex_name(&user_sid),
+        &user_sid,
+        READINESS_MUTEX_TIMEOUT_MS,
+    )?;
+
     unsafe {
         let job = create_kill_on_close_job()?;
         // Deterministic, retryable profile lifecycle. The readiness child is a
@@ -173,20 +193,30 @@ pub fn readiness_probe() -> Result<u8, String> {
         // before creating a fresh one, so at most one readiness profile ever
         // exists and it is always the current probe's. This bounds cleanup
         // without a persistent ledger and without relying on process
-        // destruction to run `Drop`.
-        let profile = match AppContainerProfile::create_readiness() {
+        // destruction to run `Drop`. The lease above makes this reclaim safe:
+        // no other process can hold the profile while we delete and recreate it.
+        let mut profile = match AppContainerProfile::create_readiness() {
             Ok(profile) => profile,
             Err(error) => {
                 CloseHandle(job);
                 return Err(error);
             }
         };
-        let result = probe_appcontainer_child(&cmd_path, job, profile.sid);
+        let mut unsettled = false;
+        let result = probe_appcontainer_child(&cmd_path, job, profile.sid, &mut unsettled);
         // Closing the last Job handle is the kernel backstop after the probe has
         // already explicitly terminated and drained its child (see
         // `probe_appcontainer_child`); it terminates any straggler the drain
         // did not reap.
         CloseHandle(job);
+        if unsettled {
+            // The Job was not proven empty, so a descendant may still hold this
+            // AppContainer identity. Preserve the registration rather than
+            // deleting a profile that could still be in use; the next
+            // lease-holding `create_readiness` best-effort reclaims it — safe
+            // because the lease serializes that reclaim against any live holder.
+            profile.preserve();
+        }
         drop(profile);
         result
     }
@@ -200,6 +230,7 @@ unsafe fn probe_appcontainer_child(
     cmd_path: &str,
     job: HANDLE,
     app_container_sid: *mut c_void,
+    unsettled: &mut bool,
 ) -> Result<u8, String> {
     let executable = wide(cmd_path);
     // Build the command line directly: cmd.exe's `/c` switch must stay
@@ -339,6 +370,14 @@ unsafe fn probe_appcontainer_child(
         CloseHandle(process.hProcess);
     }
 
+    // Report whether the identity is proven drained. A settlement failure means
+    // the Job was not confirmed empty, so a descendant may still hold this
+    // AppContainer profile; the caller must preserve the registration instead of
+    // deleting one that could still be in use. This is independent of `verify`:
+    // a verification failure whose Job *did* drain cleanly leaves nothing behind
+    // and the profile is safe to delete.
+    *unsettled = settled.is_err();
+
     // A verification/exit failure is the primary diagnosis; a settlement failure
     // is itself a fail-closed signal (something still holds the identity), so it
     // is surfaced when the probe otherwise succeeded.
@@ -426,9 +465,22 @@ unsafe fn sid_string(sid: *mut c_void) -> Result<String, String> {
 struct AppContainerProfile {
     sid: *mut c_void,
     name: Vec<u16>,
+    /// When set, `Drop` skips `DeleteAppContainerProfile`. The readiness probe
+    /// sets it when its Job could not be proven empty: a descendant may still
+    /// hold this identity, so the registration is preserved for a later
+    /// lease-holding `create_readiness` to reclaim rather than deleted while
+    /// possibly in use. Production launches never set it (each has a unique
+    /// identity that no live launch reuses).
+    keep_on_drop: bool,
 }
 
 impl AppContainerProfile {
+    /// Preserve this profile's registration on drop instead of deleting it.
+    /// Called only when the readiness probe could not prove its Job empty.
+    fn preserve(&mut self) {
+        self.keep_on_drop = true;
+    }
+
     unsafe fn create(request_id: &str) -> Result<Self, String> {
         let name = appcontainer_profile_name(request_id);
         let display_name = wide("Maka Windows Sandbox");
@@ -453,7 +505,11 @@ impl AppContainerProfile {
                 result as u32
             ));
         }
-        Ok(Self { sid, name })
+        Ok(Self {
+            sid,
+            name,
+            keep_on_drop: false,
+        })
     }
 
     /// Create the throwaway readiness profile under a fixed, self-reconciling
@@ -465,10 +521,11 @@ impl AppContainerProfile {
     /// externally-killed probe is reclaimed by the next probe rather than
     /// accumulating under an unrecoverable unique name.
     unsafe fn create_readiness() -> Result<Self, String> {
-        let name = appcontainer_profile_name(READINESS_PROFILE_REQUEST_ID);
+        let name = appcontainer_readiness_profile_name();
         // Best-effort reclaim of a profile leaked by a previously killed probe.
         // The name is fixed, so this is the only registration that can exist
-        // under it; a missing profile makes this a no-op.
+        // under it; a missing profile makes this a no-op. The caller holds the
+        // readiness lease, so no concurrent probe can be mid-lifecycle here.
         unsafe { DeleteAppContainerProfile(name.as_ptr()) };
         let display_name = wide("Maka Windows Sandbox Readiness");
         let description =
@@ -490,27 +547,38 @@ impl AppContainerProfile {
                 result as u32
             ));
         }
-        Ok(Self { sid, name })
+        Ok(Self {
+            sid,
+            name,
+            keep_on_drop: false,
+        })
     }
 }
 
 /// Fixed request identity for the readiness profile. Unlike production launches
 /// this carries no PID or nonce: a leaked profile is deterministically
 /// reclaimed by the next probe (see `AppContainerProfile::create_readiness`),
-/// which also removes any PID-reuse collision by construction. Readiness is
-/// invoked once per host through the memoized TypeScript availability gate, so
-/// this fixed name is not exercised concurrently in practice.
-pub(crate) const READINESS_PROFILE_REQUEST_ID: &str = "readiness-probe";
+/// which also removes any PID-reuse collision by construction, and the readiness
+/// lease serializes that reclaim across processes. This is the single source
+/// shared with `protocol::RESERVED_READINESS_REQUEST_ID`, which
+/// `LaunchRequest::validate` rejects so no production launch can ever carry the
+/// readiness identity.
+pub(crate) const READINESS_PROFILE_REQUEST_ID: &str = RESERVED_READINESS_REQUEST_ID;
 
 impl Drop for AppContainerProfile {
     fn drop(&mut self) {
         unsafe {
             FreeSid(self.sid);
-            // The request-derived name is never reused by another live launch.
-            // Best-effort deletion keeps the user profile store bounded; a
-            // crash can leave this registration behind, but a future request
-            // has a different SID and cannot inherit its ACL authority.
-            DeleteAppContainerProfile(self.name.as_ptr());
+            if !self.keep_on_drop {
+                // The request-derived name is never reused by another live
+                // launch. Best-effort deletion keeps the user profile store
+                // bounded; a crash can leave this registration behind, but a
+                // future request has a different SID and cannot inherit its ACL
+                // authority. Skipped when `keep_on_drop` is set: the readiness
+                // probe could not prove its Job empty, so the identity may still
+                // be held and must be preserved for a later reclaim.
+                DeleteAppContainerProfile(self.name.as_ptr());
+            }
         }
     }
 }
@@ -518,6 +586,20 @@ impl Drop for AppContainerProfile {
 pub(crate) fn appcontainer_profile_name(request_id: &str) -> Vec<u16> {
     let digest = format!("{:x}", Sha256::digest(request_id.as_bytes()));
     wide(&format!("maka.sandbox.{}", &digest[..32]))
+}
+
+/// The readiness probe's AppContainer profile name. It lives under a distinct
+/// `maka.readiness.` prefix, structurally disjoint from the production
+/// `maka.sandbox.` namespace [`appcontainer_profile_name`] derives, so even if
+/// `validate` were somehow bypassed no production launch could resolve to the
+/// profile the probe deletes and recreates — the two namespaces can never
+/// collide by construction.
+pub(crate) fn appcontainer_readiness_profile_name() -> Vec<u16> {
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(READINESS_PROFILE_REQUEST_ID.as_bytes())
+    );
+    wide(&format!("maka.readiness.{}", &digest[..32]))
 }
 
 fn validate_appcontainer_policy(request: &LaunchRequest) -> Result<(), String> {

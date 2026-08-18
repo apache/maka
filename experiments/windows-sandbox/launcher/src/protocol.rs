@@ -31,6 +31,16 @@ pub const MIN_LAUNCH_TIMEOUT_MS: u64 = 1_000;
 pub const MAX_LAUNCH_TIMEOUT_MS: u64 = 600_000;
 pub const DEFAULT_LAUNCH_TIMEOUT_MS: u64 = 30_000;
 
+/// `request_id` reserved for the internal Windows readiness probe. Its own
+/// AppContainer profile/SID is derived from this exact identity, and
+/// `create_readiness` best-effort *deletes* that profile before recreating it.
+/// A production launch is therefore forbidden from carrying it: otherwise an
+/// ordinary launch would resolve to the same profile the probe reclaims,
+/// letting the two identities collide. `validate` rejects it so the readiness
+/// namespace is one production requests can never enter — enforced, not merely
+/// documented.
+pub const RESERVED_READINESS_REQUEST_ID: &str = "readiness-probe";
+
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
@@ -90,6 +100,11 @@ impl LaunchRequest {
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
         {
             return Err("requestId must use 1-128 safe ASCII characters".to_owned());
+        }
+        if self.request_id == RESERVED_READINESS_REQUEST_ID {
+            return Err(format!(
+                "requestId '{RESERVED_READINESS_REQUEST_ID}' is reserved for the internal readiness probe"
+            ));
         }
         validate_path(&self.executable, "executable")?;
         validate_path(&self.cwd, "cwd")?;

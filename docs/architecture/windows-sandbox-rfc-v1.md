@@ -2,7 +2,7 @@
 
 - Status: implementation baseline selected; first preview slice ([#2961](https://github.com/maka-agent/maka-agent/pull/2961)) merged 2026-08-17; product integration continuing under release validation (preview scope in §6.5)
 - Tracking: Windows Phase 4 in [issue #2142](https://github.com/maka-agent/maka-agent/issues/2142)
-- Updated: 2026-08-17
+- Updated: 2026-08-18
 - Owners: `@maka/runtime` sandbox boundary and Runtime Host execution composition
 - Chinese version: [windows-sandbox-rfc-v1.zh-CN.md](./windows-sandbox-rfc-v1.zh-CN.md)
 
@@ -169,6 +169,17 @@ Lexical prefix checks are never authorization evidence.
   cannot create or enforce the boundary rather than trusting file presence alone. The private
   desktop and the full per-profile filesystem/offline-network policy are not yet exercised at
   readiness — see §6.5.)_
+- The readiness probe's throwaway profile lifecycle is isolated and fail-closed. _(Implemented: the
+  probe profile lives under a dedicated `maka.readiness.` namespace that is structurally disjoint
+  from the production `maka.sandbox.` namespace, and its reserved `requestId` is rejected by launch
+  validation, so no production launch can ever resolve to the profile the probe deletes and
+  recreates. The whole delete→create→probe→settle→drop cycle is serialized across processes by a
+  DACL-hardened per-user named mutex — the same primitive the ACL ledger uses — so concurrent probes
+  cannot delete each other's live registration. When the probe cannot prove its Job empty it
+  preserves the registration for a later lease-holder to reclaim rather than deleting an identity a
+  descendant may still hold. On the consumer side a negative availability result is cached only for a
+  bounded TTL, so a single transient failure re-probes on the next composition rather than disabling
+  the sandbox until the Runtime Host restarts; a positive result is cached for the process lifetime.)_
 - Launcher signature, version, and digest are verified against packaged metadata. _(Later gate: the
   per-launch request digest is recomputed and enforced in-broker today; verifying the launcher
   binary's signature and version against packaged metadata is deferred with Phase 3 signing — see
@@ -206,6 +217,11 @@ Enforced in the preview slice:
   identity and token and a kill-on-close Job and launches a throwaway confined child, so
   availability fails closed on hosts where the OS cannot create the boundary rather than on the
   packaged binary's presence alone;
+- a dedicated, cross-process-serialized readiness profile lifecycle (§6.4): the probe profile lives
+  in a namespace disjoint from production, its reserved `requestId` is rejected by validation, a
+  DACL-hardened per-user named mutex serializes its delete→create→probe→drop cycle, an unsettled
+  probe preserves rather than deletes its registration, and negative availability is cached with a
+  bounded TTL so one transient failure does not disable the sandbox until restart;
 - fail-closed capability outcomes with no unsandboxed fallback for `auto`/`require` (§6.4).
 
 Designed but deferred as later gates (not enforced in the preview slice):
@@ -223,6 +239,11 @@ Designed but deferred as later gates (not enforced in the preview slice):
 - Structured unavailable reasons and diagnostics (§6.4). The readiness probe fails closed as a single
   boolean surfaced as `backend_not_available`; the stable typed unavailable reasons and the
   setup-version/failure-stage diagnostics are designed but not yet implemented or propagated.
+- Concurrent real-machine readiness race coverage (§6.4). The readiness profile lifecycle is
+  serialized by a named mutex and covered by unit tests over the mutex-name, namespace, and
+  validation primitives; a multi-process race test that spawns real concurrent probes on a live
+  Windows host is deferred as disproportionate for a throwaway diagnostic probe and inherently flaky
+  in CI. The serialization primitive itself, not an end-to-end race harness, is the enforced contract.
 
 Deferral narrows readiness richness and desktop-layer defense-in-depth, not the enforcement
 boundary: an unavailable, drifted, or failed backend still fails closed, and a restricted managed

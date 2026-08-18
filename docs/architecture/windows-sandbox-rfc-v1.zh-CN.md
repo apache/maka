@@ -2,7 +2,7 @@
 
 - 状态：实现基线已选定；首个预览切片（[#2961](https://github.com/maka-agent/maka-agent/pull/2961)）已于 2026-08-17 合并；产品接入继续做发布验证（预览范围见 §6.5）
 - 跟踪：[Issue #2142](https://github.com/maka-agent/maka-agent/issues/2142) Windows Phase 4
-- 更新日期：2026-08-17
+- 更新日期：2026-08-18
 - Owner：`@maka/runtime` sandbox boundary 与 Runtime Host execution composition
 - 英文版：[windows-sandbox-rfc-v1.md](./windows-sandbox-rfc-v1.md)
 
@@ -135,6 +135,7 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 ### 6.4 能力与失败
 
 - readiness 必须在生产 identity/token/Job/desktop/handle/filesystem/offline network 下启动真实 probe； _(已实现:预览版的 `--readiness-probe` 会真正建立 AppContainer identity/token 与 kill-on-close Job 并启动一个抛弃式受限子进程,宿主无法创建或强制边界时 fail closed,而非仅凭二进制存在即注册;private desktop 与完整的按 profile filesystem/offline network 策略尚未在 readiness 阶段演练 —— 见 §6.5。)_
+- readiness probe 的抛弃式 profile 生命周期必须隔离且 fail closed； _(已实现:probe profile 位于专属 `maka.readiness.` 命名空间,与生产 `maka.sandbox.` 命名空间结构性不相交,其保留的 `requestId` 被 launch validation 拒绝,任何生产启动都无法解析到 probe 删除并重建的那个 profile;整个 delete→create→probe→settle→drop 生命周期由一个 DACL 加固的按用户命名互斥量跨进程串行——与 ACL ledger 复用同一原语——使并发 probe 不会互删对方的 active 注册;当 probe 无法证明其 Job 清空时,保留该注册交由后续持锁者 reclaim,而非删除一个 descendant 可能仍持有的 identity;消费侧对负可用性结果只按有界 TTL 缓存,一次瞬时失败会在下次 composition 重探,而非把沙箱禁用到 Runtime Host 重启,正结果则按进程生命周期缓存。)_
 - launcher signature/version/digest 必须与 package metadata 一致； _(后续门禁：每次启动的 request digest 目前已在 broker 内重算并强制；对照打包 metadata 校验 launcher 二进制的 signature 与 version 随 Phase 3 签名一并暂缓 —— 见 §6.5。)_
 - setup 缺失、identity drift、ACL state 损坏、网络策略无效、文件系统不支持、helper 不匹配、probe 失败都返回
   stable typed unavailable reason； _(后续门禁:readiness probe 目前把每种失败收敛为单一 fail-closed 布尔,统一以
@@ -156,6 +157,7 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - 仅通过 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 继承声明的 handle（§6.3）；
 - 封闭、排序后的 allowlist 环境（§6.3）；
 - 生产 identity readiness probe（§6.4）:`--readiness-probe` 真正建立 AppContainer identity/token 与 kill-on-close Job 并启动抛弃式受限子进程,使可用性在宿主无法创建边界时 fail closed,而非仅凭打包二进制存在;
+- 专属且跨进程串行的 readiness profile 生命周期（§6.4）:probe profile 位于与生产不相交的命名空间,其保留 `requestId` 被 validation 拒绝,一个 DACL 加固的按用户命名互斥量串行其 delete→create→probe→drop 生命周期,未证清空的 probe 保留而非删除其注册,负可用性按有界 TTL 缓存,使一次瞬时失败不会把沙箱禁用到重启;
 - fail-closed capability check，绝不 unsandboxed fallback（§6.4）。
 
 **已设计但作为后续门禁暂缓（预览切片尚未强制）：**
@@ -166,6 +168,10 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - 结构化 unavailable reason 与 diagnostics（§6.4）:readiness probe 以单一 fail-closed 布尔(呈现为
   `backend_not_available`)收敛所有失败;stable typed unavailable reason 与 setup-version/failure-stage
   诊断已设计但尚未实现或传播。
+- readiness 的跨进程并发真机竞态覆盖（§6.4）:readiness profile 生命周期已由命名互斥量串行,并有针对
+  互斥量名、命名空间与 validation 原语的单元测试;在真实 Windows 宿主上 spawn 多个并发 probe 的多进程
+  竞态测试暂缓——对一个抛弃式诊断探针不成比例且在 CI 中天然 flaky。被强制的契约是串行化原语本身,而非
+  端到端竞态 harness。
 
 暂缓收窄的是 readiness 丰富度与 desktop 层的 defense-in-depth，而非强制边界本身：backend 不可用、identity drift 或启动失败仍然 fail closed，受限 managed profile 也绝不回退到宿主执行。
 
