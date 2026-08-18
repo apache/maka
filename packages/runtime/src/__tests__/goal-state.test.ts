@@ -108,6 +108,11 @@ describe('GoalManager creation and lifecycle', () => {
     assert.equal(defaultGoal.blockCap, 8);
   });
 
+  test('stores the condition trimmed, whichever caller set it', () => {
+    const { mgr } = createManager();
+    assert.equal(createGoal(mgr, '  ship it\n').condition, 'ship it');
+  });
+
   test('rejects active and paused Goal replacement without mutating either snapshot', () => {
     const { mgr, events } = createManager();
     const original = createGoal(mgr, 'first');

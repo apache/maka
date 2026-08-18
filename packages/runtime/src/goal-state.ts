@@ -189,7 +189,10 @@ export class GoalManager {
       tokensAtStart?: number;
     },
   ): GoalCreateResult {
-    if (!condition.trim() || !isGoalTextWithinLimit(condition, GOAL_CONDITION_TEXT_LIMIT)) {
+    // Every caller reaches the Goal through here, so the stored condition is
+    // trimmed once here rather than by each caller in its own way.
+    const trimmed = condition.trim();
+    if (!trimmed || !isGoalTextWithinLimit(trimmed, GOAL_CONDITION_TEXT_LIMIT)) {
       throw new RangeError('Goal condition exceeds its shared text limit');
     }
     const existing = this.goals.get(sessionId)?.state;
@@ -202,7 +205,7 @@ export class GoalManager {
       id: this.deps.generateId(),
       revision: 0,
       sessionId,
-      condition,
+      condition: trimmed,
       status: 'active',
       setAt: this.deps.now(),
       iterations: 0,
