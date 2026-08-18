@@ -507,6 +507,15 @@ describe('Provider error classification', () => {
     });
   });
 
+  test('does not mark a metadata-only fallback as provider wording', () => {
+    assert.deepEqual(providerFailureResult({ statusCode: 403 }), {
+      errorClass: 'RequestRejected',
+      httpStatus: 403,
+      retryable: false,
+      message: 'Provider request failed (status=403)',
+    });
+  });
+
   test('maps provider classes to stable user-safe presentations', () => {
     assert.deepEqual(errorPresentationFromClass('ProviderBilling'), {
       reason: 'provider_billing',

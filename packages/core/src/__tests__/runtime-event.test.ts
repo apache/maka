@@ -154,6 +154,35 @@ describe('continuation-start protocol', () => {
 });
 
 describe('RuntimeEvent content variants', () => {
+  test('accepts only boolean provider-message bounds on error content', () => {
+    const decoded = decodeRuntimeEvent(
+      baseEvent({
+        content: {
+          kind: 'error',
+          message: 'bounded provider response',
+          boundedProviderMessage: true,
+        },
+      }),
+    );
+    assert.equal(
+      decoded.content?.kind === 'error' ? decoded.content.boundedProviderMessage : undefined,
+      true,
+    );
+    assert.throws(
+      () =>
+        decodeRuntimeEvent(
+          baseEvent({
+            content: {
+              kind: 'error',
+              message: 'untrusted provider response',
+              boundedProviderMessage: 'true',
+            } as never,
+          }),
+        ),
+      /RuntimeEvent schema/,
+    );
+  });
+
   test('preserves sent inline references as message identity', () => {
     const inlineReferences = [
       { kind: 'skill', value: '/skill:writer', label: 'Writer', start: 8 },

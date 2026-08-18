@@ -439,7 +439,9 @@ async function httpFailure(r: ConnectionEffectResponse, t0: number): Promise<Con
   const providerFailure = providerFailureResult({ statusCode, responseBody: errorBody });
   return {
     ok: false,
-    ...(providerFailure.message !== undefined ? { errorMessage: providerFailure.message } : {}),
+    ...(providerFailure.boundedProviderMessage === true && providerFailure.message !== undefined
+      ? { errorMessage: providerFailure.message }
+      : {}),
     statusCode,
     errorClass: connectionTestErrorClassFromProviderClass(providerFailure.errorClass),
     providerFailure,

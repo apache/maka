@@ -634,6 +634,8 @@ describe('models.dev provider conformance', () => {
     assert.equal(result.ok, false);
     assert.equal(result.statusCode, 401);
     assert.equal(result.errorClass, 'auth');
+    assert.equal(result.errorMessage, undefined);
+    assert.equal(result.providerFailure?.boundedProviderMessage, undefined);
   });
 
   test('OpenAI routes gpt-5* through the Responses wire and other models through Chat Completions by declaration', async () => {

@@ -783,7 +783,10 @@ export function applyMakaSessionEventToTranscript(
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text: event.message,
+        text:
+          event.boundedProviderMessage === true
+            ? event.message
+            : 'The task run failed. Try again later.',
       });
       break;
 

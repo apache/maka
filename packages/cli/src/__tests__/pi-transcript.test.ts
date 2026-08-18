@@ -130,6 +130,7 @@ describe('Maka Pi TUI transcript', () => {
         recoverable: false,
         code: 'permission_error',
         message,
+        boundedProviderMessage: true,
       }),
     );
 
@@ -143,6 +144,27 @@ describe('Maka Pi TUI transcript', () => {
       /usage limit/,
     );
   });
+
+  test('hides an unmarked Runtime error behind the safe fallback', () => {
+    const state = createMakaPiTranscriptState();
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'error',
+        recoverable: false,
+        code: 'permission_error',
+        message: 'unbounded provider response',
+      }),
+    );
+
+    assert.deepEqual(state.entries.at(-1), {
+      kind: 'notice',
+      level: 'error',
+      text: 'The task run failed. Try again later.',
+    });
+  });
+
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'inspect the package');

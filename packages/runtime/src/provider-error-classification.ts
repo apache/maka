@@ -83,6 +83,10 @@ interface ProviderFailureSummary {
   code?: string;
 }
 
+interface ProviderFailureSummaryEvidence extends ProviderFailureSummary {
+  boundedProviderMessage: boolean;
+}
+
 const PROVIDER_FAILURE_SUMMARY_MAX_BYTES = 2 * 1024;
 const PROVIDER_FAILURE_FIELD_MAX_BYTES = 256;
 
@@ -303,12 +307,17 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
 export function providerFailureSummary(error: unknown): ProviderFailureSummary | undefined {
   const facts = normalizeProviderError(error);
   if (!facts) return undefined;
-  return providerFailureSummaryFromFacts(facts);
+  const summary = providerFailureSummaryFromFacts(facts);
+  if (!summary) return undefined;
+  return {
+    message: summary.message,
+    ...(summary.code !== undefined ? { code: summary.code } : {}),
+  };
 }
 
 function providerFailureSummaryFromFacts(
   facts: ProviderErrorFacts,
-): ProviderFailureSummary | undefined {
+): ProviderFailureSummaryEvidence | undefined {
   const sources = facts.summarySources;
   const message = firstProviderMessage(facts);
   const code = firstProviderField(sources, ['code']) ?? firstProviderField(sources, ['type']);
@@ -335,6 +344,7 @@ function providerFailureSummaryFromFacts(
   return {
     message: truncateUtf8(summary, PROVIDER_FAILURE_SUMMARY_MAX_BYTES, '…'),
     ...(code || statusCode ? { code: code ?? statusCode } : {}),
+    boundedProviderMessage: message !== undefined && hasProviderMessageSource(facts),
   };
 }
 
@@ -372,7 +382,15 @@ export function providerFailureResult(error: unknown): ProviderFailureResult {
       ? numericStatus
       : undefined;
   const classified = classifyProviderFacts(facts);
-  const errorClass = normalizedProviderFailureClass(classified, httpStatus);
+  const errorClass = normalizedProviderFailureClass(
+    classified === 'Auth' &&
+      httpStatus !== undefined &&
+      httpStatus !== 401 &&
+      !facts.evidence.structuredCodes.some((value) => PROVIDER_AUTH_CODES.has(value))
+      ? 'Other'
+      : classified,
+    httpStatus,
+  );
   const providerCode =
     firstProviderField(sources, ['code']) ?? firstProviderField(sources, ['type']);
   const providerRequestId =
@@ -388,7 +406,12 @@ export function providerFailureResult(error: unknown): ProviderFailureResult {
     retryable: retry.retryable,
     ...(retry.retryAfterMs !== undefined ? { retryAfterMs: retry.retryAfterMs } : {}),
     ...(summary !== undefined
-      ? { message: summary.message, boundedProviderMessage: true as const }
+      ? {
+          message: summary.message,
+          ...(summary.boundedProviderMessage === true
+            ? { boundedProviderMessage: true as const }
+            : {}),
+        }
       : {}),
   };
 }
@@ -479,6 +502,21 @@ function firstProviderMessage(facts: ProviderErrorFacts): string | undefined {
   return candidates
     .map((candidate) => boundedProviderMessage(candidate))
     .find((value) => value !== undefined);
+}
+
+function hasProviderMessageSource(facts: ProviderErrorFacts): boolean {
+  if (!(facts.target instanceof Error)) return true;
+  const targetRecord = objectRecord(facts.target);
+  return (
+    facts.summarySources.records.some(
+      (source) =>
+        source !== targetRecord &&
+        boundedProviderMessage(safeField(source, 'message')) !== undefined,
+    ) ||
+    facts.summarySources.stringErrors.some(
+      (candidate) => boundedProviderMessage(candidate) !== undefined,
+    )
+  );
 }
 
 function firstProviderField(

@@ -597,6 +597,7 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(adapter.classifyError(error), 'Error');
     assert.equal(event.reason, undefined);
     assert.equal(event.message, 'Network error');
+    assert.equal(event.boundedProviderMessage, undefined);
   });
 
   test('projects string provider errors through the same classification', () => {
@@ -653,6 +654,10 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(event.code, 'permission_error');
     assert.equal(event.message, `${observedMessage} (code=permission_error, status=403)`);
     assert.equal(event.boundedProviderMessage, true);
+
+    const rawEvent = adapter.makeErrorEvent('turn-1', error);
+    assert.equal(rawEvent.message, `${observedMessage} (code=permission_error, status=403)`);
+    assert.equal(rawEvent.boundedProviderMessage, true);
   });
 
   test('normalizes cache and reasoning usage variants in the adapter module', () => {

@@ -484,7 +484,7 @@ export class ModelAdapter {
   }
 
   makeErrorEvent(turnId: string, err: unknown): ErrorEvent {
-    const failure = normalizeModelFailure(err);
+    const failure = normalizeProviderFailure(err);
     return {
       type: 'error',
       id: this.input.newId(),
@@ -951,11 +951,12 @@ function normalizeModelFailure(error: unknown): ModelFailure {
 function normalizeProviderFailure(error: unknown): ModelFailure {
   if (isModelFailure(error)) return error;
   const result = providerFailureResult(error);
-  const presentation = errorPresentationFromClass(result.errorClass);
+  const errorClass = result.errorClass === 'Other' ? classifyError(error) : result.errorClass;
+  const presentation = errorPresentationFromClass(errorClass);
   // The bounded summary is display-safe provider wording; a generalized
   // presentation message is not. The marker must follow the message, not the
   // presence of a code (Error.code and provider codes both exist here).
-  const kind = modelFailureKind(result.errorClass);
+  const kind = modelFailureKind(errorClass);
   const boundedProviderMessage = kind === 'unknown' && result.boundedProviderMessage === true;
   return {
     type: 'model_failure',

@@ -691,6 +691,8 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         hasExactShape(value, ERROR_CONTENT_SHAPE) &&
         isOptionalString(value.code) &&
         isOptionalString(value.reason) &&
+        (value.boundedProviderMessage === undefined ||
+          typeof value.boundedProviderMessage === 'boolean') &&
         typeof value.message === 'string' &&
         (value.details === undefined || isStringArray(value.details) || isRecord(value.details))
       );
