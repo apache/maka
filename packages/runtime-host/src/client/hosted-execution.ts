@@ -6,7 +6,7 @@ import {
   type HostedExecutionStartInput,
 } from '../protocol/index.js';
 import { connectOwnedRuntimeHost } from './connect-or-spawn.js';
-import { RuntimeHostRequestInterruptedError, type RuntimeHostConnection } from './connection.js';
+import { type RuntimeHostConnection } from './connection.js';
 import { configureHostedExecutionTarget } from './hosted-execution-target.js';
 
 export interface RunHostedExecutionInput {
@@ -155,9 +155,14 @@ async function executeHostedExecution(
       detached: false,
     };
   }
+  let admissionToken: string | undefined;
   try {
+    if (abortPolicy === 'preserve_environment') {
+      const admission = await connection.request('hosted.execution.admit', execution);
+      admissionToken = admission.admissionToken;
+    }
     const projection = await connection.request('hosted.execution.start', execution);
-    if (signal?.aborted && abortPolicy === 'preserve_environment') {
+    if (signal?.aborted && abortPolicy === 'preserve_environment' && admissionToken) {
       host.releaseToEnvironment();
       return {
         projection: preservesHostedExecutionEnvironment(projection)
@@ -172,7 +177,7 @@ async function executeHostedExecution(
     return { projection, detached: false };
   } catch (error) {
     if (signal?.aborted && abortPolicy === 'preserve_environment') {
-      if (isAdmittedInterrupt(error)) {
+      if (admissionToken) {
         host.releaseToEnvironment();
         return {
           projection: indeterminate(
@@ -192,10 +197,6 @@ async function executeHostedExecution(
     signal?.removeEventListener('abort', onAbort);
     await closeForAbort;
   }
-}
-
-function isAdmittedInterrupt(error: unknown): boolean {
-  return error instanceof RuntimeHostRequestInterruptedError && error.dispatch === 'dispatched';
 }
 
 function indeterminate(executionId: string, failureReason: string): HostedExecutionProjection {

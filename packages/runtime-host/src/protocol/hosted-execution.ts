@@ -31,6 +31,11 @@ export interface HostedExecutionReferenceInput {
   readonly executionId: string;
 }
 
+export interface HostedExecutionAdmissionAck {
+  readonly executionId: string;
+  readonly admissionToken: string;
+}
+
 export interface HostedExecutionUsage {
   readonly inputTokens: number;
   readonly outputTokens: number;
@@ -65,6 +70,18 @@ export function preservesHostedExecutionEnvironment(
 }
 
 export const HOSTED_EXECUTION_OPERATION_SPECS = {
+  'hosted.execution.admit': defineOperation<
+    HostedExecutionStartInput,
+    HostedExecutionAdmissionAck,
+    (typeof ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: ERRORS,
+    usesHostPaths: () => true,
+    decodeInput: decodeHostedExecutionStartInput,
+    decodeOutput: decodeHostedExecutionAdmissionAck,
+  }),
   'hosted.execution.start': defineOperation<
     HostedExecutionStartInput,
     HostedExecutionProjection,
@@ -115,6 +132,17 @@ export function decodeHostedExecutionStartInput(value: unknown): HostedExecution
 export function decodeHostedExecutionReferenceInput(value: unknown): HostedExecutionReferenceInput {
   const input = requireExactRecord(value, 'Hosted execution reference', ['executionId']);
   return { executionId: requireEntityId(input.executionId, 'executionId') };
+}
+
+export function decodeHostedExecutionAdmissionAck(value: unknown): HostedExecutionAdmissionAck {
+  const ack = requireExactRecord(value, 'Hosted execution admission', [
+    'executionId',
+    'admissionToken',
+  ]);
+  return {
+    executionId: requireEntityId(ack.executionId, 'executionId'),
+    admissionToken: requireEntityId(ack.admissionToken, 'admissionToken'),
+  };
 }
 
 export function decodeHostedExecutionProjection(value: unknown): HostedExecutionProjection {

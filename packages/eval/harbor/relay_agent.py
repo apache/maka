@@ -172,24 +172,16 @@ class RelayAgent(BaseAgent):
             current = asyncio.current_task()
             if current is not None and hasattr(current, "uncancel"):
                 current.uncancel()
-            try:
-                if request is not None and execution is not None:
-                    await self._finalize_cancelled_execution(
-                        environment,
-                        cwd,
-                        scope_path,
-                        execution,
-                        request,
-                        writer,
-                        execution_reported,
-                    )
-            except asyncio.CancelledError:
-                if request is not None and execution is not None:
-                    with contextlib.suppress(Exception):
-                        await _settle_or_destroy(
-                            environment, cwd, scope_path, execution, self._teardown_timeout
-                        )
-                raise
+            if request is not None and execution is not None:
+                await self._cleanup_cancelled_execution(
+                    environment,
+                    cwd,
+                    scope_path,
+                    execution,
+                    request,
+                    writer,
+                    execution_reported,
+                )
             raise
         except RelayTransportClosed:
             if request is not None and execution is not None:
@@ -226,6 +218,36 @@ class RelayAgent(BaseAgent):
             with contextlib.suppress(BrokenPipeError, ConnectionError, RuntimeError, TimeoutError):
                 writer.close()
                 await asyncio.wait_for(writer.wait_closed(), timeout=1)
+
+    async def _cleanup_cancelled_execution(
+        self,
+        environment: Any,
+        cwd: str,
+        scope_path: str,
+        execution: asyncio.Task[Any],
+        request: dict[str, Any],
+        writer: Any,
+        execution_reported: bool,
+    ) -> None:
+        try:
+            await self._finalize_cancelled_execution(
+                environment,
+                cwd,
+                scope_path,
+                execution,
+                request,
+                writer,
+                execution_reported,
+            )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(
+                    _settle_or_destroy(
+                        environment, cwd, scope_path, execution, self._teardown_timeout
+                    ),
+                    timeout=self._teardown_timeout,
+                )
+            raise
 
     async def _finalize_cancelled_execution(
         self,

@@ -24,6 +24,32 @@ test('cancel before start prevents the hosted execution from running', async () 
   assert.equal(runs, 0);
 });
 
+test('admit returns a server-owned token before start waits for settlement', async () => {
+  const release = deferred();
+  const coordinator = new HostHostedExecutionCoordinator(
+    async (input) => {
+      await release.promise;
+      return settled(input.executionId, 'completed');
+    },
+    () => {},
+  );
+
+  const admitted = await coordinator.handlers['hosted.execution.admit'](input(), context());
+  assert.equal(admitted.ok, true);
+  if (!admitted.ok) return;
+  assert.equal(admitted.result.executionId, ID);
+  assert.match(admitted.result.admissionToken, /^[0-9a-f-]{36}$/i);
+
+  const waiting = coordinator.handlers['hosted.execution.start'](input(), context());
+  const again = await coordinator.handlers['hosted.execution.admit'](input(), context());
+  assert.equal(again.ok, true);
+  if (again.ok) assert.equal(again.result.admissionToken, admitted.result.admissionToken);
+  release.resolve();
+  const started = await waiting;
+  assert.equal(started.ok, true);
+  if (started.ok) assert.equal(started.result.kind, 'settled');
+});
+
 test('cancelling a settled subject reclaims its verification environment', async () => {
   let drains = 0;
   const coordinator = new HostHostedExecutionCoordinator(
@@ -78,4 +104,12 @@ function context() {
     principal: 'runtime_host' as const,
     acquireResidency: () => ({ release() {} }),
   };
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
 }

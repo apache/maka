@@ -83,6 +83,17 @@ class SimultaneousEnvironment:
         return SimpleNamespace(return_code=0, stdout="", stderr="")
 
 
+class DummyWriter:
+    def is_closing(self):
+        return False
+
+    def write(self, _value):
+        return None
+
+    async def drain(self):
+        return None
+
+
 class ClosedWriter:
     def is_closing(self):
         return False
@@ -188,6 +199,20 @@ class IgnoringLeaderEnvironment(SimultaneousEnvironment):
         return await super().exec(command, cwd=cwd, timeout_sec=timeout_sec)
 
 
+class ExplodingSubjectEnvironment:
+    def __init__(self):
+        self.stopped = False
+
+    async def exec(self, command, cwd=None, timeout_sec=None):
+        return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    async def stop(self, delete=False):
+        self.stopped = delete
+
+    async def upload_file(self, source, target):
+        return None
+
+
 class SlowLeaderStopEnvironment(IgnoringLeaderEnvironment):
     def __init__(self):
         super().__init__()
@@ -216,6 +241,19 @@ class LiveScopeEnvironment(SimultaneousEnvironment):
         if command.startswith("pgid="):
             return SimpleNamespace(return_code=3 if self.signalled else 0, stdout="", stderr="")
         return await super().exec(command, cwd=cwd, timeout_sec=timeout_sec)
+
+
+class PersistFailureEnvironment(LiveScopeEnvironment):
+    def __init__(self):
+        super().__init__()
+        self.stopped = False
+
+    async def stop(self, delete=False):
+        self.stopped = delete
+
+    async def upload_file(self, source, target):
+        if str(target).endswith("maka-subject.stdout.txt"):
+            raise RuntimeError("persist failed")
 
 
 class TransportLossEnvironment(SimultaneousEnvironment):
@@ -729,6 +767,87 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await asyncio.wait_for(running, timeout=1)
             self.assertTrue(environment.stopped)
+        finally:
+            writer.close()
+            server.close()
+            await server.wait_closed()
+
+    async def test_execution_exception_during_host_abort_still_destroys(self):
+        relay = load_relay()
+        environment = ExplodingSubjectEnvironment()
+
+        async def boom():
+            raise RuntimeError("subject execution exploded")
+
+        execution = asyncio.create_task(boom())
+        await asyncio.sleep(0)
+        relay.request_host_teardown()
+        agent = relay.RelayAgent(
+            logs_dir=Path(tempfile.gettempdir()),
+            relay_host="127.0.0.1",
+            relay_port=1,
+            relay_token="token",
+            teardown_timeout_ms=1_000,
+        )
+        with self.assertRaisesRegex(RuntimeError, "subject execution exploded"):
+            await agent._cleanup_cancelled_execution(
+                environment,
+                "/",
+                "/tmp/missing",
+                execution,
+                {"resultToken": "0" * 32, "captureStdout": True},
+                DummyWriter(),
+                False,
+            )
+        self.assertTrue(environment.stopped)
+
+    async def test_persistence_failure_during_host_abort_still_destroys(self):
+        relay = load_relay()
+        environment = PersistFailureEnvironment()
+        token = f"host-persist-{os.getpid()}"
+        connected = asyncio.get_running_loop().create_future()
+
+        async def accept(reader, writer):
+            connected.set_result((reader, writer))
+
+        server = await asyncio.start_server(accept, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        agent = relay.RelayAgent(
+            logs_dir=Path(tempfile.gettempdir()),
+            relay_host="127.0.0.1",
+            relay_port=port,
+            relay_token=token,
+            teardown_timeout_ms=1_000,
+        )
+        running = asyncio.create_task(agent.run("solve", environment, None))
+        reader, writer = await connected
+        try:
+            await reader.readline()
+            writer.write(
+                (
+                    __import__("json").dumps(
+                        {
+                            "token": token,
+                            "kind": "execute",
+                            "command": "/bin/true",
+                            "args": [],
+                            "credentials": {},
+                            "resultToken": "0" * 32,
+                        }
+                    )
+                    + "\n"
+                ).encode()
+            )
+            await writer.drain()
+            environment.release.set()
+            await environment.finished.wait()
+            relay.request_host_teardown()
+            running.cancel()
+            with self.assertRaisesRegex(RuntimeError, "persist failed"):
+                await asyncio.wait_for(running, timeout=1)
+            self.assertTrue(
+                any(_is_teardown(command) for command in environment.commands),
+            )
         finally:
             writer.close()
             server.close()

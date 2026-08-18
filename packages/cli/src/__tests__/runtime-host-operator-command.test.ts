@@ -138,6 +138,7 @@ describe('Runtime Host operator commands', () => {
         'access.credential.issue',
         'access.credential.revoke',
         'host.upgrade.prepare',
+        'hosted.execution.admit',
         'hosted.execution.cancel',
         'hosted.execution.start',
       ],
