@@ -993,6 +993,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         beginGracefulClose();
         return;
       }
+      if (prompt.trim().split(/\s+/, 1)[0] === '/transcript') {
+        editor.addToHistory(prompt);
+        handleSlashCommand(prompt, 0);
+        return;
+      }
       const swarmCommand = parseSwarmCommand(prompt);
       if (swarmCommand) {
         editor.addToHistory(prompt);
@@ -2068,8 +2073,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showTranscriptViewer = (): void => {
     let overlay: OverlayHandle | undefined;
+    const renderTranscript = transcript.createDocumentRenderer();
     const viewer = new TranscriptViewerOverlay({
-      renderTranscript: (width) => transcript.renderDocument(width),
+      renderTranscript,
       viewportRows: () => terminal.rows,
       onClose: () => overlay?.hide(),
       onChange: () => tui.requestRender(),

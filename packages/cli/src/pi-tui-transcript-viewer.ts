@@ -80,6 +80,7 @@ export class TranscriptViewerOverlay implements Component {
     this.documentRows = document.length;
     const maxTop = this.maxTop();
     this.top = this.followsEnd ? maxTop : clamp(this.top, 0, maxTop);
+    this.followsEnd = this.top === maxTop;
 
     const visible = document.slice(this.top, this.top + this.bodyRows);
     const start = visible.length === 0 ? 0 : this.top + 1;

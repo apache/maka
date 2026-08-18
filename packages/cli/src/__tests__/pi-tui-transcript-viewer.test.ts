@@ -122,6 +122,31 @@ describe('TranscriptViewerOverlay', () => {
     ]);
   });
 
+  test('resumes following after a resize clamps a detached viewport to the tail', () => {
+    const document = Array.from({ length: 12 }, (_, index) => `line ${index + 1}`);
+    let viewportRows = 6;
+    const viewer = new TranscriptViewerOverlay({
+      renderTranscript: () => document,
+      viewportRows: () => viewportRows,
+      onChange: () => {},
+      onClose: () => {},
+    });
+
+    viewer.render(30);
+    viewer.handleInput('\x1b[A');
+    viewportRows = 7;
+    viewer.render(30);
+    document.push('line 13');
+
+    assert.deepEqual(plain(viewer.render(30)).slice(1, -1).map(trim), [
+      'line 9',
+      'line 10',
+      'line 11',
+      'line 12',
+      'line 13',
+    ]);
+  });
+
   test('closes with q or Escape', () => {
     let closed = 0;
     const viewer = new TranscriptViewerOverlay({
@@ -173,7 +198,8 @@ describe('TranscriptViewerOverlay', () => {
       permissionMode: 'ask',
     }));
 
-    assert.ok(plain(transcript.renderDocument(40)).some((line) => line.includes('oldest prompt')));
+    const renderDocument = transcript.createDocumentRenderer();
+    assert.ok(plain(renderDocument(40)).some((line) => line.includes('oldest prompt')));
     assert.equal(state.renderGeometry.viewportTop, 16);
     assert.strictEqual(state.renderGeometry.entryFirstLine, entryFirstLine);
   });
@@ -193,9 +219,8 @@ describe('TranscriptViewerOverlay', () => {
     assert.ok(plain(transcript.render(40)).some((line) => line.includes('settled text')));
     state.renderGeometry.viewportTop = 100;
     entry.text = 'background update';
-    assert.ok(
-      plain(transcript.renderDocument(40)).some((line) => line.includes('background update')),
-    );
+    const renderDocument = transcript.createDocumentRenderer();
+    assert.ok(plain(renderDocument(40)).some((line) => line.includes('background update')));
 
     const liveLines = plain(transcript.render(40));
     assert.ok(liveLines.some((line) => line.includes('settled text')));

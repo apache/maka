@@ -28,12 +28,6 @@ export function fitPendingQueueLines(lines: readonly string[], maxRows: number):
 }
 
 export class MakaTranscriptComponent implements Component {
-  /** Separate WeakMap keys keep viewer renders out of the live scrollback cache. */
-  private readonly documentEntryClones = new WeakMap<
-    MakaPiTranscriptEntry,
-    MakaPiTranscriptEntry
-  >();
-
   constructor(
     private readonly state: MakaPiTranscriptState,
     private readonly metadata: () => MakaPiTranscriptMetadata,
@@ -49,27 +43,30 @@ export class MakaTranscriptComponent implements Component {
    * Render the complete current projection without changing the geometry used
    * by the live terminal-scrollback reconciliation path.
    */
-  renderDocument(width: number): string[] {
-    return renderMakaPiTranscript(
-      {
-        ...this.state,
-        entries: this.state.entries.map((entry) => this.documentEntry(entry)),
-        renderGeometry: { entryFirstLine: undefined, viewportTop: 0 },
-      },
-      this.metadata(),
-      width,
-    );
-  }
-
-  private documentEntry(entry: MakaPiTranscriptEntry): MakaPiTranscriptEntry {
-    const cached = this.documentEntryClones.get(entry);
-    if (cached) {
-      Object.assign(cached, entry);
-      return cached;
-    }
-    const clone = { ...entry } as MakaPiTranscriptEntry;
-    this.documentEntryClones.set(entry, clone);
-    return clone;
+  createDocumentRenderer(): (width: number) => string[] {
+    // The detached keys and their rendered-line cache live only as long as one
+    // viewer overlay. Closing it releases the complete duplicate projection.
+    const entryClones = new WeakMap<MakaPiTranscriptEntry, MakaPiTranscriptEntry>();
+    const documentEntry = (entry: MakaPiTranscriptEntry): MakaPiTranscriptEntry => {
+      const cached = entryClones.get(entry);
+      if (cached) {
+        Object.assign(cached, entry);
+        return cached;
+      }
+      const clone = { ...entry } as MakaPiTranscriptEntry;
+      entryClones.set(entry, clone);
+      return clone;
+    };
+    return (width) =>
+      renderMakaPiTranscript(
+        {
+          ...this.state,
+          entries: this.state.entries.map(documentEntry),
+          renderGeometry: { entryFirstLine: undefined, viewportTop: 0 },
+        },
+        this.metadata(),
+        width,
+      );
   }
 }
 
