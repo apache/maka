@@ -6,6 +6,7 @@ mod tests {
     use crate::protocol::{LaunchRequest, NetworkMode, RESERVED_READINESS_REQUEST_ID};
     use crate::windows_launcher::{
         appcontainer_profile_name, appcontainer_readiness_profile_name, environment_block,
+        readiness_probe_command_line,
     };
 
     fn valid_launch_request(request_id: &str) -> LaunchRequest {
@@ -177,5 +178,18 @@ mod tests {
         assert!(name.starts_with(r"Global\Maka.WindowsSandbox.ReadinessProfile."));
         assert!(name.ends_with(sid));
         assert!(!name.contains("AclLedger"));
+    }
+
+    #[test]
+    fn readiness_command_line_disables_autorun_before_exit() {
+        // `/d` must precede `/c` so cmd.exe skips the machine-constant
+        // `Command Processor\AutoRun` value. Without it, a host whose AutoRun
+        // exits non-zero (or blocks) would make the readiness probe fail closed
+        // on every startup, disabling the sandbox regardless of the boundary.
+        let line = readiness_probe_command_line("C:\\Windows\\System32\\cmd.exe");
+        assert_eq!(line, "\"C:\\Windows\\System32\\cmd.exe\" /d /c exit 0");
+        let d = line.find("/d").expect("/d present");
+        let c = line.find("/c").expect("/c present");
+        assert!(d < c, "/d must come before /c: {line}");
     }
 }

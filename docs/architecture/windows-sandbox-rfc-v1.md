@@ -203,11 +203,13 @@ Lexical prefix checks are never authorization evidence.
 
 The first product slice — the packaged Windows 11 x64 AppContainer backend in
 [#2961](https://github.com/maka-agent/maka-agent/pull/2961), merged 2026-08-17 — enforces a subset
-of the guarantees above. This subsection aligns the documented guarantees with what the preview
-actually ships so the RFC does not overclaim. The remaining guarantees are designed but explicitly
-deferred as later gates, tracked by Phase 4 in [#2142](https://github.com/maka-agent/maka-agent/issues/2142).
+of the guarantees above. This subsection aligns the documented guarantees with what the code
+actually ships so the RFC does not overclaim. Bullets tagged `(#3161)` land in the readiness-probe
+follow-up rather than the merged #2961 slice; the rest are enforced by #2961 today. The remaining
+guarantees are designed but explicitly deferred as later gates, tracked by Phase 4 in
+[#2142](https://github.com/maka-agent/maka-agent/issues/2142).
 
-Enforced in the preview slice:
+Enforced (merged in #2961 unless tagged otherwise):
 
 - default-deny filesystem with distinct read/write roots compiled from the exact profile (§6.1);
 - recursive reparse-point rejection and multi-hard-link rejection before ACL mutation (§5, §6.1);
@@ -218,11 +220,12 @@ Enforced in the preview slice:
 - inheritance limited to declared stdio/protocol handles through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
   (§6.3);
 - a closed, sorted, allowlisted environment (§6.3);
-- a production-identity readiness probe (§6.4): `--readiness-probe` stands up the real AppContainer
-  identity and token and a kill-on-close Job and launches a throwaway confined child, so
-  availability fails closed on hosts where the OS cannot create the boundary rather than on the
-  packaged binary's presence alone;
-- a dedicated, cross-process-serialized readiness profile lifecycle (§6.4): the probe profile lives
+- a production-identity readiness probe (§6.4) **(#3161)**: `--readiness-probe` stands up the real
+  AppContainer identity and token and a kill-on-close Job and launches a throwaway confined child
+  (`cmd.exe /d /c exit 0`, with AutoRun disabled so a host's shell customization cannot skew the
+  result), so availability fails closed on hosts where the OS cannot create the boundary rather than
+  on the packaged binary's presence alone;
+- a dedicated, cross-process-serialized readiness profile lifecycle (§6.4) **(#3161)**: the probe profile lives
   in a namespace disjoint from production, its reserved `requestId` is rejected by validation, a
   DACL-hardened per-user named mutex serializes its delete→create→probe→drop cycle, an unsettled
   probe fails closed rather than claiming a clean boundary (relying on the kill-on-close Job and a

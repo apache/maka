@@ -220,6 +220,21 @@ pub fn readiness_probe() -> Result<u8, String> {
     }
 }
 
+/// Command line for the throwaway readiness child: `"<cmd>" /d /c exit 0`.
+///
+/// `/d` is load-bearing, not cosmetic. Without it cmd.exe runs the
+/// `HKLM`/`HKCU\Software\Microsoft\Command Processor\AutoRun` value before the
+/// `/c` payload. A machine whose AutoRun exits non-zero would make every probe
+/// report failure; one whose AutoRun blocks would hang the child until the Job
+/// drain times out — either way the sandbox fails closed on *every* startup,
+/// because AutoRun is machine-constant. `/d` disables AutoRun so the probe
+/// measures the sandbox boundary, not the host's shell customization. The
+/// production launch path already passes `/d` before `/c`; this keeps the
+/// diagnostic probe on the same contract.
+pub(crate) fn readiness_probe_command_line(cmd_path: &str) -> String {
+    format!("\"{cmd_path}\" /d /c exit 0")
+}
+
 /// Launch the throwaway readiness child under the AppContainer token and Job.
 /// Mirrors `create_appcontainer_child` but carries no stdio/handle inheritance
 /// (nothing is relayed) and inherits the parent environment, since the child
@@ -230,10 +245,10 @@ unsafe fn probe_appcontainer_child(
     app_container_sid: *mut c_void,
 ) -> Result<u8, String> {
     let executable = wide(cmd_path);
-    // Build the command line directly: cmd.exe's `/c` switch must stay
+    // Build the command line directly: cmd.exe's `/d`/`/c` switches must stay
     // unquoted, so the per-token quoting used for arbitrary workloads would
     // make cmd treat "/c" as a program to run and exit non-zero.
-    let mut command = wide(&format!("\"{cmd_path}\" /c exit 0"));
+    let mut command = wide(&readiness_probe_command_line(cmd_path));
     // Run from System32 rather than inheriting the launcher's cwd: the probe
     // grants no filesystem roots, so an inherited working directory would be
     // default-denied and cmd.exe would fail to initialize. System32 is readable

@@ -145,9 +145,9 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 
 ### 6.5 预览实现状态（2026-08-17）
 
-首个预览切片 [#2961](https://github.com/maka-agent/maka-agent/pull/2961) 已于 2026-08-17 合并，强制上述保证的一个子集。本节把文档与已交付切片对齐，使 RFC 不 overclaim：§6.3/§6.4 中尚未强制的保证在此显式标为后续门禁。
+首个预览切片 [#2961](https://github.com/maka-agent/maka-agent/pull/2961) 已于 2026-08-17 合并，强制上述保证的一个子集。本节把文档与已交付代码对齐，使 RFC 不 overclaim：§6.3/§6.4 中尚未强制的保证在此显式标为后续门禁。标注 `(#3161)` 的条目落在 readiness-probe 后续 PR，而非已合并的 #2961 切片；其余条目由 #2961 当前强制。
 
-**预览切片已强制：**
+**已强制（未标注者由 #2961 合并强制）：**
 
 - 默认拒绝文件系统，读/写 grant 分离（§6.1）；
 - ACL 修改前拒绝 reparse point 与多硬链接对象（§5/§6.1）；
@@ -156,8 +156,8 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - 创建时原子附加、close 时杀整棵树的 kill-on-close Job（§6.3）；
 - 仅通过 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 继承声明的 handle（§6.3）；
 - 封闭、排序后的 allowlist 环境（§6.3）；
-- 生产 identity readiness probe（§6.4）:`--readiness-probe` 真正建立 AppContainer identity/token 与 kill-on-close Job 并启动抛弃式受限子进程,使可用性在宿主无法创建边界时 fail closed,而非仅凭打包二进制存在;
-- 专属且跨进程串行的 readiness profile 生命周期（§6.4）:probe profile 位于与生产不相交的命名空间,其保留 `requestId` 被 validation 拒绝,一个 DACL 加固的按用户命名互斥量串行其 delete→create→probe→drop 生命周期,未证清空的 probe 按周期 fail closed 而非宣称边界干净(清理依赖 kill-on-close Job 与零权限 identity,而非持久隔离),负可用性按有界 TTL 缓存以限制一次瞬时失败毒化 module 缓存的时长——由下一次 composition 构建重探,而非运行中宿主原地恢复;
+- 生产 identity readiness probe（§6.4）**(#3161)**:`--readiness-probe` 真正建立 AppContainer identity/token 与 kill-on-close Job 并启动抛弃式受限子进程（`cmd.exe /d /c exit 0`,以 `/d` 关闭 AutoRun 使宿主 shell 定制不能扭曲结果）,使可用性在宿主无法创建边界时 fail closed,而非仅凭打包二进制存在;
+- 专属且跨进程串行的 readiness profile 生命周期（§6.4）**(#3161)**:probe profile 位于与生产不相交的命名空间,其保留 `requestId` 被 validation 拒绝,一个 DACL 加固的按用户命名互斥量串行其 delete→create→probe→drop 生命周期,未证清空的 probe 按周期 fail closed 而非宣称边界干净(清理依赖 kill-on-close Job 与零权限 identity,而非持久隔离),负可用性按有界 TTL 缓存以限制一次瞬时失败毒化 module 缓存的时长——由下一次 composition 构建重探,而非运行中宿主原地恢复;
 - fail-closed capability check，绝不 unsandboxed fallback（§6.4）。
 
 **已设计但作为后续门禁暂缓（预览切片尚未强制）：**
