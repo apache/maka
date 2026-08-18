@@ -24,11 +24,11 @@
     "@maka/core": "0.1.0",
     "@maka/runtime": "0.1.0",
     "@maka/storage": "0.1.0",
-    "ws": "^8.21.1",
+    "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
-    "electron": "^43.2.0"
+    "electron": "^43.4.0"
   }
 }

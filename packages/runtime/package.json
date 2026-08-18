@@ -129,8 +129,8 @@
     "@ai-sdk/google": "4.0.44",
     "@ai-sdk/openai": "4.0.42",
     "@ai-sdk/openai-compatible": "3.0.30",
-    "@openai/agents-core": "0.14.3",
-    "@larksuiteoapi/node-sdk": "1.72.0",
+    "@openai/agents-core": "0.16.0",
+    "@larksuiteoapi/node-sdk": "1.73.0",
     "@maka/code-mode": "0.1.0",
     "@maka/core": "0.1.0",
     "@modelcontextprotocol/sdk": "1.30.0",
@@ -151,7 +151,7 @@
     "socks-proxy-agent": "^10.1.0",
     "turndown": "^7.2.4",
     "undici": "^8.7.0",
-    "ws": "^8.21.1",
+    "ws": "^8.21.3",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
@@ -159,6 +159,6 @@
     "@maka/storage": "0.1.0",
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.18.1",
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.2"
   }
 }
