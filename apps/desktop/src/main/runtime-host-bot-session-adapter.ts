@@ -107,12 +107,6 @@ export function createRuntimeHostBotSessionAdapter(
       }
 
       try {
-        const active = session.snapshot.rootTurn;
-        if (active && !isTerminal(active.status)) {
-          return active.status === 'waiting_for_user'
-            ? { kind: 'suspended' as const }
-            : { kind: 'errored' as const, reason: 'Session is already running a Turn' };
-        }
         const turnId = deferred<string>();
         const completion = collectRuntimeHostBotTurn(
           session,

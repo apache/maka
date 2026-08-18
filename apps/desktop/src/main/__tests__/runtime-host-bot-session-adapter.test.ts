@@ -223,6 +223,52 @@ test('reports a concurrent Turn without leaking the Bot message into the queue',
   );
 });
 
+test('reattaches an exact redelivery to its already-running Host Turn', async () => {
+  const events = new AsyncFrameQueue();
+  const replySnapshots: string[] = [];
+  const activeTurn = runningTurn('session-1', 'redelivered-turn');
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(activeTurn),
+    activeAssistantStreams: [],
+    transcript: Promise.resolve([]),
+    events,
+    async close() {
+      events.end();
+    },
+  });
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      openSession: async () => handle,
+      submitMessage: async (input) => {
+        assert.equal(input.messageId, 'stable-redelivery');
+        events.push(deltaFrame(1, 'session-1', 'redelivered-turn', 0, 'Recovered reply'));
+        events.push(
+          projectionFrame(2, {
+            ...activeTurn,
+            status: 'completed',
+            terminalEventId: 'redelivered-terminal',
+          }),
+        );
+        return { disposition: 'turn_started', turnId: 'redelivered-turn' };
+      },
+      queryTurn: async () => activeTurn,
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+
+  assert.deepEqual(
+    await adapter.runTurn({
+      sessionId: 'session-1',
+      messageId: 'stable-redelivery',
+      text: 'redelivered input',
+      onReplySnapshot: (text) => replySnapshots.push(text),
+    }),
+    { kind: 'completed', text: 'Recovered reply' },
+  );
+  assert.deepEqual(replySnapshots, ['Recovered reply']);
+});
+
 test('fails closed on a queued submit disposition instead of misreporting a busy race', async () => {
   for (const disposition of ['followup', 'steering'] as const) {
     const events = new AsyncFrameQueue();

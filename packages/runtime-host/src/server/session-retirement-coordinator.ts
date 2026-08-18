@@ -105,6 +105,7 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
   readonly retireExternalConversations: (sessionIds: readonly string[]) => Promise<void>;
   readonly listExternalConversationSessionIds: () => Promise<readonly string[]>;
+  readonly reportRecoveryFailure: (error: AggregateError) => void;
   readonly purgeAgentGraphState: (sessionId: string) => Promise<void>;
   readonly worktrees?: Pick<SubagentWorktreeExecutor, 'retire'>;
   readonly requestDrain: () => void;
@@ -177,6 +178,7 @@ export class HostSessionRetirementCoordinator {
   readonly #purgeOperationalState: HostSessionRetirementCoordinatorOptions['purgeOperationalState'];
   readonly #retireExternalConversations: HostSessionRetirementCoordinatorOptions['retireExternalConversations'];
   readonly #listExternalConversationSessionIds: HostSessionRetirementCoordinatorOptions['listExternalConversationSessionIds'];
+  readonly #reportRecoveryFailure: HostSessionRetirementCoordinatorOptions['reportRecoveryFailure'];
   readonly #purgeAgentGraphState: HostSessionRetirementCoordinatorOptions['purgeAgentGraphState'];
   readonly #worktrees: HostSessionRetirementCoordinatorOptions['worktrees'];
   readonly #requestDrain: () => void;
@@ -206,6 +208,7 @@ export class HostSessionRetirementCoordinator {
     this.#purgeOperationalState = options.purgeOperationalState;
     this.#retireExternalConversations = options.retireExternalConversations;
     this.#listExternalConversationSessionIds = options.listExternalConversationSessionIds;
+    this.#reportRecoveryFailure = options.reportRecoveryFailure;
     this.#purgeAgentGraphState = options.purgeAgentGraphState;
     this.#worktrees = options.worktrees;
     this.#requestDrain = options.requestDrain;
@@ -223,17 +226,35 @@ export class HostSessionRetirementCoordinator {
    * A binding row is the durable record of an archive-time purge: when an
    * archive committed but `retireExternalConversations` failed, the leftover
    * row is the only trace of that unfinished work. Rows whose Session is
-   * archived or gone are stale; rows on live, unarchived Sessions are
-   * legitimate bindings and stay.
+   * archived or durably removed are stale; an absent Session may be a claim
+   * persisted just before a crash and must survive for create reconciliation.
+   * Rows on live, unarchived Sessions are legitimate bindings and stay.
    */
   async #recoverExternalConversationBindings(): Promise<void> {
-    const stale: string[] = [];
+    const failures: Error[] = [];
     for (const sessionId of await this.#listExternalConversationSessionIds()) {
-      const probe = await this.#stores.probeSessionRemoval(sessionId);
-      const live = probe.kind === 'present' && !probe.record.header.isArchived;
-      if (!live) stale.push(sessionId);
+      try {
+        const probe = await this.#stores.probeSessionRemoval(sessionId);
+        const stale =
+          probe.kind === 'removed' || (probe.kind === 'present' && probe.record.header.isArchived);
+        if (stale) await this.#retireExternalConversations([sessionId]);
+      } catch (error) {
+        failures.push(
+          new Error(`External conversation recovery remains pending for ${sessionId}`, {
+            cause: error,
+          }),
+        );
+      }
     }
-    if (stale.length > 0) await this.#retireExternalConversations(stale);
+    if (failures.length > 0) {
+      try {
+        this.#reportRecoveryFailure(
+          new AggregateError(failures, 'External conversation recovery remains pending'),
+        );
+      } catch {
+        // Recovery reporting is observational; unfinished durable cleanup remains retryable.
+      }
+    }
   }
 
   async close(): Promise<void> {

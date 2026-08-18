@@ -1348,6 +1348,8 @@ export async function createExecutionRuntimeHostComposition(
       },
       listExternalConversationSessionIds: () =>
         openedExternalConversationAuthority.listBoundSessionIds(),
+      reportRecoveryFailure: (error) =>
+        console.error(`[runtime-host] ${generalizedErrorMessage(error)}`),
       purgeAgentGraphState: async (sessionId) => {
         for (const graphId of await requireGraphCoordinator(graphCoordinator).listGraphIds(
           sessionId,
