@@ -10,7 +10,6 @@ import {
   parseCliReleaseVersion,
   prepareSignatureAuditTree,
   prepareStageRelease,
-  validateGitHubRelease,
   validateRegistryChannels,
   validateSignatureAudit,
   validateStageRun,
@@ -26,7 +25,6 @@ test('release versions map prereleases and stable versions to distinct channels'
   assert.deepEqual(parseCliReleaseVersion('0.1.0-beta.1'), {
     version: '0.1.0-beta.1',
     distTag: 'next',
-    gitTag: 'cli-v0.1.0-beta.1',
     tarball: 'maka-agent-0.1.0-beta.1.tgz',
   });
   assert.equal(parseCliReleaseVersion('0.1.0').distTag, 'latest');
@@ -192,10 +190,9 @@ test('registry finalization requires the exact staged bytes and dist-tag', async
     readFileSync(`${result.tarballPath}.files.json`),
     readFileSync(`${fixture.tarballPath}.files.json`),
   );
-  assert.match(
-    readFileSync(join(registryDirectory, 'release-notes.md'), 'utf8'),
-    /Stage workflow run: .* \(attempt 1\)/u,
-  );
+  const registryRecord = JSON.parse(readFileSync(join(registryDirectory, 'release.json'), 'utf8'));
+  assert.equal(registryRecord.version, result.version);
+  assert.equal(Object.hasOwn(registryRecord, 'gitTag'), false);
 
   await assert.rejects(
     fetchRegistryRelease({
@@ -293,42 +290,6 @@ test('signature audit tree exposes only the top-level registry package', () => {
   );
 });
 
-test('GitHub finalization accepts only the exact published metadata and asset digests', async () => {
-  const fixture = createPreparedCandidate();
-  const registryDirectory = mkdtempSync(join(tmpdir(), 'maka-cli-github-release-'));
-  await fetchRegistryRelease({
-    releaseDirectory: fixture.releaseDirectory,
-    registryDirectory,
-    fetchImpl: registryFetch({ fixture }),
-  });
-  const release = createGitHubReleaseFixture(fixture, registryDirectory);
-
-  assert.doesNotThrow(() =>
-    validateGitHubRelease({ releaseDirectory: registryDirectory, release }),
-  );
-  assert.throws(
-    () =>
-      validateGitHubRelease({
-        releaseDirectory: registryDirectory,
-        release: { ...release, draft: true },
-      }),
-    /metadata does not match/u,
-  );
-  assert.throws(
-    () =>
-      validateGitHubRelease({
-        releaseDirectory: registryDirectory,
-        release: {
-          ...release,
-          assets: release.assets.map((asset, index) =>
-            index === 0 ? { ...asset, digest: `sha256:${'0'.repeat(64)}` } : asset,
-          ),
-        },
-      }),
-    /asset does not match/u,
-  );
-});
-
 test('prepare-stage CLI emits only consumed GitHub Actions outputs', () => {
   const fixture = createCandidate(CURRENT_CLI_VERSION);
   const output = join(fixture.root, 'github-output.txt');
@@ -352,8 +313,7 @@ test('prepare-stage CLI emits only consumed GitHub Actions outputs', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(readFileSync(output, 'utf8').trim().split('\n'), [
     `version=${fixture.version}`,
-    'dist_tag=next',
-    `git_tag=cli-v${fixture.version}`,
+    'dist_tag=latest',
     `tarball=${fixture.tarballPath}`,
   ]);
 });
@@ -393,7 +353,6 @@ test('validate-stage-run CLI emits the canonical cross-job release identity', ()
   assert.deepEqual(readFileSync(output, 'utf8').trim().split('\n'), [
     `version=${fixture.version}`,
     'dist_tag=next',
-    `git_tag=cli-v${fixture.version}`,
     `source_sha=${SOURCE_SHA}`,
     `tarball=${fixture.tarball}`,
   ]);
@@ -453,31 +412,6 @@ function registryFetch({ fixture, bytes = fixture.bytes }) {
     }
     if (url === tarballUrl) return new Response(bytes);
     return new Response('not found', { status: 404 });
-  };
-}
-
-function createGitHubReleaseFixture(fixture, releaseDirectory) {
-  const names = [
-    fixture.tarball,
-    `${fixture.tarball}.sha256`,
-    `${fixture.tarball}.files.json`,
-    'release.json',
-  ];
-  return {
-    tag_name: `cli-v${fixture.version}`,
-    name: `Maka CLI ${fixture.version}`,
-    body: readFileSync(join(releaseDirectory, 'release-notes.md'), 'utf8'),
-    draft: false,
-    prerelease: true,
-    assets: names.map((name) => {
-      const bytes = readFileSync(join(releaseDirectory, name));
-      return {
-        name,
-        state: 'uploaded',
-        size: bytes.length,
-        digest: `sha256:${digest('sha256', bytes, 'hex')}`,
-      };
-    }),
   };
 }
 

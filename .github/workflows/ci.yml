@@ -103,6 +103,10 @@ jobs:
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true'
         run: npm ci
 
+      - name: Release contracts
+        if: steps.plan.outputs.cli_package == 'true'
+        run: npm run check:release
+
       - name: Lint
         if: steps.plan.outputs.code == 'true'
         run: npm run lint

@@ -54,20 +54,9 @@ const buildOrder = [
   '@maka/eval',
   'maka-agent',
 ];
-const evalAssets = [
-  'harbor/deepseek-codex-models.json',
-  'harbor/deepseek-harness-profile/cordis.patch.yml',
-  'harbor/deepseek-harness-profile/cordis.yml',
-  'harbor/deepseek-harness-profile/package.json',
-  'harbor/docker-compose-egress-proxy.yaml',
-  'harbor/egress-proxy/Dockerfile',
-  'harbor/egress-proxy/entrypoint.sh',
-  'harbor/egress-proxy/network-policy',
-  'harbor/egress_filter.py',
-  'harbor/eval_framework.py',
-  'harbor/relay_agent.py',
-  'harbor/run_trial.py',
-];
+const evalAssets = readJson(join(repoRoot, 'packages/eval/package.json')).releaseFiles.filter(
+  (path) => path !== 'dist',
+);
 const strippedInstallScripts = new Map([
   // The clean repository install has already produced every generated file and
   // platform prebuild copied below. Do not run advisory postinstalls on an end

@@ -1,10 +1,21 @@
-# Desktop release checklist
+# Product release checklist
 
-The `Release desktop` workflow is the single release entry point. It packages, verifies, and creates one draft GitHub Release carrying the Apple Silicon macOS and Windows x64 builds; it never publishes the release. The macOS build is signed, notarized, and stapled. The Windows build is unsigned.
+The `Release` workflow is Maka's single release entry point. Desktop, CLI/TUI, and source
+materials share one source commit, root product version, tag, GitHub Release, Draft decision,
+and release gate. The workflow creates no Draft until every required artifact job succeeds.
+
+Phase 1 requires:
+
+- signed and notarized Apple Silicon macOS Desktop artifacts;
+- the unsigned Windows x64 Desktop installer and ZIP;
+- the signed, notarized, relocatable Apple Silicon CLI/TUI ZIP;
+- bundled Git source materials;
+- checksums generated after each artifact reaches its final form.
 
 ## One-time repository setup
 
-Create a GitHub Environment named `release`. Add required reviewers if the repository needs a release approval gate, then configure these environment secrets:
+Create a protected GitHub Environment named `release`, require the appropriate reviewers, and
+configure:
 
 - `CSC_LINK`: base64-encoded Developer ID Application `.p12`;
 - `CSC_KEY_PASSWORD`: password for that `.p12`;
@@ -12,39 +23,63 @@ Create a GitHub Environment named `release`. Add required reviewers if the repos
 - `APPLE_API_KEY_ID`: App Store Connect API key ID;
 - `APPLE_API_ISSUER`: App Store Connect API issuer ID.
 
-Windows needs no secrets while the build is unsigned: electron-builder skips signing when no certificate is configured. Adding an Authenticode certificate later means configuring it in `apps/desktop/electron-builder.config.mjs`, and nothing else: electron-builder derives the publisher name that authenticates updates from the certificate itself.
+Windows remains unsigned until an Authenticode policy and certificate are added. Release secrets
+must never be exposed to fork or ordinary pull-request jobs.
 
-## Create the draft
+## Create the complete Draft
 
-1. Confirm the intended commit is on `main`, CI is green, `apps/desktop/package.json` contains a version that has never been released, and the exact `maka-agent` version in `packages/cli/package.json` is public on npm.
-2. In GitHub Actions, run `Release desktop` against `main`.
-3. Confirm every workflow step passes on both platforms and a draft release named `v<version>` exists.
-4. Confirm the draft records the intended commit SHA and contains the macOS DMG, ZIP, `latest-mac.yml`, the Windows `.exe`, ZIP, `latest.yml`, the bundled Git source-materials archive, and matching `.sha256` files.
-5. Extract the bundled Git source-materials archive. Confirm `SOURCE_MANIFEST.json` and `README.txt` are present, every manifest archive is present, and the manifest pins the expected Dugite native release.
-6. Confirm the packaged applications contain `licenses/git/LICENSE.txt`, `NOTICE.txt`, and `SOURCE_OFFER.txt`.
+1. Confirm the intended commit is on `main`, required CI is green, and root `package.json`
+   contains a product version that has never been released.
+2. Confirm `apps/desktop/package.json` and `packages/cli/package.json` exactly match the root
+   version, and the CLI manifest exposes only the `maka` command.
+3. In GitHub Actions, run `Release` against `main`.
+4. Confirm `release-identity`, both Desktop matrix entries, `cli-macos-arm64`, `source`, and
+   `publish` pass. A skipped or failed required job must prevent Draft creation.
+5. Confirm one Draft named `v<version>` targets the intended source SHA and contains at least:
+   - `Maka-<version>-mac-arm64.dmg` and checksum;
+   - `Maka-<version>-win-x64.exe` and checksum;
+   - `Maka-<version>-cli-mac-arm64.zip` and checksum;
+   - `Maka-<version>-bundled-git-source.tar.gz` and checksum;
+   - the platform update metadata and Desktop ZIPs produced by electron-builder.
+6. Inspect the CLI ZIP. It must contain `bin/maka`, `RELEASE.json`, `LICENSE`, `NOTICE`,
+   `THIRD_PARTY_NOTICES.txt`, the pinned Node license, and no `bin/maka-agent`.
+7. Confirm `RELEASE.json` records the Draft's product version and source SHA, the official Node
+   URL/archive/digest, npm version, workspace and production dependency closures, dependency
+   patches, Mach-O inventory, and `developer-id-notarized` signing state.
+8. Extract the bundled Git source-materials archive. Confirm `SOURCE_MANIFEST.json`, `README.txt`,
+   all manifest archives, and the expected Dugite native release are present.
 
 ## Acceptance on another Apple Silicon Mac
 
-Download the DMG and its `.sha256` file through the GitHub UI. This download path applies the real browser quarantine metadata that CI intentionally does not simulate.
+Download the DMG, CLI ZIP, and their checksum files through a browser from the Draft. Do not move
+artifacts directly from the workflow runner; the browser path supplies the real quarantine
+boundary.
 
-1. From the download directory, run `shasum -a 256 -c Maka-<version>-mac-arm64.dmg.sha256`.
-2. Open the DMG in Finder, drag Maka to Applications, and launch it from Finder.
-3. Confirm macOS opens Maka without an unidentified-developer or damaged-app warning.
-4. Run `spctl --assess --type execute --verbose=4 /Applications/Maka.app` and confirm it is accepted with a Developer ID origin.
-5. Configure a model connection, send one basic prompt, and run one representative file-tool task.
-6. Install `ripgrep` with `brew install ripgrep`, then confirm a task using `Grep` works.
-7. Confirm the known limitation is accurate: Computer Use is not included.
+1. Run `shasum -a 256 -c` for the DMG and CLI ZIP.
+2. Install and launch the Desktop app from Finder. Confirm there is no unidentified-developer or
+   damaged-app warning.
+3. Run `spctl --assess --type execute --verbose=4 /Applications/Maka.app` and confirm a Developer
+   ID origin.
+4. Extract the CLI ZIP without clearing quarantine. Run `bin/maka --version` and `bin/maka --help`.
+5. Create an external link, for example `ln -s "$PWD/bin/maka" /tmp/maka-release-acceptance`, and
+   confirm the linked command reports the same version and help output.
+6. Start `bin/maka` with no arguments and confirm the TUI renders, accepts input, and exits cleanly.
+7. Exercise one non-interactive `bin/maka run`, one deterministic `bin/maka eval run`, and one streaming
+   tool-call path against the packaged artifact.
+8. Configure a Desktop model connection, send one prompt, and run one representative file-tool
+   task. Confirm the documented Computer Use limitation remains accurate.
 
 ## Acceptance on a Windows x64 machine
 
-Download the `.exe` installer and its `.sha256` file through the GitHub UI. The build is unsigned, so this pass is about confirming the expected warnings and that the app still runs.
+Download the installer and checksum through a browser from the same Draft.
 
-1. From the download directory, run `Get-FileHash Maka-<version>-win-x64.exe -Algorithm SHA256` in PowerShell and confirm the hash matches the `.sha256` file.
-2. Run the installer. Confirm SmartScreen shows the expected unrecognized-publisher warning, and that continuing through **More info → Run anyway** completes the install.
-3. Launch Maka from the Start menu.
-4. Configure a model connection, send one basic prompt, and run one representative file-tool task.
-5. Install `ripgrep` with `winget install BurntSushi.ripgrep.MSVC`, restart Maka so the new `PATH` applies, then confirm a task using `Grep` works.
-6. Run one terminal task and confirm the shell integration works against the packaged `node-pty`.
-7. Confirm the known limitation is accurate: Computer Use is not included.
+1. Verify the SHA-256 in PowerShell.
+2. Run the installer and confirm the expected unsigned-publisher SmartScreen flow.
+3. Launch Maka from the Start menu, configure a model connection, send one prompt, and run one
+   representative file-tool task.
+4. Run one terminal task and confirm packaged `node-pty` behavior.
+5. Confirm the documented Computer Use limitation remains accurate.
 
-Publish the draft only after all checks pass on both platforms. If acceptance fails, keep the draft unpublished, fix the issue, increment the desktop version, and run the workflow again; do not replace an existing release identity.
+Publish only after both independent-machine acceptance passes. If any required artifact or
+acceptance step fails, keep the Draft unpublished, fix the issue, increment the root product
+version, and run the full workflow again. Never replace an existing release identity.

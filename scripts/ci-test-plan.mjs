@@ -10,6 +10,7 @@ const defaultRepoRoot = dirname(dirname(scriptPath));
 
 const FULL_SUITE_FILES = new Set([
   '.github/workflows/ci.yml',
+  '.github/workflows/release.yml',
   'package-lock.json',
   'package.json',
   'scripts/ci-test-plan.mjs',

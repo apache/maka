@@ -7,6 +7,11 @@
     "node": ">=22.19.0"
   },
   "packageManager": "npm@11.19.0",
+  "releaseToolchain": {
+    "node": "24.18.1",
+    "nodeDarwinArm64Archive": "node-v24.18.1-darwin-arm64.tar.xz",
+    "nodeDarwinArm64Sha256": "1d60b703fe5d7e7072489be8187f430f1a095a658c31e5e1e281331a5873fac3"
+  },
   "type": "module",
   "workspaces": [
     "packages/core",
@@ -48,9 +53,13 @@
     "release:asf:verify": "node scripts/asf-source-release.mjs verify",
     "release:asf:sign": "node scripts/asf-source-release.mjs sign",
     "check:asf-source": "node --test scripts/asf-source-release.test.mjs scripts/asf-source-workflow-policy.test.mjs",
+    "check:product-release-identity": "node scripts/product-release-identity.mjs",
+    "package:cli:macos-arm64": "node scripts/package-macos-arm64-cli.mjs",
+    "verify:cli:macos-arm64": "node scripts/verify-macos-arm64-cli.mjs",
+    "test:product-release": "node --test scripts/product-release.test.mjs",
     "generate:windows-cargo-notices": "node scripts/generate-windows-cargo-notices.mjs",
     "check:windows-cargo-notices": "node scripts/generate-windows-cargo-notices.mjs --check",
-    "check:release": "npm run check:stale && npm run check:third-party-notices && npm run check:cli-third-party-notices && node --test scripts/release-cli-file-policy.test.mjs scripts/release-cli-artifact-policy.test.mjs scripts/release-cli-eval-support.test.mjs scripts/release-cli-publication.test.mjs scripts/release-cli-runtime-host-diagnostics.test.mjs scripts/release-cli-workflow-policy.test.mjs scripts/verify-packaged-app.test.mjs scripts/third-party-closure.test.mjs",
+    "check:release": "npm run check:stale && npm run check:third-party-notices && npm run check:cli-third-party-notices && node --test scripts/product-release.test.mjs scripts/release-cli-file-policy.test.mjs scripts/release-cli-artifact-policy.test.mjs scripts/release-cli-eval-support.test.mjs scripts/release-cli-publication.test.mjs scripts/release-cli-runtime-host-diagnostics.test.mjs scripts/release-cli-workflow-policy.test.mjs scripts/verify-packaged-app.test.mjs scripts/third-party-closure.test.mjs",
     "package:macos-arm64": "node scripts/package-macos-arm64.mjs",
     "verify:macos-arm64": "node scripts/verify-macos-arm64-dmg.mjs",
     "package:windows-x64": "node scripts/package-windows-x64.mjs",
@@ -81,7 +90,8 @@
     "dugite": "3.2.2",
     "knip": "^6.26.0",
     "patch-package": "8.0.1",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "yaml": "2.9.0"
   },
   "allowScripts": {
     "esbuild@0.27.7": true,

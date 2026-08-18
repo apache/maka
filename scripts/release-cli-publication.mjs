@@ -13,7 +13,6 @@ const RELEASE_RECORD_KEYS = [
   'packageName',
   'version',
   'distTag',
-  'gitTag',
   'tarball',
   'sha256',
   'checksum',
@@ -26,7 +25,6 @@ export function parseCliReleaseVersion(version) {
   return {
     version,
     distTag: prerelease.length > 0 ? 'next' : 'latest',
-    gitTag: `cli-v${version}`,
     tarball: `${PACKAGE_NAME}-${version}.tgz`,
   };
 }
@@ -169,10 +167,6 @@ export async function fetchRegistryRelease({
   for (const name of [record.checksum, record.inventory, 'release.json']) {
     copyFileSync(join(releaseDirectory, name), join(registryDirectory, name));
   }
-  writeFileSync(join(registryDirectory, 'release-notes.md'), releaseNotes(record), {
-    flag: 'wx',
-    mode: 0o644,
-  });
   return { ...record, tarballPath, sha256 };
 }
 
@@ -192,37 +186,6 @@ export function validateSignatureAudit({ releaseDirectory, audit }) {
     throw new Error(
       `npm signature audit did not include verified provenance for ${record.version}`,
     );
-  }
-  return record;
-}
-
-export function validateGitHubRelease({ releaseDirectory, release }) {
-  const record = loadReleaseRecord(releaseDirectory);
-  const expectedAssets = [record.tarball, record.checksum, record.inventory, 'release.json'];
-  const expectedPrerelease = record.distTag === 'next';
-  if (
-    release?.tag_name !== record.gitTag ||
-    release.name !== `Maka CLI ${record.version}` ||
-    release.body !== readFileSync(join(releaseDirectory, 'release-notes.md'), 'utf8') ||
-    release.draft !== false ||
-    release.prerelease !== expectedPrerelease ||
-    !Array.isArray(release.assets) ||
-    release.assets.length !== expectedAssets.length
-  ) {
-    throw new Error('GitHub Release metadata does not match the verified CLI release');
-  }
-
-  const assets = new Map(release.assets.map((asset) => [asset?.name, asset]));
-  for (const name of expectedAssets) {
-    const bytes = readFileSync(join(releaseDirectory, name));
-    const asset = assets.get(name);
-    if (
-      asset?.state !== 'uploaded' ||
-      asset.size !== bytes.length ||
-      asset.digest !== `sha256:${digest('sha256', bytes, 'hex')}`
-    ) {
-      throw new Error(`GitHub Release asset does not match the verified file: ${name}`);
-    }
   }
   return record;
 }
@@ -255,7 +218,7 @@ function loadReleaseRecord(releaseDirectory) {
     throw new Error('Unsupported CLI release record');
   }
   const identity = parseCliReleaseVersion(record.version);
-  for (const key of ['distTag', 'gitTag', 'tarball']) {
+  for (const key of ['distTag', 'tarball']) {
     if (record[key] !== identity[key]) throw new Error(`Release record ${key} is inconsistent`);
   }
   if (!/^[0-9a-f]{64}$/u.test(record.sha256)) {
@@ -438,11 +401,6 @@ function parseRegistryTarballUrl(value, expectedName) {
   return url.href;
 }
 
-function releaseNotes(record) {
-  const install = record.distTag === 'next' ? `${PACKAGE_NAME}@next` : PACKAGE_NAME;
-  return `Maka CLI ${record.version}\n\nInstall with:\n\n\`\`\`sh\nnpm install --global ${install}\n\`\`\`\n\nSource commit: ${record.source.commit}\nStage workflow run: https://github.com/${record.source.repository}/actions/runs/${record.source.runId} (attempt ${record.source.runAttempt})\nSHA-256: \`${record.sha256}\`\n`;
-}
-
 function exactKeys(value, keys, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
@@ -506,25 +464,25 @@ async function main() {
     appendOutputs(output, {
       version: result.record.version,
       dist_tag: result.record.distTag,
-      git_tag: result.record.gitTag,
       tarball: result.tarballPath,
     });
     return;
   }
-  if (command === 'validate-stage-run' && args.length === 4) {
+  if (command === 'validate-stage-run' && (args.length === 3 || args.length === 4)) {
     const [releaseDirectory, runPath, expectedVersion, output] = args;
     const record = validateStageRun({
       releaseDirectory: resolve(releaseDirectory),
       expectedVersion,
       run: readJson(resolve(runPath), 'stage workflow run'),
     });
-    appendOutputs(output, {
-      version: record.version,
-      dist_tag: record.distTag,
-      git_tag: record.gitTag,
-      source_sha: record.source.commit,
-      tarball: record.tarball,
-    });
+    if (output) {
+      appendOutputs(output, {
+        version: record.version,
+        dist_tag: record.distTag,
+        source_sha: record.source.commit,
+        tarball: record.tarball,
+      });
+    }
     return;
   }
   if (command === 'prepare-audit' && args.length === 2) {
@@ -551,16 +509,8 @@ async function main() {
     });
     return;
   }
-  if (command === 'validate-github-release' && args.length === 2) {
-    const [releaseDirectory, releasePath] = args;
-    validateGitHubRelease({
-      releaseDirectory: resolve(releaseDirectory),
-      release: readJson(resolve(releasePath), 'GitHub Release'),
-    });
-    return;
-  }
   throw new Error(
-    `Usage: release-cli-publication.mjs <prepare-stage|prepare-audit|validate-stage-run|fetch-registry|validate-audit|validate-github-release> ...`,
+    `Usage: release-cli-publication.mjs <prepare-stage|prepare-audit|validate-stage-run|fetch-registry|validate-audit> ...`,
   );
 }
 

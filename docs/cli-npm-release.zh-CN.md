@@ -2,15 +2,14 @@
 
 [English](./cli-npm-release.md)
 
-本文档是发布 `maka-agent` 的操作权威。CLI 包版本独立于 Desktop 发布线。每个公开版本都必须
-来自 Stage workflow 验证过的同一个精确 tarball。
+本文档是发布 `maka-agent` npm 安装渠道的操作权威。根目录 `package.json` 仍是 Maka 唯一产品版本权威，`packages/cli/package.json` 必须与其一致。每个公开 npm 版本都必须来自 Stage workflow 验证过的同一个精确 tarball。
 
 ## 发布不变量
 
 - 只从 `main` dispatch 发布 workflow；
 - 预发布版本使用 `next`，稳定版本使用 `latest`；`next` 不得指向比 `latest` 更旧的版本；没有
   更新的预发布版本时，两个 tag 都指向稳定版；
-- Git tag 使用 `cli-v<version>`；CLI release 不得替换 Desktop 的 GitHub Latest release；
+- 不创建 npm 专属 Git tag 或 GitHub Release；产品 `v<version>` tag 与 GitHub Release 只由 `Release` workflow 管理；
 - 不运行 `npm publish`。GitHub Actions 只能运行 `npm stage publish`，由人工 package
   maintainer 使用 npm 2FA 批准 staged package；
 - validation、staging、approval 和 finalization 之间不得重新构建；
@@ -21,9 +20,7 @@
 1. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) 构建并验证一个 immutable
    tarball，记录其 source identity，进入受保护的 `npm-release` Environment，然后通过 OIDC
    提交到 npm staging；
-2. [Finalize CLI npm release](../.github/workflows/release-cli-finalize.yml) 只接受精确的成功
-   Stage run 和 attempt，验证公共 registry 字节、signature、provenance 和 dist-tag，然后创建
-   精确 Git tag 和非 Latest 的 GitHub Release。
+2. [Finalize CLI npm channel](../.github/workflows/release-cli-finalize.yml) 只接受精确的成功 Stage run 和 attempt，并验证公共 registry 字节、signature、provenance 和 dist-tag；它不创建 tag 或 GitHub Release。
 
 ## 一次性控制面配置
 
@@ -62,8 +59,7 @@ authentication and disallow tokens**，然后撤销不再使用的 publish token
 ## 准备发布
 
 1. 将本次包、文档和发布变更全部合并到 `main`；
-2. 把 `packages/cli/package.json` 更新为尚未使用的目标版本并合并。release tool 会把
-   prerelease 映射到 `next`，stable 映射到 `latest`；
+2. 将根产品版本、`apps/desktop/package.json` 与 `packages/cli/package.json` 设置为同一个尚未使用的目标版本并合并。npm 渠道会把 prerelease 映射到 `next`，stable 映射到 `latest`；
 3. 确认目标版本既不在公共 registry，也不在 staged package 中：
 
    ```sh
@@ -133,7 +129,7 @@ npm dist-tag add "maka-agent@$version" next --registry https://registry.npmjs.or
 npm Trusted Publishing 只认证 `npm publish` 和 `npm stage publish`，不认证 dist-tag 变更，而
 release workflow 不得获得长期 npm token。
 
-## Finalize 公共发布
+## Finalize 公共 npm 渠道
 
 npm 显示该版本已经公开后：
 
@@ -141,9 +137,7 @@ npm 显示该版本已经公开后：
 2. 输入成功 Stage 的 run ID、精确 run attempt 和 version；
 3. 让 inspection job 验证公共 tarball 字节、checksum、inventory、npm signature、Trusted
    Publishing provenance、发布 dist-tag，并确认 `next` 不比 `latest` 更旧；
-4. 审查并批准用于 Git tag 和 GitHub Release 的 `npm-release` Environment deployment；
-5. 确认 workflow 在 Stage source commit 上创建了 `cli-v<version>`。预发布版本必须标记为
-   prerelease；任何 CLI release 都不得成为仓库的 GitHub Latest release。
+4. 确认 workflow 将验证后的公开包保存为 Actions artifact，且没有创建或修改任何 Git tag 或 GitHub Release。
 
 检查最终 registry 状态：
 
@@ -188,10 +182,7 @@ npm 版本此时已经 immutable，不要再次 publish 或 approve。保留 Sta
 和 artifacts。如果 package 字节与 provenance 有效，在 `main` 修复当前 Finalize verifier，
 然后针对同一个成功 Stage identity 重新运行 Finalize。
 
-Finalize 可以幂等地恢复部分完成的 GitHub Release 创建：它会继续处理精确匹配的
-draft，并且只会在验证 metadata 和 asset digest 后接受已经发布的 release。如果已经
-存在的 `cli-v<version>` 指向的不是记录的 Stage source commit，或已经发布的 release
-与验证过的 candidate 不一致，立即停止并调查。不要通过移动或删除 tag 让 workflow 通过。
+Finalize 对产品发布状态只读。如果 npm 包版本、字节、dist-tag、签名、provenance 或记录的 Stage identity 不一致，立即停止并调查；不要修改产品 tag 或 GitHub Release 来让 npm 验证通过。
 
 ### 公共版本存在缺陷
 

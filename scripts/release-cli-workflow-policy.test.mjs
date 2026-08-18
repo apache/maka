@@ -70,32 +70,11 @@ test('finalize validates one exact stage attempt before running the current veri
   assert.doesNotMatch(checkout, /steps\.stage-run\.outputs\.source_sha/u);
 });
 
-test('finalize propagates verified artifacts and idempotently publishes an exact-tag release', () => {
+test('finalize preserves verified npm bytes without creating another product release', () => {
   const workflow = readWorkflow('release-cli-finalize.yml');
-  assert.match(
-    workflow,
-    /public_release_artifact_id: \$\{\{ steps\.public-release\.outputs\.artifact-id \}\}/u,
-  );
-  assert.match(workflow, /tarball: \$\{\{ steps\.release\.outputs\.tarball \}\}/u);
-  assert.doesNotMatch(workflow, /steps\.registry\.outputs\.tarball/u);
-  const publish = workflow.slice(workflow.indexOf('\n  publish:'));
-  assert.match(
-    publish,
-    /artifact-ids: \$\{\{ needs\.inspect\.outputs\.public_release_artifact_id \}\}/u,
-  );
-  assert.match(publish, /--verify-tag/u);
-  assert.match(publish, /gh release create[\s\S]*?--draft/u);
-  assert.match(publish, /gh release upload[\s\S]*?--clobber/u);
-  assert.match(publish, /gh release edit[\s\S]*?--draft=false/u);
-  assert.match(publish, /gh release view[\s\S]*?--json apiUrl/u);
-  assert.match(publish, /gh api "\$release_api_url"/u);
-  assert.doesNotMatch(publish, /releases\/tags\/\$RELEASE_TAG/u);
-  assert.match(publish, /--prerelease/u);
-  assert.match(publish, /--latest=false/u);
-  assert.match(publish, /validate-github-release/u);
-  const checkout = namedStep(workflowSteps(publish), 'Check out the current release finalizer');
-  assert.match(checkout, /ref: \$\{\{ github\.sha \}\}/u);
-  assert.match(checkout, /persist-credentials: false/u);
+  assert.match(workflow, /name: Preserve the verified public npm package/u);
+  assert.match(workflow, /path: \$\{\{ runner\.temp \}\}\/registry-release/u);
+  assert.doesNotMatch(workflow, /cli-v|gh release|contents: write|validate-github-release/u);
 });
 
 test('release workflows select npm from the root packageManager authority', () => {
