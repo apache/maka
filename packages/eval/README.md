@@ -155,8 +155,10 @@ so the teardown would not unblock anything, and it would edit the thing about to
 subjects Eval classifies as failed and not for the others. Framework timeout is the same
 measurement: the verifier still runs, the status is `subject_failed`, and leftover processes stay.
 The relay stops only the subject so the execution call can return; it does not signal the process
-group or delete the environment. Host abort is the exception, because that trial is abandoned
-rather than scored. The same rule binds the agent frameworks: the DeepSeek Harness owns a persistent
+group or delete the environment. Host abort is one exception, because that trial is abandoned
+rather than scored. The other is an unconfirmed timeout: if the leader never acknowledges TERM or
+KILL inside the reserved budget, the relay destroys the environment and raises instead of
+publishing a scoreable `framework_timeout` over a cell the subject may still be mutating. The same rule binds the agent frameworks: the DeepSeek Harness owns a persistent
 PTY tree and kills every descendant on shutdown, so the Eval-patched DSH subprocess skips that kill
 under `DSH_PRESERVE_BACKGROUND_PROCESSES`, which Eval always sets.
 

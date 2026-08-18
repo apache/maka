@@ -165,6 +165,26 @@ class TimeoutScopeEnvironment(SimultaneousEnvironment):
         return await super().exec(command, cwd=cwd, timeout_sec=timeout_sec)
 
 
+class IgnoringLeaderEnvironment(SimultaneousEnvironment):
+    """Delivers leader TERM/KILL but keeps the subject running."""
+
+    def __init__(self):
+        super().__init__()
+        self.commands = []
+        self.stopped = False
+
+    async def stop(self, delete=False):
+        self.stopped = delete
+
+    async def exec(self, command, cwd=None, timeout_sec=None):
+        self.commands.append(command)
+        if _is_teardown(command):
+            raise AssertionError("framework timeout must not signal the process group")
+        if _is_leader_stop(command):
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+        return await super().exec(command, cwd=cwd, timeout_sec=timeout_sec)
+
+
 class LiveScopeEnvironment(SimultaneousEnvironment):
     """A subject whose process group outlives it, as a task's own service does."""
 
@@ -200,16 +220,16 @@ class SettleCompletionEnvironment(SimultaneousEnvironment):
 
 
 def _is_teardown(command: str) -> bool:
-    # Host abort signals the recorded process group. Framework timeout stops
-    # only the subject leader (`"$pgid"`), which must not count as teardown.
-    return ('-"$pgid"' in command) and ("kill -TERM" in command or "kill -KILL" in command)
+    # Host abort emits `kill -- "-$pgid"`. Framework timeout emits
+    # `kill -- "$pgid"`, which must not count as teardown.
+    return ('"-$pgid"' in command) and ("kill -TERM" in command or "kill -KILL" in command)
 
 
 def _is_leader_stop(command: str) -> bool:
     return (
         ("kill -TERM" in command or "kill -KILL" in command)
         and '"$pgid"' in command
-        and '-"$pgid"' not in command
+        and '"-$pgid"' not in command
     )
 
 
@@ -306,6 +326,14 @@ asyncio.run(module.main())
 
 
 class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    def test_scope_predicates_distinguish_group_teardown_from_leader_stop(self):
+        group = 'kill -TERM -- "-$pgid"'
+        leader = 'kill -TERM -- "$pgid"'
+        self.assertTrue(_is_teardown(group))
+        self.assertFalse(_is_leader_stop(group))
+        self.assertFalse(_is_teardown(leader))
+        self.assertTrue(_is_leader_stop(leader))
+
     def test_host_teardown_exits_successfully_after_trial_unwinds(self):
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / "cleanup-attempted"
@@ -569,8 +597,49 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
             await environment.started.wait()
             running.cancel()
             self.assertEqual(await asyncio.wait_for(reader.readline(), 0.5), b"")
-            # The subject never acknowledged either leader-only signal. Do not
-            # let the verifier race a process that may still mutate its input.
+            # SimultaneousEnvironment answers every `pgid=` command with 3, so
+            # `_signal_leader` reports a vanished leader. The completion race
+            # never delivers, so the relay must fail closed rather than score.
+            self.assertTrue(environment.stopped)
+            with self.assertRaisesRegex(RuntimeError, "could not confirm subject exit"):
+                await running
+        finally:
+            writer.close()
+            server.close()
+            await server.wait_closed()
+
+    async def test_ignored_leader_signals_fail_closed_without_a_scoreable_timeout(self):
+        relay = load_relay()
+        environment = IgnoringLeaderEnvironment()
+        token = f"framework-ignore-{os.getpid()}"
+        connected = asyncio.get_running_loop().create_future()
+
+        async def accept(reader, writer):
+            connected.set_result((reader, writer))
+
+        server = await asyncio.start_server(accept, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        agent = relay.RelayAgent(
+            logs_dir=Path(tempfile.gettempdir()), relay_host="127.0.0.1",
+            relay_port=port, relay_token=token, teardown_timeout_ms=50,
+        )
+        running = asyncio.create_task(agent.run("solve", environment, None))
+        reader, writer = await connected
+        try:
+            await reader.readline()
+            writer.write((__import__("json").dumps({
+                "token": token, "kind": "execute", "command": "/bin/true", "args": [],
+                "credentials": {}, "resultToken": "0" * 32,
+            }) + "\n").encode())
+            await writer.drain()
+            await environment.started.wait()
+            running.cancel()
+            self.assertEqual(await asyncio.wait_for(reader.readline(), 0.5), b"")
+            self.assertTrue(any(_is_leader_stop(command) for command in environment.commands))
+            self.assertEqual(
+                [command for command in environment.commands if _is_teardown(command)],
+                [],
+            )
             self.assertTrue(environment.stopped)
             with self.assertRaisesRegex(RuntimeError, "could not confirm subject exit"):
                 await running

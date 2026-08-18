@@ -605,7 +605,7 @@ async def _stop_subject_for_timeout(
             # evidence that a live subject stopped.
             try:
                 return await asyncio.wait_for(
-                    asyncio.shield(execution), timeout=min(0.1, remaining)
+                    asyncio.shield(execution), timeout=remaining
                 )
             except asyncio.CancelledError:
                 if execution.cancelled():
@@ -632,17 +632,7 @@ async def _stop_subject_for_timeout(
     # A verifier cannot measure a stable environment while the subject may
     # still be mutating it. Fail closed instead of publishing a scoreable
     # framework_timeout frame without positive leader-exit evidence.
-    try:
-        remaining = max(0.001, deadline - loop.time())
-        await asyncio.wait_for(environment.stop(delete=True), timeout=remaining)
-    except Exception:
-        pass
-    finally:
-        if not execution.done():
-            execution.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            remaining = max(0.001, deadline - loop.time())
-            await asyncio.wait_for(execution, timeout=remaining)
+    await _destroy_environment(environment, execution, deadline, loop)
     raise RuntimeError("Maka Eval could not confirm subject exit after framework timeout")
 
 
@@ -662,18 +652,27 @@ async def _settle_or_destroy(
             timeout=max(0.001, deadline - loop.time() - stop_reserve),
         )
     except Exception:
-        try:
-            remaining = max(0.001, deadline - loop.time())
-            await asyncio.wait_for(environment.stop(delete=True), timeout=remaining)
-        except Exception:
-            pass
-        finally:
-            if not execution.done():
-                execution.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                remaining = max(0.001, deadline - loop.time())
-                await asyncio.wait_for(execution, timeout=remaining)
+        await _destroy_environment(environment, execution, deadline, loop)
         return None
+
+
+async def _destroy_environment(
+    environment: Any,
+    execution: Any,
+    deadline: float,
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    try:
+        remaining = max(0.001, deadline - loop.time())
+        await asyncio.wait_for(environment.stop(delete=True), timeout=remaining)
+    except Exception:
+        pass
+    finally:
+        if not execution.done():
+            execution.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            remaining = max(0.001, deadline - loop.time())
+            await asyncio.wait_for(execution, timeout=remaining)
 
 
 async def _signal_group(environment: Any, cwd: str, scope_path: str, signal: str) -> None:
