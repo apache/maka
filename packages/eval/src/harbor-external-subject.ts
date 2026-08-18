@@ -365,7 +365,7 @@ try {
     const prepared = await prepareProfile(profile, proxy.baseUrl, systemRoot, args);
     credentialPath = prepared.credentialPath;
     if (profile === 'claude-code') prepareClaudeWorkspace(systemRoot, prepared.home);
-    const result = await runChild(command, args, prepared.env, profile);
+    const result = await runChild(command, args, prepared.env, profile, proxy.stopAccepting);
     child = undefined;
     await writeState('child_exited', { exitCode: result.exitCode });
     const metering = await proxy.report();
@@ -459,6 +459,7 @@ async function runChild(
   executableArgs: string[],
   env: NodeJS.ProcessEnv,
   selected: Profile,
+  onExit: () => void,
 ): Promise<{ exitCode: number; stdout: ClassifiedStream; stderr: StreamDiagnostic }> {
   const running = spawn(executable, executableArgs, {
     env,
@@ -468,8 +469,14 @@ async function runChild(
   const stdout = classifyStream(running.stdout, selected);
   const stderr = captureStreamDiagnostic(running.stderr);
   const exitCode = await new Promise<number>((resolveExit, reject) => {
-    running.once('error', reject);
-    running.once('exit', (code) => resolveExit(code ?? 1));
+    running.once('error', (error) => {
+      onExit();
+      reject(error);
+    });
+    running.once('exit', (code) => {
+      onExit();
+      resolveExit(code ?? 1);
+    });
   });
   const [stdoutResult, stderrResult] = await Promise.all([stdout, stderr]);
   return { exitCode, stdout: stdoutResult, stderr: stderrResult };
@@ -661,6 +668,7 @@ async function startMeteringProxy(
   // Metering is only readable as one settled snapshot: a request still in
   // flight when the child exits would otherwise be missing from the counts that
   // decide admission, usage, and cost.
+  stopAccepting(): void;
   report(): Promise<ProviderMeteringCounts>;
   close(): Promise<void>;
 }> {
@@ -722,6 +730,9 @@ async function startMeteringProxy(
     : new Agent(timeouts);
   const active = new Set<Promise<void>>();
   let accepting = true;
+  const stopAccepting = () => {
+    accepting = false;
+  };
   const server = createServer((request, response) => {
     // Refused rather than counted: a request the proxy declined was never
     // admitted by the provider and never billed, so it is not part of what
@@ -824,6 +835,7 @@ async function startMeteringProxy(
   if (!address || typeof address === 'string') throw new Error('provider proxy did not bind');
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
+    stopAccepting,
     report: async () => {
       // Admission closes before anything is drained, so settlement is made
       // true rather than asserted about a moment. The subject's own process has
@@ -833,7 +845,7 @@ async function startMeteringProxy(
       // with work in flight. Closing the socket would not do this: it stops new
       // connections while leaving established ones free to send another
       // request, and it waits on idle keep-alive sockets that may never close.
-      accepting = false;
+      stopAccepting();
       await Promise.allSettled([...active]);
       // Settlement is something this process observes; it is not recoverable
       // from the counts. A checkpoint whose last successful write happened
@@ -844,6 +856,7 @@ async function startMeteringProxy(
       return snapshot();
     },
     close: async () => {
+      stopAccepting();
       await Promise.allSettled([...active]);
       await checkpointWrites;
       await closeServer(server);
