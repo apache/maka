@@ -198,6 +198,10 @@ class MemoryAuthority implements ExternalConversationAuthority {
     }
     return removed;
   }
+
+  async listBoundSessionIds(): Promise<string[]> {
+    return [...new Set(this.bindings.values())].sort();
+  }
 }
 
 class MemorySessions {

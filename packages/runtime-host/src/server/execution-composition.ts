@@ -1346,6 +1346,8 @@ export async function createExecutionRuntimeHostComposition(
           await openedExternalConversationAuthority.purgeSession(sessionId);
         }
       },
+      listExternalConversationSessionIds: () =>
+        openedExternalConversationAuthority.listBoundSessionIds(),
       purgeAgentGraphState: async (sessionId) => {
         for (const graphId of await requireGraphCoordinator(graphCoordinator).listGraphIds(
           sessionId,
