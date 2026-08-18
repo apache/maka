@@ -385,8 +385,11 @@ export function mapWechatIlinkMessage(raw: unknown): BotIncomingMessage | null {
   if (!text && !hasMedia) return null;
   const userId = firstStringField(message, ['from_user_id', 'fromUserId', 'fromWxid']);
   if (!userId) return null;
-  const messageId =
-    firstStringField(message, ['msg_id', 'message_id', 'client_id', 'id']) ?? randomUUID();
+  const messageId = firstStringField(message, ['msg_id', 'message_id', 'client_id', 'id']);
+  // Without a stable upstream identity a redelivery cannot be deduplicated: a
+  // locally generated id would route each retry to a fresh Host admission and
+  // could run the model twice. Drop the message like the DingTalk bridge does.
+  if (!messageId) return null;
   const timestamp = firstNumberField(message, ['create_time', 'timestamp', 'createdAt']);
   return {
     platform: 'wechat',

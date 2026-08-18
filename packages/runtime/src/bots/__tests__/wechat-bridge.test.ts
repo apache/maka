@@ -183,6 +183,20 @@ describe('WechatBridge', () => {
     assert.equal(event?.receivedAt, 1_700_000_002_000);
   });
 
+  test('drops iLink messages without a stable upstream identity', () => {
+    // A redelivery of an id-less message would otherwise mint a fresh
+    // sourceEventId each time, defeating Host admission idempotency and
+    // running a duplicate Turn.
+    assert.equal(
+      mapWechatIlinkMessage({
+        from_user_id: 'wxid_friend',
+        create_time: 1_700_000_002,
+        item_list: [{ type: 1, text_item: { text: 'no id anywhere' } }],
+      }),
+      null,
+    );
+  });
+
   test('maps bridge media kinds and rejects empty non-media messages', () => {
     assert.equal(
       mapWechatBridgeMessage({
