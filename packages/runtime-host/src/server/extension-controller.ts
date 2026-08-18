@@ -59,13 +59,14 @@ type MutationFailureCode =
   | 'persistence_failed'
   | 'commit_outcome_unknown';
 
-interface PersistedExtensionBinding {
+interface CompositionEntryState {
   readonly bindingId: string;
   readonly scopeId: string;
   readonly extensionId: string;
-  readonly desiredRevision: string;
+  readonly revision: string;
   readonly enabled: boolean;
   readonly error: string | null;
+  readonly config: Readonly<Record<string, string | number | boolean>>;
 }
 
 /** Durable control plane that converges persisted desired bindings into the Host runtime. */
@@ -85,8 +86,7 @@ export class HostExtensionController {
     'extension.package.export': (input) => this.#exportPackage(input),
   };
 
-  readonly #bindings = new Map<string, PersistedExtensionBinding>();
-  readonly #configuration = new Map<string, Readonly<Record<string, string | number | boolean>>>();
+  readonly #bindings = new Map<string, CompositionEntryState>();
   #mutationTail: Promise<void> = Promise.resolve();
   #recovered = false;
   #draining = false;
@@ -103,7 +103,7 @@ export class HostExtensionController {
     private readonly uiPackages?: PluginPackageStore,
   ) {
     this.loader.setConfigurationResolver?.(
-      (bindingId) => this.#configuration.get(bindingId) ?? Object.freeze({}),
+      (bindingId) => this.#configurationForBinding(bindingId),
     );
     this.loader.setEventEmitter?.((scopeId, event, payload, context) =>
       this.runtime.emitEvent(scopeId, event, payload, context),
@@ -129,12 +129,12 @@ export class HostExtensionController {
               bindingId: entry.id,
               scopeId,
               extensionId: entry.packageId,
-              desiredRevision: entry.revision,
+              revision: entry.revision,
               enabled: !entry.disabled,
               error: entry.error ?? null,
+              config: entry.config,
             }),
           );
-          this.#configuration.set(entry.id, entry.config);
         }
         for (const [, entry] of persistedEntries(composition)) {
           if (!entry.packageId || !entry.revision || entry.disabled) continue;
@@ -206,10 +206,10 @@ export class HostExtensionController {
       return { ok: false, error: { code: 'not_found', message: 'Extension binding not found' } };
     }
     try {
-      const contract = await this.#requireContract(binding.extensionId, binding.desiredRevision);
+      const contract = await this.#requireContract(binding.extensionId, binding.revision);
       const configuration = validateExtensionConfiguration(
         contract.configuration,
-        this.#configuration.get(input.bindingId),
+        this.#configurationForBinding(input.bindingId),
       );
       const result: ExtensionConfigurationQueryResult = {
         configuration: redactSecretConfiguration(contract, configuration),
@@ -239,7 +239,7 @@ export class HostExtensionController {
       }
       let configuration: Readonly<Record<string, string | number | boolean>>;
       try {
-        const contract = await this.#requireContract(binding.extensionId, binding.desiredRevision);
+        const contract = await this.#requireContract(binding.extensionId, binding.revision);
         configuration = validateExtensionConfiguration(contract.configuration, input.configuration);
       } catch (error) {
         return {
@@ -247,12 +247,12 @@ export class HostExtensionController {
           error: { code: 'invalid_request', message: boundedErrorMessage(error) },
         };
       }
-      const previous = this.#configuration.get(input.bindingId);
-      this.#configuration.set(input.bindingId, configuration);
+      const previous = binding;
+      this.#bindings.set(input.bindingId, bindingState({ ...binding, config: configuration }));
       try {
         await this.#persist();
         if (binding.enabled && this.#tryInspect(binding.bindingId)) {
-          await this.runtime.applyComposition({
+          await this.#applyComposition({
             operations: [
               {
                 type: 'update',
@@ -264,14 +264,13 @@ export class HostExtensionController {
           await this.#refreshRuntimeState();
           await this.#persist();
         }
-        const contract = await this.#requireContract(binding.extensionId, binding.desiredRevision);
+        const contract = await this.#requireContract(binding.extensionId, binding.revision);
         const result: ExtensionConfigurationMutateResult = {
           configuration: redactSecretConfiguration(contract, configuration),
         };
         return { ok: true, result };
       } catch (error) {
-        if (previous) this.#configuration.set(input.bindingId, previous);
-        else this.#configuration.delete(input.bindingId);
+        this.#bindings.set(input.bindingId, previous);
         await this.#persist().catch(() => undefined);
         if (binding.enabled) await this.#convergeBinding(binding.bindingId).catch(() => undefined);
         return {
@@ -594,21 +593,17 @@ export class HostExtensionController {
       );
     }
     const bindingSnapshot = new Map(this.#bindings);
-    const configurationSnapshot = new Map(this.#configuration);
     let dependencyBindings: readonly string[];
+    let configuration: Readonly<Record<string, string | number | boolean>>;
     try {
       const contract = await this.#requireContract(input.extensionId, input.revision);
       dependencyBindings = await this.#stageDependencies(input.scopeId, contract, new Set());
-      this.#configuration.set(
-        input.bindingId,
-        validateExtensionConfiguration(
-          contract.configuration,
-          this.#configuration.get(input.bindingId),
-        ),
+      configuration = validateExtensionConfiguration(
+        contract.configuration,
+        current?.config,
       );
     } catch (error) {
       this.#replaceMap(this.#bindings, bindingSnapshot);
-      this.#replaceMap(this.#configuration, configurationSnapshot);
       return mutationFailure('operation_conflict', boundedErrorMessage(error));
     }
     this.#bindings.set(
@@ -617,9 +612,10 @@ export class HostExtensionController {
         bindingId: input.bindingId,
         scopeId: input.scopeId,
         extensionId: input.extensionId,
-        desiredRevision: input.revision,
+        revision: input.revision,
         enabled: true,
         error: null,
+        config: configuration,
       }),
     );
     const committed = await this.#commitDesiredState();
@@ -640,23 +636,28 @@ export class HostExtensionController {
     const available = await this.#requireAvailable(binding.extensionId, revision);
     if (available) return available;
     const bindingSnapshot = new Map(this.#bindings);
-    const configurationSnapshot = new Map(this.#configuration);
     let dependencyBindings: readonly string[];
+    let configuration: Readonly<Record<string, string | number | boolean>>;
     try {
       const contract = await this.#requireContract(binding.extensionId, revision);
       dependencyBindings = await this.#stageDependencies(binding.scopeId, contract, new Set());
-      this.#configuration.set(
-        bindingId,
-        validateExtensionConfiguration(contract.configuration, this.#configuration.get(bindingId)),
+      configuration = validateExtensionConfiguration(
+        contract.configuration,
+        binding.config,
       );
     } catch (error) {
       this.#replaceMap(this.#bindings, bindingSnapshot);
-      this.#replaceMap(this.#configuration, configurationSnapshot);
       return mutationFailure('operation_conflict', boundedErrorMessage(error));
     }
     this.#bindings.set(
       bindingId,
-      bindingState({ ...binding, desiredRevision: revision, enabled: true, error: null }),
+      bindingState({
+        ...binding,
+        revision,
+        enabled: true,
+        error: null,
+        config: configuration,
+      }),
     );
     const committed = await this.#commitDesiredState();
     if (committed) return committed;
@@ -670,7 +671,7 @@ export class HostExtensionController {
   async #disable(bindingId: string): Promise<OperationOutcome<'extension.catalog.mutate'>> {
     const binding = this.#bindings.get(bindingId);
     if (!binding) return mutationFailure('not_found', `Extension binding not found: ${bindingId}`);
-    let dependent: PersistedExtensionBinding | undefined;
+    let dependent: CompositionEntryState | undefined;
     try {
       dependent = await this.#requiredBy(binding);
     } catch (error) {
@@ -687,7 +688,7 @@ export class HostExtensionController {
     if (committed) return committed;
     try {
       if (this.#tryInspect(bindingId)) {
-        await this.runtime.applyComposition({
+        await this.#applyComposition({
           operations: [{ type: 'update', entryId: bindingId, patch: { disabled: true } }],
         });
       }
@@ -703,7 +704,7 @@ export class HostExtensionController {
   async #remove(bindingId: string): Promise<OperationOutcome<'extension.catalog.mutate'>> {
     const binding = this.#bindings.get(bindingId);
     if (!binding) return mutationFailure('not_found', `Extension binding not found: ${bindingId}`);
-    let dependent: PersistedExtensionBinding | undefined;
+    let dependent: CompositionEntryState | undefined;
     try {
       dependent = await this.#requiredBy(binding);
     } catch (error) {
@@ -717,13 +718,12 @@ export class HostExtensionController {
     }
     try {
       if (this.#tryInspect(bindingId)) {
-        await this.runtime.applyComposition({
+        await this.#applyComposition({
           operations: [{ type: 'remove', entryId: bindingId }],
         });
       }
       await this.uiState.clear(binding.scopeId, binding.extensionId);
       this.#bindings.delete(bindingId);
-      this.#configuration.delete(bindingId);
       await this.#pruneOrphanDependencyBindings();
       await this.#garbageCollectRevisions();
       const persisted = await this.#commitDesiredState();
@@ -796,7 +796,7 @@ export class HostExtensionController {
   async #convergeBinding(bindingId: string): Promise<void> {
     const binding = this.#bindings.get(bindingId);
     if (!binding || !binding.enabled) return;
-    await this.#ensureInstalled(binding.extensionId, binding.desiredRevision);
+    await this.#ensureInstalled(binding.extensionId, binding.revision);
     const inspection = this.#tryInspect(bindingId);
     const rootId: MakaPluginRootId =
       binding.scopeId === 'profile'
@@ -804,7 +804,7 @@ export class HostExtensionController {
         : binding.scopeId === 'desktop-ui'
           ? 'desktop-ui'
           : `session:${binding.scopeId}`;
-    await this.runtime.applyComposition({
+    await this.#applyComposition({
       operations: inspection
         ? [
             {
@@ -812,9 +812,9 @@ export class HostExtensionController {
               entryId: binding.bindingId,
               patch: {
                 packageId: binding.extensionId,
-                revision: binding.desiredRevision,
+                revision: binding.revision,
                 disabled: false,
-                config: this.#configuration.get(binding.bindingId) ?? Object.freeze({}),
+                config: this.#configurationForBinding(binding.bindingId),
               },
             },
           ]
@@ -825,8 +825,8 @@ export class HostExtensionController {
               entry: {
                 id: binding.bindingId,
                 packageId: binding.extensionId,
-                revision: binding.desiredRevision,
-                config: this.#configuration.get(binding.bindingId) ?? Object.freeze({}),
+                revision: binding.revision,
+                config: this.#configurationForBinding(binding.bindingId),
               },
             },
           ],
@@ -888,7 +888,7 @@ export class HostExtensionController {
   async #garbageCollectRevisions(): Promise<void> {
     const retained = new Set(
       [...this.#bindings.values()].flatMap((binding) =>
-        [binding.desiredRevision, this.#tryInspect(binding.bindingId)?.current?.revision]
+        [binding.revision, this.#tryInspect(binding.bindingId)?.current?.revision]
           .filter((revision): revision is string => typeof revision === 'string')
           .map((revision) => revisionKey(binding.extensionId, revision)),
       ),
@@ -925,6 +925,21 @@ export class HostExtensionController {
     } catch {
       return undefined;
     }
+  }
+
+  async #applyComposition(
+    input: Parameters<HostExtensionRuntime['applyComposition']>[0],
+  ): Promise<void> {
+    await this.runtime.applyComposition(input);
+  }
+
+  #configurationForBinding(
+    bindingId: string,
+  ): Readonly<Record<string, string | number | boolean>> {
+    const persisted = this.#persistedComposition
+      ? persistedEntries(this.#persistedComposition).find(([, entry]) => entry.id === bindingId)?.[1]
+      : undefined;
+    return this.#bindings.get(bindingId)?.config ?? persisted?.config ?? Object.freeze({});
   }
 
   async #requireAvailable(
@@ -990,7 +1005,7 @@ export class HostExtensionController {
           const existingContract = contracts.find(
             (candidate) =>
               candidate.extensionId === existing.extensionId &&
-              candidate.revision === existing.desiredRevision,
+              candidate.revision === existing.revision,
           );
           if (
             !existingContract ||
@@ -1000,7 +1015,7 @@ export class HostExtensionController {
               bindingId,
               bindingState({
                 ...existing,
-                desiredRevision: selected.revision,
+                revision: selected.revision,
                 enabled: true,
                 error: null,
               }),
@@ -1018,19 +1033,26 @@ export class HostExtensionController {
               bindingId,
               scopeId,
               extensionId: selected.extensionId,
-              desiredRevision: selected.revision,
+              revision: selected.revision,
               enabled: true,
               error: null,
+              config: validateExtensionConfiguration(selected.configuration, undefined),
             }),
           );
         }
-        this.#configuration.set(
-          bindingId,
-          validateExtensionConfiguration(
-            selected.configuration,
-            this.#configuration.get(bindingId),
-          ),
-        );
+        const stagedBinding = this.#bindings.get(bindingId);
+        if (stagedBinding) {
+          this.#bindings.set(
+            bindingId,
+            bindingState({
+              ...stagedBinding,
+              config: validateExtensionConfiguration(
+                selected.configuration,
+                stagedBinding.config,
+              ),
+            }),
+          );
+        }
         staged.push(...(await this.#stageDependencies(scopeId, selected, visiting)), bindingId);
       }
       return Object.freeze([...new Set(staged)]);
@@ -1040,8 +1062,8 @@ export class HostExtensionController {
   }
 
   async #requiredBy(
-    target: PersistedExtensionBinding,
-  ): Promise<PersistedExtensionBinding | undefined> {
+    target: CompositionEntryState,
+  ): Promise<CompositionEntryState | undefined> {
     const contracts = this.loader.contracts ? await this.loader.contracts() : [];
     return [...this.#bindings.values()].find((binding) => {
       if (!binding.enabled || binding.bindingId === target.bindingId) return false;
@@ -1049,7 +1071,7 @@ export class HostExtensionController {
       const contract = contracts.find(
         (candidate) =>
           candidate.extensionId === binding.extensionId &&
-          candidate.revision === binding.desiredRevision,
+          candidate.revision === binding.revision,
       );
       return contract?.dependencies.some((dependency) => dependency.id === target.extensionId);
     });
@@ -1058,13 +1080,13 @@ export class HostExtensionController {
   async #pruneOrphanDependencyBindings(): Promise<void> {
     const contracts = this.loader.contracts ? await this.loader.contracts() : [];
     const required = new Set<string>();
-    const visit = (binding: PersistedExtensionBinding, visiting: Set<string>): void => {
+    const visit = (binding: CompositionEntryState, visiting: Set<string>): void => {
       if (visiting.has(binding.bindingId)) return;
       visiting.add(binding.bindingId);
       const contract = contracts.find(
         (candidate) =>
           candidate.extensionId === binding.extensionId &&
-          candidate.revision === binding.desiredRevision,
+          candidate.revision === binding.revision,
       );
       for (const dependency of contract?.dependencies ?? []) {
         const dependencyBinding = [...this.#bindings.values()].find(
@@ -1087,12 +1109,11 @@ export class HostExtensionController {
     for (const binding of [...this.#bindings.values()]) {
       if (!binding.bindingId.startsWith('dependency_') || required.has(binding.bindingId)) continue;
       if (this.#tryInspect(binding.bindingId)) {
-        await this.runtime.applyComposition({
+        await this.#applyComposition({
           operations: [{ type: 'remove', entryId: binding.bindingId }],
         });
       }
       this.#bindings.delete(binding.bindingId);
-      this.#configuration.delete(binding.bindingId);
     }
   }
 
@@ -1123,9 +1144,9 @@ export class HostExtensionController {
       const entry: PersistedPluginEntry = Object.freeze({
         id: binding.bindingId,
         packageId: binding.extensionId,
-        revision: binding.desiredRevision,
+        revision: binding.revision,
         disabled: !binding.enabled,
-        config: this.#configuration.get(binding.bindingId) ?? Object.freeze({}),
+        config: binding.config,
         error: binding.error,
       });
       if (binding.scopeId === 'profile') profile.push(entry);
@@ -1173,7 +1194,7 @@ export class HostExtensionController {
       bindingId: binding.bindingId,
       scopeId: binding.scopeId,
       extensionId: binding.extensionId,
-      desiredRevision: binding.desiredRevision,
+      desiredRevision: binding.revision,
       enabled: binding.enabled,
       status: projectStatus(binding, inspection),
       error: binding.error,
@@ -1191,21 +1212,21 @@ export class HostExtensionController {
 }
 
 function projectStatus(
-  binding: PersistedExtensionBinding,
+  binding: CompositionEntryState,
   inspection: MakaPluginMountInspection | undefined,
 ): ExtensionBindingProjection['status'] {
   if (!binding.enabled) return 'disabled';
   if (binding.error || inspection?.status === 'failed') return 'failed';
-  if (inspection?.current?.revision === binding.desiredRevision) return 'active';
+  if (inspection?.current?.revision === binding.revision) return 'active';
   return 'waiting';
 }
 
-function bindingState(binding: PersistedExtensionBinding): PersistedExtensionBinding {
+function bindingState(binding: CompositionEntryState): CompositionEntryState {
   return Object.freeze({ ...binding });
 }
 
-function uniqueRevisions(binding: PersistedExtensionBinding): readonly string[] {
-  return [binding.desiredRevision];
+function uniqueRevisions(binding: CompositionEntryState): readonly string[] {
+  return [binding.revision];
 }
 
 function boundedErrorMessage(error: unknown): string {
@@ -1317,8 +1338,8 @@ function packageLoaderFailure(
 }
 
 function compareBinding(
-  left: Pick<PersistedExtensionBinding, 'bindingId'>,
-  right: Pick<PersistedExtensionBinding, 'bindingId'>,
+  left: Pick<CompositionEntryState, 'bindingId'>,
+  right: Pick<CompositionEntryState, 'bindingId'>,
 ): number {
   return compareString(left.bindingId, right.bindingId);
 }
