@@ -63,6 +63,8 @@ interface ProviderErrorFacts {
   target: unknown;
   evidence: ProviderErrorEvidence;
   summarySources: ProviderFailureSources;
+  messageSources?: ProviderFailureSources;
+  boundedProviderMessageSource?: boolean;
   bareMessage?: string;
   responseHeaders?: Record<string, string>;
 }
@@ -135,7 +137,7 @@ function parseRetryAfterMs(headers: Record<string, string>): number | null | und
  * response headers across the ModelAdapter boundary.
  */
 export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
-  const facts = normalizeProviderError(error);
+  const facts = providerFailureDiagnosticFacts(error);
   if (!facts) return { retryable: false };
   return providerRetryMetadataFromFacts(facts);
 }
@@ -305,7 +307,7 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
  * or serialized as diagnostic output wholesale.
  */
 export function providerFailureSummary(error: unknown): ProviderFailureSummary | undefined {
-  const facts = normalizeProviderError(error);
+  const facts = providerFailureDiagnosticFacts(error);
   if (!facts) return undefined;
   const summary = providerFailureSummaryFromFacts(facts);
   if (!summary) return undefined;
@@ -320,7 +322,7 @@ function providerFailureSummaryFromFacts(
 ): ProviderFailureSummaryEvidence | undefined {
   const sources = facts.summarySources;
   const message = firstProviderMessage(facts);
-  const code = firstProviderField(sources, ['code']) ?? firstProviderField(sources, ['type']);
+  const code = strongestProviderCode(facts);
   const statusCode = firstProviderField(sources, ['statusCode', 'status']);
   const requestId =
     firstProviderField(sources, ['requestId', 'request_id']) ??
@@ -391,8 +393,7 @@ export function providerFailureResult(error: unknown): ProviderFailureResult {
       : classified,
     httpStatus,
   );
-  const providerCode =
-    firstProviderField(sources, ['code']) ?? firstProviderField(sources, ['type']);
+  const providerCode = strongestProviderCode(facts);
   const providerRequestId =
     firstProviderField(sources, ['requestId', 'request_id']) ??
     boundedProviderField(facts.responseHeaders?.['x-request-id']);
@@ -414,6 +415,24 @@ export function providerFailureResult(error: unknown): ProviderFailureResult {
         }
       : {}),
   };
+}
+
+function strongestProviderCode(facts: ProviderErrorFacts): string | undefined {
+  const semantic = facts.evidence.structuredCodes.find(
+    (value) =>
+      PROVIDER_AUTH_CODES.has(value) ||
+      PROVIDER_BILLING_CODES.has(value) ||
+      PROVIDER_PERMISSION_CODES.has(value) ||
+      PROVIDER_USAGE_LIMIT_CODES.has(value) ||
+      PROVIDER_RATE_LIMIT_CODES.has(value) ||
+      PROVIDER_UNAVAILABLE_CODES.has(value) ||
+      CONTEXT_OVERFLOW_PROVIDER_CODES.has(value),
+  );
+  return (
+    boundedProviderField(semantic) ??
+    firstProviderField(facts.summarySources, ['code']) ??
+    firstProviderField(facts.summarySources, ['type'])
+  );
 }
 
 function normalizedProviderFailureClass(
@@ -439,28 +458,50 @@ function normalizedProviderFailureClass(
 
 function providerFailureDiagnosticFacts(error: unknown): ProviderErrorFacts | undefined {
   let current = providerErrorTarget(error);
-  let fallback: ProviderErrorFacts | undefined;
-  let structuredFallback: ProviderErrorFacts | undefined;
-  let codedFallback: ProviderErrorFacts | undefined;
+  const chain: ProviderErrorFacts[] = [];
   const seen = new Set<unknown>();
   for (let depth = 0; depth < 4 && current !== undefined && !seen.has(current); depth += 1) {
     seen.add(current);
     const facts = normalizeProviderError(current);
-    fallback ??= facts;
-    // HTTP status is the strongest durable evidence: an SDK wrapper can carry
-    // its own transport `code` (for example `FETCH_FAILED`) while the real
-    // provider status sits on the wrapped cause. Prefer the status-bearing
-    // fact, and only fall back to wrapper-level structured codes when no fact
-    // in the chain carries one.
-    if (facts?.evidence.statusCode) return facts;
-    structuredFallback ??= facts && facts.evidence.structuredCodes.length > 0 ? facts : undefined;
-    if (facts?.evidence.code) codedFallback ??= facts;
+    if (facts) chain.push(facts);
     current =
       current && typeof current === 'object'
         ? safeField(current as Record<string, unknown>, 'cause')
         : undefined;
   }
-  return structuredFallback ?? codedFallback ?? fallback;
+  if (chain.length === 0) return undefined;
+
+  // Provider semantics can sit below an SDK/transport wrapper that also owns
+  // the HTTP status. Aggregate the bounded cause chain instead of letting the
+  // first status-bearing object discard stronger structured codes. Provider
+  // sources are ordered inner-first for message/code projection; transport
+  // status and retry hints remain available as fallback evidence.
+  const providerFirst = [...chain].reverse();
+  const messageFacts = providerFirst.filter((facts) => hasProviderMessageSource(facts));
+  const responseHeaders = Object.assign({}, ...chain.map((facts) => facts.responseHeaders ?? {})) as
+    | Record<string, string>
+    | undefined;
+  const bareMessage = messageFacts.find((facts) => facts.bareMessage)?.bareMessage;
+  return {
+    target: chain[0]!.target,
+    evidence: {
+      text: chain.map((facts) => facts.evidence.text).join(' '),
+      statusCode: chain.find((facts) => facts.evidence.statusCode)?.evidence.statusCode ?? '',
+      code: chain.find((facts) => facts.evidence.code)?.evidence.code ?? '',
+      structuredCodes: [...new Set(chain.flatMap((facts) => facts.evidence.structuredCodes))],
+    },
+    summarySources: {
+      records: providerFirst.flatMap((facts) => facts.summarySources.records),
+      stringErrors: providerFirst.flatMap((facts) => facts.summarySources.stringErrors),
+    },
+    messageSources: {
+      records: messageFacts.flatMap((facts) => facts.summarySources.records),
+      stringErrors: messageFacts.flatMap((facts) => facts.summarySources.stringErrors),
+    },
+    boundedProviderMessageSource: messageFacts.length > 0,
+    ...(bareMessage ? { bareMessage } : {}),
+    ...(responseHeaders && Object.keys(responseHeaders).length > 0 ? { responseHeaders } : {}),
+  };
 }
 
 interface ProviderFailureSources {
@@ -494,7 +535,7 @@ function providerRecord(value: unknown): Record<string, unknown> | undefined {
 
 function firstProviderMessage(facts: ProviderErrorFacts): string | undefined {
   if (facts.bareMessage !== undefined) return boundedProviderMessage(facts.bareMessage);
-  const sources = facts.summarySources;
+  const sources = facts.messageSources ?? facts.summarySources;
   const candidates = [
     ...sources.records.map((source) => safeField(source, 'message')),
     ...sources.stringErrors,
@@ -505,6 +546,9 @@ function firstProviderMessage(facts: ProviderErrorFacts): string | undefined {
 }
 
 function hasProviderMessageSource(facts: ProviderErrorFacts): boolean {
+  if (facts.boundedProviderMessageSource !== undefined) {
+    return facts.boundedProviderMessageSource;
+  }
   if (!(facts.target instanceof Error)) return true;
   const targetRecord = objectRecord(facts.target);
   return (
@@ -695,7 +739,7 @@ export function isContextOverflowErrorText(text: string): boolean {
  */
 export function classifyError(error: unknown): string {
   if (RetryError.isInstance(error) && error.reason === 'abort') return 'Abort';
-  const facts = normalizeProviderError(error);
+  const facts = providerFailureDiagnosticFacts(error);
   return facts ? classifyProviderFacts(facts) : 'Other';
 }
 

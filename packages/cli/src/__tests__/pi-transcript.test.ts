@@ -145,6 +145,46 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('renders a Runtime-owned reason before unmarked provider text', () => {
+    const state = createMakaPiTranscriptState();
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'error',
+        recoverable: false,
+        reason: 'context_overflow',
+        message: 'unbounded provider response',
+      }),
+    );
+
+    assert.deepEqual(state.entries.at(-1), {
+      kind: 'notice',
+      level: 'error',
+      text: 'Context window exceeded',
+    });
+  });
+
+  test('renders a marked provider summary without inventing a code requirement', () => {
+    const state = createMakaPiTranscriptState();
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'error',
+        recoverable: false,
+        message: 'Provider request failed safely.',
+        boundedProviderMessage: true,
+      }),
+    );
+
+    assert.deepEqual(state.entries.at(-1), {
+      kind: 'notice',
+      level: 'error',
+      text: 'Provider request failed safely.',
+    });
+  });
+
   test('hides an unmarked Runtime error behind the safe fallback', () => {
     const state = createMakaPiTranscriptState();
 

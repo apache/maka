@@ -783,10 +783,7 @@ export function applyMakaSessionEventToTranscript(
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text:
-          event.boundedProviderMessage === true
-            ? event.message
-            : 'The task run failed. Try again later.',
+        text: transcriptErrorMessage(event),
       });
       break;
 
@@ -815,6 +812,36 @@ export function applyMakaSessionEventToTranscript(
       }
       break;
   }
+}
+
+function transcriptErrorMessage(event: Extract<SessionEvent, { type: 'error' }>): string {
+  const stableReason = (() => {
+    switch (event.reason?.toLowerCase()) {
+      case 'context_overflow':
+        return 'Context window exceeded';
+      case 'timeout':
+        return 'Request timed out';
+      case 'auth':
+        return 'Authentication failed';
+      case 'provider_billing':
+        return 'Provider billing required';
+      case 'provider_permission':
+        return 'Provider access denied';
+      case 'provider_unavailable':
+        return 'Provider returned an error';
+      case 'rate_limit':
+        return 'Rate limit exceeded';
+      case 'usage_limit':
+        return 'Usage limit reached';
+      case 'network':
+        return 'Network error';
+      default:
+        return undefined;
+    }
+  })();
+  if (stableReason) return stableReason;
+  if (event.boundedProviderMessage === true && event.message.length > 0) return event.message;
+  return 'The task run failed. Try again later.';
 }
 
 function chatItemToTranscriptEntries(item: ChatItem): MakaPiTranscriptEntry[] {

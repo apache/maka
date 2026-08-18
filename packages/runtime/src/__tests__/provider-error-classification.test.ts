@@ -67,6 +67,29 @@ describe('Provider error classification', () => {
     assert.equal(diagnostic.retryable, false);
   });
 
+  test('ranks structured cause semantics above an outer HTTP status', () => {
+    const wrapped = (cause: unknown) =>
+      Object.assign(new Error('transport wrapper rejected the request'), {
+        status: 403,
+        code: 'FETCH_FAILED',
+        cause,
+      });
+    const cases: Array<[Record<string, unknown>, string, string]> = [
+      [{ error: { code: 'usage_limit_reached' } }, 'UsageLimit', 'usage_limit_reached'],
+      [{ error: { type: 'permission_denied' } }, 'ProviderPermission', 'permission_denied'],
+      [{ error: { code: 'context_length_exceeded' } }, 'ContextLength', 'context_length_exceeded'],
+    ];
+
+    for (const [cause, expectedClass, expectedCode] of cases) {
+      const result = providerFailureResult(wrapped(cause));
+      assert.equal(result.errorClass, expectedClass);
+      assert.equal(result.httpStatus, 403);
+      assert.equal(result.providerCode, expectedCode);
+      assert.equal(result.retryable, false);
+      assert.deepEqual(providerRetryMetadata(wrapped(cause)), { retryable: false });
+    }
+  });
+
   test('durable diagnostics distinguish the provider failure classes used by fail-open handling', () => {
     const cases: Array<[unknown, string]> = [
       [Object.assign(new Error('bad request'), { statusCode: 400 }), 'RequestRejected'],

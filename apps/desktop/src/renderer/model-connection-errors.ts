@@ -49,11 +49,7 @@ export function sessionEventErrorMessage(
   // status fragments in the presentation layer. The bounded marker is the only
   // proof that `message` is safe to render verbatim: a code alone can be a Node
   // transport code whose message is unbounded internal text.
-  if (
-    event.boundedProviderMessage === true &&
-    event.code !== undefined &&
-    event.message.length > 0
-  ) {
+  if (event.boundedProviderMessage === true && event.message.length > 0) {
     return event.message;
   }
 

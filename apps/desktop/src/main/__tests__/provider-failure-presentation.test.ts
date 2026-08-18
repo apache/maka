@@ -60,6 +60,21 @@ describe('provider failure presentation', () => {
     assert.equal(sessionEventErrorMessage(event, 'en'), message);
   });
 
+  test('preserves a bounded provider summary without a provider code', () => {
+    const event: Extract<SessionEvent, { type: 'error' }> = {
+      type: 'error',
+      id: 'event-provider-summary',
+      turnId: 'turn-provider-summary',
+      ts: 1,
+      recoverable: false,
+      boundedProviderMessage: true,
+      message: 'Provider request failed safely.',
+    };
+
+    assert.equal(sessionEventErrorMessage(event), event.message);
+    assert.equal(sessionEventErrorMessage(event, 'en'), event.message);
+  });
+
   test('does not render a coded message verbatim without the bounded-provider marker', () => {
     const event: Extract<SessionEvent, { type: 'error' }> = {
       type: 'error',
