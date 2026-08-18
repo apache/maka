@@ -152,7 +152,7 @@ test('standalone packaging keeps or thins arm64 Mach-O files instead of deleting
   assert.equal(macosArm64MachOAction('arm64', macos), 'keep');
   assert.equal(macosArm64MachOAction('x86_64 arm64', macos), 'thin');
   assert.equal(macosArm64MachOAction('x86_64', macos), 'remove');
-  assert.equal(macosArm64MachOAction('arm64', 'platform IOS\n'), 'reject');
+  assert.equal(macosArm64MachOAction('arm64', 'platform IOS\n'), 'remove');
 });
 
 test('CLI signing accepts one base64 PKCS12 and one isolated Developer ID identity', () => {

@@ -479,8 +479,9 @@ export function isMacosArm64MachO(architectures, buildVersion) {
 
 export function macosArm64MachOAction(architectures, buildVersion) {
   const architectureList = architectures.trim().split(/\s+/u).filter(Boolean);
-  if (!architectureList.includes('arm64')) return 'remove';
-  if (!/^\s*platform MACOS\s*$/m.test(buildVersion)) return 'reject';
+  if (!architectureList.includes('arm64') || !/^\s*platform MACOS\s*$/m.test(buildVersion)) {
+    return 'remove';
+  }
   return architectureList.length === 1 ? 'keep' : 'thin';
 }
 
@@ -497,8 +498,6 @@ async function pruneNonTargetNativeBinaries(nodeModulesDirectory, { inspect, run
     const action = macosArm64MachOAction(architectures.stdout, buildVersion.stdout);
     if (action === 'remove') {
       await rm(binaryPath, { force: true });
-    } else if (action === 'reject') {
-      throw new Error(`Mach-O file does not target macOS arm64: ${binaryPath}`);
     } else if (action === 'thin') {
       const thinnedPath = `${binaryPath}.arm64`;
       try {
