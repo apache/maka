@@ -85,7 +85,7 @@ test('releases a direct-message binding through a source-correlated reset operat
   assert.equal(releases.length, 1);
   assert.equal((releases[0] as { conversationId: string }).conversationId, 'telegram:chat-1');
   assert.match((releases[0] as { operationId: string }).operationId, /^bot_[a-f0-9]{64}$/);
-  assert.deepEqual(sent, ['会话已重置，下一条消息会开新对话。']);
+  assert.deepEqual(sent, ['任务已重置，下一条消息会开新任务。']);
   await service.close();
 });
 

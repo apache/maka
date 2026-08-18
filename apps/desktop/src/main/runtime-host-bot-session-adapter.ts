@@ -172,7 +172,11 @@ export function createRuntimeHostBotSessionAdapter(
           throw error;
         }
         if (canonicalTurn.status === 'waiting_for_user' || isTerminal(canonicalTurn.status)) {
-          return projectTerminalBotTurn(canonicalTurn, await session.transcript, submitted.turnId);
+          return projectTerminalBotTurn(
+            canonicalTurn,
+            await session.loadTranscript(),
+            submitted.turnId,
+          );
         }
         return await completion;
       } finally {
@@ -185,7 +189,7 @@ export function createRuntimeHostBotSessionAdapter(
 async function collectRuntimeHostBotTurn(
   session: {
     readonly snapshot: import('@maka/runtime-host/protocol').SessionContinuitySnapshot;
-    readonly transcript: Promise<StoredMessage[]>;
+    loadTranscript(): Promise<StoredMessage[]>;
     readonly events: AsyncIterable<SubscriptionFrame>;
   },
   turnIdPromise: Promise<string>,
@@ -203,7 +207,7 @@ async function collectRuntimeHostBotTurn(
     initialTurn?.turnId === turnId &&
     (initialTurn.status === 'waiting_for_user' || isTerminal(initialTurn.status))
   ) {
-    return projectTerminalBotTurn(initialTurn, await session.transcript, turnId);
+    return projectTerminalBotTurn(initialTurn, await session.loadTranscript(), turnId);
   }
   const assistantText = new Map<string, string>();
   let latestMessageId: string | undefined;
@@ -242,7 +246,7 @@ async function collectRuntimeHostBotTurn(
           if (latestMessageId) {
             return { kind: 'completed', text: assistantText.get(latestMessageId) ?? '' };
           }
-          return projectTerminalBotTurn(turn, await session.transcript, turnId);
+          return projectTerminalBotTurn(turn, await session.loadTranscript(), turnId);
         }
         if (turn.status === 'failed') return { kind: 'errored', reason: turn.failureClass };
         if (turn.status === 'cancelled') {

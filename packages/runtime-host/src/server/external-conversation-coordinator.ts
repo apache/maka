@@ -158,7 +158,7 @@ export class HostExternalConversationCoordinator {
 }
 
 function isRetired(session: SessionCatalogItem): boolean {
-  return 'kind' in session || session.isArchived || session.status === 'archived';
+  return 'kind' in session || session.isArchived;
 }
 
 function resolved(

@@ -8,7 +8,6 @@ import {
   type SubscriptionFrame,
   type TurnSnapshot,
 } from '@maka/runtime-host/protocol';
-import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   createRuntimeHostBotSessionAdapter,
   type RuntimeHostBotSessionAdapterDeps,
@@ -180,7 +179,7 @@ test('starts collecting before submitting the stable source message for the Host
     }),
     { kind: 'completed', text: 'Corrected reply' },
   );
-  assert.deepEqual(replySnapshots, ['Hello', 'Hello world']);
+  assert.deepEqual(replySnapshots, ['Hello', 'Hello world', 'Corrected reply']);
   assert.equal(closeCount, 1);
   assert.deepEqual(changes, [
     { reason: 'status-change', sessionId: 'session-1', extra: { turnId: 'host-turn-1' } },
@@ -189,7 +188,7 @@ test('starts collecting before submitting the stable source message for the Host
 
 test('reports a concurrent Turn without leaking the Bot message into the queue', async () => {
   const events = new AsyncFrameQueue();
-  const handle: DesktopRuntimeHostSession = {
+  const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(null),
     activeAssistantStreams: [],
     transcript: Promise.resolve([]),
@@ -197,7 +196,7 @@ test('reports a concurrent Turn without leaking the Bot message into the queue',
     async close() {
       events.end();
     },
-  };
+  });
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
       openSession: async () => handle,
@@ -259,7 +258,7 @@ test('fails closed on a queued submit disposition instead of misreporting a busy
 
 test('recovers an older completed Turn from the canonical query and transcript', async () => {
   const events = new AsyncFrameQueue();
-  const handle: DesktopRuntimeHostSession = {
+  const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot({
       ...runningTurn('session-1', 'newer-turn'),
       status: 'completed',
@@ -288,7 +287,7 @@ test('recovers an older completed Turn from the canonical query and transcript',
       events.end();
     },
     events,
-  };
+  });
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
       openSession: async () => handle,
@@ -320,31 +319,29 @@ test('loads a fast completed Turn transcript only after message admission', asyn
   const events = new AsyncFrameQueue();
   let submitted = false;
   let transcriptReads = 0;
-  const handle: DesktopRuntimeHostSession = {
+  const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(null),
     activeAssistantStreams: [],
-    get transcript() {
+    async loadTranscript() {
       transcriptReads += 1;
-      return Promise.resolve(
-        submitted
-          ? [
-              {
-                type: 'assistant' as const,
-                id: 'assistant-fast',
-                turnId: 'fast-turn',
-                ts: 2,
-                text: 'Fast reply',
-                modelId: 'test-model',
-              },
-            ]
-          : [],
-      );
+      return submitted
+        ? [
+            {
+              type: 'assistant' as const,
+              id: 'assistant-fast',
+              turnId: 'fast-turn',
+              ts: 2,
+              text: 'Fast reply',
+              modelId: 'test-model',
+            },
+          ]
+        : [];
     },
     events,
     async close() {
       events.end();
     },
-  };
+  });
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
       openSession: async () => handle,
@@ -377,12 +374,12 @@ test('loads a fast completed Turn transcript only after message admission', asyn
 test('recovers a completed Turn when no assistant delta reaches the subscriber', async () => {
   const events = new AsyncFrameQueue();
   let transcriptReads = 0;
-  const handle: DesktopRuntimeHostSession = {
+  const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(null),
     activeAssistantStreams: [],
-    get transcript() {
+    async loadTranscript() {
       transcriptReads += 1;
-      return Promise.resolve([
+      return [
         {
           type: 'assistant' as const,
           id: 'assistant-terminal-only',
@@ -391,13 +388,13 @@ test('recovers a completed Turn when no assistant delta reaches the subscriber',
           text: 'Recovered after terminal projection',
           modelId: 'test-model',
         },
-      ]);
+      ];
     },
     events,
     async close() {
       events.end();
     },
-  };
+  });
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
       openSession: async () => handle,

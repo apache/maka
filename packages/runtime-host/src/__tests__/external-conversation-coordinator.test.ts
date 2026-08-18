@@ -274,7 +274,7 @@ function session(id: string, archived: boolean): SessionCatalogProjection {
     labels: ['bot'],
     labelsTruncated: false,
     hasUnread: false,
-    status: archived ? 'archived' : 'active',
+    status: 'active',
     backend: 'ai-sdk',
     llmConnectionSlug: 'default',
     connectionLocked: false,

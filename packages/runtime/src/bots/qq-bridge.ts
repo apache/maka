@@ -383,11 +383,7 @@ export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
     if (type === QQ_EVENT_AT_MESSAGE) {
       event = qqChannelMessageToEvent(d as QQChannelMessagePayload, receivedAt);
     } else if (type === QQ_EVENT_DIRECT_MESSAGE) {
-      // DMs use the channel-message shape.
-      const channelLike = qqChannelMessageToEvent(d as QQChannelMessagePayload, receivedAt);
-      if (channelLike) {
-        event = { ...channelLike, isGroup: false, chatId: `dm:${channelLike.chatId}` };
-      }
+      event = qqDirectMessageToEvent(d as QQChannelMessagePayload, receivedAt);
     } else if (type === QQ_EVENT_GROUP_AT_MESSAGE) {
       event = qqGroupMessageToEvent(d as QQGroupMessagePayload, receivedAt);
     } else if (type === QQ_EVENT_C2C_MESSAGE) {

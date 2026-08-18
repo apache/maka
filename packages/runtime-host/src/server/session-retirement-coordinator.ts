@@ -230,10 +230,7 @@ export class HostSessionRetirementCoordinator {
     const stale: string[] = [];
     for (const sessionId of await this.#listExternalConversationSessionIds()) {
       const probe = await this.#stores.probeSessionRemoval(sessionId);
-      const live =
-        probe.kind === 'present' &&
-        !probe.record.header.isArchived &&
-        probe.record.header.status !== 'archived';
+      const live = probe.kind === 'present' && !probe.record.header.isArchived;
       if (!live) stale.push(sessionId);
     }
     if (stale.length > 0) await this.#retireExternalConversations(stale);

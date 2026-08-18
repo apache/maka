@@ -486,6 +486,8 @@ describe('SQLite SessionStore', () => {
       DROP TABLE agent_graph_epochs;
       DROP TABLE session_message_chunks;
       DROP TABLE session_message_payloads;
+      DROP TABLE external_conversation_release_receipts;
+      DROP TABLE external_conversation_bindings;
       ALTER TABLE session_metadata ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
       ALTER TABLE session_metadata ADD COLUMN status_updated_at INTEGER;
       CREATE INDEX session_metadata_by_status
