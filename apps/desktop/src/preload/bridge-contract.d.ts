@@ -729,12 +729,10 @@ export interface MakaBridge {
      * on; arming alone starts nothing. Rejects when the session already has an
      * unfinished goal.
      */
-    arm(input: {
-      sessionId: string;
-      condition: string;
-      maxIterations?: number | null;
-      tokenBudget?: number | null;
-    }): Promise<import('@maka/runtime/goal-state').GoalState>;
+    arm(
+      sessionId: string,
+      goal: import('../shared/goal-arm').GoalArmRequest,
+    ): Promise<import('@maka/runtime/goal-state').GoalState>;
     /** Clear the active goal, stopping autonomous continuation. */
     clear(sessionId: string): Promise<void>;
     /** Pause the active goal without spending a model turn. */

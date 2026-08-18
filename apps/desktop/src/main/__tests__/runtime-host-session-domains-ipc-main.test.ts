@@ -17,7 +17,7 @@ import {
 
 type DomainClient = RuntimeHostSessionDomainsIpcDeps['client'];
 
-test('goal:arm takes the Session from the scoped channel, not the renderer frame', async () => {
+test('goal:arm takes the Session from the scoped channel and refuses any other key', async () => {
   const armed: unknown[] = [];
   const client = domainClient({
     armGoal: async (input) => {
@@ -29,8 +29,6 @@ test('goal:arm takes the Session from the scoped channel, not the renderer frame
   registerDomainsIpc({ client, emitModeChanged() {} }, ipc);
 
   const goal = await ipc.invoke('goal:arm', 'session-1', {
-    // A renderer-side Session id in the frame must not redirect the operation.
-    sessionId: 'session-somewhere-else',
     condition: 'Finish the adapter',
     maxIterations: 20,
     tokenBudget: 1_000,
@@ -59,6 +57,23 @@ test('goal:arm takes the Session from the scoped channel, not the renderer frame
     ipc.invoke('goal:arm', 'session-1', { condition: 'Finish', maxIterations: 0 }),
   );
   await assert.rejects(ipc.invoke('goal:arm', 'session-1', 'not-an-object'));
+
+  // Any key this frame does not carry is a caller mistake. Dropping it would
+  // send the Host a frame the caller did not write, so it is refused instead.
+  await assert.rejects(
+    ipc.invoke('goal:arm', 'session-1', { condition: 'Finish', blockCap: 5 }),
+    /Invalid Goal arm input/,
+  );
+  // The Session is one of those keys: it comes from the scoped channel, so a
+  // renderer-side Session id cannot redirect the operation even by matching.
+  await assert.rejects(
+    ipc.invoke('goal:arm', 'session-1', {
+      sessionId: 'session-somewhere-else',
+      condition: 'Finish',
+    }),
+    /Invalid Goal arm input/,
+  );
+  assert.equal(armed.length, 2);
 });
 
 test('adapts Host Goal, Task, Deep Research, and Resource projections', async () => {

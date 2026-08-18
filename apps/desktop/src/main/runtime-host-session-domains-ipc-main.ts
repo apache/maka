@@ -14,6 +14,7 @@ import type {
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { RuntimeHostSessionObserver } from './runtime-host-session-observer.js';
+import { GOAL_ARM_REQUEST_KEYS } from '../shared/goal-arm.js';
 import { projectHostedDeepResearch } from './deep-research-desktop-projection.js';
 import {
   handleReconnectableRead,
@@ -327,6 +328,9 @@ function requireGoalArmBudgets(value: unknown): {
     throw new TypeError('Goal arm input must be an object');
   }
   const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !GOAL_ARM_REQUEST_KEYS.includes(key as never))) {
+    throw new TypeError('Invalid Goal arm input');
+  }
   if (typeof record.condition !== 'string' || record.condition.trim().length === 0) {
     throw new TypeError('Goal condition is required');
   }

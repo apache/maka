@@ -19,7 +19,11 @@ import { NumberInput } from '@astryxdesign/core/NumberInput';
 import { Text } from '@astryxdesign/core/Text';
 import { TextArea } from '@astryxdesign/core/TextArea';
 import { useUiLocale } from '@maka/ui';
-import { GOAL_CONDITION_TEXT_LIMIT, GOAL_MAX_ITERATIONS_LIMIT } from '@maka/core/goal';
+import {
+  GOAL_CONDITION_TEXT_LIMIT,
+  GOAL_MAX_ITERATIONS_LIMIT,
+  GOAL_TOKEN_BUDGET_MINIMUM,
+} from '@maka/core/goal';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 
 export function GoalDialog(props: {
@@ -54,8 +58,7 @@ export function GoalDialog(props: {
     setArming(true);
     setError(undefined);
     try {
-      await window.maka.goal.arm({
-        sessionId,
+      await window.maka.goal.arm(sessionId, {
         condition: condition.trim(),
         maxIterations,
         tokenBudget,
@@ -115,7 +118,7 @@ export function GoalDialog(props: {
                   description={copy.tokenBudgetDescription}
                   value={tokenBudget}
                   onChange={setTokenBudget}
-                  min={1_000}
+                  min={GOAL_TOKEN_BUDGET_MINIMUM}
                   step={1_000}
                   isOptional
                   isDisabled={arming}

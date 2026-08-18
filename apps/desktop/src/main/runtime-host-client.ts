@@ -1189,12 +1189,7 @@ export class DesktopRuntimeHostClient {
    * that already has an unfinished Goal fails with `operation_conflict`, and
    * that is an answer for the user, not a race to re-run.
    */
-  armGoal(input: {
-    sessionId: string;
-    condition: string;
-    maxIterations: number | null;
-    tokenBudget: number | null;
-  }): Promise<OperationOutput<"goal.arm">> {
+  armGoal(input: OperationInput<"goal.arm">): Promise<OperationOutput<"goal.arm">> {
     return this.request("goal.arm", input);
   }
 
