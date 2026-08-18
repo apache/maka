@@ -33,10 +33,23 @@ test('Host Extension authority owns trusted Tool lifecycle and close cleanup', a
     ['Read', 'Weather'],
   );
   assert.equal(extensions.resolveTools('session-a', [tool('Read', 0)])[1]?.impl, weatherV1.impl);
+  const profileContext = extensions.inspectRuntime().children.find(({ id }) => id === 'profile');
+  const sessionContext = profileContext?.children.find(({ id }) => id === 'session-a');
+  const v1Context = sessionContext?.children[0];
+  assert.equal(v1Context?.kind, 'plugin');
+  assert.equal(v1Context?.status, 'active');
+  assert.deepEqual(v1Context?.effectLabels, ['tool:Weather']);
 
   await extensions.update('weather-binding', '2');
   assert.equal(extensions.resolveTools('session-a', [tool('Read', 0)])[1]?.impl, weatherV2.impl);
   assert.equal(extensions.composition('session-a').entries[0]?.revision, '2');
+  assert.equal(
+    extensions
+      .inspectRuntime()
+      .children.find(({ id }) => id === 'profile')
+      ?.children.find(({ id }) => id === 'session-a')?.children.length,
+    1,
+  );
 
   extensions.beginDrain();
   assert.throws(

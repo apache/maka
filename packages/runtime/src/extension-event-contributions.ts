@@ -408,7 +408,7 @@ function ownRegistration(
   unregister: () => void,
 ): void {
   try {
-    context.ownEffect(id, unregister);
+    context.runtimeContext.own(id, unregister);
   } catch (error) {
     unregister();
     throw error;

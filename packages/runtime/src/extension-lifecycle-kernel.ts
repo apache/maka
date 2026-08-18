@@ -1,4 +1,8 @@
 import { createHash } from 'node:crypto';
+import {
+  ExtensionRuntimeContext,
+  type ExtensionRuntimeContextDescriptor,
+} from './extension-runtime-context.js';
 
 const ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 const SCOPE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
@@ -31,6 +35,8 @@ export interface ExtensionPreparationContext {
   readonly extensionId: string;
   readonly revision: string;
   readonly signal: AbortSignal;
+  /** Live Context/Fiber that owns this candidate and all of its runtime effects. */
+  readonly runtimeContext: ExtensionRuntimeContext;
   ownEffect(label: string, dispose: ExtensionEffectDisposer): void;
 }
 
@@ -46,7 +52,7 @@ export interface ExtensionActivationResult {
 export interface PreparedExtension {
   /** Validate candidate-local resources without publishing contributions. */
   healthCheck?(): void | Promise<void>;
-  /** Publish activation-owned effects through `context.ownEffect`. */
+  /** Publish activation-owned effects through the candidate Runtime Context. */
   activate(
     context: ExtensionActivationContext,
   ): void | ExtensionActivationResult | Promise<void | ExtensionActivationResult>;
@@ -226,6 +232,7 @@ interface CandidateActivation {
   readonly definition: InstalledRevision;
   readonly owner: EffectOwner;
   readonly controller: AbortController;
+  readonly runtimeContext: ExtensionRuntimeContext;
   prepared?: PreparedExtension;
   phase: 'preparing' | 'health_check' | 'activating';
 }
@@ -267,8 +274,22 @@ export class ExtensionLifecycleKernel {
   readonly #revisions = new Map<string, InstalledRevision>();
   readonly #bindings = new Map<string, BindingRecord>();
   readonly #scopeExtensionBindings = new Map<string, string>();
+  readonly #runtimeRoot: ExtensionRuntimeContext;
+  readonly #runtimeScopes = new Map<string, ExtensionRuntimeContext>();
   #mutationTail: Promise<void> = Promise.resolve();
   #generation = 0;
+  #candidateSequence = 0;
+
+  constructor(
+    runtimeRoot = ExtensionRuntimeContext.root(),
+    private readonly runtimeScopeParent?: (scopeId: string) => string | undefined,
+  ) {
+    this.#runtimeRoot = runtimeRoot;
+  }
+
+  inspectRuntime(): ExtensionRuntimeContextDescriptor {
+    return this.#runtimeRoot.inspect();
+  }
 
   install(definition: ExtensionRevisionDefinition): Promise<void> {
     return this.#mutate(async () => {
@@ -431,6 +452,11 @@ export class ExtensionLifecycleKernel {
       this.#bindings.delete(bindingId);
       this.#scopeExtensionBindings.delete(scopeExtensionKey(record.scopeId, record.extensionId));
       await this.#reconcileScope(record.scopeId);
+      if (this.#scopeBindings(record.scopeId).length === 0) {
+        const runtimeScope = this.#runtimeScopes.get(record.scopeId);
+        if (runtimeScope) await runtimeScope.close();
+        this.#runtimeScopes.delete(record.scopeId);
+      }
     });
   }
 
@@ -458,6 +484,11 @@ export class ExtensionLifecycleKernel {
       for (const record of records) {
         this.#bindings.delete(record.bindingId);
         this.#scopeExtensionBindings.delete(scopeExtensionKey(scopeId, record.extensionId));
+      }
+      const runtimeScope = this.#runtimeScopes.get(scopeId);
+      if (runtimeScope) {
+        await runtimeScope.close();
+        this.#runtimeScopes.delete(scopeId);
       }
     });
   }
@@ -635,12 +666,22 @@ export class ExtensionLifecycleKernel {
     definition: InstalledRevision,
   ): Promise<CandidateActivation> {
     const owner = new EffectOwner();
+    const runtimeScope = this.#runtimeScope(record.scopeId);
+    const runtimeContext = runtimeScope.fork({
+      id: `${record.bindingId}:${++this.#candidateSequence}`,
+      kind: 'plugin',
+      label: `${definition.extensionId}@${definition.revision}`,
+      replacementKey: record.bindingId,
+      status: 'preparing',
+    });
     const candidate: CandidateActivation = {
       definition,
       owner,
       controller: new AbortController(),
+      runtimeContext,
       phase: 'preparing',
     };
+    owner.own('runtime-context', () => runtimeContext.close());
     record.candidate = candidate;
     record.status = 'preparing';
     try {
@@ -654,7 +695,7 @@ export class ExtensionLifecycleKernel {
         );
       }
       candidate.prepared = prepared;
-      if (prepared.dispose) owner.own('prepared.dispose', () => prepared.dispose!());
+      if (prepared.dispose) runtimeContext.own('prepared.dispose', () => prepared.dispose!());
       candidate.phase = 'health_check';
       record.status = 'health_check';
       await prepared.healthCheck?.();
@@ -683,6 +724,7 @@ export class ExtensionLifecycleKernel {
     record.status = 'activating';
     try {
       const result = await prepared.activate(this.#activationContext(record, candidate));
+      candidate.runtimeContext.activate();
       candidate.owner.seal();
       return {
         definition: candidate.definition,
@@ -695,7 +737,7 @@ export class ExtensionLifecycleKernel {
         ? cause
         : new ExtensionLifecycleOperationError(
             'activation_failed',
-            `Extension candidate ${candidate.definition.extensionId}@${candidate.definition.revision} activation failed`,
+            `Extension candidate ${candidate.definition.extensionId}@${candidate.definition.revision} activation failed: ${errorMessage(cause)}`,
             { cause },
           );
     }
@@ -731,9 +773,42 @@ export class ExtensionLifecycleKernel {
       extensionId: record.extensionId,
       revision: definition.revision,
       signal: candidate.controller.signal,
-      ownEffect: (label: string, dispose: ExtensionEffectDisposer) =>
-        candidate.owner.own(label, dispose),
+      runtimeContext: candidate.runtimeContext,
+      ownEffect: (label: string, dispose: ExtensionEffectDisposer) => {
+        if (!label || label.length > 256 || typeof dispose !== 'function') {
+          throw new ExtensionLifecycleOperationError(
+            'invalid_definition',
+            'Extension effects require a non-empty label and disposer',
+          );
+        }
+        try {
+          candidate.runtimeContext.own(label, dispose);
+        } catch (cause) {
+          throw new ExtensionLifecycleOperationError(
+            'activation_failed',
+            `Cannot register effect "${label}" after its Runtime Context stopped`,
+            { cause },
+          );
+        }
+      },
     });
+  }
+
+  #runtimeScope(scopeId: string): ExtensionRuntimeContext {
+    let context = this.#runtimeScopes.get(scopeId);
+    if (!context) {
+      const parentScopeId = this.runtimeScopeParent?.(scopeId);
+      if (parentScopeId === scopeId) {
+        throw new ExtensionLifecycleOperationError(
+          'invalid_definition',
+          `Extension Runtime Context cannot parent scope ${scopeId} to itself`,
+        );
+      }
+      const parent = parentScopeId ? this.#runtimeScope(parentScopeId) : this.#runtimeRoot;
+      context = parent.fork({ id: scopeId, kind: 'scope', label: `scope:${scopeId}` });
+      this.#runtimeScopes.set(scopeId, context);
+    }
+    return context;
   }
 
   #activationContext(
@@ -945,6 +1020,10 @@ export class ExtensionLifecycleKernel {
       ...(record.diagnostic ? { diagnostic: Object.freeze({ ...record.diagnostic }) } : {}),
     });
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : String(error);
 }
 
 function normalizeDefinition(definition: ExtensionRevisionDefinition): InstalledRevision {

@@ -373,6 +373,122 @@ test('installed Tool package works through real UDS, provider execution, sandbox
   }
 });
 
+test('installed package runs real Tool execution through trusted around middleware', {
+  timeout: 120_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-around-extension-e2e-'));
+  const root = join(base, 'interactive');
+  const source = join(base, 'around-package');
+  const invocationLog = join(root, 'around-invocations.jsonl');
+  const provider = await startProvider();
+  let host: RuntimeHostKernel | undefined;
+  let client: RuntimeHostConnection | undefined;
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+
+  try {
+    await createAroundPackage(source);
+    await seedProvider(root, provider.baseUrl);
+    ({ host, client } = await startHost(root, []));
+    const installed = await client.request('extension.package.install', { sourcePath: source });
+    assert.equal(installed.extensionId, 'around-package');
+    assert.deepEqual(installed.toolNames, ['Weather']);
+    assert.ok(installed.eventContributionIds.some((id) => id.includes('weather.alert')));
+    assert.ok(installed.eventContributionIds.some((id) => id.includes('alert-record')));
+    assert.ok(installed.serviceContributionIds?.some((id) => id.includes('audit')));
+    assert.ok(installed.timerContributionIds?.some((id) => id.includes('heartbeat')));
+
+    await createSession(client, 'around-extension-session', root);
+    const enabled = await client.request('extension.catalog.mutate', {
+      kind: 'enable',
+      bindingId: 'around-package-binding',
+      scopeId: 'profile',
+      extensionId: installed.extensionId,
+      revision: installed.revision,
+    });
+    assert.equal(enabled.binding?.status, 'active');
+    const configured = await client.request('extension.configuration.mutate', {
+      bindingId: 'around-package-binding',
+      configuration: { region: 'Hangzhou' },
+    });
+    assert.deepEqual(configured.configuration, { region: 'Hangzhou' });
+
+    const result = await runTurn(
+      client,
+      provider,
+      'around-extension-session',
+      'exercise real around middleware',
+    );
+    assert.match(result.toolResult ?? '', /"middleware":"around"/u);
+    assert.match(result.toolResult ?? '', /"city":"Hangzhou-through-around"/u);
+    assert.match(result.toolResult ?? '', /"callCount":1/u);
+    assert.match(result.toolResult ?? '', /"region":"Hangzhou"/u);
+    assert.match(result.toolResult ?? '', /"auditAccepted":true/u);
+    assert.deepEqual(
+      (await readFile(invocationLog, 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line)),
+      [
+        { phase: 'before', toolName: 'Weather', city: 'Hangzhou' },
+        { phase: 'after', middleware: 'around' },
+      ],
+    );
+    assert.deepEqual(JSON.parse(await readFile(join(root, 'weather-alert.json'), 'utf8')), {
+      city: 'Hangzhou-through-around',
+      score: 7,
+    });
+    assert.deepEqual(JSON.parse(await readFile(join(root, 'weather-service.json'), 'utf8')), {
+      city: 'Hangzhou-through-around',
+      score: 7,
+    });
+    await waitForFile(join(root, 'weather-heartbeat.json'));
+    assert.deepEqual(JSON.parse(await readFile(join(root, 'weather-heartbeat.json'), 'utf8')), {
+      region: 'Hangzhou',
+      kind: 'heartbeat',
+    });
+    const llmLog = (await readFile(join(root, 'llm-around-invocations.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.ok(llmLog.length >= 4, 'real provider execution should cross the LLM middleware');
+    assert.equal(llmLog.length % 2, 0);
+    for (let index = 0; index < llmLog.length; index += 2) {
+      assert.deepEqual(llmLog[index], { phase: 'before' });
+      assert.deepEqual(llmLog[index + 1], { phase: 'after' });
+    }
+
+    const sharedState = await runTurn(
+      client,
+      provider,
+      'around-extension-session',
+      'exercise shared in-process module state',
+    );
+    assert.match(sharedState.toolResult ?? '', /"callCount":2/u);
+
+    await client.close();
+    client = undefined;
+    await host.close();
+    host = undefined;
+    ({ host, client } = await startHost(root, []));
+    const afterRestart = await runTurn(
+      client,
+      provider,
+      'around-extension-session',
+      'exercise fresh activation after Host restart',
+    );
+    assert.match(afterRestart.toolResult ?? '', /"callCount":1/u);
+  } finally {
+    await client?.close().catch(() => undefined);
+    await host?.close().catch(() => undefined);
+    await provider.close();
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 async function createWeatherPackage(source: string): Promise<void> {
   await mkdir(join(source, 'dist'), { recursive: true });
   await writeFile(
@@ -422,6 +538,178 @@ export default {
 };
 `,
   );
+}
+
+async function createAroundPackage(source: string): Promise<void> {
+  await mkdir(join(source, 'dist'), { recursive: true });
+  await writeFile(
+    join(source, 'maka.extension.json'),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        id: 'around-package',
+        version: '1.0.0',
+        configuration: {
+          properties: {
+            region: { type: 'string', default: 'default-region', secret: false },
+          },
+          required: ['region'],
+        },
+        runtime: {
+          entry: 'dist/index.mjs',
+          tools: [
+            {
+              name: 'Weather',
+              description: 'Read weather through real around middleware.',
+              handler: 'Weather',
+              inputSchema: {
+                type: 'object',
+                properties: { city: { type: 'string' } },
+                required: ['city'],
+                additionalProperties: false,
+              },
+              recoveryMode: 'never_auto_retry',
+            },
+          ],
+          events: [
+            {
+              name: 'around-package.weather.alert',
+              description: 'Weather alert emitted by the Tool.',
+              payloadSchema: {
+                type: 'object',
+                properties: { city: { type: 'string' }, score: { type: 'number' } },
+                required: ['city', 'score'],
+                additionalProperties: false,
+              },
+            },
+          ],
+          listeners: [
+            {
+              id: 'around-llm',
+              event: 'maka.llm.stream',
+              handler: 'aroundLlm',
+            },
+            {
+              id: 'around-tools',
+              event: 'maka.tools.execute',
+              handler: 'aroundTools',
+            },
+            {
+              id: 'alert-record',
+              event: 'around-package.weather.alert',
+              handler: 'alertRecord',
+            },
+          ],
+          services: [
+            {
+              name: 'around-package.audit',
+              version: '1.0.0',
+              description: 'Records the accepted weather score.',
+              methods: [
+                {
+                  name: 'record',
+                  description: 'Record a weather score.',
+                  handler: 'recordAudit',
+                  inputSchema: {
+                    type: 'object',
+                    properties: { city: { type: 'string' }, score: { type: 'number' } },
+                    required: ['city', 'score'],
+                    additionalProperties: false,
+                  },
+                  outputSchema: {
+                    type: 'object',
+                    properties: { accepted: { type: 'boolean' } },
+                    required: ['accepted'],
+                    additionalProperties: false,
+                  },
+                },
+              ],
+            },
+          ],
+          timers: [
+            {
+              id: 'heartbeat',
+              handler: 'heartbeat',
+              intervalMs: 1_000,
+              initialDelayMs: 100,
+              timeoutMs: 1_000,
+              payload: { kind: 'heartbeat' },
+            },
+          ],
+          permissions: { workspace: 'write', network: false },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(
+    join(source, 'dist', 'index.mjs'),
+    `import { appendFile } from 'node:fs/promises';
+import { join } from 'node:path';
+const log = (context, value) => appendFile(
+  join(context.cwd, 'around-invocations.jsonl'),
+  JSON.stringify(value) + '\\n',
+  'utf8',
+);
+const logLlm = (context, value) => appendFile(
+  join(context.cwd, 'llm-around-invocations.jsonl'),
+  JSON.stringify(value) + '\\n',
+  'utf8',
+);
+const writeJson = (context, name, value) => import('node:fs/promises').then(({ writeFile }) =>
+  writeFile(join(context.cwd, name), JSON.stringify(value), 'utf8'));
+let callCount = 0;
+export default {
+  Weather: async ({ city }, context) => {
+    callCount += 1;
+    const score = 7;
+    const audit = await context.callService('around-package.audit', 'record', { city, score });
+    await context.emitEvent('around-package.weather.alert', { city, score });
+    return {
+      source: 'around-package', city, temperature: 32, callCount, score,
+      region: context.configuration.region, auditAccepted: audit.accepted,
+    };
+  },
+  aroundTools: async (payload, context, next) => {
+    await log(context, { phase: 'before', toolName: payload.toolName, city: payload.toolInput.city });
+    const result = await next({
+      ...payload,
+      toolInput: { ...payload.toolInput, city: payload.toolInput.city + '-through-around' },
+    });
+    const wrapped = { ...result, middleware: 'around' };
+    await log(context, { phase: 'after', middleware: wrapped.middleware });
+    return wrapped;
+  },
+  aroundLlm: async (payload, context, next) => {
+    await logLlm(context, { phase: 'before' });
+    const result = await next(payload);
+    await logLlm(context, { phase: 'after' });
+    return result;
+  },
+  alertRecord: async (payload, context) => writeJson(context, 'weather-alert.json', payload),
+  recordAudit: async (payload, context) => {
+    await writeJson(context, 'weather-service.json', payload);
+    return { accepted: true };
+  },
+  heartbeat: async (payload, context) =>
+    writeJson(context, 'weather-heartbeat.json', { ...payload, region: context.configuration.region }),
+};
+`,
+  );
+}
+
+async function waitForFile(path: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await stat(path);
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  throw new Error(`Timed out waiting for ${path}`);
 }
 
 function extensionRevision(

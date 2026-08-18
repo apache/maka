@@ -348,9 +348,10 @@ test('system: public error paths preserve state and the serialized queue remains
   assert.equal(kernel.inspect('valid-binding').status, 'active');
 });
 
-test('system: effect registration is validated and sealed after activation', async () => {
+test('system: effect registration is validated and remains Context-owned after activation', async () => {
   const kernel = new ExtensionLifecycleKernel();
   let retainedContext: ExtensionActivationContext | undefined;
+  let lateEffectDisposed = false;
   await kernel.install({
     extensionId: 'bad-effect',
     revision: '1',
@@ -373,6 +374,11 @@ test('system: effect registration is validated and sealed after activation', asy
     }),
   });
   await kernel.activate(binding('sealed-binding', 'session-effects', 'sealed-effect', '1'));
+  retainedContext!.ownEffect('late-effect', () => {
+    lateEffectDisposed = true;
+  });
+  await kernel.stop('sealed-binding');
+  assert.equal(lateEffectDisposed, true);
   assert.throws(
     () => retainedContext!.ownEffect('too-late', () => undefined),
     hasCode('activation_failed'),

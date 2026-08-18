@@ -141,7 +141,7 @@ export function contributeExtensionUi(
 ): void {
   const unregister = registry.register(context, contribution);
   try {
-    context.ownEffect(`ui:${contribution.id}`, unregister);
+    context.runtimeContext.own(`ui:${contribution.id}`, unregister);
   } catch (error) {
     unregister();
     throw error;

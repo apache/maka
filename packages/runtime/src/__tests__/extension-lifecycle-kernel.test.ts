@@ -118,7 +118,7 @@ test('failed activation rolls back every candidate-owned effect', async () => {
     pendingCleanupEffects: 0,
     diagnostic: {
       code: 'activation_failed',
-      message: 'Extension candidate broken@1 activation failed',
+      message: 'Extension candidate broken@1 activation failed: boom',
       revision: '1',
       at: kernel.inspect('broken-binding').diagnostic!.at,
     },

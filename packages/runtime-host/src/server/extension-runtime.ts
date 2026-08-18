@@ -55,6 +55,8 @@ import {
   type ExtensionTimerContribution,
   type ExtensionTimerContributionInspection,
 } from '@maka/runtime/extension-timer-contributions';
+import type { ExtensionRuntimeContextDescriptor } from '@maka/runtime/extension-runtime-context';
+import { ExtensionRuntimeContext } from '@maka/runtime/extension-runtime-context';
 
 export type HostTrustedToolExtensionRevisionInput = Omit<
   TrustedToolExtensionRevisionInput,
@@ -136,7 +138,8 @@ export interface HostExtensionEventDispatchResult {
  * boundary while later API/CLI/UI work decides how trusted definitions arrive.
  */
 export class HostExtensionRuntime implements HostExtensionToolResolver {
-  readonly #lifecycle = new ExtensionLifecycleKernel();
+  readonly #runtimeRoot = ExtensionRuntimeContext.root('runtime-host-extensions');
+  readonly #lifecycle: ExtensionLifecycleKernel;
   readonly #tools: ExtensionToolContributionRegistry;
   readonly #ui = new ExtensionUiContributionRegistry();
   readonly #events = new ExtensionEventContributionRegistry();
@@ -155,6 +158,11 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
       close?(): Promise<void> | void;
     },
   ) {
+    this.#lifecycle = new ExtensionLifecycleKernel(this.#runtimeRoot, (scopeId) =>
+      scopeId === PROFILE_EXTENSION_SCOPE || scopeId === 'desktop-ui'
+        ? undefined
+        : PROFILE_EXTENSION_SCOPE,
+    );
     this.#tools = new ExtensionToolContributionRegistry(options);
   }
 
@@ -485,6 +493,10 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
       digest: `sha256:${digest}`,
       entries,
     });
+  }
+
+  inspectRuntime(): ExtensionRuntimeContextDescriptor {
+    return this.#lifecycle.inspectRuntime();
   }
 
   resolveTools(

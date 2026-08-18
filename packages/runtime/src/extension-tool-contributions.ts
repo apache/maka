@@ -187,7 +187,7 @@ export function contributeExtensionTool(
 ): void {
   const unregister = registry.register(context, tool);
   try {
-    context.ownEffect(`tool:${tool.name}`, unregister);
+    context.runtimeContext.own(`tool:${tool.name}`, unregister);
   } catch (error) {
     unregister();
     throw error;

@@ -57,6 +57,28 @@ iterables, and streams no longer cross a JSON or RPC boundary.
 
 ## Composition
 
+### Context runtime
+
+The live Runtime is organized as an owned Context tree rather than one flat
+collection of contribution registries. The Runtime Host owns the root;
+`profile` and `desktop-ui` are root scopes, Session scopes inherit from the
+Profile scope, and every active package Revision is represented by a plugin
+Context below its scope.
+
+Each plugin Context is the single owner of its child Contexts, published
+capabilities, and runtime effects. Tool, UI, Event, Listener, Service, and
+Timer adapters register their cleanup with that Context. Closing a Context
+first closes its children and then releases effects in reverse order. Runtime
+inspection exposes this same tree, including status, capabilities, effects,
+and children, so lifecycle ownership is observable rather than implicit.
+
+The durable Revision/Binding controller remains outside the Context runtime.
+It decides what should run and preserves immutable revisions, last-good state,
+rollback, and restart recovery. The Context runtime decides how the selected
+Revisions compose in the live process. Candidate updates receive a fresh
+preparing Context; only a healthy activation becomes active, while failed
+candidates close without disturbing the current Context.
+
 The dispatch kernel supports `emit`, `parallel`, `serial`, `bail`, `transform`,
 `observe`, `gate`, and `around`. Around listeners receive `(value, context,
 next)`, may wrap downstream execution before and after, transform its value, or

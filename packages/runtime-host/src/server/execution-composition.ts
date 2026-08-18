@@ -119,7 +119,7 @@ import {
   StaticTrustedToolExtensionLoader,
   type StaticTrustedToolExtensionRevision,
 } from './extension-loader.js';
-import { HostExtensionRuntime } from './extension-runtime.js';
+import { HostExtensionRuntime, PROFILE_EXTENSION_SCOPE } from './extension-runtime.js';
 import { HostExtensionStateStore } from './extension-state-store.js';
 import { HostExtensionUiStateStore } from './extension-ui-state-store.js';
 import { ToolPackageStore } from './tool-package-store.js';
@@ -128,7 +128,10 @@ import { UiPackageStore } from './ui-package-store.js';
 import { EventPackageStore } from './event-package-store.js';
 import { HostEventPackageManagementTools } from './event-package-management-tools.js';
 import { HostExtensionPackageManagementTools } from './extension-package-management-tools.js';
-import { HostUiPackageManagementTools } from './ui-package-management-tools.js';
+import {
+  DESKTOP_UI_EXTENSION_SCOPE,
+  HostUiPackageManagementTools,
+} from './ui-package-management-tools.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
 import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
@@ -216,6 +219,15 @@ export function runtimeHostFilesystemWorkerRuntime(versions: {
   return versions.electron ? 'electron' : 'node';
 }
 
+export async function extensionTimerCwdForScope(
+  scopeId: string,
+  rootCwd: string,
+  sessionCwdForScope: (sessionId: string) => string | Promise<string>,
+): Promise<string> {
+  if (scopeId === PROFILE_EXTENSION_SCOPE || scopeId === DESKTOP_UI_EXTENSION_SCOPE) return rootCwd;
+  return await sessionCwdForScope(scopeId);
+}
+
 export async function createExecutionRuntimeHostComposition(
   context: RuntimeHostCompositionContext<'interactive'>,
   options: CreateExecutionRuntimeHostCompositionOptions = {},
@@ -225,7 +237,12 @@ export async function createExecutionRuntimeHostComposition(
   await stores.sessionStore.ready();
   const extensionTimers = new HostExtensionTimerScheduler(
     context.owner.controlDirectory,
-    async (scopeId) => (await stores.sessionStore.readHeaderSnapshot(scopeId)).cwd,
+    (scopeId) =>
+      extensionTimerCwdForScope(
+        scopeId,
+        context.owner.capability.canonicalPath,
+        async (sessionId) => (await stores.sessionStore.readHeaderSnapshot(sessionId)).cwd,
+      ),
   );
   const extensions = new HostExtensionRuntime({}, extensionTimers);
   const toolPackageStore = new ToolPackageStore(context.owner.controlDirectory);

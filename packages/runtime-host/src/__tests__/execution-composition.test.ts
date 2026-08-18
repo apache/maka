@@ -31,6 +31,7 @@ import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtim
 import { HostResidencyRegistry } from '../server/host-residency-registry.js';
 import {
   createExecutionRuntimeHostComposition,
+  extensionTimerCwdForScope,
   runtimeHostFilesystemWorkerRuntime,
 } from '../server/execution-composition.js';
 
@@ -39,6 +40,28 @@ const require = createRequire(import.meta.url);
 test('filesystem worker follows the candidate executable runtime', () => {
   assert.equal(runtimeHostFilesystemWorkerRuntime({ electron: '43.1.1' }), 'electron');
   assert.equal(runtimeHostFilesystemWorkerRuntime({}), 'node');
+});
+
+test('Extension Timers resolve global scopes to the profile root and Session scopes to Session cwd', async () => {
+  const requestedSessions: string[] = [];
+  const sessionCwdForScope = async (sessionId: string) => {
+    requestedSessions.push(sessionId);
+    return `/sessions/${sessionId}`;
+  };
+
+  assert.equal(
+    await extensionTimerCwdForScope('profile', '/profile', sessionCwdForScope),
+    '/profile',
+  );
+  assert.equal(
+    await extensionTimerCwdForScope('desktop-ui', '/profile', sessionCwdForScope),
+    '/profile',
+  );
+  assert.equal(
+    await extensionTimerCwdForScope('session-1', '/profile', sessionCwdForScope),
+    '/sessions/session-1',
+  );
+  assert.deepEqual(requestedSessions, ['session-1']);
 });
 
 test('production composition owns the long-term memory database lifecycle', async () => {

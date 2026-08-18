@@ -51,7 +51,7 @@ export async function contributeExtensionTimer(
   validateExtensionTimerContribution(contribution);
   const unregister = await authority.register(context, contribution);
   try {
-    context.ownEffect(`timer:${contribution.id}`, unregister);
+    context.runtimeContext.own(`timer:${contribution.id}`, unregister);
   } catch (error) {
     await unregister();
     throw error;

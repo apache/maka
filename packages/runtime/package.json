@@ -32,6 +32,7 @@
     "./runtime-resume": "./dist/runtime-resume.js",
     "./runtime-kernel": "./dist/runtime-kernel.js",
     "./extension-lifecycle-kernel": "./dist/extension-lifecycle-kernel.js",
+    "./extension-runtime-context": "./dist/extension-runtime-context.js",
     "./extension-tool-contributions": "./dist/extension-tool-contributions.js",
     "./extension-ui-contributions": "./dist/extension-ui-contributions.js",
     "./extension-event-contributions": "./dist/extension-event-contributions.js",

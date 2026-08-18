@@ -194,9 +194,10 @@ export function contributeExtensionService(
   registry: ExtensionServiceContributionRegistry,
   contribution: ExtensionServiceContribution,
 ): void {
+  context.runtimeContext.provide(`service:${contribution.name}`, contribution);
   const unregister = registry.register(context, contribution);
   try {
-    context.ownEffect(`service:${contribution.name}`, unregister);
+    context.runtimeContext.own(`service:${contribution.name}`, unregister);
   } catch (error) {
     unregister();
     throw error;

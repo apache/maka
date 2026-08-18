@@ -28,17 +28,18 @@ interface TimerState {
 
 interface ActiveTimer {
   readonly token: symbol;
+  readonly runtimeContext: ExtensionActivationContext['runtimeContext'];
   readonly contribution: ExtensionTimerContribution;
   readonly configuration: Readonly<Record<string, string | number | boolean>>;
   readonly state: TimerState;
   handle?: NodeJS.Timeout;
 }
 
-/** Host-owned, durable scheduler. Plugin code still runs in a fresh one-shot sandbox per fire. */
+/** Host-owned, durable scheduler for trusted in-process Extension Timer invocations. */
 export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
   readonly path: string | undefined;
   readonly #states = new Map<string, TimerState>();
-  readonly #active = new Map<string, ActiveTimer>();
+  readonly #active = new Map<string, ActiveTimer[]>();
   #loaded = false;
   #closed = false;
   #draining = false;
@@ -59,8 +60,9 @@ export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
     if (this.#closed) throw new Error('Extension Timer scheduler is closed');
     await this.#load();
     const key = timerKey(context.bindingId, contribution.id);
-    const previous = this.#active.get(key);
-    if (previous) throw new Error(`Extension Timer is already active: ${contribution.id}`);
+    const stack = this.#active.get(key) ?? [];
+    const previous = stack.at(-1);
+    if (previous?.handle) clearTimeout(previous.handle);
     const persisted = this.#states.get(key);
     const reusable =
       persisted?.scopeId === context.scopeId &&
@@ -83,19 +85,29 @@ export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
     this.#states.set(key, state);
     const active: ActiveTimer = {
       token: Symbol(key),
+      runtimeContext: context.runtimeContext,
       contribution,
       configuration: Object.freeze({ ...contribution.configuration }),
       state,
     };
-    this.#active.set(key, active);
+    this.#active.set(key, [...stack, active]);
     await this.#persistQueued();
-    this.#schedule(key, active);
+    this.#scheduleWhenActive(key, active);
     return async () => {
-      const current = this.#active.get(key);
-      if (current?.token !== active.token) return;
-      if (current.handle) clearTimeout(current.handle);
-      this.#active.delete(key);
-      if (!this.#draining) this.#states.delete(key);
+      const current = this.#active.get(key) ?? [];
+      const wasCurrent = current.at(-1)?.token === active.token;
+      const remaining = current.filter((entry) => entry.token !== active.token);
+      if (remaining.length === current.length) return;
+      if (active.handle) clearTimeout(active.handle);
+      if (remaining.length === 0) {
+        this.#active.delete(key);
+        if (!this.#draining) this.#states.delete(key);
+      } else {
+        this.#active.set(key, remaining);
+        const restored = remaining.at(-1)!;
+        this.#states.set(key, restored.state);
+        if (wasCurrent && !restored.state.running) this.#scheduleWhenActive(key, restored);
+      }
       await this.#persistQueued();
     };
   }
@@ -119,20 +131,33 @@ export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    for (const active of this.#active.values()) if (active.handle) clearTimeout(active.handle);
+    for (const stack of this.#active.values()) {
+      for (const active of stack) if (active.handle) clearTimeout(active.handle);
+    }
     this.#active.clear();
     await this.#tail;
   }
 
+  #scheduleWhenActive(key: string, active: ActiveTimer): void {
+    if (this.#closed || this.#current(key)?.token !== active.token) return;
+    if (active.runtimeContext.status === 'active') {
+      this.#schedule(key, active);
+      return;
+    }
+    if (active.runtimeContext.status !== 'preparing') return;
+    active.handle = setTimeout(() => this.#scheduleWhenActive(key, active), 0);
+    active.handle.unref?.();
+  }
+
   #schedule(key: string, active: ActiveTimer): void {
-    if (this.#closed || this.#active.get(key)?.token !== active.token) return;
+    if (this.#closed || this.#current(key)?.token !== active.token) return;
     const delay = Math.max(0, Math.min(MAX_TIMEOUT_MS, active.state.nextRunAt - Date.now()));
     active.handle = setTimeout(() => void this.#fire(key, active), delay);
     active.handle.unref?.();
   }
 
   async #fire(key: string, active: ActiveTimer): Promise<void> {
-    if (this.#closed || this.#active.get(key)?.token !== active.token) return;
+    if (this.#closed || this.#current(key)?.token !== active.token) return;
     const scheduledAt = active.state.nextRunAt;
     const now = Date.now();
     const elapsed = Math.max(0, now - scheduledAt);
@@ -177,10 +202,14 @@ export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
       clearTimeout(timeout);
       active.state.running = false;
       await this.#persistQueued().catch(() => undefined);
-      // A Timer owns at most one live sandbox. If the invocation ran beyond its
+      // A Timer owns at most one live invocation. If it ran beyond its
       // interval, #fire collapses all missed ticks when this next handle fires.
       this.#schedule(key, active);
     }
+  }
+
+  #current(key: string): ActiveTimer | undefined {
+    return this.#active.get(key)?.at(-1);
   }
 
   #persistQueued(): Promise<void> {
