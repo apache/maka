@@ -81,6 +81,12 @@ export interface HostRuntimeResourceCoordinatorInput {
   readonly acquireResidency: () => RuntimeHostResidency;
   readonly requestDrain: () => void;
   readonly onProjectionChanged?: (update: ShellRunUpdate) => void;
+  /**
+   * Fallback shell resolution for callers that do not carry a plan (e.g.
+   * integrated terminal launches, which capture their plan at launch). A
+   * caller-supplied plan — the turn's admission-time resolution — always
+   * wins, so a mid-turn settings change cannot split guidance from execution.
+   */
   readonly resolveShell?: () => Promise<ShellPlan> | ShellPlan;
 }
 
@@ -148,7 +154,7 @@ export class HostRuntimeResourceCoordinator
         if (this.#draining) throw new Error('Runtime resources are draining');
         await this.#assertActiveSession(input.sessionId);
         if (this.#draining) throw new Error('Runtime resources are draining');
-        const shell = await this.#resolveShell();
+        const shell = input.shell ?? (await this.#resolveShell());
         if (this.#draining) throw new Error('Runtime resources are draining');
         return { execution: this.#manager.runForegroundBash({ ...input, shell }) };
       });
@@ -178,7 +184,7 @@ export class HostRuntimeResourceCoordinator
         if (this.#draining) throw new Error('Runtime resources are draining');
         await this.#assertActiveSession(input.sessionId);
         if (this.#draining) throw new Error('Runtime resources are draining');
-        const shell = await this.#resolveShell();
+        const shell = input.shell ?? (await this.#resolveShell());
         if (this.#draining) throw new Error('Runtime resources are draining');
         return this.#manager.runBackgroundBash({ ...input, shell, onCompletion: complete });
       });

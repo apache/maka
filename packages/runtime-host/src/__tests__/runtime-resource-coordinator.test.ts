@@ -335,17 +335,42 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.drainCount, 0);
   });
 
-  test('makes the Host-resolved shell authoritative over a caller plan', async () => {
+  test('keeps the caller-supplied turn plan authoritative over the settings snapshot', async () => {
+    // The turn's Bash tool carries the plan resolved at turn admission. A
+    // mid-turn settings change must not split model guidance from execution,
+    // so the coordinator never overwrites a supplied plan — it does not even
+    // consult the settings snapshot when one is present.
+    const callerPlan = { kind: 'cmd' as const, displayName: 'cmd.exe' };
+    let resolveCalls = 0;
+    const harness = createHarness({
+      resolveShell: async () => {
+        resolveCalls += 1;
+        return {
+          kind: 'git-bash' as const,
+          displayName: 'Git Bash',
+          exe: 'C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe',
+        };
+      },
+    });
+
+    await harness.coordinator.runForegroundBash({ ...backgroundInput(), shell: callerPlan });
+    assert.deepEqual(harness.lastForegroundInput?.shell, callerPlan);
+    assert.equal(resolveCalls, 0);
+
+    await harness.coordinator.runBackgroundBash({ ...backgroundInput(), shell: callerPlan });
+    assert.deepEqual(harness.lastBackgroundInput?.shell, callerPlan);
+    assert.equal(resolveCalls, 0);
+    harness.finishBackground({ successful: true });
+  });
+
+  test('falls back to the Host-resolved plan only when the caller carries none', async () => {
     const shell = {
       kind: 'git-bash' as const,
       displayName: 'Git Bash',
-      exe: 'C:\\Program Files\\Git\\bin\\bash.exe',
+      exe: 'C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe',
     };
     const harness = createHarness({ resolveShell: async () => shell });
-    await harness.coordinator.runForegroundBash({
-      ...backgroundInput(),
-      shell: { kind: 'cmd', displayName: 'cmd.exe' },
-    });
+    await harness.coordinator.runForegroundBash(backgroundInput());
 
     assert.deepEqual(harness.lastForegroundInput?.shell, shell);
   });

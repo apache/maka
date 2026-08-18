@@ -20,7 +20,14 @@ import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 import type { SandboxType } from './sandbox/types.js';
 import { isLikelySandboxDenial } from './sandbox/detect.js';
 import { runShellWithBoundedTail, type BoundedShellResult } from './shell-exec.js';
-import { bashToolShellGuidance, defaultShellPlan, type ShellPlan } from './shell-detect.js';
+import {
+  bashToolShellGuidance,
+  bashToolTurnShellGuidance,
+  defaultShellPlan,
+  type ShellPlan,
+  throwIfShellSetupFailed,
+  type TurnShellPlan,
+} from './shell-detect.js';
 import { truncateToolOutput } from './tool-output.js';
 import {
   DEFAULT_BASH_TIMEOUT_MS,
@@ -121,23 +128,25 @@ export function buildForegroundBashTool(options: BuildForegroundBashToolOptions)
 }
 
 export function buildLocalForegroundBashTool(
-  options: { executionFacts?: ToolExecutionFacts; shell?: ShellPlan } = {},
+  options: { executionFacts?: ToolExecutionFacts; shell?: TurnShellPlan } = {},
 ): MakaTool {
-  const shell = options.shell ?? defaultShellPlan();
+  const shell = options.shell ?? { plan: defaultShellPlan() };
   return buildForegroundBashTool({
     description:
-      withShellGuidance('Run a shell command in the session cwd.', shell) +
+      withTurnShellGuidance('Run a shell command in the session cwd.', shell) +
       ' Subject to permission policy.',
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),
     defaultTimeoutMs: () => 120_000,
-    execute: async ({ command, cwd, timeoutMs, ctx }) =>
-      runShellWithBoundedTail(command, {
+    execute: async ({ command, cwd, timeoutMs, ctx }) => {
+      throwIfShellSetupFailed(shell);
+      return runShellWithBoundedTail(command, {
         cwd,
         timeoutMs: timeoutMs ?? 120_000,
         abortSignal: ctx.abortSignal,
         emitOutput: ctx.emitOutput,
-        shell,
-      }),
+        shell: shell.plan,
+      });
+    },
   });
 }
 
@@ -145,7 +154,7 @@ export function buildManagedBashTool(
   shellRuns: ShellRunLauncher,
   options: {
     executionFacts?: ToolExecutionFacts;
-    shell?: ShellPlan;
+    shell?: TurnShellPlan;
     /** Opening sentence of the description, before the shared foreground/background/PTY contract. */
     lead?: string;
     /**
@@ -192,7 +201,7 @@ export function buildManagedBashTool(
       | undefined;
   } = {},
 ): MakaTool {
-  const shell = options.shell ?? defaultShellPlan();
+  const shell = options.shell ?? { plan: defaultShellPlan() };
   const declareSandboxBoundary = options.declareSandboxBoundary !== false;
   const managedBashFields = {
     command: z.string().describe('The shell command to execute'),
@@ -230,7 +239,7 @@ export function buildManagedBashTool(
     name: 'Bash',
     activityKind: 'command',
     description:
-      withShellGuidance(options.lead ?? 'Run a shell command in the session cwd.', shell) +
+      withTurnShellGuidance(options.lead ?? 'Run a shell command in the session cwd.', shell) +
       ` Foreground is the default (timeout ${DEFAULT_BASH_TIMEOUT_MS}ms, maximum ${MAX_FOREGROUND_BASH_TIMEOUT_MS}ms).` +
       ` Set run_in_background=true only when the command should continue as a tracked runtime background task; background commands have no default timeout (maximum explicit timeout ${MAX_SHELL_RUN_TIMEOUT_MS}ms).` +
       ' Set pty=true together with run_in_background=true only for terminal semantics or later input; use the returned ref with Read or WriteStdin.' +
@@ -251,6 +260,7 @@ export function buildManagedBashTool(
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),
     impl: async (input, ctx) => {
+      throwIfShellSetupFailed(shell);
       const { command, timeout_ms, run_in_background, pty } = input;
       const normalizedRequiredBoundary = await preflightDeclaredSandboxBoundary(
         'required_boundary' in input ? input.required_boundary : undefined,
@@ -279,7 +289,7 @@ export function buildManagedBashTool(
           cwd: transformed?.cwd ?? ctx.cwd,
           command,
           ...(pty !== undefined ? { pty } : {}),
-          ...(transformed?.argv ? { argv: transformed.argv } : { shell }),
+          ...(transformed?.argv ? { argv: transformed.argv } : { shell: shell.plan }),
           ...(transformed?.env ? { env: transformed.env } : {}),
           ...(transformed?.fdInputs ? { fdInputs: transformed.fdInputs } : {}),
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
@@ -330,6 +340,12 @@ function onceCompletion(
 
 export function withShellGuidance(lead: string, shell: ShellPlan): string {
   const guidance = bashToolShellGuidance(shell);
+  return guidance ? `${lead} ${guidance}` : lead;
+}
+
+/** {@link withShellGuidance} for a turn-scoped plan, including the broken-preference outage notice. */
+export function withTurnShellGuidance(lead: string, shell: TurnShellPlan): string {
+  const guidance = bashToolTurnShellGuidance(shell);
   return guidance ? `${lead} ${guidance}` : lead;
 }
 

@@ -32,10 +32,10 @@ import {
   buildStopBackgroundTaskTool,
   buildWriteStdinTool,
   shapeTerminalResult,
-  withShellGuidance,
+  withTurnShellGuidance,
 } from './shell-tools.js';
 import type { ShellRunLauncher } from './shell-tools.js';
-import { defaultShellPlan, type ShellPlan } from './shell-detect.js';
+import { defaultShellPlan, throwIfShellSetupFailed, type TurnShellPlan } from './shell-detect.js';
 import type {
   BackgroundTaskStopper,
   PtyControlWriter,
@@ -146,8 +146,12 @@ export interface BuildBuiltinToolsOptions {
   backgroundTasks?: BackgroundTaskStopper;
   ptyControls?: PtyControlWriter;
   executor?: WorkspaceExecutor;
-  /** Shell that runs Bash commands. Defaults to the process-wide detected shell. */
-  shell?: ShellPlan;
+  /**
+   * Turn-scoped shell resolution that runs Bash commands. Defaults to the
+   * process-wide detected shell. A broken saved preference rides along as
+   * `setupError` and fails closed at the Bash boundary.
+   */
+  shell?: TurnShellPlan;
   permissionProfile?: PermissionProfile;
   sandboxManager?: SandboxManager;
   /** Sandboxed worker used for all local filesystem tools. */
@@ -264,7 +268,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         },
       })
     : fileReadParameters;
-  const shell = options.shell ?? defaultShellPlan();
+  const shell = options.shell ?? { plan: defaultShellPlan() };
   const sandboxPlatform = options.sandboxPlatform ?? process.platform;
   const bashTools = options.shellRuns
     ? [
@@ -595,14 +599,14 @@ interface ExecutorBashSandboxOptions {
 
 function buildExecutorBashTool(
   executor: WorkspaceExecutor,
-  shell: ShellPlan,
+  shell: TurnShellPlan,
   sandboxOptions: ExecutorBashSandboxOptions,
 ): MakaTool {
   return {
     name: 'Bash',
     activityKind: 'command',
     description:
-      withShellGuidance('Run a shell command in the session cwd.', shell) +
+      withTurnShellGuidance('Run a shell command in the session cwd.', shell) +
       ' Enforced by the current session sandbox boundary.',
     parameters: z
       .object({
@@ -618,6 +622,7 @@ function buildExecutorBashTool(
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     executionFacts: executor.facts,
     impl: async ({ command, timeout_ms, required_boundary }, ctx) => {
+      throwIfShellSetupFailed(shell);
       const normalizedRequiredBoundary = await preflightDeclaredSandboxBoundary(
         required_boundary,
         ctx,
@@ -661,7 +666,7 @@ function buildExecutorBashTool(
           timeoutMs: timeout,
           ...(abortSignal ? { abortSignal } : {}),
           emitOutput,
-          shell,
+          shell: shell.plan,
         });
         const executionResult = {
           ...result,

@@ -51,6 +51,19 @@ export class ShellPreferenceError extends Error {
 
 export interface ResolveShellPlanInput extends DetectShellInput {}
 
+/**
+ * The one Host-owned shell resolution captured at turn admission. `plan`
+ * drives model guidance and Bash execution for the whole turn so a mid-turn
+ * settings change cannot split guidance from execution; a broken saved
+ * preference rides along as `setupError` instead of throwing at composition
+ * time, so text-only turns keep working while the Bash/PTY boundary stays
+ * fail-closed (and never falls back to another shell).
+ */
+export interface TurnShellPlan {
+  readonly plan: ShellPlan;
+  readonly setupError?: ShellPreferenceError;
+}
+
 /** Resolves the Host-owned user preference into the one plan every shell surface consumes. */
 export function resolveShellPlan(
   settings: ShellSettings,
@@ -83,6 +96,37 @@ export function resolveShellPlan(
     return { kind: 'legacy-wsl-bash', displayName: 'Legacy WSL Bash', exe: executable };
   }
   return { kind: 'git-bash', displayName: 'Git Bash', exe: executable };
+}
+
+/**
+ * Resolves the turn-scoped shell plan without throwing. A saved preference
+ * whose executable moved or was uninstalled is a repairable optional-tool
+ * configuration error: composition must not widen it into whole-turn
+ * unavailability, so the failure is captured in `setupError` and the Bash/PTY
+ * boundary re-throws it when a command actually runs.
+ */
+export function resolveTurnShellPlan(
+  settings: ShellSettings,
+  input: ResolveShellPlanInput = {},
+): TurnShellPlan {
+  try {
+    return { plan: resolveShellPlan(settings, input) };
+  } catch (error) {
+    if (error instanceof ShellPreferenceError) {
+      return { plan: defaultShellPlan(), setupError: error };
+    }
+    throw error;
+  }
+}
+
+/** Fail-closed gate for the Bash/PTY boundary: never execute through a broken preference. */
+export function throwIfShellSetupFailed(shell: TurnShellPlan): void {
+  if (shell.setupError) throw shell.setupError;
+}
+
+/** Model-facing shell name; a broken preference is declared, not silently hidden. */
+export function turnShellDisplayName(shell: TurnShellPlan): string {
+  return shell.setupError ? `Unavailable (${shell.setupError.message})` : shell.plan.displayName;
 }
 
 export interface ValidateShellPreferenceInput extends ResolveShellPlanInput {
@@ -294,6 +338,17 @@ export function bashToolShellGuidance(shell: ShellPlan): string {
           ? 'Commands are executed by Windows PowerShell 5.1; write PowerShell 5.1-compatible syntax, not cmd or bash syntax.'
           : 'Commands are executed by cmd.exe; write cmd syntax, not bash syntax.';
   return `${dialect} Prefer \`git ls-files\` or the Grep/Glob tools over recursive directory listings, and always exclude node_modules and build output when enumerating files.`;
+}
+
+/**
+ * Turn-scoped variant of {@link bashToolShellGuidance}. When the saved
+ * preference is broken, dialect guidance would be a lie — every command fails
+ * at the boundary — so the description declares the outage and the repair
+ * instead of naming a shell that cannot run.
+ */
+export function bashToolTurnShellGuidance(shell: TurnShellPlan): string {
+  if (!shell.setupError) return bashToolShellGuidance(shell.plan);
+  return `Bash is unavailable this turn: ${shell.setupError.message} Repair the shell setting to re-enable it; commands keep failing closed rather than falling back to another shell.`;
 }
 
 function findAt(

@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
+  bashToolTurnShellGuidance,
   buildPtyShellSpawnPlan,
   buildShellSpawnPlan,
   detectShell,
   resolveShellPlan,
+  resolveTurnShellPlan,
   ShellPreferenceError,
+  throwIfShellSetupFailed,
+  turnShellDisplayName,
   validateShellPreference,
 } from '../shell-detect.js';
 
@@ -140,6 +144,74 @@ describe('resolveShellPlan', () => {
       }),
       (error: unknown) => error instanceof ShellPreferenceError && error.code === 'not_bash',
     );
+  });
+});
+
+describe('resolveTurnShellPlan', () => {
+  const executable = 'C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe';
+
+  test('resolves a healthy explicit preference into a ready plan', () => {
+    const shell = resolveTurnShellPlan(
+      { preference: 'git_bash', executable },
+      { platform: 'win32', fileExists: existsIn(executable) },
+    );
+    assert.deepEqual(shell, {
+      plan: { kind: 'git-bash', displayName: 'Git Bash', exe: executable },
+    });
+    assert.equal(shell.setupError, undefined);
+  });
+
+  test('captures a moved or uninstalled executable instead of throwing at turn admission', () => {
+    const shell = resolveTurnShellPlan(
+      { preference: 'git_bash', executable },
+      { platform: 'win32', fileExists: () => false },
+    );
+    assert.ok(shell.setupError instanceof ShellPreferenceError);
+    assert.equal(shell.setupError.code, 'executable_missing');
+    // The fallback plan exists only so guidance surfaces still have a shape;
+    // execution never reaches it (throwIfShellSetupFailed gates the boundary).
+    assert.equal(shell.plan, resolveTurnShellPlan({ preference: 'auto', executable }).plan);
+  });
+
+  test('keeps automatic detection error-free', () => {
+    const shell = resolveTurnShellPlan(
+      { preference: 'auto', executable: '' },
+      { platform: 'darwin', env: {}, fileExists: () => false },
+    );
+    assert.equal(shell.plan.kind, 'posix');
+    assert.equal(shell.setupError, undefined);
+  });
+
+  test('fails closed at the Bash boundary without falling back to another shell', () => {
+    const broken = resolveTurnShellPlan(
+      { preference: 'git_bash', executable },
+      { platform: 'win32', fileExists: () => false },
+    );
+    assert.throws(() => throwIfShellSetupFailed(broken), ShellPreferenceError);
+    const healthy = resolveTurnShellPlan(
+      { preference: 'git_bash', executable },
+      { platform: 'win32', fileExists: existsIn(executable) },
+    );
+    throwIfShellSetupFailed(healthy);
+  });
+
+  test('declares the outage to the model instead of naming a shell that cannot run', () => {
+    const broken = resolveTurnShellPlan(
+      { preference: 'git_bash', executable },
+      { platform: 'win32', fileExists: () => false },
+    );
+    const guidance = bashToolTurnShellGuidance(broken);
+    assert.match(guidance, /unavailable this turn/);
+    assert.match(guidance, /not found/i);
+    assert.doesNotMatch(guidance, /write POSIX shell syntax/);
+    assert.match(turnShellDisplayName(broken), /Unavailable/);
+
+    const healthy = resolveTurnShellPlan(
+      { preference: 'git_bash', executable },
+      { platform: 'win32', fileExists: existsIn(executable) },
+    );
+    assert.match(bashToolTurnShellGuidance(healthy), /write POSIX shell syntax/);
+    assert.equal(turnShellDisplayName(healthy), 'Git Bash');
   });
 });
 

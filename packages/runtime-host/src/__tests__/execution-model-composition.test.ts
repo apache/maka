@@ -35,6 +35,7 @@ import {
 } from '@maka/runtime/network/scoped-fetch-transport';
 import { type ScannedSkill } from '@maka/runtime/skills';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
+import { ShellPreferenceError } from '@maka/runtime/shell-detect';
 import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
 import { SESSION_RECAP_INSTRUCTION } from '@maka/runtime/session-recap';
 import { hostedExecutionToolNames } from '../server/hosted-execution-tool-profile.js';
@@ -2681,6 +2682,90 @@ test('one composer freezes Runtime Policy while each Run freezes its remaining p
       { id: 'skill-catalog', revision: 'skills-4' },
     ],
   );
+});
+
+test('backend composition survives a moved saved Git Bash executable while Bash fails closed', async () => {
+  // A previously valid Git Bash path that was moved or uninstalled is a
+  // repairable optional-tool configuration error: it must not fail text-only
+  // backend composition. The turn plan carries the setup error, the tool
+  // description declares the outage, and the Bash boundary rethrows it
+  // instead of silently falling back to another shell.
+  const policy = {
+    ...createDefaultRuntimePolicy(),
+    shell: {
+      preference: 'git_bash' as const,
+      executable: 'C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe',
+    },
+  };
+  const fixture = backendCreationFixture({
+    abortSignal: new AbortController().signal,
+    resolveExecutionConnection: async () => readyExecutionConnection(),
+    readPricing: async () => ({ revision: 0, overrides: [] }),
+  });
+  const factory = createInteractiveRunComposerFactory({
+    skills: {
+      readCanonicalModelInventory: async () => ({
+        revision: 'skills-fixture',
+        projectRoot: '/workspace',
+        inventory: [],
+        diagnostics: [],
+        discoveryDiagnostics: [],
+      }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {
+      readPromptProjection: async () => ({
+        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
+        bundleRevision: null,
+        memoryRevision: null,
+        body: '',
+      }),
+    } as unknown as HostMemoryCoordinator,
+    taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
+    clientCapabilities: {
+      snapshotForSession: () => undefined,
+    } as unknown as HostClientCapabilityCoordinator,
+    resolveTavilyWebSearchReadiness: async () => false,
+    builtinTools: {},
+  });
+  const connection = readyExecutionConnection()
+    .connection as unknown as import('@maka/core/llm-connections').RuntimeExecutionConnection;
+
+  const composer = await factory({
+    backendContext: fixture.context,
+    connection,
+    modelId: MODEL_ID,
+    runtimePolicy: { revision: 0, policy },
+    contextWindow: null,
+  });
+
+  const bash = composer.tools.find((tool) => tool.name === 'Bash') as
+    | MakaTool<{ command: string }, unknown>
+    | undefined;
+  assert.ok(bash, 'expected the default tool surface to include Bash');
+  assert.match(bash.description, /unavailable this turn/);
+  assert.doesNotMatch(bash.description, /write PowerShell syntax/);
+  await assert.rejects(
+    async () => {
+      await bash.impl({ command: 'echo never-runs' }, {
+        sessionId: 'session',
+        turnId: 'turn-1',
+        cwd: '/workspace',
+        toolCallId: 'tool-call',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+      } satisfies MakaToolContext);
+    },
+    (error: unknown) => error instanceof ShellPreferenceError,
+  );
+
+  // Text-only composition — prompts and the rest of the tool surface — is unaffected.
+  const prompt = await composer.resolveSystemPrompt({
+    sessionId: 'session',
+    turnId: 'turn-1',
+    cwd: '/workspace',
+    workspaceRoot: '/workspace',
+  });
+  assert.ok(prompt.sourceRevisions.length > 0);
 });
 
 test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
