@@ -403,7 +403,7 @@ export class HostEventPackageManagementTools {
     return Object.freeze({
       name: 'manage_event',
       description:
-        'Activate, atomically update, stop, or delete an Event/Listener package for the current session. Updates retain the last-good Revision on failed preparation.',
+        'Activate, atomically update, stop, or delete an Event/Listener package for the current session. Failed updates leave the current runtime tree unchanged.',
       parameters: manageInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
