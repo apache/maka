@@ -2,6 +2,7 @@ import type {
   MakaCompositionEntry,
   MakaCompositionSnapshot,
   MakaPluginMountInspection,
+  MakaPluginRootId,
 } from '@maka/runtime/plugin-runtime';
 import { createHash } from 'node:crypto';
 import {
@@ -63,7 +64,6 @@ interface PersistedExtensionBinding {
   readonly scopeId: string;
   readonly extensionId: string;
   readonly desiredRevision: string;
-  readonly lastGoodRevision: string | null;
   readonly enabled: boolean;
   readonly error: string | null;
 }
@@ -130,7 +130,6 @@ export class HostExtensionController {
               scopeId,
               extensionId: entry.packageId,
               desiredRevision: entry.revision,
-              lastGoodRevision: entry.currentRevision ?? null,
               enabled: !entry.disabled,
               error: entry.error ?? null,
             }),
@@ -139,7 +138,7 @@ export class HostExtensionController {
         }
         for (const [, entry] of persistedEntries(composition)) {
           if (!entry.packageId || !entry.revision || entry.disabled) continue;
-          await this.#ensureInstalled(entry.packageId, entry.currentRevision ?? entry.revision);
+          await this.#ensureInstalled(entry.packageId, entry.revision);
         }
         await this.runtime.replaceCompositionSnapshot(runtimeSnapshot(composition));
       }
@@ -602,7 +601,6 @@ export class HostExtensionController {
         scopeId: input.scopeId,
         extensionId: input.extensionId,
         desiredRevision: input.revision,
-        lastGoodRevision: current?.lastGoodRevision ?? null,
         enabled: true,
         error: null,
       }),
@@ -758,25 +756,6 @@ export class HostExtensionController {
     }
     for (const original of enabled) {
       const binding = this.#bindings.get(original.bindingId)!;
-      let activeRevision: string | null = null;
-      if (binding.lastGoodRevision) {
-        try {
-          await this.#ensureInstalled(binding.extensionId, binding.lastGoodRevision);
-          await this.runtime.activate({
-            bindingId: binding.bindingId,
-            scopeId: binding.scopeId,
-            extensionId: binding.extensionId,
-            revision: binding.lastGoodRevision,
-          });
-          activeRevision = binding.lastGoodRevision;
-        } catch (error) {
-          this.#bindings.set(
-            binding.bindingId,
-            bindingState({ ...binding, error: boundedErrorMessage(error) }),
-          );
-        }
-      }
-      if (activeRevision === binding.desiredRevision) continue;
       try {
         await this.#convergeBinding(binding.bindingId);
       } catch (error) {
@@ -794,24 +773,39 @@ export class HostExtensionController {
     if (!binding || !binding.enabled) return;
     await this.#ensureInstalled(binding.extensionId, binding.desiredRevision);
     const inspection = this.#tryInspect(bindingId);
-    if (!inspection) {
-      await this.runtime.activate({
-        bindingId: binding.bindingId,
-        scopeId: binding.scopeId,
-        extensionId: binding.extensionId,
-        revision: binding.desiredRevision,
-      });
-      return;
-    }
-    if (inspection.desiredRevision !== binding.desiredRevision) {
-      await this.runtime.update(bindingId, binding.desiredRevision);
-      if (!this.runtime.inspect(bindingId).enabled) await this.runtime.start(bindingId);
-      return;
-    }
-    if (!inspection.enabled) await this.runtime.start(bindingId);
-    else if (inspection.current?.revision !== binding.desiredRevision) {
-      await this.runtime.update(bindingId, binding.desiredRevision);
-    }
+    const rootId: MakaPluginRootId =
+      binding.scopeId === 'profile'
+        ? 'profile'
+        : binding.scopeId === 'desktop-ui'
+          ? 'desktop-ui'
+          : `session:${binding.scopeId}`;
+    await this.runtime.applyComposition({
+      operations: inspection
+        ? [
+            {
+              type: 'update',
+              entryId: binding.bindingId,
+              patch: {
+                packageId: binding.extensionId,
+                revision: binding.desiredRevision,
+                disabled: false,
+                config: this.#configuration.get(binding.bindingId) ?? Object.freeze({}),
+              },
+            },
+          ]
+        : [
+            {
+              type: 'insert',
+              rootId,
+              entry: {
+                id: binding.bindingId,
+                packageId: binding.extensionId,
+                revision: binding.desiredRevision,
+                config: this.#configuration.get(binding.bindingId) ?? Object.freeze({}),
+              },
+            },
+          ],
+    });
   }
 
   async #ensureInstalled(extensionId: string, revision: string): Promise<void> {
@@ -828,7 +822,9 @@ export class HostExtensionController {
   async #garbageCollectRevisions(): Promise<void> {
     const retained = new Set(
       [...this.#bindings.values()].flatMap((binding) =>
-        uniqueRevisions(binding).map((revision) => revisionKey(binding.extensionId, revision)),
+        [binding.desiredRevision, this.#tryInspect(binding.bindingId)?.current?.revision]
+          .filter((revision): revision is string => typeof revision === 'string')
+          .map((revision) => revisionKey(binding.extensionId, revision)),
       ),
     );
     for (const installed of [...this.runtime.installedRevisions()].reverse()) {
@@ -846,15 +842,12 @@ export class HostExtensionController {
     for (const binding of [...this.#bindings.values()]) {
       const inspection = this.#tryInspect(binding.bindingId);
       if (!inspection) continue;
-      const currentRevision = inspection.current?.revision;
       const error = inspection.diagnostic?.message ?? binding.error;
       this.#bindings.set(
         binding.bindingId,
         bindingState({
           ...binding,
-          ...(currentRevision ? { lastGoodRevision: currentRevision } : {}),
-          error:
-            currentRevision === binding.desiredRevision && !inspection.diagnostic ? null : error,
+          error: !inspection.diagnostic && inspection.status === 'active' ? null : error,
         }),
       );
     }
@@ -960,7 +953,6 @@ export class HostExtensionController {
               scopeId,
               extensionId: selected.extensionId,
               desiredRevision: selected.revision,
-              lastGoodRevision: null,
               enabled: true,
               error: null,
             }),
@@ -1062,7 +1054,6 @@ export class HostExtensionController {
         id: binding.bindingId,
         packageId: binding.extensionId,
         revision: binding.desiredRevision,
-        currentRevision: binding.lastGoodRevision,
         disabled: !binding.enabled,
         config: this.#configuration.get(binding.bindingId) ?? Object.freeze({}),
         error: binding.error,
@@ -1113,7 +1104,7 @@ export class HostExtensionController {
       scopeId: binding.scopeId,
       extensionId: binding.extensionId,
       desiredRevision: binding.desiredRevision,
-      lastGoodRevision: binding.lastGoodRevision,
+      lastGoodRevision: null,
       enabled: binding.enabled,
       status: projectStatus(binding, inspection),
       error: binding.error,
@@ -1145,11 +1136,7 @@ function bindingState(binding: PersistedExtensionBinding): PersistedExtensionBin
 }
 
 function uniqueRevisions(binding: PersistedExtensionBinding): readonly string[] {
-  return [...new Set([binding.lastGoodRevision, binding.desiredRevision].filter(isString))];
-}
-
-function isString(value: string | null): value is string {
-  return value !== null;
+  return [binding.desiredRevision];
 }
 
 function boundedErrorMessage(error: unknown): string {
@@ -1324,7 +1311,7 @@ function runtimeSnapshot(composition: PersistedPluginComposition): MakaCompositi
     Object.freeze({
       id: entry.id,
       ...(entry.packageId && entry.revision
-        ? { packageId: entry.packageId, revision: entry.currentRevision ?? entry.revision }
+        ? { packageId: entry.packageId, revision: entry.revision }
         : {}),
       config: entry.config,
       disabled: entry.disabled,

@@ -11,7 +11,6 @@ export interface PersistedPluginEntry {
   readonly id: string;
   readonly packageId?: string;
   readonly revision?: string;
-  readonly currentRevision?: string | null;
   readonly disabled: boolean;
   readonly config: Readonly<Record<string, ExtensionConfigurationScalar>>;
   readonly inject?: readonly string[] | Readonly<Record<string, unknown>>;
@@ -148,16 +147,7 @@ function decodeEntry(value: unknown, label: string): PersistedPluginEntry {
   exactOptional(
     entry,
     ['id', 'disabled', 'config'],
-    [
-      'packageId',
-      'revision',
-      'currentRevision',
-      'inject',
-      'isolate',
-      'intercept',
-      'children',
-      'error',
-    ],
+    ['packageId', 'revision', 'inject', 'isolate', 'intercept', 'children', 'error'],
   );
   if (!isCanonicalExtensionScopeId(entry.id)) throw invalid(`${label}.id is invalid`);
   const group = entry.packageId === undefined && entry.revision === undefined;
@@ -167,12 +157,6 @@ function decodeEntry(value: unknown, label: string): PersistedPluginEntry {
   if (!group && !isCanonicalExtensionId(entry.packageId))
     throw invalid(`${label}.packageId is invalid`);
   const revision = group ? undefined : text(entry.revision, `${label}.revision`, 128);
-  const currentRevision =
-    group || entry.currentRevision === undefined
-      ? undefined
-      : entry.currentRevision === null
-        ? null
-        : text(entry.currentRevision, `${label}.currentRevision`, 128);
   if (typeof entry.disabled !== 'boolean') throw invalid(`${label}.disabled is invalid`);
   const config = scalarRecord(entry.config, `${label}.config`);
   const error =
@@ -189,7 +173,6 @@ function decodeEntry(value: unknown, label: string): PersistedPluginEntry {
   return Object.freeze({
     id: entry.id as string,
     ...(group ? {} : { packageId: entry.packageId as string, revision }),
-    ...(currentRevision === undefined ? {} : { currentRevision }),
     disabled: entry.disabled,
     config,
     ...(inject === undefined ? {} : { inject }),

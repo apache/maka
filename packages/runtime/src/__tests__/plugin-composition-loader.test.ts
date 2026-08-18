@@ -143,6 +143,30 @@ test('snapshot replacement restores ordered roots and descendants', async () => 
   await loader.close();
 });
 
+test('composition apply batches EntryTree operations under one generation check', async () => {
+  const loader = new MakaCompositionLoader();
+  await loader.install(pkg('batch', 'r1', () => undefined));
+  const initial = loader.snapshot().generation;
+  const changed = await loader.apply({
+    baseGeneration: initial,
+    operations: [
+      { type: 'insert', entry: entry('batch-a', 'batch', 'r1') },
+      { type: 'insert', parentId: 'batch-a', entry: { id: 'batch-group' } },
+      { type: 'update', entryId: 'batch-group', patch: { disabled: true } },
+    ],
+  });
+  assert.deepEqual(
+    changed.map(({ id }) => id),
+    ['batch-a', 'batch-group', 'batch-group'],
+  );
+  assert.equal(loader.inspect('batch-group').disabled, true);
+  await assert.rejects(
+    () => loader.apply({ baseGeneration: initial, operations: [] }),
+    /Composition generation changed/u,
+  );
+  await loader.close();
+});
+
 function pkg(packageId: string, revision: string, host: Plugin): MakaPluginPackage {
   return Object.freeze({ packageId, revision, host });
 }

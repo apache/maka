@@ -19,7 +19,7 @@ const connection: ConnectionContext = {
   acquireResidency: () => ({ release: () => undefined }),
 };
 
-test('Extension control plane enables, upgrades, restores last-good, disables, and restarts', async () => {
+test('Extension composition enables, upgrades, rejects failed replacement, and restarts', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-extension-control-'));
   const loader = new StaticTrustedToolExtensionLoader([
     revision('1'),
@@ -60,7 +60,7 @@ test('Extension control plane enables, upgrades, restores last-good, disables, a
       scopeId: 'session-1',
       extensionId: 'weather',
       desiredRevision: '1',
-      lastGoodRevision: '1',
+      lastGoodRevision: null,
       enabled: true,
       status: 'active',
       error: null,
@@ -72,7 +72,7 @@ test('Extension control plane enables, upgrades, restores last-good, disables, a
       connection,
     );
     assert.equal(upgraded.ok, true);
-    assert.equal(upgraded.ok && upgraded.result.binding?.lastGoodRevision, '2');
+    assert.equal(upgraded.ok && upgraded.result.binding?.lastGoodRevision, null);
     assert.equal(await invoke(runtime, 'session-1'), '2');
     assert.deepEqual(runtime.installedRevisions(), [{ extensionId: 'weather', revision: '2' }]);
 
@@ -83,7 +83,7 @@ test('Extension control plane enables, upgrades, restores last-good, disables, a
     assert.deepEqual(failed.ok, false);
     assert.equal(!failed.ok && failed.error.code, 'operation_conflict');
     assert.match(!failed.ok ? failed.error.message : '', /weather v3 is unhealthy/);
-    assert.equal(await invoke(runtime, 'session-1'), '2');
+    assert.deepEqual(runtime.resolveTools('session-1', []), []);
 
     const afterFailure = await controller.handlers['extension.catalog.query']({}, connection);
     assert.equal(afterFailure.ok, true);
@@ -92,7 +92,7 @@ test('Extension control plane enables, upgrades, restores last-good, disables, a
       scopeId: 'session-1',
       extensionId: 'weather',
       desiredRevision: '3',
-      lastGoodRevision: '2',
+      lastGoodRevision: null,
       enabled: true,
       status: 'failed',
       error: 'Unable to activate entry weather-binding: weather v3 is unhealthy',
@@ -101,14 +101,14 @@ test('Extension control plane enables, upgrades, restores last-good, disables, a
     await runtime.close();
     runtime = new HostExtensionRuntime();
     controller = new HostExtensionController(runtime, loader, store, () =>
-      assert.fail('last-good recovery must not drain the Host'),
+      assert.fail('failed composition recovery must not drain the Host'),
     );
     await controller.recover();
-    assert.equal(await invoke(runtime, 'session-1'), '2');
+    assert.deepEqual(runtime.resolveTools('session-1', []), []);
     const recovered = await controller.handlers['extension.catalog.query']({}, connection);
     assert.equal(recovered.ok, true);
     assert.equal(recovered.ok && recovered.result.bindings[0]?.desiredRevision, '3');
-    assert.equal(recovered.ok && recovered.result.bindings[0]?.lastGoodRevision, '2');
+    assert.equal(recovered.ok && recovered.result.bindings[0]?.lastGoodRevision, null);
     assert.equal(recovered.ok && recovered.result.bindings[0]?.status, 'failed');
 
     const disabled = await controller.handlers['extension.catalog.mutate'](
@@ -129,10 +129,10 @@ test('Extension control plane enables, upgrades, restores last-good, disables, a
     assert.deepEqual(runtime.installedRevisions(), []);
 
     const persisted = JSON.parse(await readFile(store.path, 'utf8')) as {
-      roots: { sessions: Record<string, Array<{ disabled: boolean; currentRevision: string }>> };
+      roots: { sessions: Record<string, Array<{ disabled: boolean; revision: string }>> };
     };
     assert.equal(persisted.roots.sessions['session-1']?.[0]?.disabled, true);
-    assert.equal(persisted.roots.sessions['session-1']?.[0]?.currentRevision, '2');
+    assert.equal(persisted.roots.sessions['session-1']?.[0]?.revision, '3');
 
     const removed = await controller.handlers['extension.catalog.mutate'](
       { kind: 'remove', bindingId: 'weather-binding' },
@@ -196,7 +196,6 @@ test('Composition Snapshot restores and preserves nested groups', async () => {
                 id: 'weather-binding',
                 packageId: 'weather',
                 revision: '1',
-                currentRevision: '1',
                 disabled: false,
                 config: {},
                 error: null,

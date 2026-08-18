@@ -3,6 +3,7 @@ import {
   fiberStateName,
   type MakaCompositionEntry,
   type MakaCompositionEntryInspection,
+  type MakaCompositionApplyInput,
   type MakaCompositionSnapshot,
   type MakaPluginMetadata,
   type MakaPluginPackage,
@@ -204,6 +205,55 @@ export class MakaCompositionLoader {
     return this.update(entryId, { disabled: true });
   }
 
+  apply(input: MakaCompositionApplyInput): Promise<readonly MakaCompositionEntryInspection[]> {
+    return this.#mutate(async () => {
+      if (input.baseGeneration !== undefined && input.baseGeneration !== this.#generation)
+        throw new MakaPluginRuntimeError(
+          'invalid_entry',
+          `Composition generation changed from ${input.baseGeneration} to ${this.#generation}`,
+        );
+      const before = this.snapshot();
+      const inspections: MakaCompositionEntryInspection[] = [];
+      try {
+        for (const operation of input.operations) {
+          switch (operation.type) {
+            case 'insert': {
+              const entry = await this.#insert(
+                operation.rootId ?? this.#inferRoot(operation.parentId),
+                operation.entry,
+                operation.parentId,
+                operation.position,
+              );
+              inspections.push(this.#inspect(entry));
+              break;
+            }
+            case 'update': {
+              const entry = await this.#update(operation.entryId, operation.patch);
+              inspections.push(this.#inspect(entry));
+              break;
+            }
+            case 'move': {
+              const entry = await this.#move(
+                operation.entryId,
+                operation.parentId,
+                operation.position,
+              );
+              inspections.push(this.#inspect(entry));
+              break;
+            }
+            case 'remove':
+              await this.#remove(operation.entryId);
+              break;
+          }
+        }
+      } catch (error) {
+        await this.#replaceSnapshot(before);
+        throw error;
+      }
+      return Object.freeze(inspections);
+    });
+  }
+
   replaceRevision(entryId: string, revision: string): Promise<MakaCompositionEntryInspection> {
     return this.update(entryId, { revision });
   }
@@ -309,55 +359,57 @@ export class MakaCompositionLoader {
   }
 
   replaceSnapshot(snapshot: MakaCompositionSnapshot): Promise<void> {
-    return this.#mutate(async () => {
-      if (snapshot.schemaVersion !== 1)
-        throw new MakaPluginRuntimeError('invalid_entry', 'Unsupported composition snapshot');
-      const specs = new Map<MakaPluginRootId, readonly MakaCompositionEntry[]>([
-        ['profile', snapshot.roots.profile],
-        ['desktop-ui', snapshot.roots.desktopUi],
-        ...Object.entries(snapshot.roots.sessions).map(
-          ([id, entries]) => [`session:${id}` as MakaPluginRootId, entries] as const,
-        ),
-      ]);
-      const stagedRoots = new Map<MakaPluginRootId, LiveRoot>();
-      const stagedIds = new Set<string>();
-      try {
-        for (const [rootId, entries] of specs) {
-          validatePluginRootId(rootId);
-          const context = this.root.extend({ makaRootId: rootId });
-          const root: LiveRoot = { id: rootId, context, entries: [] };
-          stagedRoots.set(rootId, root);
-          for (const spec of entries) {
-            validateCompositionEntry(spec);
-            for (const item of walk(spec)) {
-              if (stagedIds.has(item.id))
-                throw new MakaPluginRuntimeError(
-                  'entry_exists',
-                  `Composition entry already exists: ${item.id}`,
-                );
-              stagedIds.add(item.id);
-            }
-            root.entries.push(await this.#stage(spec, rootId, undefined, context, false));
+    return this.#mutate(() => this.#replaceSnapshot(snapshot));
+  }
+
+  async #replaceSnapshot(snapshot: MakaCompositionSnapshot): Promise<void> {
+    if (snapshot.schemaVersion !== 1)
+      throw new MakaPluginRuntimeError('invalid_entry', 'Unsupported composition snapshot');
+    const specs = new Map<MakaPluginRootId, readonly MakaCompositionEntry[]>([
+      ['profile', snapshot.roots.profile],
+      ['desktop-ui', snapshot.roots.desktopUi],
+      ...Object.entries(snapshot.roots.sessions).map(
+        ([id, entries]) => [`session:${id}` as MakaPluginRootId, entries] as const,
+      ),
+    ]);
+    const stagedRoots = new Map<MakaPluginRootId, LiveRoot>();
+    const stagedIds = new Set<string>();
+    try {
+      for (const [rootId, entries] of specs) {
+        validatePluginRootId(rootId);
+        const context = this.root.extend({ makaRootId: rootId });
+        const root: LiveRoot = { id: rootId, context, entries: [] };
+        stagedRoots.set(rootId, root);
+        for (const spec of entries) {
+          validateCompositionEntry(spec);
+          for (const item of walk(spec)) {
+            if (stagedIds.has(item.id))
+              throw new MakaPluginRuntimeError(
+                'entry_exists',
+                `Composition entry already exists: ${item.id}`,
+              );
+            stagedIds.add(item.id);
           }
+          root.entries.push(await this.#stage(spec, rootId, undefined, context, false));
         }
-        for (const root of stagedRoots.values())
-          for (const entry of root.entries) await this.#commitSubtree(entry);
-      } catch (error) {
-        await Promise.allSettled(
-          [...stagedRoots.values()].map((root) => root.context.fiber.dispose()),
-        );
-        throw error;
       }
-      const previous = [...this.#roots.values()];
-      this.#roots.clear();
-      this.#entries.clear();
-      for (const [rootId, root] of stagedRoots) {
-        this.#roots.set(rootId, root);
-        for (const entry of root.entries) this.#index(entry);
-      }
-      this.#generation = Math.max(this.#generation, snapshot.generation);
-      await Promise.allSettled(previous.map((root) => root.context.fiber.dispose()));
-    });
+      for (const root of stagedRoots.values())
+        for (const entry of root.entries) await this.#commitSubtree(entry);
+    } catch (error) {
+      await Promise.allSettled(
+        [...stagedRoots.values()].map((root) => root.context.fiber.dispose()),
+      );
+      throw error;
+    }
+    const previous = [...this.#roots.values()];
+    this.#roots.clear();
+    this.#entries.clear();
+    for (const [rootId, root] of stagedRoots) {
+      this.#roots.set(rootId, root);
+      for (const entry of root.entries) this.#index(entry);
+    }
+    this.#generation = Math.max(this.#generation, snapshot.generation);
+    await Promise.allSettled(previous.map((root) => root.context.fiber.dispose()));
   }
 
   async close(): Promise<void> {
@@ -490,6 +542,94 @@ export class MakaCompositionLoader {
       this.#roots.set(rootId, root);
     }
     return root;
+  }
+
+  #inferRoot(parentId: string | undefined): MakaPluginRootId {
+    if (!parentId) return 'profile';
+    return this.#requireEntry(parentId).rootId;
+  }
+
+  async #insert(
+    rootId: MakaPluginRootId,
+    entry: MakaCompositionEntry,
+    parentId?: string,
+    position = Infinity,
+  ): Promise<LiveEntry> {
+    validatePluginRootId(rootId);
+    validateCompositionEntry(entry);
+    this.#assertUniqueSubtree(entry);
+    const root = this.#root(rootId);
+    const parent = parentId ? this.#requireEntry(parentId) : undefined;
+    if (parent && parent.rootId !== rootId)
+      throw new MakaPluginRuntimeError(
+        'invalid_entry',
+        'Composition entries cannot move between roots',
+      );
+    const live = await this.#stage(entry, rootId, parent, parent?.context ?? root.context, false);
+    await this.#commitSubtree(live);
+    const siblings = parent?.children ?? root.entries;
+    siblings.splice(Math.min(position, siblings.length), 0, live);
+    this.#index(live);
+    return live;
+  }
+
+  async #update(
+    entryId: string,
+    patch: Partial<Omit<MakaCompositionEntry, 'id' | 'children'>>,
+  ): Promise<LiveEntry> {
+    const current = this.#requireEntry(entryId);
+    const next = freezeEntry({
+      ...current.spec,
+      ...patch,
+      id: current.spec.id,
+      children: current.spec.children,
+    });
+    validateCompositionEntry(next);
+    const structural =
+      next.packageId !== current.spec.packageId ||
+      next.revision !== current.spec.revision ||
+      JSON.stringify(next.inject ?? null) !== JSON.stringify(current.spec.inject ?? null) ||
+      JSON.stringify(next.isolate ?? null) !== JSON.stringify(current.spec.isolate ?? null) ||
+      JSON.stringify(next.intercept ?? null) !== JSON.stringify(current.spec.intercept ?? null);
+    if (!structural && current.fiber && next.disabled !== true && current.spec.disabled !== true) {
+      await current.fiber.update(next.config);
+      current.spec = next;
+      current.generation = ++this.#generation;
+      current.diagnostic = undefined;
+      return current;
+    }
+    return this.#replace(current, next).then((inspection) => this.#requireEntry(inspection.id));
+  }
+
+  async #move(entryId: string, newParentId?: string, position = Infinity): Promise<LiveEntry> {
+    const entry = this.#requireEntry(entryId);
+    const parent = newParentId ? this.#requireEntry(newParentId) : undefined;
+    if (parent && parent.rootId !== entry.rootId)
+      throw new MakaPluginRuntimeError(
+        'invalid_entry',
+        'Composition entries cannot move between roots',
+      );
+    for (let ancestor = parent; ancestor; ancestor = ancestor.parent)
+      if (ancestor === entry)
+        throw new MakaPluginRuntimeError(
+          'dependency_cycle',
+          `Entry ${entryId} cannot contain itself`,
+        );
+    const source = entry.parent?.children ?? this.#root(entry.rootId).entries;
+    source.splice(source.indexOf(entry), 1);
+    entry.parent = parent;
+    const target = parent?.children ?? this.#root(entry.rootId).entries;
+    target.splice(Math.min(position, target.length), 0, entry);
+    await this.#rebind(entry);
+    return this.#requireEntry(entryId);
+  }
+
+  async #remove(entryId: string): Promise<void> {
+    const entry = this.#requireEntry(entryId);
+    const siblings = entry.parent?.children ?? this.#root(entry.rootId).entries;
+    siblings.splice(siblings.indexOf(entry), 1);
+    this.#unindex(entry);
+    await this.#dispose(entry);
   }
 
   #requireEntry(entryId: string): LiveEntry {

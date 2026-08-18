@@ -3,6 +3,7 @@ import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
 import {
   type MakaContributionContext,
   type MakaCompositionSnapshot,
+  type MakaCompositionApplyInput,
   type MakaCompositionEntryInspection,
   type MakaPluginMountInspection,
   type MakaPluginPackage,
@@ -282,6 +283,19 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     for (const [scopeId, entries] of Object.entries(snapshot.roots.sessions)) {
       if (entries.length > 0) this.#scopeIds.add(scopeId);
     }
+  }
+
+  /**
+   * Applies an atomic batch to the EntryTree. All public extension mutations
+   * should converge on this operation; the loader owns the runtime tree.
+   */
+  async applyComposition(
+    input: MakaCompositionApplyInput,
+  ): Promise<readonly MakaCompositionEntryInspection[]> {
+    this.#assertMutable();
+    const changed = await this.#composition.apply(input);
+    for (const entry of changed) this.#scopeIds.add(this.#scopeId(entry.rootId));
+    return changed;
   }
 
   uninstall(extensionId: string, revision: string): Promise<void> {

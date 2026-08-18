@@ -39,6 +39,32 @@ export interface MakaCompositionSnapshot {
   };
 }
 
+export type MakaCompositionOperation =
+  | {
+      readonly type: 'insert';
+      readonly rootId?: MakaPluginRootId;
+      readonly parentId?: string;
+      readonly entry: MakaCompositionEntry;
+      readonly position?: number;
+    }
+  | {
+      readonly type: 'update';
+      readonly entryId: string;
+      readonly patch: Partial<Omit<MakaCompositionEntry, 'id' | 'children'>>;
+    }
+  | {
+      readonly type: 'move';
+      readonly entryId: string;
+      readonly parentId?: string;
+      readonly position?: number;
+    }
+  | { readonly type: 'remove'; readonly entryId: string };
+
+export interface MakaCompositionApplyInput {
+  readonly baseGeneration?: number;
+  readonly operations: readonly MakaCompositionOperation[];
+}
+
 export type MakaCompositionEntryStatus =
   | 'disabled'
   | 'pending'
