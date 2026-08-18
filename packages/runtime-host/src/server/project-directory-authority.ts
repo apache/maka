@@ -84,8 +84,11 @@ export class HostProjectDirectoryAuthority {
     segments: readonly string[],
   ): Promise<string> {
     const directory = await realpath(join(root.path, ...segments));
-    if (!isWithin(root.path, directory) || !(await stat(directory)).isDirectory()) {
+    if (!isWithin(root.path, directory)) {
       throw new TypeError('Project directory is outside the published root');
+    }
+    if (!(await stat(directory)).isDirectory()) {
+      throw new TypeError('Project directory is not a directory');
     }
     return directory;
   }

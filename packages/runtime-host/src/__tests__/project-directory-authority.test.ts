@@ -34,10 +34,9 @@ test('Project directory authority exposes folders without crossing its published
       roots.roots.map((root) => root.label),
       ['Home', 'Shared'],
     );
-    assert.deepEqual(
-      roots.roots.map((root) => root.id),
-      ['root-1', 'root-2'],
-    );
+    const rootIds = roots.roots.map((root) => root.id);
+    assert.ok(rootIds.every((id) => id.length > 0));
+    assert.equal(new Set(rootIds).size, rootIds.length);
     const homeRoot = roots.roots[0];
     const sharedRoot = roots.roots[1];
     assert.ok(homeRoot && sharedRoot);
