@@ -81,6 +81,19 @@ export function resolveProductReleaseIdentity({
   };
 }
 
+export function assertProductReleaseExpectation(identity, { version, tag, sourceCommit }) {
+  if (
+    identity.version !== version ||
+    identity.tag !== tag ||
+    identity.sourceCommit !== sourceCommit
+  ) {
+    throw new Error(
+      `Checked source ${identity.tag} at ${identity.sourceCommit} does not match product release ${tag} at ${sourceCommit}`,
+    );
+  }
+  return identity;
+}
+
 export async function readProductReleaseIdentity({
   ref = process.env.GITHUB_REF,
   sha = process.env.GITHUB_SHA,
@@ -113,6 +126,17 @@ function githubOutputEntries(identity) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const identity = await readProductReleaseIdentity();
+  if (
+    process.env.EXPECTED_PRODUCT_VERSION ||
+    process.env.EXPECTED_PRODUCT_TAG ||
+    process.env.EXPECTED_PRODUCT_SOURCE_COMMIT
+  ) {
+    assertProductReleaseExpectation(identity, {
+      version: process.env.EXPECTED_PRODUCT_VERSION,
+      tag: process.env.EXPECTED_PRODUCT_TAG,
+      sourceCommit: process.env.EXPECTED_PRODUCT_SOURCE_COMMIT,
+    });
+  }
   if (process.env.GITHUB_OUTPUT) {
     const output = Object.entries(githubOutputEntries(identity))
       .map(([name, value]) => `${name}=${value}`)

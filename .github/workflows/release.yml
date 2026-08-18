@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release
@@ -40,20 +40,6 @@ jobs:
       - name: Resolve product release identity
         id: identity
         run: node scripts/product-release-identity.mjs
-
-      - name: Assert the tag and release are unused
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.identity.outputs.tag }}
-        run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "Tag ${TAG} already exists." >&2
-            exit 1
-          fi
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release ${TAG} already exists." >&2
-            exit 1
-          fi
 
   desktop:
     needs: release-identity
@@ -357,6 +343,8 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
     defaults:
       run:
         shell: bash
@@ -366,6 +354,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Download the verified release assets
@@ -396,7 +385,16 @@ jobs:
             (cd "$(dirname "$checksum")" && sha256sum -c "$(basename "$checksum")")
           done < <(find release-assets -type f -name '*.sha256' -print0)
 
-      - name: Create draft GitHub Release
+      - name: Ensure the exact product tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-identity.outputs.tag }}
+          SOURCE_COMMIT: ${{ needs.release-identity.outputs.source_commit }}
+        run: |
+          gh auth setup-git
+          node scripts/product-release-tag.mjs ensure "$TAG" "$SOURCE_COMMIT"
+
+      - name: Create or update the draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.release-identity.outputs.version }}
@@ -413,10 +411,21 @@ jobs:
 
           Known limitation: Computer Use is not included in this release."
 
-          gh release create "$TAG" release-assets/* \
-            --draft \
-            --target "$SOURCE_COMMIT" \
-            --title "Maka ${VERSION}" \
-            --notes "$notes"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
+            if [[ "$is_draft" != "true" ]]; then
+              echo "Release ${TAG} is already published and cannot be replaced." >&2
+              exit 1
+            fi
+          else
+            gh release create "$TAG" \
+              --draft \
+              --verify-tag \
+              --title "Maka ${VERSION}" \
+              --notes "$notes"
+          fi
+
+          gh release edit "$TAG" --title "Maka ${VERSION}" --notes "$notes"
+          gh release upload "$TAG" release-assets/* --clobber
 
           echo "Draft release ${TAG} created from ${SOURCE_COMMIT}." >> "$GITHUB_STEP_SUMMARY"

@@ -9,7 +9,7 @@ test('validation consumers download the artifact produced by the build job', () 
   const workflow = readWorkflow('cli-package-validation.yml');
   assert.match(
     workflow,
-    /workflow_call:\n\s+outputs:\n\s+release_candidate_artifact_id:[\s\S]*?value: \$\{\{ jobs\.build\.outputs\.release_candidate_artifact_id \}\}/u,
+    /workflow_call:[\s\S]*?\n\s+outputs:\n\s+release_candidate_artifact_id:[\s\S]*?value: \$\{\{ jobs\.build\.outputs\.release_candidate_artifact_id \}\}/u,
   );
   assert.match(
     workflow,
@@ -43,6 +43,20 @@ test('stage consumes the validated artifact and makes provenance staging the fin
   assert.equal(steps.at(-1), submit);
   assert.match(submit, /npm stage publish/u);
   assert.match(submit, /--provenance/u);
+});
+
+test('stage builds the npm candidate from the exact product release commit', () => {
+  const workflow = readWorkflow('release-cli-stage.yml');
+  assert.match(workflow, /source_commit: \$\{\{ steps\.product\.outputs\.source_commit \}\}/u);
+  assert.match(
+    workflow,
+    /needs: authorize\n\s+uses: \.\/\.github\/workflows\/cli-package-validation\.yml/u,
+  );
+  assert.match(workflow, /source_commit: \$\{\{ needs\.authorize\.outputs\.source_commit \}\}/u);
+  assert.match(workflow, /ref: \$\{\{ needs\.authorize\.outputs\.source_commit \}\}/u);
+  assert.match(workflow, /gh release view "\$PRODUCT_TAG"/u);
+  assert.match(workflow, /EXPECTED_PRODUCT_SOURCE_COMMIT/u);
+  assert.doesNotMatch(workflow, /RELEASE_SHA: \$\{\{ github\.sha \}\}/u);
 });
 
 test('finalize validates one exact stage attempt before running the current verifier', () => {

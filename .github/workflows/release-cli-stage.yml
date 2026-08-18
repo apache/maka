@@ -17,10 +17,17 @@ concurrency:
 
 jobs:
   authorize:
-    name: Require main
+    name: Resolve product release
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    outputs:
+      source_commit: ${{ steps.product.outputs.source_commit }}
+      product_tag: ${{ steps.product.outputs.product_tag }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - name: Reject non-main dispatches
         env:
           RELEASE_REF: ${{ github.ref }}
@@ -30,14 +37,51 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve the exact product release
+        id: product
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+          PRODUCT_TAG: ${{ needs.authorize.outputs.product_tag }}
+          GH_TOKEN: ${{ github.token }}
+          PRODUCT_TAG: v${{ inputs.version }}
+        run: |
+          if [[ ! "$EXPECTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Expected an exact product version; found $EXPECTED_VERSION" >&2
+            exit 1
+          fi
+          release_tag="$(gh release view "$PRODUCT_TAG" --json tagName --jq .tagName)"
+          test "$release_tag" = "$PRODUCT_TAG"
+          git fetch --no-tags origin "refs/tags/$PRODUCT_TAG"
+          source_commit="$(git rev-list -n 1 FETCH_HEAD)"
+          test "$(git rev-parse FETCH_HEAD^{commit})" = "$source_commit"
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "product_tag=$PRODUCT_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the product release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.product.outputs.source_commit }}
+          persist-credentials: false
+
+      - name: Verify the product release identity
+        env:
+          GITHUB_REF: refs/heads/main
+          GITHUB_SHA: ${{ steps.product.outputs.source_commit }}
+          EXPECTED_PRODUCT_VERSION: ${{ inputs.version }}
+          EXPECTED_PRODUCT_TAG: ${{ steps.product.outputs.product_tag }}
+          EXPECTED_PRODUCT_SOURCE_COMMIT: ${{ steps.product.outputs.source_commit }}
+        run: node scripts/product-release-identity.mjs
+
   validate:
     name: Validate immutable candidate
     needs: authorize
     uses: ./.github/workflows/cli-package-validation.yml
+    with:
+      source_commit: ${{ needs.authorize.outputs.source_commit }}
 
   stage:
     name: Stage maka-agent on npm
-    needs: validate
+    needs: [authorize, validate]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
@@ -49,6 +93,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.authorize.outputs.source_commit }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -69,13 +114,16 @@ jobs:
           RELEASE_REPOSITORY: ${{ github.repository }}
           RELEASE_RUN_ID: ${{ github.run_id }}
           RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
-          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.source_commit }}
+          RELEASE_WORKFLOW_SHA: ${{ github.sha }}
           RELEASE_WORKFLOW: .github/workflows/release-cli-stage.yml
         run: |
           node scripts/release-cli-publication.mjs prepare-stage \
             packages/cli/release \
             "$EXPECTED_VERSION" \
+            "$PRODUCT_TAG" \
             "$RELEASE_SHA" \
+            "$RELEASE_WORKFLOW_SHA" \
             "$RELEASE_RUN_ID" \
             "$RELEASE_RUN_ATTEMPT" \
             "$RELEASE_REPOSITORY" \

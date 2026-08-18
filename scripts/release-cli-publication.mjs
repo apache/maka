@@ -12,6 +12,7 @@ const RELEASE_RECORD_KEYS = [
   'schemaVersion',
   'packageName',
   'version',
+  'productTag',
   'distTag',
   'tarball',
   'sha256',
@@ -53,7 +54,9 @@ export function prepareStageRelease({
   repoRoot,
   releaseDirectory,
   expectedVersion,
+  productTag,
   sourceSha,
+  workflowSha,
   runId,
   runAttempt,
   repository,
@@ -69,12 +72,23 @@ export function prepareStageRelease({
       `Release version confirmation ${expectedVersion} does not match ${identity.version}`,
     );
   }
-  validateSourceIdentity({ sourceSha, runId, runAttempt, repository, workflowPath });
+  if (productTag !== `v${identity.version}`) {
+    throw new Error(`Product tag ${productTag} does not match ${identity.version}`);
+  }
+  validateSourceIdentity({
+    sourceSha,
+    workflowSha,
+    runId,
+    runAttempt,
+    repository,
+    workflowPath,
+  });
   const candidate = validateCandidateFiles(releaseDirectory, identity);
   const record = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     packageName: PACKAGE_NAME,
     ...identity,
+    productTag,
     sha256: candidate.sha256,
     checksum: `${identity.tarball}.sha256`,
     inventory: `${identity.tarball}.files.json`,
@@ -82,6 +96,7 @@ export function prepareStageRelease({
       repository,
       workflow: workflowPath,
       commit: sourceSha,
+      workflowCommit: workflowSha,
       runId,
       runAttempt,
     },
@@ -107,7 +122,7 @@ export function validateStageRun({ releaseDirectory, expectedVersion, run }) {
     run.path !== record.source.workflow ||
     run.event !== 'workflow_dispatch' ||
     run.head_branch !== 'main' ||
-    run.head_sha !== record.source.commit ||
+    run.head_sha !== record.source.workflowCommit ||
     run.conclusion !== 'success' ||
     run.head_repository?.full_name !== record.source.repository
   ) {
@@ -214,7 +229,7 @@ export function prepareSignatureAuditTree({ releaseDirectory, auditDirectory }) 
 function loadReleaseRecord(releaseDirectory) {
   const record = readJson(join(releaseDirectory, 'release.json'), 'release record');
   exactKeys(record, RELEASE_RECORD_KEYS, 'release record');
-  if (record.schemaVersion !== 1 || record.packageName !== PACKAGE_NAME) {
+  if (record.schemaVersion !== 2 || record.packageName !== PACKAGE_NAME) {
     throw new Error('Unsupported CLI release record');
   }
   const identity = parseCliReleaseVersion(record.version);
@@ -232,11 +247,12 @@ function loadReleaseRecord(releaseDirectory) {
   }
   exactKeys(
     record.source,
-    ['repository', 'workflow', 'commit', 'runId', 'runAttempt'],
+    ['repository', 'workflow', 'commit', 'workflowCommit', 'runId', 'runAttempt'],
     'release source',
   );
   validateSourceIdentity({
     sourceSha: record.source.commit,
+    workflowSha: record.source.workflowCommit,
     runId: record.source.runId,
     runAttempt: record.source.runAttempt,
     repository: record.source.repository,
@@ -269,8 +285,16 @@ function validateCandidateFiles(releaseDirectory, identity) {
   return { tarballPath, sha256 };
 }
 
-function validateSourceIdentity({ sourceSha, runId, runAttempt, repository, workflowPath }) {
+function validateSourceIdentity({
+  sourceSha,
+  workflowSha,
+  runId,
+  runAttempt,
+  repository,
+  workflowPath,
+}) {
   if (!/^[0-9a-f]{40}$/u.test(sourceSha)) throw new Error('Release source SHA is invalid');
+  if (!/^[0-9a-f]{40}$/u.test(workflowSha)) throw new Error('Release workflow SHA is invalid');
   if (!/^[1-9]\d*$/u.test(runId)) throw new Error('Release workflow run ID is invalid');
   if (!/^[1-9]\d*$/u.test(runAttempt)) throw new Error('Release workflow run attempt is invalid');
   if (repository !== REPOSITORY) throw new Error(`Release repository must be ${REPOSITORY}`);
@@ -440,11 +464,13 @@ function appendOutputs(path, values) {
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
-  if (command === 'prepare-stage' && args.length === 8) {
+  if (command === 'prepare-stage' && args.length === 10) {
     const [
       releaseDirectory,
       expectedVersion,
+      productTag,
       sourceSha,
+      workflowSha,
       runId,
       runAttempt,
       repository,
@@ -455,7 +481,9 @@ async function main() {
       repoRoot: resolve(import.meta.dirname, '..'),
       releaseDirectory: resolve(releaseDirectory),
       expectedVersion,
+      productTag,
       sourceSha,
+      workflowSha,
       runId,
       runAttempt,
       repository,
@@ -468,21 +496,13 @@ async function main() {
     });
     return;
   }
-  if (command === 'validate-stage-run' && (args.length === 3 || args.length === 4)) {
-    const [releaseDirectory, runPath, expectedVersion, output] = args;
-    const record = validateStageRun({
+  if (command === 'validate-stage-run' && args.length === 3) {
+    const [releaseDirectory, runPath, expectedVersion] = args;
+    validateStageRun({
       releaseDirectory: resolve(releaseDirectory),
       expectedVersion,
       run: readJson(resolve(runPath), 'stage workflow run'),
     });
-    if (output) {
-      appendOutputs(output, {
-        version: record.version,
-        dist_tag: record.distTag,
-        source_sha: record.source.commit,
-        tarball: record.tarball,
-      });
-    }
     return;
   }
   if (command === 'prepare-audit' && args.length === 2) {
