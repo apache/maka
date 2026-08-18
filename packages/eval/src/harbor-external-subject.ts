@@ -365,9 +365,11 @@ try {
     const prepared = await prepareProfile(profile, proxy.baseUrl, systemRoot, args);
     credentialPath = prepared.credentialPath;
     if (profile === 'claude-code') prepareClaudeWorkspace(systemRoot, prepared.home);
-    const result = await runChild(command, args, prepared.env, profile, proxy.stopAccepting);
+    const result = await runChild(command, args, prepared.env, profile, async (exitCode) => {
+      proxy.stopAccepting();
+      if (exitCode !== undefined) await writeState('child_exited', { exitCode });
+    });
     child = undefined;
-    await writeState('child_exited', { exitCode: result.exitCode });
     const metering = await proxy.report();
     const derived = deriveMetering(metering);
     usage = metering.usage;
@@ -459,7 +461,7 @@ async function runChild(
   executableArgs: string[],
   env: NodeJS.ProcessEnv,
   selected: Profile,
-  onExit: () => void,
+  onExit: (exitCode?: number) => Promise<void>,
 ): Promise<{ exitCode: number; stdout: ClassifiedStream; stderr: StreamDiagnostic }> {
   const running = spawn(executable, executableArgs, {
     env,
@@ -469,13 +471,17 @@ async function runChild(
   const stdout = classifyStream(running.stdout, selected);
   const stderr = captureStreamDiagnostic(running.stderr);
   const exitCode = await new Promise<number>((resolveExit, reject) => {
+    let settled = false;
     running.once('error', (error) => {
-      onExit();
-      reject(error);
+      if (settled) return;
+      settled = true;
+      void onExit().then(() => reject(error), reject);
     });
     running.once('exit', (code) => {
-      onExit();
-      resolveExit(code ?? 1);
+      if (settled) return;
+      settled = true;
+      const exitCode = code ?? 1;
+      void onExit(exitCode).then(() => resolveExit(exitCode), reject);
     });
   });
   const [stdoutResult, stderrResult] = await Promise.all([stdout, stderr]);
