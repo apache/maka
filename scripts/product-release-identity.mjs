@@ -1,15 +1,9 @@
 import { appendFile, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { parseProductReleaseVersion } from './release-version.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-
-function exactVersion(value, label) {
-  if (typeof value !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(value)) {
-    throw new Error(`${label} must be an exact product version`);
-  }
-  return value;
-}
 
 export function releaseToolchainFromManifest(rootManifest) {
   const nodeVersion = rootManifest.releaseToolchain?.node;
@@ -39,7 +33,7 @@ export function resolveProductReleaseIdentity({
   ref,
   sha,
 }) {
-  const version = exactVersion(rootManifest.version, 'Root package version');
+  const { version } = parseProductReleaseVersion(rootManifest.version);
   for (const [label, manifest] of [
     ['Desktop', desktopManifest],
     ['CLI', cliManifest],

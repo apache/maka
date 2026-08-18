@@ -44,10 +44,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PRODUCT_TAG: v${{ inputs.version }}
         run: |
-          if [[ ! "$EXPECTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Expected an exact product version; found $EXPECTED_VERSION" >&2
-            exit 1
-          fi
+          node scripts/release-version.mjs "$EXPECTED_VERSION"
           release_tag="$(gh release view "$PRODUCT_TAG" --json tagName --jq .tagName)"
           test "$release_tag" = "$PRODUCT_TAG"
           git fetch --no-tags origin "refs/tags/$PRODUCT_TAG"
@@ -166,10 +163,21 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Submit the candidate to npm staging
         env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCT_SOURCE_COMMIT: ${{ needs.authorize.outputs.source_commit }}
+          PRODUCT_TAG: ${{ needs.authorize.outputs.product_tag }}
           RELEASE_DIST_TAG: ${{ steps.release.outputs.dist_tag }}
           RELEASE_TARBALL: ${{ steps.release.outputs.tarball }}
-        run: >-
-          npm stage publish "$RELEASE_TARBALL"
-          --tag "$RELEASE_DIST_TAG"
-          --registry https://registry.npmjs.org/
-          --provenance
+        run: |
+          current_source="$(git ls-remote --tags --refs origin "refs/tags/$PRODUCT_TAG" | awk '{print $1}')"
+          if [[ "$current_source" != "$PRODUCT_SOURCE_COMMIT" ]]; then
+            echo "Product tag ${PRODUCT_TAG} no longer points to ${PRODUCT_SOURCE_COMMIT}." >&2
+            exit 1
+          fi
+          release_tag="$(gh release view "$PRODUCT_TAG" --json tagName --jq .tagName)"
+          test "$release_tag" = "$PRODUCT_TAG"
+
+          npm stage publish "$RELEASE_TARBALL" \
+            --tag "$RELEASE_DIST_TAG" \
+            --registry https://registry.npmjs.org/ \
+            --provenance

@@ -69,9 +69,11 @@ jobs:
             echo "Recovery tag ${TAG} does not point to ${SOURCE_COMMIT}." >&2
             exit 1
           fi
-          if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != "true" ]]; then
-            echo "Recovery requires an existing Draft release ${TAG}." >&2
-            exit 1
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != "true" ]]; then
+              echo "Recovery cannot replace published Release ${TAG}." >&2
+              exit 1
+            fi
           fi
 
   desktop:
@@ -456,7 +458,21 @@ jobs:
               --notes "$notes"
           fi
 
+          if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != "true" ]]; then
+            echo "Release ${TAG} was published while recovery was running." >&2
+            exit 1
+          fi
           gh release edit "$TAG" --title "Maka ${VERSION}" --notes "$notes"
-          gh release upload "$TAG" release-assets/* --clobber
+          asset_names="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          if [[ -n "$asset_names" ]]; then
+            while IFS= read -r asset; do
+              gh release delete-asset "$TAG" "$asset" --yes
+            done <<< "$asset_names"
+          fi
+          if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != "true" ]]; then
+            echo "Release ${TAG} was published while assets were replaced." >&2
+            exit 1
+          fi
+          gh release upload "$TAG" release-assets/*
 
           echo "Draft release ${TAG} created from ${SOURCE_COMMIT}." >> "$GITHUB_STEP_SUMMARY"

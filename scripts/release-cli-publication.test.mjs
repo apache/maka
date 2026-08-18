@@ -31,7 +31,7 @@ test('release versions map prereleases and stable versions to distinct channels'
   });
   assert.equal(parseCliReleaseVersion('0.1.0').distTag, 'latest');
   for (const version of ['01.0.0', '0.1', '0.1.0+local', '0.1.0-beta..1', '../0.1.0']) {
-    assert.throws(() => parseCliReleaseVersion(version), /valid CLI release version/u);
+    assert.throws(() => parseCliReleaseVersion(version), /valid product release version/u);
   }
 });
 

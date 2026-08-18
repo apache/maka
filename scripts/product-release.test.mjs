@@ -58,6 +58,20 @@ test('one root version defines every product artifact from one main commit', () 
   assert.equal(identity.sourceArchive, 'Maka-1.2.3-bundled-git-source.tar.gz');
 });
 
+test('product and npm release identities reject the same non-canonical versions', () => {
+  for (const version of ['01.2.3', '1.2.3-beta..1', '1.2.3-.', '1.2.3-beta.01']) {
+    const manifests = {
+      rootManifest: { ...rootManifest, version },
+      desktopManifest: { version },
+      cliManifest: { version, bin: { maka: './dist/cli.js' } },
+      ref: 'refs/heads/main',
+      sha: 'a'.repeat(40),
+    };
+    assert.throws(() => resolveProductReleaseIdentity(manifests), /valid product release version/u);
+    assert.throws(() => parseCliReleaseVersion(version), /valid product release version/u);
+  }
+});
+
 test('an npm candidate must name the exact product tag, version, and source commit', () => {
   const identity = resolveProductReleaseIdentity({
     rootManifest,
@@ -327,9 +341,17 @@ test('one product workflow gates one draft release on every required artifact', 
   assert.match(commands, /npm run verify:windows-autoupdate/u);
   assert.match(commands, /product-release-tag\.mjs ensure/u);
   assert.match(commands, /RECOVERY_SOURCE/u);
+  assert.match(commands, /if gh release view "\$TAG"/u);
+  assert.doesNotMatch(commands, /requires an existing Draft release/u);
   assert.match(commands, /--json isDraft/u);
   assert.match(commands, /gh release create[\s\S]*--verify-tag/u);
-  assert.match(commands, /gh release upload[\s\S]*--clobber/u);
+  assert.match(commands, /gh release delete-asset/u);
+  assert.match(commands, /gh release upload/u);
+  assert.doesNotMatch(commands, /gh release upload[\s\S]*--clobber/u);
+  const listAssets = commands.indexOf('asset_names="$(gh release view');
+  const deleteAssets = commands.indexOf('gh release delete-asset');
+  const uploadAssets = commands.indexOf('gh release upload');
+  assert.ok(listAssets >= 0 && listAssets < deleteAssets && deleteAssets < uploadAssets);
   assert.doesNotMatch(commands, /gh release create[\s\S]*--target/u);
   assert.doesNotMatch(commands, /cli-v|npm (?:stage )?publish/u);
   await assert.rejects(

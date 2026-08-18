@@ -1,12 +1,18 @@
 import { execFile } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { parseProductReleaseVersion } from './release-version.mjs';
 
 const execFileAsync = promisify(execFile);
 
 function validateInputs(tag, source) {
-  if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(tag)) {
+  if (!tag.startsWith('v')) {
     throw new Error(`Product tag must be an exact version tag; found ${tag}`);
+  }
+  try {
+    parseProductReleaseVersion(tag.slice(1));
+  } catch (error) {
+    throw new Error(`Product tag must be an exact version tag; found ${tag}`, { cause: error });
   }
   if (!/^[0-9a-f]{40}$/u.test(source)) {
     throw new Error(`Product tag source must be an exact commit SHA; found ${source}`);

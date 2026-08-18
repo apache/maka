@@ -3,6 +3,7 @@ import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { CLI_RELEASE_ARTIFACT_LIMITS } from './release-cli-artifact-policy.mjs';
+import { parseProductReleaseVersion } from './release-version.mjs';
 
 const PACKAGE_NAME = 'maka-agent';
 const REGISTRY_ORIGIN = 'https://registry.npmjs.org';
@@ -22,7 +23,7 @@ const RELEASE_RECORD_KEYS = [
 ];
 
 export function parseCliReleaseVersion(version) {
-  const { prerelease } = parseReleaseSemver(version);
+  const { prerelease } = parseProductReleaseVersion(version);
   return {
     version,
     distTag: prerelease.length > 0 ? 'next' : 'latest',
@@ -303,30 +304,9 @@ function validateSourceIdentity({
   }
 }
 
-function parseReleaseSemver(version) {
-  if (typeof version !== 'string') throw new Error('Expected a valid CLI release version');
-  const match =
-    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u.exec(
-      version,
-    );
-  if (!match) throw new Error(`Expected a valid CLI release version; found ${version}`);
-  const prerelease = match[4]?.split('.') ?? [];
-  if (
-    prerelease.some(
-      (identifier) => /^\d+$/u.test(identifier) && identifier.length > 1 && identifier[0] === '0',
-    )
-  ) {
-    throw new Error(`Expected a valid CLI release version; found ${version}`);
-  }
-  return {
-    core: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])],
-    prerelease,
-  };
-}
-
 function compareReleaseSemver(left, right) {
-  const a = parseReleaseSemver(left);
-  const b = parseReleaseSemver(right);
+  const a = parseProductReleaseVersion(left);
+  const b = parseProductReleaseVersion(right);
   for (let index = 0; index < a.core.length; index += 1) {
     if (a.core[index] < b.core[index]) return -1;
     if (a.core[index] > b.core[index]) return 1;
