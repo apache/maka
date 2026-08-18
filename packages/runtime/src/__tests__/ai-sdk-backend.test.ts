@@ -217,20 +217,18 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     });
   });
 
-  test('downgrades durable DeepSeek freeform apply_patch history to a fact', async () => {
+  const assertApplyPatchHistoryDowngraded = async (
+    targetConnection: LlmConnection,
+    modelId: string,
+  ) => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
-      connection: {
-        ...connection(),
-        slug: 'deepseek',
-        providerType: 'deepseek',
-        defaultModel: 'deepseek-v4-flash',
-      },
+      connection: targetConnection,
       apiKey: 'sk-test',
-      modelId: 'deepseek-v4-flash',
+      modelId,
       modelFactory: () => model,
       tools: [nativeApplyPatchTool()],
       newId: idGenerator(),
@@ -304,6 +302,23 @@ describe('AiSdkBackend ApplyPatch routing', () => {
         .find((part) => part.type === 'text' && /ApplyPatch completed/.test(part.text))?.text ?? '',
       /ApplyPatch completed 1 file operation: update_file file\.txt/,
     );
+  };
+
+  test('downgrades durable DeepSeek freeform apply_patch history to a fact', async () => {
+    await assertApplyPatchHistoryDowngraded(
+      {
+        ...connection(),
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      'deepseek-v4-flash',
+    );
+  });
+
+  test('downgrades apply_patch history when a non-Responses target does not advertise it', async () => {
+    const targetConnection = connection();
+    await assertApplyPatchHistoryDowngraded(targetConnection, targetConnection.defaultModel!);
   });
 
   test('preserves a multi-file ApplyPatch fact when structured replay cannot represent it', async () => {
