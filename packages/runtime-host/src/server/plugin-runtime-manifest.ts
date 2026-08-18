@@ -4,10 +4,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, posix, resolve } from 'node:path';
 import type { ToolCategory } from '@maka/core/permission';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
-import { isCanonicalExtensionId } from '@maka/runtime/extension-lifecycle-kernel';
+import { isCanonicalExtensionId } from '@maka/runtime/plugin-runtime';
 
 const MANIFEST_FILE = 'maka.extension.json';
-const STORE_DIRECTORY = 'tool-packages-v1';
 const MAX_FILES = 128;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_PACKAGE_BYTES = 8 * 1024 * 1024;
@@ -69,8 +68,8 @@ export interface InstalledToolPackage {
   readonly manifest: ToolPackageManifest;
 }
 
-export class ToolPackageStoreError extends Error {
-  readonly name = 'ToolPackageStoreError';
+export class PluginPackageManifestError extends Error {
+  readonly name = 'PluginPackageManifestError';
 
   constructor(
     readonly code: 'not_found' | 'invalid_package' | 'already_installed' | 'persistence_failed',
@@ -87,164 +86,6 @@ export interface PackageFile {
 }
 
 /** Root-private, content-addressed storage for prebuilt JavaScript Tool packages. */
-export class ToolPackageStore {
-  readonly root: string;
-
-  constructor(controlDirectory: string) {
-    this.root = join(controlDirectory, STORE_DIRECTORY);
-  }
-
-  async install(sourcePath: string): Promise<InstalledToolPackage> {
-    const files = await readSourcePackage(sourcePath);
-    const manifestFile = files.find(({ path }) => path === MANIFEST_FILE);
-    if (!manifestFile) throw invalidPackage(`Tool package is missing ${MANIFEST_FILE}`);
-    if (manifestFile.content.byteLength > MAX_MANIFEST_BYTES) {
-      throw invalidPackage('Tool package manifest exceeds its size limit');
-    }
-    const manifest = decodeToolPackageManifest(parseJson(manifestFile.content));
-    if (!files.some(({ path }) => path === manifest.entry)) {
-      throw invalidPackage(`Tool package entry does not exist: ${manifest.entry}`);
-    }
-    const revision = packageRevision(files);
-    const extensionRoot = join(this.root, manifest.id);
-    const target = join(extensionRoot, revision);
-    try {
-      const installed = await this.load(manifest.id, revision);
-      if (sameManifest(installed.manifest, manifest)) return installed;
-      throw new ToolPackageStoreError(
-        'already_installed',
-        `Tool package revision already exists with conflicting metadata: ${manifest.id}@${revision}`,
-      );
-    } catch (error) {
-      if (!(error instanceof ToolPackageStoreError) || error.code !== 'not_found') throw error;
-    }
-
-    const staging = join(this.root, `.staging-${randomUUID()}`);
-    let committed = false;
-    try {
-      await mkdir(this.root, { recursive: true, mode: 0o700 });
-      await mkdir(staging, { recursive: false, mode: 0o700 });
-      for (const file of files) await writeStoredFile(staging, file);
-      await syncTree(staging, files);
-      await mkdir(extensionRoot, { recursive: true, mode: 0o700 });
-      await rename(staging, target);
-      committed = true;
-      await syncDirectory(extensionRoot);
-      return Object.freeze({
-        extensionId: manifest.id,
-        revision,
-        root: target,
-        entry: join(target, ...manifest.entry.split('/')),
-        manifest,
-      });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-        return this.load(manifest.id, revision);
-      }
-      throw new ToolPackageStoreError(
-        'persistence_failed',
-        `Unable to install Tool package ${manifest.id}@${revision}`,
-        { cause: error },
-      );
-    } finally {
-      if (!committed) await rm(staging, { recursive: true, force: true }).catch(() => undefined);
-    }
-  }
-
-  async list(): Promise<readonly InstalledToolPackage[]> {
-    let extensions: Dirent[];
-    try {
-      extensions = await readdir(this.root, { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return Object.freeze([]);
-      throw persistenceFailure('Unable to list installed Tool packages', error);
-    }
-    const installed: InstalledToolPackage[] = [];
-    for (const extension of extensions.sort(compareDirent)) {
-      if (!extension.isDirectory() || !validId(extension.name)) continue;
-      const extensionRoot = join(this.root, extension.name);
-      let revisions: Dirent[];
-      try {
-        revisions = await readdir(extensionRoot, { withFileTypes: true });
-      } catch (error) {
-        throw persistenceFailure(`Unable to list Tool package ${extension.name}`, error);
-      }
-      for (const revision of revisions.sort(compareDirent)) {
-        if (!revision.isDirectory() || !REVISION_PATTERN.test(revision.name)) continue;
-        installed.push(await this.load(extension.name, revision.name));
-      }
-    }
-    return Object.freeze(installed);
-  }
-
-  async load(extensionId: string, revision: string): Promise<InstalledToolPackage> {
-    requireId(extensionId);
-    requireRevision(revision);
-    const root = join(this.root, extensionId, revision);
-    try {
-      if (!(await stat(root)).isDirectory())
-        throw invalidPackage('Installed Tool package is not a directory');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new ToolPackageStoreError(
-          'not_found',
-          `Tool package revision is not installed: ${extensionId}@${revision}`,
-        );
-      }
-      throw persistenceFailure(`Unable to read Tool package ${extensionId}@${revision}`, error);
-    }
-    const files = await readSourcePackage(root);
-    const manifestFile = files.find(({ path }) => path === MANIFEST_FILE);
-    if (!manifestFile) throw invalidPackage(`Installed Tool package is missing ${MANIFEST_FILE}`);
-    const encoded = manifestFile.content;
-    if (encoded.byteLength > MAX_MANIFEST_BYTES) {
-      throw invalidPackage(
-        `Installed Tool package manifest is too large: ${extensionId}@${revision}`,
-      );
-    }
-    const manifest = decodeToolPackageManifest(parseJson(encoded));
-    if (manifest.id !== extensionId) {
-      throw invalidPackage(
-        `Installed Tool package identity does not match its path: ${extensionId}`,
-      );
-    }
-    if (packageRevision(files) !== revision) {
-      throw invalidPackage(
-        `Installed Tool package content hash does not match: ${extensionId}@${revision}`,
-      );
-    }
-    const entry = join(root, ...manifest.entry.split('/'));
-    try {
-      const entryStat = await stat(entry);
-      if (!entryStat.isFile()) throw invalidPackage(`Tool package entry is not a file: ${entry}`);
-    } catch (error) {
-      if (error instanceof ToolPackageStoreError) throw error;
-      throw invalidPackage(`Tool package entry is unavailable: ${entry}`, error);
-    }
-    return Object.freeze({ extensionId, revision, root, entry, manifest });
-  }
-
-  async uninstall(extensionId: string, revision: string): Promise<void> {
-    requireId(extensionId);
-    requireRevision(revision);
-    await this.load(extensionId, revision);
-    const target = join(this.root, extensionId, revision);
-    try {
-      await rm(target, { recursive: true, force: false });
-      const extensionRoot = dirname(target);
-      const remaining = await readdir(extensionRoot);
-      if (remaining.length === 0) await rm(extensionRoot, { recursive: true, force: false });
-      await syncDirectory(this.root).catch(() => undefined);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-      throw persistenceFailure(
-        `Unable to uninstall Tool package ${extensionId}@${revision}`,
-        error,
-      );
-    }
-  }
-}
-
 export function decodeToolPackageManifest(value: unknown): ToolPackageManifest {
   const root = optionalExactRecord(value, [
     'schemaVersion',
@@ -357,7 +198,7 @@ export async function readSourcePackage(sourcePath: string): Promise<readonly Pa
     if (!(await stat(root)).isDirectory())
       throw invalidPackage('Tool package source is not a directory');
   } catch (error) {
-    if (error instanceof ToolPackageStoreError) throw error;
+    if (error instanceof PluginPackageManifestError) throw error;
     throw invalidPackage('Tool package source directory is unavailable', error);
   }
   const paths: string[] = [];
@@ -381,7 +222,7 @@ export async function readSourcePackage(sourcePath: string): Promise<readonly Pa
       if (total > MAX_PACKAGE_BYTES) throw invalidPackage('Tool package exceeds its size limit');
       files.push(Object.freeze({ path, content }));
     } catch (error) {
-      if (error instanceof ToolPackageStoreError) throw error;
+      if (error instanceof PluginPackageManifestError) throw error;
       throw invalidPackage(`Unable to read Tool package file: ${path}`, error);
     } finally {
       await handle?.close().catch(() => undefined);
@@ -527,7 +368,7 @@ function jsonSchema(value: unknown, label: string): Readonly<Record<string, unkn
     }
     return Object.freeze(structuredClone(value as Record<string, unknown>));
   } catch (error) {
-    if (error instanceof ToolPackageStoreError) throw error;
+    if (error instanceof PluginPackageManifestError) throw error;
     throw invalidPackage(`Tool package ${label} is not JSON-serializable`, error);
   }
 }
@@ -566,13 +407,13 @@ function sameManifest(left: ToolPackageManifest, right: ToolPackageManifest): bo
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function invalidPackage(message: string, cause?: unknown): ToolPackageStoreError {
-  return new ToolPackageStoreError('invalid_package', message, { cause });
+function invalidPackage(message: string, cause?: unknown): PluginPackageManifestError {
+  return new PluginPackageManifestError('invalid_package', message, { cause });
 }
 
-function persistenceFailure(message: string, cause?: unknown): ToolPackageStoreError {
+function persistenceFailure(message: string, cause?: unknown): PluginPackageManifestError {
   const detail = cause instanceof Error && cause.message ? `: ${cause.message}` : '';
-  return new ToolPackageStoreError('persistence_failed', `${message}${detail}`, { cause });
+  return new PluginPackageManifestError('persistence_failed', `${message}${detail}`, { cause });
 }
 
 export function compareDirent(left: Dirent, right: Dirent): number {

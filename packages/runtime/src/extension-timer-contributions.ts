@@ -1,4 +1,4 @@
-import type { ExtensionActivationContext } from './extension-lifecycle-kernel.js';
+import type { MakaContributionContext } from './plugin-runtime.js';
 
 export interface ExtensionTimerInvocationContext {
   readonly sessionId: string;
@@ -38,20 +38,20 @@ export interface ExtensionTimerContributionInspection {
 
 export interface ExtensionTimerAuthority {
   register(
-    context: ExtensionActivationContext,
+    context: MakaContributionContext,
     contribution: ExtensionTimerContribution,
   ): Promise<() => void | Promise<void>>;
 }
 
 export async function contributeExtensionTimer(
-  context: ExtensionActivationContext,
+  context: MakaContributionContext,
   authority: ExtensionTimerAuthority,
   contribution: ExtensionTimerContribution,
 ): Promise<void> {
   validateExtensionTimerContribution(contribution);
   const unregister = await authority.register(context, contribution);
   try {
-    context.runtimeContext.own(`timer:${contribution.id}`, unregister);
+    context.ownEffect(`timer:${contribution.id}`, unregister);
   } catch (error) {
     await unregister();
     throw error;

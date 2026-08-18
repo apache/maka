@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { isCanonicalExtensionId } from '@maka/runtime/extension-lifecycle-kernel';
+import { isCanonicalExtensionId } from '@maka/runtime/plugin-runtime';
 
 export const EXTENSION_PACKAGE_MANIFEST_FILE = 'maka.extension.json';
 const MAX_MANIFEST_BYTES = 256 * 1024;

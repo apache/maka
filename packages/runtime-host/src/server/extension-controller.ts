@@ -1,6 +1,9 @@
-import type { ExtensionBindingInspection } from '@maka/runtime/extension-lifecycle-kernel';
+import type {
+  MakaCompositionEntry,
+  MakaCompositionSnapshot,
+  MakaPluginMountInspection,
+} from '@maka/runtime/plugin-runtime';
 import { createHash } from 'node:crypto';
-import { dirname } from 'node:path';
 import {
   type ExtensionBindingProjection,
   type ExtensionCatalogMutateInput,
@@ -34,14 +37,14 @@ import {
 } from './extension-loader.js';
 import { HostExtensionRuntime } from './extension-runtime.js';
 import {
-  HostExtensionStateStore,
-  HostExtensionStateStoreError,
-  type PersistedExtensionBinding,
-} from './extension-state-store.js';
+  HostPluginCompositionStore,
+  HostPluginCompositionStoreError,
+  type PersistedPluginComposition,
+  type PersistedPluginEntry,
+} from './plugin-composition-store.js';
 import { HostExtensionUiStateStore } from './extension-ui-state-store.js';
 import { UiPackageService } from './ui-package-service.js';
-import type { UiPackageStore } from './ui-package-store.js';
-import { HostExtensionConfigurationStore } from './extension-configuration-store.js';
+import type { PluginPackageStore } from './plugin-package-store.js';
 import {
   compareExtensionVersions,
   extensionVersionSatisfies,
@@ -54,6 +57,16 @@ type MutationFailureCode =
   | 'operation_conflict'
   | 'persistence_failed'
   | 'commit_outcome_unknown';
+
+interface PersistedExtensionBinding {
+  readonly bindingId: string;
+  readonly scopeId: string;
+  readonly extensionId: string;
+  readonly desiredRevision: string;
+  readonly lastGoodRevision: string | null;
+  readonly enabled: boolean;
+  readonly error: string | null;
+}
 
 /** Durable control plane that converges persisted desired bindings into the Host runtime. */
 export class HostExtensionController {
@@ -77,16 +90,17 @@ export class HostExtensionController {
   #mutationTail: Promise<void> = Promise.resolve();
   #recovered = false;
   #draining = false;
-  #persistenceFailure: HostExtensionStateStoreError | undefined;
+  #persistenceFailure: HostPluginCompositionStoreError | undefined;
+  #compositionGeneration = 0;
+  #persistedComposition: PersistedPluginComposition | undefined;
 
   constructor(
     private readonly runtime: HostExtensionRuntime,
     private readonly loader: HostTrustedToolExtensionLoader,
-    private readonly store: HostExtensionStateStore,
+    private readonly store: HostPluginCompositionStore,
     private readonly requestDrain: () => void,
     private readonly uiState = new HostExtensionUiStateStore(),
-    private readonly uiPackages?: UiPackageStore,
-    private readonly configurationStore = new HostExtensionConfigurationStore(dirname(store.path)),
+    private readonly uiPackages?: PluginPackageStore,
   ) {
     this.loader.setConfigurationResolver?.(
       (bindingId) => this.#configuration.get(bindingId) ?? Object.freeze({}),
@@ -103,13 +117,31 @@ export class HostExtensionController {
   async recover(): Promise<void> {
     if (this.#recovered) return;
     try {
-      const composite = await this.store.readComposite();
-      if (composite) {
-        for (const [bindingId, configuration] of composite.configuration) this.#configuration.set(bindingId, configuration);
-        for (const binding of composite.bindings) this.#bindings.set(binding.bindingId, binding);
-      } else {
-        for (const [bindingId, configuration] of await this.configurationStore.read()) this.#configuration.set(bindingId, configuration);
-        for (const binding of await this.store.read()) this.#bindings.set(binding.bindingId, binding);
+      const composition = await this.store.read();
+      if (composition) {
+        this.#persistedComposition = composition;
+        this.#compositionGeneration = composition.generation;
+        for (const [scopeId, entry] of persistedEntries(composition)) {
+          if (!entry.packageId || !entry.revision) continue;
+          this.#bindings.set(
+            entry.id,
+            bindingState({
+              bindingId: entry.id,
+              scopeId,
+              extensionId: entry.packageId,
+              desiredRevision: entry.revision,
+              lastGoodRevision: entry.currentRevision ?? null,
+              enabled: !entry.disabled,
+              error: entry.error ?? null,
+            }),
+          );
+          this.#configuration.set(entry.id, entry.config);
+        }
+        for (const [, entry] of persistedEntries(composition)) {
+          if (!entry.packageId || !entry.revision || entry.disabled) continue;
+          await this.#ensureInstalled(entry.packageId, entry.currentRevision ?? entry.revision);
+        }
+        await this.runtime.replaceCompositionSnapshot(runtimeSnapshot(composition));
       }
       await this.#recoverEnabledBindings();
       await this.#refreshRuntimeState();
@@ -318,7 +350,7 @@ export class HostExtensionController {
     const denied = this.#authorizeUiRpc(input);
     if (denied) return uiRpcFailure(denied.code, denied.message);
     try {
-      const installed = await this.uiPackages.load(input.extensionId, input.revision);
+      const installed = await this.uiPackages.loadUi(input.extensionId, input.revision);
       const result: ExtensionUiRpcInvokeResult = {
         value: (await new UiPackageService().invoke(
           installed,
@@ -773,6 +805,7 @@ export class HostExtensionController {
     }
     if (inspection.desiredRevision !== binding.desiredRevision) {
       await this.runtime.update(bindingId, binding.desiredRevision);
+      if (!this.runtime.inspect(bindingId).enabled) await this.runtime.start(bindingId);
       return;
     }
     if (!inspection.enabled) await this.runtime.start(bindingId);
@@ -827,7 +860,7 @@ export class HostExtensionController {
     }
   }
 
-  #tryInspect(bindingId: string): ExtensionBindingInspection | undefined {
+  #tryInspect(bindingId: string): MakaPluginMountInspection | undefined {
     try {
       return this.runtime.inspect(bindingId);
     } catch {
@@ -1013,12 +1046,56 @@ export class HostExtensionController {
     } catch (error) {
       const failure = asPersistenceFailure(error);
       if (failure.code === 'commit_outcome_unknown') this.requestDrain();
-      return mutationFailure(failure.code, failure.message);
+      return mutationFailure(
+        failure.code === 'invalid_state' ? 'persistence_failed' : failure.code,
+        failure.message,
+      );
     }
   }
 
   async #persist(): Promise<void> {
-    await this.store.replaceComposite([...this.#bindings.values()].sort(compareBinding), this.#configuration);
+    const profile: PersistedPluginEntry[] = [];
+    const desktopUi: PersistedPluginEntry[] = [];
+    const sessions: Record<string, PersistedPluginEntry[]> = {};
+    for (const binding of [...this.#bindings.values()].sort(compareBinding)) {
+      const entry: PersistedPluginEntry = Object.freeze({
+        id: binding.bindingId,
+        packageId: binding.extensionId,
+        revision: binding.desiredRevision,
+        currentRevision: binding.lastGoodRevision,
+        disabled: !binding.enabled,
+        config: this.#configuration.get(binding.bindingId) ?? Object.freeze({}),
+        error: binding.error,
+      });
+      if (binding.scopeId === 'profile') profile.push(entry);
+      else if (binding.scopeId === 'desktop-ui') desktopUi.push(entry);
+      else (sessions[binding.scopeId] ??= []).push(entry);
+    }
+    const previous = this.#persistedComposition;
+    const sessionIds = new Set([
+      ...Object.keys(previous?.roots.sessions ?? {}),
+      ...Object.keys(sessions),
+    ]);
+    const snapshot: PersistedPluginComposition = {
+      schemaVersion: 1,
+      generation: ++this.#compositionGeneration,
+      roots: Object.freeze({
+        profile: reconcileEntries(previous?.roots.profile, profile),
+        desktopUi: reconcileEntries(previous?.roots.desktopUi, desktopUi),
+        sessions: Object.freeze(
+          Object.fromEntries(
+            [...sessionIds]
+              .sort(compareString)
+              .map((scopeId) => [
+                scopeId,
+                reconcileEntries(previous?.roots.sessions[scopeId], sessions[scopeId] ?? []),
+              ]),
+          ),
+        ),
+      }),
+    };
+    await this.store.replace(snapshot);
+    this.#persistedComposition = snapshot;
   }
 
   #bindingProjections(): readonly ExtensionBindingProjection[] {
@@ -1055,7 +1132,7 @@ export class HostExtensionController {
 
 function projectStatus(
   binding: PersistedExtensionBinding,
-  inspection: ExtensionBindingInspection | undefined,
+  inspection: MakaPluginMountInspection | undefined,
 ): ExtensionBindingProjection['status'] {
   if (!binding.enabled) return 'disabled';
   if (binding.error || inspection?.status === 'failed') return 'failed';
@@ -1086,10 +1163,10 @@ function boundedErrorMessage(error: unknown): string {
         .replace(/\uFFFD$/u, '') + '...';
 }
 
-function asPersistenceFailure(error: unknown): HostExtensionStateStoreError {
-  return error instanceof HostExtensionStateStoreError
+function asPersistenceFailure(error: unknown): HostPluginCompositionStoreError {
+  return error instanceof HostPluginCompositionStoreError
     ? error
-    : new HostExtensionStateStoreError('persistence_failed', 'Extension state is unavailable', {
+    : new HostPluginCompositionStoreError('persistence_failed', 'Extension state is unavailable', {
         cause: error,
       });
 }
@@ -1188,6 +1265,92 @@ function compareBinding(
   right: Pick<PersistedExtensionBinding, 'bindingId'>,
 ): number {
   return compareString(left.bindingId, right.bindingId);
+}
+
+function persistedEntries(
+  composition: PersistedPluginComposition,
+): readonly (readonly [scopeId: string, entry: PersistedPluginEntry])[] {
+  return [
+    ...flattenPersistedEntries('profile', composition.roots.profile),
+    ...flattenPersistedEntries('desktop-ui', composition.roots.desktopUi),
+    ...Object.entries(composition.roots.sessions).flatMap(([scopeId, entries]) =>
+      flattenPersistedEntries(scopeId, entries),
+    ),
+  ];
+}
+
+function flattenPersistedEntries(
+  scopeId: string,
+  entries: readonly PersistedPluginEntry[],
+): readonly (readonly [scopeId: string, entry: PersistedPluginEntry])[] {
+  return entries.flatMap((entry) => [
+    [scopeId, entry] as const,
+    ...flattenPersistedEntries(scopeId, entry.children ?? []),
+  ]);
+}
+
+function reconcileEntries(
+  previous: readonly PersistedPluginEntry[] | undefined,
+  current: readonly PersistedPluginEntry[],
+): readonly PersistedPluginEntry[] {
+  const remaining = new Map(current.map((entry) => [entry.id, entry]));
+  const preserve = (entry: PersistedPluginEntry): PersistedPluginEntry | undefined => {
+    if (entry.packageId) {
+      const replacement = remaining.get(entry.id);
+      if (!replacement) return undefined;
+      remaining.delete(entry.id);
+      return replacement;
+    }
+    const children = (entry.children ?? []).flatMap((child) => {
+      const next = preserve(child);
+      return next ? [next] : [];
+    });
+    return Object.freeze({ ...entry, children: Object.freeze(children) });
+  };
+  const retained = (previous ?? []).flatMap((entry) => {
+    if (entry.packageId) {
+      const replacement = remaining.get(entry.id);
+      if (!replacement) return [];
+      remaining.delete(entry.id);
+      return [replacement];
+    }
+    return [preserve(entry)!];
+  });
+  return Object.freeze([...retained, ...remaining.values()]);
+}
+
+function runtimeSnapshot(composition: PersistedPluginComposition): MakaCompositionSnapshot {
+  const convert = (entry: PersistedPluginEntry): MakaCompositionEntry =>
+    Object.freeze({
+      id: entry.id,
+      ...(entry.packageId && entry.revision
+        ? { packageId: entry.packageId, revision: entry.currentRevision ?? entry.revision }
+        : {}),
+      config: entry.config,
+      disabled: entry.disabled,
+      ...(entry.inject === undefined ? {} : { inject: entry.inject }),
+      ...(entry.isolate === undefined ? {} : { isolate: entry.isolate }),
+      ...(entry.intercept === undefined ? {} : { intercept: entry.intercept }),
+      ...(entry.children === undefined
+        ? {}
+        : { children: Object.freeze(entry.children.map(convert)) }),
+    });
+  return Object.freeze({
+    schemaVersion: 1,
+    generation: composition.generation,
+    roots: Object.freeze({
+      profile: Object.freeze(composition.roots.profile.map(convert)),
+      desktopUi: Object.freeze(composition.roots.desktopUi.map(convert)),
+      sessions: Object.freeze(
+        Object.fromEntries(
+          Object.entries(composition.roots.sessions).map(([scopeId, entries]) => [
+            scopeId,
+            Object.freeze(entries.map(convert)),
+          ]),
+        ),
+      ),
+    }),
+  });
 }
 
 function compareString(left: string, right: string): number {

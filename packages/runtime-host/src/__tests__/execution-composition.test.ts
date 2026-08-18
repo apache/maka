@@ -418,7 +418,7 @@ test('production Session create and archive dispatch profile Extension lifecycle
         revision: '1',
         toolNames: [],
         eventContributionIds: ['session-created', 'session-disposed'],
-        prepare: async () => ({
+        load: async () => ({
           tools: [],
           listeners: [
             {

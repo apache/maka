@@ -1,33 +1,29 @@
+import { Context, type Plugin } from '@deepseek-ai/cordis';
+import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
 import {
-  ExtensionLifecycleKernel,
-  type ExtensionBindingInput,
-  type ExtensionBindingInspection,
-  type ExtensionActivationContext,
-  type ExtensionCompositionSnapshot,
-  type ExtensionPreparationContext,
-  type ExtensionRevisionDefinition,
-  type ExtensionDependencyDefinition,
-} from '@maka/runtime/extension-lifecycle-kernel';
+  type MakaContributionContext,
+  type MakaCompositionSnapshot,
+  type MakaCompositionEntryInspection,
+  type MakaPluginMountInspection,
+  type MakaPluginPackage,
+  type MakaPluginRootId,
+  type MakaRuntimeCompositionSnapshot,
+  ownPluginEffect,
+  pluginIdentity,
+} from '@maka/runtime/plugin-runtime';
+import { PluginToolService } from '@maka/runtime/plugin-tool-service';
+import { PluginUiService } from '@maka/runtime/plugin-ui-service';
+import { PluginHookService } from '@maka/runtime/plugin-hook-service';
 import {
-  contributeExtensionTool,
-  ExtensionToolContributionRegistry,
-  defineTrustedToolExtensionRevision,
   type ExtensionToolContributionInspection,
   type ExtensionToolContributionRegistryOptions,
-  type TrustedToolExtensionRevisionInput,
 } from '@maka/runtime/extension-tool-contributions';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
-  contributeExtensionUi,
-  defineTrustedUiExtensionRevision,
-  ExtensionUiContributionRegistry,
   type ExtensionUiContribution,
   type ExtensionUiContributionInspection,
 } from '@maka/runtime/extension-ui-contributions';
 import {
-  contributeExtensionEvent,
-  contributeExtensionEventListener,
-  ExtensionEventContributionRegistry,
   type ExtensionEventDefinition,
   type ExtensionEventDefinitionInspection,
   type ExtensionEventInvocationContext,
@@ -55,26 +51,26 @@ import {
   type ExtensionTimerContribution,
   type ExtensionTimerContributionInspection,
 } from '@maka/runtime/extension-timer-contributions';
-import type { ExtensionRuntimeContextDescriptor } from '@maka/runtime/extension-runtime-context';
-import { ExtensionRuntimeContext } from '@maka/runtime/extension-runtime-context';
+export interface HostTrustedToolExtensionRevisionInput {
+  readonly extensionId: string;
+  readonly revision: string;
+  readonly dependencies?: readonly { readonly extensionId: string }[];
+  readonly tools: readonly MakaTool[];
+  readonly healthCheck?: () => void | Promise<void>;
+}
 
-export type HostTrustedToolExtensionRevisionInput = Omit<
-  TrustedToolExtensionRevisionInput,
-  'registry'
->;
-
-export interface HostPreparedToolExtensionRevisionInput {
+export interface HostPreparedPluginPackageInput {
   readonly extensionId: string;
   readonly revision: string;
   readonly toolNames: readonly string[];
-  readonly dependencies?: readonly ExtensionDependencyDefinition[];
+  readonly dependencies?: readonly { readonly extensionId: string }[];
   /** Optional client contribution carried by the exact same immutable package Revision. */
   readonly ui?: readonly ExtensionUiContribution[];
   /** Plugin-defined Event and Listener identities carried by the same immutable Revision. */
   readonly eventContributionIds?: readonly string[];
   readonly serviceContributionIds?: readonly string[];
   readonly timerContributionIds?: readonly string[];
-  readonly prepare: (context: ExtensionPreparationContext) => Promise<{
+  readonly load: (context: MakaContributionContext) => Promise<{
     readonly tools: readonly MakaTool[];
     readonly events?: readonly ExtensionEventDefinition[];
     readonly listeners?: readonly ExtensionEventListenerContribution[];
@@ -87,12 +83,12 @@ export interface HostPreparedToolExtensionRevisionInput {
 
 export type HostToolExtensionRevisionInput =
   | HostTrustedToolExtensionRevisionInput
-  | HostPreparedToolExtensionRevisionInput;
+  | HostPreparedPluginPackageInput;
 
 export interface HostUiExtensionRevisionInput {
   readonly extensionId: string;
   readonly revision: string;
-  readonly dependencies?: readonly ExtensionDependencyDefinition[];
+  readonly dependencies?: readonly { readonly extensionId: string }[];
   readonly ui: readonly ExtensionUiContribution[];
   readonly healthCheck?: () => void | Promise<void>;
 }
@@ -131,8 +127,8 @@ export interface HostExtensionEventDispatchResult {
 }
 
 export interface HostExtensionRuntimeInspection {
-  readonly runtime: ExtensionRuntimeContextDescriptor;
-  readonly scopes: readonly ExtensionBindingInspection[];
+  readonly runtime: readonly import('@maka/runtime/plugin-runtime').MakaCompositionEntryInspection[];
+  readonly scopes: readonly MakaPluginMountInspection[];
   readonly tools: readonly ExtensionToolContributionInspection[];
   readonly ui: readonly ExtensionUiContributionInspection[];
   readonly uiReadiness: readonly import('@maka/runtime/extension-ui-contributions').ExtensionUiReadinessInspection[];
@@ -150,11 +146,10 @@ export interface HostExtensionRuntimeInspection {
  * boundary while later API/CLI/UI work decides how trusted definitions arrive.
  */
 export class HostExtensionRuntime implements HostExtensionToolResolver {
-  readonly #runtimeRoot = ExtensionRuntimeContext.root('runtime-host-extensions');
-  readonly #lifecycle: ExtensionLifecycleKernel;
-  readonly #tools: ExtensionToolContributionRegistry;
-  readonly #ui = new ExtensionUiContributionRegistry();
-  readonly #events = new ExtensionEventContributionRegistry();
+  readonly #composition: MakaCompositionLoader;
+  readonly #tools: PluginToolService;
+  readonly #ui: PluginUiService;
+  readonly #hooks: PluginHookService;
   readonly #services = new ExtensionServiceContributionRegistry();
   readonly #scopeIds = new Set<string>();
   #hostTools: readonly MakaTool[] = Object.freeze([]);
@@ -170,25 +165,23 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
       close?(): Promise<void> | void;
     },
   ) {
-    this.#lifecycle = new ExtensionLifecycleKernel(this.#runtimeRoot, (scopeId) =>
-      scopeId === PROFILE_EXTENSION_SCOPE || scopeId === 'desktop-ui'
-        ? undefined
-        : PROFILE_EXTENSION_SCOPE,
-    );
-    this.#tools = new ExtensionToolContributionRegistry(options);
-  }
-
-  install(definition: ExtensionRevisionDefinition): Promise<void> {
-    this.#assertMutable();
-    return this.#lifecycle.install(definition);
+    const root = new Context();
+    this.#tools = new PluginToolService(root, options);
+    this.#ui = new PluginUiService(root);
+    this.#hooks = new PluginHookService(root);
+    this.#composition = new MakaCompositionLoader({ root });
   }
 
   installTrustedToolRevision(input: HostTrustedToolExtensionRevisionInput): Promise<void> {
     this.#assertMutable();
-    return this.#lifecycle.install(
-      defineTrustedToolExtensionRevision({
-        ...input,
-        registry: this.#tools,
+    const tools = Object.freeze(input.tools.map((tool) => Object.freeze({ ...tool })));
+    return this.#composition.install(
+      this.#package(input, (ctx) => {
+        const setup = async () => {
+          await input.healthCheck?.();
+          for (const tool of tools) ctx.tools.register(tool);
+        };
+        return setup();
       }),
     );
   }
@@ -196,127 +189,131 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
   installToolRevision(input: HostToolExtensionRevisionInput): Promise<void> {
     if ('tools' in input) return this.installTrustedToolRevision(input);
     this.#assertMutable();
-    const definition: ExtensionRevisionDefinition = Object.freeze({
-      extensionId: input.extensionId,
-      revision: input.revision,
-      ...(input.dependencies ? { dependencies: input.dependencies } : {}),
-      contributions: Object.freeze([
-        ...input.toolNames.map((_, index) =>
-          Object.freeze({ id: `${input.extensionId}.tool-${index + 1}`, kind: 'tool' }),
-        ),
-        ...(input.ui ?? []).map(({ id }) => Object.freeze({ id, kind: 'ui' })),
-        ...(input.eventContributionIds ?? []).map((_, index) =>
-          Object.freeze({ id: `${input.extensionId}.event-${index + 1}`, kind: 'event' }),
-        ),
-        ...(input.serviceContributionIds ?? []).map((_, index) =>
-          Object.freeze({ id: `${input.extensionId}.service-${index + 1}`, kind: 'service' }),
-        ),
-        ...(input.timerContributionIds ?? []).map((_, index) =>
-          Object.freeze({ id: `${input.extensionId}.timer-${index + 1}`, kind: 'timer' }),
-        ),
-      ]),
-      prepare: async (context: ExtensionPreparationContext) => {
-        const prepared = await input.prepare(context);
-        return {
-          ...(prepared.healthCheck ? { healthCheck: prepared.healthCheck } : {}),
-          activate: async (activation: ExtensionActivationContext) => {
-            for (const tool of prepared.tools)
-              contributeExtensionTool(activation, this.#tools, tool);
-            for (const contribution of input.ui ?? [])
-              contributeExtensionUi(activation, this.#ui, contribution);
-            for (const definition of prepared.events ?? [])
-              contributeExtensionEvent(activation, this.#events, definition);
-            for (const listener of prepared.listeners ?? [])
-              contributeExtensionEventListener(activation, this.#events, listener);
-            for (const service of prepared.services ?? [])
-              contributeExtensionService(activation, this.#services, service);
-            if ((prepared.timers?.length ?? 0) > 0 && !this.timerAuthority)
-              throw new Error('Extension Timer authority is unavailable');
-            for (const timer of prepared.timers ?? [])
-              await contributeExtensionTimer(activation, this.timerAuthority!, timer);
-          },
-          ...(prepared.dispose ? { dispose: prepared.dispose } : {}),
-        };
-      },
-    });
-    return this.#lifecycle.install(definition);
+    return this.#composition.install(
+      this.#package(input, async (ctx) => {
+        const activation = this.#activationContext(ctx);
+        const loaded = await input.load(activation);
+        await loaded.healthCheck?.();
+        for (const tool of loaded.tools) ctx.tools.register(tool);
+        for (const contribution of input.ui ?? []) ctx.ui.register(contribution);
+        for (const definition of loaded.events ?? []) ctx.hooks.define(definition);
+        for (const listener of loaded.listeners ?? []) ctx.hooks.on(listener);
+        for (const service of loaded.services ?? [])
+          contributeExtensionService(activation, this.#services, service);
+        if ((loaded.timers?.length ?? 0) > 0 && !this.timerAuthority)
+          throw new Error('Extension Timer authority is unavailable');
+        for (const timer of loaded.timers ?? [])
+          await contributeExtensionTimer(activation, this.timerAuthority!, timer);
+        if (loaded.dispose) ownPluginEffect(ctx, 'package.dispose', loaded.dispose);
+      }),
+    );
   }
 
   installUiRevision(input: HostUiExtensionRevisionInput): Promise<void> {
     this.#assertMutable();
-    return this.#lifecycle.install(
-      defineTrustedUiExtensionRevision({ ...input, registry: this.#ui }),
+    return this.#composition.install(
+      this.#package(input, async (ctx) => {
+        await input.healthCheck?.();
+        for (const contribution of input.ui) ctx.ui.register(contribution);
+      }),
     );
   }
 
   installRevision(input: HostExtensionRevisionInput): Promise<void> {
-    return 'prepare' in input || 'tools' in input
+    return 'load' in input || 'tools' in input
       ? this.installToolRevision(input)
       : this.installUiRevision(input);
   }
 
-  activate(input: ExtensionBindingInput): Promise<ExtensionBindingInspection> {
+  async activate(input: {
+    readonly bindingId: string;
+    readonly scopeId: string;
+    readonly extensionId: string;
+    readonly revision: string;
+  }): Promise<MakaPluginMountInspection> {
     this.#assertMutable();
-    // Activation may leave a failed Binding behind for diagnosis/retry. Track
-    // the scope before entering the kernel so Host close still owns cleanup.
     this.#scopeIds.add(input.scopeId);
-    return this.#lifecycle.activate(input);
+    await this.#composition.create(this.#rootId(input.scopeId), {
+      id: input.bindingId,
+      packageId: input.extensionId,
+      revision: input.revision,
+    });
+    return this.inspect(input.bindingId);
   }
 
-  update(bindingId: string, revision: string): Promise<ExtensionBindingInspection> {
+  async update(bindingId: string, revision: string): Promise<MakaPluginMountInspection> {
     this.#assertMutable();
-    return this.#lifecycle.update(bindingId, revision);
+    await this.#composition.replaceRevision(bindingId, revision);
+    return this.inspect(bindingId);
   }
 
-  start(bindingId: string): Promise<ExtensionBindingInspection> {
+  async start(bindingId: string): Promise<MakaPluginMountInspection> {
     this.#assertMutable();
-    return this.#lifecycle.start(bindingId);
+    await this.#composition.enable(bindingId);
+    return this.inspect(bindingId);
   }
 
-  stop(bindingId: string): Promise<ExtensionBindingInspection> {
+  async stop(bindingId: string): Promise<MakaPluginMountInspection> {
     this.#assertMutable();
-    return this.#lifecycle.stop(bindingId);
+    await this.#composition.disable(bindingId);
+    return this.inspect(bindingId);
   }
 
   async removeBinding(bindingId: string): Promise<void> {
     this.#assertMutable();
-    const scopeId = this.#lifecycle.inspect(bindingId).scopeId;
-    await this.#lifecycle.removeBinding(bindingId);
-    if (this.#lifecycle.inspectScope(scopeId).length === 0) this.#scopeIds.delete(scopeId);
+    const scopeId = this.inspect(bindingId).rootId;
+    await this.#composition.remove(bindingId);
+    if (this.inspectScope(scopeId).length === 0) this.#scopeIds.delete(scopeId);
   }
 
   async disposeScope(scopeId: string): Promise<void> {
     this.#assertMutable();
-    await this.#lifecycle.disposeScope(scopeId);
+    for (const entry of [...this.#composition.inspectTree(this.#rootId(scopeId))].reverse())
+      await this.#composition.remove(entry.id);
     this.#scopeIds.delete(scopeId);
+  }
+
+  async replaceCompositionSnapshot(snapshot: MakaCompositionSnapshot): Promise<void> {
+    this.#assertMutable();
+    await this.#composition.replaceSnapshot(snapshot);
+    this.#scopeIds.clear();
+    if (snapshot.roots.profile.length > 0) this.#scopeIds.add(PROFILE_EXTENSION_SCOPE);
+    if (snapshot.roots.desktopUi.length > 0) this.#scopeIds.add('desktop-ui');
+    for (const [scopeId, entries] of Object.entries(snapshot.roots.sessions)) {
+      if (entries.length > 0) this.#scopeIds.add(scopeId);
+    }
   }
 
   uninstall(extensionId: string, revision: string): Promise<void> {
     this.#assertMutable();
-    return this.#lifecycle.uninstall(extensionId, revision);
+    return this.#composition.uninstall(extensionId, revision);
   }
 
-  inspect(bindingId: string): ExtensionBindingInspection {
-    return this.#lifecycle.inspect(bindingId);
+  inspect(bindingId: string): MakaPluginMountInspection {
+    const entry = this.#composition.inspect(bindingId);
+    return this.#mountInspection(entry);
   }
 
-  inspectScope(scopeId: string): readonly ExtensionBindingInspection[] {
-    return this.#lifecycle.inspectScope(scopeId);
+  inspectScope(scopeId: string): readonly MakaPluginMountInspection[] {
+    const rootId = this.#rootId(scopeId);
+    return Object.freeze(
+      this.#composition
+        .inspectTree(rootId)
+        .flatMap(flattenInspection)
+        .filter((entry) => entry.packageId)
+        .map((entry) => this.#mountInspection(entry)),
+    );
   }
 
   inspectTools(scopeId: string): readonly ExtensionToolContributionInspection[] {
-    return this.#tools.inspect(scopeId);
+    return this.#tools.inspect(this.#rootId(scopeId));
   }
 
   inspectUi(scopeId: string): readonly ExtensionUiContributionInspection[] {
-    const committed = this.#lifecycle
-      .inspectScope(scopeId)
-      .flatMap((binding) =>
-        binding.current
-          ? [{ bindingId: binding.bindingId, revision: binding.current.revision }]
-          : [],
-      );
-    return this.#ui.inspect(scopeId, committed);
+    const committed = this.inspectScope(scopeId).flatMap((binding) =>
+      binding.current ? [{ bindingId: binding.entryId, revision: binding.current.revision }] : [],
+    );
+    return this.#ui.inspect(this.#rootId(scopeId), committed);
   }
 
   reportUiReadiness(
@@ -326,21 +323,21 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     status: import('@maka/runtime/extension-ui-contributions').ExtensionUiReadiness,
     diagnostic?: string,
   ): void {
-    this.#ui.setReadiness(scopeId, bindingId, revision, status, diagnostic);
+    this.#ui.registry.setReadiness(this.#rootId(scopeId), bindingId, revision, status, diagnostic);
   }
 
   inspectUiReadiness(scopeId?: string) {
-    return this.#ui.inspectReadiness(scopeId);
+    return this.#ui.inspectReadiness(scopeId ? this.#rootId(scopeId) : undefined);
   }
 
   inspectEvents(scopeId: string): readonly ExtensionEventDefinitionInspection[] {
     const { scopeIds, committed } = this.#resolvedScopeState(scopeId);
-    return this.#events.inspectEvents(scopeIds, committed);
+    return this.#hooks.inspectEvents(scopeIds, committed);
   }
 
   inspectEventListeners(scopeId: string): readonly ExtensionEventListenerInspection[] {
     const { scopeIds, committed } = this.#resolvedScopeState(scopeId);
-    return this.#events.inspectListeners(scopeIds, committed);
+    return this.#hooks.inspectListeners(scopeIds, committed);
   }
 
   inspectServices(scopeId: string): readonly ExtensionServiceContributionInspection[] {
@@ -349,7 +346,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
   }
 
   inspectTimers(scopeId: string): readonly ExtensionTimerContributionInspection[] {
-    return this.timerAuthority?.inspect?.(scopeId) ?? Object.freeze([]);
+    return this.timerAuthority?.inspect?.(this.#rootId(scopeId)) ?? Object.freeze([]);
   }
 
   async callService(
@@ -379,9 +376,9 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
       throw context.signal.reason ?? new Error('Event emission was aborted');
     if ((context.eventDepth ?? 0) > 8) throw new Error('Extension Event recursion limit exceeded');
     const { scopeIds, committed } = this.#resolvedScopeState(scopeId);
-    const parsed = this.#events.parsePayload(scopeIds, committed, event, payload);
-    const definition = this.#events.resolveDefinition(scopeIds, committed, event);
-    const listeners = this.#events
+    const parsed = this.#hooks.registry.parsePayload(scopeIds, committed, event, payload);
+    const definition = this.#hooks.registry.resolveDefinition(scopeIds, committed, event);
+    const listeners = this.#hooks.registry
       .inspectListeners(scopeIds, committed)
       .filter((listener) => listener.event === event);
     const dispatched = await dispatchExtensionHandlers({
@@ -404,7 +401,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     const result =
       definition.mode === 'emit'
         ? undefined
-        : this.#events.parseResult(scopeIds, committed, event, dispatched.value);
+        : this.#hooks.registry.parseResult(scopeIds, committed, event, dispatched.value);
     return Object.freeze({
       event,
       ...(definition.mode === 'emit' ? {} : { mode: definition.mode }),
@@ -429,7 +426,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
       throw context.signal.reason ?? new Error('Core Extension Event was aborted');
     const mode = EXTENSION_CORE_EVENTS[event];
     const { scopeIds, committed } = this.#resolvedScopeState(scopeId);
-    const listeners = this.#events
+    const listeners = this.#hooks.registry
       .inspectListeners(scopeIds, committed)
       .filter((listener) => listener.event === event);
     if (listeners.length === 0) {
@@ -483,7 +480,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     if (context.signal.aborted)
       throw context.signal.reason ?? new Error('Core Extension Middleware was aborted');
     const { scopeIds, committed } = this.#resolvedScopeState(scopeId);
-    const listeners = this.#events
+    const listeners = this.#hooks.registry
       .inspectListeners(scopeIds, committed)
       .filter((listener) => listener.event === event);
     const dispatched = await dispatchExtensionHandlers({
@@ -503,33 +500,35 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     readonly extensionId: string;
     readonly revision: string;
   }[] {
-    return this.#lifecycle.installedRevisions();
+    return this.#composition
+      .installedPackages()
+      .map(({ packageId: extensionId, revision }) => Object.freeze({ extensionId, revision }));
   }
 
-  composition(scopeId: string): ExtensionCompositionSnapshot {
-    const scoped = this.#lifecycle.composition(scopeId);
+  composition(scopeId: string): MakaRuntimeCompositionSnapshot {
+    const scoped = this.#runtimeComposition(scopeId);
     if (scopeId === PROFILE_EXTENSION_SCOPE) return scoped;
-    const profile = this.#lifecycle.composition(PROFILE_EXTENSION_SCOPE);
+    const profile = this.#runtimeComposition(PROFILE_EXTENSION_SCOPE);
     if (profile.entries.length === 0) return scoped;
     const entries = Object.freeze([...profile.entries, ...scoped.entries]);
     const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
     return Object.freeze({
       schemaVersion: 1,
-      scopeId,
+      rootId: scopeId,
       digest: `sha256:${digest}`,
       entries,
     });
   }
 
-  inspectRuntime(): ExtensionRuntimeContextDescriptor {
-    return this.#lifecycle.inspectRuntime();
+  inspectRuntime() {
+    return this.#composition.inspectTree();
   }
 
   inspectAll(): HostExtensionRuntimeInspection {
     const scopes = this.#scopeIds.size === 0 ? [PROFILE_EXTENSION_SCOPE] : [...this.#scopeIds];
     return Object.freeze({
       runtime: this.inspectRuntime(),
-      scopes: Object.freeze(scopes.flatMap((scopeId) => this.#lifecycle.inspectScope(scopeId))),
+      scopes: Object.freeze(scopes.flatMap((scopeId) => this.inspectScope(scopeId))),
       tools: Object.freeze(scopes.flatMap((scopeId) => this.inspectTools(scopeId))),
       ui: Object.freeze(scopes.flatMap((scopeId) => this.inspectUi(scopeId))),
       uiReadiness: this.inspectUiReadiness(),
@@ -553,7 +552,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     ]);
     return scopeId === PROFILE_EXTENSION_SCOPE
       ? profileTools
-      : this.#tools.compose(scopeId, profileTools);
+      : this.#tools.compose(this.#rootId(scopeId), profileTools);
   }
 
   registerHostTools(tools: readonly MakaTool[]): void {
@@ -568,17 +567,113 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     committed: readonly { readonly bindingId: string; readonly revision: string }[];
   } {
     const scopeIds =
-      scopeId === PROFILE_EXTENSION_SCOPE ? [scopeId] : [PROFILE_EXTENSION_SCOPE, scopeId];
+      scopeId === PROFILE_EXTENSION_SCOPE
+        ? [this.#rootId(scopeId)]
+        : [this.#rootId(PROFILE_EXTENSION_SCOPE), this.#rootId(scopeId)];
     const committed = scopeIds.flatMap((resolvedScopeId) =>
-      this.#lifecycle
-        .inspectScope(resolvedScopeId)
-        .flatMap((binding) =>
-          binding.current
-            ? [{ bindingId: binding.bindingId, revision: binding.current.revision }]
-            : [],
-        ),
+      this.inspectScope(resolvedScopeId).flatMap((binding) =>
+        binding.current ? [{ bindingId: binding.entryId, revision: binding.current.revision }] : [],
+      ),
     );
     return { scopeIds, committed };
+  }
+
+  #package(
+    input: {
+      readonly extensionId: string;
+      readonly revision: string;
+      readonly dependencies?: readonly { readonly extensionId: string }[];
+    },
+    apply: (ctx: Context) => void | Promise<void>,
+  ): MakaPluginPackage {
+    const inject = Object.freeze(['tools', 'ui', 'hooks']);
+    const host: Plugin = Object.freeze({
+      name: input.extensionId,
+      inject,
+      apply: async (ctx: Context) => {
+        await apply(ctx);
+      },
+    });
+    return Object.freeze({
+      packageId: input.extensionId,
+      revision: input.revision,
+      host,
+    });
+  }
+
+  #activationContext(ctx: Context): MakaContributionContext {
+    const identity = pluginIdentity(ctx);
+    return Object.freeze({
+      ...identity,
+      signal: new AbortController().signal,
+      runtimeContext: ctx,
+      ownEffect: (label: string, dispose: () => void | Promise<void>) =>
+        ownPluginEffect(ctx, label, dispose),
+      dependency: <T>(packageId: string) =>
+        this.inspectScope(this.#scopeId(identity.scopeId)).some(
+          ({ packageId: activePackage, current }) => activePackage === packageId && current,
+        ) as T,
+      dependencyRevision: (packageId: string) =>
+        this.inspectScope(this.#scopeId(identity.scopeId)).find(
+          ({ packageId: activePackage }) => activePackage === packageId,
+        )?.current?.revision ?? '',
+    });
+  }
+
+  #rootId(scopeId: string): MakaPluginRootId {
+    if (scopeId === PROFILE_EXTENSION_SCOPE || scopeId === 'desktop-ui') return scopeId;
+    return scopeId.startsWith('session:') ? (scopeId as MakaPluginRootId) : `session:${scopeId}`;
+  }
+
+  #scopeId(rootId: string): string {
+    return rootId.startsWith('session:') ? rootId.slice('session:'.length) : rootId;
+  }
+
+  #mountInspection(entry: MakaCompositionEntryInspection): MakaPluginMountInspection {
+    const active = entry.status === 'active';
+    return Object.freeze({
+      entryId: entry.id,
+      rootId: this.#scopeId(entry.rootId),
+      packageId: entry.packageId!,
+      desiredRevision: entry.revision!,
+      enabled: entry.status !== 'disabled' && entry.status !== 'disposed',
+      status: entry.status,
+      ...(active && entry.generation !== undefined
+        ? { current: Object.freeze({ revision: entry.revision!, generation: entry.generation }) }
+        : {}),
+      waitingFor: entry.waitingFor,
+      pendingCleanupEffects: 0,
+      ...(entry.diagnostic ? { diagnostic: Object.freeze({ message: entry.diagnostic }) } : {}),
+    });
+  }
+
+  #runtimeComposition(scopeId: string): MakaRuntimeCompositionSnapshot {
+    const entries = this.inspectScope(scopeId)
+      .flatMap((entry) => {
+        if (!entry.current) return [];
+        const pkg = this.#composition.package(entry.packageId, entry.current.revision);
+        return [
+          Object.freeze({
+            entryId: entry.entryId,
+            packageId: entry.packageId,
+            revision: entry.current.revision,
+            generation: entry.current.generation,
+            contributions: Object.freeze([...(pkg.contributions ?? [])]),
+          }),
+        ];
+      })
+      .sort(
+        (left, right) =>
+          left.packageId.localeCompare(right.packageId) ||
+          left.entryId.localeCompare(right.entryId),
+      );
+    const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
+    return Object.freeze({
+      schemaVersion: 1,
+      rootId: scopeId,
+      digest: `sha256:${digest}`,
+      entries: Object.freeze(entries),
+    });
   }
 
   beginDrain(): void {
@@ -599,16 +694,18 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     const errors: unknown[] = [];
     for (const scopeId of [...this.#scopeIds].sort(compareString)) {
       try {
-        await this.#lifecycle.disposeScope(scopeId);
+        for (const entry of [...this.#composition.inspectTree(this.#rootId(scopeId))].reverse()) {
+          await this.#composition.remove(entry.id);
+        }
         this.#scopeIds.delete(scopeId);
       } catch (error) {
         errors.push(error);
       }
     }
     if (errors.length === 0) {
-      for (const { extensionId, revision } of [...this.#lifecycle.installedRevisions()].reverse()) {
+      for (const { extensionId, revision } of [...this.installedRevisions()].reverse()) {
         try {
-          await this.#lifecycle.uninstall(extensionId, revision);
+          await this.#composition.uninstall(extensionId, revision);
         } catch (error) {
           errors.push(error);
         }
@@ -618,6 +715,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
       throw new AggregateError(errors, 'Unable to close Runtime Host Extension authority');
     }
     await this.timerAuthority?.close?.();
+    await this.#composition.close();
     this.#closed = true;
   }
 
@@ -629,6 +727,12 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
 
 function compareString(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function flattenInspection(
+  entry: MakaCompositionEntryInspection,
+): readonly MakaCompositionEntryInspection[] {
+  return [entry, ...entry.children.flatMap(flattenInspection)];
 }
 
 function boundedDiagnostic(error: unknown): string {

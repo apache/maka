@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { z } from 'zod';
 import type { ExtensionConfigurationScalar } from '../protocol/extension.js';
-import type { InstalledToolPackage } from './tool-package-store.js';
+import type { InstalledToolPackage } from './plugin-runtime-manifest.js';
 
 export interface PackageInvocationContext {
   readonly sessionId: string;

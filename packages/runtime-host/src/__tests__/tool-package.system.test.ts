@@ -7,12 +7,12 @@ import { test } from 'node:test';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { HostExtensionController } from '../server/extension-controller.js';
 import {
-  InstalledToolPackageExtensionLoader,
+  InstalledPluginPackageLoader,
   StaticTrustedToolExtensionLoader,
 } from '../server/extension-loader.js';
 import { HostExtensionRuntime } from '../server/extension-runtime.js';
-import { HostExtensionStateStore } from '../server/extension-state-store.js';
-import { ToolPackageStore } from '../server/tool-package-store.js';
+import { HostPluginCompositionStore } from '../server/plugin-composition-store.js';
+import { PluginPackageStore } from '../server/plugin-package-store.js';
 import { InProcessPackageActivation } from '../server/in-process-package-runtime.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 
@@ -33,8 +33,8 @@ test('real Tool package installs, runs in process, updates, drains, and uninstal
   await mkdir(workspace, { recursive: true });
   const packageV1 = await createPackage(root, 'v1', 21);
   const packageV2 = await createPackage(root, 'v2', 27);
-  const packageStore = new ToolPackageStore(control);
-  const loader = new InstalledToolPackageExtensionLoader(
+  const packageStore = new PluginPackageStore(control);
+  const loader = new InstalledPluginPackageLoader(
     new StaticTrustedToolExtensionLoader(),
     packageStore,
   );
@@ -42,7 +42,7 @@ test('real Tool package installs, runs in process, updates, drains, and uninstal
   const controller = new HostExtensionController(
     runtime,
     loader,
-    new HostExtensionStateStore(control),
+    new HostPluginCompositionStore(control),
     () => assert.fail('deterministic Tool package failures must not drain the Host'),
   );
 
@@ -166,7 +166,7 @@ test('real Tool package installs, runs in process, updates, drains, and uninstal
 test('Tool package install rejects traversal, unknown fields, and missing entries', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-tool-package-invalid-'));
   const source = join(root, 'source');
-  const store = new ToolPackageStore(join(root, 'control'));
+  const store = new PluginPackageStore(join(root, 'control'));
   try {
     await mkdir(source, { recursive: true });
     await writeFile(
@@ -215,13 +215,18 @@ test('Tool package install rejects traversal, unknown fields, and missing entrie
 test('Tool package Store detects post-install content corruption', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-tool-package-corrupt-'));
   const source = await createPackage(root, 'sealed', 42);
-  const store = new ToolPackageStore(join(root, 'control'));
+  const store = new PluginPackageStore(join(root, 'control'));
   try {
     const installed = await store.install(source);
-    await writeFile(installed.entry, 'export default {};\n', 'utf8');
+    assert.ok(installed.toolManifest);
+    await writeFile(
+      join(installed.root, installed.toolManifest.entry),
+      'export default {};\n',
+      'utf8',
+    );
     await assert.rejects(
       store.load(installed.extensionId, installed.revision),
-      /content hash does not match/u,
+      /integrity check failed/u,
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -233,7 +238,7 @@ test('trusted Tool activation shares in-process state, host network, and cancell
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-tool-in-process-'));
   const source = join(root, 'source');
-  const store = new ToolPackageStore(join(root, 'control'));
+  const store = new PluginPackageStore(join(root, 'control'));
   let networkRequests = 0;
   const server = createServer((_request, response) => {
     networkRequests += 1;
@@ -251,7 +256,8 @@ test('trusted Tool activation shares in-process state, host network, and cancell
   try {
     process.env.MAKA_TEST_PLUGIN_SECRET = 'visible-to-trusted-plugin';
     await createTrustedPackage(source, `http://127.0.0.1:${address.port}/allowed`);
-    const installed = await store.install(source);
+    const sealed = await store.install(source);
+    const installed = await store.loadTool(sealed.extensionId, sealed.revision);
     const activation = new InProcessPackageActivation(installed);
     try {
       await activation.healthCheck(installed.manifest.tools.map(({ handler }) => handler));

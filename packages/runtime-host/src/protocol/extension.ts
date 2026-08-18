@@ -1,7 +1,4 @@
-import {
-  isCanonicalExtensionId,
-  isCanonicalExtensionScopeId,
-} from '@maka/runtime/extension-lifecycle-kernel';
+import { isCanonicalExtensionId, isCanonicalExtensionScopeId } from '@maka/runtime/plugin-runtime';
 import {
   requireEncodedByteLimit,
   requireEntityId,

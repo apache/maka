@@ -13,7 +13,7 @@ import type { ConnectionContext } from './operation-dispatcher.js';
 import type { HostExtensionController } from './extension-controller.js';
 import { HostExtensionRuntime } from './extension-runtime.js';
 import { UiPackageService } from './ui-package-service.js';
-import { UiPackageStore } from './ui-package-store.js';
+import { PluginPackageStore } from './plugin-package-store.js';
 
 export const DESKTOP_UI_EXTENSION_SCOPE = 'desktop-ui';
 const AUTHOR_UI_TOOL_NAMES = new Set(['inspect_ui', 'define_ui', 'test_ui']);
@@ -157,7 +157,7 @@ export class HostUiPackageManagementTools {
     controlDirectory: string,
     private readonly controller: HostExtensionController,
     private readonly runtime: HostExtensionRuntime,
-    private readonly store: UiPackageStore,
+    private readonly store: PluginPackageStore,
   ) {
     this.#draftRoot = join(controlDirectory, 'ui-package-drafts-v1');
   }
@@ -321,7 +321,7 @@ export class HostUiPackageManagementTools {
       categoryHint: 'read',
       recoveryMode: 'never_auto_retry',
       impl: async (input: z.infer<typeof revisionInput>) => {
-        const installed = await this.store.load(input.extensionId, input.revision);
+        const installed = await this.store.loadUi(input.extensionId, input.revision);
         const service = new UiPackageService();
         const loaded = {
           extensionId: installed.extensionId,

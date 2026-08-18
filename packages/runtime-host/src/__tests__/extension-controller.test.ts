@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { HostExtensionController } from '../server/extension-controller.js';
 import { StaticTrustedToolExtensionLoader } from '../server/extension-loader.js';
 import { HostExtensionRuntime } from '../server/extension-runtime.js';
-import { HostExtensionStateStore } from '../server/extension-state-store.js';
+import { HostPluginCompositionStore } from '../server/plugin-composition-store.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 
 const connection: ConnectionContext = {
@@ -28,7 +28,7 @@ test('Extension control plane enables, upgrades, restores last-good, disables, a
       throw new Error('weather v3 is unhealthy');
     }),
   ]);
-  const store = new HostExtensionStateStore(root);
+  const store = new HostPluginCompositionStore(root);
   let runtime = new HostExtensionRuntime();
   let controller = new HostExtensionController(runtime, loader, store, () =>
     assert.fail('deterministic Extension failures must not drain the Host'),
@@ -82,7 +82,7 @@ test('Extension control plane enables, upgrades, restores last-good, disables, a
     );
     assert.deepEqual(failed.ok, false);
     assert.equal(!failed.ok && failed.error.code, 'operation_conflict');
-    assert.match(!failed.ok ? failed.error.message : '', /health_check failed/);
+    assert.match(!failed.ok ? failed.error.message : '', /weather v3 is unhealthy/);
     assert.equal(await invoke(runtime, 'session-1'), '2');
 
     const afterFailure = await controller.handlers['extension.catalog.query']({}, connection);
@@ -95,7 +95,7 @@ test('Extension control plane enables, upgrades, restores last-good, disables, a
       lastGoodRevision: '2',
       enabled: true,
       status: 'failed',
-      error: 'Extension candidate weather@3 health_check failed',
+      error: 'Unable to activate entry weather-binding: weather v3 is unhealthy',
     });
 
     await runtime.close();
@@ -129,10 +129,10 @@ test('Extension control plane enables, upgrades, restores last-good, disables, a
     assert.deepEqual(runtime.installedRevisions(), []);
 
     const persisted = JSON.parse(await readFile(store.path, 'utf8')) as {
-      bindings: Array<{ enabled: boolean; lastGoodRevision: string }>;
+      roots: { sessions: Record<string, Array<{ disabled: boolean; currentRevision: string }>> };
     };
-    assert.equal(persisted.bindings[0]?.enabled, false);
-    assert.equal(persisted.bindings[0]?.lastGoodRevision, '2');
+    assert.equal(persisted.roots.sessions['session-1']?.[0]?.disabled, true);
+    assert.equal(persisted.roots.sessions['session-1']?.[0]?.currentRevision, '2');
 
     const removed = await controller.handlers['extension.catalog.mutate'](
       { kind: 'remove', bindingId: 'weather-binding' },
@@ -140,10 +140,10 @@ test('Extension control plane enables, upgrades, restores last-good, disables, a
     );
     assert.deepEqual(removed, { ok: true, result: { binding: null } });
     assert.deepEqual(runtime.installedRevisions(), []);
-    assert.deepEqual(JSON.parse(await readFile(store.path, 'utf8')) as { bindings: unknown[] }, {
-      schemaVersion: 1,
-      bindings: [],
-    });
+    const empty = JSON.parse(await readFile(store.path, 'utf8')) as {
+      roots: { sessions: Record<string, unknown[]> };
+    };
+    assert.deepEqual(empty.roots.sessions['session-1'], []);
   } finally {
     await runtime.close().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
@@ -152,7 +152,7 @@ test('Extension control plane enables, upgrades, restores last-good, disables, a
 
 test('Extension recovery isolates corrupt state from normal Runtime Host startup', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-extension-corrupt-'));
-  const store = new HostExtensionStateStore(root);
+  const store = new HostPluginCompositionStore(root);
   const runtime = new HostExtensionRuntime();
   const controller = new HostExtensionController(
     runtime,
@@ -169,6 +169,61 @@ test('Extension recovery isolates corrupt state from normal Runtime Host startup
       error: { code: 'persistence_failed', message: 'Extension state is unavailable' },
     });
     assert.deepEqual(runtime.resolveTools('session-1', []), []);
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Composition Snapshot restores and preserves nested groups', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-extension-tree-'));
+  const store = new HostPluginCompositionStore(root);
+  await store.replace({
+    schemaVersion: 1,
+    generation: 7,
+    roots: {
+      profile: [],
+      desktopUi: [],
+      sessions: {
+        'session-1': [
+          {
+            id: 'workspace-group',
+            disabled: false,
+            config: {},
+            intercept: { locale: 'zh-CN' },
+            children: [
+              {
+                id: 'weather-binding',
+                packageId: 'weather',
+                revision: '1',
+                currentRevision: '1',
+                disabled: false,
+                config: {},
+                error: null,
+              },
+            ],
+          },
+        ],
+      },
+    },
+  });
+  const runtime = new HostExtensionRuntime();
+  const controller = new HostExtensionController(
+    runtime,
+    new StaticTrustedToolExtensionLoader([revision('1')]),
+    store,
+    () => assert.fail('tree recovery must not drain the Host'),
+  );
+  try {
+    await controller.recover();
+    assert.deepEqual(
+      runtime.inspectRuntime().map(({ id, children }) => [id, children[0]?.id]),
+      [['workspace-group', 'weather-binding']],
+    );
+    assert.equal(await invoke(runtime, 'session-1'), '1');
+    const persisted = await store.read();
+    assert.equal(persisted?.roots.sessions['session-1']?.[0]?.children?.[0]?.id, 'weather-binding');
+    assert.deepEqual(persisted?.roots.sessions['session-1']?.[0]?.intercept, { locale: 'zh-CN' });
   } finally {
     await runtime.close();
     await rm(root, { recursive: true, force: true });

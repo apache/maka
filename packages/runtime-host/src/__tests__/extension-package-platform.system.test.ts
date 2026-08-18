@@ -6,17 +6,16 @@ import { test } from 'node:test';
 import type { MakaToolContext } from '@maka/runtime/tool-runtime';
 import { HostExtensionController } from '../server/extension-controller.js';
 import {
-  InstalledToolPackageExtensionLoader,
+  InstalledPluginPackageLoader,
   StaticTrustedToolExtensionLoader,
 } from '../server/extension-loader.js';
 import { HostExtensionRuntime, PROFILE_EXTENSION_SCOPE } from '../server/extension-runtime.js';
-import { HostExtensionStateStore } from '../server/extension-state-store.js';
+import { HostPluginCompositionStore } from '../server/plugin-composition-store.js';
 import {
   compareExtensionVersions,
   extensionVersionSatisfies,
 } from '../server/extension-package-manifest.js';
-import { ToolPackageStore } from '../server/tool-package-store.js';
-import { UiPackageStore } from '../server/ui-package-store.js';
+import { PluginPackageStore } from '../server/plugin-package-store.js';
 
 test('unified Extension package resolves dependencies, configures workers, survives restart, and round-trips a Bundle', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-extension-platform-'));
@@ -95,7 +94,7 @@ test('unified Extension package resolves dependencies, configures workers, survi
       /required by application-profile/u,
     );
     assert.deepEqual(
-      fixture.runtime.composition('session-test').entries.map(({ extensionId }) => extensionId),
+      fixture.runtime.composition('session-test').entries.map(({ packageId }) => packageId),
       ['dev.maka.platform.application', 'dev.maka.platform.dependency'],
     );
 
@@ -201,15 +200,14 @@ test('unified Extension package resolves dependencies, configures workers, survi
 
 function createFixture(control: string) {
   const runtime = new HostExtensionRuntime();
-  const loader = new InstalledToolPackageExtensionLoader(
+  const loader = new InstalledPluginPackageLoader(
     new StaticTrustedToolExtensionLoader(),
-    new ToolPackageStore(control),
-    new UiPackageStore(control),
+    new PluginPackageStore(control),
   );
   const controller = new HostExtensionController(
     runtime,
     loader,
-    new HostExtensionStateStore(control),
+    new HostPluginCompositionStore(control),
     () => undefined,
   );
   return { runtime, loader, controller };
@@ -318,23 +316,22 @@ test('combined package installation rolls back a newly installed Tool when UI pe
       join(source, 'documents', 'root.html'),
       '<!doctype html><title>Combined</title>',
     );
-    const toolStore = new ToolPackageStore(control);
-    const loader = new InstalledToolPackageExtensionLoader(
+    const toolStore = new RejectingPluginPackageStore(control);
+    const loader = new InstalledPluginPackageLoader(
       new StaticTrustedToolExtensionLoader(),
       toolStore,
-      new RejectingUiPackageStore(control),
     );
     await assert.rejects(
       () => loader.installPackage(source),
       /Extension package operation failed/u,
     );
-    assert.deepEqual(await toolStore.list(), []);
+    assert.deepEqual(await new PluginPackageStore(control).list(), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-class RejectingUiPackageStore extends UiPackageStore {
+class RejectingPluginPackageStore extends PluginPackageStore {
   override async install(): Promise<never> {
     throw new Error('simulated UI persistence failure');
   }

@@ -1,8 +1,4 @@
-import type {
-  ExtensionActivationContext,
-  ExtensionDependencyDefinition,
-  ExtensionRevisionDefinition,
-} from './extension-lifecycle-kernel.js';
+import type { MakaContributionContext } from './plugin-runtime.js';
 import type { MakaTool } from './tool-runtime.js';
 
 const RESERVED_TOOL_NAMES = new Set([
@@ -66,7 +62,7 @@ export class ExtensionToolContributionRegistry {
   constructor(private readonly options: ExtensionToolContributionRegistryOptions = {}) {}
 
   register(
-    context: Pick<ExtensionActivationContext, 'bindingId' | 'scopeId' | 'extensionId' | 'revision'>,
+    context: Pick<MakaContributionContext, 'bindingId' | 'scopeId' | 'extensionId' | 'revision'>,
     tool: MakaTool,
   ): () => void {
     validateContext(context);
@@ -104,34 +100,42 @@ export class ExtensionToolContributionRegistry {
     }
     const token = Symbol(tool.name);
     let entry!: RegisteredExtensionTool;
-    const guardedTool: MakaTool = this.options.invocationTimeoutMs === undefined && this.options.failureThreshold === undefined
-      ? tool
-      : {
-      ...tool,
-      impl: async (args: any, context: Parameters<typeof tool.impl>[1]) => {
-        if (entry.retired) throw new Error(`Extension Tool "${tool.name}" is no longer active`);
-        if (entry.circuitOpen)
-          throw new Error(`Extension Tool "${tool.name}" circuit is open after repeated failures`);
-        const timeoutMs = this.options.invocationTimeoutMs ?? 30_000;
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        try {
-          const result = await Promise.race([
-            Promise.resolve(tool.impl(args, context)),
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error(`Extension Tool "${tool.name}" timed out`)), timeoutMs);
-            }),
-          ]);
-          entry.failures = 0;
-          return result;
-        } catch (error) {
-          entry.failures += 1;
-          if (entry.failures >= (this.options.failureThreshold ?? 3)) entry.circuitOpen = true;
-          throw error;
-        } finally {
-          if (timer) clearTimeout(timer);
-        }
-      },
-      };
+    const guardedTool: MakaTool =
+      this.options.invocationTimeoutMs === undefined && this.options.failureThreshold === undefined
+        ? tool
+        : {
+            ...tool,
+            impl: async (args: any, context: Parameters<typeof tool.impl>[1]) => {
+              if (entry.retired)
+                throw new Error(`Extension Tool "${tool.name}" is no longer active`);
+              if (entry.circuitOpen)
+                throw new Error(
+                  `Extension Tool "${tool.name}" circuit is open after repeated failures`,
+                );
+              const timeoutMs = this.options.invocationTimeoutMs ?? 30_000;
+              let timer: ReturnType<typeof setTimeout> | undefined;
+              try {
+                const result = await Promise.race([
+                  Promise.resolve(tool.impl(args, context)),
+                  new Promise<never>((_, reject) => {
+                    timer = setTimeout(
+                      () => reject(new Error(`Extension Tool "${tool.name}" timed out`)),
+                      timeoutMs,
+                    );
+                  }),
+                ]);
+                entry.failures = 0;
+                return result;
+              } catch (error) {
+                entry.failures += 1;
+                if (entry.failures >= (this.options.failureThreshold ?? 3))
+                  entry.circuitOpen = true;
+                throw error;
+              } finally {
+                if (timer) clearTimeout(timer);
+              }
+            },
+          };
     entry = {
       key,
       scopeId: context.scopeId,
@@ -216,79 +220,21 @@ export class ExtensionToolContributionRegistry {
 
 /** Register one Tool and make its registry entry activation-owned atomically. */
 export function contributeExtensionTool(
-  context: ExtensionActivationContext,
+  context: MakaContributionContext,
   registry: ExtensionToolContributionRegistry,
   tool: MakaTool,
 ): void {
   const unregister = registry.register(context, tool);
   try {
-    context.runtimeContext.own(`tool:${tool.name}`, unregister);
+    context.ownEffect(`tool:${tool.name}`, unregister);
   } catch (error) {
     unregister();
     throw error;
   }
 }
 
-export interface TrustedToolExtensionRevisionInput {
-  readonly registry: ExtensionToolContributionRegistry;
-  readonly extensionId: string;
-  readonly revision: string;
-  readonly dependencies?: readonly ExtensionDependencyDefinition[];
-  readonly tools: readonly MakaTool[];
-  readonly healthCheck?: () => void | Promise<void>;
-}
-
-/**
- * Build a trusted, static Tool revision using the same lifecycle contract as
- * every later contribution adapter. Definition/install stays effect-free;
- * registry publication happens only in `activate`.
- */
-export function defineTrustedToolExtensionRevision(
-  input: TrustedToolExtensionRevisionInput,
-): ExtensionRevisionDefinition {
-  validateIdentity('extensionId', input.extensionId);
-  if (!input.revision || typeof input.revision !== 'string') {
-    throw new ExtensionToolContributionError('invalid_tool', 'Revision is required');
-  }
-  const tools = Object.freeze(input.tools.map((tool) => Object.freeze({ ...tool })));
-  const names = new Set<string>();
-  for (const tool of tools) {
-    validateTool(tool);
-    const key = toolNameKey(tool.name);
-    if (RESERVED_TOOL_NAMES.has(key)) {
-      throw new ExtensionToolContributionError(
-        'reserved_tool_name',
-        `Tool name "${tool.name}" is reserved by Runtime`,
-      );
-    }
-    if (names.has(key)) {
-      throw new ExtensionToolContributionError(
-        'tool_name_conflict',
-        `Tool revision declares conflicting name "${tool.name}"`,
-      );
-    }
-    names.add(key);
-  }
-  return Object.freeze({
-    extensionId: input.extensionId,
-    revision: input.revision,
-    ...(input.dependencies ? { dependencies: Object.freeze([...input.dependencies]) } : {}),
-    contributions: Object.freeze(
-      tools.map((_, index) =>
-        Object.freeze({ id: `${input.extensionId}.tool-${index + 1}`, kind: 'tool' }),
-      ),
-    ),
-    prepare: () => ({
-      ...(input.healthCheck ? { healthCheck: input.healthCheck } : {}),
-      activate: (context: ExtensionActivationContext) => {
-        for (const tool of tools) contributeExtensionTool(context, input.registry, tool);
-      },
-    }),
-  });
-}
-
 function validateContext(
-  context: Pick<ExtensionActivationContext, 'bindingId' | 'scopeId' | 'extensionId' | 'revision'>,
+  context: Pick<MakaContributionContext, 'bindingId' | 'scopeId' | 'extensionId' | 'revision'>,
 ): void {
   validateIdentity('bindingId', context.bindingId);
   validateIdentity('scopeId', context.scopeId);

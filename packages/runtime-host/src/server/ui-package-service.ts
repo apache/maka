@@ -1,8 +1,8 @@
 import type { MakaToolContext } from '@maka/runtime/tool-runtime';
 import { join } from 'node:path';
 import { InProcessPackageActivation } from './in-process-package-runtime.js';
-import type { InstalledToolPackage, ToolPackageManifest } from './tool-package-store.js';
-import type { InstalledUiPackage } from './ui-package-store.js';
+import type { InstalledToolPackage, ToolPackageManifest } from './plugin-runtime-manifest.js';
+import type { InstalledUiPackage } from './plugin-ui-manifest.js';
 
 /** Executes a trusted UI revision's package-private Host methods in process. */
 export class UiPackageService {

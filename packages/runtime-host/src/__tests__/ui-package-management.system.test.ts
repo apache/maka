@@ -7,19 +7,18 @@ import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { decodeExtensionUiSnapshotResult } from '../protocol/extension.js';
 import { HostExtensionController } from '../server/extension-controller.js';
 import {
-  InstalledToolPackageExtensionLoader,
+  InstalledPluginPackageLoader,
   StaticTrustedToolExtensionLoader,
 } from '../server/extension-loader.js';
 import { HostExtensionRuntime } from '../server/extension-runtime.js';
-import { HostExtensionStateStore } from '../server/extension-state-store.js';
+import { HostPluginCompositionStore } from '../server/plugin-composition-store.js';
 import { HostExtensionUiStateStore } from '../server/extension-ui-state-store.js';
-import { ToolPackageStore } from '../server/tool-package-store.js';
+import { PluginPackageStore } from '../server/plugin-package-store.js';
 import { HostToolPackageManagementTools } from '../server/tool-package-management-tools.js';
 import {
   DESKTOP_UI_EXTENSION_SCOPE,
   HostUiPackageManagementTools,
 } from '../server/ui-package-management-tools.js';
-import { UiPackageStore } from '../server/ui-package-store.js';
 
 test('UI author surface exposes only inspect, define, and test', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-ui-author-tools-'));
@@ -274,7 +273,7 @@ test('UI package Store rejects symlinks and detects installed content corruption
       }),
     );
     await writeFile(join(source, 'documents', 'root.html'), '<main>safe</main>');
-    const store = new UiPackageStore(join(root, 'control'));
+    const store = new PluginPackageStore(join(root, 'control'));
     const installed = await store.install(source);
     await writeFile(join(installed.root, 'documents', 'root.html'), '<main>changed</main>');
     await assert.rejects(
@@ -312,7 +311,7 @@ test('UI package Store rejects symlinks and detects installed content corruption
     );
     await writeFile(join(unsupported, 'documents', 'unknown.html'), '<main>unknown</main>');
     const dynamicSlot = await store.install(unsupported);
-    assert.equal(dynamicSlot.manifest.ui[0]?.slot, 'unknown.area');
+    assert.equal(dynamicSlot.uiManifest?.ui[0]?.slot, 'unknown.area');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -370,12 +369,11 @@ test('one immutable package Revision carries a Tool and a complete Maka root sna
       'export default { projectPlanCommit: (input) => input };\n',
     );
 
-    const toolStore = new ToolPackageStore(control);
-    const uiStore = new UiPackageStore(control);
-    const loader = new InstalledToolPackageExtensionLoader(
+    const toolStore = new PluginPackageStore(control);
+    const uiStore = toolStore;
+    const loader = new InstalledPluginPackageLoader(
       new StaticTrustedToolExtensionLoader(),
       toolStore,
-      uiStore,
     );
     const installed = await loader.installPackage(source);
     assert.deepEqual(installed.toolNames, ['project_plan_commit']);
@@ -388,7 +386,7 @@ test('one immutable package Revision carries a Tool and a complete Maka root sna
     const controller = new HostExtensionController(
       runtime,
       loader,
-      new HostExtensionStateStore(control),
+      new HostPluginCompositionStore(control),
       () => undefined,
       new HostExtensionUiStateStore(control),
       uiStore,
@@ -464,15 +462,11 @@ const connection = {
 
 async function createFixture(root: string) {
   const runtime = new HostExtensionRuntime();
-  const uiStore = new UiPackageStore(root);
+  const uiStore = new PluginPackageStore(root);
   const controller = new HostExtensionController(
     runtime,
-    new InstalledToolPackageExtensionLoader(
-      new StaticTrustedToolExtensionLoader(),
-      new ToolPackageStore(root),
-      uiStore,
-    ),
-    new HostExtensionStateStore(root),
+    new InstalledPluginPackageLoader(new StaticTrustedToolExtensionLoader(), uiStore),
+    new HostPluginCompositionStore(root),
     () => undefined,
     new HostExtensionUiStateStore(root),
     uiStore,

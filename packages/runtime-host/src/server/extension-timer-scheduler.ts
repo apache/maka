@@ -3,7 +3,7 @@ import type {
   ExtensionTimerContribution,
   ExtensionTimerContributionInspection,
 } from '@maka/runtime/extension-timer-contributions';
-import type { ExtensionActivationContext } from '@maka/runtime/extension-lifecycle-kernel';
+import type { MakaContributionContext } from '@maka/runtime/plugin-runtime';
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -28,7 +28,7 @@ interface TimerState {
 
 interface ActiveTimer {
   readonly token: symbol;
-  readonly runtimeContext: ExtensionActivationContext['runtimeContext'];
+  readonly runtimeContext: MakaContributionContext['runtimeContext'];
   readonly contribution: ExtensionTimerContribution;
   readonly configuration: Readonly<Record<string, string | number | boolean>>;
   readonly state: TimerState;
@@ -54,7 +54,7 @@ export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
   }
 
   async register(
-    context: ExtensionActivationContext,
+    context: MakaContributionContext,
     contribution: ExtensionTimerContribution,
   ): Promise<() => Promise<void>> {
     if (this.#closed) throw new Error('Extension Timer scheduler is closed');
@@ -140,11 +140,11 @@ export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
 
   #scheduleWhenActive(key: string, active: ActiveTimer): void {
     if (this.#closed || this.#current(key)?.token !== active.token) return;
-    if (active.runtimeContext.status === 'active') {
+    if (active.runtimeContext.fiber.state === 2) {
       this.#schedule(key, active);
       return;
     }
-    if (active.runtimeContext.status !== 'preparing') return;
+    if (active.runtimeContext.fiber.state !== 0 && active.runtimeContext.fiber.state !== 1) return;
     active.handle = setTimeout(() => this.#scheduleWhenActive(key, active), 0);
     active.handle.unref?.();
   }

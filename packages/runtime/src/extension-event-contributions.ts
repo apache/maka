@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ExtensionActivationContext } from './extension-lifecycle-kernel.js';
+import type { MakaContributionContext } from './plugin-runtime.js';
 import type { ExtensionDispatchMode } from './extension-dispatch.js';
 
 export type ExtensionEventDispatchMode = ExtensionDispatchMode;
@@ -82,7 +82,7 @@ export class ExtensionEventContributionRegistry {
   readonly #listeners = new Map<string, RegisteredListener[]>();
 
   registerEvent(
-    context: ExtensionActivationContext,
+    context: MakaContributionContext,
     definition: ExtensionEventDefinition,
   ): () => void {
     validateExtensionEventDefinition(context.extensionId, definition);
@@ -131,7 +131,7 @@ export class ExtensionEventContributionRegistry {
   }
 
   registerListener(
-    context: ExtensionActivationContext,
+    context: MakaContributionContext,
     listener: ExtensionEventListenerContribution,
   ): () => void {
     validateExtensionEventListener(listener);
@@ -317,7 +317,7 @@ export class ExtensionEventContributionRegistry {
 }
 
 export function contributeExtensionEvent(
-  context: ExtensionActivationContext,
+  context: MakaContributionContext,
   registry: ExtensionEventContributionRegistry,
   definition: ExtensionEventDefinition,
 ): void {
@@ -325,7 +325,7 @@ export function contributeExtensionEvent(
 }
 
 export function contributeExtensionEventListener(
-  context: ExtensionActivationContext,
+  context: MakaContributionContext,
   registry: ExtensionEventContributionRegistry,
   listener: ExtensionEventListenerContribution,
 ): void {
@@ -403,12 +403,12 @@ export function validateExtensionEventListener(listener: ExtensionEventListenerC
 }
 
 function ownRegistration(
-  context: ExtensionActivationContext,
+  context: MakaContributionContext,
   id: string,
   unregister: () => void,
 ): void {
   try {
-    context.runtimeContext.own(id, unregister);
+    context.ownEffect(id, unregister);
   } catch (error) {
     unregister();
     throw error;

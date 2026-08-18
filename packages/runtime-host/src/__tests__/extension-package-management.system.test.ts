@@ -7,34 +7,30 @@ import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { z } from 'zod';
 import { HostExtensionController } from '../server/extension-controller.js';
 import {
-  InstalledToolPackageExtensionLoader,
+  InstalledPluginPackageLoader,
   StaticTrustedToolExtensionLoader,
 } from '../server/extension-loader.js';
 import { HostExtensionPackageManagementTools } from '../server/extension-package-management-tools.js';
 import { HostExtensionRuntime } from '../server/extension-runtime.js';
-import { HostExtensionStateStore } from '../server/extension-state-store.js';
-import { EventPackageStore } from '../server/event-package-store.js';
-import { ToolPackageStore } from '../server/tool-package-store.js';
+import { HostPluginCompositionStore } from '../server/plugin-composition-store.js';
+import { PluginPackageStore } from '../server/plugin-package-store.js';
 import { HostUiPackageManagementTools } from '../server/ui-package-management-tools.js';
-import { UiPackageStore } from '../server/ui-package-store.js';
 
 test('define_package installs Tool, UI, Event, dependencies, and secret configuration as one Revision', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-define-package-'));
   const control = join(root, 'control');
   const runtime = new HostExtensionRuntime();
-  const toolStore = new ToolPackageStore(control);
-  const uiStore = new UiPackageStore(control);
-  const eventStore = new EventPackageStore(control);
-  const loader = new InstalledToolPackageExtensionLoader(
+  const toolStore = new PluginPackageStore(control);
+  const uiStore = toolStore;
+  const eventStore = toolStore;
+  const loader = new InstalledPluginPackageLoader(
     new StaticTrustedToolExtensionLoader(),
     toolStore,
-    uiStore,
-    eventStore,
   );
   const controller = new HostExtensionController(
     runtime,
     loader,
-    new HostExtensionStateStore(control),
+    new HostPluginCompositionStore(control),
     () => undefined,
   );
   try {
@@ -244,15 +240,15 @@ test('define_package installs Tool, UI, Event, dependencies, and secret configur
 test('define_package rejects secret defaults before writing a Revision', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-define-package-secret-'));
   const runtime = new HostExtensionRuntime();
-  const toolStore = new ToolPackageStore(root);
-  const loader = new InstalledToolPackageExtensionLoader(
+  const toolStore = new PluginPackageStore(root);
+  const loader = new InstalledPluginPackageLoader(
     new StaticTrustedToolExtensionLoader(),
     toolStore,
   );
   const controller = new HostExtensionController(
     runtime,
     loader,
-    new HostExtensionStateStore(root),
+    new HostPluginCompositionStore(root),
     () => undefined,
   );
   try {

@@ -32,7 +32,7 @@ export { createUnavailableDomainOperationHandlers } from './operation-dispatcher
 export {
   HostExtensionRuntime,
   type HostExtensionToolResolver,
-  type HostPreparedToolExtensionRevisionInput,
+  type HostPreparedPluginPackageInput,
   type HostToolExtensionRevisionInput,
   type HostTrustedToolExtensionRevisionInput,
   type HostUiExtensionRevisionInput,
@@ -41,37 +41,17 @@ export {
 } from './extension-runtime.js';
 export {
   HostExtensionLoaderError,
-  InstalledToolPackageExtensionLoader,
+  InstalledPluginPackageLoader,
   StaticTrustedToolExtensionLoader,
   type HostTrustedToolExtensionLoader,
   type StaticTrustedToolExtensionRevision,
 } from './extension-loader.js';
 export {
-  ToolPackageStore,
-  ToolPackageStoreError,
-  decodeToolPackageManifest,
-  type InstalledToolPackage,
-  type ToolPackageManifest,
-  type ToolPackageManifestTool,
-} from './tool-package-store.js';
-export {
-  UiPackageStore,
-  UiPackageStoreError,
-  decodeUiPackageManifest,
-  type InstalledUiPackage,
-  type UiPackageManifest,
-  type UiPackageManifestContribution,
-} from './ui-package-store.js';
-export {
-  EventPackageStore,
-  EventPackageStoreError,
-  decodeEventPackageManifest,
-  type InstalledEventPackage,
-  type EventPackageManifest,
-  type EventPackageManifestEvent,
-  type EventPackageManifestListener,
-} from './event-package-store.js';
-export { EventPackageActivation } from './event-package-activation.js';
+  PluginPackageStore,
+  PluginPackageStoreError,
+  type InstalledPluginPackage,
+} from './plugin-package-store.js';
+export { PluginHookActivation } from './plugin-hook-activation.js';
 export { HostEventPackageManagementTools } from './event-package-management-tools.js';
 export { HostExtensionPackageManagementTools } from './extension-package-management-tools.js';
 export {
@@ -89,7 +69,7 @@ export {
   materializeExtensionPackage,
   ExtensionBundleError,
 } from './extension-bundle.js';
-export { HostExtensionConfigurationStore } from './extension-configuration-store.js';
+export { HostPluginCompositionStore } from './plugin-composition-store.js';
 export {
   RuntimeHostRootAlreadyOwnedError,
   startExecutionRuntimeHostService,

@@ -55,7 +55,7 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
   const statePath = join(
     resolveRootControlNamespace(),
     capability.rootId,
-    'extension-bindings-v1.json',
+    'plugin-composition-v1.json',
   );
 
   try {
@@ -154,7 +154,7 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
         bindingId: 'weather-binding',
         revision: '3',
       }),
-      operationError('operation_conflict', /health_check/u),
+      operationError('operation_conflict', /failed its real health check/u),
     );
     const failed = await client.request('extension.catalog.query', {});
     assert.deepEqual(failed.bindings[0], {
@@ -165,7 +165,8 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
       lastGoodRevision: '2',
       enabled: true,
       status: 'failed',
-      error: 'Extension candidate weather@3 health_check failed',
+      error:
+        'Unable to activate entry weather-binding: weather revision 3 failed its real health check',
     });
     const afterFailure = await runTurn(
       client,
@@ -254,10 +255,10 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
       'removed extension must disappear',
     );
     assert.equal(afterRemove.tools.includes('Weather'), false);
-    assert.deepEqual(JSON.parse(await readFile(statePath, 'utf8')), {
-      schemaVersion: 1,
-      bindings: [],
-    });
+    const emptyComposition = JSON.parse(await readFile(statePath, 'utf8')) as {
+      roots: { sessions: Record<string, unknown[]> };
+    };
+    assert.deepEqual(emptyComposition.roots.sessions['extension-session-a'], []);
 
     await client.close();
     client = undefined;

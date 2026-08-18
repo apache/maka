@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ExtensionActivationContext } from './extension-lifecycle-kernel.js';
+import type { MakaContributionContext } from './plugin-runtime.js';
 
 export interface ExtensionServiceInvocationContext {
   readonly sessionId: string;
@@ -69,7 +69,7 @@ export class ExtensionServiceContributionRegistry {
   readonly #scopes = new Map<string, RegisteredService[]>();
 
   register(
-    context: ExtensionActivationContext,
+    context: MakaContributionContext,
     contribution: ExtensionServiceContribution,
   ): () => void {
     validateExtensionServiceContribution(context.extensionId, contribution);
@@ -190,14 +190,14 @@ export class ExtensionServiceContributionRegistry {
 }
 
 export function contributeExtensionService(
-  context: ExtensionActivationContext,
+  context: MakaContributionContext,
   registry: ExtensionServiceContributionRegistry,
   contribution: ExtensionServiceContribution,
 ): void {
   context.runtimeContext.provide(`service:${contribution.name}`, contribution);
   const unregister = registry.register(context, contribution);
   try {
-    context.runtimeContext.own(`service:${contribution.name}`, unregister);
+    context.ownEffect(`service:${contribution.name}`, unregister);
   } catch (error) {
     unregister();
     throw error;

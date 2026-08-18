@@ -4,20 +4,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { MakaToolContext } from '@maka/runtime/tool-runtime';
-import { ExtensionRuntimeContext } from '@maka/runtime/extension-runtime-context';
+import { Context } from '@deepseek-ai/cordis';
 import { HostExtensionController } from '../server/extension-controller.js';
 import {
-  InstalledToolPackageExtensionLoader,
+  InstalledPluginPackageLoader,
   StaticTrustedToolExtensionLoader,
 } from '../server/extension-loader.js';
 import { HostExtensionRuntime } from '../server/extension-runtime.js';
-import { HostExtensionStateStore } from '../server/extension-state-store.js';
-import { EventPackageStore } from '../server/event-package-store.js';
+import { HostPluginCompositionStore } from '../server/plugin-composition-store.js';
+import { PluginPackageStore } from '../server/plugin-package-store.js';
 import { HostEventPackageManagementTools } from '../server/event-package-management-tools.js';
 import { HostExtensionTimerScheduler } from '../server/extension-timer-scheduler.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
-import { ToolPackageStore } from '../server/tool-package-store.js';
-import { UiPackageStore } from '../server/ui-package-store.js';
 
 const connection: ConnectionContext = {
   hostEpoch: 'event-package-system-test',
@@ -210,84 +208,6 @@ test('cross-plugin Service calls require a declared package dependency', {
   }
 });
 
-test('serverless Extension Timer replacement stays dormant until commit and restores current on rollback', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-extension-timer-replacement-'));
-  const runtimeRoot = ExtensionRuntimeContext.root('timer-replacement-root');
-  const scope = runtimeRoot.fork({ id: 'profile', kind: 'scope' });
-  const scheduler = new HostExtensionTimerScheduler(join(root, 'control'), () => root);
-  const fired: string[] = [];
-  const activationContext = (revision: string, runtimeContext: ReturnType<typeof scope.fork>) => ({
-    bindingId: 'timer-binding',
-    scopeId: 'profile',
-    extensionId: 'dev.maka.timer',
-    revision,
-    signal: new AbortController().signal,
-    runtimeContext,
-    ownEffect: () => undefined,
-    dependency: () => {
-      throw new Error('No Timer dependencies');
-    },
-    dependencyRevision: () => {
-      throw new Error('No Timer dependencies');
-    },
-  });
-  const contribution = (revision: string, initialDelayMs: number) => ({
-    id: 'heartbeat',
-    handler: 'heartbeat',
-    intervalMs: 1_000,
-    initialDelayMs,
-    timeoutMs: 1_000,
-    configuration: Object.freeze({}),
-    invoke: async () => {
-      fired.push(revision);
-    },
-  });
-  const current = scope.fork({
-    id: 'timer-binding:current',
-    kind: 'plugin',
-    replacementKey: 'timer-binding',
-  });
-  const unregisterCurrent = await scheduler.register(
-    activationContext('revision-1', current),
-    contribution('revision-1', 10_000),
-  );
-  try {
-    const failedCandidate = scope.fork({
-      id: 'timer-binding:failed',
-      kind: 'plugin',
-      replacementKey: 'timer-binding',
-      status: 'preparing',
-    });
-    const rollback = await scheduler.register(
-      activationContext('revision-2', failedCandidate),
-      contribution('revision-2', 0),
-    );
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    assert.equal(fired.length, 0);
-    await rollback();
-    assert.equal(scheduler.inspect('profile')[0]?.revision, 'revision-1');
-
-    const committedCandidate = scope.fork({
-      id: 'timer-binding:committed',
-      kind: 'plugin',
-      replacementKey: 'timer-binding',
-      status: 'preparing',
-    });
-    const unregisterCommitted = await scheduler.register(
-      activationContext('revision-2', committedCandidate),
-      contribution('revision-2', 0),
-    );
-    committedCandidate.activate();
-    await unregisterCurrent();
-    await waitFor(() => fired.includes('revision-2'));
-    assert.equal(scheduler.inspect('profile')[0]?.revision, 'revision-2');
-    await unregisterCommitted();
-  } finally {
-    await scheduler.close().catch(() => undefined);
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test('serverless Extension Timers retain their next fire across Host restart', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-extension-timer-restart-'));
   const control = join(root, 'control');
@@ -298,10 +218,7 @@ test('serverless Extension Timers retain their next fire across Host restart', a
     extensionId: 'dev.maka.timer',
     revision: 'revision-1',
     signal: new AbortController().signal,
-    runtimeContext: ExtensionRuntimeContext.root('timer-recovery-root').fork({
-      id: 'timer-recovery-plugin',
-      kind: 'plugin' as const,
-    }),
+    runtimeContext: new Context(),
     ownEffect: () => undefined,
     dependency: () => {
       throw new Error('No Timer dependencies');
@@ -361,10 +278,7 @@ test('serverless Extension Timers never overlap and collapse a missed interval',
     extensionId: 'dev.maka.non-overlap',
     revision: 'revision-1',
     signal: new AbortController().signal,
-    runtimeContext: ExtensionRuntimeContext.root('timer-overlap-root').fork({
-      id: 'timer-overlap-plugin',
-      kind: 'plugin' as const,
-    }),
+    runtimeContext: new Context(),
     ownEffect: () => undefined,
     dependency: () => {
       throw new Error('No Timer dependencies');
@@ -424,7 +338,7 @@ test('Agent Event tools define, test, activate, emit, inspect, and stop a packag
       revision: '1',
       toolNames: [],
       eventContributionIds: ['timer-fired-listener'],
-      prepare: async () => ({
+      load: async () => ({
         tools: [],
         listeners: [
           {
@@ -682,17 +596,15 @@ function createFixture(control: string) {
     {},
     new HostExtensionTimerScheduler(control, () => join(control, '..')),
   );
-  const eventStore = new EventPackageStore(control);
-  const loader = new InstalledToolPackageExtensionLoader(
+  const eventStore = new PluginPackageStore(control);
+  const loader = new InstalledPluginPackageLoader(
     new StaticTrustedToolExtensionLoader(),
-    new ToolPackageStore(control),
-    new UiPackageStore(control),
     eventStore,
   );
   const controller = new HostExtensionController(
     runtime,
     loader,
-    new HostExtensionStateStore(control),
+    new HostPluginCompositionStore(control),
     () => undefined,
   );
   return { runtime, loader, controller, eventStore };

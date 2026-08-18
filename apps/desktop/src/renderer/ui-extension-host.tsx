@@ -14,6 +14,7 @@ import type {
   ExtensionUiStateValue,
 } from '@maka/runtime-host/protocol';
 import { uiExtensionFrameUrl } from './ui-extension-frame-url.js';
+import { UiPluginRuntime } from './ui-plugin-runtime.js';
 
 const DESKTOP_UI_SCOPE = 'desktop-ui';
 const REFRESH_MS = 1_000;
@@ -88,7 +89,11 @@ export function UiExtensionHost({
   officialSnapshot: () => ReactNode;
 }) {
   const [snapshot, setSnapshot] = useState<ExtensionUiSnapshotResult | null>(null);
+  const [clientContributions, setClientContributions] = useState<
+    readonly ExtensionUiContributionProjection[]
+  >(Object.freeze([]));
   const [safeMode, setSafeMode] = useState(false);
+  const clientRuntime = useMemo(() => new UiPluginRuntime(), []);
 
   useEffect(() => {
     let disposed = false;
@@ -113,6 +118,26 @@ export function UiExtensionHost({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    void clientRuntime
+      .reconcile(snapshot?.contributions ?? [])
+      .then((contributions) => {
+        if (!cancelled) setClientContributions(contributions);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [clientRuntime, snapshot]);
+
+  useEffect(
+    () => () => {
+      void clientRuntime.close();
+    },
+    [clientRuntime],
+  );
+
+  useEffect(() => {
     const recover = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === 'Backspace') {
         event.preventDefault();
@@ -124,8 +149,8 @@ export function UiExtensionHost({
   }, []);
 
   const selected = useMemo(
-    () => selectUiSnapshots(null, snapshot?.contributions ?? []),
-    [snapshot],
+    () => selectUiSnapshots(null, clientContributions),
+    [clientContributions],
   );
   const selectedRoot = safeMode ? selected.official : selected.root;
   return (

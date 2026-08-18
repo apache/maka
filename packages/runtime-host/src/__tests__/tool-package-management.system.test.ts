@@ -6,13 +6,13 @@ import { test } from 'node:test';
 import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { HostExtensionController } from '../server/extension-controller.js';
 import {
-  InstalledToolPackageExtensionLoader,
+  InstalledPluginPackageLoader,
   StaticTrustedToolExtensionLoader,
 } from '../server/extension-loader.js';
 import { HostExtensionRuntime } from '../server/extension-runtime.js';
-import { HostExtensionStateStore } from '../server/extension-state-store.js';
+import { HostPluginCompositionStore } from '../server/plugin-composition-store.js';
 import { HostToolPackageManagementTools } from '../server/tool-package-management-tools.js';
-import { ToolPackageStore } from '../server/tool-package-store.js';
+import { PluginPackageStore } from '../server/plugin-package-store.js';
 
 const emptyInspection = {
   catalog: { revisions: [], bindings: [] },
@@ -23,12 +23,12 @@ test('Agent can inspect, define, test, activate, immediately invoke, update safe
   timeout: 60_000,
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-agent-tool-package-'));
-  const store = new ToolPackageStore(root);
+  const store = new PluginPackageStore(root);
   const runtime = new HostExtensionRuntime();
   const controller = new HostExtensionController(
     runtime,
-    new InstalledToolPackageExtensionLoader(new StaticTrustedToolExtensionLoader(), store),
-    new HostExtensionStateStore(root),
+    new InstalledPluginPackageLoader(new StaticTrustedToolExtensionLoader(), store),
+    new HostPluginCompositionStore(root),
     () => assert.fail('Agent Tool failure must not drain the Host'),
   );
   const management = new HostToolPackageManagementTools(root, controller, runtime, store);
@@ -136,7 +136,7 @@ test('Agent can inspect, define, test, activate, immediately invoke, update safe
           { action: 'update', extensionId: 'calculator', revision: broken.revision },
           context,
         ),
-      /health_check failed/u,
+      /Extension handler is missing: Add/u,
     );
     assert.deepEqual(await invoke.impl({ toolName: 'Add', args: { left: 1, right: 4 } }, context), {
       sum: 5,
@@ -169,12 +169,12 @@ test('child author installs and in-process-tests a trusted candidate before the 
   timeout: 60_000,
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-child-tool-author-'));
-  const store = new ToolPackageStore(root);
+  const store = new PluginPackageStore(root);
   let runtime = new HostExtensionRuntime();
   let controller = new HostExtensionController(
     runtime,
-    new InstalledToolPackageExtensionLoader(new StaticTrustedToolExtensionLoader(), store),
-    new HostExtensionStateStore(root),
+    new InstalledPluginPackageLoader(new StaticTrustedToolExtensionLoader(), store),
+    new HostPluginCompositionStore(root),
     () => assert.fail('Tool author failure must not drain the Host'),
   );
   const management = new HostToolPackageManagementTools(root, controller, runtime, store);
@@ -251,8 +251,8 @@ test('child author installs and in-process-tests a trusted candidate before the 
     runtime = new HostExtensionRuntime();
     controller = new HostExtensionController(
       runtime,
-      new InstalledToolPackageExtensionLoader(new StaticTrustedToolExtensionLoader(), store),
-      new HostExtensionStateStore(root),
+      new InstalledPluginPackageLoader(new StaticTrustedToolExtensionLoader(), store),
+      new HostPluginCompositionStore(root),
       () => assert.fail('dotted Tool candidate recovery must not drain the Host'),
     );
     await controller.recover();

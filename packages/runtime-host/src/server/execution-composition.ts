@@ -115,17 +115,15 @@ import { HostExternalSessionCoordinator } from './external-session-coordinator.j
 import { HostExtensionController } from './extension-controller.js';
 import { HostExtensionTimerScheduler } from './extension-timer-scheduler.js';
 import {
-  InstalledToolPackageExtensionLoader,
+  InstalledPluginPackageLoader,
   StaticTrustedToolExtensionLoader,
   type StaticTrustedToolExtensionRevision,
 } from './extension-loader.js';
 import { HostExtensionRuntime, PROFILE_EXTENSION_SCOPE } from './extension-runtime.js';
-import { HostExtensionStateStore } from './extension-state-store.js';
+import { HostPluginCompositionStore } from './plugin-composition-store.js';
 import { HostExtensionUiStateStore } from './extension-ui-state-store.js';
-import { ToolPackageStore } from './tool-package-store.js';
 import { HostToolPackageManagementTools } from './tool-package-management-tools.js';
-import { UiPackageStore } from './ui-package-store.js';
-import { EventPackageStore } from './event-package-store.js';
+import { PluginPackageStore } from './plugin-package-store.js';
 import { HostEventPackageManagementTools } from './event-package-management-tools.js';
 import { HostExtensionPackageManagementTools } from './extension-package-management-tools.js';
 import {
@@ -244,44 +242,43 @@ export async function createExecutionRuntimeHostComposition(
         async (sessionId) => (await stores.sessionStore.readHeaderSnapshot(sessionId)).cwd,
       ),
   );
-  const extensions = new HostExtensionRuntime({
-    invocationTimeoutMs: 30_000,
-    failureThreshold: 3,
-  }, extensionTimers);
-  const toolPackageStore = new ToolPackageStore(context.owner.controlDirectory);
-  const uiPackageStore = new UiPackageStore(context.owner.controlDirectory);
-  const eventPackageStore = new EventPackageStore(context.owner.controlDirectory);
-  const extensionLoader = new InstalledToolPackageExtensionLoader(
+  const extensions = new HostExtensionRuntime(
+    {
+      invocationTimeoutMs: 30_000,
+      failureThreshold: 3,
+    },
+    extensionTimers,
+  );
+  const pluginPackageStore = new PluginPackageStore(context.owner.controlDirectory);
+  const extensionLoader = new InstalledPluginPackageLoader(
     new StaticTrustedToolExtensionLoader(options.trustedToolExtensions),
-    toolPackageStore,
-    uiPackageStore,
-    eventPackageStore,
+    pluginPackageStore,
   );
   const extensionController = new HostExtensionController(
     extensions,
     extensionLoader,
-    new HostExtensionStateStore(context.owner.controlDirectory),
+    new HostPluginCompositionStore(context.owner.controlDirectory),
     context.requestDrain,
     new HostExtensionUiStateStore(context.owner.controlDirectory),
-    uiPackageStore,
+    pluginPackageStore,
   );
   const toolPackageManagement = new HostToolPackageManagementTools(
     context.owner.controlDirectory,
     extensionController,
     extensions,
-    toolPackageStore,
+    pluginPackageStore,
   );
   const uiPackageManagement = new HostUiPackageManagementTools(
     context.owner.controlDirectory,
     extensionController,
     extensions,
-    uiPackageStore,
+    pluginPackageStore,
   );
   const eventPackageManagement = new HostEventPackageManagementTools(
     context.owner.controlDirectory,
     extensionController,
     extensions,
-    eventPackageStore,
+    pluginPackageStore,
   );
   const extensionPackageManagement = new HostExtensionPackageManagementTools(
     context.owner.controlDirectory,

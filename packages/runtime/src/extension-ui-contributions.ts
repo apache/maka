@@ -1,9 +1,5 @@
 import { createHash } from 'node:crypto';
-import type {
-  ExtensionActivationContext,
-  ExtensionDependencyDefinition,
-  ExtensionRevisionDefinition,
-} from './extension-lifecycle-kernel.js';
+import type { MakaContributionContext } from './plugin-runtime.js';
 
 export const EXTENSION_UI_DOCUMENT_MAX_BYTES = 1024 * 1024;
 export const EXTENSION_UI_SURFACES = ['app.root', 'app.overlay', 'app.slot'] as const;
@@ -89,22 +85,27 @@ export class ExtensionUiContributionRegistry {
     diagnostic?: string,
   ): void {
     validateIdentity('scopeId', scopeId);
-    this.#readiness.set(`${scopeId}\u0000${bindingId}`, Object.freeze({
-      bindingId,
-      revision,
-      status,
-      ...(diagnostic ? { diagnostic } : {}),
-    }));
+    this.#readiness.set(
+      `${scopeId}\u0000${bindingId}`,
+      Object.freeze({
+        bindingId,
+        revision,
+        status,
+        ...(diagnostic ? { diagnostic } : {}),
+      }),
+    );
   }
 
   inspectReadiness(scopeId?: string): readonly ExtensionUiReadinessInspection[] {
-    return Object.freeze([...this.#readiness.entries()]
-      .filter(([key]) => !scopeId || key.startsWith(`${scopeId}\u0000`))
-      .map(([, value]) => value));
+    return Object.freeze(
+      [...this.#readiness.entries()]
+        .filter(([key]) => !scopeId || key.startsWith(`${scopeId}\u0000`))
+        .map(([, value]) => value),
+    );
   }
 
   register(
-    context: Pick<ExtensionActivationContext, 'bindingId' | 'scopeId' | 'extensionId' | 'revision'>,
+    context: Pick<MakaContributionContext, 'bindingId' | 'scopeId' | 'extensionId' | 'revision'>,
     contribution: ExtensionUiContribution,
   ): () => void {
     validateContext(context);
@@ -168,64 +169,17 @@ export class ExtensionUiContributionRegistry {
 }
 
 export function contributeExtensionUi(
-  context: ExtensionActivationContext,
+  context: MakaContributionContext,
   registry: ExtensionUiContributionRegistry,
   contribution: ExtensionUiContribution,
 ): void {
   const unregister = registry.register(context, contribution);
   try {
-    context.runtimeContext.own(`ui:${contribution.id}`, unregister);
+    context.ownEffect(`ui:${contribution.id}`, unregister);
   } catch (error) {
     unregister();
     throw error;
   }
-}
-
-export interface TrustedUiExtensionRevisionInput {
-  readonly registry: ExtensionUiContributionRegistry;
-  readonly extensionId: string;
-  readonly revision: string;
-  readonly dependencies?: readonly ExtensionDependencyDefinition[];
-  readonly ui: readonly ExtensionUiContribution[];
-  readonly healthCheck?: () => void | Promise<void>;
-}
-
-export function defineTrustedUiExtensionRevision(
-  input: TrustedUiExtensionRevisionInput,
-): ExtensionRevisionDefinition {
-  validateIdentity('extensionId', input.extensionId);
-  if (!input.revision || typeof input.revision !== 'string') {
-    throw new ExtensionUiContributionError('invalid_ui', 'Revision is required');
-  }
-  if (!Array.isArray(input.ui) || input.ui.length === 0) {
-    throw new ExtensionUiContributionError('invalid_ui', 'UI revision requires a contribution');
-  }
-  const ids = new Set<string>();
-  const ui = Object.freeze(
-    input.ui.map((item) => {
-      validateExtensionUiContribution(item);
-      if (ids.has(item.id)) {
-        throw new ExtensionUiContributionError(
-          'ui_id_conflict',
-          `UI revision repeats contribution id "${item.id}"`,
-        );
-      }
-      ids.add(item.id);
-      return Object.freeze({ ...item });
-    }),
-  );
-  return Object.freeze({
-    extensionId: input.extensionId,
-    revision: input.revision,
-    ...(input.dependencies ? { dependencies: Object.freeze([...input.dependencies]) } : {}),
-    contributions: Object.freeze(ui.map(({ id }) => Object.freeze({ id, kind: 'ui' }))),
-    prepare: () => ({
-      ...(input.healthCheck ? { healthCheck: input.healthCheck } : {}),
-      activate: (context: ExtensionActivationContext) => {
-        for (const contribution of ui) contributeExtensionUi(context, input.registry, contribution);
-      },
-    }),
-  });
 }
 
 export function validateExtensionUiContribution(contribution: ExtensionUiContribution): void {
@@ -302,7 +256,7 @@ export function validateExtensionUiContribution(contribution: ExtensionUiContrib
 }
 
 function validateContext(
-  context: Pick<ExtensionActivationContext, 'bindingId' | 'scopeId' | 'extensionId' | 'revision'>,
+  context: Pick<MakaContributionContext, 'bindingId' | 'scopeId' | 'extensionId' | 'revision'>,
 ): void {
   validateIdentity('bindingId', context.bindingId);
   validateIdentity('scopeId', context.scopeId);

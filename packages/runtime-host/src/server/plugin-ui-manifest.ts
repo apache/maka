@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants, type Dirent } from 'node:fs';
 import { mkdir, open, readdir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, posix, resolve } from 'node:path';
-import { isCanonicalExtensionId } from '@maka/runtime/extension-lifecycle-kernel';
+import { isCanonicalExtensionId } from '@maka/runtime/plugin-runtime';
 import {
   EXTENSION_UI_DOCUMENT_MAX_BYTES,
   EXTENSION_UI_SURFACES,
@@ -10,7 +10,6 @@ import {
 } from '@maka/runtime/extension-ui-contributions';
 
 const MANIFEST_FILE = 'maka.extension.json';
-const STORE_DIRECTORY = 'ui-packages-v1';
 const MAX_FILES = 64;
 const MAX_FILE_BYTES = EXTENSION_UI_DOCUMENT_MAX_BYTES;
 const MAX_PACKAGE_BYTES = 2 * 1024 * 1024;
@@ -55,8 +54,8 @@ export interface InstalledUiPackage {
   readonly manifest: UiPackageManifest;
 }
 
-export class UiPackageStoreError extends Error {
-  readonly name = 'UiPackageStoreError';
+export class PluginUiManifestError extends Error {
+  readonly name = 'PluginUiManifestError';
   constructor(
     readonly code: 'not_found' | 'invalid_package' | 'already_installed' | 'persistence_failed',
     message: string,
@@ -72,146 +71,6 @@ interface PackageFile {
 }
 
 /** Content-addressed, root-private storage for client-only UI packages. */
-export class UiPackageStore {
-  readonly root: string;
-
-  constructor(controlDirectory: string) {
-    this.root = join(controlDirectory, STORE_DIRECTORY);
-  }
-
-  async install(sourcePath: string): Promise<InstalledUiPackage> {
-    const files = await readSourcePackage(sourcePath);
-    const manifestFile = files.find(({ path }) => path === MANIFEST_FILE);
-    if (!manifestFile) throw invalidPackage(`UI package is missing ${MANIFEST_FILE}`);
-    const manifest = decodeUiPackageManifest(parseJson(manifestFile.content));
-    for (const contribution of manifest.ui) {
-      const file = files.find(({ path }) => path === contribution.document);
-      if (!file) throw invalidPackage(`UI document does not exist: ${contribution.document}`);
-      validateHtml(file.content, contribution.document);
-    }
-    validateHostFiles(manifest, files);
-    const revision = packageRevision(files);
-    const extensionRoot = join(this.root, manifest.id);
-    const target = join(extensionRoot, revision);
-    try {
-      const installed = await this.load(manifest.id, revision);
-      if (JSON.stringify(installed.manifest) === JSON.stringify(manifest)) return installed;
-      throw new UiPackageStoreError(
-        'already_installed',
-        `UI package revision has conflicting metadata: ${manifest.id}@${revision}`,
-      );
-    } catch (error) {
-      if (!(error instanceof UiPackageStoreError) || error.code !== 'not_found') throw error;
-    }
-    const staging = join(this.root, `.staging-${randomUUID()}`);
-    let committed = false;
-    try {
-      await mkdir(this.root, { recursive: true, mode: 0o700 });
-      await mkdir(staging, { mode: 0o700 });
-      for (const file of files) await writeStoredFile(staging, file);
-      await syncTree(staging, files);
-      await mkdir(extensionRoot, { recursive: true, mode: 0o700 });
-      await rename(staging, target);
-      committed = true;
-      await syncDirectory(extensionRoot);
-      return Object.freeze({ extensionId: manifest.id, revision, root: target, manifest });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST')
-        return this.load(manifest.id, revision);
-      throw persistenceFailure(`Unable to install UI package ${manifest.id}@${revision}`, error);
-    } finally {
-      if (!committed) await rm(staging, { recursive: true, force: true }).catch(() => undefined);
-    }
-  }
-
-  async list(): Promise<readonly InstalledUiPackage[]> {
-    let extensions: Dirent[];
-    try {
-      extensions = await readdir(this.root, { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return Object.freeze([]);
-      throw persistenceFailure('Unable to list installed UI packages', error);
-    }
-    const packages: InstalledUiPackage[] = [];
-    for (const extension of extensions.sort(compareDirent)) {
-      if (!extension.isDirectory() || !isCanonicalExtensionId(extension.name)) continue;
-      const revisions = await readdir(join(this.root, extension.name), { withFileTypes: true });
-      for (const revision of revisions.sort(compareDirent)) {
-        if (revision.isDirectory() && REVISION_PATTERN.test(revision.name)) {
-          packages.push(await this.load(extension.name, revision.name));
-        }
-      }
-    }
-    return Object.freeze(packages);
-  }
-
-  async load(extensionId: string, revision: string): Promise<InstalledUiPackage> {
-    requireId(extensionId);
-    requireRevision(revision);
-    const root = join(this.root, extensionId, revision);
-    try {
-      if (!(await stat(root)).isDirectory())
-        throw invalidPackage('Installed UI package is invalid');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new UiPackageStoreError(
-          'not_found',
-          `UI package revision is not installed: ${extensionId}@${revision}`,
-        );
-      }
-      if (error instanceof UiPackageStoreError) throw error;
-      throw persistenceFailure(`Unable to read UI package ${extensionId}@${revision}`, error);
-    }
-    const files = await readSourcePackage(root);
-    const manifestFile = files.find(({ path }) => path === MANIFEST_FILE);
-    if (!manifestFile) throw invalidPackage(`Installed UI package is missing ${MANIFEST_FILE}`);
-    const manifest = decodeUiPackageManifest(parseJson(manifestFile.content));
-    if (
-      manifest.id !== extensionId ||
-      (packageRevision(files) !== revision && legacyPackageRevision(files) !== revision)
-    ) {
-      throw invalidPackage(
-        `Installed UI package integrity check failed: ${extensionId}@${revision}`,
-      );
-    }
-    for (const item of manifest.ui) {
-      const file = files.find(({ path }) => path === item.document);
-      if (!file) throw invalidPackage(`UI document does not exist: ${item.document}`);
-      validateHtml(file.content, item.document);
-    }
-    validateHostFiles(manifest, files);
-    return Object.freeze({ extensionId, revision, root, manifest });
-  }
-
-  async readDocument(installed: InstalledUiPackage, relativePath: string): Promise<string> {
-    const path = packagePath(relativePath, 'document');
-    if (!installed.manifest.ui.some((item) => item.document === path)) {
-      throw invalidPackage(`UI document is not declared: ${path}`);
-    }
-    const content = await readFile(join(installed.root, ...path.split('/')));
-    validateHtml(content, path);
-    return content.toString('utf8');
-  }
-
-  async uninstall(extensionId: string, revision: string): Promise<void> {
-    await this.load(extensionId, revision);
-    const target = join(this.root, extensionId, revision);
-    try {
-      await rm(target, { recursive: true, force: false });
-      const parent = dirname(target);
-      if ((await readdir(parent)).length === 0) await rm(parent, { recursive: true, force: false });
-      await syncDirectory(this.root).catch(() => undefined);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw persistenceFailure(
-          `Unable to uninstall UI package ${extensionId}@${revision}`,
-          error,
-        );
-      }
-    }
-  }
-}
-
 export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
   const root = exactRecord(value, [
     'schemaVersion',
@@ -377,7 +236,7 @@ async function readSourcePackage(sourcePath: string): Promise<readonly PackageFi
     if (!(await stat(root)).isDirectory())
       throw invalidPackage('UI package source is not a directory');
   } catch (error) {
-    if (error instanceof UiPackageStoreError) throw error;
+    if (error instanceof PluginUiManifestError) throw error;
     throw invalidPackage('UI package source directory is unavailable', error);
   }
   const paths: string[] = [];
@@ -550,12 +409,12 @@ function parseJson(content: Buffer): unknown {
   }
 }
 
-function invalidPackage(message: string, cause?: unknown): UiPackageStoreError {
-  return new UiPackageStoreError('invalid_package', message, { cause });
+function invalidPackage(message: string, cause?: unknown): PluginUiManifestError {
+  return new PluginUiManifestError('invalid_package', message, { cause });
 }
 
-function persistenceFailure(message: string, cause?: unknown): UiPackageStoreError {
-  return new UiPackageStoreError('persistence_failed', message, { cause });
+function persistenceFailure(message: string, cause?: unknown): PluginUiManifestError {
+  return new PluginUiManifestError('persistence_failed', message, { cause });
 }
 
 function compareDirent(left: Dirent, right: Dirent): number {

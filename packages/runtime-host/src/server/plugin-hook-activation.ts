@@ -11,17 +11,17 @@ import type {
   ExtensionTimerContribution,
   ExtensionTimerInvocationContext,
 } from '@maka/runtime/extension-timer-contributions';
-import type { InstalledToolPackage, ToolPackageManifest } from './tool-package-store.js';
+import type { InstalledToolPackage, ToolPackageManifest } from './plugin-runtime-manifest.js';
 import {
   InProcessPackageActivation,
   type PackageContinuation,
   type PackageEventEmitter,
   type PackageServiceCaller,
 } from './in-process-package-runtime.js';
-import type { InstalledEventPackage } from './event-package-store.js';
+import type { InstalledEventPackage } from './plugin-hook-manifest.js';
 
-/** One trusted Event Extension activation backed by a live in-process module. */
-export class EventPackageActivation {
+/** One trusted Hook plugin activation backed by a live in-process module. */
+export class PluginHookActivation {
   readonly #runtime: InProcessPackageActivation;
   readonly #ownsRuntime: boolean;
 

@@ -8,8 +8,8 @@ import type { OperationKey, OperationOutcome } from '../protocol/index.js';
 import type { ConnectionContext } from './operation-dispatcher.js';
 import type { HostExtensionController } from './extension-controller.js';
 import type { HostExtensionRuntime } from './extension-runtime.js';
-import { EventPackageActivation } from './event-package-activation.js';
-import { EventPackageStore } from './event-package-store.js';
+import { PluginHookActivation } from './plugin-hook-activation.js';
+import { PluginPackageStore } from './plugin-package-store.js';
 
 const eventName = z
   .string()
@@ -169,7 +169,7 @@ export class HostEventPackageManagementTools {
     controlDirectory: string,
     private readonly controller: HostExtensionController,
     private readonly runtime: HostExtensionRuntime,
-    private readonly store: EventPackageStore,
+    private readonly store: PluginPackageStore,
   ) {
     this.#draftRoot = join(controlDirectory, 'event-package-drafts-v1');
   }
@@ -310,8 +310,8 @@ export class HostEventPackageManagementTools {
       permissionArgs: (input: z.infer<typeof testInput>) => input,
       executionFacts: managementExecutionFacts(),
       impl: async (input: z.infer<typeof testInput>, context: MakaToolContext) => {
-        const installed = await this.store.load(input.extensionId, input.revision);
-        const activation = new EventPackageActivation(installed);
+        const installed = await this.store.loadEvent(input.extensionId, input.revision);
+        const activation = new PluginHookActivation(installed);
         try {
           await activation.healthCheck();
           const listener = activation
@@ -362,8 +362,8 @@ export class HostEventPackageManagementTools {
       permissionArgs: (input: z.infer<typeof serviceTestInput>) => input,
       executionFacts: managementExecutionFacts(),
       impl: async (input: z.infer<typeof serviceTestInput>, context: MakaToolContext) => {
-        const installed = await this.store.load(input.extensionId, input.revision);
-        const activation = new EventPackageActivation(installed);
+        const installed = await this.store.loadEvent(input.extensionId, input.revision);
+        const activation = new PluginHookActivation(installed);
         try {
           await activation.healthCheck();
           const service = activation.services().find(({ name }) => name === input.service);

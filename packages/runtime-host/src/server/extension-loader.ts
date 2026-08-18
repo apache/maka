@@ -1,4 +1,4 @@
-import { isCanonicalExtensionId } from '@maka/runtime/extension-lifecycle-kernel';
+import { isCanonicalExtensionId } from '@maka/runtime/plugin-runtime';
 import type {
   ExtensionConfigurationScalar,
   ExtensionPackageContractProjection,
@@ -6,7 +6,7 @@ import type {
 } from '../protocol/index.js';
 import type {
   HostExtensionRevisionInput,
-  HostPreparedToolExtensionRevisionInput,
+  HostPreparedPluginPackageInput,
   HostToolExtensionRevisionInput,
   HostTrustedToolExtensionRevisionInput,
   HostUiExtensionRevisionInput,
@@ -18,31 +18,19 @@ import type {
   PackageServiceCaller,
 } from './in-process-package-runtime.js';
 import { InProcessPackageActivation } from './in-process-package-runtime.js';
-import { EventPackageActivation } from './event-package-activation.js';
-import {
-  type InstalledEventPackage,
-  EventPackageStore,
-  EventPackageStoreError,
-} from './event-package-store.js';
-import {
-  type InstalledToolPackage,
-  ToolPackageStore,
-  ToolPackageStoreError,
-} from './tool-package-store.js';
-import {
-  type InstalledUiPackage,
-  UiPackageStore,
-  UiPackageStoreError,
-} from './ui-package-store.js';
+import { PluginHookActivation } from './plugin-hook-activation.js';
+import { type InstalledEventPackage } from './plugin-hook-manifest.js';
+import { type InstalledToolPackage } from './plugin-runtime-manifest.js';
+import { type InstalledUiPackage } from './plugin-ui-manifest.js';
 import { UiPackageService } from './ui-package-service.js';
 import { dirname, join } from 'node:path';
-import { unlink, writeFile } from 'node:fs/promises';
 import { exportExtensionBundle, materializeExtensionPackage } from './extension-bundle.js';
+import { type ExtensionPackageManifest } from './extension-package-manifest.js';
 import {
-  type ExtensionPackageManifest,
-  ExtensionPackageManifestError,
-  loadExtensionPackageManifest,
-} from './extension-package-manifest.js';
+  type InstalledPluginPackage,
+  PluginPackageStore,
+  PluginPackageStoreError,
+} from './plugin-package-store.js';
 
 export type StaticTrustedToolExtensionRevision = HostTrustedToolExtensionRevisionInput;
 
@@ -187,8 +175,7 @@ export class StaticTrustedToolExtensionLoader implements HostTrustedToolExtensio
 }
 
 /** Combines Host-composed static Tools with real packages installed in the root-private Store. */
-export class InstalledToolPackageExtensionLoader implements HostTrustedToolExtensionLoader {
-  readonly #transactionPath: string;
+export class InstalledPluginPackageLoader implements HostTrustedToolExtensionLoader {
   #configurationFor: (bindingId: string) => Readonly<Record<string, ExtensionConfigurationScalar>> =
     () => Object.freeze({});
   #emitEvent: (
@@ -211,12 +198,8 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
 
   constructor(
     private readonly statics: StaticTrustedToolExtensionLoader,
-    private readonly packages: ToolPackageStore,
-    private readonly uiPackages?: UiPackageStore,
-    private readonly eventPackages?: EventPackageStore,
-  ) {
-    this.#transactionPath = join(dirname(packages.root), 'extension-package-transaction-v1.json');
-  }
+    private readonly packages: PluginPackageStore,
+  ) {}
 
   setConfigurationResolver(
     resolver: (bindingId: string) => Readonly<Record<string, ExtensionConfigurationScalar>>,
@@ -249,35 +232,16 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
 
   async list(): Promise<readonly TrustedExtensionRevisionProjection[]> {
     const combined = [...(await this.statics.list())];
-    const installedByRevision = new Map<string, TrustedExtensionRevisionProjection>();
     for (const installed of await this.packages.list()) {
-      const projection = projectPackage(installed);
-      installedByRevision.set(revisionKey(projection.extensionId, projection.revision), projection);
+      combined.push(projectPluginPackage(installed));
     }
-    if (this.uiPackages) {
-      for (const installed of await this.uiPackages.list()) {
-        const projection = projectUiPackage(installed);
-        const key = revisionKey(projection.extensionId, projection.revision);
-        const current = installedByRevision.get(key);
-        installedByRevision.set(key, current ? mergeProjection(current, projection) : projection);
-      }
-    }
-    if (this.eventPackages) {
-      for (const installed of await this.eventPackages.list()) {
-        const projection = projectEventPackage(installed);
-        const key = revisionKey(projection.extensionId, projection.revision);
-        const current = installedByRevision.get(key);
-        installedByRevision.set(key, current ? mergeProjection(current, projection) : projection);
-      }
-    }
-    combined.push(...installedByRevision.values());
     const keys = new Set<string>();
     for (const item of combined) {
       const key = revisionKey(item.extensionId, item.revision);
       if (keys.has(key)) {
         throw new HostExtensionLoaderError(
           'invalid_definition',
-          `Tool Extension revision exists in both static and package catalogs: ${item.extensionId}@${item.revision}`,
+          `Plugin revision exists in both static and installed catalogs: ${item.extensionId}@${item.revision}`,
         );
       }
       keys.add(key);
@@ -291,227 +255,66 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
     } catch (error) {
       if (!(error instanceof HostExtensionLoaderError) || error.code !== 'not_found') throw error;
     }
-    const tool = await this.#loadTool(extensionId, revision);
-    const ui = await this.#loadUi(extensionId, revision);
-    const event = await this.#loadEvent(extensionId, revision);
-    const root = tool?.root ?? ui?.root ?? event?.root;
-    const metadata = root ? await loadAndValidateMetadata(root, tool, ui, event) : undefined;
-    if (root) {
-      return combinedPackageRevisionInput({
-        tool,
-        ui: ui && this.uiPackages ? { installed: ui, store: this.uiPackages } : undefined,
-        event,
-        metadata,
-        configurationFor: this.#configurationFor,
-        emitEvent: (...args) => this.#emitEvent(...args),
-        callService: (...args) => this.#callService(...args),
-      });
-    }
-    throw new HostExtensionLoaderError(
-      'not_found',
-      `Extension revision is not available: ${extensionId}@${revision}`,
-    );
+    const installed = await this.#load(extensionId, revision);
+    const { tool, ui, event } = packageViews(installed);
+    return combinedPackageRevisionInput({
+      tool,
+      ui: ui
+        ? {
+            installed: ui,
+            store: {
+              readDocument: (_package, path) => this.packages.readText(installed, path),
+            },
+          }
+        : undefined,
+      event,
+      metadata: installed.manifest,
+      configurationFor: this.#configurationFor,
+      emitEvent: (...args) => this.#emitEvent(...args),
+      callService: (...args) => this.#callService(...args),
+    });
   }
 
   async installPackage(sourcePath: string): Promise<TrustedExtensionRevisionProjection> {
-    await writeFile(this.#transactionPath, `${JSON.stringify({ operation: 'install', sourcePath, startedAt: Date.now() })}\n`, { mode: 0o600 }).catch(() => undefined);
     const materialized = await materializeExtensionPackage(
       sourcePath,
       dirname(this.packages.root),
     ).catch((error) => {
       throw translatePackageError(error);
     });
-    let installedTool: InstalledToolPackage | undefined;
-    let installedUi: InstalledUiPackage | undefined;
-    let installedEvent: InstalledEventPackage | undefined;
-    let toolsBefore = new Set<string>();
-    let uiBefore = new Set<string>();
-    let eventsBefore = new Set<string>();
     try {
-      toolsBefore = new Set(
+      const before = new Set(
         (await this.packages.list()).map((item) => revisionKey(item.extensionId, item.revision)),
       );
-      uiBefore = new Set(
-        this.uiPackages
-          ? (await this.uiPackages.list()).map((item) =>
-              revisionKey(item.extensionId, item.revision),
-            )
-          : [],
-      );
-      eventsBefore = new Set(
-        this.eventPackages
-          ? (await this.eventPackages.list()).map((item) =>
-              revisionKey(item.extensionId, item.revision),
-            )
-          : [],
-      );
-      const packageRoot = materialized.root;
-      const manifest = await loadExtensionPackageManifest(packageRoot);
-      if (!manifest) {
-        throw new HostExtensionLoaderError(
-          'invalid_definition',
-          'Extension package is missing maka.extension.json',
-        );
-      }
-      const runtime = manifest.runtime as Record<string, unknown> | undefined;
-      const hasUi = Boolean(this.uiPackages && manifest.ui);
-      const hasTool = Array.isArray(runtime?.tools) && runtime.tools.length > 0;
-      const hasEvent = Boolean(
-        this.eventPackages &&
-          (['events', 'listeners', 'services', 'timers'] as const).some(
-            (key) => Array.isArray(runtime?.[key]) && runtime[key].length > 0,
-          ),
-      );
-      if (!hasUi && !hasTool && !hasEvent) {
-        throw new HostExtensionLoaderError(
-          'invalid_definition',
-          'maka.extension.json must declare at least one Runtime or UI contribution',
-        );
-      }
-      installedTool = hasTool ? await this.packages.install(packageRoot) : undefined;
-      installedUi = hasUi ? await this.uiPackages!.install(packageRoot) : undefined;
-      installedEvent = hasEvent ? await this.eventPackages!.install(packageRoot) : undefined;
-      const installed = installedTool ?? installedUi ?? installedEvent!;
-      try {
-        await loadAndValidateMetadata(installed.root, installedTool, installedUi, installedEvent);
-      } catch (error) {
-        if (installedTool) {
-          await this.packages
-            .uninstall(installedTool.extensionId, installedTool.revision)
-            .catch(() => undefined);
-        }
-        if (installedUi) {
-          await this.uiPackages!.uninstall(installedUi.extensionId, installedUi.revision).catch(
-            () => undefined,
-          );
-        }
-        if (installedEvent) {
-          await this.eventPackages!.uninstall(
-            installedEvent.extensionId,
-            installedEvent.revision,
-          ).catch(() => undefined);
-        }
-        throw error;
-      }
-      if (
-        [installedTool, installedUi, installedEvent]
-          .filter((item): item is NonNullable<typeof item> => Boolean(item))
-          .some(
-            (item) =>
-              item.extensionId !== installed.extensionId || item.revision !== installed.revision,
-          )
-      ) {
-        if (installedTool)
-          await this.packages
-            .uninstall(installedTool.extensionId, installedTool.revision)
-            .catch(() => undefined);
-        if (installedUi)
-          await this.uiPackages!.uninstall(installedUi.extensionId, installedUi.revision).catch(
-            () => undefined,
-          );
-        if (installedEvent)
-          await this.eventPackages!.uninstall(
-            installedEvent.extensionId,
-            installedEvent.revision,
-          ).catch(() => undefined);
-        throw new HostExtensionLoaderError(
-          'invalid_definition',
-          'All contributions in maka.extension.json must share one id and content Revision',
-        );
-      }
+      const installed = await this.packages.install(materialized.root);
       const staticConflict = (await this.statics.list()).some(
         (item) =>
           item.extensionId === installed.extensionId && item.revision === installed.revision,
       );
       if (staticConflict) {
-        if (installedTool)
+        if (!before.has(revisionKey(installed.extensionId, installed.revision))) {
           await this.packages
             .uninstall(installed.extensionId, installed.revision)
             .catch(() => undefined);
-        if (installedUi)
-          await this.uiPackages!.uninstall(installed.extensionId, installed.revision).catch(
-            () => undefined,
-          );
-        if (installedEvent)
-          await this.eventPackages!.uninstall(installed.extensionId, installed.revision).catch(
-            () => undefined,
-          );
+        }
         throw new HostExtensionLoaderError(
           'invalid_definition',
           `Installed package conflicts with a static revision: ${installed.extensionId}@${installed.revision}`,
         );
       }
-      const toolProjection = installedTool ? projectPackage(installedTool) : undefined;
-      const uiProjection = installedUi ? projectUiPackage(installedUi) : undefined;
-      const eventProjection = installedEvent ? projectEventPackage(installedEvent) : undefined;
-      const projections = [toolProjection, uiProjection, eventProjection].filter(
-        (item): item is TrustedExtensionRevisionProjection => Boolean(item),
-      );
-      return projections.reduce(mergeProjection);
+      return projectPluginPackage(installed);
     } catch (error) {
-      if (
-        installedTool &&
-        !toolsBefore.has(revisionKey(installedTool.extensionId, installedTool.revision))
-      ) {
-        await this.packages
-          .uninstall(installedTool.extensionId, installedTool.revision)
-          .catch(() => undefined);
-      }
-      if (
-        installedEvent &&
-        this.eventPackages &&
-        !eventsBefore.has(revisionKey(installedEvent.extensionId, installedEvent.revision))
-      ) {
-        await this.eventPackages
-          .uninstall(installedEvent.extensionId, installedEvent.revision)
-          .catch(() => undefined);
-      }
-      if (
-        installedUi &&
-        this.uiPackages &&
-        !uiBefore.has(revisionKey(installedUi.extensionId, installedUi.revision))
-      ) {
-        await this.uiPackages
-          .uninstall(installedUi.extensionId, installedUi.revision)
-          .catch(() => undefined);
-      }
       throw translatePackageError(error);
     } finally {
       await materialized.dispose();
-      await unlink(this.#transactionPath).catch(() => undefined);
     }
   }
 
   async contracts(): Promise<readonly ExtensionPackageContractProjection[]> {
     const contracts = [...(await this.statics.contracts())];
-    const installed = new Map<
-      string,
-      {
-        tool?: InstalledToolPackage;
-        ui?: InstalledUiPackage;
-        event?: InstalledEventPackage;
-      }
-    >();
-    for (const tool of await this.packages.list()) {
-      installed.set(revisionKey(tool.extensionId, tool.revision), { tool });
-    }
-    if (this.uiPackages) {
-      for (const ui of await this.uiPackages.list()) {
-        const key = revisionKey(ui.extensionId, ui.revision);
-        installed.set(key, { ...installed.get(key), ui });
-      }
-    }
-    if (this.eventPackages) {
-      for (const event of await this.eventPackages.list()) {
-        const key = revisionKey(event.extensionId, event.revision);
-        installed.set(key, { ...installed.get(key), event });
-      }
-    }
-    for (const { tool, ui, event } of installed.values()) {
-      const root = tool?.root ?? ui?.root ?? event?.root;
-      if (!root) continue;
-      const metadata = await loadAndValidateMetadata(root, tool, ui, event);
-      contracts.push(projectContract(tool, ui, event, metadata));
+    for (const installed of await this.packages.list()) {
+      const { tool, ui, event } = packageViews(installed);
+      contracts.push(projectContract(tool, ui, event, installed.manifest));
     }
     return Object.freeze(
       contracts.sort(
@@ -523,23 +326,13 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
   }
 
   async exportPackage(extensionId: string, revision: string, targetPath: string): Promise<void> {
-    const tool = await this.#loadTool(extensionId, revision);
-    const ui = await this.#loadUi(extensionId, revision);
-    const event = await this.#loadEvent(extensionId, revision);
-    const installed = tool ?? ui ?? event;
-    if (!installed) {
-      throw new HostExtensionLoaderError(
-        'not_found',
-        `Extension revision is not installed: ${extensionId}@${revision}`,
-      );
-    }
+    const installed = await this.#load(extensionId, revision);
     await exportExtensionBundle(installed.root, targetPath).catch((error) => {
       throw translatePackageError(error);
     });
   }
 
   async uninstallPackage(extensionId: string, revision: string): Promise<void> {
-    await writeFile(this.#transactionPath, `${JSON.stringify({ operation: 'uninstall', extensionId, revision, startedAt: Date.now() })}\n`, { mode: 0o600 }).catch(() => undefined);
     const staticRevision = (await this.statics.list()).some(
       (item) => item.extensionId === extensionId && item.revision === revision,
     );
@@ -550,78 +343,72 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
       );
     }
     try {
-      const tool = await this.#loadTool(extensionId, revision);
-      const ui = await this.#loadUi(extensionId, revision);
-      const event = await this.#loadEvent(extensionId, revision);
-      if (!tool && !ui && !event)
-        throw new HostExtensionLoaderError(
-          'not_found',
-          `Extension revision is not installed: ${extensionId}@${revision}`,
-        );
-      const restoreSource = tool?.root ?? ui?.root ?? event!.root;
-      const removed: Array<() => Promise<void>> = [];
-      if (event && this.eventPackages) {
-        await this.eventPackages.uninstall(extensionId, revision);
-        removed.push(() => this.eventPackages!.install(restoreSource).then(() => undefined));
-      }
-      if (ui && this.uiPackages) {
-        try {
-          await this.uiPackages.uninstall(extensionId, revision);
-          removed.push(() => this.uiPackages!.install(restoreSource).then(() => undefined));
-        } catch (error) {
-          await Promise.allSettled(removed.map((restore) => restore()));
-          throw error;
-        }
-      }
-      if (tool) {
-        try {
-          await this.packages.uninstall(extensionId, revision);
-        } catch (error) {
-          await Promise.allSettled(removed.map((restore) => restore()));
-          throw error;
-        }
-      }
+      await this.packages.uninstall(extensionId, revision);
     } catch (error) {
       throw translatePackageError(error);
-    } finally {
-      await unlink(this.#transactionPath).catch(() => undefined);
     }
   }
 
-  async #loadTool(
-    extensionId: string,
-    revision: string,
-  ): Promise<InstalledToolPackage | undefined> {
+  async #load(extensionId: string, revision: string): Promise<InstalledPluginPackage> {
     try {
       return await this.packages.load(extensionId, revision);
     } catch (error) {
-      if (error instanceof ToolPackageStoreError && error.code === 'not_found') return undefined;
       throw translatePackageError(error);
     }
   }
+}
 
-  async #loadUi(extensionId: string, revision: string): Promise<InstalledUiPackage | undefined> {
-    if (!this.uiPackages) return undefined;
-    try {
-      return await this.uiPackages.load(extensionId, revision);
-    } catch (error) {
-      if (error instanceof UiPackageStoreError && error.code === 'not_found') return undefined;
-      throw translatePackageError(error);
-    }
-  }
+function packageViews(installed: InstalledPluginPackage): {
+  readonly tool?: InstalledToolPackage;
+  readonly ui?: InstalledUiPackage;
+  readonly event?: InstalledEventPackage;
+} {
+  return Object.freeze({
+    ...(installed.toolManifest
+      ? {
+          tool: Object.freeze({
+            extensionId: installed.extensionId,
+            revision: installed.revision,
+            root: installed.root,
+            entry: join(installed.root, ...installed.toolManifest.entry.split('/')),
+            manifest: installed.toolManifest,
+          }),
+        }
+      : {}),
+    ...(installed.uiManifest
+      ? {
+          ui: Object.freeze({
+            extensionId: installed.extensionId,
+            revision: installed.revision,
+            root: installed.root,
+            manifest: installed.uiManifest,
+          }),
+        }
+      : {}),
+    ...(installed.eventManifest
+      ? {
+          event: Object.freeze({
+            extensionId: installed.extensionId,
+            revision: installed.revision,
+            root: installed.root,
+            entry: join(installed.root, ...installed.eventManifest.entry.split('/')),
+            manifest: installed.eventManifest,
+          }),
+        }
+      : {}),
+  });
+}
 
-  async #loadEvent(
-    extensionId: string,
-    revision: string,
-  ): Promise<InstalledEventPackage | undefined> {
-    if (!this.eventPackages) return undefined;
-    try {
-      return await this.eventPackages.load(extensionId, revision);
-    } catch (error) {
-      if (error instanceof EventPackageStoreError && error.code === 'not_found') return undefined;
-      throw translatePackageError(error);
-    }
-  }
+function projectPluginPackage(
+  installed: InstalledPluginPackage,
+): TrustedExtensionRevisionProjection {
+  const { tool, ui, event } = packageViews(installed);
+  const projections = [
+    tool ? projectPackage(tool) : undefined,
+    ui ? projectUiPackage(ui) : undefined,
+    event ? projectEventPackage(event) : undefined,
+  ].filter((item): item is TrustedExtensionRevisionProjection => Boolean(item));
+  return projections.reduce(mergeProjection);
 }
 
 function projectPackage(installed: InstalledToolPackage): TrustedExtensionRevisionProjection {
@@ -635,7 +422,9 @@ function projectPackage(installed: InstalledToolPackage): TrustedExtensionRevisi
 }
 
 async function uiPackageRevisionInput(
-  store: UiPackageStore,
+  store: {
+    readDocument(installed: InstalledUiPackage, path: string): Promise<string>;
+  },
   installed: InstalledUiPackage,
   metadata?: ExtensionPackageManifest,
 ): Promise<HostUiExtensionRevisionInput> {
@@ -716,7 +505,12 @@ function projectEventPackage(installed: InstalledEventPackage): TrustedExtension
 
 async function combinedPackageRevisionInput(input: {
   readonly tool?: InstalledToolPackage;
-  readonly ui?: { readonly installed: InstalledUiPackage; readonly store: UiPackageStore };
+  readonly ui?: {
+    readonly installed: InstalledUiPackage;
+    readonly store: {
+      readDocument(installed: InstalledUiPackage, path: string): Promise<string>;
+    };
+  };
   readonly event?: InstalledEventPackage;
   readonly metadata?: ExtensionPackageManifest;
   readonly configurationFor: (
@@ -735,7 +529,7 @@ async function combinedPackageRevisionInput(input: {
     payload: unknown,
     context: ExtensionServiceInvocationContext,
   ) => Promise<unknown>;
-}): Promise<HostPreparedToolExtensionRevisionInput> {
+}): Promise<HostPreparedPluginPackageInput> {
   const installed = input.tool ?? input.ui?.installed ?? input.event;
   if (!installed) throw new HostExtensionLoaderError('not_found', 'Extension package is missing');
   const uiInput = input.ui
@@ -778,7 +572,7 @@ async function combinedPackageRevisionInput(input: {
             : {}),
         }
       : {}),
-    prepare: async (context: Parameters<HostPreparedToolExtensionRevisionInput['prepare']>[0]) => {
+    load: async (context: Parameters<HostPreparedPluginPackageInput['load']>[0]) => {
       const configuration = configurationFor(context.bindingId);
       const emitEvent = (
         event: string,
@@ -824,7 +618,7 @@ async function combinedPackageRevisionInput(input: {
         ? new InProcessPackageActivation(input.tool, configuration, emitEvent, callService)
         : undefined;
       const eventActivation = input.event
-        ? new EventPackageActivation(
+        ? new PluginHookActivation(
             input.event,
             configuration,
             emitEvent,
@@ -905,30 +699,6 @@ function mergeProjection(
   });
 }
 
-async function loadAndValidateMetadata(
-  root: string,
-  tool: InstalledToolPackage | undefined,
-  ui: InstalledUiPackage | undefined,
-  event: InstalledEventPackage | undefined,
-): Promise<ExtensionPackageManifest | undefined> {
-  const metadata = await loadExtensionPackageManifest(root);
-  if (!metadata) return undefined;
-  const manifests = [tool?.manifest, ui?.manifest, event?.manifest].filter(
-    (manifest): manifest is NonNullable<typeof manifest> => Boolean(manifest),
-  );
-  if (
-    manifests.some(
-      (manifest) => manifest.id !== metadata.id || manifest.version !== metadata.version,
-    )
-  ) {
-    throw new HostExtensionLoaderError(
-      'invalid_definition',
-      'maka.extension.json identity and version must match every decoded contribution',
-    );
-  }
-  return metadata;
-}
-
 function projectContract(
   tool: InstalledToolPackage | undefined,
   ui: InstalledUiPackage | undefined,
@@ -1005,7 +775,7 @@ function projectContract(
 
 function translatePackageError(error: unknown): HostExtensionLoaderError {
   if (error instanceof HostExtensionLoaderError) return error;
-  if (error instanceof ToolPackageStoreError) {
+  if (error instanceof PluginPackageStoreError) {
     return new HostExtensionLoaderError(
       error.code === 'not_found'
         ? 'not_found'
@@ -1015,31 +785,6 @@ function translatePackageError(error: unknown): HostExtensionLoaderError {
       error.message,
       { cause: error },
     );
-  }
-  if (error instanceof UiPackageStoreError) {
-    return new HostExtensionLoaderError(
-      error.code === 'not_found'
-        ? 'not_found'
-        : error.code === 'invalid_package' || error.code === 'already_installed'
-          ? 'invalid_definition'
-          : 'load_failed',
-      error.message,
-      { cause: error },
-    );
-  }
-  if (error instanceof EventPackageStoreError) {
-    return new HostExtensionLoaderError(
-      error.code === 'not_found'
-        ? 'not_found'
-        : error.code === 'invalid_package' || error.code === 'already_installed'
-          ? 'invalid_definition'
-          : 'load_failed',
-      error.message,
-      { cause: error },
-    );
-  }
-  if (error instanceof ExtensionPackageManifestError) {
-    return new HostExtensionLoaderError('invalid_definition', error.message, { cause: error });
   }
   return new HostExtensionLoaderError('load_failed', 'Extension package operation failed', {
     cause: error,

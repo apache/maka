@@ -14,7 +14,7 @@ import type { ConnectionContext } from './operation-dispatcher.js';
 import type { HostExtensionController } from './extension-controller.js';
 import type { HostExtensionRuntime } from './extension-runtime.js';
 import { InProcessPackageActivation } from './in-process-package-runtime.js';
-import { ToolPackageStore } from './tool-package-store.js';
+import { PluginPackageStore } from './plugin-package-store.js';
 
 const MANAGEMENT_TOOL_NAMES = new Set([
   'inspect_package',
@@ -150,7 +150,7 @@ export class HostToolPackageManagementTools {
     controlDirectory: string,
     private readonly controller: HostExtensionController,
     private readonly runtime: HostExtensionRuntime,
-    private readonly store: ToolPackageStore,
+    private readonly store: PluginPackageStore,
   ) {
     this.#draftRoot = join(controlDirectory, 'tool-package-drafts-v1');
   }
@@ -267,7 +267,7 @@ export class HostToolPackageManagementTools {
       permissionArgs: (args: z.infer<typeof testInput>) => args,
       executionFacts: managementExecutionFacts(),
       impl: async (input: z.infer<typeof testInput>, context: MakaToolContext) => {
-        const installed = await this.store.load(input.extensionId, input.revision);
+        const installed = await this.store.loadTool(input.extensionId, input.revision);
         const activation = new InProcessPackageActivation(installed);
         try {
           await activation.healthCheck(installed.manifest.tools.map(({ handler }) => handler));
@@ -356,7 +356,7 @@ export class HostToolPackageManagementTools {
     extensionId: string,
     revision: string,
   ): Promise<Record<string, unknown>> {
-    const installed = await this.store.load(extensionId, revision);
+    const installed = await this.store.loadTool(extensionId, revision);
     return {
       ...result,
       tools: installed.manifest.tools.map((tool) => ({
@@ -393,7 +393,7 @@ export class HostToolPackageManagementTools {
         await validateArgs(tool, input.args);
         const result = await tool.impl(input.args, context);
         if (ownership) {
-          const installed = await this.store.load(ownership.extensionId, ownership.revision);
+          const installed = await this.store.loadTool(ownership.extensionId, ownership.revision);
           const stateKey = installed.manifest.tools.find(({ name }) => name === input.toolName)
             ?.visualization?.stateKey;
           const contribution = stateKey
