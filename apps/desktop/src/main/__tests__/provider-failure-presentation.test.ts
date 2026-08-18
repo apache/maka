@@ -104,7 +104,10 @@ describe('provider failure presentation', () => {
       }, 'en'),
       'RECHECK',
     );
-    assert.notEqual(commandPaletteConnectionTestFailureMessage(result, 'en'), 'Authentication failed. Check the model key, subscription login, or credentials and try again.');
+    assert.equal(
+      commandPaletteConnectionTestFailureMessage(result, 'en'),
+      'The connection test failed. Try again later.',
+    );
   });
 
   test('renders only the Runtime-marked connection-test provider summary verbatim', () => {
