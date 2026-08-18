@@ -1663,3 +1663,110 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
   assert.fail('Timed out waiting for fake Host state');
 }
+
+describe('turn consumer lag recovery (#3180)', () => {
+  async function floodTurnStream(
+    subscription: InstanceType<typeof FakeSubscription>,
+    count: number,
+    startOffset: number,
+  ): Promise<void> {
+    let offset = startOffset;
+    for (let index = 0; index < count; index += 1) {
+      const text = `x${String(index).padStart(4, '0')}`;
+      subscription.push(deltaFrame(index + 1, 'turn-1', offset, text));
+      offset += text.length;
+      if (index % 64 === 63) await delay(0);
+    }
+    await delay(0);
+  }
+
+  async function waitForSubscriptions(connection: FakeConnection, count: number): Promise<void> {
+    const deadline = Date.now() + WAIT_BUDGET_MS;
+    while (connection.openedSubscriptions !== count && Date.now() < deadline) await delay(5);
+    assert.equal(connection.openedSubscriptions, count);
+  }
+
+  test('resubscribes instead of failing when a turn event consumer falls behind', async () => {
+    const initial = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+    );
+    const replacement = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 2 }),
+      Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+      'subscription-2',
+    );
+    const connection = new FakeConnection([initial, replacement], true);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 50,
+    });
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+
+    // Flood the unconsumed turn stream past its 1024-event bound.
+    await floodTurnStream(initial, 1_100, 5);
+
+    // The channel retires the lagged subscription and resubscribes instead of
+    // failing the stream.
+    await waitForSubscriptions(connection, 2);
+
+    // Drain part of the backlog, then confirm live events keep flowing.
+    const iterator = switched.activeTurn.events[Symbol.asyncIterator]();
+    for (let index = 0; index < 100; index += 1) {
+      const result = await iterator.next();
+      assert.equal(result.done, false);
+    }
+    replacement.push(deltaFrame(1, 'turn-1', 5, ' world', 'subscription-2'));
+    let seen = '';
+    for (let index = 0; index < 1_100 && seen !== ' world'; index += 1) {
+      const result = await iterator.next();
+      assert.equal(result.done, false);
+      seen = (result.value as { text?: string }).text ?? '';
+    }
+    assert.equal(seen, ' world');
+  });
+
+  test('lands terminal events while shedding deltas from a lagging consumer', async () => {
+    const initial = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+    );
+    const replacement = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 2 }),
+      Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+      'subscription-2',
+    );
+    const connection = new FakeConnection([initial, replacement], true);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 50,
+    });
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+
+    await floodTurnStream(initial, 1_100, 5);
+    await waitForSubscriptions(connection, 2);
+
+    replacement.push(projectionFrame(1, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'));
+    const iterator = switched.activeTurn.events[Symbol.asyncIterator]();
+    let completed = false;
+    let done = false;
+    for (let index = 0; index < 1_200 && !done; index += 1) {
+      const result = await iterator.next();
+      if (result.done) {
+        done = true;
+        break;
+      }
+      if ((result.value as { type?: string }).type === 'complete') completed = true;
+    }
+    assert.ok(completed, 'terminal complete event survived the lagged backlog');
+    assert.ok(done, 'turn stream finished cleanly');
+  });
+});
