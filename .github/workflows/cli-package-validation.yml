@@ -58,6 +58,10 @@ on:
       - 'scripts/smoke-release-cli-package.mjs'
       - 'tsconfig*.json'
   workflow_call:
+    outputs:
+      release_candidate_artifact_id:
+        description: Immutable artifact produced by the build job
+        value: ${{ jobs.build.outputs.release_candidate_artifact_id }}
   workflow_dispatch:
 
 permissions:
@@ -72,6 +76,8 @@ jobs:
     name: Build immutable tarball
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    outputs:
+      release_candidate_artifact_id: ${{ steps.release-candidate.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -81,10 +87,11 @@ jobs:
           node-version: '22.19.0'
           cache: npm
       - name: Select the release npm toolchain
-        run: npm install --global --no-audit --no-fund npm@11.19.0
+        run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
       - name: Build the release tarball once
         run: npm run release:cli:pack
       - name: Upload the immutable release candidate
+        id: release-candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cli-release-candidate-${{ github.run_attempt }}
@@ -132,7 +139,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - name: Select the release npm toolchain
-        run: npm install --global --no-audit --no-fund npm@11.19.0
+        run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
       - name: Assert the runner architecture
         env:
           EXPECTED_PLATFORM: ${{ matrix.platform }}
@@ -142,7 +149,7 @@ jobs:
       - name: Download the release candidate
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: cli-release-candidate-${{ github.run_attempt }}
+          artifact-ids: ${{ needs.build.outputs.release_candidate_artifact_id }}
           path: packages/cli/release
       - name: Validate the installed tarball
         run: node scripts/smoke-release-cli-package.mjs
@@ -163,7 +170,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Select the release npm toolchain
-        run: npm install --global --no-audit --no-fund npm@11.19.0
+        run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
       - name: Install pinned Eval frameworks
         run: |
           python -m venv "$RUNNER_TEMP/maka-harbor"
@@ -175,7 +182,7 @@ jobs:
       - name: Download the release candidate
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: cli-release-candidate-${{ github.run_attempt }}
+          artifact-ids: ${{ needs.build.outputs.release_candidate_artifact_id }}
           path: packages/cli/release
       - name: Validate real Harbor and Pier cells
         run: npm run release:cli:eval

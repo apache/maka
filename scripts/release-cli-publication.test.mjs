@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 import {
-  assertPublicVersionVacant,
   fetchRegistryRelease,
   parseCliReleaseVersion,
+  prepareSignatureAuditTree,
   prepareStageRelease,
   validateSignatureAudit,
   validateStageRun,
@@ -86,29 +87,6 @@ test('stage preparation rejects confirmation and checksum drift', () => {
   );
 });
 
-test('staging refuses an existing public version and fails closed on registry errors', async () => {
-  await assert.doesNotReject(
-    assertPublicVersionVacant({
-      version: '0.1.0-beta.1',
-      fetchImpl: async () => new Response('not found', { status: 404 }),
-    }),
-  );
-  await assert.rejects(
-    assertPublicVersionVacant({
-      version: '0.1.0-beta.1',
-      fetchImpl: async () => Response.json({ name: 'maka-agent', version: '0.1.0-beta.1' }),
-    }),
-    /already exists/u,
-  );
-  await assert.rejects(
-    assertPublicVersionVacant({
-      version: '0.1.0-beta.1',
-      fetchImpl: async () => new Response('unavailable', { status: 503 }),
-    }),
-    /status 503/u,
-  );
-});
-
 test('finalization accepts only the exact successful main stage run', () => {
   const fixture = createPreparedCandidate();
   const run = {
@@ -167,6 +145,10 @@ test('registry finalization requires the exact staged bytes and dist-tag', async
   assert.deepEqual(
     readFileSync(`${result.tarballPath}.files.json`),
     readFileSync(`${fixture.tarballPath}.files.json`),
+  );
+  assert.match(
+    readFileSync(join(registryDirectory, 'release-notes.md'), 'utf8'),
+    /Stage workflow run: .* \(attempt 1\)/u,
   );
 
   await assert.rejects(
@@ -243,6 +225,55 @@ test('signature audit must contain Maka provenance for the finalized version', (
       }),
     /invalid or missing signatures/u,
   );
+});
+
+test('signature audit tree exposes only the top-level registry package', () => {
+  const fixture = createPreparedCandidate();
+  const auditDirectory = mkdtempSync(join(tmpdir(), 'maka-cli-signature-audit-'));
+
+  prepareSignatureAuditTree({
+    releaseDirectory: fixture.releaseDirectory,
+    auditDirectory,
+  });
+
+  assert.deepEqual(JSON.parse(readFileSync(join(auditDirectory, 'package.json'), 'utf8')), {
+    name: 'maka-cli-signature-audit',
+    private: true,
+    dependencies: { 'maka-agent': fixture.version },
+  });
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(auditDirectory, 'node_modules/maka-agent/package.json'), 'utf8')),
+    { name: 'maka-agent', version: fixture.version },
+  );
+});
+
+test('prepare-stage CLI emits only consumed GitHub Actions outputs', () => {
+  const fixture = createCandidate();
+  const output = join(fixture.root, 'github-output.txt');
+  const result = spawnSync(
+    process.execPath,
+    [
+      resolve(import.meta.dirname, 'release-cli-publication.mjs'),
+      'prepare-stage',
+      fixture.releaseDirectory,
+      fixture.version,
+      SOURCE_SHA,
+      '321',
+      '1',
+      'maka-agent/maka-agent',
+      WORKFLOW_PATH,
+      output,
+    ],
+    { encoding: 'utf8' },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(readFileSync(output, 'utf8').trim().split('\n'), [
+    `version=${fixture.version}`,
+    'dist_tag=next',
+    `git_tag=cli-v${fixture.version}`,
+    `tarball=${fixture.tarballPath}`,
+  ]);
 });
 
 function createPreparedCandidate() {

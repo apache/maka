@@ -90,17 +90,6 @@ export function prepareStageRelease({
   return { record, tarballPath: candidate.tarballPath };
 }
 
-export async function assertPublicVersionVacant({ version, fetchImpl = fetch }) {
-  parseCliReleaseVersion(version);
-  const response = await fetchImpl(
-    `${REGISTRY_ORIGIN}/${PACKAGE_NAME}/${encodeURIComponent(version)}`,
-    { redirect: 'error' },
-  );
-  if (response.status === 404) return;
-  if (response.ok) throw new Error(`${PACKAGE_NAME}@${version} already exists on npm`);
-  throw new Error(`Registry version availability check failed with status ${response.status}`);
-}
-
 export function validateStageRun({ releaseDirectory, expectedVersion, run }) {
   const record = loadReleaseRecord(releaseDirectory);
   if (expectedVersion !== record.version) {
@@ -192,6 +181,27 @@ export function validateSignatureAudit({ releaseDirectory, audit }) {
       `npm signature audit did not include verified provenance for ${record.version}`,
     );
   }
+  return record;
+}
+
+export function prepareSignatureAuditTree({ releaseDirectory, auditDirectory }) {
+  const record = loadReleaseRecord(releaseDirectory);
+  const packageDirectory = join(auditDirectory, 'node_modules', PACKAGE_NAME);
+  mkdirSync(packageDirectory, { recursive: true, mode: 0o755 });
+  writeJson(
+    join(auditDirectory, 'package.json'),
+    {
+      name: 'maka-cli-signature-audit',
+      private: true,
+      dependencies: { [PACKAGE_NAME]: record.version },
+    },
+    0o644,
+  );
+  writeJson(
+    join(packageDirectory, 'package.json'),
+    { name: PACKAGE_NAME, version: record.version },
+    0o644,
+  );
   return record;
 }
 
@@ -327,7 +337,7 @@ function parseRegistryTarballUrl(value, expectedName) {
 
 function releaseNotes(record) {
   const install = record.distTag === 'next' ? `${PACKAGE_NAME}@next` : PACKAGE_NAME;
-  return `Maka CLI ${record.version}\n\nInstall with:\n\n\`\`\`sh\nnpm install --global ${install}\n\`\`\`\n\nSource commit: ${record.source.commit}\nStage workflow run: https://github.com/${record.source.repository}/actions/runs/${record.source.runId}\nSHA-256: \`${record.sha256}\`\n`;
+  return `Maka CLI ${record.version}\n\nInstall with:\n\n\`\`\`sh\nnpm install --global ${install}\n\`\`\`\n\nSource commit: ${record.source.commit}\nStage workflow run: https://github.com/${record.source.repository}/actions/runs/${record.source.runId} (attempt ${record.source.runAttempt})\nSHA-256: \`${record.sha256}\`\n`;
 }
 
 function exactKeys(value, keys, label) {
@@ -347,6 +357,10 @@ function readJson(path, label) {
   } catch (error) {
     throw new Error(`${label} is unavailable or invalid`, { cause: error });
   }
+}
+
+function writeJson(path, value, mode) {
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx', mode });
 }
 
 function digest(algorithm, bytes, encoding) {
@@ -391,7 +405,6 @@ async function main() {
       dist_tag: result.record.distTag,
       git_tag: result.record.gitTag,
       tarball: result.tarballPath,
-      sha256: result.record.sha256,
     });
     return;
   }
@@ -407,15 +420,15 @@ async function main() {
       dist_tag: record.distTag,
       git_tag: record.gitTag,
       source_sha: record.source.commit,
-      stage_run_id: record.source.runId,
-      stage_run_attempt: record.source.runAttempt,
-      tarball: record.tarball,
-      sha256: record.sha256,
     });
     return;
   }
-  if (command === 'assert-vacant' && args.length === 1) {
-    await assertPublicVersionVacant({ version: args[0] });
+  if (command === 'prepare-audit' && args.length === 2) {
+    const [releaseDirectory, auditDirectory] = args;
+    prepareSignatureAuditTree({
+      releaseDirectory: resolve(releaseDirectory),
+      auditDirectory: resolve(auditDirectory),
+    });
     return;
   }
   if (command === 'fetch-registry' && args.length === 3) {
@@ -425,12 +438,7 @@ async function main() {
       registryDirectory: resolve(registryDirectory),
     });
     appendOutputs(output, {
-      version: result.version,
-      dist_tag: result.distTag,
-      git_tag: result.gitTag,
-      source_sha: result.source.commit,
       tarball: result.tarballPath,
-      sha256: result.sha256,
     });
     return;
   }
@@ -443,7 +451,7 @@ async function main() {
     return;
   }
   throw new Error(
-    `Usage: release-cli-publication.mjs <prepare-stage|assert-vacant|validate-stage-run|fetch-registry|validate-audit> ...`,
+    `Usage: release-cli-publication.mjs <prepare-stage|prepare-audit|validate-stage-run|fetch-registry|validate-audit> ...`,
   );
 }
 
