@@ -54,7 +54,7 @@ function harness(patches: DesktopSessionConfigurationPatch[]) {
     resolveCreateProject: async () => ({}),
     emitSessionsChanged() {},
     releaseSessionResources() {},
-    sessionCopyCleanup: { recover: async () => ({ cleaned: [] }) },
+    sessionCopyCleanup: { recover: async () => ({ cleaned: [], failed: [] }) },
   } as unknown as RuntimeHostSessionCatalogIpcDeps;
   registerRuntimeHostSessionCatalogIpc(deps, ipcMain as unknown as IpcMain);
   return {

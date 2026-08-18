@@ -16,7 +16,11 @@ function plusMenu(props: Parameters<typeof Composer>[0]): string {
       <Composer {...props} />
     </LocaleProvider>,
   );
-  return markup.split('maka-composer-plus-menu').pop() ?? '';
+  const parts = markup.split('maka-composer-plus-menu');
+  // Without the marker `split` returns the whole markup, and a menu that
+  // stopped rendering would still satisfy an absence assertion.
+  assert.ok(parts.length > 1, 'the composer rendered no ＋ menu');
+  return parts[parts.length - 1] ?? '';
 }
 
 const base = {
