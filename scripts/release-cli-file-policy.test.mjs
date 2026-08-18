@@ -4,6 +4,7 @@ import {
   collectWorkspaceDependencyClosure,
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
+  orderWorkspaceBuilds,
   workspaceReleaseFiles,
 } from './release-cli-file-policy.mjs';
 
@@ -18,6 +19,20 @@ describe('CLI release file policy', () => {
     assert.deepEqual(collectWorkspaceDependencyClosure('maka-agent', manifests), [
       '@maka/core',
       '@maka/eval',
+      'maka-agent',
+    ]);
+  });
+
+  test('orders selected runtime workspaces by local build-time dependencies', () => {
+    const selected = [
+      { name: '@maka/runtime', manifest: { devDependencies: { '@maka/storage': '0.1.0' } } },
+      { name: '@maka/storage', manifest: {} },
+      { name: 'maka-agent', manifest: { dependencies: { '@maka/runtime': '0.1.0' } } },
+    ];
+
+    assert.deepEqual(orderWorkspaceBuilds(selected), [
+      '@maka/storage',
+      '@maka/runtime',
       'maka-agent',
     ]);
   });

@@ -48,6 +48,37 @@ export function collectWorkspaceDependencyClosure(entryName, manifestsByName) {
   return closure;
 }
 
+export function orderWorkspaceBuilds(workspaces) {
+  const workspacesByName = new Map(workspaces.map((workspace) => [workspace.name, workspace]));
+  const order = [];
+  const complete = new Set();
+  const visiting = new Set();
+
+  function visit(packageName) {
+    if (complete.has(packageName)) return;
+    if (visiting.has(packageName)) {
+      throw new Error(`Workspace build dependency cycle reached ${packageName}.`);
+    }
+    const workspace = workspacesByName.get(packageName);
+    if (!workspace) throw new Error(`Selected workspace package ${packageName} is missing.`);
+    visiting.add(packageName);
+    const manifest = manifestFromEntry(workspace);
+    const dependencies = {
+      ...manifest.dependencies,
+      ...manifest.devDependencies,
+    };
+    for (const dependencyName of Object.keys(dependencies).sort()) {
+      if (workspacesByName.has(dependencyName)) visit(dependencyName);
+    }
+    visiting.delete(packageName);
+    complete.add(packageName);
+    order.push(packageName);
+  }
+
+  for (const { name } of workspaces) visit(name);
+  return order;
+}
+
 export function workspaceReleaseFiles(manifest) {
   const declared = Object.hasOwn(manifest, 'releaseFiles') ? manifest.releaseFiles : ['dist'];
   if (!Array.isArray(declared) || declared.length === 0) {

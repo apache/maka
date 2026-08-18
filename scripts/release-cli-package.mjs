@@ -22,6 +22,7 @@ import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy
 import {
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
+  orderWorkspaceBuilds,
   releaseNpmEnvironment,
   resolveReleaseWorkspacePackages,
   workspaceReleaseFiles,
@@ -44,7 +45,7 @@ const internalPackageNames = workspacePackages
   .map(({ name }) => name)
   .filter((name) => name !== 'maka-agent');
 const internalPackageSet = new Set(internalPackageNames);
-const buildOrder = workspacePackages.map(({ name }) => name);
+const buildOrder = orderWorkspaceBuilds(workspacePackages);
 const strippedInstallScripts = new Map([
   // The clean repository install has already produced every generated file and
   // platform prebuild copied below. Do not run advisory postinstalls on an end
