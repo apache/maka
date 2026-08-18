@@ -113,6 +113,7 @@ describe('stream graph schedule reconciliation', () => {
           },
         ],
       });
+      let resolveCalls = 0;
       const result = await reconcileAgentGraphSchedule({
         topology: topology(),
         controlStore,
@@ -122,6 +123,7 @@ describe('stream graph schedule reconciliation', () => {
         maxNewActivations: 1,
         observeGraph: (currentTopology) => observation.read(currentTopology),
         resolveSelectedResultInputs: async () => {
+          resolveCalls += 1;
           throw new Error('source epoch runtime events are unreadable');
         },
         renderPrompt: ({ work }) => work.instruction,
@@ -130,6 +132,7 @@ describe('stream graph schedule reconciliation', () => {
       assert.equal(result.status, 'waiting');
       assert.equal(result.failures.length, 0);
       assert.equal(result.dispatches.length, 0);
+      assert.equal(resolveCalls, 1);
       assert.deepEqual(
         result.deferredWork.map((item) => ({
           reason: item.reason,

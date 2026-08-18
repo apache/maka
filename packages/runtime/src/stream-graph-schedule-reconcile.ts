@@ -513,8 +513,8 @@ function missingWorkInputIds(
   ];
 }
 
-/** Resolved historical records keyed by source graph id, then result id. */
-type SelectedResultCache = Map<string, Map<string, AgentGraphRecord>>;
+/** Historical resolution attempts keyed by source graph id, then result id. */
+type SelectedResultCache = Map<string, Map<string, AgentGraphRecord | undefined>>;
 
 /**
  * Resolves selected historical result inputs, isolating failures per source
@@ -557,6 +557,10 @@ async function resolveSelectedResultRecords(
     }
     const pending = group.filter((selected) => !cached.has(selected.resultId));
     if (pending.length === 0) continue;
+    // Cache unsuccessful attempts for this reconciliation too. Repeated
+    // snapshot reads must not replay a resolver that already failed or
+    // returned records that violate its identity contract.
+    pending.forEach((selected) => cached.set(selected.resultId, undefined));
     let records: readonly AgentGraphRecord[];
     try {
       records = await input.resolveSelectedResultInputs(pending);
