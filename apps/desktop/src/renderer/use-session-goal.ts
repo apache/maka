@@ -37,6 +37,9 @@ export function useSessionGoal(sessionId: string | undefined): LiveGoalState | n
       setGoal(null);
       return;
     }
+    // The previous Session's Goal is not an answer for this one, so it goes
+    // before the first fetch resolves rather than after.
+    setGoal(null);
     let cancelled = false;
     let refreshSequence = 0;
     const refresh = (): void => {
