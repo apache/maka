@@ -26,7 +26,7 @@ Streaming tool-call association for gateways that reuse or omit `index` / `id`
 
 Delete when that guard passes against an unpatched package.
 
-## `@astryxdesign/core@0.4.0`
+## `@astryxdesign/core@0.4.1`
 
 Six published component seams drop host-owned state or semantics:
 
