@@ -100,6 +100,8 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} -p ...       Alias for ${cliCommand} run`,
     `  ${cliCommand} eval ...     Run one declarative multi-arm experiment`,
     `  ${cliCommand} runtime-host serve [options]  Run a Runtime Host service`,
+    `  ${cliCommand} runtime-host service install [options]`,
+    `  ${cliCommand} runtime-host service status|start|stop|restart|uninstall [--json]`,
     `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
     `  ${cliCommand} runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>`,
     `  ${cliCommand} runtime-host access issue --kind capability-provider --principal <id>`,
@@ -122,7 +124,7 @@ function helpText(cliCommand: string): string {
     '  --project <project-id>  Select an existing Project on a remote Host',
     '  MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL  Access credential used by runtime-host profile set',
     '',
-    'Runtime Host service options:',
+    'Runtime Host serve options:',
     '  --root <path>                 Select the canonical data root',
     '  --project-root <label>=<path> Publish an absolute project directory root (repeatable)',
     '  --websocket-port <port>       Enable an authenticated WebSocket listener',
@@ -133,6 +135,13 @@ function helpText(cliCommand: string): string {
     '  --allow-insecure-remote       Allow plaintext WebSocket access beyond loopback',
     '  --allow-origin <origin>       Allow one browser Origin (repeatable)',
     '  --json                        Emit one machine-readable ready event',
+    '',
+    'Managed Runtime Host service install options (Linux):',
+    '  --root <path>                 Select the canonical data root',
+    '  --project-root <label>=<path> Publish an absolute directory root (repeatable)',
+    '  --websocket-port <port>       Persist a loopback port (chosen automatically by default)',
+    '  --websocket-path <path>       Persist the upgrade path (default: /runtime-host)',
+    '  --json                        Emit a machine-readable result',
     '',
     'Runtime Host access issue options:',
     '  --root <path>                 Select the canonical data root',
@@ -195,6 +204,26 @@ export async function runMakaCli(
           ? { projectDirectoryRoots: command.projectDirectoryRoots }
           : {}),
         ...(command.websocket ? { websocket: command.websocket } : {}),
+      });
+    }
+    case 'runtime-host-service-manage': {
+      const { runManagedRuntimeHostServiceCli } = await import(
+        './runtime-host-service-management-command.js'
+      );
+      return runManagedRuntimeHostServiceCli({
+        action: command.action,
+        json: command.json,
+        clientDataRoot: dataRoots.clientDataRoot,
+        defaultRootPath: dataRoots.workspaceRoot,
+        packageVersion: version,
+        nodePath: process.execPath,
+        cliPath: process.argv[1] ?? '',
+        ...(command.rootPath ? { rootPath: command.rootPath } : {}),
+        ...(command.projectDirectoryRoots
+          ? { projectDirectoryRoots: command.projectDirectoryRoots }
+          : {}),
+        ...(command.websocketPort === undefined ? {} : { websocketPort: command.websocketPort }),
+        ...(command.websocketPath ? { websocketPath: command.websocketPath } : {}),
       });
     }
     case 'runtime-host-access-issue': {

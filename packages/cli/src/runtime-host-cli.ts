@@ -23,6 +23,15 @@ export type RuntimeHostCliCommand =
       };
     }
   | {
+      kind: 'runtime-host-service-manage';
+      action: 'install' | 'status' | 'start' | 'stop' | 'restart' | 'uninstall';
+      json: boolean;
+      rootPath?: string;
+      projectDirectoryRoots?: { label: string; path: string }[];
+      websocketPort?: number;
+      websocketPath?: string;
+    }
+  | {
       kind: 'runtime-host-access-issue';
       rootPath?: string;
       principalKind: 'remote_owner' | 'capability_provider';
@@ -70,6 +79,7 @@ export type RuntimeHostCliCommand =
 
 export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
   if (argv[0] === 'serve') return parseServeCommand(argv.slice(1));
+  if (argv[0] === 'service') return parseServiceManagementCommand(argv.slice(1));
   if (argv[0] === 'access') return parseAccessCommand(argv.slice(1));
   if (argv[0] === 'project') return parseProjectCommand(argv.slice(1));
   if (argv[0] === 'capability-provider') {
@@ -79,8 +89,92 @@ export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
   return error(
     argv[0]
       ? `Unexpected runtime-host command: ${argv[0]}`
-      : 'runtime-host requires the serve, access, project, profile, or capability-provider command',
+      : 'runtime-host requires the serve, service, access, project, profile, or capability-provider command',
   );
+}
+
+function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
+  const action = argv[0];
+  if (
+    action !== 'install' &&
+    action !== 'status' &&
+    action !== 'start' &&
+    action !== 'stop' &&
+    action !== 'restart' &&
+    action !== 'uninstall'
+  ) {
+    return error(
+      action
+        ? `Unexpected runtime-host service command: ${action}`
+        : 'runtime-host service requires install, status, start, stop, restart, or uninstall',
+    );
+  }
+
+  let json = false;
+  let rootPath: string | undefined;
+  let websocketPort: number | undefined;
+  let websocketPath: string | undefined;
+  const projectDirectoryRoots: { label: string; path: string }[] = [];
+  for (let index = 1; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === '--json') {
+      json = true;
+      continue;
+    }
+    if (action !== 'install') {
+      return error(`Unexpected argument: ${argument ?? ''}`);
+    }
+    if (
+      argument === '--root' ||
+      argument === '--websocket-port' ||
+      argument === '--websocket-path'
+    ) {
+      const parsed = optionValue(argv, index, argument);
+      if (typeof parsed !== 'string') return parsed;
+      if (argument === '--root') rootPath = parsed;
+      if (argument === '--websocket-port') websocketPort = Number(parsed);
+      if (argument === '--websocket-path') websocketPath = parsed;
+      index += 1;
+      continue;
+    }
+    if (argument === '--project-root') {
+      const parsed = optionValue(argv, index, argument);
+      if (typeof parsed !== 'string') return parsed;
+      const root = parseProjectRoot(parsed);
+      if ('kind' in root) return root;
+      if (projectDirectoryRoots.length >= PROJECT_DIRECTORY_MAX_ROOTS) {
+        return error(`--project-root may be provided at most ${PROJECT_DIRECTORY_MAX_ROOTS} times`);
+      }
+      if (projectDirectoryRoots.some((candidate) => candidate.label === root.label)) {
+        return error(`Duplicate --project-root label: ${root.label}`);
+      }
+      projectDirectoryRoots.push(root);
+      index += 1;
+      continue;
+    }
+    return error(`Unexpected argument: ${argument ?? ''}`);
+  }
+  if (
+    websocketPort !== undefined &&
+    (!Number.isInteger(websocketPort) || websocketPort < 1 || websocketPort > 65_535)
+  ) {
+    return error('--websocket-port must be an integer between 1 and 65535');
+  }
+  if (
+    websocketPath !== undefined &&
+    (!websocketPath.startsWith('/') || websocketPath.includes('?') || websocketPath.includes('#'))
+  ) {
+    return error('--websocket-path must be an absolute URL path without a query or fragment');
+  }
+  return {
+    kind: 'runtime-host-service-manage',
+    action,
+    json,
+    ...(rootPath ? { rootPath } : {}),
+    ...(projectDirectoryRoots.length > 0 ? { projectDirectoryRoots } : {}),
+    ...(websocketPort === undefined ? {} : { websocketPort }),
+    ...(websocketPath === undefined ? {} : { websocketPath }),
+  };
 }
 
 function parseProjectCommand(argv: string[]): RuntimeHostCliCommand {

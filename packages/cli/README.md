@@ -86,10 +86,14 @@ with `npm install --global maka-agent@latest`.
 ## Uninstall
 
 ```sh
+# Linux only, when a managed Runtime Host service was installed
+maka runtime-host service uninstall
+
 npm uninstall --global maka-agent
 ```
 
-Uninstalling the package does not delete model connections, credentials, sessions, or artifacts.
+Remove the managed service before removing the package so systemd does not retain a unit pointing to
+the deleted CLI. Neither command deletes model connections, credentials, sessions, or artifacts.
 Those remain in the profile shared by the released CLI and Desktop app:
 
 | Platform | Profile directory |

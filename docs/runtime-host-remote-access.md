@@ -37,6 +37,22 @@ npm --workspace maka-agent exec -- maka runtime-host access issue \
 
 Use `terminal-client` for TUI or CLI. The command prints the credential once.
 
+On Linux with a systemd user manager, the released CLI can keep the loopback Host running after the
+SSH session ends:
+
+```sh
+maka runtime-host service install \
+  --root /srv/maka \
+  --project-root projects=/srv/projects
+maka runtime-host service status --json
+```
+
+The install command persists the current exact Node and Maka CLI paths. Re-running it updates the
+same service; an omitted WebSocket port preserves the existing port. Before uninstalling the npm
+package, remove the service with `maka runtime-host service uninstall`. Service uninstall keeps the
+State Root and Project data. Installation reports an actionable error instead of claiming persistence
+when systemd user lingering is disabled.
+
 ## Choose a connection method
 
 ### Direct TLS

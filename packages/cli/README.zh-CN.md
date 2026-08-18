@@ -81,10 +81,14 @@ Beta 升级不要使用不带 tag 的 `npm update --global maka-agent`：npm 的
 ## 卸载
 
 ```sh
+# 仅限安装过 managed Runtime Host service 的 Linux
+maka runtime-host service uninstall
+
 npm uninstall --global maka-agent
 ```
 
-卸载 npm 包不会删除模型连接、凭证、会话或 Artifact。它们仍保留在发布版 CLI 与 Desktop
+先删除 managed service，再卸载 npm 包，避免 systemd 留下指向已删除 CLI 的 unit。这两个命令
+都不会删除模型连接、凭证、会话或 Artifact。它们仍保留在发布版 CLI 与 Desktop
 共用的 profile 中：
 
 | 平台 | Profile 目录 |
