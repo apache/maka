@@ -281,7 +281,7 @@ describe('ModelAdapter stream and error normalization', () => {
       adapter.translateChunk({
         type: 'tool-call',
         toolCallId: 'tool-double-encoded',
-        toolName: 'define_tool',
+        toolName: 'define_package',
         input: JSON.stringify({ id: 'dev.maka.example', version: '1.0.0' }),
         providerExecuted: false,
       } as unknown as Chunk),
@@ -291,7 +291,7 @@ describe('ModelAdapter stream and error normalization', () => {
           toolCall: {
             type: 'tool-call',
             toolCallId: 'tool-double-encoded',
-            toolName: 'define_tool',
+            toolName: 'define_package',
             input: { id: 'dev.maka.example', version: '1.0.0' },
             providerExecuted: false,
           },
@@ -310,7 +310,7 @@ describe('ModelAdapter stream and error normalization', () => {
     const [translated] = adapter.translateChunk({
       type: 'tool-call',
       toolCallId: 'tool-provider-double-encoded',
-      toolName: 'define_tool',
+      toolName: 'define_package',
       input: wireInput,
       providerExecuted: false,
     } as unknown as Chunk);

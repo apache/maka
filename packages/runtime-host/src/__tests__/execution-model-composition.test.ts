@@ -1101,21 +1101,12 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'Write',
       'WriteStdin',
       'call_service',
-      'define_event',
       'define_package',
-      'define_tool',
-      'define_ui',
       'emit_event',
-      'inspect_events',
       'inspect_package',
-      'inspect_tools',
-      'inspect_ui',
       'invoke_tool',
       'load_tools',
-      'manage_event',
       'manage_package',
-      'manage_tool',
-      'manage_ui',
       'memory_extract',
       'memory_remember',
       'publish_ui_state',
@@ -1124,16 +1115,14 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'task_get',
       'task_list',
       'task_update',
-      'test_listener',
-      'test_service',
-      'test_tool',
-      'test_ui',
     ]);
     const requestTools = request?.body.tools as Array<Record<string, unknown>> | undefined;
     const manageTool = requestTools?.find((tool) => {
       const fn = tool.function;
       return (
-        fn !== null && typeof fn === 'object' && (fn as { name?: unknown }).name === 'manage_tool'
+        fn !== null &&
+        typeof fn === 'object' &&
+        (fn as { name?: unknown }).name === 'manage_package'
       );
     }) as { function?: { parameters?: { type?: unknown } } } | undefined;
     assert.equal(manageTool?.function?.parameters?.type, 'object');
@@ -1793,7 +1782,7 @@ test('production Host lets a child install and test a Tool before the parent acc
     assert.ok(
       parentEvents.some(
         (event) =>
-          event.content?.kind === 'function_response' && event.content.name === 'manage_tool',
+          event.content?.kind === 'function_response' && event.content.name === 'manage_package',
       ),
     );
     assert.ok(
@@ -3573,8 +3562,8 @@ async function handleProviderRequest(
   }
   if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 7) {
     assert.ok(flow.revision);
-    assert.ok(toolNames(body).includes('manage_tool'));
-    respondProviderToolCall(response, streamRequestIndex, 'manage_tool', {
+    assert.ok(toolNames(body).includes('manage_package'));
+    respondProviderToolCall(response, streamRequestIndex, 'manage_package', {
       action: 'activate',
       extensionId: 'child-calculator',
       revision: flow.revision,
@@ -3590,7 +3579,7 @@ async function handleProviderRequest(
   }
   if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 9) {
     assert.deepEqual(requireLatestToolResult(body), { sum: 42, author: 'child' });
-    respondProviderToolCall(response, streamRequestIndex, 'manage_tool', {
+    respondProviderToolCall(response, streamRequestIndex, 'manage_package', {
       action: 'stop',
       extensionId: 'child-calculator',
     });

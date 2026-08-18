@@ -122,20 +122,16 @@ import {
 import { HostExtensionRuntime, PROFILE_EXTENSION_SCOPE } from './extension-runtime.js';
 import { HostPluginCompositionStore } from './plugin-composition-store.js';
 import { HostExtensionUiStateStore } from './extension-ui-state-store.js';
-import { HostToolPackageManagementTools } from './tool-package-management-tools.js';
 import { PluginPackageStore } from './plugin-package-store.js';
-import { HostEventPackageManagementTools } from './event-package-management-tools.js';
 import { HostExtensionPackageManagementTools } from './extension-package-management-tools.js';
-import {
-  DESKTOP_UI_EXTENSION_SCOPE,
-  HostUiPackageManagementTools,
-} from './ui-package-management-tools.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
 import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
 import { HostHostedExecutionRunner } from './hosted-execution-runner.js';
 import { executeHostedExecutionToSettlement } from './hosted-execution-wait.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
+
+const DESKTOP_UI_EXTENSION_SCOPE = 'desktop-ui';
 import {
   beginRuntimeHostDomainModuleDrain,
   closeRuntimeHostDomainModules,
@@ -262,33 +258,12 @@ export async function createExecutionRuntimeHostComposition(
     new HostExtensionUiStateStore(context.owner.controlDirectory),
     pluginPackageStore,
   );
-  const toolPackageManagement = new HostToolPackageManagementTools(
-    context.owner.controlDirectory,
-    extensionController,
-    extensions,
-    pluginPackageStore,
-  );
-  const uiPackageManagement = new HostUiPackageManagementTools(
-    context.owner.controlDirectory,
-    extensionController,
-    extensions,
-    pluginPackageStore,
-  );
-  const eventPackageManagement = new HostEventPackageManagementTools(
-    context.owner.controlDirectory,
-    extensionController,
-    extensions,
-    pluginPackageStore,
-  );
   const extensionPackageManagement = new HostExtensionPackageManagementTools(
     context.owner.controlDirectory,
     extensionController,
   );
   extensions.registerHostTools([
     ...extensionPackageManagement.tools(),
-    ...toolPackageManagement.tools(),
-    ...uiPackageManagement.tools(),
-    ...eventPackageManagement.tools(),
   ]);
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let taskLedgerStore:
@@ -485,8 +460,6 @@ export async function createExecutionRuntimeHostComposition(
       hostTools: [
         ...hostTools,
         ...extensionPackageManagement.authorTools(),
-        ...toolPackageManagement.authorTools(),
-        ...uiPackageManagement.authorTools(),
       ],
       worktreePatchWriteBackAvailable: true,
     });

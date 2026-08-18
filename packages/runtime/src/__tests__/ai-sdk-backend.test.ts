@@ -6135,7 +6135,7 @@ describe('AiSdkBackend error surfaces', () => {
                 {
                   type: 'tool-call',
                   toolCallId: 'define-ui-1',
-                  toolName: 'define_ui',
+                  toolName: 'define_package',
                   input: JSON.stringify({
                     id: 'dev.maka.example',
                     ui: JSON.stringify([{ id: 'stage', surface: 'app.root' }]),
@@ -6181,7 +6181,7 @@ describe('AiSdkBackend error surfaces', () => {
       tools: [
         {
           ...testTool(
-            'define_ui',
+            'define_package',
             z.object({
               id: z.string(),
               ui: z.array(z.object({ id: z.string(), surface: z.string() })),

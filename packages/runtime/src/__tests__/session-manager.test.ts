@@ -11514,12 +11514,12 @@ describe('SessionManager permission mode updates', () => {
     expect(list.definitions[3]?.availability).toEqual({
       status: 'unavailable',
       reason: 'missing_tools',
-      missingTools: ['inspect_tools', 'define_tool', 'test_tool'],
+      missingTools: ['inspect_package', 'define_package'],
     });
     expect(list.definitions[4]?.availability).toEqual({
       status: 'unavailable',
       reason: 'missing_tools',
-      missingTools: ['inspect_ui', 'define_ui', 'test_ui'],
+      missingTools: ['inspect_package', 'define_package'],
     });
     expect(list.runs.map((agent) => agent.runId)).toEqual(['child-run']);
     expect(list.executions.map((agent) => agent.execution)).toEqual([

@@ -52,7 +52,6 @@ export {
   type InstalledPluginPackage,
 } from './plugin-package-store.js';
 export { PluginHookActivation } from './plugin-hook-activation.js';
-export { HostEventPackageManagementTools } from './event-package-management-tools.js';
 export { HostExtensionPackageManagementTools } from './extension-package-management-tools.js';
 export {
   compareExtensionVersions,

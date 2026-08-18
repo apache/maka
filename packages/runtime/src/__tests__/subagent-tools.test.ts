@@ -248,10 +248,10 @@ describe('subagent tools', () => {
       testCatalogTool('Read', 'read'),
       testCatalogTool('Glob', 'read'),
       testCatalogTool('Grep', 'read'),
-      testCatalogTool('inspect_tools', 'read'),
-      testCatalogTool('define_tool', 'file_write'),
-      testCatalogTool('test_tool', 'shell_unsafe'),
-      testCatalogTool('manage_tool', 'file_write'),
+      testCatalogTool('inspect_package', 'read'),
+      testCatalogTool('define_package', 'file_write'),
+      testCatalogTool('manage_package', 'file_write'),
+      testCatalogTool('manage_package', 'file_write'),
       testCatalogTool('invoke_tool', 'shell_unsafe'),
     ];
     const definition = listBuiltinAgentDefinitions({ tools }).find(
@@ -263,13 +263,12 @@ describe('subagent tools', () => {
       'Read',
       'Glob',
       'Grep',
-      'inspect_tools',
-      'define_tool',
-      'test_tool',
+      'inspect_package',
+      'define_package',
     ]);
     expect(TOOL_AUTHOR_AGENT_DEFINITION.contract.workspace).toBe(AGENT_WORKSPACE_SAME_WORKSPACE);
     expect(TOOL_AUTHOR_AGENT_DEFINITION.contract.defaultWriteBack).toBe(AGENT_WRITE_BACK_SUMMARY);
-    expect(TOOL_AUTHOR_AGENT_DEFINITION.tools).not.toContain('manage_tool');
+    expect(TOOL_AUTHOR_AGENT_DEFINITION.tools).not.toContain('manage_package');
     expect(TOOL_AUTHOR_AGENT_DEFINITION.tools).not.toContain('invoke_tool');
     expect(TOOL_AUTHOR_AGENT_DEFINITION.tools).not.toContain('Write');
     expect(TOOL_AUTHOR_AGENT_DEFINITION.tools).not.toContain('Bash');
@@ -280,10 +279,9 @@ describe('subagent tools', () => {
       testCatalogTool('Read', 'read'),
       testCatalogTool('Glob', 'read'),
       testCatalogTool('Grep', 'read'),
-      testCatalogTool('inspect_ui', 'read'),
-      testCatalogTool('define_ui', 'file_write'),
-      testCatalogTool('test_ui', 'read'),
-      testCatalogTool('manage_ui', 'file_write'),
+      testCatalogTool('inspect_package', 'read'),
+      testCatalogTool('define_package', 'file_write'),
+      testCatalogTool('manage_package', 'file_write'),
       testCatalogTool('publish_ui_state', 'file_write'),
     ];
     const definition = listBuiltinAgentDefinitions({ tools }).find(
@@ -295,13 +293,12 @@ describe('subagent tools', () => {
       'Read',
       'Glob',
       'Grep',
-      'inspect_ui',
-      'define_ui',
-      'test_ui',
+      'inspect_package',
+      'define_package',
     ]);
     expect(UI_AUTHOR_AGENT_DEFINITION.contract.workspace).toBe(AGENT_WORKSPACE_SAME_WORKSPACE);
     expect(UI_AUTHOR_AGENT_DEFINITION.contract.defaultWriteBack).toBe(AGENT_WRITE_BACK_SUMMARY);
-    expect(UI_AUTHOR_AGENT_DEFINITION.tools).not.toContain('manage_ui');
+    expect(UI_AUTHOR_AGENT_DEFINITION.tools).not.toContain('manage_package');
     expect(UI_AUTHOR_AGENT_DEFINITION.tools).not.toContain('publish_ui_state');
     expect(UI_AUTHOR_AGENT_DEFINITION.tools).not.toContain('Write');
     expect(UI_AUTHOR_AGENT_DEFINITION.tools).not.toContain('Bash');
@@ -392,15 +389,13 @@ describe('subagent tools', () => {
         categoryHint: 'subagent',
         impl: async () => ({}),
       },
-      testCatalogTool('inspect_tools', 'read'),
-      testCatalogTool('define_tool', 'file_write'),
-      testCatalogTool('test_tool', 'shell_unsafe'),
-      testCatalogTool('manage_tool', 'file_write'),
+      testCatalogTool('inspect_package', 'read'),
+      testCatalogTool('define_package', 'file_write'),
+      testCatalogTool('manage_package', 'file_write'),
       testCatalogTool('invoke_tool', 'shell_unsafe'),
-      testCatalogTool('inspect_ui', 'read'),
-      testCatalogTool('define_ui', 'file_write'),
-      testCatalogTool('test_ui', 'read'),
-      testCatalogTool('manage_ui', 'file_write'),
+      testCatalogTool('inspect_package', 'read'),
+      testCatalogTool('define_package', 'file_write'),
+      testCatalogTool('manage_package', 'file_write'),
       testCatalogTool('publish_ui_state', 'file_write'),
     ]);
 
@@ -416,12 +411,8 @@ describe('subagent tools', () => {
       'Bash',
       'WriteStdin',
       'StopBackgroundTask',
-      'inspect_tools',
-      'define_tool',
-      'test_tool',
-      'inspect_ui',
-      'define_ui',
-      'test_ui',
+      'inspect_package',
+      'define_package',
     ]);
     expect([...CHILD_AGENT_TOOL_NAMES]).toEqual([
       'Read',
@@ -435,12 +426,8 @@ describe('subagent tools', () => {
       'Bash',
       'WriteStdin',
       'StopBackgroundTask',
-      'inspect_tools',
-      'define_tool',
-      'test_tool',
-      'inspect_ui',
-      'define_ui',
-      'test_ui',
+      'inspect_package',
+      'define_package',
     ]);
   });
 

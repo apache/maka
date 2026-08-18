@@ -14,7 +14,6 @@ import { HostExtensionPackageManagementTools } from '../server/extension-package
 import { HostExtensionRuntime } from '../server/extension-runtime.js';
 import { HostPluginCompositionStore } from '../server/plugin-composition-store.js';
 import { PluginPackageStore } from '../server/plugin-package-store.js';
-import { HostUiPackageManagementTools } from '../server/ui-package-management-tools.js';
 
 test('define_package installs Tool, UI, Event, dependencies, and secret configuration as one Revision', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-define-package-'));
@@ -131,16 +130,6 @@ test('define_package installs Tool, UI, Event, dependencies, and secret configur
       'listener:dev.maka.codebase-studio.scan.completed:observe-scan',
       'listener:maka.tools.execute:safe-write',
     ]);
-    const uiManagement = new HostUiPackageManagementTools(control, controller, runtime, uiStore);
-    const testedUi = (await call(uiManagement.tools(), 'test_ui', {
-      extensionId: result.extensionId,
-      revision: result.revision,
-    })) as { ok: boolean; contributions: Array<{ id: string }> };
-    assert.equal(testedUi.ok, true);
-    assert.deepEqual(
-      testedUi.contributions.map(({ id }) => id),
-      ['studio-panel'],
-    );
     const revisions = await Promise.all([toolStore.list(), uiStore.list(), eventStore.list()]);
     assert.deepEqual(
       revisions.map(
