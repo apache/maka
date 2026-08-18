@@ -45,6 +45,7 @@ const STDERR_CONTINUATION = '[stderr continuation omitted]';
 const MAX_SUMMARIZED_ERROR_BLOCKS = 100;
 const OVERSIZED_TOOL_ERROR_CONTENT = 'server returned oversized error content';
 const MAX_TOOL_REFRESH_PASSES = 3;
+const TOOL_REFRESH_BURST_IDLE_MS = 1_000;
 
 export interface McpClientManagerOptions {
   clientName?: string;
@@ -101,9 +102,11 @@ interface ToolRefreshNotificationState {
   readonly client: Client;
   readonly connectionGeneration: number;
   // This state intentionally outlives one refresh promise. A notification
-  // sent just after every response must consume the same bounded pass budget.
+  // sent just after every response must consume the same bounded pass budget,
+  // while an idle interval starts a later independent burst with a new one.
   refreshPasses: number;
   suppressed: boolean;
+  lastPassCompletedAt?: number;
 }
 
 interface Connection {
@@ -377,6 +380,13 @@ export class McpClientManager {
       activeRefresh.pending = true;
       activeRefresh.pendingNotification = true;
       return (await activeRefresh.promise).descriptors;
+    }
+    if (
+      notificationState.lastPassCompletedAt !== undefined &&
+      this.now() - notificationState.lastPassCompletedAt >= TOOL_REFRESH_BURST_IDLE_MS
+    ) {
+      notificationState.refreshPasses = 0;
+      notificationState.suppressed = false;
     }
     if (notificationState.suppressed) {
       return Promise.reject(this.toolRefreshFrequencyError(serverId));
@@ -771,14 +781,7 @@ export class McpClientManager {
         } catch (error) {
           failure = error;
         }
-        if (
-          this.connections.get(serverId) !== entry ||
-          entry.client !== state.client ||
-          entry.connectionGeneration !== state.connectionGeneration ||
-          // Initial discovery legitimately runs while the status is still
-          // 'connecting'; every later refresh requires the connected state.
-          (!state.initial && entry.status.state !== 'connected')
-        ) {
+        if (!this.ownsToolRefresh(serverId, entry, state)) {
           throw safeMcpOperationError(serverId, 'connection changed during tool refresh', failure);
         }
         const notificationState = entry.refreshNotificationState;
@@ -805,6 +808,7 @@ export class McpClientManager {
           entry.toolSnapshot,
         );
         latestSnapshot = snapshot;
+        if (notificationStateMatches) notificationState.lastPassCompletedAt = this.now();
         if (refreshSuppressed) {
           if (state.initial) return finish(snapshot, true);
           throw this.toolRefreshFrequencyError(serverId);
@@ -819,6 +823,14 @@ export class McpClientManager {
             error: undefined,
             updatedAt: this.now(),
           });
+          if (!this.ownsToolRefresh(serverId, entry, state)) {
+            throw safeMcpOperationError(
+              serverId,
+              'connection changed during tool refresh',
+              undefined,
+            );
+          }
+          if (state.pending) continue;
         }
         return finish(snapshot, false);
       }
@@ -829,6 +841,16 @@ export class McpClientManager {
       // list that started before it asked.
       if (entry.refreshState === state) entry.refreshState = undefined;
     }
+  }
+
+  private ownsToolRefresh(serverId: string, entry: Connection, state: ToolRefreshState): boolean {
+    return (
+      this.connections.get(serverId) === entry &&
+      !entry.closing &&
+      entry.client === state.client &&
+      entry.connectionGeneration === state.connectionGeneration &&
+      (entry.status.state === 'connected' || (state.initial && entry.status.state === 'connecting'))
+    );
   }
 
   private toolRefreshFrequencyError(serverId: string): Error {

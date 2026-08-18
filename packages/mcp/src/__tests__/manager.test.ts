@@ -385,7 +385,7 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
           status.tools[0]?.name === 'replacement' &&
           queued === undefined
         ) {
-          queued = Promise.resolve().then(() => manager.refreshTools('remote'));
+          queued = manager.refreshTools('remote');
         }
       });
 
@@ -397,6 +397,25 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
         manager.status('remote')?.tools.map((tool) => tool.name),
         ['replacement'],
       );
+    });
+
+    test('rejects descriptors retired synchronously during snapshot publication', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+
+      fixture.setToolListMode('replacement');
+      let disconnect: Promise<void> | undefined;
+      manager.onChange((status) => {
+        if (status.serverId === 'remote' && status.tools[0]?.name === 'replacement') {
+          disconnect ??= manager.disconnect('remote');
+        }
+      });
+
+      await assert.rejects(manager.refreshTools('remote'), /connection changed/u);
+      await disconnect;
+      assert.equal(manager.status('remote')?.state, 'disconnected');
+      assert.deepEqual(manager.toolSnapshot().tools, []);
     });
 
     test('releases a failed refresh so the next one can publish a replacement', async () => {
@@ -501,6 +520,22 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
         manager.status('remote')?.tools.map((tool) => tool.name),
         ['replacement'],
       );
+    });
+
+    test('gives spaced list-changed notifications independent refresh budgets', async () => {
+      const fixture = await createRemoteFixture('sse');
+      let now = 0;
+      const manager = createManager({ now: () => now });
+      await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
+
+      for (let change = 1; change <= 4; change += 1) {
+        now += 1_000;
+        await fixture.notifyToolListChanged();
+        await waitFor(() => countProtocolMethod(fixture, 'tools/list') === change + 1);
+      }
+
+      assert.equal(manager.status('remote')?.error, undefined);
+      assert.equal(countProtocolMethod(fixture, 'tools/list'), 5);
     });
 
     test('lets configuration removal preempt active notification rediscovery', async () => {
