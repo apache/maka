@@ -25,6 +25,10 @@ import type { MakaPreparedSessionTurn } from './session-driver.js';
 const MAX_PENDING_FRAMES = 512;
 const MAX_PENDING_EVENTS_PER_TURN = 1_024;
 const LAG_REARM_PENDING_EVENTS = MAX_PENDING_EVENTS_PER_TURN / 2;
+const MAX_RECOVERY_ATTEMPTS_WITHOUT_LIVE_FRAME = 8;
+const RECOVERY_BACKOFF_INITIAL_MS = 25;
+const RECOVERY_BACKOFF_MAX_MS = 500;
+const RECOVERY_STABLE_AFTER_MS = 1_000;
 
 export interface RuntimeHostSessionChannelOpenResult {
   channel: RuntimeHostSessionChannel;
@@ -75,6 +79,8 @@ export class RuntimeHostSessionChannel {
   #closing = false;
   #failure: Error | undefined;
   #recoveryTask: Promise<void> | undefined;
+  #recoveryAttemptsWithoutLiveFrame = 0;
+  #recoveryStableTimer: ReturnType<typeof setTimeout> | undefined;
 
   private constructor(
     subscription: RuntimeHostSessionSubscription,
@@ -244,6 +250,7 @@ export class RuntimeHostSessionChannel {
   async close(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
+    this.#clearRecoveryStableTimer();
     this.#pendingStartedTurns.clear();
     for (const queue of this.#turns.values()) queue.finish();
     await this.#subscription.close();
@@ -253,6 +260,7 @@ export class RuntimeHostSessionChannel {
     try {
       for await (const frame of subscription) {
         if (this.#closing || this.#subscription !== subscription) return;
+        if (frame.kind !== 'subscription.closed') this.#markRecoveryStable(subscription);
         if (!this.#ready) {
           if (this.#pendingFrames.length >= MAX_PENDING_FRAMES) {
             throw new RuntimeHostSubscriptionError(
@@ -306,6 +314,7 @@ export class RuntimeHostSessionChannel {
   #scheduleRecovery(failed: RuntimeHostSessionSubscription): void {
     if (this.#closing || this.#failure || this.#subscription !== failed || this.#recoveryTask)
       return;
+    this.#clearRecoveryStableTimer();
     const task = this.#recover(failed);
     this.#recoveryTask = task;
     void task
@@ -321,6 +330,8 @@ export class RuntimeHostSessionChannel {
     let previous = failed;
     while (!this.#closing && !this.#failure && this.#subscription === previous) {
       await previous.close().catch(() => undefined);
+      await this.#waitForRecoveryAttempt();
+      if (this.#closing || this.#failure || this.#subscription !== previous) return;
       let replacement: RuntimeHostSessionSubscription;
       try {
         replacement = await this.#connection.openSessionSubscription({
@@ -355,6 +366,7 @@ export class RuntimeHostSessionChannel {
         this.#ready = true;
         for (const frame of this.#pendingFrames.splice(0)) this.#accept(frame);
         if (replacedLiveState) this.#onRecovered();
+        this.#scheduleRecoveryStable(replacement);
         return;
       } catch (error) {
         if (!this.#canRecover(error)) throw error;
@@ -379,10 +391,11 @@ export class RuntimeHostSessionChannel {
       this.#now,
       this.#subscription.activeAssistantStreams,
     );
-    // Deltas a lagging consumer has not seen are superseded by this canonical
-    // resync; keeping them would shed the fresh post-recovery stream behind
-    // them.
-    for (const queue of this.#turns.values()) queue.shedLaggedDeltas();
+    // A canonical replacement is a sequence cut. No queued event from the
+    // retired subscription may replay after the transcript/snapshot has
+    // established newer state; active, terminal, and interaction state is
+    // seeded again below from the replacement authority.
+    for (const queue of this.#turns.values()) queue.cutBacklog();
     if (!replacedLiveState) {
       for (const event of this.#projector.seedActive(false)) this.#emit(event);
       return false;
@@ -451,6 +464,46 @@ export class RuntimeHostSessionChannel {
       else this.#pendingTerminalTurns.push(root);
     }
     return true;
+  }
+
+  async #waitForRecoveryAttempt(): Promise<void> {
+    if (this.#recoveryAttemptsWithoutLiveFrame >= MAX_RECOVERY_ATTEMPTS_WITHOUT_LIVE_FRAME) {
+      throw new RuntimeHostSubscriptionError(
+        'connection_closed',
+        'Runtime Host Session subscription recovery exhausted its retry budget',
+      );
+    }
+    if (this.#recoveryAttemptsWithoutLiveFrame > 0) {
+      const delayMs = Math.min(
+        RECOVERY_BACKOFF_INITIAL_MS * 2 ** (this.#recoveryAttemptsWithoutLiveFrame - 1),
+        RECOVERY_BACKOFF_MAX_MS,
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    }
+    this.#recoveryAttemptsWithoutLiveFrame += 1;
+  }
+
+  #markRecoveryStable(subscription: RuntimeHostSessionSubscription): void {
+    if (this.#subscription !== subscription) return;
+    this.#clearRecoveryStableTimer();
+    this.#recoveryAttemptsWithoutLiveFrame = 0;
+  }
+
+  #scheduleRecoveryStable(subscription: RuntimeHostSessionSubscription): void {
+    this.#clearRecoveryStableTimer();
+    const timer = setTimeout(() => {
+      if (!this.#closing && this.#subscription === subscription && this.#ready) {
+        this.#recoveryAttemptsWithoutLiveFrame = 0;
+      }
+      if (this.#recoveryStableTimer === timer) this.#recoveryStableTimer = undefined;
+    }, RECOVERY_STABLE_AFTER_MS);
+    timer.unref?.();
+    this.#recoveryStableTimer = timer;
+  }
+
+  #clearRecoveryStableTimer(): void {
+    if (this.#recoveryStableTimer !== undefined) clearTimeout(this.#recoveryStableTimer);
+    this.#recoveryStableTimer = undefined;
   }
 
   #canRecover(error: unknown): boolean {
@@ -598,6 +651,9 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
     }
     if (this.#waiting)
       return Promise.reject(new Error('Session event stream already has a reader'));
+    // A canonical cut can empty a lagged queue before its consumer resumes.
+    // Waiting again proves the consumer caught up and may arm a later episode.
+    this.#lagging = false;
     return new Promise((resolve, reject) => {
       this.#waiting = { resolve, reject };
     });
@@ -646,18 +702,9 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
     this.#items.push(event);
   }
 
-  /**
-   * Drop sheddable deltas a lagging consumer has not seen. Called when the
-   * channel re-syncs from canonical state. The resync supersedes text and
-   * thinking ranges; tool output chunks are not replayed, but their seq
-   * ordering keeps the live panel consistent and the terminal tool_result
-   * heals the final output.
-   */
-  shedLaggedDeltas(): void {
-    if (!this.#lagging) return;
-    for (let index = this.#items.length - 1; index >= 0; index -= 1) {
-      if (isSheddableDelta(this.#items[index]!)) this.#items.splice(index, 1);
-    }
+  /** Drop the entire unseen pre-cut backlog after canonical replacement. */
+  cutBacklog(): void {
+    this.#items.length = 0;
   }
 
   #noteLag(): void {

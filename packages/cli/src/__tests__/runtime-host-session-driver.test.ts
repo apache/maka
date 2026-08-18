@@ -1807,6 +1807,26 @@ describe('turn consumer lag recovery (#3180)', () => {
     );
   });
 
+  test('drops the entire pre-resync tool backlog at the canonical cut', async () => {
+    const { initial, replacement, connection, driver, resynced } = lagRecoveryFixture();
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+
+    await floodToolStream(initial, 1_100);
+    await waitForSubscriptions(connection, 2);
+    await resynced.promise;
+
+    replacement.push(toolStartFrame(1, 9_000, 'subscription-2'));
+    replacement.push(projectionFrame(2, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'));
+    await delay(0);
+
+    const iterator = switched.activeTurn.events[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    assert.equal(first.done, false);
+    assert.equal(first.value.type, 'tool_start');
+    if (first.value.type === 'tool_start') assert.equal(first.value.toolUseId, 'tool-9000');
+  });
+
   test('admits a tool result when the lagged backlog holds no deltas', async () => {
     const { initial, replacement, connection, driver, resynced } = lagRecoveryFixture();
     const switched = await driver.switchSession('session-1');
@@ -1904,6 +1924,51 @@ describe('turn consumer lag recovery (#3180)', () => {
     assert.equal((await nextEvent(switched.activeTurn.events)).text, '!');
   });
 
+  test('backs off several immediate clean-EOF replacements before recovering', async () => {
+    const initial = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+    );
+    const ended = [2, 3, 4].map(
+      (index) =>
+        new FakeSubscription(
+          continuitySnapshot({ projectionRevision: index }),
+          Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+          `subscription-${index}`,
+        ),
+    );
+    for (const subscription of ended) await subscription.close();
+    const stable = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 5 }),
+      Promise.resolve([assistantMessage('turn-1', 'Hello world')]),
+      'subscription-5',
+    );
+    const connection = new FakeConnection([initial, ...ended, stable], true);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 50,
+    });
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+    const resynced = deferred<void>();
+    driver.subscribeTranscriptReplacements!((_sessionId, _turnId, _messages, reason) => {
+      if (reason === 'reconnect') resynced.resolve();
+    });
+
+    await initial.close();
+    await waitForSubscriptions(connection, 2);
+    await delay(5);
+    assert.equal(connection.openedSubscriptions, 2, 'the first repeated EOF is backoff-gated');
+
+    await resynced.promise;
+    assert.equal(connection.openedSubscriptions, 5);
+    stable.push(deltaFrame(1, 'turn-1', 11, '!', 'subscription-5'));
+    assert.equal((await nextEvent(switched.activeTurn.events)).text, '!');
+  });
+
   test('re-arms lag detection exactly at the hysteresis watermark', async () => {
     const initial = new FakeSubscription(
       continuitySnapshot(),
@@ -1934,11 +1999,15 @@ describe('turn consumer lag recovery (#3180)', () => {
     const switched = await driver.switchSession('session-1');
     assert.ok(switched.activeTurn);
 
-    // Latch the lag flag with a full non-delta backlog: all 1_024 queued
-    // events stay because nothing is sheddable.
+    // Latch the lag flag with a non-delta backlog. The canonical cut clears
+    // every pre-cut event, then a still-wedged consumer fills again without
+    // triggering a resubscribe loop.
     await floodToolStream(initial, 1_100);
     await waitForSubscriptions(connection, 2);
     await waitFor(() => resyncs === 1);
+    await floodToolStream(second, 1_100, 'subscription-2', 1);
+    await delay(20);
+    assert.equal(connection.openedSubscriptions, 2, 'the post-cut lag latch stayed armed');
 
     // Draining to one event above the watermark (513 pending) must NOT
     // re-arm: a fresh overflow on the still-latched queue is the same lag
@@ -1948,7 +2017,7 @@ describe('turn consumer lag recovery (#3180)', () => {
     for (let index = 0; index < 511; index += 1) {
       assert.equal((await iterator.next()).done, false);
     }
-    await floodToolStream(second, 600, 'subscription-2', 2_000);
+    await floodToolStream(second, 600, 'subscription-2', 1_101);
     await delay(20);
     assert.equal(connection.openedSubscriptions, 2, 'lag latch held above the watermark');
 
@@ -1957,7 +2026,7 @@ describe('turn consumer lag recovery (#3180)', () => {
     for (let index = 0; index < 512; index += 1) {
       assert.equal((await iterator.next()).done, false);
     }
-    await floodToolStream(second, 600, 'subscription-2', 3_000);
+    await floodToolStream(second, 600, 'subscription-2', 1_701);
     await waitForSubscriptions(connection, 3);
     await waitFor(() => resyncs === 2);
   });
@@ -1992,11 +2061,13 @@ describe('turn consumer lag recovery (#3180)', () => {
     const switched = await driver.switchSession('session-1');
     assert.ok(switched.activeTurn);
 
-    // First lag episode over a non-delta backlog: nothing to compact, and the
-    // latch stays on while the consumer remains behind.
+    // First lag episode over a non-delta backlog. The canonical cut clears the
+    // retired subscription's events; a still-wedged consumer can fill again
+    // without immediately looping recovery.
     await floodToolStream(initial, 1_100);
     await waitForSubscriptions(connection, 2);
     await waitFor(() => resyncs === 1);
+    await floodToolStream(second, 1_100, 'subscription-2', 1);
 
     // The consumer drains past the hysteresis watermark, re-arming lag
     // detection, and fresh output flows again. One hundred events stay queued
@@ -2006,9 +2077,9 @@ describe('turn consumer lag recovery (#3180)', () => {
       const result = await iterator.next();
       assert.equal(result.done, false);
     }
-    second.push(deltaFrame(1, 'turn-1', 5, ' world', 'subscription-2'));
+    second.push(deltaFrame(1_101, 'turn-1', 5, ' world', 'subscription-2'));
     for (let index = 0; index < 100; index += 1) {
-      second.push(toolStartFrame(2 + index, 2_000 + index, 'subscription-2'));
+      second.push(toolStartFrame(1_102 + index, 2_000 + index, 'subscription-2'));
     }
     await delay(0);
     let fresh = '';
@@ -2021,7 +2092,7 @@ describe('turn consumer lag recovery (#3180)', () => {
 
     // A second lag episode is a new episode, not a dead latch: it triggers a
     // fresh canonical resync. The stream stays contiguous on `second`.
-    await floodToolStream(second, 1_100, 'subscription-2', 102);
+    await floodToolStream(second, 1_100, 'subscription-2', 1_202);
     await waitForSubscriptions(connection, 3);
     await waitFor(() => resyncs === 2);
 
