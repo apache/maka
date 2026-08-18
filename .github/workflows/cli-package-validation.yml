@@ -1,0 +1,146 @@
+name: CLI package validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/cli-package-validation.yml'
+      - '.gitattributes'
+      - '.npmrc'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'patches/**'
+      - 'packages/cli/**'
+      - 'packages/code-mode/**'
+      - 'packages/core/**'
+      - 'packages/eval/**'
+      - 'packages/mcp/**'
+      - 'packages/runtime/**'
+      - 'packages/runtime-host/**'
+      - 'packages/storage/**'
+      - 'scripts/apply-dependency-patches.mjs'
+      - 'scripts/clean-paths.mjs'
+      - 'scripts/generate-third-party-notices.mjs'
+      - 'scripts/install-electron-with-retry.mjs'
+      - 'scripts/npm-spawn.mjs'
+      - 'scripts/release-cli-*.mjs'
+      - 'scripts/smoke-release-cli-package.mjs'
+      - 'tsconfig*.json'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cli-package-validation.yml'
+      - '.gitattributes'
+      - '.npmrc'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'patches/**'
+      - 'packages/cli/**'
+      - 'packages/code-mode/**'
+      - 'packages/core/**'
+      - 'packages/eval/**'
+      - 'packages/mcp/**'
+      - 'packages/runtime/**'
+      - 'packages/runtime-host/**'
+      - 'packages/storage/**'
+      - 'scripts/apply-dependency-patches.mjs'
+      - 'scripts/clean-paths.mjs'
+      - 'scripts/generate-third-party-notices.mjs'
+      - 'scripts/install-electron-with-retry.mjs'
+      - 'scripts/npm-spawn.mjs'
+      - 'scripts/release-cli-*.mjs'
+      - 'scripts/smoke-release-cli-package.mjs'
+      - 'tsconfig*.json'
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-package-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build immutable tarball
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.19.0'
+          cache: npm
+      - name: Select the release npm toolchain
+        run: npm install --global --no-audit --no-fund npm@11.12.1
+      - name: Build the release tarball once
+        run: npm run release:cli:pack
+      - name: Upload the immutable release candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-release-candidate
+          path: |
+            packages/cli/release/*.tgz
+            packages/cli/release/*.tgz.sha256
+            packages/cli/release/*.tgz.files.json
+          if-no-files-found: error
+          retention-days: 7
+
+  smoke:
+    name: Smoke ${{ matrix.name }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64 / Node 22.19
+            runner: ubuntu-24.04
+            node: '22.19.0'
+            platform: linux
+            arch: x64
+          - name: Linux x64 / Node 24
+            runner: ubuntu-24.04
+            node: '24'
+            platform: linux
+            arch: x64
+          - name: macOS arm64 / Node 24
+            runner: macos-15
+            node: '24'
+            platform: darwin
+            arch: arm64
+          - name: Windows x64 / Node 24
+            runner: windows-2025
+            node: '24'
+            platform: win32
+            arch: x64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Select the release npm toolchain
+        run: npm install --global --no-audit --no-fund npm@11.12.1
+      - name: Assert the runner architecture
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          node -e "if (process.platform !== process.env.EXPECTED_PLATFORM || process.arch !== process.env.EXPECTED_ARCH) throw new Error('Expected ' + process.env.EXPECTED_PLATFORM + '/' + process.env.EXPECTED_ARCH + ', found ' + process.platform + '/' + process.arch)"
+      - name: Download the release candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-release-candidate
+          path: packages/cli/release
+      - name: Smoke the installed tarball
+        run: node scripts/smoke-release-cli-package.mjs

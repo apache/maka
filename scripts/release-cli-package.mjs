@@ -18,6 +18,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { npmSpawnOptions } from './npm-spawn.mjs';
+import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
 import {
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
@@ -123,6 +124,11 @@ function main() {
   if (!pack?.filename || !Array.isArray(pack.files)) {
     throw new Error('npm pack did not return one JSON package result');
   }
+  validateCliReleaseArtifactMetrics({
+    compressedBytes: pack.size,
+    unpackedBytes: pack.unpackedSize,
+    entryCount: pack.entryCount,
+  });
   const tarballPath = join(releaseRoot, pack.filename);
   validatePackedFiles(pack.files, expectedDependencyManifests);
   const sha256 = digestFile(tarballPath);
