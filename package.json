@@ -73,7 +73,7 @@
     "@astryxdesign/core": "0.4.1",
     "@biomejs/biome": "2.5.8",
     "@types/node": "^26.2.0",
-    "dugite": "3.2.3",
+    "dugite": "^3.2.2",
     "knip": "^6.32.2",
     "patch-package": "8.0.1",
     "typescript": "^7.0.2"
