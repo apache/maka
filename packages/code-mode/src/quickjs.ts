@@ -13,7 +13,7 @@ import type {
 } from './index.js';
 import { DEFAULT_CODE_MODE_EXECUTION_POLICY } from './index.js';
 
-export async function executeCodeCellImpl(
+export async function executeCodeCell(
   input: ExecuteCodeCellInput,
 ): Promise<CodeModeExecutionResult> {
   // An explicit `undefined` override keeps the product default rather than
