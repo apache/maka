@@ -10,7 +10,20 @@ import {
   createBuiltinSandboxManager,
   createDefaultSandboxManager,
   isBuiltinFilesystemWorkerSandboxAvailable,
+  probeWindowsReadiness,
+  type WindowsReadinessSpawn,
 } from '../sandbox/default-sandbox-manager.js';
+
+async function withFakeLauncher<T>(run: (clientPath: string) => Promise<T> | T): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-windows-readiness-'));
+  const clientPath = join(dir, 'maka-windows-sandbox.exe');
+  await writeFile(clientPath, 'test');
+  try {
+    return await run(clientPath);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
 
 describe('createDefaultSandboxManager', () => {
   it('registers platform backends without requiring the host platform at import time', () => {
@@ -95,5 +108,69 @@ describe('isBuiltinFilesystemWorkerSandboxAvailable', () => {
       ),
       false,
     );
+  });
+
+  it('reports Windows unavailable when the launcher is absent, so no worker is published', () => {
+    // execution-composition gates filesystem-worker wiring on this helper; with
+    // no packaged launcher there is nothing to probe and it must fail closed.
+    assert.equal(
+      isBuiltinFilesystemWorkerSandboxAvailable('win32', undefined, 'x64', undefined),
+      false,
+    );
+  });
+});
+
+describe('probeWindowsReadiness', () => {
+  it('is available only on a clean exit 0 from the launcher probe', async () => {
+    await withFakeLauncher((clientPath) => {
+      const spawn: WindowsReadinessSpawn = () => ({ status: 0 });
+      assert.equal(probeWindowsReadiness(clientPath, spawn), true);
+    });
+  });
+
+  it('fails closed when the probe exits non-zero', async () => {
+    await withFakeLauncher((clientPath) => {
+      const spawn: WindowsReadinessSpawn = () => ({ status: 1 });
+      assert.equal(probeWindowsReadiness(clientPath, spawn), false);
+    });
+  });
+
+  it('fails closed on a spawn error', async () => {
+    await withFakeLauncher((clientPath) => {
+      const spawn: WindowsReadinessSpawn = () => ({ status: null, error: new Error('ENOENT') });
+      assert.equal(probeWindowsReadiness(clientPath, spawn), false);
+    });
+  });
+
+  it('fails closed on an external timeout that leaves no exit status', async () => {
+    await withFakeLauncher((clientPath) => {
+      // spawnSync surfaces a `timeout` kill as status === null.
+      const spawn: WindowsReadinessSpawn = () => ({ status: null });
+      assert.equal(probeWindowsReadiness(clientPath, spawn), false);
+    });
+  });
+
+  it('reuses the memoized result so repeated checks never re-probe', async () => {
+    await withFakeLauncher((clientPath) => {
+      let calls = 0;
+      const spawn: WindowsReadinessSpawn = () => {
+        calls += 1;
+        return { status: 0 };
+      };
+      assert.equal(probeWindowsReadiness(clientPath, spawn), true);
+      assert.equal(probeWindowsReadiness(clientPath, spawn), true);
+      assert.equal(calls, 1);
+    });
+  });
+
+  it('fails closed when the launcher file does not exist without spawning', () => {
+    let calls = 0;
+    const spawn: WindowsReadinessSpawn = () => {
+      calls += 1;
+      return { status: 0 };
+    };
+    const missing = join(tmpdir(), 'maka-windows-readiness-missing', 'maka-windows-sandbox.exe');
+    assert.equal(probeWindowsReadiness(missing, spawn), false);
+    assert.equal(calls, 0);
   });
 });

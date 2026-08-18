@@ -174,10 +174,14 @@ Lexical prefix checks are never authorization evidence.
   binary's signature and version against packaged metadata is deferred with Phase 3 signing — see
   §6.5.)_
 - Missing setup, identity drift, ACL-state corruption, ineffective network policy, unsupported
-  filesystem, helper mismatch, or a failed probe returns a stable typed unavailable reason.
+  filesystem, helper mismatch, or a failed probe returns a stable typed unavailable reason. _(Later
+  gate: the readiness probe today collapses every failure to a single fail-closed boolean surfaced as
+  `backend_not_available`; the structured typed reasons are deferred — see §6.5.)_
 - `auto` and `require` never fall back to host execution for a restricted managed profile.
 - Diagnostics expose the backend, setup version, and failure stage without paths, SIDs, credentials,
-  environment values, or firewall details.
+  environment values, or firewall details. _(Later gate: the probe runs with `stdio: 'ignore'` and
+  retains only the exit result, so setup version and failure stage are not yet propagated — deferred
+  with the structured unavailable reasons, see §6.5.)_
 
 ### 6.5 Preview implementation status (2026-08-17)
 
@@ -216,6 +220,9 @@ Designed but deferred as later gates (not enforced in the preview slice):
 - Launcher signature/version verification at readiness (§6.4). The per-launch request digest is
   recomputed and enforced in-broker on every launch; verifying the launcher binary's Authenticode
   signature and version against packaged metadata is deferred together with Phase 3 signing.
+- Structured unavailable reasons and diagnostics (§6.4). The readiness probe fails closed as a single
+  boolean surfaced as `backend_not_available`; the stable typed unavailable reasons and the
+  setup-version/failure-stage diagnostics are designed but not yet implemented or propagated.
 
 Deferral narrows readiness richness and desktop-layer defense-in-depth, not the enforcement
 boundary: an unavailable, drifted, or failed backend still fails closed, and a restricted managed

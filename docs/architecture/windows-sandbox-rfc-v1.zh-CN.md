@@ -137,9 +137,10 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - readiness 必须在生产 identity/token/Job/desktop/handle/filesystem/offline network 下启动真实 probe； _(已实现:预览版的 `--readiness-probe` 会真正建立 AppContainer identity/token 与 kill-on-close Job 并启动一个抛弃式受限子进程,宿主无法创建或强制边界时 fail closed,而非仅凭二进制存在即注册;private desktop 与完整的按 profile filesystem/offline network 策略尚未在 readiness 阶段演练 —— 见 §6.5。)_
 - launcher signature/version/digest 必须与 package metadata 一致； _(后续门禁：每次启动的 request digest 目前已在 broker 内重算并强制；对照打包 metadata 校验 launcher 二进制的 signature 与 version 随 Phase 3 签名一并暂缓 —— 见 §6.5。)_
 - setup 缺失、identity drift、ACL state 损坏、网络策略无效、文件系统不支持、helper 不匹配、probe 失败都返回
-  stable typed unavailable reason；
+  stable typed unavailable reason； _(后续门禁:readiness probe 目前把每种失败收敛为单一 fail-closed 布尔,统一以
+  `backend_not_available` 呈现;结构化 typed reason 尚未实现,暂缓 —— 见 §6.5。)_
 - restricted managed profile 在 `auto`/`require` 下绝不 fallback host execution；
-- diagnostics 只暴露 backend、setup version 与 failure stage，不暴露 path、SID、credential、env 或 firewall detail。
+- diagnostics 只暴露 backend、setup version 与 failure stage，不暴露 path、SID、credential、env 或 firewall detail。 _(后续门禁:probe 以 `stdio: 'ignore'` 运行且只保留退出结果,setup version 与 failure stage 尚未传播,与结构化 unavailable reason 一并暂缓 —— 见 §6.5。)_
 
 ### 6.5 预览实现状态（2026-08-17）
 
@@ -162,6 +163,9 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - private desktop / window station（§6.3）；
 - readiness 阶段的完整策略覆盖（§6.4):readiness probe 已建立生产 AppContainer identity/token 与 kill-on-close Job 并启动受限子进程,但尚未在 readiness 阶段编译并演练按 profile 的精确 filesystem 根、offline network 策略与 private desktop —— 这些目前按每次启动强制,而非在 readiness 阶段复证;
 - 随 Phase 3 签名一并落地的 launcher signature/version 校验（§6.4）。
+- 结构化 unavailable reason 与 diagnostics（§6.4）:readiness probe 以单一 fail-closed 布尔(呈现为
+  `backend_not_available`)收敛所有失败;stable typed unavailable reason 与 setup-version/failure-stage
+  诊断已设计但尚未实现或传播。
 
 暂缓收窄的是 readiness 丰富度与 desktop 层的 defense-in-depth，而非强制边界本身：backend 不可用、identity drift 或启动失败仍然 fail closed，受限 managed profile 也绝不回退到宿主执行。
 

@@ -4,7 +4,7 @@ use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::Foundation::{
@@ -164,18 +164,17 @@ pub fn readiness_probe() -> Result<u8, String> {
 
     unsafe {
         let job = create_kill_on_close_job()?;
-        // A per-invocation identity so probes never collide on a profile name:
-        // the profile is deleted on drop, but if a probe is killed before that
-        // runs the profile leaks. A PID-only name would then make every later
-        // probe on a reused PID fail closed on `CreateAppContainerProfile`
-        // (already exists), so mix in the wall-clock nanos as a nonce; the PID
-        // stays only to disambiguate concurrent probes.
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or(0);
-        let request_id = format!("readiness-probe.{}.{nonce}", std::process::id());
-        let profile = match AppContainerProfile::create(&request_id) {
+        // Deterministic, retryable profile lifecycle. The readiness child is a
+        // throwaway `cmd.exe /c exit 0` granted no filesystem roots, so — unlike
+        // a production launch, which must never reuse a profile lest it inherit
+        // stale filesystem ACEs — it can use a fixed, self-reconciling name.
+        // `create_readiness` reclaims any registration leaked by a previously
+        // killed probe (e.g. the Node-side timeout firing before `Drop` runs)
+        // before creating a fresh one, so at most one readiness profile ever
+        // exists and it is always the current probe's. This bounds cleanup
+        // without a persistent ledger and without relying on process
+        // destruction to run `Drop`.
+        let profile = match AppContainerProfile::create_readiness() {
             Ok(profile) => profile,
             Err(error) => {
                 CloseHandle(job);
@@ -183,8 +182,10 @@ pub fn readiness_probe() -> Result<u8, String> {
             }
         };
         let result = probe_appcontainer_child(&cmd_path, job, profile.sid);
-        // Closing the last Job handle is the kernel backstop: it terminates the
-        // throwaway child if the wait above did not already reap it.
+        // Closing the last Job handle is the kernel backstop after the probe has
+        // already explicitly terminated and drained its child (see
+        // `probe_appcontainer_child`); it terminates any straggler the drain
+        // did not reap.
         CloseHandle(job);
         drop(profile);
         result
@@ -301,7 +302,7 @@ unsafe fn probe_appcontainer_child(
         return Err(last_error("CreateProcessW(readiness appcontainer)"));
     }
 
-    let result = (|| -> Result<u8, String> {
+    let verify = (|| -> Result<u8, String> {
         if unsafe { ResumeThread(process.hThread) } == u32::MAX {
             return Err(last_error("ResumeThread(readiness)"));
         }
@@ -325,11 +326,40 @@ unsafe fn probe_appcontainer_child(
         Ok(0)
     })();
 
+    // Route *every* post-resume outcome — clean exit, verification failure, or
+    // timeout — through explicit termination and a Job drain before releasing
+    // the identity. Closing the Job alone is only a kernel backstop, and it
+    // misses the exact failure the verification guards against: a child found
+    // *outside* this Job. Terminating the throwaway child directly reaps that
+    // case, then terminate-and-drain the Job so no descendant outlives the probe.
+    let settled = unsafe { settle_probe_child(job, process.hProcess) };
+
     unsafe {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
     }
-    result
+
+    // A verification/exit failure is the primary diagnosis; a settlement failure
+    // is itself a fail-closed signal (something still holds the identity), so it
+    // is surfaced when the probe otherwise succeeded.
+    match (verify, settled) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Ok(exit), Ok(())) => Ok(exit),
+    }
+}
+
+/// Deterministically reap the throwaway readiness child. The child is a
+/// disposable `cmd.exe /c exit 0`, so terminate it outright before draining:
+/// `TerminateProcess` reaches a child that escaped this Job (the exact case the
+/// Job-close backstop cannot), and `terminate_and_drain_job` — the same
+/// settlement primitive the production launch path uses — then kills any
+/// Job-accounted descendant and confirms the Job is empty. An already-exited
+/// child makes `TerminateProcess` fail with `ERROR_ACCESS_DENIED`, which is
+/// benign here and intentionally ignored.
+unsafe fn settle_probe_child(job: HANDLE, child: HANDLE) -> Result<(), String> {
+    unsafe { TerminateProcess(child, 124) };
+    unsafe { terminate_and_drain_job(job, child) }
 }
 
 pub fn appcontainer_sid_string(request_id: &str) -> Result<String, String> {
@@ -425,7 +455,52 @@ impl AppContainerProfile {
         }
         Ok(Self { sid, name })
     }
+
+    /// Create the throwaway readiness profile under a fixed, self-reconciling
+    /// name. The readiness child is granted no filesystem roots and does no
+    /// filesystem work, so — unlike `create`, which fails closed on a leftover
+    /// to avoid inheriting stale ACEs — it is safe to reclaim a leaked
+    /// registration under this stable name first. That makes the profile
+    /// lifecycle deterministic and retryable: a profile leaked by an
+    /// externally-killed probe is reclaimed by the next probe rather than
+    /// accumulating under an unrecoverable unique name.
+    unsafe fn create_readiness() -> Result<Self, String> {
+        let name = appcontainer_profile_name(READINESS_PROFILE_REQUEST_ID);
+        // Best-effort reclaim of a profile leaked by a previously killed probe.
+        // The name is fixed, so this is the only registration that can exist
+        // under it; a missing profile makes this a no-op.
+        unsafe { DeleteAppContainerProfile(name.as_ptr()) };
+        let display_name = wide("Maka Windows Sandbox Readiness");
+        let description =
+            wide("Throwaway AppContainer profile for the Maka sandbox readiness probe");
+        let mut sid = null_mut();
+        let result = unsafe {
+            CreateAppContainerProfile(
+                name.as_ptr(),
+                display_name.as_ptr(),
+                description.as_ptr(),
+                null(),
+                0,
+                &mut sid,
+            )
+        };
+        if result < 0 {
+            return Err(format!(
+                "CreateAppContainerProfile(readiness) failed closed: HRESULT 0x{:08x}",
+                result as u32
+            ));
+        }
+        Ok(Self { sid, name })
+    }
 }
+
+/// Fixed request identity for the readiness profile. Unlike production launches
+/// this carries no PID or nonce: a leaked profile is deterministically
+/// reclaimed by the next probe (see `AppContainerProfile::create_readiness`),
+/// which also removes any PID-reuse collision by construction. Readiness is
+/// invoked once per host through the memoized TypeScript availability gate, so
+/// this fixed name is not exercised concurrently in practice.
+pub(crate) const READINESS_PROFILE_REQUEST_ID: &str = "readiness-probe";
 
 impl Drop for AppContainerProfile {
     fn drop(&mut self) {

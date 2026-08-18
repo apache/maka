@@ -2,7 +2,9 @@
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::windows_launcher::{appcontainer_profile_name, environment_block};
+    use crate::windows_launcher::{
+        READINESS_PROFILE_REQUEST_ID, appcontainer_profile_name, environment_block,
+    };
 
     fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().collect()
@@ -95,5 +97,18 @@ mod tests {
         let rendered = String::from_utf16(&first[..first.len() - 1]).expect("profile name");
         assert!(rendered.starts_with("maka.sandbox."));
         assert_eq!(rendered.len(), "maka.sandbox.".len() + 32);
+    }
+
+    #[test]
+    fn readiness_profile_name_is_fixed_and_self_reconciling() {
+        // The readiness profile uses one stable name so a profile leaked by an
+        // externally-killed probe is reclaimed by the next probe rather than
+        // accumulating under a unique per-invocation name.
+        let first = appcontainer_profile_name(READINESS_PROFILE_REQUEST_ID);
+        let second = appcontainer_profile_name(READINESS_PROFILE_REQUEST_ID);
+        assert_eq!(first, second);
+        // It must stay distinct from any production request identity so the two
+        // lifecycles never share a registration.
+        assert_ne!(first, appcontainer_profile_name("request-one"));
     }
 }

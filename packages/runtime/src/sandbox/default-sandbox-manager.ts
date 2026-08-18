@@ -40,6 +40,24 @@ const WINDOWS_READINESS_PROBE_TIMEOUT_MS = 15_000;
  */
 const windowsReadinessCache = new Map<string, boolean>();
 
+/** Outcome of one launcher `--readiness-probe` invocation. */
+export interface WindowsReadinessSpawnResult {
+  readonly status: number | null;
+  readonly error?: Error;
+}
+
+/** Runs one readiness probe. Injectable so tests can drive it deterministically. */
+export type WindowsReadinessSpawn = (clientPath: string) => WindowsReadinessSpawnResult;
+
+function spawnReadinessProbe(clientPath: string): WindowsReadinessSpawnResult {
+  const result = spawnSync(clientPath, ['--readiness-probe'], {
+    timeout: WINDOWS_READINESS_PROBE_TIMEOUT_MS,
+    windowsHide: true,
+    stdio: 'ignore',
+  });
+  return { status: result.status, error: result.error };
+}
+
 /**
  * Production-identity readiness probe for the Windows backend (RFC §6.4).
  *
@@ -50,19 +68,19 @@ const windowsReadinessCache = new Map<string, boolean>();
  * real production identity and launches a throwaway confined child, and caches
  * the result for the process lifetime — availability is stable per host, and
  * the sync `SandboxBackend.isAvailable` contract must stay cheap after the
- * first call. Anything other than a clean exit 0 fails closed.
+ * first call. Anything other than a clean exit 0 fails closed (a non-zero
+ * status, a spawn error, or an external timeout that leaves `status === null`).
  */
-function probeWindowsReadiness(clientPath: string): boolean {
+export function probeWindowsReadiness(
+  clientPath: string,
+  spawn: WindowsReadinessSpawn = spawnReadinessProbe,
+): boolean {
   const cached = windowsReadinessCache.get(clientPath);
   if (cached !== undefined) return cached;
   let available = false;
   if (existsSync(clientPath)) {
     try {
-      const result = spawnSync(clientPath, ['--readiness-probe'], {
-        timeout: WINDOWS_READINESS_PROBE_TIMEOUT_MS,
-        windowsHide: true,
-        stdio: 'ignore',
-      });
+      const result = spawn(clientPath);
       available = result.error === undefined && result.status === 0;
     } catch {
       available = false;
@@ -112,7 +130,16 @@ export function isBuiltinFilesystemWorkerSandboxAvailable(
   resourcesPath: string | undefined = (process as ElectronProcess).resourcesPath,
 ): boolean {
   if (platform === 'darwin') return true;
-  if (platform === 'win32') return builtinWindowsClientPath(platform, resourcesPath) !== undefined;
+  if (platform === 'win32') {
+    // Single source of truth for Windows availability: file presence only
+    // discovers the launcher path; the memoized readiness probe decides
+    // availability. Runtime Host composition calls this at startup, which warms
+    // `windowsReadinessCache`, so the backend's later synchronous `isAvailable`
+    // on the operation hot path hits the cache instead of spawning. File
+    // presence is no longer a second availability authority.
+    const clientPath = builtinWindowsClientPath(platform, resourcesPath);
+    return clientPath !== undefined && probeWindowsReadiness(clientPath);
+  }
   return (
     platform === 'linux' &&
     linuxCapability !== undefined &&
