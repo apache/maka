@@ -1,10 +1,17 @@
-//! Pure-function coverage for the private-desktop *placement* (RFC §6.3):
-//! the DACL string handed to `CreateDesktopW` and the child-side attestation
-//! that rejects the interactive desktop. These attest initial `lpDesktop`
-//! placement plus the desktop DACL, not escape-proof confinement (§6.5). They
-//! never touch the window station, so they run on any host.
+//! Coverage for the private-desktop *placement* (RFC §6.3): the security
+//! descriptor handed to `CreateDesktopExW`, the child-side attestation that
+//! rejects everything but the launcher-owned desktop, and a real-OS check that
+//! the supported launch concurrency fits the bounded desktop-heap budget.
+//! These attest initial `lpDesktop` placement plus the desktop security
+//! descriptor, not escape-proof confinement (§6.5).
 
-use crate::windows_launcher::desktop_sddl;
+use std::ffi::c_void;
+use std::ptr::null_mut;
+
+use windows_sys::Win32::Security::FreeSid;
+use windows_sys::Win32::Security::Isolation::DeriveAppContainerSidFromAppContainerName;
+
+use crate::windows_launcher::{create_confined_desktop, desktop_sddl};
 use crate::{desktop_is_private_placement, json_string};
 
 const APP_SID: &str =
@@ -77,6 +84,47 @@ fn private_placement_requires_the_launcher_owned_desktop_prefix() {
     assert!(!desktop_is_private_placement("Screen-saver"));
     // The bare prefix with no pid/nonce suffix is not a launcher-created name.
     assert!(!desktop_is_private_placement("maka-sandbox-desktop."));
+}
+
+#[test]
+fn desktop_sddl_pins_a_low_integrity_no_write_up_label() {
+    let sddl = desktop_sddl(OWNER_SID, APP_SID);
+    // Without an explicit label the desktop inherits the creator's Medium
+    // integrity, and MIC — evaluated before the DACL — would make the Low-IL
+    // AppContainer child's granted create-window/write rights unusable.
+    assert!(
+        sddl.ends_with("S:(ML;;NW;;;LW)"),
+        "desktop must carry a Low no-write-up mandatory label: {sddl}"
+    );
+}
+
+#[test]
+fn ten_confined_desktops_can_be_held_live() {
+    // Real-OS budget check for `CONFINED_DESKTOP_HEAP_KB` (RFC §6.3): the
+    // repository supports ten-way launch concurrency, so ten private desktops
+    // must be able to exist *simultaneously* without exhausting the system
+    // desktop heap. The default 3,072 KiB per-desktop allocation would put ten
+    // live desktops at ~30 MiB of the documented 48 MiB limit; the bounded
+    // 512 KiB budget keeps them at ~5 MiB. Children are not launched — the
+    // desktops themselves own the heap allocation this bounds.
+    let mut sid: *mut c_void = null_mut();
+    let name: Vec<u16> = "maka-desktop-heap-test"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let derived =
+        unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) } == 0;
+    assert!(derived, "derive test AppContainer SID");
+    let desktops: Vec<_> = (0..10)
+        .map(|index| {
+            unsafe { create_confined_desktop(sid) }
+                .unwrap_or_else(|error| panic!("desktop {index} must fit the heap budget: {error}"))
+        })
+        .collect();
+    assert_eq!(desktops.len(), 10);
+    // Drop order releases all ten handles; the kernel reclaims the desktops.
+    drop(desktops);
+    unsafe { FreeSid(sid) };
 }
 
 #[test]

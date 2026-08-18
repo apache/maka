@@ -37,7 +37,7 @@ use windows_sys::Win32::System::JobObjects::{
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::StationsAndDesktops::{
-    CloseDesktop, CreateDesktopW, DESKTOP_CREATEMENU, DESKTOP_CREATEWINDOW, DESKTOP_ENUMERATE,
+    CloseDesktop, CreateDesktopExW, DESKTOP_CREATEMENU, DESKTOP_CREATEWINDOW, DESKTOP_ENUMERATE,
     DESKTOP_HOOKCONTROL, DESKTOP_JOURNALPLAYBACK, DESKTOP_JOURNALRECORD, DESKTOP_READOBJECTS,
     DESKTOP_SWITCHDESKTOP, DESKTOP_WRITEOBJECTS, HDESK,
 };
@@ -210,6 +210,13 @@ pub fn readiness_probe() -> Result<u8, String> {
                 return Err(error);
             }
         };
+        let probe_sid = match sid_string(profile.sid) {
+            Ok(sid) => sid,
+            Err(error) => {
+                CloseHandle(job);
+                return Err(error);
+            }
+        };
         let result = probe_appcontainer_child(&cmd_path, job, profile.sid);
         // Closing the last Job handle is the kernel backstop after the probe has
         // already explicitly terminated and drained its child (see
@@ -224,7 +231,24 @@ pub fn readiness_probe() -> Result<u8, String> {
         // (RFC §6.5).
         CloseHandle(job);
         drop(profile);
-        result
+        let desktop = result?;
+        // Attest what the probe actually verified, not just that it exited 0:
+        // release evidence asserts these fields, so removing the exact-SID
+        // match, the specific-Job membership check, the settlement drain, or
+        // the private-desktop placement would turn the smoke red instead of
+        // leaving a hollow exit-0 gate green. `appContainerSidVerified`,
+        // `jobVerified`, and `settled` report the parent-side checks above
+        // (each fails closed before this line otherwise); `desktop` is the
+        // parent-side `lpDesktop` placement fact (RFC §6.3 placement, not
+        // escape-proof confinement — the throwaway cmd child cannot
+        // self-report).
+        println!(
+            "{{\"appContainerSidVerified\":true,\"jobVerified\":true,\"settled\":true,\"appContainerSid\":{},\"desktop\":{},\"desktopPrivatePlacement\":{}}}",
+            crate::json_string(&probe_sid),
+            crate::json_string(&desktop),
+            crate::desktop_is_private_placement(&desktop),
+        );
+        Ok(0)
     }
 }
 
@@ -251,7 +275,7 @@ unsafe fn probe_appcontainer_child(
     cmd_path: &str,
     job: HANDLE,
     app_container_sid: *mut c_void,
-) -> Result<u8, String> {
+) -> Result<String, String> {
     let executable = wide(cmd_path);
     // Build the command line directly: cmd.exe's `/d`/`/c` switches must stay
     // unquoted, so the per-token quoting used for arbitrary workloads would
@@ -404,11 +428,15 @@ unsafe fn probe_appcontainer_child(
     // preserved for reuse — its profile carries no filesystem roots, so a
     // surviving child inherits no ACE authority, and the kill-on-close Job is the
     // cleanup backstop. Durable quarantine of an unsettled identity is a deferred
-    // gate (RFC §6.5).
+    // gate (RFC §6.5). Success reports the private desktop the child was placed
+    // on so the caller can emit a machine-readable attestation of the verified
+    // facts instead of a bare success bit.
+    let desktop_name =
+        String::from_utf16_lossy(&desktop.name[..desktop.name.len().saturating_sub(1)]);
     match (verify, settled) {
         (Err(error), _) => Err(error),
         (Ok(_), Err(cleanup)) => Err(cleanup),
-        (Ok(exit), Ok(())) => Ok(exit),
+        (Ok(_), Ok(())) => Ok(desktop_name),
     }
 }
 
@@ -628,24 +656,44 @@ const CONFINED_DESKTOP_APP_MASK: u32 = DESKTOP_READOBJECTS
 const DENIED_DESKTOP_INTERACTIVE_MASK: u32 =
     DESKTOP_SWITCHDESKTOP | DESKTOP_HOOKCONTROL | DESKTOP_JOURNALRECORD | DESKTOP_JOURNALPLAYBACK;
 
-/// DACL for the per-launch private desktop. A leading deny ACE strips the
-/// interactive-control rights from the launching-user SID (which the
+/// Desktop-heap budget (KiB) for each per-launch private desktop, passed to
+/// `CreateDesktopExW`. A plain `CreateDesktopW` desktop takes the default
+/// interactive allocation (3,072 KiB against a documented 48 MiB system
+/// desktop-heap limit), so ten live launches — a supported concurrency — would
+/// consume ~30 MiB before counting `Default`, `Winlogon`, screensaver, or other
+/// software's desktops, and further launches would start failing. The confined
+/// worker is a no-GUI workload: the heap only backs the desktop object itself
+/// plus any hidden windows/menus the child creates, so 512 KiB (a sixth of the
+/// default; ten live launches ≈ 5 MiB) leaves an order of magnitude of
+/// system-wide headroom. `ten_confined_desktops_can_be_held_live` proves the
+/// supported maximum can be held live simultaneously within this budget.
+pub(crate) const CONFINED_DESKTOP_HEAP_KB: u32 = 512;
+
+/// Security descriptor for the per-launch private desktop. A leading deny ACE
+/// strips the interactive-control rights from the launching-user SID (which the
 /// AppContainer child carries effectively); the launching user and Local System
 /// otherwise keep full control so the desktop can always be managed and cleaned
 /// up — the launcher itself only ever requests the minimal app mask, which the
 /// deny does not intersect. The per-launch AppContainer package SID gets only
 /// the minimal non-interactive rights above. `P` blocks inherited ACEs so the
 /// confined child shares this desktop with nothing else on the window station.
+/// The `S:(ML;;NW;;;LW)` mandatory label pins the desktop at Low integrity with
+/// No-Write-Up: without it the desktop would inherit the creator's Medium
+/// level, and — because Mandatory Integrity Control is evaluated *before* the
+/// DACL — the Low-IL AppContainer child's granted create-window/write rights
+/// would be unusable. Labeling at Low (no privilege needed: it is below the
+/// creator's own level) makes the granted rights real for the child while
+/// higher-integrity access is unaffected.
 pub(crate) fn desktop_sddl(owner_sid: &str, app_container_sid: &str) -> String {
     format!(
-        "D:P(D;;0x{DENIED_DESKTOP_INTERACTIVE_MASK:x};;;{owner_sid})(A;;GA;;;{owner_sid})(A;;GA;;;SY)(A;;0x{CONFINED_DESKTOP_APP_MASK:x};;;{app_container_sid})"
+        "D:P(D;;0x{DENIED_DESKTOP_INTERACTIVE_MASK:x};;;{owner_sid})(A;;GA;;;{owner_sid})(A;;GA;;;SY)(A;;0x{CONFINED_DESKTOP_APP_MASK:x};;;{app_container_sid})S:(ML;;NW;;;LW)"
     )
 }
 
 /// Per-launch private desktop for the confined child. The open handle keeps the
 /// desktop alive; `Drop` closes it after the child has settled, at which point
 /// the kernel reclaims the now-unreferenced desktop.
-struct ConfinedDesktop {
+pub(crate) struct ConfinedDesktop {
     handle: HDESK,
     /// NUL-terminated wide name, handed to `STARTUPINFOW::lpDesktop`.
     name: Vec<u16>,
@@ -672,13 +720,17 @@ impl Drop for ConfinedDesktop {
 /// enumerate or post messages to the user's windows, and the DACL keeps every
 /// *other* principal off this private desktop. It does NOT isolate the
 /// clipboard — the clipboard belongs to the window station, which this desktop
-/// still shares with `Default`. The create-window/write rights in the DACL are
-/// granted but not relied upon: an explicit Low mandatory-integrity label
-/// proving they are usable at AppContainer's Low IL is also deferred, so the
-/// shipped guarantee is placement, not GUI capability. Fails closed: if the
-/// desktop or its security descriptor cannot be built, the caller aborts the
-/// launch rather than fall back to the interactive desktop.
-unsafe fn create_confined_desktop(
+/// still shares with `Default`. The desktop carries an explicit Low
+/// no-write-up mandatory label so the DACL's create-window/write grants pass
+/// MIC for the Low-IL AppContainer child, but those rights are still not
+/// relied upon — no probe creates a window in-child, so the shipped guarantee
+/// remains placement, not GUI capability (an in-child window-creation check is
+/// deferred, §6.5). The desktop heap is bounded per launch
+/// (`CONFINED_DESKTOP_HEAP_KB`) so supported concurrency cannot exhaust the
+/// system desktop heap. Fails closed: if the desktop or its security
+/// descriptor cannot be built, the caller aborts the launch rather than fall
+/// back to the interactive desktop.
+pub(crate) unsafe fn create_confined_desktop(
     app_container_sid: *mut c_void,
 ) -> Result<ConfinedDesktop, String> {
     let owner_sid = current_user_sid_string()?;
@@ -720,13 +772,15 @@ unsafe fn create_confined_desktop(
     // handle and later close it; disjoint from the deny mask) always succeeds.
     // No `DESKTOP_SWITCHDESKTOP`: the launcher never foregrounds it.
     let handle = unsafe {
-        CreateDesktopW(
+        CreateDesktopExW(
             name.as_ptr(),
             null(),
             null(),
             0,
             CONFINED_DESKTOP_APP_MASK,
             &security,
+            CONFINED_DESKTOP_HEAP_KB,
+            null_mut(),
         )
     };
     unsafe { LocalFree(descriptor as *mut c_void) };
@@ -1428,13 +1482,18 @@ unsafe fn token_appcontainer_sid_matches(
     if needed == 0 {
         return Err(last_error("GetTokenInformation(TokenAppContainerSid size)"));
     }
-    let mut buffer = vec![0u8; needed as usize];
+    // `TOKEN_APPCONTAINER_INFORMATION` starts with a pointer field, so the
+    // buffer must be pointer-aligned: a `Vec<u8>` only guarantees byte
+    // alignment and reading the struct through it would be UB. Size the buffer
+    // in `usize` words instead (same pattern as `current_user_sid_string`).
+    let words = needed as usize / size_of::<usize>() + 1;
+    let mut buffer = vec![0usize; words];
     if unsafe {
         GetTokenInformation(
             token,
             TokenAppContainerSid,
             buffer.as_mut_ptr() as *mut c_void,
-            needed,
+            (buffer.len() * size_of::<usize>()) as u32,
             &mut needed,
         )
     } == 0

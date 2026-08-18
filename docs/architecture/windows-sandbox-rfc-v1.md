@@ -162,10 +162,13 @@ Lexical prefix checks are never authorization evidence.
   does **not** structurally prevent in-process code from calling `OpenDesktopW("Default")` +
   `SetThreadDesktop` to re-attach, because no no-Win32k mitigation, dedicated window station, or token
   boundary is enforced yet. It also does **not** isolate the clipboard, which belongs to the window
-  station both desktops still share. An escape-proof boundary (a no-Win32k process mitigation, a
-  dedicated window station isolating the clipboard, and a verified Low mandatory-integrity label
-  proving the child's create-window/write rights are usable at Low IL) remains a later hardening gate
-  — see §6.5.)_
+  station both desktops still share. The desktop carries an explicit Low no-write-up mandatory label
+  (`S:(ML;;NW;;;LW)`) so the DACL's create-window/write grants pass Mandatory Integrity Control for
+  the Low-IL AppContainer child, and its heap is bounded per launch via `CreateDesktopExW` so the
+  supported ten-way concurrency stays an order of magnitude under the system desktop-heap limit. An
+  escape-proof boundary (a no-Win32k process mitigation, a dedicated window station isolating the
+  clipboard, and an in-child window-creation check proving the granted rights end to end) remains a
+  later hardening gate — see §6.5.)_
 - The token removes privileges and uses restricting SIDs; low integrity is defense in depth, not the
   filesystem policy by itself.
 - The child receives an allowlisted environment. Credentials, tokens, proxy variables, shell startup
@@ -242,17 +245,22 @@ Enforced (merged in #2961 unless tagged with a follow-up PR):
   rights, and a leading deny ACE stripping `DESKTOP_SWITCHDESKTOP`, `DESKTOP_HOOKCONTROL`, and journal
   record/playback from the launching-user SID the AppContainer child effectively carries — and start
   the child with `STARTUPINFOW.lpDesktop` pointing at it, failing closed if it cannot be created or
-  granted. Because `lpDesktop` selects only the *initial* desktop, this places the worker off the
-  interactive `Default` desktop and DACL-protects the private one; it is placement plus DACL
-  protection, **not** an escape-proof boundary — nothing structurally stops in-process code from
-  `OpenDesktopW("Default")` + `SetThreadDesktop`, and the clipboard is window-station-scoped and
-  remains shared (a no-Win32k mitigation, a dedicated window station, and a token boundary are deferred
-  gates below);
+  granted. The desktop is pinned at Low integrity (`S:(ML;;NW;;;LW)`) so the granted rights pass MIC
+  for the Low-IL child, and its heap is bounded per launch (`CreateDesktopExW`, 512 KiB) so supported
+  concurrency cannot exhaust the system desktop heap. Because `lpDesktop` selects only the *initial*
+  desktop, this places the worker off the interactive `Default` desktop and DACL-protects the private
+  one; it is placement plus DACL protection, **not** an escape-proof boundary — nothing structurally
+  stops in-process code from `OpenDesktopW("Default")` + `SetThreadDesktop`, and the clipboard is
+  window-station-scoped and remains shared (a no-Win32k mitigation, a dedicated window station, and a
+  token boundary are deferred gates below);
 - a production-identity readiness probe (§6.4) **(#3161)**: `--readiness-probe` stands up the real
   AppContainer identity and token, a kill-on-close Job, and the private desktop, then launches a
   throwaway confined child on that desktop (`cmd.exe /d /c exit 0`, with AutoRun disabled so a host's
   shell customization cannot skew the result), so availability fails closed on hosts where the OS
-  cannot create the boundary rather than on the packaged binary's presence alone;
+  cannot create the boundary rather than on the packaged binary's presence alone; on success it emits
+  a machine-readable attestation of the verified facts (exact-SID match, specific-Job membership,
+  settlement, private-desktop placement) that the release smoke asserts field by field, so the gate
+  cannot silently degrade into a hollow exit-0 check;
 - a dedicated, cross-process-serialized readiness profile lifecycle (§6.4) **(#3161)**: the probe profile lives
   in a namespace disjoint from production, its reserved `requestId` is rejected by validation, a
   DACL-hardened per-user named mutex serializes its delete→create→probe→drop cycle, an unsettled
@@ -269,15 +277,15 @@ Designed but deferred as later gates (not enforced in the preview slice):
   dedicated one. Because the clipboard is window-station-scoped, it is not isolated by the alternate
   desktop; moving to a dedicated window station (and thereby isolating the clipboard) is a later
   hardening gate.
-- Escape-proof desktop confinement: no-Win32k mitigation, token boundary, and usable Low-IL desktop
-  rights (§6.3). `STARTUPINFOW.lpDesktop` selects only the initial desktop, so absent a no-Win32k
-  process mitigation (or a separate window-station/token boundary) in-process code can
+- Escape-proof desktop confinement: no-Win32k mitigation, token boundary, and end-to-end Low-IL
+  desktop rights (§6.3). `STARTUPINFOW.lpDesktop` selects only the initial desktop, so absent a
+  no-Win32k process mitigation (or a separate window-station/token boundary) in-process code can
   `OpenDesktopW("Default")` + `SetThreadDesktop` to re-attach to the interactive desktop; the shipped
   contract is initial-desktop placement plus DACL protection, not structural confinement. Separately,
-  the private-desktop DACL grants the AppContainer SID create-window/write rights, but the desktop
-  carries no explicit Low mandatory-integrity label, so those rights are not proven usable by a Low-IL
-  AppContainer child. Enforcing a no-Win32k mitigation, plus a verified integrity label and a
-  child-side window-creation test, is deferred.
+  the desktop now carries an explicit Low no-write-up mandatory label so the AppContainer SID's
+  create-window/write grants pass MIC, but no probe creates a window in-child, so those rights are
+  labeled-usable rather than proven end to end. Enforcing a no-Win32k mitigation, plus a child-side
+  window-creation test, is deferred.
 - Full-policy readiness coverage (§6.4). The readiness probe already stands up the production
   AppContainer identity, token, kill-on-close Job, and private desktop and launches a confined child
   on it, but it does not yet compile and exercise the exact per-profile filesystem roots or the
