@@ -1683,9 +1683,13 @@ describe('turn consumer lag recovery (#3180)', () => {
   async function floodToolStream(
     subscription: InstanceType<typeof FakeSubscription>,
     count: number,
+    subscriptionId = 'subscription-1',
+    startSequence = 1,
   ): Promise<void> {
     for (let index = 0; index < count; index += 1) {
-      subscription.push(toolStartFrame(index + 1, index));
+      subscription.push(
+        toolStartFrame(startSequence + index, startSequence + index, subscriptionId),
+      );
       if (index % 64 === 63) await delay(0);
     }
     await delay(0);
@@ -1834,7 +1838,7 @@ describe('turn consumer lag recovery (#3180)', () => {
     }
     second.push(deltaFrame(1, 'turn-1', 5, ' world', 'subscription-2'));
     for (let index = 0; index < 100; index += 1) {
-      second.push(toolStartFrame(100 + index, 2_000 + index, 'subscription-2'));
+      second.push(toolStartFrame(2 + index, 2_000 + index, 'subscription-2'));
     }
     await delay(0);
     let fresh = '';
@@ -1846,8 +1850,8 @@ describe('turn consumer lag recovery (#3180)', () => {
     assert.equal(fresh, ' world');
 
     // A second lag episode is a new episode, not a dead latch: it triggers a
-    // fresh canonical resync.
-    await floodToolStream(second, 1_100);
+    // fresh canonical resync. The stream stays contiguous on `second`.
+    await floodToolStream(second, 1_100, 'subscription-2', 102);
     await waitForSubscriptions(connection, 3);
     await waitFor(() => resyncs === 2);
 
