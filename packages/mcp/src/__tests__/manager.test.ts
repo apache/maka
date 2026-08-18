@@ -133,6 +133,39 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       );
     });
 
+    test('routes initial discovery through the refresh owner when list-changed precedes the first response', async () => {
+      const fixture = await createRemoteFixture('sse');
+      const gate = fixture.holdNextToolList();
+      const manager = createManager();
+      const syncPromise = manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
+      await gate.started;
+
+      // The tool list changes while the first tools/list response is still in
+      // flight, and the server answers with the list it captured before the
+      // change. Dropping this notification would settle the connection on a
+      // snapshot the server already declared stale.
+      fixture.setToolListMode('replacement');
+      await fixture.notifyToolListChanged();
+      gate.release();
+
+      await syncPromise;
+      await waitFor(() => manager.toolSnapshot().tools[0]?.descriptor.name === 'replacement');
+      assert.deepEqual(
+        manager.toolSnapshot().tools.map(({ descriptor }) => descriptor.name),
+        ['replacement'],
+      );
+      // Exactly one follow-up pass through the same single-flight owner: the
+      // initial request plus the coalesced re-list the notification joined.
+      assert.equal(
+        fixture.requests.reduce(
+          (count, request) =>
+            count + request.protocolMethods.filter((method) => method === 'tools/list').length,
+          0,
+        ),
+        2,
+      );
+    });
+
     test('bounds raw Tool definitions without replacing the callable snapshot', async () => {
       const fixture = await createRemoteFixture('streamable-http');
       const manager = createManager();
