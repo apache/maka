@@ -33,6 +33,10 @@ jobs:
       - name: Build test artifacts
         run: npm.cmd run build:test
 
+      - name: Verify Runtime Host Local IPC trust boundary
+        shell: pwsh
+        run: ./scripts/windows-runtime-host-local-ipc-trust.ps1
+
       - name: Verify SQLite crash recovery
         shell: pwsh
         run: |

@@ -36,7 +36,10 @@ export async function prepareRuntimeHostEndpoint(
     const path = `\\\\.\\pipe\\maka-runtime-host-${input.rootId.slice(0, 16)}-${input.hostEpoch}`;
     return {
       path,
-      async prepareAfterListen() {},
+      async prepareAfterListen() {
+        // Node creates the pipe with the process token's default DACL. The
+        // blocking cross-user CI pins that a foreign user cannot open it duplex.
+      },
       async cleanup() {},
     };
   }

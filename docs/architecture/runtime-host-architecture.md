@@ -283,6 +283,7 @@ Runtime Host does not promise that an arbitrary external side effect happens exa
 
 - Protocol messages use closed schemas that reject unknown fields, explicit size and count limits, and stable error codes.
 - Authentication completes before protocol connection admission.
+- Local IPC grants Local Owner authority only after its OS endpoint establishes a same-user trust boundary.
 - Authentication fixes the principal, allowed operations, and path or capability access for the lifetime of a connection.
 - Client Capability offers and reverse calls remain authenticated, size-limited, and tied to that connection.
 - Adding a protocol operation does not expand an existing credential grant.

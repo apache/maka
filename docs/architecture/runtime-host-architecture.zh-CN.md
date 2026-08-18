@@ -283,6 +283,7 @@ Runtime Host 不保证任意 external side effect 恰好发生一次。如果 co
 
 - Protocol message 使用拒绝未知字段的 closed schema、明确的大小与数量限制，以及稳定的 error code。
 - Authentication 在 protocol connection admission 前完成。
+- Local IPC 只有在操作系统 endpoint 建立 same-user 信任边界后，才能授予 Local Owner authority。
 - Authentication 会在 connection 的整个生命周期内固定 principal、允许的 operations，以及 path 或 capability access。
 - Client Capability offers 与 reverse calls 必须经过认证、带大小限制，并绑定到该 connection。
 - 新增 protocol operation 不会扩张既有 credential grant。
