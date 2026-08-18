@@ -177,7 +177,14 @@ export type MakaPiTranscriptEntry =
        */
       hidden?: boolean;
     }
-  | { kind: 'notice'; level: 'info' | 'error'; text: string };
+  | {
+      kind: 'notice';
+      level: 'info' | 'error';
+      /** Already-safe display text. Runtime errors leave this empty unless the Host bounded it. */
+      text: string;
+      /** Stable Runtime reason retained until the locale-aware render boundary. */
+      runtimeError?: { reason?: string };
+    };
 
 export interface MakaPiTranscriptMetadata {
   title: string;
@@ -783,7 +790,9 @@ export function applyMakaSessionEventToTranscript(
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text: transcriptErrorMessage(event),
+        text:
+          event.boundedProviderMessage === true && event.message.length > 0 ? event.message : '',
+        runtimeError: event.reason ? { reason: event.reason.toLowerCase() } : {},
       });
       break;
 
@@ -812,36 +821,6 @@ export function applyMakaSessionEventToTranscript(
       }
       break;
   }
-}
-
-function transcriptErrorMessage(event: Extract<SessionEvent, { type: 'error' }>): string {
-  const stableReason = (() => {
-    switch (event.reason?.toLowerCase()) {
-      case 'context_overflow':
-        return 'Context window exceeded';
-      case 'timeout':
-        return 'Request timed out';
-      case 'auth':
-        return 'Authentication failed';
-      case 'provider_billing':
-        return 'Provider billing required';
-      case 'provider_permission':
-        return 'Provider access denied';
-      case 'provider_unavailable':
-        return 'Provider returned an error';
-      case 'rate_limit':
-        return 'Rate limit exceeded';
-      case 'usage_limit':
-        return 'Usage limit reached';
-      case 'network':
-        return 'Network error';
-      default:
-        return undefined;
-    }
-  })();
-  if (stableReason) return stableReason;
-  if (event.boundedProviderMessage === true && event.message.length > 0) return event.message;
-  return 'The task run failed. Try again later.';
 }
 
 function chatItemToTranscriptEntries(item: ChatItem): MakaPiTranscriptEntry[] {
@@ -1173,7 +1152,9 @@ export function renderMakaPiTranscript(
     const fullyOffScreen =
       lines.length < viewportTop &&
       (entryHeight === 0 || lines.length + entryHeight <= viewportTop);
-    lines.push(...renderTranscriptEntryMemoized(entry, safeWidth, fullyOffScreen));
+    lines.push(
+      ...renderTranscriptEntryMemoized(entry, safeWidth, fullyOffScreen, metadata.uiLocale ?? 'en'),
+    );
   }
   state.renderGeometry.entryFirstLine = entryFirstLine;
 
@@ -1262,6 +1243,7 @@ function renderTranscriptEntryMemoized(
   entry: MakaPiTranscriptEntry,
   width: number,
   offScreen: boolean,
+  locale: UiLocale,
 ): string[] {
   // Off-screen entries live in terminal scrollback, which is immutable: any
   // change to their rendered lines forces pi-tui's differential renderer into a
@@ -1274,15 +1256,19 @@ function renderTranscriptEntryMemoized(
     const cached = transcriptEntryRenderCache.get(entry);
     if (cached && cached.width === width) return cached.lines;
   }
-  const signature = transcriptEntrySignature(entry, width);
+  const signature = transcriptEntrySignature(entry, width, locale);
   const cached = transcriptEntryRenderCache.get(entry);
   if (cached && cached.signature === signature) return cached.lines;
-  const lines = renderTranscriptEntryBlock(entry, width);
+  const lines = renderTranscriptEntryBlock(entry, width, locale);
   transcriptEntryRenderCache.set(entry, { signature, lines, width });
   return lines;
 }
 
-function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number): string[] {
+function renderTranscriptEntryBlock(
+  entry: MakaPiTranscriptEntry,
+  width: number,
+  locale: UiLocale,
+): string[] {
   switch (entry.kind) {
     case 'user':
       return renderUserBlock(entry.text, width);
@@ -1297,11 +1283,19 @@ function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number)
     case 'tool':
       return renderToolBlock(entry, width, entry.expanded);
     case 'notice':
-      return renderNotice(entry, width);
+      return renderNotice(
+        entry,
+        width,
+        entry.runtimeError ? transcriptErrorMessage(entry, locale) : entry.text,
+      );
   }
 }
 
-function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): string {
+function transcriptEntrySignature(
+  entry: MakaPiTranscriptEntry,
+  width: number,
+  locale: UiLocale,
+): string {
   switch (entry.kind) {
     // User text is immutable, so length is a safe change key.
     case 'user':
@@ -1320,7 +1314,9 @@ function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): 
       // then serve stale reasoning from the cache. Key on the full text.
       return `thinking|${width}|${entry.expanded ? 1 : 0}|${entry.text}`;
     case 'notice':
-      return `notice|${width}|${entry.level}|${entry.text.length}`;
+      return `notice|${width}|${entry.level}|${
+        entry.runtimeError ? transcriptErrorMessage(entry, locale) : entry.text
+      }`;
     case 'tool':
       // A tool entry mutates in place as it runs: status/duration flip,
       // progress/output deltas append, and resultVersion advances whenever a
@@ -1752,9 +1748,44 @@ function renderAssistantBlock(text: string, width: number): string[] {
     .map((line) => fitLine(line, width));
 }
 
-function renderNotice(entry: MakaPiNoticeEntry, width: number): string[] {
+function transcriptErrorMessage(entry: MakaPiNoticeEntry, locale: UiLocale): string {
+  const copy =
+    locale === 'zh'
+      ? {
+          context_overflow: '上下文窗口已超出限制',
+          timeout: '请求超时',
+          auth: '鉴权失败',
+          provider_billing: '模型服务计费受限',
+          provider_permission: '模型服务拒绝访问',
+          provider_unavailable: '模型服务返回错误',
+          rate_limit: '触发模型速率限制',
+          usage_limit: '模型使用额度已用完',
+          network: '网络错误',
+          fallback: '任务运行失败，请稍后重试。',
+        }
+      : {
+          context_overflow: 'Context window exceeded',
+          timeout: 'Request timed out',
+          auth: 'Authentication failed',
+          provider_billing: 'Provider billing required',
+          provider_permission: 'Provider access denied',
+          provider_unavailable: 'Provider returned an error',
+          rate_limit: 'Rate limit exceeded',
+          usage_limit: 'Usage limit reached',
+          network: 'Network error',
+          fallback: 'The task run failed. Try again later.',
+        };
+  const reason = entry.runtimeError?.reason;
+  if (reason && reason in copy && reason !== 'fallback') {
+    return copy[reason as Exclude<keyof typeof copy, 'fallback'>];
+  }
+  if (entry.text.length > 0) return entry.text;
+  return copy.fallback;
+}
+
+function renderNotice(entry: MakaPiNoticeEntry, width: number, text: string): string[] {
   const label = entry.level === 'error' ? ansi.red('Error') : ansi.dim('Note');
-  return renderIndented(`${label}: ${entry.text}`, width, 0).map((line) => fitLine(line, width));
+  return renderIndented(`${label}: ${text}`, width, 0).map((line) => fitLine(line, width));
 }
 
 // Shown on a fresh, empty session. Greets with the branded maka wordmark and a
