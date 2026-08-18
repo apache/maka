@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { createReadStream } from 'node:fs';
 import { chmod, lstat, mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { decodeJsonObject, type ExperimentCell, type JsonObject } from './experiment.js';
 import {
@@ -32,6 +32,12 @@ import type { EvalResult } from './result.js';
 
 export type HarnessFramework = 'harbor' | 'pier';
 type RelayTransportStage = 'ready' | 'execute' | 'receive' | 'decision';
+
+const PIER_FRAMEWORK_LOG_MOUNTS = Object.freeze([
+  { directory: 'agent', target: '/logs/agent' },
+  { directory: 'verifier', target: '/logs/verifier' },
+  { directory: 'artifacts', target: '/logs/artifacts' },
+]);
 
 interface RelayTransportFailure {
   readonly stage: RelayTransportStage;
@@ -922,6 +928,18 @@ function decodeHarnessOptions(value: JsonObject, framework: HarnessFramework): H
       ? { tasksRootEnv: machinePathEnv(options.tasksRootEnv, 'tasksRootEnv') }
       : {}),
   };
+  if (framework === 'pier') {
+    const reservedTargets = PIER_FRAMEWORK_LOG_MOUNTS.map((mount) => mount.target);
+    const collision = decoded.mounts.find((mount) => {
+      const target = posix.normalize(mount.target);
+      return reservedTargets.some(
+        (reserved) => target === reserved || target.startsWith(`${reserved}/`),
+      );
+    });
+    if (collision) {
+      throw new Error(`Pier mount target ${collision.target} is reserved for framework logs`);
+    }
+  }
   for (const name of [
     decoded.pythonPathEnv,
     decoded.trialsRootEnv,
@@ -1000,9 +1018,11 @@ function resolveEnvironmentConfig(
     framework === 'pier'
       ? [
           ...configuredMounts,
-          { type: 'bind', source: join(trialPath, 'agent'), target: '/logs/agent' },
-          { type: 'bind', source: join(trialPath, 'verifier'), target: '/logs/verifier' },
-          { type: 'bind', source: join(trialPath, 'artifacts'), target: '/logs/artifacts' },
+          ...PIER_FRAMEWORK_LOG_MOUNTS.map(({ directory, target }) => ({
+            type: 'bind',
+            source: join(trialPath, directory),
+            target,
+          })),
         ]
       : configuredMounts;
   const base = { ...options.environment, mounts };

@@ -1295,6 +1295,34 @@ test('pier cannot declare an egress proxy it never enforces', () => {
   );
 });
 
+test('Pier rejects configured mounts that collide with framework log ownership', () => {
+  const root = join(tmpdir(), 'maka-test-pier-reserved-mount');
+  const restoreEnvironment = setEnvironment({
+    MAKA_TEST_MOUNT: join(root, 'mount'),
+    MAKA_TEST_PYTHON: join(root, 'python'),
+    MAKA_TEST_TASKS: join(root, 'tasks'),
+    MAKA_TEST_TRIALS: join(root, 'trials'),
+  });
+  try {
+    for (const target of ['/logs/agent/../agent', '/logs/verifier/reward.txt']) {
+      assert.throws(
+        () =>
+          createPierExecutor(
+            {
+              ...executorConfig(),
+              tasksRootEnv: 'MAKA_TEST_TASKS',
+              mounts: [{ sourceEnv: 'MAKA_TEST_MOUNT', target, readOnly: true }],
+            },
+            'experiment.json',
+          ),
+        new RegExp(`Pier mount target ${target.replaceAll('/', '\\/')} is reserved`, 'u'),
+      );
+    }
+  } finally {
+    restoreEnvironment();
+  }
+});
+
 test('Pier preserves its log mounts without inheriting MAKA_EVAL_FRAMEWORK', {
   timeout: 10_000,
 }, async () => {
