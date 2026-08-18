@@ -17,7 +17,7 @@ reviews:
         Review the diff adversarially against the problem it claims to solve.
         Determine whether it is the smallest coherent solution at the existing source of truth.
         Treat the reported problem and the proposed remedy as separate decisions.
-        Report only concrete, reproducible correctness or maintenance risks, and give each finding one disposition:
+        Report only concrete, reproducible risks, and give each finding one disposition:
         - fix-now: the current PR violates its stated behavior or an existing invariant;
         - follow-up: the risk is real but pre-existing or outside the PR's goal;
         - optional: the change would be an improvement but is not required for correctness or coherence.
