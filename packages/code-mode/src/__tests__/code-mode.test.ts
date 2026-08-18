@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { jsonSchema, tool } from 'ai';
-import { type ExecuteCodeCellInput, executeCodeCell, serializedByteLength } from '../index.js';
+import { type ExecuteCodeCellInput, executeCodeCell } from '../index.js';
 
 function execute(code: string, input: Partial<Omit<ExecuteCodeCellInput, 'code'>> = {}) {
   return executeCodeCell({
@@ -11,21 +11,6 @@ function execute(code: string, input: Partial<Omit<ExecuteCodeCellInput, 'code'>
     ...input,
   });
 }
-
-test('counts the bounded JSON representation used at the tool boundary', () => {
-  let inspectedPastLimit = false;
-  const trailing = Object.defineProperty({}, 'value', {
-    enumerable: true,
-    get: () => {
-      inspectedPastLimit = true;
-      throw new Error('must not inspect values after the byte limit');
-    },
-  });
-
-  assert.equal(serializedByteLength('\0'.repeat(10)), 62);
-  assert.equal(serializedByteLength(['x'.repeat(128), trailing], 32), 33);
-  assert.equal(inspectedPastLimit, false);
-});
 
 test('executes standard JavaScript without an interpreter subset', async () => {
   const result = await execute(`

@@ -10,6 +10,7 @@ import {
   type SandboxBoundarySettlement,
   type SettleSandboxBoundaryRequest,
 } from '@maka/core/sandbox-boundary';
+import { serializedByteLength } from '@maka/core/serialized-byte-length';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
 import type {
   SandboxBoundaryDecisionAckEvent,
@@ -46,7 +47,6 @@ import type { SessionHeader } from '@maka/core/session';
 import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import { redactSecrets } from '@maka/core/redaction';
 import { TOOL_BOUNDARY_PROTOCOL_V1, type RuntimeEvent } from '@maka/core/runtime-event';
-import { serializedByteLength } from '@maka/code-mode';
 
 import { recordToolArtifactsSafely, type ToolArtifactRecorder } from './tool-artifacts.js';
 import { computerActionFields, describeComputerUseArgsViolation } from './computer-use-codec.js';

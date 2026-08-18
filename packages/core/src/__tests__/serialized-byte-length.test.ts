@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { serializedByteLength } from '../serialized-byte-length.js';
+
+test('counts the bounded JSON representation used at the tool boundary', () => {
+  let inspectedPastLimit = false;
+  const trailing = Object.defineProperty({}, 'value', {
+    enumerable: true,
+    get: () => {
+      inspectedPastLimit = true;
+      throw new Error('must not inspect values after the byte limit');
+    },
+  });
+
+  assert.equal(serializedByteLength('\0'.repeat(10)), 62);
+  assert.equal(serializedByteLength(['x'.repeat(128), trailing], 32), 33);
+  assert.equal(inspectedPastLimit, false);
+});
+
+test('agrees with JSON.stringify on the payloads validation bounds', () => {
+  const payloads: unknown[] = [
+    { fileSystem: { entries: [{ path: '/tmp/工作区', scope: 'subtree', access: 'write' }] } },
+    { network: { enabled: true } },
+    { kind: 'managed', profile: { roots: [] }, revision: 3 },
+    { text: 'tab\tnewline\nquote"backslash\\ emoji😀 lone\ud800' },
+    [],
+    {},
+  ];
+
+  for (const payload of payloads) {
+    assert.equal(
+      serializedByteLength(payload),
+      new TextEncoder().encode(JSON.stringify(payload)).byteLength,
+      JSON.stringify(payload),
+    );
+  }
+});
