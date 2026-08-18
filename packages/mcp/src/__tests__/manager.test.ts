@@ -343,31 +343,30 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assert.notEqual(bindingFor(manager, 'first', 'echo'), bindingFor(manager, 'second', 'echo'));
     });
 
-    test('coalesces a refresh signal and keeps the latest valid snapshot', async () => {
-      const fixture = await createRemoteFixture('streamable-http');
+    test('keeps a stale candidate private when list-changed arrives before publication', async () => {
+      const fixture = await createRemoteFixture('sse');
       const manager = createManager();
-      await manager.sync(remoteConfig(fixture.url));
+      await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
       const listsBefore = countProtocolMethod(fixture, 'tools/list');
+      const retained = manager.toolSnapshot();
+      const publishedToolNames: string[][] = [];
+      manager.onChange((status) => {
+        publishedToolNames.push(status.tools.map((tool) => tool.name));
+      });
 
       fixture.setToolListMode('replacement');
       const gate = fixture.holdNextToolList();
-      const first = manager.refreshTools('remote');
+      const refresh = manager.refreshTools('remote');
       await gate.started;
       fixture.setToolListMode('duplicate');
-      const second = manager.refreshTools('remote');
+      await fixture.notifyToolListChanged();
       gate.release();
 
-      const settled = await Promise.allSettled([first, second]);
+      await assert.rejects(refresh, /duplicate tool/u);
+      assert.equal(manager.toolSnapshot(), retained);
       assert.equal(
-        settled.every((result) => result.status === 'rejected'),
-        true,
-      );
-      for (const result of settled) {
-        if (result.status === 'rejected') assert.match(String(result.reason), /duplicate tool/u);
-      }
-      assert.deepEqual(
-        manager.status('remote')?.tools.map((tool) => tool.name),
-        ['replacement'],
+        publishedToolNames.some((names) => names.includes('replacement')),
+        false,
       );
       assert.equal(countProtocolMethod(fixture, 'tools/list') - listsBefore, 2);
     });

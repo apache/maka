@@ -805,6 +805,11 @@ export class McpClientManager {
           entry.toolSnapshot,
         );
         latestSnapshot = snapshot;
+        if (refreshSuppressed) {
+          if (state.initial) return finish(snapshot, true);
+          throw this.toolRefreshFrequencyError(serverId);
+        }
+        if (state.pending) continue;
         if (!state.initial) {
           this.replaceToolSnapshot(entry, snapshot.entries);
           this.update(entry, {
@@ -815,11 +820,6 @@ export class McpClientManager {
             updatedAt: this.now(),
           });
         }
-        if (refreshSuppressed) {
-          if (state.initial) return finish(snapshot, true);
-          throw this.toolRefreshFrequencyError(serverId);
-        }
-        if (state.pending) continue;
         return finish(snapshot, false);
       }
     } finally {
