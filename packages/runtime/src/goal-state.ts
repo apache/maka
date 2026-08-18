@@ -29,8 +29,11 @@ import {
 } from '@maka/core/goal';
 
 export {
+  GOAL_BLOCK_CAP_LIMIT,
   GOAL_CONDITION_TEXT_LIMIT,
+  GOAL_MAX_ITERATIONS_LIMIT,
   GOAL_REASON_TEXT_LIMIT,
+  GOAL_TOKEN_BUDGET_MINIMUM,
   type GoalCheckpoint,
   type GoalControlLease,
   type GoalState,

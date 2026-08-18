@@ -23,6 +23,7 @@ import {
   Plus,
   Square,
   Sparkles,
+  Target,
   Upload,
   Workflow,
 } from './icons.js';
@@ -368,6 +369,24 @@ export const Composer = forwardRef<
     orchestrationModePending?: boolean;
     orchestrationModeDisabledReason?: string;
     onOrchestrationModeChange?(mode: OrchestrationMode): void | Promise<void>;
+    /**
+     * Open the host's Goal dialog. The composer offers the entry and nothing
+     * else: a Goal names a condition and two budgets, which is a form, and the
+     * ＋ menu is a menu. Absent handler, no entry — the same rule the other
+     * ＋ entries follow.
+     */
+    onSetGoal?(): void | Promise<void>;
+    /**
+     * A Goal is already running here. Arming refuses a second one, so the
+     * entry says so up front instead of spending the user's click on an error.
+     */
+    goalActive?: boolean;
+    /**
+     * Why a Goal cannot be set right now — a running Turn, typically. A Goal
+     * takes hold on the Turn after it is armed, so arming during one reads as
+     * having done nothing; the host names the reason and the entry shows it.
+     */
+    goalDisabledReason?: string;
     /**
      * Composer mention popups. Both are optional and the whole feature no-ops
      * when absent (SSR contracts render Composer with minimal props):
@@ -1412,7 +1431,9 @@ export const Composer = forwardRef<
    * groups, so with nothing above it there is nothing to separate — a host
    * that wires only the mode controls would open the menu on a rule.
    */
-  const hasPlusMenuActions = Boolean(props.onPickAttachments || props.mentionSkills);
+  const hasPlusMenuActions = Boolean(
+    props.onPickAttachments || props.mentionSkills || props.onSetGoal,
+  );
   const hasPlusMenuModes = Boolean(props.onPlanModeChange || props.onOrchestrationModeChange);
   const showPlusMenu = Boolean(hasPlusMenuActions || hasPlusMenuModes);
 
@@ -1666,6 +1687,25 @@ export const Composer = forwardRef<
                           props.mentionSkills.length === 0 ? copy.noSkillsAvailable : undefined
                         }
                         onClick={openSkillMenu}
+                      />
+                    ) : null}
+                    {props.onSetGoal ? (
+                      <DropdownMenuItem
+                        label={copy.setGoal}
+                        icon={<Target size={ICON_SIZE.control} aria-hidden="true" />}
+                        isDisabled={
+                          props.disabled
+                          || props.goalActive === true
+                          || Boolean(props.goalDisabledReason)
+                        }
+                        description={
+                          props.goalActive === true
+                            ? copy.goalAlreadySet
+                            : props.goalDisabledReason
+                        }
+                        onClick={() => {
+                          void props.onSetGoal?.();
+                        }}
                       />
                     ) : null}
                     {hasPlusMenuModes ? (

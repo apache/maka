@@ -1183,6 +1183,21 @@ export class DesktopRuntimeHostClient {
     return this.request("goal.query", { sessionId });
   }
 
+  /**
+   * Arm a Goal the user asked for. No optimistic retry loop like `clearGoal`:
+   * arming names no revision, so there is no stale one to refresh — a Session
+   * that already has an unfinished Goal fails with `operation_conflict`, and
+   * that is an answer for the user, not a race to re-run.
+   */
+  armGoal(input: {
+    sessionId: string;
+    condition: string;
+    maxIterations: number | null;
+    tokenBudget: number | null;
+  }): Promise<OperationOutput<"goal.arm">> {
+    return this.request("goal.arm", input);
+  }
+
   controlGoal(
     goal: Pick<GoalProjection, "sessionId" | "goalId" | "revision">,
     action: GoalControlAction,

@@ -1910,6 +1910,14 @@ const makaBridge = {
     get(sessionId: string): Promise<GoalState | null> {
       return invokeProjectedSessionRuntimeHost('goal:get', sessionId);
     },
+    arm(input: {
+      sessionId: string;
+      condition: string;
+      maxIterations?: number | null;
+      tokenBudget?: number | null;
+    }): Promise<GoalState> {
+      return invokeProjectedSessionRuntimeHost('goal:arm', input.sessionId, input);
+    },
     clear(sessionId: string): Promise<void> {
       return invokeSessionRuntimeHost('goal:clear', sessionId);
     },

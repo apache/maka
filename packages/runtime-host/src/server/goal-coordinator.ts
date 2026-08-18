@@ -33,7 +33,12 @@ import {
   type GoalAuthoritySnapshot,
   type InteractiveGoalAuthorityWriter,
 } from '@maka/storage/goal-authority';
-import type { GoalControlInput, GoalProjection, OperationOutcome } from '../protocol/index.js';
+import type {
+  GoalArmInput,
+  GoalControlInput,
+  GoalProjection,
+  OperationOutcome,
+} from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import type { GoalOperationHandlerMap } from './operation-dispatcher.js';
 import { projectGoalState } from './goal-projection.js';
@@ -78,6 +83,7 @@ export interface HostGoalSessionRetirement {
 export class HostGoalCoordinator {
   readonly handlers: GoalOperationHandlerMap = {
     'goal.query': (input) => this.#query(input.sessionId),
+    'goal.arm': (input) => this.#arm(input),
     'goal.control': (input) => this.#control(input),
   };
 
@@ -94,6 +100,14 @@ export class HostGoalCoordinator {
   readonly #acquireResidency: () => RuntimeHostResidency;
   readonly #executions: Pick<HostedExecutionAuthority, 'reconcile' | 'subscribe'>;
   readonly #authorityBySession = new Map<string, GoalAuthoritySnapshot>();
+  /**
+   * Token count per Session as of the last continuation read. It is the
+   * baseline a new Goal starts from, and `#arm` reads the same cache the
+   * GoalSet tool does — a second source would let the two paths disagree about
+   * what a Goal has spent. An empty entry means no evaluation has read this
+   * Session yet, which is what `tokensBaselinePending` on the Goal is for.
+   */
+  readonly #tokenCache = new Map<string, number>();
   readonly #recoveryWaits = new Set<Promise<void>>();
   readonly #recoveryAbort = new AbortController();
   #persistenceLane: Promise<void> = Promise.resolve();
@@ -120,7 +134,7 @@ export class HostGoalCoordinator {
         this.#onProjectionChanged(goal.sessionId);
       },
     });
-    const tokenCache = new Map<string, number>();
+    const tokenCache = this.#tokenCache;
     this.continuation = new GoalContinuationCoordinator({
       goalManager: this.manager,
       evaluator: options.evaluator,
@@ -302,6 +316,49 @@ export class HostGoalCoordinator {
       return {
         ok: true,
         result: { sessionId, goal: this.readProjection(sessionId) },
+      };
+    });
+  }
+
+  /**
+   * Arm a Goal from outside a Turn — the Host's own entry point for a user who
+   * asked for one, next to the GoalSet tool the model uses from inside a Turn.
+   *
+   * It creates the Goal and nothing else. There is deliberately no continuation
+   * scheduled here: a Goal armed with no Turn running takes effect on the next
+   * Turn, which `beginObservedTurn` binds to the live control lease, and the
+   * loop starts when that Turn settles. Arming does not itself start spending.
+   *
+   * A Turn already in flight keeps the standing it registered with — it was
+   * bound before this Goal existed, so it settles outside the Goal, and the one
+   * after it is the first the Goal drives.
+   */
+  #arm(input: GoalArmInput): Promise<OperationOutcome<'goal.arm'>> {
+    return this.#sessionAdmission.run(input.sessionId, async () => {
+      let header;
+      try {
+        header = await this.#stores.sessionStore.readHeaderSnapshot(input.sessionId);
+      } catch (error) {
+        if (isSessionNotFoundError(error)) return notFound('Session does not exist');
+        throw error;
+      }
+      if (header.isArchived) {
+        return sessionArchived('Archived Session cannot be given a Goal');
+      }
+      const created = this.manager.create(input.sessionId, input.condition, {
+        ...(input.maxIterations === null ? {} : { maxIterations: input.maxIterations }),
+        ...(input.tokenBudget === null ? {} : { tokenBudget: input.tokenBudget }),
+        tokensAtStart: this.#tokenCache.get(input.sessionId) ?? 0,
+      });
+      if (created.kind === 'unfinished') {
+        return operationConflict(
+          `Session already has an unfinished Goal in status ${created.goal.status}`,
+        );
+      }
+      await this.#flushGoalState(input.sessionId);
+      return {
+        ok: true,
+        result: { sessionId: input.sessionId, goal: projectGoalState(created.goal) },
       };
     });
   }

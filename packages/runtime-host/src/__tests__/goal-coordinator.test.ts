@@ -525,6 +525,121 @@ function activeGoalRecord(
   };
 }
 
+test('goal.arm creates one Goal per Session and refuses a second while it is unfinished', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-arm-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'root'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
+  try {
+    const session = await stores.sessionStore.create({
+      cwd: capability.canonicalPath,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const coordinator = new HostGoalCoordinator({
+      store: goalStore,
+      stores,
+      executions: {
+        reconcile: async () => assert.fail('Arming alone has no execution to recover'),
+        subscribe: () => () => undefined,
+      },
+      sessionAdmission: new SessionAdmissionGate(),
+      evaluator: {
+        evaluate: async () => assert.fail('Arming alone must not evaluate the Goal'),
+        close: async () => {},
+      },
+      // Arming schedules nothing: the Goal takes hold on the next Turn.
+      admitTurn: () => assert.fail('Arming must not admit a continuation Turn'),
+      listActionableTaskKeys: async () => [],
+      acquireResidency: () => ({ release: () => {} }),
+      onProjectionChanged: () => {},
+      requestDrain: () => {},
+      newId: () => 'goal-armed',
+      now: () => 10,
+    });
+    await coordinator.prepareRecovery();
+
+    const armed = await coordinator.handlers['goal.arm'](
+      {
+        sessionId: session.id,
+        condition: 'All tests pass',
+        maxIterations: 20,
+        tokenBudget: 50_000,
+      },
+      operationContext('connection-1'),
+    );
+    assert.equal(armed.ok, true);
+    if (!armed.ok) return;
+    assert.equal(armed.result.goal.goalId, 'goal-armed');
+    assert.equal(armed.result.goal.status, 'active');
+    assert.equal(armed.result.goal.maxIterations, 20);
+    assert.equal(armed.result.goal.tokenBudget, 50_000);
+    assert.deepEqual(
+      await coordinator.handlers['goal.query'](
+        { sessionId: session.id },
+        operationContext('connection-2'),
+      ),
+      armed,
+      'every client reads the Goal the Host just armed',
+    );
+    await waitForAsync(async () => (await goalStore.read(session.id)) !== null);
+
+    const second = await coordinator.handlers['goal.arm'](
+      {
+        sessionId: session.id,
+        condition: 'Something else',
+        maxIterations: null,
+        tokenBudget: null,
+      },
+      operationContext('connection-1'),
+    );
+    assert.equal(second.ok, false);
+    assert.equal(second.ok === false && second.error.code, 'operation_conflict');
+
+    const missing = await coordinator.handlers['goal.arm'](
+      {
+        sessionId: 'session-that-never-existed',
+        condition: 'All tests pass',
+        maxIterations: null,
+        tokenBudget: null,
+      },
+      operationContext('connection-1'),
+    );
+    assert.equal(missing.ok === false && missing.error.code, 'not_found');
+
+    const header = await stores.sessionStore.readHeaderRecordSnapshot(session.id);
+    await stores.sessionStore.setSessionsArchivedVersioned(
+      [{ sessionId: session.id, expectedVersion: header.revision }],
+      true,
+    );
+    const archived = await coordinator.handlers['goal.arm'](
+      {
+        sessionId: session.id,
+        condition: 'All tests pass',
+        maxIterations: null,
+        tokenBudget: null,
+      },
+      operationContext('connection-1'),
+    );
+    assert.equal(archived.ok === false && archived.error.code, 'session_archived');
+
+    await coordinator.close();
+  } finally {
+    await goalStore.close();
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 function operationContext(connectionId: string) {
   return {
     hostEpoch: 'epoch-1',

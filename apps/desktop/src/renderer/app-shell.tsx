@@ -227,6 +227,7 @@ function rebaseWorkspaceFileReferences(
 
 import { useSettingsModal } from './use-settings-modal';
 import { RemoteProjectDirectoryDialog } from './remote-project-directory-dialog';
+import { GoalDialog } from './goal-dialog.js';
 import { useSystemUiLocale } from './use-system-ui-locale';
 import {
   isSessionWorkspaceUnavailableError,
@@ -776,6 +777,12 @@ function AppShellContent({
     },
     [],
   );
+  /**
+   * The Session the Goal dialog is arming, or `undefined` when it is closed.
+   * Keyed by Session rather than a boolean so switching Sessions while the
+   * dialog is open can never arm the wrong one.
+   */
+  const [goalDialogSessionId, setGoalDialogSessionId] = useState<string>();
   // Set of session ids whose backend / connection is no longer usable —
   // drives the sidebar "已过期" pill (PR108g, paired with the PR108e chat
   // header banner). Derivation is pure (see `stale-sessions.ts`) so the
@@ -3271,6 +3278,17 @@ function AppShellContent({
                   onOrchestrationModeChange={(mode) => {
                     void setOrchestrationMode(mode);
                   }}
+                  onSetGoal={
+                    activeId && activeBoundarySurface.localInteractionAvailable
+                      ? () => setGoalDialogSessionId(activeId)
+                      : undefined
+                  }
+                  goalActive={activeGoal !== null}
+                  goalDisabledReason={
+                    activeStreamingLive || (activeId && turnActive)
+                      ? shellCopy.goalTurnActive
+                      : undefined
+                  }
                     />
                   </>
                 }
@@ -3586,6 +3604,10 @@ function AppShellContent({
         }}
       />
 
+      <GoalDialog
+        {...(goalDialogSessionId ? { sessionId: goalDialogSessionId } : {})}
+        onClose={() => setGoalDialogSessionId(undefined)}
+      />
       <RuntimeHostSshTerminalDialog />
 
       <RemoteProjectDirectoryDialog

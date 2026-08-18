@@ -754,6 +754,52 @@ test('controlGoalWithRetry rethrows a status refusal instead of retrying it away
   );
 });
 
+test('arms a Goal in one request and reports a conflicting Goal instead of retrying', async () => {
+  const armed = goalProjection(0);
+  const { client, requests } = clientWithResponses([
+    { sessionId: 'session-1', goal: armed },
+  ]);
+
+  const result = await client.armGoal({
+    sessionId: 'session-1',
+    condition: 'All tests pass',
+    maxIterations: 20,
+    tokenBudget: null,
+  });
+
+  assert.deepEqual(result, { sessionId: 'session-1', goal: armed });
+  assert.deepEqual(
+    requests.filter(({ operation }) => operation === 'goal.arm').map(({ input }) => input),
+    [
+      {
+        sessionId: 'session-1',
+        condition: 'All tests pass',
+        maxIterations: 20,
+        tokenBudget: null,
+      },
+    ],
+  );
+
+  // Arming names no revision, so a conflict is an answer for the user — the
+  // Session already has a Goal — not a stale read to refresh and re-send.
+  const conflicted = clientWithResponses([
+    new RuntimeHostOperationError('goal.arm', 'operation_conflict', 'Goal already set'),
+  ]);
+  await assert.rejects(
+    conflicted.client.armGoal({
+      sessionId: 'session-1',
+      condition: 'All tests pass',
+      maxIterations: null,
+      tokenBudget: null,
+    }),
+    /Goal already set/,
+  );
+  assert.equal(
+    conflicted.requests.filter(({ operation }) => operation === 'goal.arm').length,
+    1,
+  );
+});
+
 test('rejects an invalid sidecar continuation without misclassifying it as revision churn', async () => {
   const revision = catalogRevision('7');
   const { client, requests } = clientWithResponses([

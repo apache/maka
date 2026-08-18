@@ -234,6 +234,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'external-session.catalog.query',
   'external-session.import',
   'external-session.source.query',
+  'goal.arm',
   'goal.control',
   'goal.query',
   'host.diagnostics.query',

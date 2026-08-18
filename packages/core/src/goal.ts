@@ -266,6 +266,18 @@ export const GOAL_CONDITION_TEXT_LIMIT: GoalTextLimit = Object.freeze({
   utf8Bytes: 1_500,
 });
 
+/**
+ * Shared ceilings for the two Goal budgets a caller may choose.
+ *
+ * They were literals inside the GoalSet tool's schema until the Host grew an
+ * operation that arms a Goal too — two callers validating the same field
+ * against two copies of a number is how the copies drift apart.
+ */
+export const GOAL_MAX_ITERATIONS_LIMIT = 200;
+export const GOAL_BLOCK_CAP_LIMIT = 50;
+/** Below this a budget stops the Goal before it can do anything with it. */
+export const GOAL_TOKEN_BUDGET_MINIMUM = 1_000;
+
 /** Shared boundary for evaluator and lifecycle diagnostics. */
 export const GOAL_REASON_TEXT_LIMIT: GoalTextLimit = Object.freeze({
   codeUnits: 500,

@@ -9,7 +9,10 @@
 import { z } from 'zod';
 import type { MakaTool } from './tool-runtime.js';
 import {
+  GOAL_BLOCK_CAP_LIMIT,
   GOAL_CONDITION_TEXT_LIMIT,
+  GOAL_MAX_ITERATIONS_LIMIT,
+  GOAL_TOKEN_BUDGET_MINIMUM,
   isGoalTextWithinLimit,
   TERMINAL_GOAL_STATUSES,
   type GoalManager,
@@ -179,14 +182,14 @@ function buildGoalSetTool(deps: GoalToolsDeps): MakaTool<
         .number()
         .int()
         .min(1)
-        .max(200)
+        .max(GOAL_MAX_ITERATIONS_LIMIT)
         .optional()
         .describe('Absolute ceiling on total turns before giving up. Defaults to 50.'),
       block_cap: z
         .number()
         .int()
         .min(1)
-        .max(50)
+        .max(GOAL_BLOCK_CAP_LIMIT)
         .optional()
         .describe(
           'Stop after this many consecutive turns with no progress (stall detection). Defaults to 8.',
@@ -194,7 +197,7 @@ function buildGoalSetTool(deps: GoalToolsDeps): MakaTool<
       token_budget: z
         .number()
         .int()
-        .min(1000)
+        .min(GOAL_TOKEN_BUDGET_MINIMUM)
         .optional()
         .describe(
           'Optional token budget; the goal stops (budget_limited) once this many tokens are spent working toward it.',

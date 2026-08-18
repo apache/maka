@@ -17,6 +17,50 @@ import {
 
 type DomainClient = RuntimeHostSessionDomainsIpcDeps['client'];
 
+test('goal:arm takes the Session from the scoped channel, not the renderer frame', async () => {
+  const armed: unknown[] = [];
+  const client = domainClient({
+    armGoal: async (input) => {
+      armed.push(input);
+      return { sessionId: input.sessionId, goal: goalProjection() };
+    },
+  });
+  const ipc = ipcHarness();
+  registerDomainsIpc({ client, emitModeChanged() {} }, ipc);
+
+  const goal = await ipc.invoke('goal:arm', 'session-1', {
+    // A renderer-side Session id in the frame must not redirect the operation.
+    sessionId: 'session-somewhere-else',
+    condition: 'Finish the adapter',
+    maxIterations: 20,
+    tokenBudget: 1_000,
+  });
+  assert.deepEqual(armed, [
+    {
+      sessionId: 'session-1',
+      condition: 'Finish the adapter',
+      maxIterations: 20,
+      tokenBudget: 1_000,
+    },
+  ]);
+  assert.equal((goal as { id: string }).id, 'goal-1');
+
+  // Omitted budgets are "not chosen", which the Host reads as its defaults.
+  await ipc.invoke('goal:arm', 'session-1', { condition: 'Finish the adapter' });
+  assert.deepEqual(armed[1], {
+    sessionId: 'session-1',
+    condition: 'Finish the adapter',
+    maxIterations: null,
+    tokenBudget: null,
+  });
+
+  await assert.rejects(ipc.invoke('goal:arm', 'session-1', { condition: '   ' }));
+  await assert.rejects(
+    ipc.invoke('goal:arm', 'session-1', { condition: 'Finish', maxIterations: 0 }),
+  );
+  await assert.rejects(ipc.invoke('goal:arm', 'session-1', 'not-an-object'));
+});
+
 test('adapts Host Goal, Task, Deep Research, and Resource projections', async () => {
   const controls: unknown[] = [];
   const client = domainClient({
@@ -720,6 +764,7 @@ function domainClient(overrides: Partial<DomainClient>): DomainClient {
     throw new Error('Unexpected domain operation');
   };
   return {
+    armGoal: unavailable,
     clearGoal: unavailable,
     acquireRuntimeResourceController: unavailable,
     controlPlan: unavailable,

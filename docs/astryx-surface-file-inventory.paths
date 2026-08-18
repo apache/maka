@@ -15,6 +15,7 @@ apps/desktop/src/renderer/chat-workbar.tsx
 apps/desktop/src/renderer/command-palette.tsx
 apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
+apps/desktop/src/renderer/goal-dialog.tsx
 apps/desktop/src/renderer/keyboard-help.tsx
 apps/desktop/src/renderer/live-turn-reconciler.tsx
 apps/desktop/src/renderer/maka-tokens.css
