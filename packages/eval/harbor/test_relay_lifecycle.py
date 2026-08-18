@@ -189,8 +189,13 @@ class IgnoringLeaderEnvironment(SimultaneousEnvironment):
 
 
 class SlowLeaderStopEnvironment(IgnoringLeaderEnvironment):
+    def __init__(self):
+        super().__init__()
+        self.leader_stop_started = asyncio.Event()
+
     async def exec(self, command, cwd=None, timeout_sec=None):
         if _is_leader_stop(command):
+            self.leader_stop_started.set()
             await asyncio.sleep(0.05)
         return await super().exec(command, cwd=cwd, timeout_sec=timeout_sec)
 
@@ -719,7 +724,7 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
             await writer.drain()
             await environment.started.wait()
             running.cancel()
-            await asyncio.sleep(0.01)
+            await environment.leader_stop_started.wait()
             running.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await asyncio.wait_for(running, timeout=1)
