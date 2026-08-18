@@ -67,7 +67,7 @@ test('finalize validates one exact stage attempt before running the current veri
   assert.doesNotMatch(checkout, /steps\.stage-run\.outputs\.source_sha/u);
 });
 
-test('finalize propagates verified artifacts and creates a non-latest exact-tag release', () => {
+test('finalize propagates verified artifacts and idempotently publishes an exact-tag release', () => {
   const workflow = readWorkflow('release-cli-finalize.yml');
   assert.match(
     workflow,
@@ -81,9 +81,15 @@ test('finalize propagates verified artifacts and creates a non-latest exact-tag 
     /artifact-ids: \$\{\{ needs\.inspect\.outputs\.public_release_artifact_id \}\}/u,
   );
   assert.match(publish, /--verify-tag/u);
+  assert.match(publish, /gh release create[\s\S]*?--draft/u);
+  assert.match(publish, /gh release upload[\s\S]*?--clobber/u);
+  assert.match(publish, /gh release edit[\s\S]*?--draft=false/u);
   assert.match(publish, /--prerelease/u);
   assert.match(publish, /--latest=false/u);
-  assert.doesNotMatch(publish, /actions\/checkout@/u);
+  assert.match(publish, /validate-github-release/u);
+  const checkout = namedStep(workflowSteps(publish), 'Check out the current release finalizer');
+  assert.match(checkout, /ref: \$\{\{ github\.sha \}\}/u);
+  assert.match(checkout, /persist-credentials: false/u);
 });
 
 test('release workflows select npm from the root packageManager authority', () => {

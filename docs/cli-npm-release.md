@@ -92,7 +92,8 @@ Do not approve anything on npm if the Stage workflow did not finish successfully
 
 ## Inspect and approve on npm
 
-Use npm 11.15 or newer. The repository pins the reviewed release toolchain in `packageManager`.
+Use Node.js 22.19.0 or newer and the npm version pinned in the repository's `packageManager`
+(currently npm 11.19.0). These are the reviewed release toolchain versions.
 
 ```sh
 npm stage list maka-agent --registry https://registry.npmjs.org/
@@ -176,8 +177,11 @@ The npm version is already immutable. Do not publish or approve it again. Preser
 attempt, version, and artifacts. If the package bytes and provenance are valid, fix the current
 Finalize verifier on `main` and rerun Finalize against that same successful Stage identity.
 
-If an existing `cli-v<version>` tag points anywhere other than the recorded Stage source commit,
-stop and investigate. Do not move or delete it to make the workflow pass.
+Finalize is idempotent across partial GitHub Release creation: it resumes an exact draft and accepts
+an already-published release only after verifying its metadata and asset digests. If an existing
+`cli-v<version>` tag points anywhere other than the recorded Stage source commit, or an existing
+published release differs from the verified candidate, stop and investigate. Do not move or delete
+it to make the workflow pass.
 
 ### The public version is defective
 
@@ -189,12 +193,14 @@ npm dist-tag add "maka-agent@$known_good" next
 # For a stable release incident, use latest instead of next.
 ```
 
-Then deprecate only the defective version with an actionable replacement message:
+Then deprecate only the defective version and direct users to the recovered dist-tag, which already
+points to the verified version:
 
 ```sh
 bad_version=0.1.0-beta.2
-replacement=0.1.0-beta.3
-npm deprecate "maka-agent@$bad_version" "Known issue; install maka-agent@$replacement."
+recovery_tag=next
+# For a stable release incident, use latest instead of next.
+npm deprecate "maka-agent@$bad_version" "Known issue; install maka-agent@$recovery_tag."
 ```
 
 Verify the tags, fix the defect, and release a new version through the complete Stage and Finalize

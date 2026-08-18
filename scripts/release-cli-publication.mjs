@@ -184,6 +184,37 @@ export function validateSignatureAudit({ releaseDirectory, audit }) {
   return record;
 }
 
+export function validateGitHubRelease({ releaseDirectory, release }) {
+  const record = loadReleaseRecord(releaseDirectory);
+  const expectedAssets = [record.tarball, record.checksum, record.inventory, 'release.json'];
+  const expectedPrerelease = record.distTag === 'next';
+  if (
+    release?.tag_name !== record.gitTag ||
+    release.name !== `Maka CLI ${record.version}` ||
+    release.body !== readFileSync(join(releaseDirectory, 'release-notes.md'), 'utf8') ||
+    release.draft !== false ||
+    release.prerelease !== expectedPrerelease ||
+    !Array.isArray(release.assets) ||
+    release.assets.length !== expectedAssets.length
+  ) {
+    throw new Error('GitHub Release metadata does not match the verified CLI release');
+  }
+
+  const assets = new Map(release.assets.map((asset) => [asset?.name, asset]));
+  for (const name of expectedAssets) {
+    const bytes = readFileSync(join(releaseDirectory, name));
+    const asset = assets.get(name);
+    if (
+      asset?.state !== 'uploaded' ||
+      asset.size !== bytes.length ||
+      asset.digest !== `sha256:${digest('sha256', bytes, 'hex')}`
+    ) {
+      throw new Error(`GitHub Release asset does not match the verified file: ${name}`);
+    }
+  }
+  return record;
+}
+
 export function prepareSignatureAuditTree({ releaseDirectory, auditDirectory }) {
   const record = loadReleaseRecord(releaseDirectory);
   const packageDirectory = join(auditDirectory, 'node_modules', PACKAGE_NAME);
@@ -448,8 +479,16 @@ async function main() {
     });
     return;
   }
+  if (command === 'validate-github-release' && args.length === 2) {
+    const [releaseDirectory, releasePath] = args;
+    validateGitHubRelease({
+      releaseDirectory: resolve(releaseDirectory),
+      release: readJson(resolve(releasePath), 'GitHub Release'),
+    });
+    return;
+  }
   throw new Error(
-    `Usage: release-cli-publication.mjs <prepare-stage|prepare-audit|validate-stage-run|fetch-registry|validate-audit> ...`,
+    `Usage: release-cli-publication.mjs <prepare-stage|prepare-audit|validate-stage-run|fetch-registry|validate-audit|validate-github-release> ...`,
   );
 }
 

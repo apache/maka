@@ -10,6 +10,7 @@ import {
   parseCliReleaseVersion,
   prepareSignatureAuditTree,
   prepareStageRelease,
+  validateGitHubRelease,
   validateSignatureAudit,
   validateStageRun,
 } from './release-cli-publication.mjs';
@@ -247,6 +248,42 @@ test('signature audit tree exposes only the top-level registry package', () => {
   );
 });
 
+test('GitHub finalization accepts only the exact published metadata and asset digests', async () => {
+  const fixture = createPreparedCandidate();
+  const registryDirectory = mkdtempSync(join(tmpdir(), 'maka-cli-github-release-'));
+  await fetchRegistryRelease({
+    releaseDirectory: fixture.releaseDirectory,
+    registryDirectory,
+    fetchImpl: registryFetch({ fixture }),
+  });
+  const release = createGitHubReleaseFixture(fixture, registryDirectory);
+
+  assert.doesNotThrow(() =>
+    validateGitHubRelease({ releaseDirectory: registryDirectory, release }),
+  );
+  assert.throws(
+    () =>
+      validateGitHubRelease({
+        releaseDirectory: registryDirectory,
+        release: { ...release, draft: true },
+      }),
+    /metadata does not match/u,
+  );
+  assert.throws(
+    () =>
+      validateGitHubRelease({
+        releaseDirectory: registryDirectory,
+        release: {
+          ...release,
+          assets: release.assets.map((asset, index) =>
+            index === 0 ? { ...asset, digest: `sha256:${'0'.repeat(64)}` } : asset,
+          ),
+        },
+      }),
+    /asset does not match/u,
+  );
+});
+
 test('prepare-stage CLI emits only consumed GitHub Actions outputs', () => {
   const fixture = createCandidate();
   const output = join(fixture.root, 'github-output.txt');
@@ -370,6 +407,31 @@ function registryFetch({ fixture, bytes = fixture.bytes }) {
     }
     if (url === tarballUrl) return new Response(bytes);
     return new Response('not found', { status: 404 });
+  };
+}
+
+function createGitHubReleaseFixture(fixture, releaseDirectory) {
+  const names = [
+    fixture.tarball,
+    `${fixture.tarball}.sha256`,
+    `${fixture.tarball}.files.json`,
+    'release.json',
+  ];
+  return {
+    tag_name: `cli-v${fixture.version}`,
+    name: `Maka CLI ${fixture.version}`,
+    body: readFileSync(join(releaseDirectory, 'release-notes.md'), 'utf8'),
+    draft: false,
+    prerelease: true,
+    assets: names.map((name) => {
+      const bytes = readFileSync(join(releaseDirectory, name));
+      return {
+        name,
+        state: 'uploaded',
+        size: bytes.length,
+        digest: `sha256:${digest('sha256', bytes, 'hex')}`,
+      };
+    }),
   };
 }
 

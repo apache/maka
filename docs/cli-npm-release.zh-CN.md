@@ -90,7 +90,8 @@ Stage workflow 没有成功结束时，不得在 npm 上批准任何内容。
 
 ## 在 npm 上检查并批准
 
-使用 npm 11.15 或更高版本。仓库通过 `packageManager` 固定经过审查的 release toolchain。
+使用 Node.js 22.19.0 或更高版本，并使用仓库 `packageManager` 固定的 npm 版本
+（当前为 npm 11.19.0）。这是经过审查的 release toolchain 版本。
 
 ```sh
 npm stage list maka-agent --registry https://registry.npmjs.org/
@@ -169,8 +170,10 @@ npm 版本此时已经 immutable，不要再次 publish 或 approve。保留 Sta
 和 artifacts。如果 package 字节与 provenance 有效，在 `main` 修复当前 Finalize verifier，
 然后针对同一个成功 Stage identity 重新运行 Finalize。
 
-如果已经存在的 `cli-v<version>` 指向的不是记录的 Stage source commit，立即停止并调查。
-不要通过移动或删除 tag 让 workflow 通过。
+Finalize 可以幂等地恢复部分完成的 GitHub Release 创建：它会继续处理精确匹配的
+draft，并且只会在验证 metadata 和 asset digest 后接受已经发布的 release。如果已经
+存在的 `cli-v<version>` 指向的不是记录的 Stage source commit，或已经发布的 release
+与验证过的 candidate 不一致，立即停止并调查。不要通过移动或删除 tag 让 workflow 通过。
 
 ### 公共版本存在缺陷
 
@@ -182,12 +185,13 @@ npm dist-tag add "maka-agent@$known_good" next
 # 稳定版事故使用 latest，而不是 next。
 ```
 
-然后只 deprecate 有缺陷的版本，并提供可操作的替代版本信息：
+然后只 deprecate 有缺陷的版本，并引导用户使用已经指向验证版本的恢复 dist-tag：
 
 ```sh
 bad_version=0.1.0-beta.2
-replacement=0.1.0-beta.3
-npm deprecate "maka-agent@$bad_version" "Known issue; install maka-agent@$replacement."
+recovery_tag=next
+# 稳定版事故使用 latest，而不是 next。
+npm deprecate "maka-agent@$bad_version" "Known issue; install maka-agent@$recovery_tag."
 ```
 
 验证 dist-tags、修复缺陷，然后通过完整 Stage 和 Finalize 流程发布新版本。不要把
