@@ -195,28 +195,26 @@ pub fn readiness_probe() -> Result<u8, String> {
         // without a persistent ledger and without relying on process
         // destruction to run `Drop`. The lease above makes this reclaim safe:
         // no other process can hold the profile while we delete and recreate it.
-        let mut profile = match AppContainerProfile::create_readiness() {
+        let profile = match AppContainerProfile::create_readiness() {
             Ok(profile) => profile,
             Err(error) => {
                 CloseHandle(job);
                 return Err(error);
             }
         };
-        let mut unsettled = false;
-        let result = probe_appcontainer_child(&cmd_path, job, profile.sid, &mut unsettled);
+        let result = probe_appcontainer_child(&cmd_path, job, profile.sid);
         // Closing the last Job handle is the kernel backstop after the probe has
         // already explicitly terminated and drained its child (see
         // `probe_appcontainer_child`); it terminates any straggler the drain
-        // did not reap.
+        // did not reap. When the child cannot be proven drained the probe
+        // returns an error, so availability fails closed for this cycle. The
+        // fixed readiness identity is not durably quarantined: cleanup relies on
+        // the kill-on-close Job's tree termination, and because the probe grants
+        // zero filesystem roots a hypothetically-surviving child inherits no ACE
+        // authority. Durable quarantine of an unsettled identity — or unique
+        // probe identities plus a reconciliation ledger — is a deferred gate
+        // (RFC §6.5).
         CloseHandle(job);
-        if unsettled {
-            // The Job was not proven empty, so a descendant may still hold this
-            // AppContainer identity. Preserve the registration rather than
-            // deleting a profile that could still be in use; the next
-            // lease-holding `create_readiness` best-effort reclaims it — safe
-            // because the lease serializes that reclaim against any live holder.
-            profile.preserve();
-        }
         drop(profile);
         result
     }
@@ -230,7 +228,6 @@ unsafe fn probe_appcontainer_child(
     cmd_path: &str,
     job: HANDLE,
     app_container_sid: *mut c_void,
-    unsettled: &mut bool,
 ) -> Result<u8, String> {
     let executable = wide(cmd_path);
     // Build the command line directly: cmd.exe's `/c` switch must stay
@@ -370,17 +367,15 @@ unsafe fn probe_appcontainer_child(
         CloseHandle(process.hProcess);
     }
 
-    // Report whether the identity is proven drained. A settlement failure means
-    // the Job was not confirmed empty, so a descendant may still hold this
-    // AppContainer profile; the caller must preserve the registration instead of
-    // deleting one that could still be in use. This is independent of `verify`:
-    // a verification failure whose Job *did* drain cleanly leaves nothing behind
-    // and the profile is safe to delete.
-    *unsettled = settled.is_err();
-
     // A verification/exit failure is the primary diagnosis; a settlement failure
-    // is itself a fail-closed signal (something still holds the identity), so it
-    // is surfaced when the probe otherwise succeeded.
+    // is itself a fail-closed signal (the Job was not confirmed empty, so a
+    // descendant may still hold this AppContainer identity), so it is surfaced
+    // when the probe otherwise succeeded. Either outcome reports unavailable
+    // rather than claiming a clean boundary; the readiness identity is not
+    // preserved for reuse — its profile carries no filesystem roots, so a
+    // surviving child inherits no ACE authority, and the kill-on-close Job is the
+    // cleanup backstop. Durable quarantine of an unsettled identity is a deferred
+    // gate (RFC §6.5).
     match (verify, settled) {
         (Err(error), _) => Err(error),
         (Ok(_), Err(cleanup)) => Err(cleanup),
@@ -465,22 +460,9 @@ unsafe fn sid_string(sid: *mut c_void) -> Result<String, String> {
 struct AppContainerProfile {
     sid: *mut c_void,
     name: Vec<u16>,
-    /// When set, `Drop` skips `DeleteAppContainerProfile`. The readiness probe
-    /// sets it when its Job could not be proven empty: a descendant may still
-    /// hold this identity, so the registration is preserved for a later
-    /// lease-holding `create_readiness` to reclaim rather than deleted while
-    /// possibly in use. Production launches never set it (each has a unique
-    /// identity that no live launch reuses).
-    keep_on_drop: bool,
 }
 
 impl AppContainerProfile {
-    /// Preserve this profile's registration on drop instead of deleting it.
-    /// Called only when the readiness probe could not prove its Job empty.
-    fn preserve(&mut self) {
-        self.keep_on_drop = true;
-    }
-
     unsafe fn create(request_id: &str) -> Result<Self, String> {
         let name = appcontainer_profile_name(request_id);
         let display_name = wide("Maka Windows Sandbox");
@@ -505,11 +487,7 @@ impl AppContainerProfile {
                 result as u32
             ));
         }
-        Ok(Self {
-            sid,
-            name,
-            keep_on_drop: false,
-        })
+        Ok(Self { sid, name })
     }
 
     /// Create the throwaway readiness profile under a fixed, self-reconciling
@@ -547,11 +525,7 @@ impl AppContainerProfile {
                 result as u32
             ));
         }
-        Ok(Self {
-            sid,
-            name,
-            keep_on_drop: false,
-        })
+        Ok(Self { sid, name })
     }
 }
 
@@ -569,16 +543,15 @@ impl Drop for AppContainerProfile {
     fn drop(&mut self) {
         unsafe {
             FreeSid(self.sid);
-            if !self.keep_on_drop {
-                // The request-derived name is never reused by another live
-                // launch. Best-effort deletion keeps the user profile store
-                // bounded; a crash can leave this registration behind, but a
-                // future request has a different SID and cannot inherit its ACL
-                // authority. Skipped when `keep_on_drop` is set: the readiness
-                // probe could not prove its Job empty, so the identity may still
-                // be held and must be preserved for a later reclaim.
-                DeleteAppContainerProfile(self.name.as_ptr());
-            }
+            // The request-derived name is never reused by another live launch.
+            // Best-effort deletion keeps the user profile store bounded; a crash
+            // can leave this registration behind, but a future request has a
+            // different SID and cannot inherit its ACL authority. The readiness
+            // probe instead uses a fixed name and reclaims it under a lease on
+            // the next cycle (`create_readiness`); an unsettled probe fails
+            // closed rather than durably quarantining its identity — that
+            // quarantine is a deferred gate (RFC §6.5).
+            DeleteAppContainerProfile(self.name.as_ptr());
         }
     }
 }

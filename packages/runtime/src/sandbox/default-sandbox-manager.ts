@@ -35,10 +35,15 @@ const WINDOWS_READINESS_PROBE_TIMEOUT_MS = 15_000;
 /**
  * A negative readiness result may be transient (a spawn timeout under load, an
  * antivirus scan briefly holding the launcher, a momentary AppContainer service
- * hiccup), so it is cached only for this window before the next warmer re-probes.
- * A single blip must not disable the Windows sandbox until the Runtime Host
- * restarts. Positive results are cached permanently: host capability does not
- * regress within a process lifetime.
+ * hiccup). Caching it for only this window bounds how long one blip poisons the
+ * module-scoped cache: a *later* composition build re-probes instead of
+ * inheriting a stale negative. It does not make an already-running host recover
+ * — the filesystem worker is published once, when a composition is built (see
+ * `isBuiltinFilesystemWorkerSandboxAvailable` and RFC §6.4), so a composition
+ * that resolved availability negative stays without the worker for its lifetime;
+ * recovery is scoped to the next composition build or a Runtime Host restart.
+ * Positive results are cached permanently: host capability does not regress
+ * within a process lifetime.
  */
 const WINDOWS_READINESS_NEGATIVE_TTL_MS = 60_000;
 
@@ -52,10 +57,10 @@ interface WindowsReadinessCacheEntry {
  * Availability is a property of the host and the launcher binary, not of any one
  * backend instance, so the probe result is cached at module scope keyed by the
  * resolved client path. Two backends built for the same launcher share the one
- * probe; distinct paths (tests, side-by-side installs) stay independent. Entries
- * carry an expiry so a transient negative result re-probes (see
- * `WINDOWS_READINESS_NEGATIVE_TTL_MS`) instead of poisoning availability for the
- * process lifetime.
+ * probe; distinct paths (tests, side-by-side installs) stay independent. A
+ * negative entry carries a bounded expiry so it does not poison availability for
+ * the whole process lifetime — the *next composition build* re-probes (see
+ * `WINDOWS_READINESS_NEGATIVE_TTL_MS`); this is not an in-composition retry.
  */
 const windowsReadinessCache = new Map<string, WindowsReadinessCacheEntry>();
 
@@ -90,9 +95,12 @@ function spawnReadinessProbe(clientPath: string): WindowsReadinessSpawnResult {
  * real production identity and launches a throwaway confined child. A fresh,
  * unexpired cache entry short-circuits the spawn; a positive result is cached
  * permanently and a negative one only for `WINDOWS_READINESS_NEGATIVE_TTL_MS`,
- * so one transient failure re-probes on the next warmer rather than disabling
- * the sandbox until restart. Anything other than a clean exit 0 fails closed (a
- * non-zero status, a spawn error, or an external timeout that leaves
+ * so a transient failure does not poison the module cache past that window — the
+ * *next composition build* re-probes. This is not a running-host retry: the
+ * warmer runs at composition-build time and the worker is published once, so a
+ * host that already resolved availability negative recovers only on a new
+ * composition or a restart (RFC §6.4). Anything other than a clean exit 0 fails
+ * closed (a non-zero status, a spawn error, or an external timeout that leaves
  * `status === null`).
  */
 export function probeWindowsReadiness(
@@ -174,11 +182,14 @@ export function isBuiltinFilesystemWorkerSandboxAvailable(
   if (platform === 'win32') {
     // Single source of truth for Windows availability: file presence only
     // discovers the launcher path; the readiness probe decides availability.
-    // Runtime Host composition calls this at startup (and again as the cache
-    // expires), which warms `windowsReadinessCache` via the spawning probe. The
-    // backend's synchronous `isAvailable` on the operation hot path is strictly
-    // cache-only (`readCachedWindowsReadiness`) and never spawns. File presence
-    // is no longer a second availability authority.
+    // Runtime Host composition calls this once when it builds (and again only
+    // when a *new* composition is built), warming `windowsReadinessCache` via the
+    // spawning probe. It is not re-run when a cache entry expires, so recovery
+    // from a transient negative is scoped to the next composition build or a
+    // restart (RFC §6.4). The backend's synchronous `isAvailable` on the
+    // operation hot path is strictly cache-only (`readCachedWindowsReadiness`)
+    // and never spawns. File presence is no longer a second availability
+    // authority.
     const clientPath = builtinWindowsClientPath(platform, resourcesPath);
     return clientPath !== undefined && probeWindowsReadiness(clientPath);
   }

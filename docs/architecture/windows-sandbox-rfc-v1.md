@@ -175,11 +175,16 @@ Lexical prefix checks are never authorization evidence.
   validation, so no production launch can ever resolve to the profile the probe deletes and
   recreates. The whole delete→create→probe→settle→drop cycle is serialized across processes by a
   DACL-hardened per-user named mutex — the same primitive the ACL ledger uses — so concurrent probes
-  cannot delete each other's live registration. When the probe cannot prove its Job empty it
-  preserves the registration for a later lease-holder to reclaim rather than deleting an identity a
-  descendant may still hold. On the consumer side a negative availability result is cached only for a
-  bounded TTL, so a single transient failure re-probes on the next composition rather than disabling
-  the sandbox until the Runtime Host restarts; a positive result is cached for the process lifetime.)_
+  cannot delete each other's live registration. When the probe cannot prove its Job drained it fails
+  closed (reports unavailable) for that cycle; the fixed readiness identity is not durably
+  quarantined — cleanup relies on the kill-on-close Job's tree termination, and because the probe
+  grants zero filesystem roots a surviving child inherits no ACE authority. On the consumer side a
+  negative availability result is cached only for a bounded TTL, which bounds how long one transient
+  failure poisons the module cache: the *next composition build* re-probes. It is not a running-host
+  retry — the filesystem worker is published once when a composition is built, so a host that already
+  resolved availability negative recovers only on a new composition or a Runtime Host restart; a
+  positive result is cached for the process lifetime. Durable quarantine of an unsettled identity and
+  active running-host readiness recovery are deferred gates — see §6.5.)_
 - Launcher signature, version, and digest are verified against packaged metadata. _(Later gate: the
   per-launch request digest is recomputed and enforced in-broker today; verifying the launcher
   binary's signature and version against packaged metadata is deferred with Phase 3 signing — see
@@ -220,8 +225,10 @@ Enforced in the preview slice:
 - a dedicated, cross-process-serialized readiness profile lifecycle (§6.4): the probe profile lives
   in a namespace disjoint from production, its reserved `requestId` is rejected by validation, a
   DACL-hardened per-user named mutex serializes its delete→create→probe→drop cycle, an unsettled
-  probe preserves rather than deletes its registration, and negative availability is cached with a
-  bounded TTL so one transient failure does not disable the sandbox until restart;
+  probe fails closed rather than claiming a clean boundary (relying on the kill-on-close Job and a
+  zero-authority identity for cleanup, not durable quarantine), and negative availability is cached
+  with a bounded TTL so one transient failure does not poison the module cache past that window — the
+  next composition build re-probes, rather than the running host recovering in place;
 - fail-closed capability outcomes with no unsandboxed fallback for `auto`/`require` (§6.4).
 
 Designed but deferred as later gates (not enforced in the preview slice):
@@ -244,6 +251,19 @@ Designed but deferred as later gates (not enforced in the preview slice):
   validation primitives; a multi-process race test that spawns real concurrent probes on a live
   Windows host is deferred as disproportionate for a throwaway diagnostic probe and inherently flaky
   in CI. The serialization primitive itself, not an end-to-end race harness, is the enforced contract.
+- Durable quarantine of an unsettled readiness identity (§6.4). When a probe cannot prove its Job
+  drained it fails closed for that cycle, and the next probe deletes and recreates the fixed
+  identity under the lease. Residual risk is bounded — the readiness child is `cmd.exe /c exit 0`
+  granted zero filesystem roots, so a hypothetically-surviving child spawns nothing and inherits no
+  ACE authority, and the kill-on-close Job terminates the tree — but the identity is not durably
+  quarantined. Durable quarantine (or unique per-probe identities plus an orphan/reconciliation
+  ledger) is deferred.
+- Active running-host readiness recovery (§6.4). A negative availability result is bounded by a TTL
+  so it does not poison the module cache past that window, and the *next composition build* re-probes.
+  A running Runtime Host does not actively re-probe or hot-publish the filesystem worker — the worker
+  is composed once when a candidate is built — so recovery from a transient negative in an
+  already-running host is scoped to a new composition build or a restart. An active readiness
+  retry with dynamic worker publication is deferred.
 
 Deferral narrows readiness richness and desktop-layer defense-in-depth, not the enforcement
 boundary: an unavailable, drifted, or failed backend still fails closed, and a restricted managed

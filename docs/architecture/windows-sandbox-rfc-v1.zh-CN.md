@@ -135,7 +135,7 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 ### 6.4 能力与失败
 
 - readiness 必须在生产 identity/token/Job/desktop/handle/filesystem/offline network 下启动真实 probe； _(已实现:预览版的 `--readiness-probe` 会真正建立 AppContainer identity/token 与 kill-on-close Job 并启动一个抛弃式受限子进程,宿主无法创建或强制边界时 fail closed,而非仅凭二进制存在即注册;private desktop 与完整的按 profile filesystem/offline network 策略尚未在 readiness 阶段演练 —— 见 §6.5。)_
-- readiness probe 的抛弃式 profile 生命周期必须隔离且 fail closed； _(已实现:probe profile 位于专属 `maka.readiness.` 命名空间,与生产 `maka.sandbox.` 命名空间结构性不相交,其保留的 `requestId` 被 launch validation 拒绝,任何生产启动都无法解析到 probe 删除并重建的那个 profile;整个 delete→create→probe→settle→drop 生命周期由一个 DACL 加固的按用户命名互斥量跨进程串行——与 ACL ledger 复用同一原语——使并发 probe 不会互删对方的 active 注册;当 probe 无法证明其 Job 清空时,保留该注册交由后续持锁者 reclaim,而非删除一个 descendant 可能仍持有的 identity;消费侧对负可用性结果只按有界 TTL 缓存,一次瞬时失败会在下次 composition 重探,而非把沙箱禁用到 Runtime Host 重启,正结果则按进程生命周期缓存。)_
+- readiness probe 的抛弃式 profile 生命周期必须隔离且 fail closed； _(已实现:probe profile 位于专属 `maka.readiness.` 命名空间,与生产 `maka.sandbox.` 命名空间结构性不相交,其保留的 `requestId` 被 launch validation 拒绝,任何生产启动都无法解析到 probe 删除并重建的那个 profile;整个 delete→create→probe→settle→drop 生命周期由一个 DACL 加固的按用户命名互斥量跨进程串行——与 ACL ledger 复用同一原语——使并发 probe 不会互删对方的 active 注册;当 probe 无法证明其 Job 清空时按该周期 fail closed(报告不可用),固定的 readiness identity 并不被持久隔离——清理依赖 kill-on-close Job 的整树终止,且因该 probe 不授任何 filesystem root,一个假设存活的子进程也继承不到任何 ACE 权限;消费侧对负可用性结果只按有界 TTL 缓存,以限制一次瞬时失败毒化 module 缓存的时长:由**下一次 composition 构建**重探,而非运行中的宿主原地恢复——filesystem worker 在 composition 构建时一次性发布,故一个已判负的宿主只在新 composition 或 Runtime Host 重启时恢复,正结果则按进程生命周期缓存。未证清空 identity 的持久隔离,以及运行中宿主的主动 readiness 恢复,均为后续门禁——见 §6.5。)_
 - launcher signature/version/digest 必须与 package metadata 一致； _(后续门禁：每次启动的 request digest 目前已在 broker 内重算并强制；对照打包 metadata 校验 launcher 二进制的 signature 与 version 随 Phase 3 签名一并暂缓 —— 见 §6.5。)_
 - setup 缺失、identity drift、ACL state 损坏、网络策略无效、文件系统不支持、helper 不匹配、probe 失败都返回
   stable typed unavailable reason； _(后续门禁:readiness probe 目前把每种失败收敛为单一 fail-closed 布尔,统一以
@@ -157,7 +157,7 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - 仅通过 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 继承声明的 handle（§6.3）；
 - 封闭、排序后的 allowlist 环境（§6.3）；
 - 生产 identity readiness probe（§6.4）:`--readiness-probe` 真正建立 AppContainer identity/token 与 kill-on-close Job 并启动抛弃式受限子进程,使可用性在宿主无法创建边界时 fail closed,而非仅凭打包二进制存在;
-- 专属且跨进程串行的 readiness profile 生命周期（§6.4）:probe profile 位于与生产不相交的命名空间,其保留 `requestId` 被 validation 拒绝,一个 DACL 加固的按用户命名互斥量串行其 delete→create→probe→drop 生命周期,未证清空的 probe 保留而非删除其注册,负可用性按有界 TTL 缓存,使一次瞬时失败不会把沙箱禁用到重启;
+- 专属且跨进程串行的 readiness profile 生命周期（§6.4）:probe profile 位于与生产不相交的命名空间,其保留 `requestId` 被 validation 拒绝,一个 DACL 加固的按用户命名互斥量串行其 delete→create→probe→drop 生命周期,未证清空的 probe 按周期 fail closed 而非宣称边界干净(清理依赖 kill-on-close Job 与零权限 identity,而非持久隔离),负可用性按有界 TTL 缓存以限制一次瞬时失败毒化 module 缓存的时长——由下一次 composition 构建重探,而非运行中宿主原地恢复;
 - fail-closed capability check，绝不 unsandboxed fallback（§6.4）。
 
 **已设计但作为后续门禁暂缓（预览切片尚未强制）：**
@@ -172,6 +172,8 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
   互斥量名、命名空间与 validation 原语的单元测试;在真实 Windows 宿主上 spawn 多个并发 probe 的多进程
   竞态测试暂缓——对一个抛弃式诊断探针不成比例且在 CI 中天然 flaky。被强制的契约是串行化原语本身,而非
   端到端竞态 harness。
+- 未证清空的 readiness identity 的持久隔离（§6.4）:probe 无法证明其 Job 清空时按该周期 fail closed,下一次 probe 在锁下删除并重建那个固定 identity。残余风险有界——readiness 子进程是被授零 filesystem root 的 `cmd.exe /c exit 0`,一个假设存活的子进程既不 spawn 任何东西也继承不到任何 ACE 权限,且 kill-on-close Job 会终止整树——但该 identity 未被持久隔离。持久隔离(或每次 probe 用唯一 identity 加 orphan/对账 ledger)暂缓。
+- 运行中宿主的主动 readiness 恢复（§6.4）:负可用性结果由 TTL 限时,使其不会长时间毒化 module 缓存,并由**下一次 composition 构建**重探。运行中的 Runtime Host 不会主动重探或热发布 filesystem worker——worker 在候选构建时一次性组装——故已判负的运行中宿主对瞬时负结果的恢复被限定到新 composition 构建或重启。带动态 worker 发布的主动 readiness 重试暂缓。
 
 暂缓收窄的是 readiness 丰富度与 desktop 层的 defense-in-depth，而非强制边界本身：backend 不可用、identity drift 或启动失败仍然 fail closed，受限 managed profile 也绝不回退到宿主执行。
 

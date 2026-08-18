@@ -269,4 +269,37 @@ describe('readCachedWindowsReadiness', () => {
       assert.equal(readCachedWindowsReadiness(clientPath, clock), false);
     });
   });
+
+  it('recovers a negative only on a new composition build (spawning warmer), never on the running hot path', async () => {
+    await withFakeLauncher((clientPath) => {
+      let now = 4_000;
+      const clock = () => now;
+      let calls = 0;
+      // Available now, but the first probe caught a transient failure.
+      const spawn: WindowsReadinessSpawn = () => {
+        calls += 1;
+        return calls === 1 ? { status: 1 } : { status: 0 };
+      };
+
+      // A composition build warms a negative entry.
+      assert.equal(probeWindowsReadiness(clientPath, spawn, clock), false);
+
+      // Model a running Runtime Host: the worker was published once at build
+      // time and the hot path is all that runs afterwards. Advancing well past
+      // the TTL never flips it — a running composition does not self-recover,
+      // and the read never spawns (calls stays at 1).
+      for (let i = 0; i < 5; i += 1) {
+        now += 60_000;
+        assert.equal(readCachedWindowsReadiness(clientPath, clock), false);
+      }
+      assert.equal(calls, 1);
+
+      // Recovery is scoped to the next composition build: a fresh spawning probe
+      // (a new composition, or a Runtime Host restart) re-evaluates and, now that
+      // the host is healthy, publishes the worker.
+      assert.equal(probeWindowsReadiness(clientPath, spawn, clock), true);
+      assert.equal(readCachedWindowsReadiness(clientPath, clock), true);
+      assert.equal(calls, 2);
+    });
+  });
 });
