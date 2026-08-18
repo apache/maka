@@ -626,16 +626,18 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
       const shedIndex = this.#items.findIndex(isSheddableDelta);
       if (shedIndex !== -1) {
         this.#items.splice(shedIndex, 1);
-      } else if (isTerminalOutcome(event)) {
-        // Terminal outcomes always land, even when the backlog holds no
-        // delta to evict: without one the consumer reaches end-of-stream
-        // without a result.
+      } else if (isGuaranteedOutcome(event)) {
+        // Turn-terminal outcomes and tool results always land, even when the
+        // backlog holds no delta to evict: without a turn outcome the
+        // consumer reaches end-of-stream without a result, and without a
+        // tool_result the live tool card stays running until the durable
+        // transcript heals it. The oldest queued event is sacrificed.
         this.#items.shift();
       } else {
-        // A non-delta, non-terminal event with nothing sheddable to evict
-        // (e.g. tool_result behind an all-control backlog) is dropped. The
-        // durable transcript heals the final state; the live panel may show
-        // a stale tool card until then. Documented boundary for v1.
+        // A non-delta, non-outcome event with nothing sheddable to evict
+        // (e.g. a tool_call begin behind an all-control backlog) is dropped;
+        // the durable transcript heals the final state. Documented boundary
+        // for v1.
         this.#noteLag();
         return;
       }
@@ -695,8 +697,16 @@ function isSheddableDelta(event: SessionEvent): boolean {
   );
 }
 
-function isTerminalOutcome(event: SessionEvent): boolean {
-  return event.type === 'complete' || event.type === 'abort' || event.type === 'error';
+function isGuaranteedOutcome(event: SessionEvent): boolean {
+  // complete/abort/error close the turn; tool_result is the authoritative
+  // terminal result for its tool — losing it leaves the live tool card
+  // running until the durable transcript heals it on a later reload.
+  return (
+    event.type === 'complete' ||
+    event.type === 'abort' ||
+    event.type === 'error' ||
+    event.type === 'tool_result'
+  );
 }
 
 function sameTerminalTurn(

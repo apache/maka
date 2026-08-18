@@ -1807,6 +1807,33 @@ describe('turn consumer lag recovery (#3180)', () => {
     );
   });
 
+  test('admits a tool result when the lagged backlog holds no deltas', async () => {
+    const { initial, replacement, connection, driver, resynced } = lagRecoveryFixture();
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+
+    // Fill the bound with non-delta events: nothing sheddable to evict.
+    await floodToolStream(initial, 1_100);
+    await waitForSubscriptions(connection, 2);
+    await resynced.promise;
+
+    // The tool result is the authoritative terminal outcome for its tool and
+    // must land even though no delta can be evicted; otherwise the live tool
+    // card stays running until the durable transcript heals it.
+    replacement.push(toolResultFrame(1, 'subscription-2'));
+    replacement.push(projectionFrame(2, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'));
+    await delay(0);
+
+    let sawToolResult = false;
+    const iterator = switched.activeTurn.events[Symbol.asyncIterator]();
+    for (let index = 0; index < 1_200; index += 1) {
+      const result = await iterator.next();
+      if (result.done) break;
+      if ((result.value as { type?: string }).type === 'tool_result') sawToolResult = true;
+    }
+    assert.ok(sawToolResult, 'tool_result was admitted over a non-delta backlog');
+  });
+
   test('sheds lagged tool output deltas so the tool result and terminal outcome land', async () => {
     const { initial, replacement, connection, driver, resynced } = lagRecoveryFixture();
     const switched = await driver.switchSession('session-1');
