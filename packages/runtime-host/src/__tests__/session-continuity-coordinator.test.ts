@@ -11,6 +11,10 @@ import {
   SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
   type SubscriptionFrame,
 } from '../protocol/index.js';
+import {
+  decodeSubscriptionFrame,
+  SESSION_LIVE_DELTA_MAX_BYTES,
+} from '../protocol/session-continuity.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import {
   type CanonicalSessionProjection,
@@ -760,6 +764,49 @@ test('keeps stream, kind, and completion boundaries when coalescing deltas', asy
       { sequence: 4, kind: 'text', messageId: 'message-1', text: '', complete: true },
     ],
   );
+  coordinator.close();
+});
+
+test('keeps coalesced deltas within the protocol text and frame limits', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+
+  // Each delta is individually protocol-valid, but merging the two would
+  // push the text past SESSION_LIVE_DELTA_MAX_BYTES: the second must stay
+  // its own frame so the receiver-side decoder does not reject it.
+  const firstText = 'a'.repeat(SESSION_LIVE_DELTA_MAX_BYTES - 1024);
+  const secondText = 'b'.repeat(SESSION_LIVE_DELTA_MAX_BYTES - 1024);
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(1), text: firstText });
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(2), text: secondText });
+  // A small continuation still merges into the new tail.
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(3));
+
+  connection.activate(opened.subscriptionId);
+  await waitFor(() => sink.frames.length === 2);
+
+  const first = sink.frames[0];
+  assert.equal(first?.kind, 'subscription.session_delta');
+  if (first?.kind !== 'subscription.session_delta') return;
+  assert.equal(first.sequence, 1);
+  assert.equal(first.delta.startOffset, 0);
+  assert.equal(first.delta.text, firstText);
+
+  const second = sink.frames[1];
+  assert.equal(second?.kind, 'subscription.session_delta');
+  if (second?.kind !== 'subscription.session_delta') return;
+  assert.equal(second.sequence, 2);
+  assert.equal(second.delta.startOffset, firstText.length);
+  assert.equal(second.delta.text, secondText + 'chunk-3');
+
+  // Every emitted frame passes the receiver-side decoder, including its
+  // 16 KiB delta-text and 64 KiB frame limits.
+  for (const frame of sink.frames) decodeSubscriptionFrame(frame);
   coordinator.close();
 });
 

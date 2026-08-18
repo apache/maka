@@ -1368,9 +1368,17 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
           delta: { ...tail.frame.delta, text: mergedText },
         };
         const mergedEncodedBytes = encodeProtocolMessage(merged).byteLength;
+        // Merging must preserve the wire invariants the split path
+        // guarantees per frame: the decoder rejects a delta text beyond
+        // SESSION_LIVE_DELTA_MAX_BYTES and any subscription frame beyond
+        // SESSION_SUBSCRIPTION_FRAME_MAX_BYTES, so an oversized merge would
+        // break the very subscription coalescing tries to preserve. Keep
+        // the next delta as its own frame instead.
         if (
+          Buffer.byteLength(mergedText, 'utf8') <= SESSION_LIVE_DELTA_MAX_BYTES &&
+          mergedEncodedBytes <= SESSION_SUBSCRIPTION_FRAME_MAX_BYTES &&
           subscriber.queuedBytes - tail.encodedBytes + mergedEncodedBytes + terminalBytes <=
-          MAX_SUBSCRIBER_QUEUED_BYTES
+            MAX_SUBSCRIBER_QUEUED_BYTES
         ) {
           tail.frame = merged;
           subscriber.queuedBytes += mergedEncodedBytes - tail.encodedBytes;
