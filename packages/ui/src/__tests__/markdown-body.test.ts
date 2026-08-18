@@ -9,6 +9,7 @@ import {
   MAX_AUTOMATIC_MERMAID_SOURCE_LENGTH,
   MAX_AUTOMATIC_MERMAID_TOTAL_SOURCE_LENGTH,
 } from '../markdown-body.js';
+import { AstryxLocaleProvider } from '../astryx-i18n.js';
 import { MakaUriContext, Markdown } from '../markdown.js';
 import { LocaleProvider } from '../locale-context.js';
 import {
@@ -65,8 +66,10 @@ it('gives collapsible plaintext code a localized accessible name', () => {
   for (const [locale, label] of [['en', 'Code'], ['zh', '代码']] as const) {
     const markup = renderToStaticMarkup(createElement(LocaleProvider, {
       locale,
-      children: createElement(MarkdownBody, {
-        text: ['```', ...code, '```'].join('\n'),
+      children: createElement(AstryxLocaleProvider, {
+        children: createElement(MarkdownBody, {
+          text: ['```', ...code, '```'].join('\n'),
+        }),
       }),
     }));
 
@@ -74,6 +77,17 @@ it('gives collapsible plaintext code a localized accessible name', () => {
     assert.match(markup, /aria-expanded="true"/);
     assert.match(markup, new RegExp(`>${label}</span>`));
   }
+});
+
+it('keeps standalone MarkdownBody compatible for collapsible plaintext code', () => {
+  const code = Array.from({ length: 10 }, (_, index) => `line ${index + 1}`);
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: ['```', ...code, '```'].join('\n'),
+  }));
+
+  assert.match(markup, /role="button"/);
+  assert.match(markup, /aria-expanded="true"/);
+  assert.match(markup, />Code<\/span>/);
 });
 
 it('keeps a lazy live stream behind the display cursor', () => {

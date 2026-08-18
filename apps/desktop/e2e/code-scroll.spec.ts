@@ -33,20 +33,20 @@ test('a one-line Markdown code block exposes native and selection horizontal scr
     const node = element as HTMLElement;
     const rect = node.getBoundingClientRect();
     const code = node.querySelector('code');
-    if (!code) throw new Error('code viewport has no code content');
-    const range = document.createRange();
-    range.selectNodeContents(code);
-    const textRect = range.getBoundingClientRect();
+    const line = code?.querySelector(':scope > [data-line]');
+    if (!code || !line) throw new Error('code viewport has no line content');
+    const codeRect = code.getBoundingClientRect();
+    const lineRect = line.getBoundingClientRect();
     return {
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       clientWidth: node.clientWidth,
       scrollWidth: node.scrollWidth,
-      topInset: textRect.top - rect.top,
-      bottomInset: rect.bottom - textRect.bottom,
+      lineTopInset: lineRect.top - codeRect.top,
+      lineBottomInset: codeRect.bottom - lineRect.bottom,
     };
   });
   expect(metrics.scrollWidth).toBeGreaterThan(metrics.clientWidth);
-  expect(Math.abs(metrics.topInset - metrics.bottomInset)).toBeLessThanOrEqual(1);
+  expect(Math.abs(metrics.lineTopInset - metrics.lineBottomInset)).toBeLessThanOrEqual(1);
 
   const overflowX = await viewport.evaluate((element) => getComputedStyle(element).overflowX);
   expect(overflowX).toBe('auto');

@@ -17,6 +17,7 @@ import {
 } from '@astryxdesign/core/Markdown';
 import { Link as AstryxLink } from '@astryxdesign/core/Link';
 import { CodeBlock } from '@astryxdesign/core/CodeBlock';
+import { useTranslator } from '@astryxdesign/core/i18n';
 import {
   isMakaUriCandidate,
   isSafeExternalScheme,
@@ -176,7 +177,7 @@ function MarkdownCode(props: {
   density: 'default' | 'compact';
   renderMermaid: boolean;
 }) {
-  const copy = getSharedUiCopy(useUiLocale()).markdown;
+  const t = useTranslator();
   const language = props.language?.trim().toLowerCase();
   if (props.renderMermaid && (language === 'mermaid' || language === DEFERRED_MERMAID_LANGUAGE)) {
     return (
@@ -205,7 +206,7 @@ function MarkdownCode(props: {
         // An empty title enables its structural header; once that header becomes
         // a collapse button, give plaintext the same localized code label that
         // language fences already provide through their language label.
-        title={isCollapsible && !hasLanguageLabel ? copy.code : ''}
+        title={isCollapsible && !hasLanguageLabel ? t('@astryx.codeBlock.code') : ''}
         isCollapsible
         collapsibleThreshold={CODE_BLOCK_COLLAPSIBLE_THRESHOLD}
       />
