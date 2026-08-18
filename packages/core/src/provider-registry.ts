@@ -17,6 +17,16 @@ export type ProviderCatalogGroup = 'recommended' | 'plans' | 'api' | 'aggregator
 
 export type ApplyPatchProtocol = 'openai-structured' | 'codex-v4a-freeform';
 
+export type ProviderResponsesContract =
+  | {
+      readonly adapter: 'openai';
+      readonly reasoningReplay: 'encrypted-content';
+    }
+  | {
+      readonly adapter: 'open-responses';
+      readonly reasoningReplay: 'plaintext-content';
+    };
+
 type ProviderRuntimeAdapterDefinition =
   | { kind: 'anthropic'; auth: 'api-key' | 'bearer'; normalizeBaseUrl: boolean }
   | { kind: 'claude-subscription' }
@@ -30,11 +40,8 @@ type ProviderRuntimeAdapterDefinition =
       name: 'provider' | 'connection';
       includeUsage?: boolean;
       requireBaseUrl?: boolean;
-      supportsOpenAiResponses?: true;
-      /** SDK provider used for a Responses wire. */
-      responsesAdapter?: 'openai' | 'open-responses';
-      /** Stateless reasoning continuation representation used by the Responses wire. */
-      responsesReasoningReplay?: 'encrypted-content' | 'plaintext-content';
+      /** Presence enables Responses and fixes the only supported SDK/replay pairing. */
+      responses?: ProviderResponsesContract;
       replayAssistantReasoningAs?: 'reasoning';
       replayAssistantReasoningDetails?: true;
     };
@@ -840,10 +847,8 @@ const providerRegistry = {
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
-      supportsOpenAiResponses: true,
       applyPatchProtocol: 'codex-v4a-freeform',
-      responsesAdapter: 'open-responses',
-      responsesReasoningReplay: 'plaintext-content',
+      responses: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
@@ -981,7 +986,7 @@ const providerRegistry = {
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
-      supportsOpenAiResponses: true,
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
@@ -1004,7 +1009,7 @@ const providerRegistry = {
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
-      supportsOpenAiResponses: true,
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     },
     modelDiscovery: {
       kind: 'protocol',

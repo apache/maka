@@ -2,6 +2,7 @@ import {
   PROVIDER_DEFAULTS,
   effectiveBaseUrl,
   type ModelInfo,
+  type ProviderResponsesContract,
   type ProviderRuntimeAdapter,
   type ProviderType,
 } from '@maka/core/llm-connections';
@@ -19,10 +20,7 @@ export type ReasoningReplayContract =
   | { kind: 'none' }
   | { kind: 'anthropic-signed' }
   | { kind: 'openai-chat-plaintext'; requestField: 'observed' | 'reasoning' }
-  | { kind: 'openai-responses-encrypted' }
-  | { kind: 'open-responses-plaintext' };
-
-export type ResponsesAdapter = 'openai' | 'open-responses';
+  | { kind: 'responses'; contract: ProviderResponsesContract };
 
 export interface ResolvedModelRuntime {
   adapter: ProviderRuntimeAdapter;
@@ -31,8 +29,6 @@ export interface ResolvedModelRuntime {
   apiProtocol?: ModelInfo['apiProtocol'];
   /** Effective wire after account, adapter, and model defaults are resolved. */
   wire: ModelRuntimeWire;
-  /** SDK provider selected for a Responses wire. */
-  responsesAdapter?: ResponsesAdapter;
   /** Durable reasoning replay semantics carried by that wire. */
   reasoningReplay: ReasoningReplayContract;
   /** Effective ApplyPatch contract after provider, model, and request wire are resolved. */
@@ -93,14 +89,10 @@ export function resolveModelRuntime(
         : resolvedBaseUrl,
     ...(apiProtocol ? { apiProtocol } : {}),
     wire,
-    ...(wire === 'openai-responses' ? { responsesAdapter: responsesAdapterContract(adapter) } : {}),
     reasoningReplay: reasoningReplayContract(adapter, wire),
     applyPatchProfile: resolveApplyPatchProfile(
       {
         wire,
-        ...(wire === 'openai-responses'
-          ? { responsesAdapter: responsesAdapterContract(adapter) }
-          : {}),
         applyPatchProtocol: adapter.applyPatchProtocol,
       },
       modelId,
@@ -151,7 +143,7 @@ function resolveModelRuntimeWire(
         ? 'openai-responses'
         : 'openai-chat';
     case 'openai-compatible':
-      return adapter.supportsOpenAiResponses === true &&
+      return adapter.responses !== undefined &&
         (apiProtocol ?? openAiAdapterApiProtocol(modelId, providerType)) === 'openai-responses'
         ? 'openai-responses'
         : 'openai-chat';
@@ -170,10 +162,7 @@ function reasoningReplayContract(
     case 'anthropic-messages':
       return { kind: 'anthropic-signed' };
     case 'openai-responses':
-      return adapter.kind === 'openai-compatible' &&
-        adapter.responsesReasoningReplay === 'plaintext-content'
-        ? { kind: 'open-responses-plaintext' }
-        : { kind: 'openai-responses-encrypted' };
+      return { kind: 'responses', contract: responsesContract(adapter) };
     case 'openai-chat':
       return adapter.kind === 'openai-compatible'
         ? {
@@ -188,10 +177,9 @@ function reasoningReplayContract(
   }
 }
 
-function responsesAdapterContract(adapter: ProviderRuntimeAdapter): ResponsesAdapter {
-  return adapter.kind === 'openai-compatible' && adapter.responsesAdapter === 'open-responses'
-    ? 'open-responses'
-    : 'openai';
+function responsesContract(adapter: ProviderRuntimeAdapter): ProviderResponsesContract {
+  if (adapter.kind === 'openai-compatible' && adapter.responses) return adapter.responses;
+  return { adapter: 'openai', reasoningReplay: 'encrypted-content' };
 }
 
 function kimiOpenAiBaseUrl(baseUrl: string): string {

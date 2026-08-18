@@ -49,28 +49,16 @@ describe('ApplyPatch profile routing', () => {
     );
   });
 
-  test('selects Codex V4A freeform for declared DeepSeek V4 Responses models', () => {
+  test('does not expose the dormant Codex V4A freeform target path', () => {
     assert.equal(
       resolveApplyPatchProfile(
         {
           wire: 'openai-responses',
-          responsesAdapter: 'open-responses',
           applyPatchProtocol: 'codex-v4a-freeform',
         },
         'deepseek-v4-flash',
       ),
       null,
-    );
-    assert.deepEqual(
-      resolveApplyPatchProfile(
-        {
-          wire: 'openai-responses',
-          responsesAdapter: 'openai',
-          applyPatchProtocol: 'codex-v4a-freeform',
-        },
-        'deepseek-v4-flash',
-      ),
-      { kind: 'codex-v4a-freeform' },
     );
     assert.equal(
       resolveApplyPatchProfile(
@@ -79,16 +67,15 @@ describe('ApplyPatch profile routing', () => {
       ),
       null,
     );
-    assert.deepEqual(
+    assert.equal(
       resolveApplyPatchProfile(
         {
           wire: 'openai-responses',
-          responsesAdapter: 'openai',
           applyPatchProtocol: 'codex-v4a-freeform',
         },
         'deepseek-v4-pro',
       ),
-      { kind: 'codex-v4a-freeform' },
+      null,
     );
     assert.equal(resolveApplyPatchProfile({ wire: 'openai-responses' }, 'deepseek-v4-flash'), null);
   });
@@ -137,13 +124,6 @@ describe('ApplyPatch profile routing', () => {
         callId: 'call-1',
         operation: { type: 'delete_file', path: 'old.txt' },
       },
-    );
-    assert.equal(
-      normalizeApplyPatchReplayInput({ kind: 'codex-v4a-freeform' }, 'call-1', {
-        callId: 'call-1',
-        operation: { type: 'delete_file', path: 'old.txt' },
-      }),
-      '*** Begin Patch\n*** Delete File: old.txt\n*** End Patch',
     );
   });
 });

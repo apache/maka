@@ -110,6 +110,54 @@ function deepseekReasoningStream(deltas: string[], answer = ANSWER): string {
   return `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`;
 }
 
+function standardFunctionCallStream(): string {
+  const item = {
+    type: 'function_call',
+    id: 'fc_1',
+    call_id: 'call_1',
+    name: 'Read',
+    arguments: '{"path":"package.json"}',
+    status: 'completed',
+  };
+  const events = [
+    { type: 'response.created', sequence_number: 0, response: { id: 'r' } },
+    {
+      type: 'response.output_item.added',
+      sequence_number: 1,
+      output_index: 0,
+      item: { ...item, arguments: '', status: 'in_progress' },
+    },
+    {
+      type: 'response.function_call_arguments.done',
+      sequence_number: 2,
+      output_index: 0,
+      item_id: item.id,
+      call_id: item.call_id,
+      arguments: item.arguments,
+    },
+    {
+      type: 'response.output_item.done',
+      sequence_number: 3,
+      output_index: 0,
+      item,
+    },
+    {
+      type: 'response.completed',
+      sequence_number: 4,
+      response: {
+        id: 'r',
+        object: 'response',
+        created_at: 0,
+        model: 'deepseek-v4-flash',
+        status: 'completed',
+        output: [item],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    },
+  ];
+  return `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`;
+}
+
 /**
  * Chunks are cut from the encoded bytes, not from the string: slicing the
  * string would hand every chunk a whole character and quietly make multi-byte

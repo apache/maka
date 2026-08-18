@@ -152,7 +152,10 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         );
       }
       if (wire === 'openai-responses') {
-        if (reasoningReplay.kind === 'open-responses-plaintext') {
+        if (reasoningReplay.kind !== 'responses') {
+          throw new Error('Responses wire requires a Responses continuation contract');
+        }
+        if (reasoningReplay.contract.adapter === 'open-responses') {
           return createOpenResponses({
             name: openAiCompatibleProviderName(adapter, connection),
             apiKey,
@@ -517,19 +520,19 @@ function buildFamilyWire(
   level: ThinkingLevel | undefined,
   thinkingOptions: ThinkingOptions | undefined,
 ): SharedV4ProviderOptions {
-  const { adapter, wire, responsesAdapter, reasoningReplay } = resolveModelRuntime(
-    connection,
-    modelId,
-  );
+  const { adapter, wire, reasoningReplay } = resolveModelRuntime(connection, modelId);
   const reasoningEffort = level ? (level === 'off' ? 'none' : level) : undefined;
   // Provider selection and reasoning continuation are independent. The OpenAI
   // provider reads its provider-options namespace; the Open Responses provider
   // consumes a provider-native reasoningEffort through the same namespace,
   // keyed by the provider name getAIModel passes to createOpenResponses.
   if (wire === 'openai-responses') {
+    if (reasoningReplay.kind !== 'responses') {
+      throw new Error('Responses wire requires a Responses continuation contract');
+    }
     // Connection-aware: a relay model's declared variants count too.
     const reasons = thinkingVariantsForConnection(connection, modelId).length > 0;
-    if (responsesAdapter === 'open-responses') {
+    if (reasoningReplay.contract.adapter === 'open-responses') {
       // @ai-sdk/open-responses@2.0.28 passes a provider-native reasoningEffort
       // through verbatim, ahead of the cross-provider top-level `reasoning`
       // enum that cannot express DeepSeek's `max` (whose documented mapping
@@ -543,7 +546,7 @@ function buildFamilyWire(
     return {
       openai: {
         store: false,
-        ...(reasons || reasoningReplay.kind === 'openai-responses-encrypted'
+        ...(reasons || reasoningReplay.contract.reasoningReplay === 'encrypted-content'
           ? { forceReasoning: true }
           : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),

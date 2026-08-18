@@ -221,7 +221,6 @@ import {
 import { modelUsesNativeOpenAiResponses, resolveModelRuntime } from './model-runtime.js';
 import {
   applyPatchReplayFactText,
-  freeformApplyPatchResultText,
   normalizeApplyPatchReplayInput,
   routeApplyPatchTools,
   type ApplyPatchProfile,
@@ -899,16 +898,6 @@ function nativeApplyPatchFailureOutput(output: ToolResultOutput): ToolResultOutp
     type: 'json',
     value: { status: 'failed', ...(message ? { output: message } : {}) },
   };
-}
-
-function freeformApplyPatchOutput(output: ToolResultOutput): ToolResultOutput {
-  if (output.type === 'text' || output.type === 'error-text') return output;
-  const value = output.type === 'json' || output.type === 'error-json' ? output.value : undefined;
-  const record = value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
-  const text = record ? freeformApplyPatchResultText(record) : freeformApplyPatchResultText(value);
-  return output.type === 'error-json'
-    ? { type: 'error-text', value: text }
-    : { type: 'text', value: text };
 }
 
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
@@ -3983,7 +3972,7 @@ export class AiSdkBackend implements AgentBackend {
             }
           : undefined;
       }
-      if (replaySupport.responsesThinking === 'open-responses-plaintext') {
+      if (replaySupport.responsesReasoning === 'plaintext-content') {
         if (item.text.length === 0) return undefined;
         return {
           part: {
@@ -3992,7 +3981,7 @@ export class AiSdkBackend implements AgentBackend {
           },
         };
       }
-      if (replaySupport.responsesThinking === 'openai-encrypted') {
+      if (replaySupport.responsesReasoning === 'encrypted-content') {
         const openai = item.providerOptions?.openai;
         if (openai && typeof openai === 'object' && !Array.isArray(openai)) {
           const { itemId, reasoningEncryptedContent } = openai as {
@@ -4050,9 +4039,6 @@ export class AiSdkBackend implements AgentBackend {
           `runtime-event:${result.eventId}:tool-result`,
         ));
       if (toolName !== 'apply_patch') return output;
-      if (this.applyPatchProfile?.kind === 'codex-v4a-freeform') {
-        return freeformApplyPatchOutput(output);
-      }
       return result.isError ? nativeApplyPatchFailureOutput(output) : output;
     };
     const pushClientToolResults = async (calls: readonly ToolCallItem[]) => {

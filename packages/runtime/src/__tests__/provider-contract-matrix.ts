@@ -198,7 +198,7 @@ function usesOpenAiResponsesWire(
   const adapter = def.runtimeAdapter;
   const supportsResponses =
     adapter.kind === 'openai' ||
-    (adapter.kind === 'openai-compatible' && adapter.supportsOpenAiResponses === true);
+    (adapter.kind === 'openai-compatible' && adapter.responses !== undefined);
   return (
     supportsResponses && openAiAdapterApiProtocol(modelId, providerType) === 'openai-responses'
   );
@@ -342,7 +342,7 @@ function wireDimensionCell(
     };
   }
   if (
-    (def.runtimeAdapter.kind === 'openai' || def.runtimeAdapter.kind === 'openai-compatible') &&
+    def.runtimeAdapter.kind === 'openai' &&
     def.runtimeAdapter.apiProtocol === 'openai-responses'
   ) {
     return {
@@ -369,11 +369,7 @@ function reasoningReplayCell(
       contract: `${adapter.kind} replays reasoning on its provider-specific per-model wire`,
     };
   }
-  if (
-    adapter.kind === 'openai-compatible' &&
-    adapter.supportsOpenAiResponses === true &&
-    adapter.apiProtocol === 'openai-responses'
-  ) {
+  if (adapter.kind === 'openai-compatible' && adapter.responses !== undefined) {
     return {
       state: 'override',
       dimension: 'reasoning-replay',

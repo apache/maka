@@ -89,39 +89,54 @@ describe('responses wire contract', () => {
     assert.deepEqual(urls, ['https://relay.example/v1/responses']);
   });
 
-  test('resolves the SDK adapter independently from reasoning continuation', () => {
+  test('resolves only supported Responses adapter and replay pairings', () => {
     const deepseek = resolveModelRuntime({ providerType: 'deepseek' }, 'deepseek-v4-flash');
-    assert.equal(deepseek.responsesAdapter, 'open-responses');
-    assert.equal(deepseek.reasoningReplay.kind, 'responses-plaintext-content');
+    assert.deepEqual(deepseek.reasoningReplay, {
+      kind: 'responses',
+      contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
+    });
 
     const xai = resolveModelRuntime({ providerType: 'xai' }, 'grok-4.5');
-    assert.equal(xai.responsesAdapter, 'openai');
-    assert.equal(xai.reasoningReplay.kind, 'responses-encrypted-content');
+    assert.deepEqual(xai.reasoningReplay, {
+      kind: 'responses',
+      contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    });
 
     const relay = resolveModelRuntime(
       { providerType: 'openai-responses-compatible' },
       'relay-model',
     );
-    assert.equal(relay.responsesAdapter, 'openai');
-    assert.equal(relay.reasoningReplay.kind, 'responses-encrypted-content');
+    assert.deepEqual(relay.reasoningReplay, {
+      kind: 'responses',
+      contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    });
   });
 
-  test('enables Open Responses only for providers with an explicit continuation contract', () => {
+  test('enables Responses only through an explicit supported contract', () => {
     const configured = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
       const adapter = definition.runtimeAdapter;
-      return adapter.kind === 'openai-compatible' && adapter.responsesAdapter === 'open-responses'
-        ? [{ providerType, reasoningReplay: adapter.responsesReasoningReplay }]
+      return adapter.kind === 'openai-compatible' && adapter.responses
+        ? [{ providerType, contract: adapter.responses }]
         : [];
     });
 
     assert.deepEqual(configured, [
-      { providerType: 'deepseek', reasoningReplay: 'plaintext-content' },
+      {
+        providerType: 'deepseek',
+        contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
+      },
+      {
+        providerType: 'xai',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'xai-oauth',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
     ]);
 
     const relay = PROVIDER_REGISTRY['openai-responses-compatible'].runtimeAdapter;
-    assert.equal(relay.kind, 'openai-compatible');
-    assert.equal(relay.responsesAdapter, 'openai');
-    assert.equal(relay.responsesReasoningReplay, 'encrypted-content');
+    assert.equal(relay.kind, 'openai');
   });
 
   test('every encrypted-content Responses contract asks for encrypted reasoning', () => {
@@ -147,7 +162,8 @@ describe('responses wire contract', () => {
         }
         if (
           runtime.wire !== 'openai-responses' ||
-          runtime.reasoningReplay.kind === 'open-responses-plaintext'
+          (runtime.reasoningReplay.kind === 'responses' &&
+            runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-content')
         ) {
           continue;
         }

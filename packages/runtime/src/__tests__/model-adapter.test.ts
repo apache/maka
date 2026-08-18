@@ -68,7 +68,7 @@ describe('ModelAdapter stream and error normalization', () => {
       providerExecutedTools: true,
       signedThinking: false,
       unsignedThinking: true,
-      responsesThinking: 'none',
+      responsesReasoning: 'none',
     });
   });
 
@@ -123,7 +123,7 @@ describe('ModelAdapter stream and error normalization', () => {
       providerExecutedTools: true,
       signedThinking: false,
       unsignedThinking: false,
-      responsesThinking: 'openai-encrypted',
+      responsesReasoning: 'encrypted-content',
     });
   });
 
@@ -147,7 +147,7 @@ describe('ModelAdapter stream and error normalization', () => {
       providerExecutedTools: false,
       signedThinking: false,
       unsignedThinking: false,
-      responsesThinking: 'open-responses-plaintext',
+      responsesReasoning: 'plaintext-content',
     });
   });
 

@@ -25,6 +25,7 @@ import {
   type ProviderCategory,
   type ProviderDefaults,
   type ProviderRuntimeAdapter,
+  type ProviderResponsesContract,
   type ProviderType,
 } from './provider-registry.js';
 
@@ -44,6 +45,7 @@ export type {
   ProviderCategory,
   ProviderDefaults,
   ProviderRuntimeAdapter,
+  ProviderResponsesContract,
   ProviderType,
 };
 
