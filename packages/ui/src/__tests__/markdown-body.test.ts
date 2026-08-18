@@ -46,14 +46,34 @@ it('keeps the copy control in a toolbar above a one-line code scroll viewport', 
 });
 
 it('does not force the single-line scrollbar layout on multiline code', () => {
-  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: ['```ts', 'const first = 1;', 'const second = 2;', '```'].join('\n'),
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: ['```ts', 'const first = 1;', 'const second = 2;', '```'].join('\n'),
+    }),
   }));
 
   assert.match(markup, /data-maka-code-layout="multi-line"/);
   assert.doesNotMatch(markup, /maka-markdown-code-scrollbar-slot/);
   assert.match(markup, /astryx-codeblock-header/);
   assert.match(markup, /astryx-codeblock-copy-button/);
+});
+
+it('gives collapsible plaintext code a localized accessible name', () => {
+  const code = Array.from({ length: 10 }, (_, index) => `line ${index + 1}`);
+
+  for (const [locale, label] of [['en', 'Code'], ['zh', '代码']] as const) {
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale,
+      children: createElement(MarkdownBody, {
+        text: ['```', ...code, '```'].join('\n'),
+      }),
+    }));
+
+    assert.match(markup, /role="button"/);
+    assert.match(markup, /aria-expanded="true"/);
+    assert.match(markup, new RegExp(`>${label}</span>`));
+  }
 });
 
 it('keeps a lazy live stream behind the display cursor', () => {

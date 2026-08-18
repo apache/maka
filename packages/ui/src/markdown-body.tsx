@@ -35,6 +35,7 @@ const BASE_MARKDOWN_COMPONENTS = {
 export const MAX_AUTOMATIC_MERMAID_DIAGRAMS = 3;
 export const MAX_AUTOMATIC_MERMAID_SOURCE_LENGTH = 4_000;
 export const MAX_AUTOMATIC_MERMAID_TOTAL_SOURCE_LENGTH = 8_000;
+const CODE_BLOCK_COLLAPSIBLE_THRESHOLD = 10;
 const DEFERRED_MERMAID_LANGUAGE = 'makamermaiddeferred';
 
 /**
@@ -175,6 +176,7 @@ function MarkdownCode(props: {
   density: 'default' | 'compact';
   renderMermaid: boolean;
 }) {
+  const copy = getSharedUiCopy(useUiLocale()).markdown;
   const language = props.language?.trim().toLowerCase();
   if (props.renderMermaid && (language === 'mermaid' || language === DEFERRED_MERMAID_LANGUAGE)) {
     return (
@@ -189,6 +191,8 @@ function MarkdownCode(props: {
   const codeLines = props.code.split('\n');
   if (codeLines.length > 1 && codeLines.at(-1) === '') codeLines.pop();
   const isSingleLine = codeLines.length === 1;
+  const isCollapsible = codeLines.length >= CODE_BLOCK_COLLAPSIBLE_THRESHOLD;
+  const hasLanguageLabel = Boolean(language && language !== 'plaintext');
 
   return (
     <div
@@ -198,11 +202,12 @@ function MarkdownCode(props: {
         code={props.code}
         language={props.language}
         // Astryx otherwise overlays the copy button on headerless plaintext.
-        // An empty title deliberately enables its structural header without
-        // inventing a visible or unlocalised label; language fences still show
-        // their normal language label in the same toolbar.
-        title=""
+        // An empty title enables its structural header; once that header becomes
+        // a collapse button, give plaintext the same localized code label that
+        // language fences already provide through their language label.
+        title={isCollapsible && !hasLanguageLabel ? copy.code : ''}
         isCollapsible
+        collapsibleThreshold={CODE_BLOCK_COLLAPSIBLE_THRESHOLD}
       />
     </div>
   );
