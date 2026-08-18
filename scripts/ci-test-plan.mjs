@@ -10,12 +10,13 @@ const defaultRepoRoot = dirname(dirname(scriptPath));
 
 const FULL_SUITE_FILES = new Set([
   '.github/workflows/ci.yml',
-  '.github/workflows/release.yml',
   'package-lock.json',
   'package.json',
   'scripts/ci-test-plan.mjs',
   'scripts/run-workspace-tests-parallel.mjs',
 ]);
+
+const RELEASE_CONTRACT_FILES = new Set(['.github/workflows/release.yml']);
 
 const TYPECHECK_ONLY_FILES = new Set([
   'biome.jsonc',
@@ -292,6 +293,10 @@ export function planTests(changedFiles, options = {}) {
       continue;
     }
     if (TYPECHECK_ONLY_FILES.has(path)) {
+      code = true;
+      continue;
+    }
+    if (RELEASE_CONTRACT_FILES.has(path)) {
       code = true;
       continue;
     }

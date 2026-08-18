@@ -22,6 +22,9 @@ import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy
 import {
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
+  releaseNpmEnvironment,
+  resolveReleaseWorkspacePackages,
+  workspaceReleaseFiles,
 } from './release-cli-file-policy.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '..');
@@ -36,27 +39,12 @@ const unsupportedArguments = process.argv
 if (unsupportedArguments.length > 0) {
   throw new Error(`Unsupported release argument: ${unsupportedArguments.join(', ')}`);
 }
-const internalPackageNames = [
-  '@maka/core',
-  '@maka/eval',
-  '@maka/mcp',
-  '@maka/runtime',
-  '@maka/runtime-host',
-  '@maka/storage',
-];
+const workspacePackages = resolveReleaseWorkspacePackages(repoRoot);
+const internalPackageNames = workspacePackages
+  .map(({ name }) => name)
+  .filter((name) => name !== 'maka-agent');
 const internalPackageSet = new Set(internalPackageNames);
-const buildOrder = [
-  '@maka/core',
-  '@maka/storage',
-  '@maka/mcp',
-  '@maka/runtime',
-  '@maka/runtime-host',
-  '@maka/eval',
-  'maka-agent',
-];
-const evalAssets = readJson(join(repoRoot, 'packages/eval/package.json')).releaseFiles.filter(
-  (path) => path !== 'dist',
-);
+const buildOrder = workspacePackages.map(({ name }) => name);
 const strippedInstallScripts = new Map([
   // The clean repository install has already produced every generated file and
   // platform prebuild copied below. Do not run advisory postinstalls on an end
@@ -145,10 +133,15 @@ function buildFromCleanDependencyTree() {
     });
     execFileSync('tar', ['-xf', archivePath, '-C', cleanRoot], { stdio: 'inherit' });
     console.log('[release-cli] installing the committed dependency tree with npm ci');
-    execFileSync('npm', ['ci'], npmSpawnOptions({ cwd: cleanRoot, stdio: 'inherit' }));
+    const cleanEnvironment = releaseNpmEnvironment(process.env, join(cleanRoot, '.npmrc'));
+    execFileSync(
+      'npm',
+      ['ci'],
+      npmSpawnOptions({ cwd: cleanRoot, env: cleanEnvironment, stdio: 'inherit' }),
+    );
     execFileSync(process.execPath, [join(cleanRoot, 'scripts/release-cli-package.mjs')], {
       cwd: cleanRoot,
-      env: { ...process.env, MAKA_CLI_RELEASE_PREPARED_TREE: '1' },
+      env: { ...cleanEnvironment, MAKA_CLI_RELEASE_PREPARED_TREE: '1' },
       stdio: 'inherit',
     });
 
@@ -201,7 +194,12 @@ function checkProductionAudit() {
   const audit = spawnSync(
     'npm',
     ['audit', '--omit=dev', '--workspace', 'maka-agent', '--json'],
-    npmSpawnOptions({ cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }),
+    npmSpawnOptions({
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: releaseNpmEnvironment(process.env, join(repoRoot, '.npmrc')),
+      maxBuffer: 64 * 1024 * 1024,
+    }),
   );
   const report = JSON.parse(audit.stdout || '{}');
   const vulnerabilities = report.metadata?.vulnerabilities;
@@ -222,7 +220,7 @@ function readCliDependencyTree() {
 }
 
 function copyCliRuntime() {
-  copyRuntimeDist(cliSource, stageRoot, { excludeDevCli: true });
+  copyRuntimeDist(cliSource, stageRoot);
   chmodSync(join(stageRoot, 'dist/cli.js'), 0o755);
 }
 
@@ -244,7 +242,7 @@ function copyDependencyClosure(cli) {
         }
         if (!previous) {
           if (internalPackageSet.has(dependency.name)) {
-            copyInternalPackage(source, destination, dependency.name === '@maka/eval');
+            copyInternalPackage(source, destination);
           } else {
             copyThirdPartyPackage(source, destination);
           }
@@ -319,7 +317,7 @@ function dependencyDestination(dependency) {
   throw new Error(`Dependency path is outside the supported installed tree: ${sourcePath}`);
 }
 
-function copyInternalPackage(source, destination, includeEvalAssets) {
+function copyInternalPackage(source, destination) {
   mkdirSync(destination, { recursive: true, mode: 0o755 });
   const manifest = readJson(join(source, 'package.json'));
   const allowedFields = [
@@ -344,31 +342,17 @@ function copyInternalPackage(source, destination, includeEvalAssets) {
       .map((field) => [field, manifest[field]]),
   );
   writeFileSync(join(destination, 'package.json'), `${JSON.stringify(releaseManifest, null, 2)}\n`);
-  copyRuntimeDist(source, destination);
-  if (includeEvalAssets) {
-    for (const asset of evalAssets) copyDeclaredFile(source, destination, asset);
+  for (const releaseFile of workspaceReleaseFiles(manifest)) {
+    if (releaseFile === 'dist') copyRuntimeDist(source, destination);
+    else copyDeclaredFile(source, destination, releaseFile);
   }
 }
 
-function copyRuntimeDist(source, destination, options = {}) {
+function copyRuntimeDist(source, destination) {
   const sourceDist = join(source, 'dist');
   if (!existsSync(sourceDist)) throw new Error(`Missing build output: ${sourceDist}`);
   copyTreeFiles(sourceDist, join(destination, 'dist'), (relativePath) => {
-    const segments = relativePath.split(sep);
-    const file = segments.at(-1) ?? '';
-    if (
-      segments.some(
-        (segment) =>
-          segment === '__tests__' || segment === '__fixtures__' || segment === 'test-only',
-      )
-    ) {
-      return false;
-    }
-    if (/(?:^|\.)test\.js$/.test(file) || file.endsWith('.d.ts') || file.endsWith('.map')) {
-      return false;
-    }
-    if (options.excludeDevCli && file === 'dev-cli.js') return false;
-    return file.endsWith('.js') || file.endsWith('.json');
+    return !isMakaDevelopmentArtifact(join('dist', relativePath));
   });
 }
 
@@ -707,10 +691,16 @@ function readJson(path) {
 }
 
 function runNpm(args, options = {}) {
+  const environment = releaseNpmEnvironment(options.env ?? process.env, join(repoRoot, '.npmrc'));
   return execFileSync(
     'npm',
     args,
-    npmSpawnOptions({ cwd: repoRoot, stdio: options.encoding ? undefined : 'inherit', ...options }),
+    npmSpawnOptions({
+      cwd: repoRoot,
+      stdio: options.encoding ? undefined : 'inherit',
+      ...options,
+      env: environment,
+    }),
   );
 }
 

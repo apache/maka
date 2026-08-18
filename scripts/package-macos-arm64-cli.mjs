@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import {
   access,
@@ -24,7 +24,13 @@ import {
   releaseToolchainFromManifest,
   resolveProductReleaseIdentity,
 } from './product-release-identity.mjs';
-import { isThirdPartyDevelopmentArtifact } from './release-cli-file-policy.mjs';
+import {
+  isMakaDevelopmentArtifact,
+  isThirdPartyDevelopmentArtifact,
+  releaseNpmEnvironment,
+  resolveReleaseWorkspacePackages,
+  workspaceReleaseFiles,
+} from './release-cli-file-policy.mjs';
 
 export { releaseToolchainFromManifest } from './product-release-identity.mjs';
 
@@ -34,7 +40,6 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const releaseDirectory = join(repoRoot, 'apps', 'desktop', 'release');
 const dependencyPatchesDirectory = join(repoRoot, 'patches');
 const cliPackageName = 'maka-agent';
-const localPackagePrefix = '@maka/';
 const requiredSigningEnvironment = [
   'CSC_LINK',
   'CSC_KEY_PASSWORD',
@@ -122,96 +127,11 @@ export function macosArm64CliInstallArgs() {
 }
 
 export function standaloneInstallEnvironment(environment) {
-  return Object.fromEntries(
-    Object.entries(environment).filter(
-      ([name]) => name.toLowerCase() !== 'npm_config_allow_scripts',
-    ),
-  );
-}
-
-function manifestFromEntry(entry) {
-  return entry?.manifest ?? entry;
-}
-
-export function collectWorkspaceDependencyClosure(entryName, manifestsByName) {
-  const closure = new Set();
-  const visiting = new Set();
-
-  function visit(packageName) {
-    if (closure.has(packageName)) return;
-    if (visiting.has(packageName)) {
-      throw new Error(`Workspace dependency cycle reached ${packageName}.`);
-    }
-    const entry = manifestsByName.get(packageName);
-    if (!entry) {
-      throw new Error(`Workspace package ${packageName} is missing.`);
-    }
-    visiting.add(packageName);
-    const manifest = manifestFromEntry(entry);
-    for (const dependencyName of Object.keys(manifest.dependencies ?? {}).sort()) {
-      if (manifestsByName.has(dependencyName)) {
-        visit(dependencyName);
-      } else if (dependencyName.startsWith(localPackagePrefix)) {
-        throw new Error(
-          `${packageName} depends on local package ${dependencyName}, but it is not in workspaces.`,
-        );
-      }
-    }
-    visiting.delete(packageName);
-    closure.add(packageName);
-  }
-
-  visit(entryName);
-  return [...closure].sort();
-}
-
-function assertInsideRepo(path) {
-  const pathFromRepo = relative(repoRoot, path);
-  if (pathFromRepo === '..' || pathFromRepo.startsWith(`..${sep}`) || isAbsolute(pathFromRepo)) {
-    throw new Error(`Workspace path escapes the repository: ${path}`);
-  }
+  return releaseNpmEnvironment(environment, join(repoRoot, '.npmrc'));
 }
 
 export async function resolveCliWorkspacePackages() {
-  const rootManifest = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
-  const manifestsByName = new Map();
-  for (const workspacePath of rootManifest.workspaces ?? []) {
-    if (typeof workspacePath !== 'string' || /[*?[\]{}]/.test(workspacePath)) {
-      throw new Error(`CLI release requires explicit workspace paths, found ${workspacePath}.`);
-    }
-    const directory = resolve(repoRoot, workspacePath);
-    assertInsideRepo(directory);
-    const manifest = JSON.parse(await readFile(join(directory, 'package.json'), 'utf8'));
-    if (typeof manifest.name !== 'string' || !manifest.name) {
-      throw new Error(`${workspacePath}/package.json is missing a package name.`);
-    }
-    if (manifestsByName.has(manifest.name)) {
-      throw new Error(`Duplicate workspace package name ${manifest.name}.`);
-    }
-    manifestsByName.set(manifest.name, { directory, manifest, workspacePath });
-  }
-
-  return collectWorkspaceDependencyClosure(cliPackageName, manifestsByName).map((name) => ({
-    name,
-    ...manifestsByName.get(name),
-  }));
-}
-
-function isTestArtifactName(name) {
-  return /\.(?:test|spec)\.(?:[cm]?js|d\.ts|[cm]?js\.map)$/.test(name);
-}
-
-export async function pruneTestArtifacts(directory) {
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory() && entry.name === '__tests__') {
-      await rm(path, { recursive: true, force: true });
-    } else if (entry.isDirectory()) {
-      await pruneTestArtifacts(path);
-    } else if (entry.isFile() && isTestArtifactName(entry.name)) {
-      await rm(path, { force: true });
-    }
-  }
+  return resolveReleaseWorkspacePackages(repoRoot, cliPackageName);
 }
 
 export async function pruneThirdPartyDevelopmentArtifacts(directory, root = directory) {
@@ -224,44 +144,6 @@ export async function pruneThirdPartyDevelopmentArtifacts(directory, root = dire
       await pruneThirdPartyDevelopmentArtifacts(path, root);
     }
   }
-}
-
-export function workspaceReleaseFiles(manifest) {
-  const declared = Object.hasOwn(manifest, 'releaseFiles') ? manifest.releaseFiles : ['dist'];
-  if (!Array.isArray(declared) || declared.length === 0) {
-    throw new Error(`${manifest.name ?? 'Workspace package'} releaseFiles must be non-empty.`);
-  }
-  const releaseFiles = declared.map((path) => {
-    if (typeof path !== 'string' || path.length === 0) {
-      throw new Error(`${manifest.name ?? 'Workspace package'} releaseFiles must be paths.`);
-    }
-    if (
-      isAbsolute(path) ||
-      path.includes('\\') ||
-      /[*?[\]{}]/u.test(path) ||
-      path.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')
-    ) {
-      throw new Error(`${manifest.name ?? 'Workspace package'} has unsafe release file ${path}.`);
-    }
-    return path;
-  });
-  if (new Set(releaseFiles).size !== releaseFiles.length) {
-    throw new Error(`${manifest.name ?? 'Workspace package'} releaseFiles contain duplicates.`);
-  }
-  for (const [index, path] of releaseFiles.entries()) {
-    const overlap = releaseFiles
-      .slice(index + 1)
-      .find((candidate) => path.startsWith(`${candidate}/`) || candidate.startsWith(`${path}/`));
-    if (overlap) {
-      throw new Error(
-        `${manifest.name ?? 'Workspace package'} releaseFiles overlap at ${path} and ${overlap}.`,
-      );
-    }
-  }
-  if (!releaseFiles.includes('dist')) {
-    throw new Error(`${manifest.name ?? 'Workspace package'} releaseFiles must include dist.`);
-  }
-  return releaseFiles;
 }
 
 export function standaloneInstallRootManifest(rootManifest, workspacePackages) {
@@ -299,9 +181,20 @@ export async function stageWorkspacePackages(installRoot, workspacePackages) {
           await cp(source, target, { recursive: true });
         }),
       );
-      await pruneTestArtifacts(join(targetDirectory, 'dist'));
+      await pruneMakaDevelopmentArtifacts(targetDirectory);
     }),
   ]);
+}
+
+async function pruneMakaDevelopmentArtifacts(directory, root = directory) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (isMakaDevelopmentArtifact(relative(root, path))) {
+      await rm(path, { recursive: entry.isDirectory(), force: true });
+    } else if (entry.isDirectory()) {
+      await pruneMakaDevelopmentArtifacts(path, root);
+    }
+  }
 }
 
 export async function listDependencyPatchNames() {
@@ -584,7 +477,14 @@ export function isMacosArm64MachO(architectures, buildVersion) {
   return architectures.trim() === 'arm64' && /^\s*platform MACOS\s*$/m.test(buildVersion);
 }
 
-async function pruneNonTargetNativeBinaries(nodeModulesDirectory, { inspect }) {
+export function macosArm64MachOAction(architectures, buildVersion) {
+  const architectureList = architectures.trim().split(/\s+/u).filter(Boolean);
+  if (!architectureList.includes('arm64')) return 'remove';
+  if (!/^\s*platform MACOS\s*$/m.test(buildVersion)) return 'reject';
+  return architectureList.length === 1 ? 'keep' : 'thin';
+}
+
+async function pruneNonTargetNativeBinaries(nodeModulesDirectory, { inspect, run }) {
   const { foreignBinaries, machOBinaries } = await inspectNativeArtifacts(nodeModulesDirectory, {
     inspect,
   });
@@ -594,8 +494,26 @@ async function pruneNonTargetNativeBinaries(nodeModulesDirectory, { inspect }) {
       inspect('lipo', ['-archs', binaryPath]),
       inspect('xcrun', ['vtool', '-show-build', binaryPath]),
     ]);
-    if (!isMacosArm64MachO(architectures.stdout, buildVersion.stdout)) {
+    const action = macosArm64MachOAction(architectures.stdout, buildVersion.stdout);
+    if (action === 'remove') {
       await rm(binaryPath, { force: true });
+    } else if (action === 'reject') {
+      throw new Error(`Mach-O file does not target macOS arm64: ${binaryPath}`);
+    } else if (action === 'thin') {
+      const thinnedPath = `${binaryPath}.arm64`;
+      try {
+        await run('lipo', [binaryPath, '-thin', 'arm64', '-output', thinnedPath]);
+        const [thinnedArchitectures, thinnedBuildVersion] = await Promise.all([
+          inspect('lipo', ['-archs', thinnedPath]),
+          inspect('xcrun', ['vtool', '-show-build', thinnedPath]),
+        ]);
+        if (!isMacosArm64MachO(thinnedArchitectures.stdout, thinnedBuildVersion.stdout)) {
+          throw new Error(`Could not thin Mach-O file to macOS arm64: ${binaryPath}`);
+        }
+        await rename(thinnedPath, binaryPath);
+      } finally {
+        await rm(thinnedPath, { force: true });
+      }
     }
   }
 }
@@ -618,25 +536,103 @@ export function assertAcceptedNotarization(output) {
   }
 }
 
-async function signCliBinaries(machOBinaries, { env, run }) {
-  assertReleaseSigningEnvironment(env);
-  const { createKeychain, findIdentity, removeKeychain } = requireFromHere(
-    'app-builder-lib/out/codeSign/macCodeSign',
-  );
-  const { TmpDir } = requireFromHere('temp-file');
-  const temporaryFiles = new TmpDir('maka-cli-signing');
-  let keychainFile;
-  try {
-    ({ keychainFile } = await createKeychain({
-      tmpDir: temporaryFiles,
-      cscLink: env.CSC_LINK,
-      cscKeyPassword: env.CSC_KEY_PASSWORD,
-      currentDir: repoRoot,
-    }));
-    const identity = await findIdentity('Developer ID Application', null, keychainFile);
-    if (!identity) throw new Error('Could not resolve a Developer ID Application identity.');
-    if (!identity.hash) throw new Error('Developer ID Application identity is missing its hash.');
+export function decodeSigningCertificate(value) {
+  const encoded = value?.trim();
+  if (!encoded || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/u.test(encoded)) {
+    throw new Error('CSC_LINK must contain one base64-encoded PKCS12 certificate.');
+  }
+  const bytes = Buffer.from(encoded, 'base64');
+  if (bytes.length === 0) {
+    throw new Error('CSC_LINK must contain one base64-encoded PKCS12 certificate.');
+  }
+  return { bytes };
+}
 
+export function parseDeveloperIdApplicationIdentity(output) {
+  const identities = [...output.matchAll(/^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"([^"]+)"\s*$/gmu)]
+    .map((match) => ({ hash: match[1].toUpperCase(), name: match[2] }))
+    .filter(({ name }) => name.startsWith('Developer ID Application:'));
+  if (identities.length !== 1) {
+    throw new Error('CLI signing keychain must contain one Developer ID Application identity.');
+  }
+  return identities[0];
+}
+
+async function createSigningKeychain({ env, run, inspect }) {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'maka-cli-signing-'));
+  const certificatePath = join(temporaryRoot, 'identity.p12');
+  const pemPath = join(temporaryRoot, 'identity.pem');
+  const keychainFile = join(temporaryRoot, 'signing.keychain-db');
+  const keychainPassword = randomBytes(32).toString('hex');
+  let created = false;
+  const cleanup = async () => {
+    if (created) {
+      try {
+        await run('security', ['delete-keychain', keychainFile], { env });
+      } finally {
+        created = false;
+      }
+    }
+    await rm(temporaryRoot, { recursive: true, force: true });
+  };
+
+  try {
+    await writeFile(certificatePath, decodeSigningCertificate(env.CSC_LINK).bytes, { mode: 0o600 });
+    await run('security', ['create-keychain', '-p', keychainPassword, keychainFile], { env });
+    created = true;
+    await run('security', ['unlock-keychain', '-p', keychainPassword, keychainFile], { env });
+    await run('security', ['set-keychain-settings', '-lut', '21600', keychainFile], { env });
+    await run(
+      'openssl',
+      [
+        'pkcs12',
+        '-in',
+        certificatePath,
+        '-nodes',
+        '-passin',
+        'env:CSC_KEY_PASSWORD',
+        '-out',
+        pemPath,
+      ],
+      { env },
+    );
+    await chmod(pemPath, 0o600);
+    await run('security', ['import', pemPath, '-k', keychainFile, '-T', '/usr/bin/codesign'], {
+      env,
+    });
+    await run(
+      'security',
+      [
+        'set-key-partition-list',
+        '-S',
+        'apple-tool:,apple:',
+        '-s',
+        '-k',
+        keychainPassword,
+        keychainFile,
+      ],
+      { env },
+    );
+    const identityOutput = await inspect(
+      'security',
+      ['find-identity', '-v', '-p', 'codesigning', keychainFile],
+      { env },
+    );
+    return {
+      cleanup,
+      identity: parseDeveloperIdApplicationIdentity(identityOutput.stdout),
+      keychainFile,
+    };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+async function signCliBinaries(machOBinaries, { env, run, inspect }) {
+  assertReleaseSigningEnvironment(env);
+  const signing = await createSigningKeychain({ env, run, inspect });
+  try {
     for (const binaryPath of machOBinaries) {
       await run(
         'codesign',
@@ -646,19 +642,21 @@ async function signCliBinaries(machOBinaries, { env, run }) {
           'runtime',
           '--timestamp',
           '--sign',
-          identity.hash,
+          signing.identity.hash,
           '--keychain',
-          keychainFile,
+          signing.keychainFile,
           binaryPath,
         ],
         { env },
       );
       await run('codesign', ['--verify', '--strict', '--verbose=2', binaryPath], { env });
     }
-    return { identityName: identity.name, machOBinaryCount: machOBinaries.length };
+    return {
+      identityName: signing.identity.name,
+      machOBinaryCount: machOBinaries.length,
+    };
   } finally {
-    if (keychainFile) await removeKeychain(keychainFile, false);
-    await temporaryFiles.cleanup();
+    await signing.cleanup();
   }
 }
 
@@ -771,7 +769,7 @@ export async function packageMacosArm64Cli({
     );
 
     const nodeModulesDirectory = join(installRoot, 'node_modules');
-    await pruneNonTargetNativeBinaries(nodeModulesDirectory, { inspect });
+    await pruneNonTargetNativeBinaries(nodeModulesDirectory, { inspect, run });
     await pruneThirdPartyDevelopmentArtifacts(nodeModulesDirectory);
 
     const archiveRoot = join(stagingRoot, archiveRootName);
@@ -852,7 +850,7 @@ export async function packageMacosArm64Cli({
     );
 
     let signing;
-    if (releaseSigning) signing = await signCliBinaries(machOBinaries, { env, run });
+    if (releaseSigning) signing = await signCliBinaries(machOBinaries, { env, run, inspect });
     await createCliZip(archiveRoot, archivePath, { env, run });
     if (releaseSigning) await notarizeCliZip(archivePath, { env, inspect });
 

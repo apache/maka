@@ -13,16 +13,12 @@ function exactVersion(value, label) {
 
 export function releaseToolchainFromManifest(rootManifest) {
   const nodeVersion = rootManifest.releaseToolchain?.node;
-  const nodeArchive = rootManifest.releaseToolchain?.nodeDarwinArm64Archive;
   const nodeArchiveSha256 = rootManifest.releaseToolchain?.nodeDarwinArm64Sha256;
   const npmMatch = /^npm@(\d+\.\d+\.\d+)$/u.exec(rootManifest.packageManager ?? '');
   if (typeof nodeVersion !== 'string' || !/^\d+\.\d+\.\d+$/u.test(nodeVersion)) {
     throw new Error('package.json must define an exact releaseToolchain.node version');
   }
-  const expectedArchive = `node-v${nodeVersion}-darwin-arm64.tar.xz`;
-  if (nodeArchive !== expectedArchive) {
-    throw new Error(`releaseToolchain.nodeDarwinArm64Archive must be ${expectedArchive}`);
-  }
+  const nodeArchive = `node-v${nodeVersion}-darwin-arm64.tar.xz`;
   if (typeof nodeArchiveSha256 !== 'string' || !/^[0-9a-f]{64}$/u.test(nodeArchiveSha256)) {
     throw new Error('releaseToolchain.nodeDarwinArm64Sha256 must be an exact SHA-256 digest');
   }

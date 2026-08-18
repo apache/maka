@@ -15,14 +15,18 @@ import {
   resolveProductReleaseIdentity,
 } from './product-release-identity.mjs';
 import {
+  decodeSigningCertificate,
   macosArm64CliWrapper,
+  macosArm64MachOAction,
+  parseDeveloperIdApplicationIdentity,
   pruneThirdPartyDevelopmentArtifacts,
   resolveCliWorkspacePackages,
   resolveMacosArm64CliArtifactPaths,
+  stageWorkspacePackages,
   standaloneInstallEnvironment,
   standaloneInstallRootManifest,
-  workspaceReleaseFiles,
 } from './package-macos-arm64-cli.mjs';
+import { workspaceReleaseFiles } from './release-cli-file-policy.mjs';
 import { isTuiReadyOutput } from './verify-macos-arm64-cli.mjs';
 import { ensureProductTag } from './product-release-tag.mjs';
 
@@ -33,7 +37,6 @@ const rootManifest = {
   packageManager: 'npm@11.19.0',
   releaseToolchain: {
     node: '24.18.1',
-    nodeDarwinArm64Archive: 'node-v24.18.1-darwin-arm64.tar.xz',
     nodeDarwinArm64Sha256: '1'.repeat(64),
   },
 };
@@ -156,6 +159,37 @@ test('standalone verification recognizes the current TUI status line through ANS
   );
 });
 
+test('standalone packaging keeps or thins arm64 Mach-O files instead of deleting them', () => {
+  const macos = 'platform MACOS\n';
+  assert.equal(macosArm64MachOAction('arm64', macos), 'keep');
+  assert.equal(macosArm64MachOAction('x86_64 arm64', macos), 'thin');
+  assert.equal(macosArm64MachOAction('x86_64', macos), 'remove');
+  assert.equal(macosArm64MachOAction('arm64', 'platform IOS\n'), 'reject');
+});
+
+test('CLI signing accepts one base64 PKCS12 and one isolated Developer ID identity', () => {
+  assert.deepEqual(decodeSigningCertificate(Buffer.from('pkcs12').toString('base64')), {
+    bytes: Buffer.from('pkcs12'),
+  });
+  assert.throws(() => decodeSigningCertificate('not base64!'), /base64-encoded/u);
+  assert.deepEqual(
+    parseDeveloperIdApplicationIdentity(
+      '  1) ABCDEF0123456789ABCDEF0123456789ABCDEF01 "Developer ID Application: Maka Test (TEAMID)"\n     1 valid identities found\n',
+    ),
+    {
+      hash: 'ABCDEF0123456789ABCDEF0123456789ABCDEF01',
+      name: 'Developer ID Application: Maka Test (TEAMID)',
+    },
+  );
+  assert.throws(
+    () =>
+      parseDeveloperIdApplicationIdentity(
+        '  1) ABCDEF0123456789ABCDEF0123456789ABCDEF01 "Apple Development: Test"\n',
+      ),
+    /one Developer ID Application/u,
+  );
+});
+
 test('the standalone maka launcher is relocatable and uses the embedded runtime', () => {
   const paths = resolveMacosArm64CliArtifactPaths('1.2.3');
   assert.equal(paths.archiveRootName, 'Maka-1.2.3-cli-mac-arm64');
@@ -208,6 +242,38 @@ test('standalone packaging applies the shared CLI file policy to dependencies', 
   }
 });
 
+test('standalone workspace staging keeps runtime files and removes Maka development output', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-standalone-workspace-'));
+  const workspace = join(root, 'workspace');
+  const install = join(root, 'install');
+  try {
+    await mkdir(join(workspace, 'dist', '__tests__'), { recursive: true });
+    await mkdir(install);
+    await writeFile(join(workspace, 'package.json'), '{}\n');
+    await writeFile(join(workspace, 'dist', 'index.js'), 'runtime\n');
+    await writeFile(join(workspace, 'dist', 'dev-cli.js'), 'development\n');
+    await writeFile(join(workspace, 'dist', 'index.d.ts'), 'development\n');
+    await writeFile(join(workspace, 'dist', 'index.js.map'), 'development\n');
+    await writeFile(join(workspace, 'dist', '__tests__', 'fixture.js'), 'development\n');
+
+    await stageWorkspacePackages(install, [
+      {
+        directory: workspace,
+        manifest: { name: '@maka/example' },
+        workspacePath: 'packages/example',
+      },
+    ]);
+
+    const staged = join(install, 'packages', 'example', 'dist');
+    assert.equal(await readFile(join(staged, 'index.js'), 'utf8'), 'runtime\n');
+    for (const path of ['dev-cli.js', 'index.d.ts', 'index.js.map', '__tests__/fixture.js']) {
+      await assert.rejects(readFile(join(staged, path)), { code: 'ENOENT' });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('standalone dependency installation removes host script policy and unrelated workspaces', () => {
   const staged = standaloneInstallRootManifest(
     {
@@ -228,7 +294,10 @@ test('standalone dependency installation ignores caller-specific npm script poli
     PATH: '/usr/bin',
     npm_config_allow_scripts: '@opencode-ai/cli',
   });
-  assert.deepEqual(environment, { PATH: '/usr/bin' });
+  assert.deepEqual(environment, {
+    PATH: '/usr/bin',
+    npm_config_userconfig: join(process.cwd(), '.npmrc'),
+  });
 });
 
 test('one product workflow gates one draft release on every required artifact', async () => {
@@ -298,5 +367,8 @@ test('product workflow changes select the release contracts in CI', () => {
   };
   const plan = planTests(['.github/workflows/release.yml'], { graph });
   assert.equal(plan.code, true);
-  assert.equal(plan.full, true);
+  assert.equal(plan.full, false);
+  assert.equal(plan.e2e, false);
+  assert.equal(plan.storybook, false);
+  assert.deepEqual(plan.workspaces, []);
 });

@@ -9,7 +9,6 @@
   "packageManager": "npm@11.19.0",
   "releaseToolchain": {
     "node": "24.18.1",
-    "nodeDarwinArm64Archive": "node-v24.18.1-darwin-arm64.tar.xz",
     "nodeDarwinArm64Sha256": "1d60b703fe5d7e7072489be8187f430f1a095a658c31e5e1e281331a5873fac3"
   },
   "type": "module",

@@ -1,11 +1,39 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
+  collectWorkspaceDependencyClosure,
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
+  workspaceReleaseFiles,
 } from './release-cli-file-policy.mjs';
 
 describe('CLI release file policy', () => {
+  test('derives the runtime workspace build order from production dependencies', () => {
+    const manifests = new Map([
+      ['maka-agent', { name: 'maka-agent', dependencies: { '@maka/eval': '0.1.0' } }],
+      ['@maka/eval', { name: '@maka/eval', dependencies: { '@maka/core': '0.1.0' } }],
+      ['@maka/core', { name: '@maka/core' }],
+    ]);
+
+    assert.deepEqual(collectWorkspaceDependencyClosure('maka-agent', manifests), [
+      '@maka/core',
+      '@maka/eval',
+      'maka-agent',
+    ]);
+  });
+
+  test('release file declarations cannot escape or overlap their workspace', () => {
+    for (const releaseFiles of [
+      ['dist', '../secret'],
+      ['dist', 'dist/runtime'],
+    ]) {
+      assert.throws(
+        () => workspaceReleaseFiles({ name: '@maka/example', releaseFiles }),
+        /unsafe|overlap/u,
+      );
+    }
+  });
+
   test('rejects third-party development artifacts on every platform', () => {
     for (const path of [
       'coverage/lcov.info',
