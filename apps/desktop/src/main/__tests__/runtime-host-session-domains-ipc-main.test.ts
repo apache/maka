@@ -88,7 +88,10 @@ test('adapts bounded Agent Graph epoch reads without changing graph identity', a
   const client = domainClient({
     listAgentGraphEpochs: async (rootSessionId) => {
       calls.push(rootSessionId);
-      return [{ epoch: 2, graphId: 'graph-2', createdAt: 2, current: true }];
+      return {
+        epochs: [{ epoch: 2, graphId: 'graph-2', createdAt: 2, current: true }],
+        truncated: false,
+      };
     },
     queryAgentGraph: async (input) => {
       calls.push(input);
@@ -98,9 +101,10 @@ test('adapts bounded Agent Graph epoch reads without changing graph identity', a
   const ipc = ipcHarness();
   registerDomainsIpc({ client, emitModeChanged() {} }, ipc);
 
-  assert.deepEqual(await ipc.invoke('graphs:listEpochs', 'session-1'), [
-    { epoch: 2, graphId: 'graph-2', createdAt: 2, current: true },
-  ]);
+  assert.deepEqual(await ipc.invoke('graphs:listEpochs', 'session-1'), {
+    epochs: [{ epoch: 2, graphId: 'graph-2', createdAt: 2, current: true }],
+    truncated: false,
+  });
   assert.equal(
     (await ipc.invoke('graphs:getSnapshot', 'session-1', { graphId: 'graph-2' }) as {
       graphId: string;

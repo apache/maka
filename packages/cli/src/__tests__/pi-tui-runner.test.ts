@@ -2515,10 +2515,13 @@ describe('Maka Pi TUI runner', () => {
       permissionMode: 'ask',
       terminal,
       agentGraphHistory: {
-        listEpochs: async () => [
-          { epoch: 2, graphId: 'graph-2', createdAt: 2, current: true },
-          { epoch: 1, graphId: 'graph-1', createdAt: 1, current: false },
-        ],
+        listEpochs: async () => ({
+          epochs: [
+            { epoch: 2, graphId: 'graph-2', createdAt: 2, current: true },
+            { epoch: 1, graphId: 'graph-1', createdAt: 1, current: false },
+          ],
+          truncated: false,
+        }),
         getSnapshot: async (_rootSessionId, graphId) => {
           requestedGraphIds.push(graphId);
           return historicalGraphSnapshot(graphId);

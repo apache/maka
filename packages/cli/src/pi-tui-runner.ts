@@ -55,6 +55,7 @@ import type {
 import { AUTO_RECAP_DISPLAY_LIMIT_BYTES, shouldAutoRecap } from './session-recap.js';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import type { AgentGraphClientSnapshot, AgentGraphEpochSummary } from '@maka/runtime-host/protocol';
+import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import { MakaSkillHighlightEditor } from './skill-highlight-editor.js';
 import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-command';
 import { parseSwarmCommand, type ParsedSwarmCommand } from '@maka/core/swarm-command';
@@ -173,7 +174,7 @@ export interface MakaPiTuiInput {
   listSkills?: (cwd: string) => Promise<readonly InvocableSkillEntry[]>;
   /** Read-only Runtime Host projection for inspecting current and historical Graph epochs. */
   agentGraphHistory?: {
-    listEpochs(rootSessionId: string): Promise<readonly AgentGraphEpochSummary[]>;
+    listEpochs(rootSessionId: string): Promise<AgentGraphEpochDirectory>;
     getSnapshot(rootSessionId: string, graphId: string): Promise<AgentGraphClientSnapshot>;
   };
   /** Serializes TUI turn and control activity for the attached Session. */
@@ -2271,7 +2272,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (!rootSessionId || !input.agentGraphHistory) {
       throw new Error('Agent Graph history is unavailable on this session driver.');
     }
-    const epochs = await input.agentGraphHistory.listEpochs(rootSessionId);
+    const directory = await input.agentGraphHistory.listEpochs(rootSessionId);
+    // The TUI may have shut down while the page reads were in flight.
+    if (closed) return;
+    const { epochs, truncated } = directory;
     const items: SelectItem[] = epochs.map((entry) => ({
       value: entry.graphId,
       label: `Run #${entry.epoch}${entry.current ? ' · Current' : ''}`,
@@ -2289,7 +2293,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const epochsByGraphId = new Map(epochs.map((entry) => [entry.graphId, entry]));
     showSelectPicker(
       'Agent Graph History',
-      `${items.length} run${items.length === 1 ? '' : 's'}`,
+      truncated
+        ? `newest ${items.length} runs (history capped)`
+        : `${items.length} run${items.length === 1 ? '' : 's'}`,
       items,
       (item) => {
         const epoch = epochsByGraphId.get(item.value);

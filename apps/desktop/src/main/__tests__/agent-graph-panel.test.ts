@@ -67,6 +67,7 @@ function installGraphRenderer(
   container: Element;
   root: Root;
   setSnapshot(next: AgentGraphClientSnapshot): Promise<void>;
+  evict(graphId: string): void;
   renderSession(sessionId: string): Promise<void>;
 } {
   const { document, window } = parseHTML('<div id="root"></div>');
@@ -99,17 +100,20 @@ function installGraphRenderer(
   const listeners = new Set<GraphListener>();
   (window as unknown as { maka: unknown }).maka = {
     graphs: {
-      listEpochs: async (sessionId: string): Promise<AgentGraphEpochSummary[]> => {
+      listEpochs: async (sessionId: string) => {
         const currentGraphId = currentGraphIds.get(sessionId);
         const entries = [...snapshots.values()]
           .filter((entry) => entry.rootSessionId === sessionId)
           .sort((left, right) => Number(right.graphId === currentGraphId) - Number(left.graphId === currentGraphId));
-        return entries.map((entry, index) => ({
-          epoch: entries.length - index,
-          graphId: entry.graphId,
-          createdAt: index + 1,
-          current: currentGraphIds.get(sessionId) === entry.graphId,
-        }));
+        return {
+          epochs: entries.map((entry, index) => ({
+            epoch: entries.length - index,
+            graphId: entry.graphId,
+            createdAt: index + 1,
+            current: currentGraphIds.get(sessionId) === entry.graphId,
+          })),
+          truncated: false,
+        };
       },
       getSnapshot: async (sessionId: string, options?: { graphId?: string }) => {
         const graphId = options?.graphId ?? currentGraphIds.get(sessionId);
@@ -145,6 +149,9 @@ function installGraphRenderer(
         for (const listener of [...listeners]) listener();
         await Promise.resolve();
       });
+    },
+    evict(graphId) {
+      snapshots.delete(graphId);
     },
     async renderSession(sessionId) {
       await act(async () => {
@@ -216,6 +223,51 @@ describe('AgentGraphPanel dismiss', () => {
     assert.match(harness.container.textContent ?? '', /#1 · History \(read-only\)/);
     assert.doesNotMatch(harness.container.textContent ?? '', /Stop graph/);
     assert.equal(harness.container.querySelector('.maka-agent-graph-dismiss'), null);
+    await act(async () => harness.root.unmount());
+  });
+
+  it('resumes following the current epoch after the selected history expires', async () => {
+    const current = snapshot({ graphId: 'graph-2', status: 'active' });
+    const previous = snapshot({ graphId: 'graph-1', status: 'completed' });
+    const harness = installGraphRenderer(current, [previous]);
+    await act(async () => {
+      harness.root.render(
+        createElement(AgentGraphPanel, {
+          rootSessionId: 'session-1',
+          enabled: true,
+          locale: 'en',
+          onOpenSession: () => undefined,
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    const selector = harness.container.querySelector('[role="combobox"]');
+    assert.ok(selector);
+    await act(async () => {
+      (selector as HTMLElement).click();
+      await Promise.resolve();
+    });
+    const historyOption = [...document.querySelectorAll('[role="option"]')].find((option) =>
+      option.textContent?.includes('History'),
+    );
+    assert.ok(historyOption);
+    await act(async () => {
+      (historyOption as HTMLElement).click();
+      await Promise.resolve();
+    });
+    const combobox = () => harness.container.querySelector('[role="combobox"]')?.textContent ?? '';
+    assert.match(combobox(), /#1 · History \(read-only\)/);
+
+    // The selected epoch leaves the bounded directory while the graph rolls over.
+    harness.evict('graph-1');
+    await harness.setSnapshot(snapshot({ graphId: 'graph-3', status: 'active' }));
+    assert.match(combobox(), /#2 · Current/);
+
+    // Follow restored: the next rollover refreshes the panel instead of
+    // staying pinned on the fallback graph.
+    await harness.setSnapshot(snapshot({ graphId: 'graph-4', status: 'waiting' }));
+    assert.match(combobox(), /#3 · Current/);
     await act(async () => harness.root.unmount());
   });
 

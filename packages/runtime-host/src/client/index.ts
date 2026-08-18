@@ -67,7 +67,10 @@ export {
 } from './connect-or-spawn.js';
 export { runHostedExecution } from './hosted-execution.js';
 export { type ClientCapabilityProvider } from './client-capability.js';
-export { readRuntimeHostAgentGraphEpochs } from './agent-graph-reader.js';
+export {
+  readRuntimeHostAgentGraphEpochs,
+  type AgentGraphEpochDirectory,
+} from './agent-graph-reader.js';
 export {
   startRuntimeHostCapabilityProviderService,
   type RuntimeHostCapabilityProviderService,

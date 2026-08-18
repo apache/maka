@@ -8,10 +8,10 @@ import type {
 import type { GoalState } from '@maka/runtime/goal-state';
 import type { ShellRunPtyDataEvent } from '@maka/runtime/shell-run-contract';
 import type {
-  AgentGraphEpochSummary,
   GoalProjection,
   SessionDomainChange,
 } from '@maka/runtime-host/protocol';
+import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { RuntimeHostSessionObserver } from './runtime-host-session-observer.js';
 import { projectHostedDeepResearch } from './deep-research-desktop-projection.js';
@@ -194,7 +194,7 @@ export function registerRuntimeHostSessionDomainsIpc(
   handleReconnectableRead(
     ipcMain,
     'graphs:listEpochs',
-    async (_event, rootSessionId: unknown): Promise<readonly AgentGraphEpochSummary[]> =>
+    async (_event, rootSessionId: unknown): Promise<AgentGraphEpochDirectory> =>
       deps.client.listAgentGraphEpochs(requiredId(rootSessionId, 'root Session')),
   );
   handleReconnectableRead(

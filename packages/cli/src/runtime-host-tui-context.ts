@@ -8,14 +8,11 @@ import {
   readRuntimeHostAgentGraphEpochs,
   readRuntimeHostInvocableSkills,
   readRuntimeHostProjects,
+  type AgentGraphEpochDirectory,
   type RuntimeHostConnection,
   type RuntimeHostProfile,
 } from '@maka/runtime-host/client';
-import type {
-  AgentGraphClientSnapshot,
-  AgentGraphEpochSummary,
-  WorkspaceTarget,
-} from '@maka/runtime-host/protocol';
+import type { AgentGraphClientSnapshot, WorkspaceTarget } from '@maka/runtime-host/protocol';
 import { connectRuntimeHostCli, resolveRuntimeHostCliTarget } from './runtime-host-cli-context.js';
 import type {
   MakaPiTuiTurnActivitySurface,
@@ -44,7 +41,7 @@ export interface RuntimeHostTuiContext {
   readonly turnActivity: MakaPiTuiTurnActivitySurface;
   readonly listSkills: (cwd: string) => Promise<readonly InvocableSkillEntry[]>;
   readonly agentGraphHistory: {
-    listEpochs(rootSessionId: string): Promise<readonly AgentGraphEpochSummary[]>;
+    listEpochs(rootSessionId: string): Promise<AgentGraphEpochDirectory>;
     getSnapshot(rootSessionId: string, graphId: string): Promise<AgentGraphClientSnapshot>;
   };
   readonly recap: SessionRecapGenerator;

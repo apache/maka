@@ -155,10 +155,10 @@ import type { AttachmentRef, InlineReference, QuoteRef } from '@maka/core/events
 import type { OnboardingMilestoneId } from '@maka/core/onboarding';
 import {
   SCHEDULED_TASK_CATALOG_MAX_ITEMS,
-  type AgentGraphEpochSummary,
   type OperationInput,
   type OperationOutput,
 } from '@maka/runtime-host/protocol';
+import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import {
   desktopSessionKey,
   parseDesktopSessionKey,
@@ -1203,11 +1203,11 @@ const makaBridge = {
     },
   },
   graphs: {
-    async listEpochs(rootSessionId: string): Promise<AgentGraphEpochSummary[]> {
+    async listEpochs(rootSessionId: string): Promise<AgentGraphEpochDirectory> {
       const session = await runtimeHostSessionRef(rootSessionId);
       return ipcRenderer.invoke(
         'graphs:listEpochs', session.scope, session.sessionId,
-      ) as Promise<AgentGraphEpochSummary[]>;
+      ) as Promise<AgentGraphEpochDirectory>;
     },
     async getSnapshot(
       rootSessionId: string,

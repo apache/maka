@@ -36,6 +36,7 @@ type GraphPanelCopy = {
   epoch: string;
   currentEpoch: string;
   historicalEpoch: string;
+  cappedEpochs(count: number): string;
   noOperators: string;
   hiddenOperators(count: number): string;
   progress(settled: number, total: number, hasOmitted: boolean): string;
@@ -63,6 +64,7 @@ export function getAgentGraphPanelCopy(locale: UiLocale): GraphPanelCopy {
       epoch: 'Graph 运行轮次',
       currentEpoch: '当前',
       historicalEpoch: '历史记录（只读）',
+      cappedEpochs: (count) => `仅显示最近 ${count} 次运行`,
       noOperators: '等待主 Agent 创建 operator…',
       hiddenOperators: (count) => `另有 ${count} 个 operator`,
       progress: (settled, total, hasOmitted) =>
@@ -109,6 +111,7 @@ export function getAgentGraphPanelCopy(locale: UiLocale): GraphPanelCopy {
     epoch: 'Graph run',
     currentEpoch: 'Current',
     historicalEpoch: 'History (read-only)',
+    cappedEpochs: (count) => `Showing the newest ${count} runs`,
     noOperators: 'Waiting for the main agent to create an operator…',
     hiddenOperators: (count) => `${count} more operator${count === 1 ? '' : 's'}`,
     progress: (settled, total, hasOmitted) =>
@@ -147,6 +150,7 @@ export function AgentGraphPanel(props: {
 }): JSX.Element | null {
   const [snapshot, setSnapshot] = useState<AgentGraphClientSnapshot>();
   const [epochs, setEpochs] = useState<readonly AgentGraphEpochSummary[]>([]);
+  const [epochsTruncated, setEpochsTruncated] = useState(false);
   const [loading, setLoading] = useState(props.enabled);
   const [error, setError] = useState(false);
   const [stopPending, setStopPending] = useState(false);
@@ -167,6 +171,7 @@ export function AgentGraphPanel(props: {
 
     setSnapshot(undefined);
     setEpochs([]);
+    setEpochsTruncated(false);
     selectedGraphIdRef.current = undefined;
     followCurrentRef.current = true;
     setError(false);
@@ -185,24 +190,31 @@ export function AgentGraphPanel(props: {
       setLoading(true);
       task = window.maka.graphs
         .listEpochs(props.rootSessionId)
-        .then(async (nextEpochs) => {
+        .then(async (directory) => {
+          const nextEpochs = directory.epochs;
           const current = nextEpochs.find((entry) => entry.current) ?? nextEpochs[0];
           const selected = followCurrentRef.current
             ? current
             : nextEpochs.find((entry) => entry.graphId === selectedGraphIdRef.current);
+          // An evicted selection must not pin the panel on the fallback:
+          // resume following the current epoch so later rollovers refresh.
+          if (!selected && !followCurrentRef.current) {
+            followCurrentRef.current = true;
+          }
           const graphId = (selected ?? current)?.graphId;
           if (!graphId) throw new Error('Agent graph epoch directory is empty');
           selectedGraphIdRef.current = graphId;
           const next = await window.maka.graphs.getSnapshot(props.rootSessionId, { graphId });
-          return { next, nextEpochs };
+          return { next, nextEpochs, truncated: directory.truncated };
         })
-        .then(({ next, nextEpochs }) => {
+        .then(({ next, nextEpochs, truncated }) => {
           if (
             !disposed &&
             generation === refreshGeneration &&
             next.graphId === selectedGraphIdRef.current
           ) {
             setEpochs(nextEpochs);
+            setEpochsTruncated(truncated);
             setSnapshot(next);
             setError(false);
           }
@@ -324,6 +336,9 @@ export function AgentGraphPanel(props: {
                 refreshRef.current();
               }}
             />
+          ) : null}
+          {epochsTruncated ? (
+            <span className="maka-agent-graph-epoch-capped">{copy.cappedEpochs(epochs.length)}</span>
           ) : null}
           {snapshot ? (
             <span className="maka-agent-graph-progress">
