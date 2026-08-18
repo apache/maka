@@ -532,6 +532,7 @@ export async function verifyMacosArm64Cli(
       makaPath,
       metadataPath,
       thirdPartyNoticesPath,
+      join(archiveRoot, 'DISCLAIMER-WIP'),
       join(archiveRoot, 'LICENSE'),
       join(archiveRoot, 'NOTICE'),
       join(archiveRoot, 'libexec', 'node', 'LICENSE'),

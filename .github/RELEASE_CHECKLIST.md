@@ -41,7 +41,7 @@ must never be exposed to fork or ordinary pull-request jobs.
    - `Maka-<version>-cli-mac-arm64.zip` and checksum;
    - `Maka-<version>-bundled-git-source.tar.gz` and checksum;
    - the platform update metadata and Desktop ZIPs produced by electron-builder.
-6. Inspect the CLI ZIP. It must contain `bin/maka`, `RELEASE.json`, `LICENSE`, `NOTICE`,
+6. Inspect the CLI ZIP. It must contain `bin/maka`, `RELEASE.json`, `DISCLAIMER-WIP`, `LICENSE`, `NOTICE`,
    `THIRD_PARTY_NOTICES.txt`, the pinned Node license, and no `bin/maka-agent`.
 7. Confirm `RELEASE.json` records the Draft's product version and source SHA, the official Node
    URL/archive/digest, npm version, workspace and production dependency closures, dependency

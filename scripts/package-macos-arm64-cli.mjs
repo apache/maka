@@ -735,6 +735,7 @@ export async function packageMacosArm64Cli({
 
   const version = identity.version;
   await Promise.all([
+    access(join(repoRoot, 'DISCLAIMER-WIP')),
     access(join(repoRoot, 'LICENSE')),
     access(join(repoRoot, 'NOTICE')),
     ...workspacePackages.map(({ directory }) => access(join(directory, 'dist'))),
@@ -788,6 +789,7 @@ export async function packageMacosArm64Cli({
     await Promise.all([
       copyFile(officialNode.execPath, join(embeddedNodeDirectory, 'bin', 'node')),
       copyFile(officialNode.licensePath, join(embeddedNodeDirectory, 'LICENSE')),
+      copyFile(join(repoRoot, 'DISCLAIMER-WIP'), join(archiveRoot, 'DISCLAIMER-WIP')),
       copyFile(join(repoRoot, 'LICENSE'), join(archiveRoot, 'LICENSE')),
       copyFile(join(repoRoot, 'NOTICE'), join(archiveRoot, 'NOTICE')),
       writeFile(join(binDirectory, 'maka'), macosArm64CliWrapper(), 'utf8'),

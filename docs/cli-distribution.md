@@ -39,7 +39,8 @@ The TUI is the default interactive mode of `maka`, not a separate artifact.
 | `signing` | `developer-id-notarized` for release artifacts; `development` for local checks |
 
 The CLI-specific `THIRD_PARTY_NOTICES.txt` must enumerate exactly the external production
-dependencies recorded in `RELEASE.json`. The archive checksum is generated only after signing and
+dependencies recorded in `RELEASE.json`. The archive also carries the repository's
+`DISCLAIMER-WIP`, `LICENSE`, and `NOTICE`. The archive checksum is generated only after signing and
 notarization complete.
 
 Every Mach-O file inside the archive is signed and the ZIP is submitted to Apple's notary service.
