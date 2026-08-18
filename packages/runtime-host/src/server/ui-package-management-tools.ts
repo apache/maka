@@ -355,11 +355,18 @@ export class HostUiPackageManagementTools {
         const scopeId = `ui-preview-${nonce}`;
         const bindingId = `ui-preview-binding-${nonce}`;
         try {
-          await previewRuntime.activate({
-            bindingId,
-            scopeId,
-            extensionId: input.extensionId,
-            revision: input.revision,
+          await previewRuntime.applyComposition({
+            operations: [
+              {
+                type: 'insert',
+                rootId: `session:${scopeId}`,
+                entry: {
+                  id: bindingId,
+                  packageId: input.extensionId,
+                  revision: input.revision,
+                },
+              },
+            ],
           });
           return { ok: true, contributions: previewRuntime.inspectUi(scopeId) };
         } finally {

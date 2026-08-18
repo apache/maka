@@ -226,63 +226,18 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
       : this.installUiRevision(input);
   }
 
-  async activate(input: {
-    readonly bindingId: string;
-    readonly scopeId: string;
-    readonly extensionId: string;
-    readonly revision: string;
-  }): Promise<MakaPluginMountInspection> {
-    this.#assertMutable();
-    this.#scopeIds.add(input.scopeId);
-    await this.#composition.create(this.#rootId(input.scopeId), {
-      id: input.bindingId,
-      packageId: input.extensionId,
-      revision: input.revision,
-    });
-    return this.inspect(input.bindingId);
-  }
-
-  async update(bindingId: string, revision: string): Promise<MakaPluginMountInspection> {
-    this.#assertMutable();
-    await this.#composition.replaceRevision(bindingId, revision);
-    return this.inspect(bindingId);
-  }
-
-  async start(bindingId: string): Promise<MakaPluginMountInspection> {
-    this.#assertMutable();
-    await this.#composition.enable(bindingId);
-    return this.inspect(bindingId);
-  }
-
-  async stop(bindingId: string): Promise<MakaPluginMountInspection> {
-    this.#assertMutable();
-    await this.#composition.disable(bindingId);
-    return this.inspect(bindingId);
-  }
-
-  async removeBinding(bindingId: string): Promise<void> {
-    this.#assertMutable();
-    const scopeId = this.inspect(bindingId).rootId;
-    await this.#composition.remove(bindingId);
-    if (this.inspectScope(scopeId).length === 0) this.#scopeIds.delete(scopeId);
-  }
-
   async disposeScope(scopeId: string): Promise<void> {
-    this.#assertMutable();
-    for (const entry of [...this.#composition.inspectTree(this.#rootId(scopeId))].reverse())
-      await this.#composition.remove(entry.id);
-    this.#scopeIds.delete(scopeId);
+    await this.applyComposition({
+      operations: [...this.#composition.inspectTree(this.#rootId(scopeId))]
+        .reverse()
+        .map(({ id: entryId }) => ({ type: 'remove' as const, entryId })),
+    });
   }
 
   async replaceCompositionSnapshot(snapshot: MakaCompositionSnapshot): Promise<void> {
     this.#assertMutable();
     await this.#composition.replaceSnapshot(snapshot);
-    this.#scopeIds.clear();
-    if (snapshot.roots.profile.length > 0) this.#scopeIds.add(PROFILE_EXTENSION_SCOPE);
-    if (snapshot.roots.desktopUi.length > 0) this.#scopeIds.add('desktop-ui');
-    for (const [scopeId, entries] of Object.entries(snapshot.roots.sessions)) {
-      if (entries.length > 0) this.#scopeIds.add(scopeId);
-    }
+    this.#refreshScopeIds();
   }
 
   /**
@@ -294,7 +249,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
   ): Promise<readonly MakaCompositionEntryInspection[]> {
     this.#assertMutable();
     const changed = await this.#composition.apply(input);
-    for (const entry of changed) this.#scopeIds.add(this.#scopeId(entry.rootId));
+    this.#refreshScopeIds();
     return changed;
   }
 
@@ -641,6 +596,12 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
 
   #scopeId(rootId: string): string {
     return rootId.startsWith('session:') ? rootId.slice('session:'.length) : rootId;
+  }
+
+  #refreshScopeIds(): void {
+    this.#scopeIds.clear();
+    for (const entry of this.#composition.inspectTree())
+      this.#scopeIds.add(this.#scopeId(entry.rootId));
   }
 
   #mountInspection(entry: MakaCompositionEntryInspection): MakaPluginMountInspection {

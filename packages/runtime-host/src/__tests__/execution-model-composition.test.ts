@@ -278,11 +278,14 @@ test('production backend snapshots Host Extension Tools per send and records the
         },
       ],
     });
-    await extensions.activate({
-      bindingId: 'weather-binding',
-      scopeId: 'backend-creation-session',
-      extensionId: 'weather',
-      revision: '1',
+    await extensions.applyComposition({
+      operations: [
+        {
+          type: 'insert',
+          rootId: 'session:backend-creation-session',
+          entry: { id: 'weather-binding', packageId: 'weather', revision: '1' },
+        },
+      ],
     });
     backend = await createHostAiSdkBackend(
       backendCreationFixture({
@@ -309,7 +312,9 @@ test('production backend snapshots Host Extension Tools per send and records the
     assert.deepEqual(toolNames(provider.requests[0]?.body), ['ArchiveRead', 'Read', 'Weather']);
     assert.deepEqual(snapshots[0]?.toolNames, ['Read', 'Weather']);
 
-    await extensions.stop('weather-binding');
+    await extensions.applyComposition({
+      operations: [{ type: 'update', entryId: 'weather-binding', patch: { disabled: true } }],
+    });
     await drainBackendSend(backend, 'extension-run-2', 'extension-turn-2');
     assert.deepEqual(toolNames(provider.requests[1]?.body), ['ArchiveRead', 'Read']);
     assert.deepEqual(snapshots[1]?.toolNames, ['Read']);

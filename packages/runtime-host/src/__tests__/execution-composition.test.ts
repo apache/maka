@@ -447,11 +447,18 @@ test('production Session create and archive dispatch profile Extension lifecycle
           ],
         }),
       });
-      await composition.extensions.activate({
-        bindingId: 'lifecycle-observer-binding',
-        scopeId: 'profile',
-        extensionId: 'lifecycle-observer',
-        revision: '1',
+      await composition.extensions.applyComposition({
+        operations: [
+          {
+            type: 'insert',
+            rootId: 'profile',
+            entry: {
+              id: 'lifecycle-observer-binding',
+              packageId: 'lifecycle-observer',
+              revision: '1',
+            },
+          },
+        ],
       });
       await composition.recover();
 

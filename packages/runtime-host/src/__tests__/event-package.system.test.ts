@@ -354,11 +354,18 @@ test('Agent Event tools define, test, activate, emit, inspect, and stop a packag
         ],
       }),
     });
-    await fixture.runtime.activate({
-      bindingId: 'timer-observer-binding',
-      scopeId: 'session-1',
-      extensionId: 'timer-observer',
-      revision: '1',
+    await fixture.runtime.applyComposition({
+      operations: [
+        {
+          type: 'insert',
+          rootId: 'session:session-1',
+          entry: {
+            id: 'timer-observer-binding',
+            packageId: 'timer-observer',
+            revision: '1',
+          },
+        },
+      ],
     });
     const management = new HostEventPackageManagementTools(
       control,

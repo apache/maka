@@ -63,11 +63,14 @@ test('one Cordis package owns Tool, UI, and Hook contributions together', async 
       ],
     }),
   });
-  await runtime.activate({
-    bindingId: 'combined-entry',
-    scopeId: 'session-one',
-    extensionId: 'fixture.combined',
-    revision: 'r1',
+  await runtime.applyComposition({
+    operations: [
+      {
+        type: 'insert',
+        rootId: 'session:session-one',
+        entry: { id: 'combined-entry', packageId: 'fixture.combined', revision: 'r1' },
+      },
+    ],
   });
   assert.equal(runtime.inspectTools('session-one').length, 1);
   assert.equal(runtime.inspectUi('session-one').length, 2);
@@ -80,11 +83,15 @@ test('one Cordis package owns Tool, UI, and Hook contributions together', async 
     invocationContext(),
   );
   assert.deepEqual(observed, [{ value: 3 }]);
-  await runtime.stop('combined-entry');
+  await runtime.applyComposition({
+    operations: [{ type: 'update', entryId: 'combined-entry', patch: { disabled: true } }],
+  });
   assert.equal(runtime.inspectTools('session-one').length, 0);
   assert.equal(runtime.inspectUi('session-one').length, 0);
   assert.equal(runtime.inspectEventListeners('session-one').length, 0);
-  await runtime.start('combined-entry');
+  await runtime.applyComposition({
+    operations: [{ type: 'update', entryId: 'combined-entry', patch: { disabled: false } }],
+  });
   assert.equal(runtime.inspectTools('session-one').length, 1);
   assert.equal(runtime.inspectUi('session-one').length, 2);
   assert.equal(runtime.inspectEventListeners('session-one').length, 1);
@@ -113,13 +120,22 @@ test('failed package revision replacement leaves the current Fiber visible', asy
       throw new Error('candidate rejected');
     },
   });
-  await runtime.activate({
-    bindingId: 'atomic-entry',
-    scopeId: 'profile',
-    extensionId: 'fixture.atomic',
-    revision: 'r1',
+  await runtime.applyComposition({
+    operations: [
+      {
+        type: 'insert',
+        rootId: 'profile',
+        entry: { id: 'atomic-entry', packageId: 'fixture.atomic', revision: 'r1' },
+      },
+    ],
   });
-  await assert.rejects(() => runtime.update('atomic-entry', 'r2'), /candidate rejected/u);
+  await assert.rejects(
+    () =>
+      runtime.applyComposition({
+        operations: [{ type: 'update', entryId: 'atomic-entry', patch: { revision: 'r2' } }],
+      }),
+    /candidate rejected/u,
+  );
   assert.equal(runtime.inspect('atomic-entry').current?.revision, 'r1');
   assert.equal(runtime.inspectTools('profile')[0]?.revision, 'r1');
   await runtime.close();

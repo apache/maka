@@ -242,8 +242,15 @@ export class HostExtensionController {
       try {
         await this.#persist();
         if (binding.enabled && this.#tryInspect(binding.bindingId)) {
-          await this.runtime.stop(binding.bindingId);
-          await this.runtime.start(binding.bindingId);
+          await this.runtime.applyComposition({
+            operations: [
+              {
+                type: 'update',
+                entryId: binding.bindingId,
+                patch: { config: configuration },
+              },
+            ],
+          });
           await this.#refreshRuntimeState();
           await this.#persist();
         }
@@ -669,7 +676,11 @@ export class HostExtensionController {
     const committed = await this.#commitDesiredState();
     if (committed) return committed;
     try {
-      if (this.#tryInspect(bindingId)) await this.runtime.stop(bindingId);
+      if (this.#tryInspect(bindingId)) {
+        await this.runtime.applyComposition({
+          operations: [{ type: 'update', entryId: bindingId, patch: { disabled: true } }],
+        });
+      }
       await this.#pruneOrphanDependencyBindings();
       await this.#refreshRuntimeState();
       const persisted = await this.#commitDesiredState();
@@ -695,7 +706,11 @@ export class HostExtensionController {
       );
     }
     try {
-      if (this.#tryInspect(bindingId)) await this.runtime.removeBinding(bindingId);
+      if (this.#tryInspect(bindingId)) {
+        await this.runtime.applyComposition({
+          operations: [{ type: 'remove', entryId: bindingId }],
+        });
+      }
       await this.uiState.clear(binding.scopeId, binding.extensionId);
       this.#bindings.delete(bindingId);
       this.#configuration.delete(bindingId);
@@ -1020,7 +1035,11 @@ export class HostExtensionController {
     }
     for (const binding of [...this.#bindings.values()]) {
       if (!binding.bindingId.startsWith('dependency_') || required.has(binding.bindingId)) continue;
-      if (this.#tryInspect(binding.bindingId)) await this.runtime.removeBinding(binding.bindingId);
+      if (this.#tryInspect(binding.bindingId)) {
+        await this.runtime.applyComposition({
+          operations: [{ type: 'remove', entryId: binding.bindingId }],
+        });
+      }
       this.#bindings.delete(binding.bindingId);
       this.#configuration.delete(binding.bindingId);
     }
