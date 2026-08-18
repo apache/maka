@@ -4,6 +4,7 @@ import type {
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
   SessionEvent,
+  ShellRunSnapshotResult,
   ToolOutputStream,
   ToolResultContent,
 } from '@maka/core/events';
@@ -169,6 +170,8 @@ export type MakaPiTranscriptEntry =
       status: 'running' | 'done' | 'error' | 'failed' | 'aborted' | 'detached' | 'unavailable';
       /** Expanded card view; stamped from expandAllTools, retargeted by Ctrl+O. */
       expanded: boolean;
+      /** Local-only Runtime Resource started by `!<command>`, never a model tool call. */
+      userOwned?: boolean;
       /**
        * Set when a successful shell-run poll is folded into its parent while
        * off-screen: the entry cannot be spliced (that would shift line numbers
@@ -291,7 +294,7 @@ export function applyShellRunViewUpdateToTranscript(
   }
   if (
     !tool ||
-    tool.toolName !== 'Bash' ||
+    !isShellRunToolCard(tool) ||
     tool.result?.kind !== 'shell_run' ||
     tool.result.ref !== update.result.ref ||
     !isActiveShellRunStatus(tool.result.status)
@@ -314,9 +317,31 @@ export function applyShellRunUpdateToTranscript(
   update: Extract<ToolResultContent, { kind: 'shell_run' }>,
 ): boolean {
   const tool = findToolEntry(state, sourceToolCallId);
-  if (!tool || tool.toolName !== 'Bash') return false;
+  if (!tool || !isShellRunToolCard(tool)) return false;
   if (tool.result?.kind === 'shell_run' && tool.result.ref !== update.ref) return false;
   return applyShellRunResult(tool, update);
+}
+
+/** Adds a local-only card for a `!<command>` resource without creating a model turn. */
+export function appendUserCommandToTranscript(
+  state: MakaPiTranscriptState,
+  input: { commandId: string; command: string; result: ShellRunSnapshotResult },
+): void {
+  state.entries.push({
+    kind: 'tool',
+    toolUseId: input.commandId,
+    toolName: 'User command',
+    title: 'User command',
+    input: { command: input.command },
+    result: input.result,
+    output: formatToolResultContent(input.result),
+    resultVersion: 1,
+    progress: createProgressBuffer(),
+    outputDeltas: createOutputBuffer(),
+    status: shellRunTranscriptStatus(input.result.status),
+    expanded: state.expandAllTools,
+    userOwned: true,
+  });
 }
 
 export function replaceTranscriptWithStoredMessages(
@@ -1572,6 +1597,10 @@ function findToolEntry(
     .find(
       (entry): entry is MakaPiToolEntry => entry.kind === 'tool' && entry.toolUseId === toolUseId,
     );
+}
+
+function isShellRunToolCard(tool: MakaPiToolEntry): boolean {
+  return tool.toolName === 'Bash' || tool.userOwned === true;
 }
 
 function createProgressBuffer(): BoundedChunkBuffer<string> {

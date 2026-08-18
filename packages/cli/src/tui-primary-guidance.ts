@@ -14,6 +14,7 @@ export interface TuiPrimaryGuidanceCopy {
   readonly commands: Readonly<Record<TuiCommandId, string>>;
   readonly help: {
     readonly commandsHeading: string;
+    readonly userCommand: string;
     readonly keybindingsHeading: string;
     readonly keybindings: readonly string[];
   };
@@ -51,6 +52,7 @@ const TUI_PRIMARY_GUIDANCE = {
     },
     help: {
       commandsHeading: '命令',
+      userCommand: '  !<command> — 执行一次仅用户可见的 shell 命令',
       keybindingsHeading: '快捷键',
       keybindings: [
         '  Ctrl+O — 展开或折叠所有工具输出',
@@ -97,6 +99,7 @@ const TUI_PRIMARY_GUIDANCE = {
     },
     help: {
       commandsHeading: 'Commands',
+      userCommand: '  !<command> — run one shell command visible only to you',
       keybindingsHeading: 'Keybindings',
       keybindings: [
         '  Ctrl+O — expand or collapse all tool output',

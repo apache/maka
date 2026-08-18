@@ -10,10 +10,12 @@ import {
   type ActiveInteractionRequestEvent,
   type QueueEnqueueOutcome,
   type SessionEvent,
+  type ShellRunSnapshotResult,
   type ShellRunUpdate,
 } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
+import { mergeShellRunUpdate } from '@maka/core/shell-run-result';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { executionBoundaryDisplayMode } from '@maka/core/sandbox-boundary';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -268,6 +270,49 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       };
     } catch (error) {
       channel.failTurn(turnId, error);
+      throw error;
+    }
+  }
+
+  async runUserCommand(command: string): Promise<{
+    commandId: string;
+    result: ShellRunSnapshotResult;
+    takeRacedUpdate(): ShellRunUpdate['result'] | undefined;
+  }> {
+    const sessionId = await this.#ensureSession();
+    await this.#ensureChannel(sessionId);
+    const commandId = `user-command-${this.#newId()}`;
+    let latest: ShellRunUpdate | undefined;
+    const capture = (update: ShellRunUpdate) => {
+      if (update.sessionId === sessionId && update.sourceToolCallId === commandId) {
+        latest = mergeShellRunUpdate(latest, update, 'cli.user-command-start').update;
+      }
+    };
+    this.#shellRunListeners.add(capture);
+    try {
+      const started = await this.#request('runtime.resource.start', {
+        sessionId,
+        launchId: commandId,
+        command,
+      });
+      if (started.resource.mode !== 'pipes') {
+        throw new Error('Runtime Host did not start a one-shot user command');
+      }
+      let activated = false;
+      return {
+        commandId,
+        result: started.resource,
+        takeRacedUpdate: () => {
+          if (activated) return undefined;
+          activated = true;
+          this.#shellRunListeners.delete(capture);
+          return latest && latest.result.revision > started.resource.revision
+            ? latest.result
+            : undefined;
+        },
+      };
+    } catch (error) {
+      this.#shellRunListeners.delete(capture);
       throw error;
     }
   }

@@ -261,6 +261,7 @@ describe('Host Runtime Resource coordinator', () => {
         sessionId: harness.lastBackgroundInput.sessionId,
         sourceTurnId: harness.lastBackgroundInput.sourceTurnId,
         sourceToolCallId: harness.lastBackgroundInput.sourceToolCallId,
+        visibility: harness.lastBackgroundInput.visibility,
         cwd: harness.lastBackgroundInput.cwd,
         pty: harness.lastBackgroundInput.pty,
       },
@@ -268,6 +269,7 @@ describe('Host Runtime Resource coordinator', () => {
         sessionId: SESSION_ID,
         sourceTurnId: 'desktop-launch-1',
         sourceToolCallId: 'desktop-launch-1',
+        visibility: 'user',
         cwd: '/workspace',
         pty: true,
       },
@@ -399,6 +401,38 @@ describe('Host Runtime Resource coordinator', () => {
 
     await assert.rejects(foreground, /Runtime resources are draining/);
     assert.equal(harness.lastForegroundInput, undefined);
+  });
+
+  test('starts a one-shot user command in pipes without exposing it to the model', async () => {
+    const harness = createHarness();
+    const started = await harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'user-command-1', command: 'printf user-command' },
+      connection('connection-1'),
+    );
+
+    assert.equal(started.ok, true);
+    assert.equal(started.ok && started.result.resource.mode, 'pipes');
+    assert.deepEqual(
+      harness.lastBackgroundInput && {
+        sessionId: harness.lastBackgroundInput.sessionId,
+        sourceTurnId: harness.lastBackgroundInput.sourceTurnId,
+        sourceToolCallId: harness.lastBackgroundInput.sourceToolCallId,
+        visibility: harness.lastBackgroundInput.visibility,
+        cwd: harness.lastBackgroundInput.cwd,
+        command: harness.lastBackgroundInput.command,
+        pty: harness.lastBackgroundInput.pty,
+      },
+      {
+        sessionId: SESSION_ID,
+        sourceTurnId: 'user-command-1',
+        sourceToolCallId: 'user-command-1',
+        visibility: 'user',
+        cwd: '/workspace',
+        command: 'printf user-command',
+        pty: false,
+      },
+    );
+    harness.finishBackground({ successful: true });
   });
 
   test('lets stop bypass the controller, releases terminal ownership, and keeps control replay safe', async () => {
@@ -542,6 +576,7 @@ describe('Host Runtime Resource coordinator', () => {
 function createHarness(options: Pick<HostRuntimeResourceCoordinatorInput, 'resolveShell'> = {}) {
   let backgroundCompletion: ShellRunBashInput['onCompletion'];
   let currentSnapshot = ptySnapshot();
+  let lastStartedSnapshot: ShellRunSnapshotResult | undefined;
   const state = {
     updates: [resourceUpdate(0)],
     sessionState: 'active' as 'active' | 'archived' | 'missing',
@@ -568,9 +603,11 @@ function createHarness(options: Pick<HostRuntimeResourceCoordinatorInput, 'resol
       state.lastBackgroundInput = input;
       backgroundCompletion = input.onCompletion;
       if (input.pty) {
+        lastStartedSnapshot = currentSnapshot;
         const { output: _output, ...snapshot } = currentSnapshot;
         return snapshot;
       }
+      lastStartedSnapshot = { ...pipeSnapshot(0), cmd: input.command };
       return compactState(0);
     },
     readRuntimeResource: async () => currentSnapshot,
@@ -619,7 +656,7 @@ function createHarness(options: Pick<HostRuntimeResourceCoordinatorInput, 'resol
         },
       };
     },
-    inspectResource: async () => structuredClone(currentSnapshot),
+    inspectResource: async () => structuredClone(lastStartedSnapshot ?? currentSnapshot),
     getLivePtySnapshot: (sessionId, ref) => ({
       sessionId,
       ref,

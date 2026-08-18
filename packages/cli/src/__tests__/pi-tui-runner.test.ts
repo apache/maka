@@ -211,6 +211,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('快捷键'));
     const output = plainTerminalOutput(terminal.output());
     assert.match(output, /\/compact\s+— 压缩会话上下文/);
+    assert.match(output, /!<command> — 执行一次仅用户可见的 shell 命令/);
     assert.match(output, /Ctrl\+D — 输入为空时退出/);
 
     exitMaka(terminal);
@@ -220,6 +221,30 @@ describe('Maka Pi TUI runner', () => {
         throw new Error('TUI did not close during test cleanup');
       }),
     ]);
+  });
+
+  test('!<command> runs once without opening an agent turn', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new UserCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!pwd');
+    terminal.input('\r');
+    await waitFor(() => driver.commands.includes('pwd'));
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+    assert.deepEqual(driver.prompts, []);
+
+    exitMaka(terminal);
+    await run;
   });
 
   test('disables taskbar progress on Windows and Windows Terminal by default', () => {
@@ -6819,6 +6844,32 @@ class SlashCommandDriver implements MakaSessionDriver {
   }
   getPermissionMode(): PermissionMode {
     return this.activeBoundaryDisplayMode ?? 'ask';
+  }
+}
+
+class UserCommandDriver extends SlashCommandDriver {
+  readonly commands: string[] = [];
+
+  async runUserCommand(command: string) {
+    this.commands.push(command);
+    return {
+      commandId: `user-command-${this.commands.length}`,
+      result: {
+        kind: 'shell_run' as const,
+        ref: `maka://runtime/background-tasks/user-command-${this.commands.length}`,
+        mode: 'pipes' as const,
+        status: 'completed' as const,
+        cwd: '/repo',
+        cmd: command,
+        startedAt: 1,
+        updatedAt: 2,
+        completedAt: 2,
+        exitCode: 0,
+        revision: 1,
+        output: pipeOutput(command),
+      },
+      takeRacedUpdate: () => undefined,
+    };
   }
 }
 

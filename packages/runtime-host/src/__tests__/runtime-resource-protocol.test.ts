@@ -11,8 +11,10 @@ import {
   decodeRuntimeResourceControllerControlInput,
   decodeRuntimeResourceQueryInput,
   decodeRuntimeResourceQueryResult,
+  decodeRuntimeResourceStartInput,
   decodeRuntimeResourceStopResult,
   RUNTIME_RESOURCE_CONTROL_INPUT_MAX_BYTES,
+  RUNTIME_RESOURCE_COMMAND_MAX_BYTES,
   RUNTIME_RESOURCE_MAX_CONTROL_SEQUENCE,
   RUNTIME_RESOURCE_CURSOR_MAX_BYTES,
   RUNTIME_RESOURCE_PAGE_MAX_ITEMS,
@@ -25,6 +27,28 @@ type PipeShellSnapshot = Extract<ShellRunSnapshotResult, { mode: 'pipes' }>;
 
 describe('Runtime Resource protocol', () => {
   test('rejects unknown fields and non-canonical snapshots', () => {
+    assert.deepEqual(
+      decodeRuntimeResourceStartInput({
+        sessionId: 'session-1',
+        launchId: 'user-command-1',
+        command: 'pwd',
+      }),
+      { sessionId: 'session-1', launchId: 'user-command-1', command: 'pwd' },
+    );
+    assertInvalid(() =>
+      decodeRuntimeResourceStartInput({
+        sessionId: 'session-1',
+        launchId: 'user-command-1',
+        command: '',
+      }),
+    );
+    assertInvalid(() =>
+      decodeRuntimeResourceStartInput({
+        sessionId: 'session-1',
+        launchId: 'user-command-1',
+        command: '  ',
+      }),
+    );
     assertInvalid(() =>
       decodeRuntimeResourceQueryInput({
         kind: 'get',
@@ -52,6 +76,13 @@ describe('Runtime Resource protocol', () => {
   });
 
   test('enforces cursor, sequence, PTY control, item, and encoded result bounds', () => {
+    assertInvalid(() =>
+      decodeRuntimeResourceStartInput({
+        sessionId: 'session-1',
+        launchId: 'user-command-1',
+        command: '界'.repeat(Math.floor(RUNTIME_RESOURCE_COMMAND_MAX_BYTES / 3) + 1),
+      }),
+    );
     const maximumToolCallId = '😀'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES / 4);
     assert.equal(
       Buffer.byteLength(maximumToolCallId, 'utf8'),

@@ -68,8 +68,10 @@ import {
 } from './session-driver.js';
 import {
   appendTurnFailureToTranscript,
+  appendUserCommandToTranscript,
   appendUserPrompt,
   applyMakaSessionEventToTranscript,
+  applyShellRunUpdateToTranscript,
   createMakaPiTranscriptState,
   activeSandboxBoundaryRequest,
   activeUserQuestionRequest,
@@ -819,6 +821,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const idleMs = Date.now() - lastActivityAt;
     editor.addToHistory(prompt);
     if (handleSlashCommand(prompt, idleMs)) return;
+    const userCommand = parseUserCommand(prompt);
+    if (userCommand !== undefined) {
+      if (!userCommand) {
+        state.entries.push({ kind: 'notice', level: 'error', text: 'Usage: !<command>' });
+        requestRender();
+        return;
+      }
+      if (input.firstRun) {
+        void showSetupWizard();
+        return;
+      }
+      void runControl(() => runUserCommand(userCommand));
+      return;
+    }
     // First-run has no connection, so the wizard is the only surface. This is
     // the single choke point for idle submits (Enter, Alt+Enter, steer
     // fallback): reopen the wizard instead of opening a turn against a
@@ -1052,6 +1068,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       // input routing): check it before handing off to steering.
       if (isExitPrompt(prompt)) {
         beginGracefulClose();
+        return;
+      }
+      if (parseUserCommand(prompt) !== undefined) {
+        editor.addToHistory(prompt);
+        state.entries.push({
+          kind: 'notice',
+          level: 'error',
+          text: 'Cannot run a user command while a turn is running.',
+        });
+        requestRender();
         return;
       }
       const swarmCommand = parseSwarmCommand(prompt);
@@ -1429,6 +1455,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       level: 'info',
       text: nextLevel ? `Thinking: ${nextLevel}` : 'Thinking: default',
     });
+    requestRender();
+  };
+
+  const runUserCommand = async (command: string): Promise<void> => {
+    if (!input.driver.runUserCommand) {
+      throw new Error('User commands are unavailable on this session driver.');
+    }
+    const started = await input.driver.runUserCommand(command);
+    appendUserCommandToTranscript(state, { command, ...started });
+    const racedUpdate = started.takeRacedUpdate();
+    if (racedUpdate) {
+      applyShellRunUpdateToTranscript(state, started.commandId, racedUpdate);
+    }
     requestRender();
   };
 
@@ -2156,15 +2195,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const showHelp = () => {
     // Derive the command list from the registry so /help never drifts from the
     // real commands. Keybindings are not commands, so they are listed by hand.
-    const commands = slashCommands
-      .map((command) => {
+    const commands = [
+      ...slashCommands.map((command) => {
         const aliasSuffix =
           command.aliases && command.aliases.length > 0
             ? ` (${command.aliases.map((alias) => `/${alias}`).join(', ')})`
             : '';
         return `  /${command.name}${aliasSuffix} — ${command.description}`;
-      })
-      .join('\n');
+      }),
+      primaryGuidance.help.userCommand,
+    ].join('\n');
     const keybindings = primaryGuidance.help.keybindings.join('\n');
     state.entries.push({
       kind: 'notice',
@@ -3373,6 +3413,13 @@ function shortSessionId(id: string): string {
 function isExitPrompt(prompt: string): boolean {
   const trimmed = prompt.trim();
   return trimmed === 'quit' || trimmed === 'exit' || trimmed === '/quit' || trimmed === '/exit';
+}
+
+/** Only a leading bang opts into a local user command; ordinary prose remains a prompt. */
+function parseUserCommand(prompt: string): string | undefined {
+  const trimmed = prompt.trim();
+  if (!trimmed.startsWith('!')) return undefined;
+  return trimmed.slice(1).trim();
 }
 
 // Two Escapes this close together read as one deliberate "stop the turn".

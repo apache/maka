@@ -344,25 +344,25 @@ export class HostRuntimeResourceCoordinator
       const header = await this.#sessionHeaders.readHeader(input.sessionId);
       const shell = await this.#resolveShell();
       const env = { ...process.env };
-      let command: string;
-      if (shell.kind === 'git-bash') {
+      let command = input.command;
+      if (command === undefined && shell.kind === 'git-bash') {
         env.SHELL = shell.exe;
         env.CHERE_INVOKING = '1';
         env.DISABLE_AUTO_UPDATE = 'true';
         env.DISABLE_UPDATE_PROMPT = 'true';
         command = 'exec "$SHELL" -l';
-      } else if (shell.kind === 'legacy-wsl-bash') {
+      } else if (command === undefined && shell.kind === 'legacy-wsl-bash') {
         env.DISABLE_AUTO_UPDATE = 'true';
         env.DISABLE_UPDATE_PROMPT = 'true';
         command = 'exec bash -l';
-      } else if (shell.kind === 'posix') {
+      } else if (command === undefined && shell.kind === 'posix') {
         env.SHELL ||= userInfo().shell || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh');
         env.DISABLE_AUTO_UPDATE = 'true';
         env.DISABLE_UPDATE_PROMPT = 'true';
         command = 'exec "$SHELL" -l';
-      } else if (shell.kind === 'cmd') {
+      } else if (command === undefined && shell.kind === 'cmd') {
         command = '%ComSpec% /d /q';
-      } else {
+      } else if (command === undefined) {
         const executable = (shell.exe ?? shell.displayName).replace(/'/g, "''");
         command = `& '${executable}' -NoLogo`;
       }
@@ -370,10 +370,11 @@ export class HostRuntimeResourceCoordinator
         sessionId: input.sessionId,
         sourceTurnId: input.launchId,
         sourceToolCallId: input.launchId,
+        visibility: 'user',
         cwd: header.cwd,
         command,
         env,
-        pty: true,
+        pty: input.command === undefined,
         emitOutput: () => undefined,
         shell,
       });
@@ -520,6 +521,7 @@ export class HostRuntimeResourceCoordinator
           const controlled = await this.#manager.writeStdin({
             sessionId: input.sessionId,
             ref: input.ref,
+            caller: 'client',
             ...controlWrite(input.control),
           });
           const result = decodeRuntimeResourceControllerControlResult({
@@ -609,6 +611,7 @@ export class HostRuntimeResourceCoordinator
             input.sessionId,
             input.ref,
             new AbortController().signal,
+            'client',
           );
           this.#releaseControllerIfTerminal(input.sessionId, input.ref, result);
           return {

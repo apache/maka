@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, test } from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
+import type { ShellRunUpdate } from '@maka/core/events';
 import type {
   DirectRequestOperationKey,
   RuntimeHostSessionSubscription,
@@ -321,6 +322,121 @@ describe('Runtime Host Maka Session driver', () => {
         },
       );
     }
+  });
+
+  test('starts one user command without opening an agent turn', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({
+        rootTurn: null,
+        session: {
+          sessionId: 'id-1',
+          metadataRevision: 1,
+          status: 'running',
+          createdAt: 1,
+          lastUsedAt: 1,
+          isArchived: false,
+        },
+      }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: (() => {
+        let id = 0;
+        return () => `id-${++id}`;
+      })(),
+    });
+    const command = await driver.runUserCommand!('pwd');
+
+    assert.equal(command.commandId, 'user-command-id-2');
+    assert.equal(command.result.mode, 'pipes');
+    assert.deepEqual(
+      connection.requests.map((request) => request.operation),
+      ['session.create', 'runtime.resource.start'],
+    );
+    assert.deepEqual(connection.requests[1]?.input, {
+      sessionId: 'id-1',
+      launchId: 'user-command-id-2',
+      command: 'pwd',
+    });
+    assert.equal(command.takeRacedUpdate(), undefined);
+  });
+
+  test('retains a terminal user-command update that arrives before its card is created', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({
+        rootTurn: null,
+        session: {
+          sessionId: 'id-1',
+          metadataRevision: 1,
+          status: 'running',
+          createdAt: 1,
+          lastUsedAt: 1,
+          isArchived: false,
+        },
+      }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: (() => {
+        let id = 0;
+        return () => `id-${++id}`;
+      })(),
+    });
+    connection.onRuntimeResourceStart = async () => {
+      const startRequest = connection.requests.at(-1);
+      if (!startRequest) throw new Error('Expected Runtime Resource start request');
+      const launchId = (startRequest.input as { launchId: string }).launchId;
+      connection.runtimeResourceQuery = {
+        kind: 'resource',
+        sessionId: 'id-1',
+        revision: `sha256:${'a'.repeat(64)}`,
+        resource: {
+          sessionId: 'id-1',
+          ownership: { kind: 'local' },
+          sourceTurnId: launchId,
+          sourceToolCallId: launchId,
+          result: {
+            ...connection.userCommandResource,
+            status: 'completed',
+            output: { ...connection.userCommandResource.output, stdout: 'done\n' },
+            updatedAt: 2,
+            completedAt: 2,
+            exitCode: 0,
+            revision: 2,
+          },
+        } satisfies ShellRunUpdate,
+      };
+      subscription.push({
+        kind: 'subscription.session_domain_changed',
+        hostEpoch: 'host-1',
+        subscriptionId: 'subscription-1',
+        sequence: 1,
+        sessionId: 'id-1',
+        domain: 'runtime_resource',
+        resources: [{ sourceSessionId: 'id-1', ref: connection.userCommandResource.ref }],
+      });
+      await waitFor(() =>
+        connection.requests.some((request) => request.operation === 'runtime.resource.query'),
+      );
+      await delay(0);
+    };
+
+    const command = await driver.runUserCommand!('printf done');
+    const raced = command.takeRacedUpdate();
+
+    assert.equal(raced?.status, 'completed');
+    assert.equal(raced?.output?.mode, 'pipes');
+    assert.equal(raced?.output?.mode === 'pipes' && raced.output.stdout, 'done\n');
   });
 
   test('drops a per-session Full access elevation when a fresh Session starts (#3020)', async () => {
@@ -1424,12 +1540,33 @@ class FakeConnection {
   readonly sessionQueries: Array<SessionCatalogProjection | Promise<SessionCatalogProjection>> = [];
   openedSubscriptions = 0;
   interactionQuery: unknown;
+  runtimeResourceQuery: unknown;
+  onRuntimeResourceStart: (() => Promise<void>) | undefined;
   executionBoundary: unknown = { kind: 'managed', access: 'read_write', revision: 1 };
   skillStartBlocked = false;
   /** Scripted outcomes for goal.control: return the result goal, or throw (e.g. operation_conflict). */
   readonly goalControlOutcomes: Array<GoalProjection | Error> = [];
   /** Scripted goal.query results, shifted per call; defaults to null (no goal). */
   readonly goalQueryResults: Array<GoalProjection | null> = [];
+  readonly userCommandResource = {
+    kind: 'shell_run' as const,
+    ref: 'maka://runtime/background-tasks/user-command',
+    mode: 'pipes' as const,
+    status: 'running' as const,
+    cwd: '/repo',
+    cmd: 'pwd',
+    startedAt: 1,
+    updatedAt: 1,
+    revision: 1,
+    output: {
+      mode: 'pipes' as const,
+      stdout: '',
+      stderr: '',
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      redacted: false,
+    },
+  };
   readonly value: RuntimeHostMakaSessionDriverInput['connection'];
 
   constructor(
@@ -1501,6 +1638,16 @@ class FakeConnection {
           permissionMode: update.configuration.permissionMode,
         }),
       } as OperationOutput<K>;
+    }
+    if (operation === 'runtime.resource.start') {
+      await this.onRuntimeResourceStart?.();
+      return { resource: this.userCommandResource } as OperationOutput<K>;
+    }
+    if (operation === 'runtime.resource.query') {
+      if (this.runtimeResourceQuery === undefined) {
+        throw new Error('Unexpected Runtime Resource query');
+      }
+      return this.runtimeResourceQuery as OperationOutput<K>;
     }
     const turnInput = input as {
       sessionId?: string;

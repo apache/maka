@@ -3,9 +3,10 @@ import { describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import type { PipeShellOutput, PtyShellOutput } from '@maka/core/shell-run';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
-import type { SessionEvent, ToolResultContent } from '@maka/core/events';
+import type { SessionEvent, ShellRunSnapshotResult, ToolResultContent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
+  appendUserCommandToTranscript,
   appendUserPrompt,
   applyShellRunViewUpdateToTranscript,
   applyMakaSessionEventToTranscript,
@@ -1772,6 +1773,36 @@ describe('Maka Pi TUI transcript', () => {
       state.entries.some((entry) => entry.kind === 'notice'),
       false,
     );
+  });
+
+  test('updates a local user command card from its Runtime Resource', () => {
+    const state = createMakaPiTranscriptState();
+    const ref = 'maka://runtime/background-tasks/user-command-1';
+    appendUserCommandToTranscript(state, {
+      commandId: 'user-command-1',
+      command: 'pwd',
+      result: shellRun({ ref, status: 'running', stdout: '' }) as ShellRunSnapshotResult,
+    });
+
+    const applied = applyShellRunViewUpdateToTranscript(state, {
+      sessionId: 'session-1',
+      ownership: { kind: 'local' },
+      sourceTurnId: 'user-command-1',
+      sourceToolCallId: 'user-command-1',
+      result: shellRun({
+        ref,
+        status: 'completed',
+        stdout: '/repo\n',
+        completedAt: 2_000,
+        exitCode: 0,
+      }),
+    });
+
+    assert.equal(applied, true);
+    const tool = state.entries.find((entry) => entry.kind === 'tool');
+    assert.equal(tool?.toolName, 'User command');
+    assert.equal(tool?.status, 'done');
+    assert.match(tool?.output ?? '', /\/repo/);
   });
 
   test('notifies a settle exactly once across a folded poll and the live update', () => {
