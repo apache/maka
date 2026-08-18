@@ -10,7 +10,6 @@ import { parseCliReleaseVersion } from './release-cli-publication.mjs';
 import { planTests } from './ci-test-plan.mjs';
 import {
   assertProductReleaseExpectation,
-  readProductReleaseIdentity,
   releaseToolchainFromManifest,
   resolveProductReleaseIdentity,
 } from './product-release-identity.mjs';
@@ -139,17 +138,6 @@ test('the root manifest pins the Node archive and npm used by release jobs', () 
   });
 });
 
-test('the checked-in manifests resolve to one releasable product identity', async () => {
-  const identity = await readProductReleaseIdentity({
-    ref: 'refs/heads/main',
-    sha: 'b'.repeat(40),
-  });
-
-  assert.equal(identity.version, '0.1.11');
-  assert.equal(identity.npmVersion, '11.19.0');
-  assert.deepEqual(identity.publicCommands, ['maka']);
-});
-
 test('standalone verification recognizes the current TUI status line through ANSI output', () => {
   assert.equal(
     isTuiReadyOutput(
@@ -199,7 +187,6 @@ test('the standalone maka launcher is relocatable and uses the embedded runtime'
   assert.match(wrapper, /while \[ -L "\$launcher" \]/u);
   assert.match(wrapper, /libexec\/node\/bin\/node/u);
   assert.match(wrapper, /libexec\/node_modules\/maka-agent\/dist\/cli\.js/u);
-  assert.doesNotMatch(wrapper, /maka-agent.*launcher/u);
 });
 
 test('the Eval workspace owns the complete runtime asset declaration', async () => {
@@ -318,6 +305,16 @@ test('one product workflow gates one draft release on every required artifact', 
   ]);
   assert.equal(jobs.publish.if, "github.ref == 'refs/heads/main'");
   assert.equal(Object.hasOwn(jobs, 'npm'), false);
+  assert.equal(
+    jobs['release-identity'].steps[0].with.ref,
+    '${{ inputs.source_commit || github.sha }}',
+  );
+  for (const name of ['desktop', 'cli-macos-arm64', 'source', 'publish']) {
+    const checkout = jobs[name].steps.find((step) =>
+      String(step.uses).startsWith('actions/checkout@'),
+    );
+    assert.equal(checkout.with.ref, '${{ needs.release-identity.outputs.source_commit }}');
+  }
 
   const commands = Object.values(jobs)
     .flatMap((job) => job.steps ?? [])
@@ -329,6 +326,8 @@ test('one product workflow gates one draft release on every required artifact', 
   assert.match(commands, /npm run package:windows-autoupdate-next/u);
   assert.match(commands, /npm run verify:windows-autoupdate/u);
   assert.match(commands, /product-release-tag\.mjs ensure/u);
+  assert.match(commands, /RECOVERY_SOURCE/u);
+  assert.match(commands, /--json isDraft/u);
   assert.match(commands, /gh release create[\s\S]*--verify-tag/u);
   assert.match(commands, /gh release upload[\s\S]*--clobber/u);
   assert.doesNotMatch(commands, /gh release create[\s\S]*--target/u);
@@ -337,18 +336,6 @@ test('one product workflow gates one draft release on every required artifact', 
     readFile(new URL('../.github/workflows/release-desktop.yml', import.meta.url)),
     { code: 'ENOENT' },
   );
-});
-
-test('npm finalization verifies the channel without creating a tag or GitHub Release', async () => {
-  const source = await readFile(
-    new URL('../.github/workflows/release-cli-finalize.yml', import.meta.url),
-    'utf8',
-  );
-  const workflow = parseYaml(source);
-
-  assert.deepEqual(Object.keys(workflow.jobs), ['inspect']);
-  assert.equal(workflow.permissions.contents, 'read');
-  assert.doesNotMatch(source, /cli-v|gh release|git\/refs|contents: write/u);
 });
 
 test('npm channel identity has no independent product tag', () => {

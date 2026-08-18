@@ -49,6 +49,12 @@ must never be exposed to fork or ordinary pull-request jobs.
 8. Extract the bundled Git source-materials archive. Confirm `SOURCE_MANIFEST.json`, `README.txt`,
    all manifest archives, and the expected Dugite native release are present.
 
+If the publish job created the product tag or Draft but failed before every asset was uploaded, rerun
+`Release` from `main` with `source_commit` set to the exact commit already named by the tag. This
+input is recovery-only: the workflow requires it to remain an ancestor of `main`, rejects a tag that
+points elsewhere, refuses to replace a published Release, and overwrites only assets on the existing
+Draft.
+
 ## Acceptance on another Apple Silicon Mac
 
 Download the DMG, CLI ZIP, and their checksum files through a browser from the Draft. Do not move
@@ -61,6 +67,8 @@ boundary.
 3. Run `spctl --assess --type execute --verbose=4 /Applications/Maka.app` and confirm a Developer
    ID origin.
 4. Extract the CLI ZIP without clearing quarantine. Run `bin/maka --version` and `bin/maka --help`.
+   Keep the Mac online for this first Gatekeeper assessment: the notarized ZIP cannot carry a
+   stapled ticket, so macOS may retrieve it from Apple.
 5. Create an external link, for example `ln -s "$PWD/bin/maka" /tmp/maka-release-acceptance`, and
    confirm the linked command reports the same version and help output.
 6. Start `bin/maka` with no arguments and confirm the TUI renders, accepts input, and exits cleanly.

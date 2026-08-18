@@ -10,7 +10,7 @@ This runbook is the operational authority for publishing the `maka-agent` npm in
 - Publish prereleases under `next` and stable versions under `latest`. `next` must never resolve to
   a version older than `latest`; when no newer prerelease exists, both tags point to the stable
   version.
-- Do not create an npm-specific Git tag or GitHub Release. The product `v<version>` tag and GitHub Release are owned only by the `Release` workflow.
+- Do not create an npm-specific Git tag or GitHub Release. The product `v<version>` tag and GitHub Release are owned only by the `Release` workflow, and must already exist before npm staging.
 - Do not run `npm publish`. GitHub Actions may only run `npm stage publish`; a human package
   maintainer approves the staged package with npm 2FA.
 - Do not rebuild between validation, staging, approval, and finalization.
@@ -18,9 +18,10 @@ This runbook is the operational authority for publishing the `maka-agent` npm in
 
 The two workflow boundaries are:
 
-1. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) builds and validates one
-   immutable tarball, records its source identity, enters the protected `npm-release` Environment,
-   and submits it to npm staging through OIDC.
+1. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) resolves the existing product
+   tag and GitHub Release, checks out that exact product commit, builds and validates one immutable
+   tarball, records both product and workflow identity, enters the protected `npm-release`
+   Environment, and submits it to npm staging through OIDC.
 2. [Finalize CLI npm channel](../.github/workflows/release-cli-finalize.yml) accepts only the exact successful Stage run and attempt, then verifies the public registry bytes, signature, provenance, and dist-tag. It creates no tag or GitHub Release.
 
 ## One-time control-plane configuration
@@ -61,7 +62,9 @@ package owner or recovery access as part of that change.
 
 1. Merge all intended package, documentation, and release changes to `main`.
 2. Set the root product version, `apps/desktop/package.json`, and `packages/cli/package.json` to the same unused target version and merge that change. The npm channel maps prerelease versions to `next` and stable versions to `latest`.
-3. Confirm the target version is absent from both public and staged package state:
+3. Run the product `Release` workflow and confirm its Draft `v<version>` Release points to the
+   intended source commit. npm staging consumes this identity and cannot precede it.
+4. Confirm the target version is absent from both public and staged package state:
 
    ```sh
    version=0.1.0-beta.1
@@ -71,13 +74,14 @@ package owner or recovery access as part of that change.
 
    The first command should report that the target version is not present. Resolve any existing
    stage instead of submitting the same version again.
-4. Confirm the `npm-release` Environment and Trusted Publisher still match the values above and the
+5. Confirm the `npm-release` Environment and Trusted Publisher still match the values above and the
    approving npm account has 2FA enabled.
 
 ## Stage the candidate
 
 1. Open **Actions → Stage CLI npm release → Run workflow**.
-2. Select `main` and enter the exact version from `packages/cli/package.json`.
+2. Select `main` and enter the exact product version. The workflow resolves `v<version>` and builds
+   its exact commit even if `main` has advanced since the Draft was created.
 3. Wait for the reusable package validation jobs to pass. They build one tarball and validate the
    installed CLI on Linux x64, macOS arm64, and Windows x64, plus real Harbor and Pier Docker cells
    on Linux x64.
@@ -137,7 +141,7 @@ not dist-tag mutations, and the release workflows must not gain a long-lived npm
 
 After npm reports the version as public:
 
-1. Open **Actions → Finalize CLI npm release → Run workflow** on `main`.
+1. Open **Actions → Finalize CLI npm channel → Run workflow** on `main`.
 2. Enter the successful Stage run ID, its exact run attempt, and the version.
 3. Let the inspection job verify the public tarball bytes, checksum, inventory, npm signature,
    Trusted Publishing provenance, the release dist-tag, and that `next` is not older than `latest`.

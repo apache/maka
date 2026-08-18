@@ -42,6 +42,12 @@ The CLI-specific `THIRD_PARTY_NOTICES.txt` must enumerate exactly the external p
 dependencies recorded in `RELEASE.json`. The archive checksum is generated only after signing and
 notarization complete.
 
+Every Mach-O file inside the archive is signed and the ZIP is submitted to Apple's notary service.
+ZIP files cannot carry a stapled notarization ticket, so the first Gatekeeper assessment on another
+Mac may require network access to retrieve the ticket from Apple. The embedded code signatures and
+published SHA-256 remain available for offline verification; do not describe the ZIP itself as
+stapled.
+
 ## Release and installation boundary
 
 Root `package.json` is the sole version authority. Desktop and CLI manifests must match before
@@ -49,16 +55,18 @@ packaging. Desktop, CLI/TUI, and source jobs build independently from one commit
 collects their verified outputs and creates one Draft GitHub Release.
 
 The GitHub Release ZIP is the immutable standalone distribution source. npm keeps its
-installer-specific tarball, OIDC, staged-publishing, and 2FA approval flow, but derives the same
-version, runtime closure, file policy, notices, and source identity. It does not create a tag or
-GitHub Release and does not block the product Draft. Homebrew must consume the standalone ZIP.
+installer-specific tarball, OIDC, staged-publishing, and 2FA approval flow, but may start only after
+the product `v<version>` tag and GitHub Release exist. It checks out that tag's exact commit and
+derives the same version, runtime closure, file policy, notices, and source identity. It does not
+create a tag or GitHub Release and does not block creation of the product Draft. Homebrew must
+consume the standalone ZIP.
 
 ## Decision ledger
 
 | Question | Decision | Enforced by |
 | --- | --- | --- |
 | Which file owns the product version? | Root `package.json`; Desktop and CLI manifests must match it. | `product-release-identity.mjs` and release contract tests |
-| Which event defines a product release? | One `v<version>` tag from `main`, one source commit, and one Draft GitHub Release. | `release.yml` identity and publish jobs |
+| Which event defines a product release? | One `v<version>` tag from `main`, one source commit, and one Draft GitHub Release. An interrupted Draft upload may retry only that exact commit. | `release.yml` identity and publish jobs plus the exact-tag helper |
 | Which artifacts are required? | macOS and Windows Desktop installers, the macOS arm64 standalone CLI ZIP, and bundled source. | The publish job's explicit artifact allowlist |
 | Is npm another release authority? | No. It is an optional install channel with its own OIDC, staging, verification, and 2FA boundaries. | Read-only npm finalize workflow; no tag or GitHub Release mutation |
 | Does the standalone CLI define another package policy? | No. It derives the workspace closure, third-party pruning, notices, and Eval runtime assets from their current manifests and shared policy. | Packaging and artifact contract tests |

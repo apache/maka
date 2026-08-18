@@ -2,6 +2,11 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact main ancestor used only to retry an interrupted Draft publication
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -23,6 +28,7 @@ jobs:
       exe: ${{ steps.identity.outputs.exe }}
       cli_archive: ${{ steps.identity.outputs.cli_archive }}
       cli_checksum: ${{ steps.identity.outputs.cli_checksum }}
+      source_archive: ${{ steps.identity.outputs.source_archive }}
       node_version: ${{ steps.identity.outputs.node_version }}
       npm_version: ${{ steps.identity.outputs.npm_version }}
       node_archive: ${{ steps.identity.outputs.node_archive }}
@@ -33,13 +39,40 @@ jobs:
       - name: Check out the dispatched commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.source_commit || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Resolve product release identity
         id: identity
+        env:
+          GITHUB_SHA: ${{ inputs.source_commit || github.sha }}
         run: node scripts/product-release-identity.mjs
+
+      - name: Require the release source on main
+        env:
+          SOURCE_COMMIT: ${{ steps.identity.outputs.source_commit }}
+        run: git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main
+
+      - name: Restrict an explicit source to Draft recovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_SOURCE: ${{ inputs.source_commit }}
+          SOURCE_COMMIT: ${{ steps.identity.outputs.source_commit }}
+          TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          if [[ -z "$RECOVERY_SOURCE" ]]; then
+            exit 0
+          fi
+          tagged_source="$(git ls-remote --tags --refs origin "refs/tags/$TAG" | awk '{print $1}')"
+          if [[ "$tagged_source" != "$SOURCE_COMMIT" ]]; then
+            echo "Recovery tag ${TAG} does not point to ${SOURCE_COMMIT}." >&2
+            exit 1
+          fi
+          if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != "true" ]]; then
+            echo "Recovery requires an existing Draft release ${TAG}." >&2
+            exit 1
+          fi
 
   desktop:
     needs: release-identity
@@ -67,7 +100,7 @@ jobs:
       - name: Check out the dispatched commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.release-identity.outputs.source_commit }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -206,7 +239,7 @@ jobs:
       - name: Check out the dispatched commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.release-identity.outputs.source_commit }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -297,7 +330,7 @@ jobs:
       - name: Check out the dispatched commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.release-identity.outputs.source_commit }}
           persist-credentials: false
 
       - name: Set up the pinned release Node.js
@@ -318,21 +351,21 @@ jobs:
         run: npm run prepare:bundled-git-source
 
       - name: Archive and hash source materials
+        env:
+          SOURCE_ARCHIVE: ${{ needs.release-identity.outputs.source_archive }}
         run: |
-          version="${{ needs.release-identity.outputs.version }}"
           archive_dir="apps/desktop/release-sources"
-          archive_name="Maka-${version}-bundled-git-source.tar.gz"
-          archive="${archive_dir}/${archive_name}"
+          archive="${archive_dir}/${SOURCE_ARCHIVE}"
           tar -C apps/desktop/release-sources/bundled-git -czf "$archive" .
-          (cd "$archive_dir" && sha256sum "$archive_name" > "${archive_name}.sha256")
+          (cd "$archive_dir" && sha256sum "$SOURCE_ARCHIVE" > "${SOURCE_ARCHIVE}.sha256")
 
       - name: Upload verified source assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-source
           path: |
-            apps/desktop/release-sources/Maka-*-bundled-git-source.tar.gz
-            apps/desktop/release-sources/Maka-*-bundled-git-source.tar.gz.sha256
+            apps/desktop/release-sources/${{ needs.release-identity.outputs.source_archive }}
+            apps/desktop/release-sources/${{ needs.release-identity.outputs.source_archive }}.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -353,7 +386,7 @@ jobs:
       - name: Check out the dispatched commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.release-identity.outputs.source_commit }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -365,18 +398,16 @@ jobs:
           merge-multiple: true
 
       - name: Verify the complete required artifact set
-        env:
-          VERSION: ${{ needs.release-identity.outputs.version }}
         run: |
           required=(
-            "Maka-${VERSION}-mac-arm64.dmg"
-            "Maka-${VERSION}-mac-arm64.dmg.sha256"
-            "Maka-${VERSION}-win-x64.exe"
-            "Maka-${VERSION}-win-x64.exe.sha256"
-            "Maka-${VERSION}-cli-mac-arm64.zip"
-            "Maka-${VERSION}-cli-mac-arm64.zip.sha256"
-            "Maka-${VERSION}-bundled-git-source.tar.gz"
-            "Maka-${VERSION}-bundled-git-source.tar.gz.sha256"
+            "${{ needs.release-identity.outputs.dmg }}"
+            "${{ needs.release-identity.outputs.dmg }}.sha256"
+            "${{ needs.release-identity.outputs.exe }}"
+            "${{ needs.release-identity.outputs.exe }}.sha256"
+            "${{ needs.release-identity.outputs.cli_archive }}"
+            "${{ needs.release-identity.outputs.cli_checksum }}"
+            "${{ needs.release-identity.outputs.source_archive }}"
+            "${{ needs.release-identity.outputs.source_archive }}.sha256"
           )
           for name in "${required[@]}"; do
             test -f "release-assets/${name}"

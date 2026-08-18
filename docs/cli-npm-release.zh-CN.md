@@ -9,7 +9,7 @@
 - 只从 `main` dispatch 发布 workflow；
 - 预发布版本使用 `next`，稳定版本使用 `latest`；`next` 不得指向比 `latest` 更旧的版本；没有
   更新的预发布版本时，两个 tag 都指向稳定版；
-- 不创建 npm 专属 Git tag 或 GitHub Release；产品 `v<version>` tag 与 GitHub Release 只由 `Release` workflow 管理；
+- 不创建 npm 专属 Git tag 或 GitHub Release；产品 `v<version>` tag 与 GitHub Release 只由 `Release` workflow 管理，并且必须先于 npm staging 存在；
 - 不运行 `npm publish`。GitHub Actions 只能运行 `npm stage publish`，由人工 package
   maintainer 使用 npm 2FA 批准 staged package；
 - validation、staging、approval 和 finalization 之间不得重新构建；
@@ -17,9 +17,9 @@
 
 两个 workflow 边界分别是：
 
-1. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) 构建并验证一个 immutable
-   tarball，记录其 source identity，进入受保护的 `npm-release` Environment，然后通过 OIDC
-   提交到 npm staging；
+1. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) 解析已有的产品 tag 与 GitHub
+   Release，checkout 该产品的精确 commit，构建并验证一个 immutable tarball，分别记录产品与
+   workflow identity，进入受保护的 `npm-release` Environment，然后通过 OIDC 提交到 npm staging；
 2. [Finalize CLI npm channel](../.github/workflows/release-cli-finalize.yml) 只接受精确的成功 Stage run 和 attempt，并验证公共 registry 字节、signature、provenance 和 dist-tag；它不创建 tag 或 GitHub Release。
 
 ## 一次性控制面配置
@@ -60,7 +60,9 @@ authentication and disallow tokens**，然后撤销不再使用的 publish token
 
 1. 将本次包、文档和发布变更全部合并到 `main`；
 2. 将根产品版本、`apps/desktop/package.json` 与 `packages/cli/package.json` 设置为同一个尚未使用的目标版本并合并。npm 渠道会把 prerelease 映射到 `next`，stable 映射到 `latest`；
-3. 确认目标版本既不在公共 registry，也不在 staged package 中：
+3. 运行产品 `Release` workflow，确认其 Draft `v<version>` Release 指向预期 source commit；npm
+   staging 消费这个身份，不能先于它运行；
+4. 确认目标版本既不在公共 registry，也不在 staged package 中：
 
    ```sh
    version=0.1.0-beta.1
@@ -69,13 +71,14 @@ authentication and disallow tokens**，然后撤销不再使用的 publish token
    ```
 
    第一个命令应报告目标版本不存在。如果已经存在同版本 stage，先处理它，不要再次提交；
-4. 确认 `npm-release` Environment 和 Trusted Publisher 仍与上面的值一致，并确认负责批准的
+5. 确认 `npm-release` Environment 和 Trusted Publisher 仍与上面的值一致，并确认负责批准的
    npm 账号已经启用 2FA。
 
 ## Stage 候选包
 
 1. 打开 **Actions → Stage CLI npm release → Run workflow**；
-2. 选择 `main`，输入 `packages/cli/package.json` 中的精确版本；
+2. 选择 `main`，输入精确产品版本；即使 Draft 创建后 `main` 已前进，workflow 仍会解析
+   `v<version>` 并构建它的精确 commit；
 3. 等待可复用 package validation jobs 全部通过。它们只构建一个 tarball，并在 Linux x64、
    macOS arm64、Windows x64 上验证安装态 CLI，在 Linux x64 上运行真实 Harbor 和 Pier
    Docker cell；
@@ -133,7 +136,7 @@ release workflow 不得获得长期 npm token。
 
 npm 显示该版本已经公开后：
 
-1. 在 `main` 上打开 **Actions → Finalize CLI npm release → Run workflow**；
+1. 在 `main` 上打开 **Actions → Finalize CLI npm channel → Run workflow**；
 2. 输入成功 Stage 的 run ID、精确 run attempt 和 version；
 3. 让 inspection job 验证公共 tarball 字节、checksum、inventory、npm signature、Trusted
    Publishing provenance、发布 dist-tag，并确认 `next` 不比 `latest` 更旧；
