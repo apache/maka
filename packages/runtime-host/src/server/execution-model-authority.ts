@@ -367,6 +367,7 @@ type AuxiliaryModelRequest =
       readonly maxOutputTokens: number;
       readonly maxRetries?: number;
       readonly system?: string;
+      readonly providerOptions?: Record<string, unknown>;
       readonly tools?: never;
     })
   | {
@@ -504,13 +505,13 @@ async function runHostAuxiliaryModelCall(
                 ? 'omit'
                 : 'none',
               abortSignal: input.abortSignal,
-              providerOptions,
+              providerOptions: request.providerOptions ?? providerOptions,
             })
           : generateToolFreeModelCall({
               model,
               ...request,
               abortSignal: input.abortSignal,
-              providerOptions,
+              providerOptions: request.providerOptions ?? providerOptions,
             });
       }, input.abortSignal);
       const oauthFailure = readDeferredOAuthFailure?.();

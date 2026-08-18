@@ -855,6 +855,28 @@ describe('models.dev provider conformance', () => {
     assert.equal(body?.store, false);
   });
 
+  test('an Open Responses probe normalizes a base URL that already names the endpoint', async () => {
+    let probedPath: string | undefined;
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      probedPath = request.url;
+      respondJson(response, 200, {});
+    });
+    const connection: LlmConnection = {
+      slug: 'deepseek',
+      name: 'DeepSeek',
+      providerType: 'deepseek',
+      baseUrl: `${server.url}/v1/responses`,
+      defaultModel: 'deepseek-v4-pro',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    assert.equal((await testConnection(connection, 'deepseek-token')).ok, true);
+    assert.equal(probedPath, '/v1/responses');
+  });
+
   test('Ollama Cloud requests usage in streamed chat completions', async () => {
     let requestBody: Record<string, unknown> | undefined;
     const server = await startJsonServer(async (request, response) => {

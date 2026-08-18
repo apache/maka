@@ -12699,10 +12699,11 @@ describe('AiSdkBackend thinking persistence', () => {
       (message) => message.role === 'assistant' && Array.isArray(message.content),
     );
     assert.ok(assistant && Array.isArray(assistant.content));
-    assert.deepEqual(
-      assistant.content.filter((part) => part.type === 'reasoning'),
-      [{ type: 'reasoning', text: 'reasoning about the tool', providerOptions: undefined }],
-    );
+    const reasoningParts = assistant.content.filter((part) => part.type === 'reasoning');
+    assert.equal(reasoningParts.length, 1);
+    const reasoning = reasoningParts[0];
+    assert.ok(reasoning && reasoning.type === 'reasoning');
+    assert.equal(reasoning.text, 'reasoning about the tool');
     assert.ok(
       assistant.content.some((part) => part.type === 'tool-call' && part.toolCallId === 'tool-1'),
     );

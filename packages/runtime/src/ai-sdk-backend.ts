@@ -1049,6 +1049,7 @@ export class AiSdkBackend implements AgentBackend {
   private readonly maxSteps: number | undefined;
   private readonly providerRetrySleep: (delayMs: number, signal: AbortSignal) => Promise<void>;
   private readonly modelAdapter: ModelAdapter;
+  private readonly resolvedProviderOptions: Record<string, unknown>;
   private readonly toolAvailabilityRuntime: ToolAvailabilityRuntime;
   private readonly applyPatchProfile: ApplyPatchProfile | null;
 
@@ -1084,11 +1085,12 @@ export class AiSdkBackend implements AgentBackend {
     this.now = input.now ?? (() => Date.now());
     this.maxSteps = input.maxSteps;
     this.providerRetrySleep = input.providerRetrySleep ?? sleepForProviderRetry;
-    const modelCallProviderOptions = buildProviderOptions(
-      input.connection,
-      input.modelId,
-      input.header.thinkingLevel,
-    );
+    // One resolved options value for every reader: the main call, the
+    // auxiliary memory-extraction call, and the request-shape diagnostics all
+    // describe the same request, so they must not disagree on what was sent.
+    this.resolvedProviderOptions =
+      input.providerOptions ??
+      buildProviderOptions(input.connection, input.modelId, input.header.thinkingLevel);
     this.modelAdapter = new ModelAdapter({
       sessionId: input.sessionId,
       connection: input.connection,
@@ -1099,7 +1101,7 @@ export class AiSdkBackend implements AgentBackend {
       // the whole provider-options namespace (including reasoning effort), and
       // the computed defaults are dropped entirely. Keep providerOptions the
       // single seam — do not re-add a parallel reasoning channel here.
-      providerOptions: input.providerOptions ?? modelCallProviderOptions,
+      providerOptions: this.resolvedProviderOptions,
       newId: this.newId,
       now: this.now,
       ...(input.openAiResponsesTransportState
@@ -1212,9 +1214,7 @@ export class AiSdkBackend implements AgentBackend {
         : {}),
       sourceTools: { ...scope.memorySourceTools },
       sourceActiveTools: [...scope.memorySourceActiveTools],
-      ...(this.input.providerOptions
-        ? { sourceProviderOptions: structuredClone(this.input.providerOptions) }
-        : {}),
+      sourceProviderOptions: structuredClone(this.resolvedProviderOptions),
       ...(this.modelAdapter.maxOutputTokens() !== undefined
         ? { sourceMaxOutputTokens: this.modelAdapter.maxOutputTokens() }
         : {}),
@@ -1995,7 +1995,7 @@ export class AiSdkBackend implements AgentBackend {
                 connection: this.input.connection,
                 modelId: this.input.modelId,
                 systemPrompt,
-                providerOptions: this.input.providerOptions,
+                providerOptions: this.resolvedProviderOptions,
                 providerTools,
                 activeTools: active,
                 priorMessages: priorReplay.messages,
@@ -2059,7 +2059,7 @@ export class AiSdkBackend implements AgentBackend {
               connection: this.input.connection,
               modelId: this.input.modelId,
               systemPrompt,
-              providerOptions: this.input.providerOptions,
+              providerOptions: this.resolvedProviderOptions,
               providerTools,
               activeTools: activeToolsForStep ?? plan.activeTools,
               priorMessages: stepMessages,
