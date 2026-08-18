@@ -745,17 +745,6 @@ export function createComputerUsePipController(
 
 
 
-// Re-exported so the tests that reach for these keep their import path while
-// the code moves. The forwarding line is what makes this a move rather than a
-// change; it comes out in a later cut, not this one.
-export {
-  pipBoundsForAnchor,
-  pipDisplaySize,
-  pipWindowOptions,
-  type ParentWindowLike,
-  type PipWindowLike,
-} from './pip-electron.js';
-
 // Re-exported so callers and tests keep their import path while the code
 // moves. Comes out in a later cut.
 export { withComputerUsePip } from './pip-feed.js';

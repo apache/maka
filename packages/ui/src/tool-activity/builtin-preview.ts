@@ -17,8 +17,6 @@ import {
 import { type UiLocale } from '@maka/core/ui-locale';
 import type { ToolActivityItem } from '../materialize.js';
 
-export type { QuietPreview } from '@maka/core/tool-quiet-preview';
-
 /** Desktop-adapted wrapper with an explicit resolved locale. */
 export function formatToolInvocationLine(
   item: Pick<ToolActivityItem, 'toolName' | 'args' | 'activityKind'>,
