@@ -5,7 +5,8 @@ mod tests {
     use crate::acl_ledger::readiness_mutex_name;
     use crate::protocol::{LaunchRequest, NetworkMode, RESERVED_READINESS_REQUEST_ID};
     use crate::windows_launcher::{
-        appcontainer_profile_name, appcontainer_readiness_profile_name, environment_block,
+        appcontainer_profile_name, appcontainer_readiness_profile_name,
+        current_token_owner_sid_string, current_user_sid_string, environment_block,
         readiness_probe_command_line,
     };
 
@@ -178,6 +179,21 @@ mod tests {
         assert!(name.starts_with(r"Global\Maka.WindowsSandbox.ReadinessProfile."));
         assert!(name.ends_with(sid));
         assert!(!name.contains("AclLedger"));
+    }
+
+    #[test]
+    fn token_owner_sid_is_a_valid_lock_owner_candidate() {
+        // The lock-squat check accepts {user SID, SYSTEM, token default owner}.
+        // The token owner is what our own creations are stamped with: the user
+        // SID for a standard user, BUILTIN\Administrators (S-1-5-32-544) for an
+        // elevated token — the CI runner case that must not self-reject.
+        let owner = current_token_owner_sid_string().expect("token owner SID");
+        let user = current_user_sid_string().expect("user SID");
+        assert!(owner.starts_with("S-1-5-"), "unexpected owner SID: {owner}");
+        assert!(
+            owner.eq_ignore_ascii_case(&user) || owner == "S-1-5-32-544",
+            "token owner {owner} is neither the user SID {user} nor Administrators"
+        );
     }
 
     #[test]

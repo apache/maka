@@ -30,7 +30,9 @@ use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForS
 
 use crate::broker_pipe_security::pipe_security_sddl;
 use crate::protocol::LaunchRequest;
-use crate::windows_launcher::{appcontainer_profile_name, current_user_sid_string, sid_string};
+use crate::windows_launcher::{
+    appcontainer_profile_name, current_token_owner_sid_string, current_user_sid_string, sid_string,
+};
 
 pub(crate) const LEDGER_VERSION: u8 = 2;
 const ACL_MUTEX_TIMEOUT_MS: u32 = 30_000;
@@ -290,9 +292,16 @@ impl LedgerLock {
 /// it, so ownership is the one property a permissive squatter cannot forge:
 /// re-owning an object to another SID requires SeTakeOwnership/SeRestore, which
 /// standard users do not hold. The legitimate creators are another process of
-/// the same user (normal contention) or SYSTEM; any other owner means the name
-/// was squatted and arbitration must fail closed instead of blocking on an
-/// attacker-held mutex.
+/// the same user (normal contention) or SYSTEM — where "the same user" must be
+/// judged by the token's *default owner* SID, not only the user SID: an
+/// elevated administrator's token stamps `BUILTIN\Administrators` as owner on
+/// objects it creates, so a lock this very code created earlier on an elevated
+/// host (e.g. a CI runner) is owned by S-1-5-32-544, and rejecting it would
+/// deny our own locks. Accepting the token-owner SID stays inside the threat
+/// model: whoever can create objects owned by Administrators is an elevated
+/// administrator, which RFC §1/§5 explicitly does not defend against. Any
+/// other owner means the name was squatted and arbitration must fail closed
+/// instead of blocking on an attacker-held mutex.
 fn validate_existing_lock_owner(handle: HANDLE, user_sid: &str) -> Result<(), String> {
     const SYSTEM_SID: &str = "S-1-5-18";
     let mut owner: *mut std::ffi::c_void = std::ptr::null_mut();
@@ -320,8 +329,15 @@ fn validate_existing_lock_owner(handle: HANDLE, user_sid: &str) -> Result<(), St
     if rendered.eq_ignore_ascii_case(user_sid) || rendered == SYSTEM_SID {
         return Ok(());
     }
+    // Elevated hosts: our own creations are owned by the token's default-owner
+    // SID (typically BUILTIN\Administrators), not the user SID.
+    let token_owner = current_token_owner_sid_string()?;
+    if rendered.eq_ignore_ascii_case(&token_owner) {
+        return Ok(());
+    }
     Err(format!(
-        "pre-existing lock is owned by {rendered}, not the current user or SYSTEM; \
+        "pre-existing lock is owned by {rendered}, not the current user \
+         ({user_sid}), this token's default owner ({token_owner}), or SYSTEM; \
          refusing to arbitrate on a squatted mutex"
     ))
 }

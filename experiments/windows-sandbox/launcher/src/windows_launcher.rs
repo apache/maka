@@ -19,7 +19,8 @@ use windows_sys::Win32::Security::{
     CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, DuplicateTokenEx, EqualSid, FreeSid,
     GetTokenInformation, IsTokenRestricted, LUA_TOKEN, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES,
     SecurityImpersonation, TOKEN_ALL_ACCESS, TOKEN_APPCONTAINER_INFORMATION, TOKEN_DUPLICATE,
-    TOKEN_QUERY, TOKEN_USER, TokenAppContainerSid, TokenIsAppContainer, TokenPrimary, TokenUser,
+    TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER, TokenAppContainerSid, TokenIsAppContainer, TokenOwner,
+    TokenPrimary, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -456,6 +457,44 @@ pub fn current_user_sid_string() -> Result<String, String> {
         CloseHandle(token);
         let user = &*(storage.as_ptr() as *const TOKEN_USER);
         sid_string(user.User.Sid)
+    }
+}
+
+/// The SID this process's token stamps as *owner* on objects it creates. For a
+/// standard user this is the user SID, but for an elevated administrator the
+/// token's default owner is typically the `BUILTIN\Administrators` group
+/// (S-1-5-32-544) — so an object legitimately created by an earlier run of this
+/// same code is NOT necessarily owned by the user SID. Lock-squat validation
+/// must accept this SID or it rejects our own locks on elevated hosts (e.g. CI
+/// runners).
+pub(crate) fn current_token_owner_sid_string() -> Result<String, String> {
+    unsafe {
+        let mut token = null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(last_error("OpenProcessToken(token owner SID)"));
+        }
+        let mut required = 0;
+        GetTokenInformation(token, TokenOwner, null_mut(), 0, &mut required);
+        if required == 0 {
+            CloseHandle(token);
+            return Err(last_error("GetTokenInformation(TokenOwner size)"));
+        }
+        let words = (required as usize).div_ceil(size_of::<usize>());
+        let mut storage = vec![0usize; words];
+        if GetTokenInformation(
+            token,
+            TokenOwner,
+            storage.as_mut_ptr() as *mut c_void,
+            required,
+            &mut required,
+        ) == 0
+        {
+            CloseHandle(token);
+            return Err(last_error("GetTokenInformation(TokenOwner)"));
+        }
+        CloseHandle(token);
+        let owner = &*(storage.as_ptr() as *const TOKEN_OWNER);
+        sid_string(owner.Owner)
     }
 }
 
