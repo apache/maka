@@ -459,7 +459,7 @@ pub fn current_user_sid_string() -> Result<String, String> {
     }
 }
 
-unsafe fn sid_string(sid: *mut c_void) -> Result<String, String> {
+pub(crate) unsafe fn sid_string(sid: *mut c_void) -> Result<String, String> {
     let mut value = null_mut();
     if unsafe { ConvertSidToStringSidW(sid, &mut value) } == 0 {
         return Err(last_error("ConvertSidToStringSidW(AppContainer)"));

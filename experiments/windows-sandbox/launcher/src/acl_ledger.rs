@@ -10,14 +10,17 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_ABANDONED, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+    WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+    SE_KERNEL_OBJECT,
 };
 use windows_sys::Win32::Security::Isolation::DeleteAppContainerProfile;
-use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+use windows_sys::Win32::Security::{
+    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
@@ -27,7 +30,7 @@ use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForS
 
 use crate::broker_pipe_security::pipe_security_sddl;
 use crate::protocol::LaunchRequest;
-use crate::windows_launcher::{appcontainer_profile_name, current_user_sid_string};
+use crate::windows_launcher::{appcontainer_profile_name, current_user_sid_string, sid_string};
 
 pub(crate) const LEDGER_VERSION: u8 = 2;
 const ACL_MUTEX_TIMEOUT_MS: u32 = 30_000;
@@ -39,7 +42,10 @@ const ACL_MUTEX_TIMEOUT_MS: u32 = 30_000;
 /// a live lease and would recover grants that are still in use. The names are
 /// scoped by the owning user's SID and the objects carry an explicit
 /// SYSTEM+user-only DACL, so another user can neither open them nor learn
-/// anything from them; a squatted name fails closed at acquisition.
+/// anything from them. A squatted name fails closed at acquisition: a
+/// restrictive squat is rejected by its own DACL, and a permissive squat is
+/// rejected by the pre-existing-owner check in `LedgerLock::try_acquire`
+/// (the DACL we pass is ignored for an object that already exists).
 pub(crate) fn acl_mutex_name(user_sid: &str) -> String {
     format!(r"Global\Maka.WindowsSandbox.AclLedger.v2.{user_sid}")
 }
@@ -232,9 +238,15 @@ impl LedgerLock {
     fn try_acquire(name: &str, user_sid: &str, timeout_ms: u32) -> Result<Option<Self>, String> {
         // Machine-wide named objects are creatable by any local user, so the
         // lock is born with an explicit SYSTEM+owner-only DACL instead of the
-        // default token DACL. If another principal squatted the name first,
-        // opening it fails and the launch fails closed rather than sharing an
-        // arbitration object with an untrusted owner.
+        // default token DACL. That DACL only protects a mutex *we* created:
+        // `CreateMutexW` ignores the supplied security descriptor when the name
+        // already exists and simply opens the existing object. A restrictive
+        // squatter is rejected by its own DACL (open fails, we fail closed),
+        // but a *permissive* squatter would hand us an attacker-owned
+        // arbitration object we would then block on. So when the object
+        // pre-existed (`ERROR_ALREADY_EXISTS` — also the normal same-user
+        // contention path), the owner is verified to be the current user or
+        // SYSTEM before any wait; anything else fails closed.
         let sddl = pipe_security_sddl(user_sid)
             .map_err(|error| format!("invalid ACL lock owner SID: {error:?}"))?;
         let descriptor = lock_security_descriptor(&sddl)?;
@@ -244,6 +256,8 @@ impl LedgerLock {
         attributes.bInheritHandle = 0;
         let name = wide(name);
         let handle = unsafe { CreateMutexW(&attributes, 0, name.as_ptr()) };
+        // Read the last error before any other call can clobber it.
+        let already_exists = !handle.is_null() && unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
         let create_error = if handle.is_null() {
             Some(last_error("CreateMutexW(ACL ledger mutex)"))
         } else {
@@ -252,6 +266,12 @@ impl LedgerLock {
         unsafe { LocalFree(descriptor as *mut std::ffi::c_void) };
         if let Some(error) = create_error {
             return Err(error);
+        }
+        if already_exists {
+            if let Err(error) = validate_existing_lock_owner(handle, user_sid) {
+                unsafe { CloseHandle(handle) };
+                return Err(error);
+            }
         }
         let wait = unsafe { WaitForSingleObject(handle, timeout_ms) };
         if wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED {
@@ -263,6 +283,47 @@ impl LedgerLock {
         }
         Err(last_error("WaitForSingleObject(ACL ledger mutex)"))
     }
+}
+
+/// Owner check for a named lock that existed before this process created it.
+/// The pre-existing object keeps whatever security descriptor its creator gave
+/// it, so ownership is the one property a permissive squatter cannot forge:
+/// re-owning an object to another SID requires SeTakeOwnership/SeRestore, which
+/// standard users do not hold. The legitimate creators are another process of
+/// the same user (normal contention) or SYSTEM; any other owner means the name
+/// was squatted and arbitration must fail closed instead of blocking on an
+/// attacker-held mutex.
+fn validate_existing_lock_owner(handle: HANDLE, user_sid: &str) -> Result<(), String> {
+    const SYSTEM_SID: &str = "S-1-5-18";
+    let mut owner: *mut std::ffi::c_void = std::ptr::null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    let status = unsafe {
+        GetSecurityInfo(
+            handle,
+            SE_KERNEL_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(format!(
+            "GetSecurityInfo(pre-existing lock owner) failed with error {status}"
+        ));
+    }
+    let rendered = unsafe { sid_string(owner) };
+    unsafe { LocalFree(descriptor as *mut std::ffi::c_void) };
+    let rendered = rendered?;
+    if rendered.eq_ignore_ascii_case(user_sid) || rendered == SYSTEM_SID {
+        return Ok(());
+    }
+    Err(format!(
+        "pre-existing lock is owned by {rendered}, not the current user or SYSTEM; \
+         refusing to arbitrate on a squatted mutex"
+    ))
 }
 
 fn lock_security_descriptor(sddl: &str) -> Result<PSECURITY_DESCRIPTOR, String> {
