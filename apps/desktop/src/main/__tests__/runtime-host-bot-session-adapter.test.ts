@@ -224,6 +224,39 @@ test('reports a concurrent Turn without leaking the Bot message into the queue',
   );
 });
 
+test('fails closed on a queued submit disposition instead of misreporting a busy race', async () => {
+  for (const disposition of ['followup', 'steering'] as const) {
+    const events = new AsyncFrameQueue();
+    const handle = runtimeHostSessionFixture({
+      snapshot: continuitySnapshot(null),
+      transcript: Promise.resolve([]),
+      events,
+      async close() {
+        events.end();
+      },
+    });
+    const adapter = createRuntimeHostBotSessionAdapter({
+      client: botClient({
+        openSession: async () => handle,
+        // placement 'next_turn' + busyBehavior 'reject' never queues: only a
+        // changed Host contract could produce this.
+        submitMessage: async () => ({ disposition, queueRevision: 7 }),
+      }),
+      resolveCreateTarget: hostPathCreateTarget,
+      emitSessionsChanged() {},
+    });
+
+    await assert.rejects(
+      adapter.runTurn({
+        sessionId: 'session-1',
+        messageId: 'bot_source_queued',
+        text: 'queued dispositions are not a busy race',
+      }),
+      new Error(`Unexpected turn.message.submit disposition: ${disposition}`),
+    );
+  }
+});
+
 test('recovers an older completed Turn from the canonical query and transcript', async () => {
   const events = new AsyncFrameQueue();
   const handle: DesktopRuntimeHostSession = {

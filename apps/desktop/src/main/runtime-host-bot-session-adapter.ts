@@ -144,14 +144,18 @@ export function createRuntimeHostBotSessionAdapter(
           throw error;
         }
         if (submitted.disposition !== 'turn_started') {
-          const error = new Error('Message was queued because another Turn started first');
+          // placement 'next_turn' + busyBehavior 'reject' either starts the
+          // Turn or fails; an exact redelivery also resolves to turn_started
+          // through the Host's durable proof. A queued disposition therefore
+          // means the submit contract changed — fail closed instead of
+          // misreporting a busy race.
+          const error = new Error(
+            `Unexpected turn.message.submit disposition: ${submitted.disposition}`,
+          );
           turnId.reject(error);
           await session.close().catch(() => undefined);
           await completion.catch(() => undefined);
-          return {
-            kind: 'errored' as const,
-            reason: error.message,
-          };
+          throw error;
         }
         turnId.resolve(submitted.turnId);
         deps.emitSessionsChanged('status-change', sessionId, { turnId: submitted.turnId });
