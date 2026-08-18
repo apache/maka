@@ -1695,6 +1695,21 @@ describe('turn consumer lag recovery (#3180)', () => {
     await delay(0);
   }
 
+  async function floodToolOutput(
+    subscription: InstanceType<typeof FakeSubscription>,
+    count: number,
+    subscriptionId = 'subscription-1',
+    startSequence = 1,
+  ): Promise<void> {
+    for (let index = 0; index < count; index += 1) {
+      subscription.push(
+        toolOutputDeltaFrame(startSequence + index, startSequence + index, subscriptionId),
+      );
+      if (index % 64 === 63) await delay(0);
+    }
+    await delay(0);
+  }
+
   async function waitForSubscriptions(connection: FakeConnection, count: number): Promise<void> {
     const deadline = Date.now() + WAIT_BUDGET_MS;
     while (connection.openedSubscriptions !== count && Date.now() < deadline) await delay(5);
@@ -1792,6 +1807,39 @@ describe('turn consumer lag recovery (#3180)', () => {
     );
   });
 
+  test('sheds lagged tool output deltas so the tool result and terminal outcome land', async () => {
+    const { initial, replacement, connection, driver, resynced } = lagRecoveryFixture();
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+
+    // A noisy tool floods the unconsumed stream with seq-ordered output
+    // deltas, the realistic way a consumer falls behind.
+    await floodToolOutput(initial, 1_100);
+    await waitForSubscriptions(connection, 2);
+    await resynced.promise;
+
+    // The canonical resync compacts the unseen tool deltas, so the tool
+    // result lands instead of being dropped behind a full non-delta backlog
+    // (which would leave the live card stuck at "running" until the durable
+    // transcript heals it).
+    replacement.push(toolResultFrame(1, 'subscription-2'));
+    replacement.push(projectionFrame(2, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'));
+    await delay(0);
+
+    let sawToolResult = false;
+    const iterator = switched.activeTurn.events[Symbol.asyncIterator]();
+    for (let index = 0; index < 1_200; index += 1) {
+      const result = await iterator.next();
+      if (result.done) break;
+      if ((result.value as { type?: string }).type === 'tool_result') sawToolResult = true;
+      if ((result.value as { type?: string }).type === 'complete') {
+        assert.ok(sawToolResult, 'tool_result landed ahead of the terminal outcome');
+        return;
+      }
+    }
+    assert.fail('stream ended without the terminal complete event');
+  });
+
   test('recovers again when the consumer lags again after making progress', async () => {
     const initial = new FakeSubscription(
       continuitySnapshot(),
@@ -1883,6 +1931,52 @@ function toolStartFrame(
       ts: 10,
       toolUseId: `tool-${index}`,
       toolName: 'Bash',
+    },
+  };
+}
+
+function toolOutputDeltaFrame(
+  sequence: number,
+  seq: number,
+  subscriptionId = 'subscription-1',
+): SubscriptionFrame {
+  return {
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId,
+    sequence,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: {
+      type: 'tool_output_delta',
+      id: `output-${seq}`,
+      turnId: 'turn-1',
+      ts: 10,
+      toolUseId: 'tool-1',
+      seq,
+      stream: 'stdout',
+      chunk: `chunk-${seq}`,
+      redacted: false,
+      createdAt: 10,
+    },
+  };
+}
+
+function toolResultFrame(sequence: number, subscriptionId = 'subscription-1'): SubscriptionFrame {
+  return {
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId,
+    sequence,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: {
+      type: 'tool_result',
+      id: 'result-tool-1',
+      turnId: 'turn-1',
+      ts: 11,
+      toolUseId: 'tool-1',
+      status: 'completed',
     },
   };
 }

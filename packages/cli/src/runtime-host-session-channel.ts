@@ -594,10 +594,13 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
       return;
     }
     if (this.#items.length >= MAX_PENDING_EVENTS_PER_TURN) {
-      // A consumer that falls behind must not kill the stream. Shed
-      // offset-bearing deltas (the next canonical resync or completion heals
-      // them) and make room for every other event; the channel resubscribes
-      // to re-sync state, like the Desktop subscription owner does (#2630).
+      // A consumer that falls behind must not kill the stream. Shed deltas
+      // (text/thinking ranges are healed by the next canonical resync or
+      // completion; tool_output_delta chunks are seq-deduped transient UI
+      // updates healed by the terminal tool_result and the durable
+      // transcript) and make room for every other event; the channel
+      // resubscribes to re-sync state, like the Desktop subscription owner
+      // does (#2630).
       if (isSheddableDelta(event)) {
         this.#noteLag();
         return;
@@ -611,6 +614,10 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
         // without a result.
         this.#items.shift();
       } else {
+        // A non-delta, non-terminal event with nothing sheddable to evict
+        // (e.g. tool_result behind an all-control backlog) is dropped. The
+        // durable transcript heals the final state; the live panel may show
+        // a stale tool card until then. Documented boundary for v1.
         this.#noteLag();
         return;
       }
@@ -621,7 +628,10 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
 
   /**
    * Drop sheddable deltas a lagging consumer has not seen. Called when the
-   * channel re-syncs from canonical state, which heals the omitted ranges.
+   * channel re-syncs from canonical state. The resync supersedes text and
+   * thinking ranges; tool output chunks are not replayed, but their seq
+   * ordering keeps the live panel consistent and the terminal tool_result
+   * heals the final output.
    */
   shedLaggedDeltas(): void {
     if (!this.#lagging) return;
@@ -656,7 +666,15 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
 }
 
 function isSheddableDelta(event: SessionEvent): boolean {
-  return event.type === 'text_delta' || event.type === 'thinking_delta';
+  // tool_output_delta is sheddable by design: its chunks are transient UI
+  // updates with a monotonic per-tool `seq` (renderers de-dupe and order by
+  // it, so a shed range leaves a gap, never corruption), and the terminal
+  // tool_result plus the durable transcript heal the tool's final output.
+  return (
+    event.type === 'text_delta' ||
+    event.type === 'thinking_delta' ||
+    event.type === 'tool_output_delta'
+  );
 }
 
 function isTerminalOutcome(event: SessionEvent): boolean {
