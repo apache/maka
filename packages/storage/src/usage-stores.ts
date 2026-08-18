@@ -53,6 +53,14 @@ const writers = new WeakSet<object>();
 const writerByLease = new WeakMap<object, InteractiveUsageStoresWriter>();
 const writerOpeningByLease = new WeakMap<object, Promise<InteractiveUsageStoresWriter>>();
 
+/**
+ * A revision read needs a stable answer or a failure, never an unbounded wait
+ * behind a continuous write stream: every admitted write replaces the barrier
+ * synchronously, so an active turn could otherwise keep the loop alive
+ * indefinitely.
+ */
+const USAGE_REVISION_SETTLE_ATTEMPTS = 32;
+
 export interface TelemetryIndexReader {
   summary(query: UsageQuery): Promise<UsageSummaryV2>;
   buckets(query: UsageQuery, groupBy: UsageGroupBy): Promise<UsageBucket[]>;
@@ -440,12 +448,13 @@ function createWriterFacade(
         ),
     },
     usageSnapshotRevision: async () => {
-      while (true) {
+      for (let attempt = 0; attempt < USAGE_REVISION_SETTLE_ATTEMPTS; attempt += 1) {
         assertOpen();
         const accepted = barrier;
         await accepted;
         if (accepted === barrier) return usageRevision;
       }
+      throw new Error('Usage revision did not settle');
     },
     beginDrain,
     flush,

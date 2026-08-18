@@ -270,6 +270,30 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('usageSnapshotRevision fails fast behind a continuous write stream', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      let stop = false;
+      const writer = (async () => {
+        while (!stop) {
+          // Admit one write per macrotask turn: admit() replaces the barrier
+          // synchronously, so every barrier the reader awaits has already been
+          // superseded before its writes can complete. Failures are collected
+          // by the facade and surfaced through flush, not here.
+          void stores.telemetry.recordLlmCall(llmRecord()).catch(() => undefined);
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      })();
+      await assert.rejects(stores.usageSnapshotRevision(), /Usage revision did not settle/);
+      stop = true;
+      await writer;
+      await stores.close();
+      await owner.close();
+    });
+  });
+
   test('normalizes legacy reasoning details out of total tokens', async () => {
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
