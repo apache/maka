@@ -34,6 +34,8 @@ test('project navigation and actions remain adjacent keyboard controls', async (
   const controlledGroup = page.locator(`[id="${controlledGroupId}"]`);
   const firstSessionControl = controlledGroup.locator('[data-session-id] button').first();
 
+  await expect(navigation).toBeVisible();
+  await expect(firstSessionControl).toBeVisible();
   const [projectNavigationBox, firstSessionBox] = await Promise.all([
     navigation.boundingBox(),
     firstSessionControl.boundingBox(),
