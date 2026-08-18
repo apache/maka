@@ -633,6 +633,15 @@ export class McpClientManager {
       entry.enforceMcpHeaders =
         connected.kind === 'streamable-http' && negotiatedProtocol.era === 'modern';
 
+      if (negotiatedProtocol.era === 'legacy') {
+        // Legacy servers commonly emit this notification without advertising
+        // the optional listChanged flag. Keep that compatibility at the
+        // manager boundary; modern connections use the SDK subscription path.
+        connectedClient.setNotificationHandler('notifications/tools/list_changed', async () => {
+          this.handleToolsChanged(serverId, entry, connectedClient, connectionGeneration, null);
+        });
+      }
+
       const bufferedEvents = connected.events.activate({
         onToolsChanged: (error) => {
           this.handleToolsChanged(serverId, entry, connectedClient, connectionGeneration, error);

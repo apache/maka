@@ -173,6 +173,21 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       );
     });
 
+    test('refreshes for legacy list-changed notifications without an advertised flag', async () => {
+      const fixture = await createRemoteFixture('sse', { advertiseToolListChanges: false });
+      const manager = createManager();
+      await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto', 'legacy'));
+
+      fixture.setToolListMode('replacement');
+      await fixture.notifyToolListChanged();
+      await waitFor(() => manager.toolSnapshot().tools[0]?.descriptor.name === 'replacement');
+
+      assert.deepEqual(
+        manager.status('remote')?.tools.map((tool) => tool.name),
+        ['replacement'],
+      );
+    });
+
     test('routes initial discovery through the refresh owner when list-changed precedes the first response', async () => {
       const fixture = await createRemoteFixture('sse');
       const gate = fixture.holdNextToolList();
@@ -1152,7 +1167,11 @@ type ToolListMode =
 
 async function createRemoteFixture(
   kind: 'streamable-http' | 'sse',
-  options: { advertiseTools?: boolean; legacyToolCallResult?: unknown } = {},
+  options: {
+    advertiseTools?: boolean;
+    advertiseToolListChanges?: boolean;
+    legacyToolCallResult?: unknown;
+  } = {},
 ): Promise<RemoteFixture> {
   const requests: RemoteRequest[] = [];
   let toolListMode: ToolListMode = 'valid';
@@ -1239,6 +1258,7 @@ async function createRemoteFixture(
         const transport = new SSEServerTransport('/messages', res);
         const server = createProtocolServer({
           advertiseTools: options.advertiseTools !== false,
+          advertiseToolListChanges: options.advertiseToolListChanges !== false,
           toolListMode: () => toolListMode,
           beforeToolList,
           afterToolList: () => toolListResponseClockAdvance(),
@@ -1335,6 +1355,7 @@ async function createRemoteFixture(
 
 function createProtocolServer(options: {
   advertiseTools: boolean;
+  advertiseToolListChanges?: boolean;
   toolListMode: () => ToolListMode;
   beforeToolList: () => Promise<void>;
   afterToolList: () => void;
@@ -1343,7 +1364,11 @@ function createProtocolServer(options: {
 }): McpServer {
   const server = new McpServer(
     { name: 'maka-remote-fixture', version: '1.0.0' },
-    { capabilities: options.advertiseTools ? { tools: { listChanged: true } } : {} },
+    {
+      capabilities: options.advertiseTools
+        ? { tools: options.advertiseToolListChanges === false ? {} : { listChanged: true } }
+        : {},
+    },
   );
   server.setRequestHandler('tools/list', async () => {
     const mode = options.toolListMode();
