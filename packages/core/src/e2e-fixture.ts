@@ -2,6 +2,9 @@ import type { BotOnboardingProvider } from './bot-onboarding.js';
 import type { SettingsSection } from './settings.js';
 import type { UiLocale } from './ui-locale.js';
 
+export const FIRST_VERIFIED_RESULT_E2E_PROMPT =
+  'Create verified-result.txt and validate the change.';
+
 /** Scenarios that are consumed by a current E2E, audit, or smoke entry point. */
 export type E2eFixtureScenario =
   | 'settings-models'

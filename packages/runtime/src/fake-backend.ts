@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { BackendKind, SessionHeader, StoredMessage } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
+import { FIRST_VERIFIED_RESULT_E2E_PROMPT } from '@maka/core/e2e-fixture';
 import type {
   AgentBackend,
   BackendSendInput,
@@ -30,6 +34,7 @@ export const FAKE_HOLD_OPEN_REWRITE_PROMPT = '__e2e_hold_open_rewrite__';
 export const FAKE_MERMAID_PROMPT = '__e2e_mermaid__';
 export const FAKE_MERMAID_HOSTILE_PROMPT = '__e2e_mermaid_hostile__';
 export const FAKE_ERROR_PROMPT_PREFIX = '__e2e_error__:';
+export const FAKE_FIRST_VERIFIED_RESULT_PROMPT = FIRST_VERIFIED_RESULT_E2E_PROMPT;
 
 type PendingQuestion = {
   turnId: string;
@@ -75,6 +80,10 @@ export class FakeBackend implements AgentBackend {
     }
     if (input.text.startsWith(FAKE_ERROR_PROMPT_PREFIX)) {
       yield* this.sendErrorScenario(input, input.text.slice(FAKE_ERROR_PROMPT_PREFIX.length));
+      return;
+    }
+    if (input.text === FAKE_FIRST_VERIFIED_RESULT_PROMPT) {
+      yield* this.sendFirstVerifiedResultScenario(input);
       return;
     }
     const turnId = input.turnId;
@@ -303,6 +312,136 @@ export class FakeBackend implements AgentBackend {
     } finally {
       if (outstanding.length > 0) input.nackSteering?.(outstanding.splice(0));
     }
+  }
+
+  private async *sendFirstVerifiedResultScenario(
+    input: BackendSendInput,
+  ): AsyncIterable<SessionEvent> {
+    const turnId = input.turnId;
+    const appendMessage =
+      this.ctx.appendMessage ??
+      ((message: StoredMessage) => this.ctx.store.appendMessage(this.sessionId, message));
+    const fileName = 'verified-result.txt';
+    const fileContent = 'Maka first verified result\n';
+    const filePath = join(this.ctx.header.cwd, fileName);
+    const writeToolUseId = randomUUID();
+    const writeStartedAt = Date.now();
+    const diff = [
+      `diff --git a/${fileName} b/${fileName}`,
+      'new file mode 100644',
+      '--- /dev/null',
+      `+++ b/${fileName}`,
+      '@@ -0,0 +1 @@',
+      '+Maka first verified result',
+    ].join('\n');
+
+    await appendMessage({
+      type: 'tool_call',
+      id: writeToolUseId,
+      turnId,
+      ts: writeStartedAt,
+      toolName: 'Write',
+      displayName: `Write ${fileName}`,
+      args: { path: fileName, content: fileContent },
+    });
+    yield {
+      type: 'tool_start',
+      id: randomUUID(),
+      turnId,
+      ts: writeStartedAt,
+      toolUseId: writeToolUseId,
+      toolName: 'Write',
+      displayName: `Write ${fileName}`,
+      args: { path: fileName, content: fileContent },
+    };
+    await writeFile(filePath, fileContent, 'utf8');
+    const writeResult = {
+      type: 'tool_result',
+      id: randomUUID(),
+      turnId,
+      ts: Date.now(),
+      toolUseId: writeToolUseId,
+      isError: false,
+      content: { kind: 'file_diff', paths: [fileName], diff },
+      durationMs: Date.now() - writeStartedAt,
+    } satisfies StoredMessage;
+    await appendMessage(writeResult);
+    yield { ...writeResult, id: randomUUID() } satisfies Extract<
+      SessionEvent,
+      { type: 'tool_result' }
+    >;
+
+    const validationToolUseId = randomUUID();
+    const validationStartedAt = Date.now();
+    const validationCommand = 'node verified-result.check.mjs';
+    await appendMessage({
+      type: 'tool_call',
+      id: validationToolUseId,
+      turnId,
+      ts: validationStartedAt,
+      toolName: 'Bash',
+      displayName: 'Validate verified result',
+      args: { cmd: validationCommand, cwd: this.ctx.header.cwd },
+    });
+    yield {
+      type: 'tool_start',
+      id: randomUUID(),
+      turnId,
+      ts: validationStartedAt,
+      toolUseId: validationToolUseId,
+      toolName: 'Bash',
+      displayName: 'Validate verified result',
+      args: { cmd: validationCommand, cwd: this.ctx.header.cwd },
+    };
+    const validationStdout = execFileSync(process.execPath, ['verified-result.check.mjs'], {
+      cwd: this.ctx.header.cwd,
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+    const validationResult = {
+      type: 'tool_result',
+      id: randomUUID(),
+      turnId,
+      ts: Date.now(),
+      toolUseId: validationToolUseId,
+      isError: false,
+      content: {
+        kind: 'terminal',
+        cwd: this.ctx.header.cwd,
+        cmd: validationCommand,
+        status: 'completed',
+        exitCode: 0,
+        output: {
+          mode: 'pipes',
+          stdout: validationStdout,
+          stderr: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: false,
+        },
+      },
+      durationMs: Date.now() - validationStartedAt,
+    } satisfies StoredMessage;
+    await appendMessage(validationResult);
+    yield { ...validationResult, id: randomUUID() } satisfies Extract<
+      SessionEvent,
+      { type: 'tool_result' }
+    >;
+
+    const messageId = randomUUID();
+    const text = `Created ${fileName}. Validation passed (1/1).`;
+    const ts = Date.now();
+    yield { type: 'text_delta', id: randomUUID(), turnId, ts, messageId, text };
+    await appendMessage({
+      type: 'assistant',
+      id: messageId,
+      turnId,
+      ts,
+      text,
+      modelId: this.ctx.header.model,
+    });
+    yield { type: 'text_complete', id: randomUUID(), turnId, ts, messageId, text };
+    yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'end_turn' };
   }
 
   async stop(): Promise<void> {

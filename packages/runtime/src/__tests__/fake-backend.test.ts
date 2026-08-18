@@ -1,14 +1,89 @@
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
-import type { SessionHeader } from '@maka/core/session';
-import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '../fake-backend.js';
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
+import {
+  FAKE_ASK_USER_QUESTION_PROMPT,
+  FAKE_FIRST_VERIFIED_RESULT_PROMPT,
+  FakeBackend,
+} from '../fake-backend.js';
 import {
   RuntimeInteractionInvariantError,
   bindRuntimeInteractionRun,
   type RuntimeUserQuestionContinuation,
 } from '../interaction-authority.js';
 import type { SessionStore } from '../session-manager.js';
+
+test('first verified result fake-backend fixture writes and validates its project', async () => {
+  const isolatedRoot = await mkdtemp(join(tmpdir(), 'maka-verified-result-'));
+  const projectRoot = join(isolatedRoot, 'project');
+  await mkdir(projectRoot);
+  await writeFile(
+    join(projectRoot, 'verified-result.check.mjs'),
+    [
+      "import assert from 'node:assert/strict';",
+      "import { readFile } from 'node:fs/promises';",
+      "assert.equal(await readFile('verified-result.txt', 'utf8'), 'Maka first verified result\\n');",
+      "console.log('validation: 1 passed, 0 failed');",
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  const appended: StoredMessage[] = [];
+  try {
+    const backend = new FakeBackend({
+      sessionId: 'session-verified',
+      header: { model: 'fake-model', cwd: projectRoot } as SessionHeader,
+      store: {} as SessionStore,
+      appendMessage: async (message) => {
+        appended.push(message);
+      },
+    });
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({
+      turnId: 'turn-verified',
+      runId: 'run-verified',
+      text: FAKE_FIRST_VERIFIED_RESULT_PROMPT,
+      context: [],
+    })) {
+      events.push(event);
+    }
+
+    assert.equal(
+      await readFile(join(projectRoot, 'verified-result.txt'), 'utf8'),
+      'Maka first verified result\n',
+    );
+    assert.deepEqual(
+      appended.map((message) => message.type),
+      ['tool_call', 'tool_result', 'tool_call', 'tool_result', 'assistant'],
+    );
+    assert.deepEqual(
+      events.map((event) => event.type),
+      [
+        'tool_start',
+        'tool_result',
+        'tool_start',
+        'tool_result',
+        'text_delta',
+        'text_complete',
+        'complete',
+      ],
+    );
+    const validation = appended.find(
+      (message) => message.type === 'tool_result' && message.content.kind === 'terminal',
+    );
+    assert.ok(validation?.type === 'tool_result' && validation.content.kind === 'terminal');
+    assert.equal(validation.content.exitCode, 0);
+    assert.equal(validation.content.output.mode, 'pipes');
+    if (validation.content.output.mode !== 'pipes') assert.fail('expected pipe output');
+    assert.match(validation.content.output.stdout, /validation: 1 passed, 0 failed/);
+  } finally {
+    await rm(isolatedRoot, { recursive: true, force: true });
+  }
+});
 
 test('Fake question publication waits for exact hosted admission', async () => {
   const admissionStarted = deferred<void>();
