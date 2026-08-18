@@ -154,9 +154,13 @@ export async function reconcileAgentGraphSchedule(
   const dispatches: AgentGraphDispatchedActivation[] = [];
   const stops: AgentGraphScheduleStopResult[] = [];
   const failures: AgentGraphScheduleReconciliationFailure[] = [];
+  // Resolved historical results are immutable for the lifetime of one
+  // reconciliation; cache them per source graph so repeated snapshot reads do
+  // not replay the full committed projection of a closed epoch.
+  const selectedResultCache: SelectedResultCache = new Map();
   let newActivationCount = 0;
   let observedExistingActivationCount = 0;
-  let snapshot = await readScheduleSnapshot(input);
+  let snapshot = await readScheduleSnapshot(input, selectedResultCache);
 
   for (let attempt = 0; attempt < MAX_RECONCILIATION_ATTEMPTS; attempt += 1) {
     if (input.abortSignal?.aborted) {
@@ -176,7 +180,7 @@ export async function reconcileAgentGraphSchedule(
     stops.push(...stopWave.stops);
     for (const failure of stopWave.failures) recordReconciliationFailure(input, failures, failure);
     if (failures.length > 0) {
-      snapshot = await readScheduleSnapshot(input);
+      snapshot = await readScheduleSnapshot(input, selectedResultCache);
       return reconciliationResult(
         input.abortSignal?.aborted ? 'cancelled' : 'failed',
         newActivationCount,
@@ -212,7 +216,7 @@ export async function reconcileAgentGraphSchedule(
         deferredWork.push({ work, reason: 'graph_closed' });
         continue;
       }
-      const missingInputIds = work.inputIds.filter((recordId) => !committedRecords.has(recordId));
+      const missingInputIds = missingWorkInputIds(work, committedRecords);
       if (missingInputIds.length > 0) {
         deferredWork.push({ work, reason: 'input_not_committed', missingInputIds });
         continue;
@@ -250,7 +254,7 @@ export async function reconcileAgentGraphSchedule(
       }
     }
     if (topologyChanged || topologyStale) {
-      snapshot = await readScheduleSnapshot(input);
+      snapshot = await readScheduleSnapshot(input, selectedResultCache);
       if (failures.length === 0) continue;
     }
     if (failures.length > 0) {
@@ -292,7 +296,7 @@ export async function reconcileAgentGraphSchedule(
         deferredWork.push({ work, reason: 'graph_closed' });
         continue;
       }
-      const missingInputIds = work.inputIds.filter((recordId) => !committedRecords.has(recordId));
+      const missingInputIds = missingWorkInputIds(work, committedRecords);
       if (missingInputIds.length > 0) {
         deferredWork.push({
           work,
@@ -305,7 +309,7 @@ export async function reconcileAgentGraphSchedule(
     }
 
     if (failures.length > 0) {
-      snapshot = await readScheduleSnapshot(input);
+      snapshot = await readScheduleSnapshot(input, selectedResultCache);
       return reconciliationResult(
         'failed',
         newActivationCount,
@@ -366,7 +370,7 @@ export async function reconcileAgentGraphSchedule(
       }
     });
     if (failures.length > 0) {
-      snapshot = await readScheduleSnapshot(input);
+      snapshot = await readScheduleSnapshot(input, selectedResultCache);
       return reconciliationResult(
         'failed',
         newActivationCount,
@@ -409,7 +413,7 @@ export async function reconcileAgentGraphSchedule(
       }
     }
 
-    const nextSnapshot = await readScheduleSnapshot(input);
+    const nextSnapshot = await readScheduleSnapshot(input, selectedResultCache);
     if (stale || nextSnapshot.schedule.revision !== snapshot.schedule.revision) {
       snapshot = nextSnapshot;
       continue;
@@ -449,7 +453,7 @@ export async function reconcileAgentGraphSchedule(
     );
   }
 
-  snapshot = await readScheduleSnapshot(input);
+  snapshot = await readScheduleSnapshot(input, selectedResultCache);
   return reconciliationResult(
     'stale',
     newActivationCount,
@@ -464,6 +468,7 @@ export async function reconcileAgentGraphSchedule(
 
 async function readScheduleSnapshot(
   input: ReconcileAgentGraphScheduleInput,
+  selectedResultCache: SelectedResultCache,
 ): Promise<ScheduleSnapshot> {
   const [updates, provisions, claims] = await Promise.all([
     input.controlStore.listAgentGraphScheduleUpdates(input.topology.graphId),
@@ -478,7 +483,11 @@ async function readScheduleSnapshot(
   const selectedInputs = schedule.work
     .filter((work) => work.status === 'requested')
     .flatMap((work) => work.selectedResultInputs ?? []);
-  const selectedResultRecords = await resolveSelectedResultRecords(input, selectedInputs);
+  const selectedResultRecords = await resolveSelectedResultRecords(
+    input,
+    selectedInputs,
+    selectedResultCache,
+  );
   return {
     schedule,
     observation,
@@ -490,9 +499,34 @@ async function readScheduleSnapshot(
   };
 }
 
+/** Missing inputs include unresolved selected historical result ids so an
+ * unresolvable source defers its own work item via `input_not_committed`. */
+function missingWorkInputIds(
+  work: AgentGraphScheduleWorkView,
+  committedRecords: ReadonlyMap<string, AgentGraphRecord>,
+): string[] {
+  return [
+    ...work.inputIds.filter((recordId) => !committedRecords.has(recordId)),
+    ...(work.selectedResultInputs ?? [])
+      .map((selected) => selected.resultId)
+      .filter((recordId) => !committedRecords.has(recordId)),
+  ];
+}
+
+/** Resolved historical records keyed by source graph id, then result id. */
+type SelectedResultCache = Map<string, Map<string, AgentGraphRecord>>;
+
+/**
+ * Resolves selected historical result inputs, isolating failures per source
+ * graph: an unresolvable source omits its records so dependent work items
+ * defer with `input_not_committed` instead of wedging the whole graph.
+ * Contract violations that commit-time authorization already rejected
+ * (missing resolver, ambiguous result ids) still throw.
+ */
 async function resolveSelectedResultRecords(
   input: ReconcileAgentGraphScheduleInput,
   selectedInputs: readonly AgentGraphSelectedResultInput[],
+  cache: SelectedResultCache,
 ): Promise<Map<string, AgentGraphRecord>> {
   if (selectedInputs.length === 0) return new Map();
   if (!input.resolveSelectedResultInputs) {
@@ -506,21 +540,49 @@ async function resolveSelectedResultRecords(
       ]),
     ).values(),
   ];
-  const records = await input.resolveSelectedResultInputs(distinct);
-  if (records.length !== distinct.length) {
-    throw new Error('Selected graph result resolver returned an incomplete result set');
+  const bySource = new Map<string, AgentGraphSelectedResultInput[]>();
+  for (const selected of distinct) {
+    const group = bySource.get(selected.sourceGraphId);
+    if (group) {
+      group.push(selected);
+    } else {
+      bySource.set(selected.sourceGraphId, [selected]);
+    }
+  }
+  for (const [sourceGraphId, group] of bySource) {
+    let cached = cache.get(sourceGraphId);
+    if (!cached) {
+      cached = new Map();
+      cache.set(sourceGraphId, cached);
+    }
+    const pending = group.filter((selected) => !cached.has(selected.resultId));
+    if (pending.length === 0) continue;
+    let records: readonly AgentGraphRecord[];
+    try {
+      records = await input.resolveSelectedResultInputs(pending);
+    } catch {
+      continue;
+    }
+    if (
+      records.length !== pending.length ||
+      records.some((record, index) => {
+        const selected = pending[index]!;
+        return record.graphId !== selected.sourceGraphId || record.recordId !== selected.resultId;
+      })
+    ) {
+      continue;
+    }
+    records.forEach((record) => cached.set(record.recordId, record));
   }
   const resolved = new Map<string, AgentGraphRecord>();
-  records.forEach((record, index) => {
-    const selected = distinct[index]!;
-    if (record.graphId !== selected.sourceGraphId || record.recordId !== selected.resultId) {
-      throw new Error('Selected graph result resolver returned a mismatched record');
-    }
+  for (const selected of distinct) {
+    const record = cache.get(selected.sourceGraphId)?.get(selected.resultId);
+    if (!record) continue;
     if (resolved.has(record.recordId)) {
       throw new Error(`Selected graph result id ${record.recordId} is ambiguous`);
     }
     resolved.set(record.recordId, clonePlain(record));
-  });
+  }
   return resolved;
 }
 
