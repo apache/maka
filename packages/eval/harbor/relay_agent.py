@@ -99,6 +99,7 @@ class RelayAgent(BaseAgent):
         execution: asyncio.Task[Any] | None = None
         decision: asyncio.Task[dict[str, Any]] | None = None
         request: dict[str, Any] | None = None
+        cwd = ""
         execution_reported = False
         scope_path = f"/logs/agent/.maka-eval-{self._token}.pid"
         environment_path = f"/tmp/maka-eval-{self._token}.env"
@@ -165,66 +166,30 @@ class RelayAgent(BaseAgent):
                 "verify",
             )
         except asyncio.CancelledError:
-            if request is not None and execution is not None:
-                execution_terminal = execution.done() and not execution.cancelled()
-                terminal_projection = None
-                if execution_terminal:
-                    terminal_result = execution.result()
-                    terminal_projection = _project_result(terminal_result, request)
-                # A subject that already exited has nothing left to settle, and
-                # tearing its scope down here would remove what the verifier is
-                # about to score -- the same environment edit this relay stopped
-                # making on the ordinary path. A still-running subject is
-                # stopped so the execution call can return. Host abort then
-                # quiesces the leftover group; framework timeout does not,
-                # because the verifier still runs.
-                if terminal_projection is not None:
-                    result = terminal_result
-                elif _host_teardown_requested:
-                    result = await _settle_or_destroy(
-                        environment, cwd, scope_path, execution, self._teardown_timeout
+            # A cancelled task would otherwise fail every await in this
+            # handler. Uncancel so cleanup can run; a second cancel or any
+            # cleanup error destroys the environment before we re-raise.
+            current = asyncio.current_task()
+            if current is not None and hasattr(current, "uncancel"):
+                current.uncancel()
+            try:
+                if request is not None and execution is not None:
+                    await self._finalize_cancelled_execution(
+                        environment,
+                        cwd,
+                        scope_path,
+                        execution,
+                        request,
+                        writer,
+                        execution_reported,
                     )
-                else:
-                    result = await _stop_subject_for_timeout(
-                        environment, cwd, scope_path, execution, self._teardown_timeout
-                    )
-                if result is not None:
-                    await _persist_subject_outputs(environment, result)
-                if (
-                    result is not None
-                    and not execution_reported
-                    and (execution_terminal or not _host_teardown_requested)
-                ):
-                    stdout, diagnostic = terminal_projection or _project_result(result, request)
+            except asyncio.CancelledError:
+                if request is not None and execution is not None:
                     with contextlib.suppress(Exception):
-                        await _send(
-                            writer,
-                            {
-                                "token": self._token,
-                                "kind": "executed",
-                                "termination": "exited" if execution_terminal else "framework_timeout",
-                                "exitCode": result.return_code if execution_terminal else 124,
-                                "stdout": stdout,
-                                "diagnostic": diagnostic,
-                            },
+                        await _settle_or_destroy(
+                            environment, cwd, scope_path, execution, self._teardown_timeout
                         )
-                elif not execution_reported and not _host_teardown_requested:
-                    with contextlib.suppress(Exception):
-                        await _send(
-                            writer,
-                            {
-                                "token": self._token,
-                                "kind": "executed",
-                                "termination": "framework_timeout",
-                                "exitCode": 124,
-                                "stdout": "",
-                                "diagnostic": (
-                                    _carrier_diagnostic("result-frame-missing", b"")
-                                    if request.get("captureStdout", True)
-                                    else {"category": "none"}
-                                ),
-                            },
-                        )
+                raise
             raise
         except RelayTransportClosed:
             if request is not None and execution is not None:
@@ -261,6 +226,76 @@ class RelayAgent(BaseAgent):
             with contextlib.suppress(BrokenPipeError, ConnectionError, RuntimeError, TimeoutError):
                 writer.close()
                 await asyncio.wait_for(writer.wait_closed(), timeout=1)
+
+    async def _finalize_cancelled_execution(
+        self,
+        environment: Any,
+        cwd: str,
+        scope_path: str,
+        execution: asyncio.Task[Any],
+        request: dict[str, Any],
+        writer: Any,
+        execution_reported: bool,
+    ) -> None:
+        execution_terminal = execution.done() and not execution.cancelled()
+        terminal_projection = None
+        if execution_terminal:
+            terminal_result = execution.result()
+            terminal_projection = _project_result(terminal_result, request)
+        # A subject that already exited has nothing left to settle, and
+        # tearing its scope down here would remove what the verifier is
+        # about to score -- the same environment edit this relay stopped
+        # making on the ordinary path. A still-running subject is
+        # stopped so the execution call can return. Host abort then
+        # quiesces the leftover group; framework timeout does not,
+        # because the verifier still runs.
+        if terminal_projection is not None:
+            result = terminal_result
+        elif _host_teardown_requested:
+            result = await _settle_or_destroy(
+                environment, cwd, scope_path, execution, self._teardown_timeout
+            )
+        else:
+            result = await _stop_subject_for_timeout(
+                environment, cwd, scope_path, execution, self._teardown_timeout
+            )
+        if result is not None:
+            await _persist_subject_outputs(environment, result)
+        if (
+            result is not None
+            and not execution_reported
+            and (execution_terminal or not _host_teardown_requested)
+        ):
+            stdout, diagnostic = terminal_projection or _project_result(result, request)
+            with contextlib.suppress(Exception):
+                await _send(
+                    writer,
+                    {
+                        "token": self._token,
+                        "kind": "executed",
+                        "termination": "exited" if execution_terminal else "framework_timeout",
+                        "exitCode": result.return_code if execution_terminal else 124,
+                        "stdout": stdout,
+                        "diagnostic": diagnostic,
+                    },
+                )
+        elif not execution_reported and not _host_teardown_requested:
+            with contextlib.suppress(Exception):
+                await _send(
+                    writer,
+                    {
+                        "token": self._token,
+                        "kind": "executed",
+                        "termination": "framework_timeout",
+                        "exitCode": 124,
+                        "stdout": "",
+                        "diagnostic": (
+                            _carrier_diagnostic("result-frame-missing", b"")
+                            if request.get("captureStdout", True)
+                            else {"category": "none"}
+                        ),
+                    },
+                )
 
 
 async def _prepare_command(
@@ -598,7 +633,7 @@ async def _stop_subject_for_timeout(
         if remaining <= 0:
             break
         signalled = await _signal_leader(
-            environment, cwd, scope_path, signal, timeout_sec=min(5.0, remaining)
+            environment, cwd, scope_path, signal, timeout_sec=remaining
         )
         remaining = stop_deadline - loop.time()
         if remaining <= 0:

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { RuntimeHostRequestInterruptedError } from '../client/connection.js';
 import { runHostedExecutionWithDependencies } from '../client/hosted-execution.js';
 
 test('diagnostics disconnect after settlement preserves the canonical result', async () => {
@@ -104,7 +105,7 @@ test('environment-preserving abort detaches without cancelling or settling the H
       }
       started.resolve();
       await closed.promise;
-      throw new Error('connection detached');
+      throw admittedInterrupt();
     },
   });
   connected.connection.close = async () => {
@@ -129,7 +130,49 @@ test('environment-preserving abort detaches without cancelling or settling the H
 
   assert.equal(result.kind, 'indeterminate');
   assert.equal(result.failureReason, 'Hosted execution continues for environment verification');
-  assert.deepEqual(events, ['hosted.execution.start', 'release', 'close']);
+  assert.deepEqual(events, ['hosted.execution.start', 'close', 'release']);
+});
+
+test('pre-admission preserve abort does not claim execution continues', async () => {
+  const abort = new AbortController();
+  const started = deferred();
+  const closed = deferred();
+  const events: string[] = [];
+  const connected = ownedHost({
+    request: async (operation: string) => {
+      events.push(operation);
+      if (operation !== 'hosted.execution.start') {
+        throw new Error(`Unexpected operation ${operation}`);
+      }
+      started.resolve();
+      await closed.promise;
+      throw queuedInterrupt();
+    },
+  });
+  connected.connection.close = async () => {
+    if (events.includes('close')) return;
+    events.push('close');
+    closed.resolve();
+  };
+  connected.host.releaseToEnvironment = () => {
+    events.push('release');
+  };
+  connected.host.settle = async () => {
+    events.push('settle');
+    return true;
+  };
+
+  const execution = runHostedExecutionWithDependencies(
+    { ...input(abort.signal), abortPolicy: 'preserve_environment' },
+    { connectOwnedRuntimeHost: async () => connected as never },
+  );
+  await started.promise;
+  abort.abort();
+  const result = await execution;
+
+  assert.equal(result.kind, 'indeterminate');
+  assert.equal(result.failureReason, 'Hosted execution was cancelled');
+  assert.deepEqual(events, ['hosted.execution.start', 'close', 'settle']);
 });
 
 test('environment-preserving abort before start does not claim execution continues', async () => {
@@ -413,6 +456,24 @@ function ownedHost(connection: Record<string, unknown>, clean = false) {
       settle: async () => clean,
     },
   };
+}
+
+function admittedInterrupt() {
+  return new RuntimeHostRequestInterruptedError(
+    'hosted.execution.start',
+    'command',
+    'dispatched',
+    'connection_lost',
+  );
+}
+
+function queuedInterrupt() {
+  return new RuntimeHostRequestInterruptedError(
+    'hosted.execution.start',
+    'command',
+    'not_dispatched',
+    'connection_lost',
+  );
 }
 
 function deferred() {

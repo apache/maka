@@ -6,7 +6,7 @@ import {
   type HostedExecutionStartInput,
 } from '../protocol/index.js';
 import { connectOwnedRuntimeHost } from './connect-or-spawn.js';
-import type { RuntimeHostConnection } from './connection.js';
+import { RuntimeHostRequestInterruptedError, type RuntimeHostConnection } from './connection.js';
 import { configureHostedExecutionTarget } from './hosted-execution-target.js';
 
 export interface RunHostedExecutionInput {
@@ -137,64 +137,65 @@ async function executeHostedExecution(
   signal: AbortSignal | undefined,
   abortPolicy: NonNullable<RunHostedExecutionInput['abortPolicy']>,
 ): Promise<{ readonly projection: HostedExecutionProjection; readonly detached: boolean }> {
-  let detached = false;
-  let dispatched = false;
-  let closeForDetach: Promise<void> | undefined;
-  const detach = () => {
-    if (abortPolicy !== 'preserve_environment' || detached || !dispatched) return;
-    detached = true;
-    host.releaseToEnvironment();
-    closeForDetach = connection.close().catch(() => undefined);
-  };
-  const cancel = () => {
+  let closeForAbort: Promise<void> | undefined;
+  const onAbort = () => {
     if (abortPolicy === 'preserve_environment') {
-      detach();
+      closeForAbort = connection.close().catch(() => undefined);
       return;
     }
-    if (!dispatched) return;
     void connection
       .request('hosted.execution.cancel', { executionId: execution.executionId })
       .catch(() => undefined);
   };
-  signal?.addEventListener('abort', cancel, { once: true });
+  signal?.addEventListener('abort', onAbort, { once: true });
   if (signal?.aborted) {
-    if (abortPolicy === 'preserve_environment') {
-      signal.removeEventListener('abort', cancel);
+    signal.removeEventListener('abort', onAbort);
+    return {
+      projection: indeterminate(execution.executionId, 'Hosted execution was cancelled'),
+      detached: false,
+    };
+  }
+  try {
+    const projection = await connection.request('hosted.execution.start', execution);
+    if (signal?.aborted && abortPolicy === 'preserve_environment') {
+      host.releaseToEnvironment();
+      return {
+        projection: preservesHostedExecutionEnvironment(projection)
+          ? projection
+          : indeterminate(
+              execution.executionId,
+              'Hosted execution continues for environment verification',
+            ),
+        detached: true,
+      };
+    }
+    return { projection, detached: false };
+  } catch (error) {
+    if (signal?.aborted && abortPolicy === 'preserve_environment') {
+      if (isAdmittedInterrupt(error)) {
+        host.releaseToEnvironment();
+        return {
+          projection: indeterminate(
+            execution.executionId,
+            'Hosted execution continues for environment verification',
+          ),
+          detached: true,
+        };
+      }
       return {
         projection: indeterminate(execution.executionId, 'Hosted execution was cancelled'),
         detached: false,
       };
     }
-    cancel();
-  }
-  try {
-    dispatched = true;
-    const projection = await connection.request('hosted.execution.start', execution);
-    return {
-      projection:
-        detached && !preservesHostedExecutionEnvironment(projection)
-          ? indeterminate(
-              execution.executionId,
-              'Hosted execution continues for environment verification',
-            )
-          : projection,
-      detached,
-    };
-  } catch (error) {
-    if (detached) {
-      return {
-        projection: indeterminate(
-          execution.executionId,
-          'Hosted execution continues for environment verification',
-        ),
-        detached: true,
-      };
-    }
     throw error;
   } finally {
-    signal?.removeEventListener('abort', cancel);
-    await closeForDetach;
+    signal?.removeEventListener('abort', onAbort);
+    await closeForAbort;
   }
+}
+
+function isAdmittedInterrupt(error: unknown): boolean {
+  return error instanceof RuntimeHostRequestInterruptedError && error.dispatch === 'dispatched';
 }
 
 function indeterminate(executionId: string, failureReason: string): HostedExecutionProjection {

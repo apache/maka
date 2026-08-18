@@ -188,6 +188,13 @@ class IgnoringLeaderEnvironment(SimultaneousEnvironment):
         return await super().exec(command, cwd=cwd, timeout_sec=timeout_sec)
 
 
+class SlowLeaderStopEnvironment(IgnoringLeaderEnvironment):
+    async def exec(self, command, cwd=None, timeout_sec=None):
+        if _is_leader_stop(command):
+            await asyncio.sleep(0.05)
+        return await super().exec(command, cwd=cwd, timeout_sec=timeout_sec)
+
+
 class LiveScopeEnvironment(SimultaneousEnvironment):
     """A subject whose process group outlives it, as a task's own service does."""
 
@@ -681,6 +688,42 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(environment.stopped)
             with self.assertRaisesRegex(RuntimeError, "could not confirm subject exit"):
                 await running
+        finally:
+            writer.close()
+            server.close()
+            await server.wait_closed()
+
+    async def test_second_cancel_during_timeout_cleanup_still_destroys(self):
+        relay = load_relay()
+        environment = SlowLeaderStopEnvironment()
+        token = f"framework-recancel-{os.getpid()}"
+        connected = asyncio.get_running_loop().create_future()
+
+        async def accept(reader, writer):
+            connected.set_result((reader, writer))
+
+        server = await asyncio.start_server(accept, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        agent = relay.RelayAgent(
+            logs_dir=Path(tempfile.gettempdir()), relay_host="127.0.0.1",
+            relay_port=port, relay_token=token, teardown_timeout_ms=200,
+        )
+        running = asyncio.create_task(agent.run("solve", environment, None))
+        reader, writer = await connected
+        try:
+            await reader.readline()
+            writer.write((__import__("json").dumps({
+                "token": token, "kind": "execute", "command": "/bin/true", "args": [],
+                "credentials": {}, "resultToken": "0" * 32,
+            }) + "\n").encode())
+            await writer.drain()
+            await environment.started.wait()
+            running.cancel()
+            await asyncio.sleep(0.01)
+            running.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(running, timeout=1)
+            self.assertTrue(environment.stopped)
         finally:
             writer.close()
             server.close()
