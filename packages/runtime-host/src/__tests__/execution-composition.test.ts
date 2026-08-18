@@ -110,7 +110,7 @@ test('production composition owns external conversation binding and Session crea
         client,
       );
       assert.equal(created.ok, true, JSON.stringify(created));
-      if (!created.ok || created.result.kind !== 'resolved') return;
+      if (!created.ok || created.result.kind !== 'resolved') assert.fail(JSON.stringify(created));
       assert.equal(created.result.disposition, 'created');
 
       const repeated = await reconcile({ kind: 'resolve', conversationId }, client);
@@ -166,7 +166,7 @@ test('production recovery preserves a crash-window conversation claim for Sessio
         },
       );
       assert.equal(outcome.ok, true, JSON.stringify(outcome));
-      if (!outcome.ok || outcome.result.kind !== 'resolved') return;
+      if (!outcome.ok || outcome.result.kind !== 'resolved') assert.fail(JSON.stringify(outcome));
       assert.equal(outcome.result.disposition, 'created');
       assert.equal(outcome.result.session.id, claimedSessionId);
     } finally {
