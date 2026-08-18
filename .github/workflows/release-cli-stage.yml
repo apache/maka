@@ -41,7 +41,6 @@ jobs:
         id: product
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
-          PRODUCT_TAG: ${{ needs.authorize.outputs.product_tag }}
           GH_TOKEN: ${{ github.token }}
           PRODUCT_TAG: v${{ inputs.version }}
         run: |
@@ -53,7 +52,7 @@ jobs:
           test "$release_tag" = "$PRODUCT_TAG"
           git fetch --no-tags origin "refs/tags/$PRODUCT_TAG"
           source_commit="$(git rev-list -n 1 FETCH_HEAD)"
-          test "$(git rev-parse FETCH_HEAD^{commit})" = "$source_commit"
+          test "$(git rev-parse "FETCH_HEAD^{commit}")" = "$source_commit"
           echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
           echo "product_tag=$PRODUCT_TAG" >> "$GITHUB_OUTPUT"
 
@@ -111,6 +110,7 @@ jobs:
         id: release
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
+          PRODUCT_TAG: ${{ needs.authorize.outputs.product_tag }}
           RELEASE_REPOSITORY: ${{ github.repository }}
           RELEASE_RUN_ID: ${{ github.run_id }}
           RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}

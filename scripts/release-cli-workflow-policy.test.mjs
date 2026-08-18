@@ -57,6 +57,8 @@ test('stage builds the npm candidate from the exact product release commit', () 
   assert.match(workflow, /gh release view "\$PRODUCT_TAG"/u);
   assert.match(workflow, /EXPECTED_PRODUCT_SOURCE_COMMIT/u);
   assert.doesNotMatch(workflow, /RELEASE_SHA: \$\{\{ github\.sha \}\}/u);
+  const bind = namedStep(workflowSteps(workflow), 'Bind the candidate to this workflow run');
+  assert.match(bind, /PRODUCT_TAG: \$\{\{ needs\.authorize\.outputs\.product_tag \}\}/u);
 });
 
 test('finalize validates one exact stage attempt before running the current verifier', () => {
