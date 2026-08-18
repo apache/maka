@@ -51,7 +51,9 @@ The install command persists the current exact Node and Maka CLI paths. Re-runni
 same service; an omitted WebSocket port preserves the existing port. Before uninstalling the npm
 package, remove the service with `maka runtime-host service uninstall`. Service uninstall keeps the
 State Root and Project data. Installation reports an actionable error instead of claiming persistence
-when systemd user lingering is disabled.
+when systemd user lingering is disabled. Run service installation from a persistent global Maka
+installation, not `npx`. A replacement is committed only after the new Runtime Host is ready; failure
+restores the previous service.
 
 ## Choose a connection method
 

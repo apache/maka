@@ -215,7 +215,6 @@ export async function runMakaCli(
         json: command.json,
         clientDataRoot: dataRoots.clientDataRoot,
         defaultRootPath: dataRoots.workspaceRoot,
-        packageVersion: version,
         nodePath: process.execPath,
         cliPath: process.argv[1] ?? '',
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),

@@ -38,7 +38,8 @@ maka --help
 ```
 
 `maka-agent` is an alias for `maka`. For a one-off invocation, use
-`npx --yes maka-agent@next`; the unrelated `maka` package on npm is not this project.
+`npx --yes maka-agent@next`; the unrelated `maka` package on npm is not this project. A managed
+Runtime Host service requires the persistent global installation above.
 
 ## First run
 

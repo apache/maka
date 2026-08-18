@@ -50,7 +50,9 @@ maka runtime-host service status --json
 安装命令会持久保存当前精确的 Node 与 Maka CLI 路径。重复执行会更新同一个 service；未指定
 WebSocket port 时会保留现有端口。卸载 npm 包前，应先执行
 `maka runtime-host service uninstall`。卸载 service 会保留 State Root 与 Project 数据。如果
-systemd user lingering 未启用，安装会给出可操作的错误，不会声称服务能够持久运行。
+systemd user lingering 未启用，安装会给出可操作的错误，不会声称服务能够持久运行。Service
+必须从持久的全局 Maka 安装中安装，不能使用 `npx`。替换操作只会在新的 Runtime Host ready
+之后提交；失败时会恢复之前的 service。
 
 ## 选择连接方式
 
