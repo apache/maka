@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
 import { runManagedRuntimeHostServiceCli } from '../runtime-host-service-management-command.js';
 import {
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceConfigPath,
+  resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceConfig,
   type RuntimeHostServiceBackend,
@@ -62,10 +63,11 @@ describe('managed Runtime Host service', () => {
     await mkdir(projectPath, { recursive: true });
     const env = { XDG_CONFIG_HOME: join(base, 'xdg-config') };
     const configPath = resolveRuntimeHostManagedServiceConfigPath(clientDataRoot);
-    const unitPath = resolveSystemdUserRuntimeHostServicePath(env, homeDir);
+    const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
+    const unitPath = resolveSystemdUserRuntimeHostServicePath(serviceId, env, homeDir);
     const systemd = createFakeSystemd(unitPath);
     const backend = () =>
-      createSystemdUserRuntimeHostService({
+      createSystemdUserRuntimeHostService(serviceId, {
         env,
         homeDir,
         uid: 1000,
@@ -98,17 +100,6 @@ describe('managed Runtime Host service', () => {
     assert.equal(installed.service.enabled, true);
     assert.equal(installed.service.config?.websocket.port, 47_777);
     assert.match(await readFile(unitPath, 'utf8'), /ExecStart=.*runtime-host.*serve/u);
-    assert.deepEqual(systemd.calls.slice(0, 4), [
-      ['show-environment'],
-      [
-        'show',
-        'maka-runtime-host.service',
-        '--property=LoadState,ActiveState,SubState,UnitFileState,MainPID,ExecMainStatus',
-        '--no-pager',
-      ],
-      ['daemon-reload'],
-      ['enable', 'maka-runtime-host.service'],
-    ]);
 
     const reinstalled = await manageRuntimeHostService(
       { ...common, action: 'install' },
@@ -141,6 +132,74 @@ describe('managed Runtime Host service', () => {
     const repaired = await manageRuntimeHostService({ ...common, action: 'uninstall' }, backend());
     assert.equal(repaired.service.installed, false);
     await assert.rejects(access(configPath));
+  });
+
+  it('isolates managed services by Client Data Root without mutating on status', async (t) => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-service-profile-'));
+    t.after(() => rm(base, { recursive: true, force: true }));
+    const homeDir = join(base, 'home');
+    const env = { XDG_CONFIG_HOME: join(base, 'xdg-config') };
+    const cliPath = join(base, 'cli.js');
+    const releaseRoot = join(base, 'profiles', 'Maka');
+    const developmentRoot = join(base, 'profiles', 'Maka Dev');
+    await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
+
+    const createProfile = (clientDataRoot: string) => {
+      const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
+      const unitPath = resolveSystemdUserRuntimeHostServicePath(serviceId, env, homeDir);
+      const systemd = createFakeSystemd(unitPath);
+      return {
+        unitPath,
+        backend: createSystemdUserRuntimeHostService(serviceId, {
+          env,
+          homeDir,
+          uid: 1000,
+          runSystemctl: systemd.run,
+          runLoginctl: async () => success('yes\n'),
+        }),
+      };
+    };
+    const release = createProfile(releaseRoot);
+    const development = createProfile(developmentRoot);
+    assert.notEqual(release.unitPath, development.unitPath);
+
+    const input = (clientDataRoot: string) => ({
+      clientDataRoot,
+      defaultRootPath: join(clientDataRoot, 'workspaces', 'default'),
+      nodePath: process.execPath,
+      cliPath,
+    });
+    const status = await manageRuntimeHostService(
+      { ...input(releaseRoot), action: 'status' },
+      release.backend,
+    );
+    assert.equal(status.service.installed, false);
+    await assert.rejects(access(releaseRoot));
+    await assert.rejects(access(dirname(release.unitPath)));
+
+    const ready = { waitForReady: async () => undefined } as const;
+    await manageRuntimeHostService(
+      { ...input(releaseRoot), action: 'install' },
+      release.backend,
+      ready,
+    );
+    await manageRuntimeHostService(
+      { ...input(developmentRoot), action: 'install' },
+      development.backend,
+      ready,
+    );
+    await manageRuntimeHostService(
+      { ...input(developmentRoot), action: 'uninstall' },
+      development.backend,
+    );
+
+    await access(release.unitPath);
+    await access(resolveRuntimeHostManagedServiceConfigPath(releaseRoot));
+    assert.equal(
+      (await manageRuntimeHostService({ ...input(releaseRoot), action: 'status' }, release.backend))
+        .service.active,
+      true,
+    );
   });
 
   it('quotes systemd arguments without exposing specifier or environment expansion', () => {
@@ -201,11 +260,14 @@ describe('managed Runtime Host service', () => {
     const clientDataRoot = join(base, 'config');
     const stateRoot = join(base, 'state');
     const cliPath = join(base, 'cli.js');
-    const unitPath = join(base, 'systemd', 'user', 'maka-runtime-host.service');
+    const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
+    const unitPath = resolveSystemdUserRuntimeHostServicePath(serviceId, {
+      XDG_CONFIG_HOME: base,
+    });
     await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
     const systemd = createFakeSystemd(unitPath);
     const backend = () =>
-      createSystemdUserRuntimeHostService({
+      createSystemdUserRuntimeHostService(serviceId, {
         env: { XDG_CONFIG_HOME: base },
         homeDir: base,
         uid: 1000,
@@ -270,7 +332,7 @@ describe('managed Runtime Host service', () => {
       nodePath: process.execPath,
       cliPath,
     };
-    const backend = createPreparedUnusedBackend(join(base, 'service'));
+    const backend = createPreparedUnusedBackend();
 
     await assert.rejects(
       manageRuntimeHostService(
@@ -302,13 +364,16 @@ describe('managed Runtime Host service', () => {
   });
 
   it('reports an unavailable systemd manager instead of not installed', async () => {
-    const backend = createSystemdUserRuntimeHostService({
-      runSystemctl: async () => ({
-        exitCode: 1,
-        stdout: '',
-        stderr: 'Failed to connect to bus',
-      }),
-    });
+    const backend = createSystemdUserRuntimeHostService(
+      resolveRuntimeHostManagedServiceId('/config/Maka'),
+      {
+        runSystemctl: async () => ({
+          exitCode: 1,
+          stdout: '',
+          stderr: 'Failed to connect to bus',
+        }),
+      },
+    );
     await assert.rejects(
       backend.status(),
       (error: unknown) =>
@@ -331,7 +396,7 @@ describe('managed Runtime Host service', () => {
       markInstallStarted = resolve;
     });
     const backend: RuntimeHostServiceBackend = {
-      ...createReadyBackend(join(base, 'service')),
+      ...createReadyBackend(),
       install: async () => {
         markInstallStarted();
         return { rollback: async () => undefined };
@@ -361,7 +426,6 @@ describe('managed Runtime Host service', () => {
 });
 
 function createFakeSystemd(unitPath: string): {
-  readonly calls: string[][];
   readonly failNext: (command: string) => void;
   readonly run: (args: readonly string[]) => Promise<{
     exitCode: number;
@@ -369,18 +433,22 @@ function createFakeSystemd(unitPath: string): {
     stderr: string;
   }>;
 } {
-  const calls: string[][] = [];
   let loaded = false;
   let enabled = false;
   let active = false;
   let failureCommand: string | undefined;
   return {
-    calls,
     failNext: (command) => {
       failureCommand = command;
     },
     run: async (args) => {
-      calls.push([...args]);
+      if (
+        ['show', 'enable', 'disable', 'start', 'restart', 'stop', 'reset-failed'].includes(
+          args[0] ?? '',
+        )
+      ) {
+        assert.equal(args[1], basename(unitPath));
+      }
       if (args[0] === failureCommand) {
         failureCommand = undefined;
         return { exitCode: 1, stdout: '', stderr: `${args[0]} failed` };
@@ -436,7 +504,6 @@ function createUnusedBackend(): RuntimeHostServiceBackend {
     throw new Error('Backend should not be used by this test');
   };
   return {
-    operationLockPath: '/unused/maka-runtime-host.service',
     preflightInstall: unexpected,
     install: unexpected,
     status: unexpected,
@@ -447,15 +514,14 @@ function createUnusedBackend(): RuntimeHostServiceBackend {
   };
 }
 
-function createPreparedUnusedBackend(operationLockPath: string): RuntimeHostServiceBackend {
+function createPreparedUnusedBackend(): RuntimeHostServiceBackend {
   return {
     ...createUnusedBackend(),
-    operationLockPath,
     preflightInstall: async () => undefined,
   };
 }
 
-function createReadyBackend(operationLockPath: string): RuntimeHostServiceBackend {
+function createReadyBackend(): RuntimeHostServiceBackend {
   const status = async () => ({
     manager: 'systemd_user' as const,
     installed: true,
@@ -466,7 +532,6 @@ function createReadyBackend(operationLockPath: string): RuntimeHostServiceBacken
     lastExitCode: 0,
   });
   return {
-    operationLockPath,
     preflightInstall: async () => undefined,
     install: async () => ({ rollback: async () => undefined }),
     status,

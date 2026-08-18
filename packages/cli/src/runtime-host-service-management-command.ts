@@ -1,5 +1,6 @@
 import {
   manageRuntimeHostService,
+  resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceInput,
   type RuntimeHostManagedServiceResult,
@@ -13,7 +14,7 @@ export interface RuntimeHostServiceManagementCliOptions extends RuntimeHostManag
 
 export interface RuntimeHostServiceManagementCliDeps {
   readonly manage: typeof manageRuntimeHostService;
-  readonly createBackend: () => RuntimeHostServiceBackend;
+  readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
 }
@@ -31,7 +32,8 @@ export async function runManagedRuntimeHostServiceCli(
   };
   try {
     const { json: _json, ...input } = options;
-    const result = await deps.manage(input, deps.createBackend());
+    const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
+    const result = await deps.manage(input, deps.createBackend(serviceId));
     deps.writeOutput(
       options.json ? `${JSON.stringify({ ...result, ok: true })}\n` : formatHumanResult(result),
     );
@@ -70,8 +72,8 @@ function formatHumanResult(result: RuntimeHostManagedServiceResult): string {
   return `Runtime Host service is ${service.state}.\n`;
 }
 
-function createPlatformServiceBackend(): RuntimeHostServiceBackend {
-  if (process.platform === 'linux') return createSystemdUserRuntimeHostService();
+function createPlatformServiceBackend(serviceId: string): RuntimeHostServiceBackend {
+  if (process.platform === 'linux') return createSystemdUserRuntimeHostService(serviceId);
   throw new RuntimeHostServiceManagerError(
     'unsupported_platform',
     'Managed Runtime Host services currently require Linux',

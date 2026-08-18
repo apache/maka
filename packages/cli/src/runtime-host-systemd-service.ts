@@ -14,13 +14,18 @@ import {
   writeRuntimeHostServiceFile,
 } from './runtime-host-service-manager.js';
 
-const SYSTEMD_UNIT_NAME = 'maka-runtime-host.service';
 const SERVICE_MANAGER_COMMAND_TIMEOUT_MS = 30_000;
 
 interface CommandResult {
   readonly exitCode: number;
   readonly stdout: string;
   readonly stderr: string;
+}
+
+interface SystemdUnitContext {
+  readonly unitName: string;
+  readonly unitPath: string;
+  readonly runSystemctl: (args: readonly string[]) => Promise<CommandResult>;
 }
 
 export interface SystemdUserServiceOptions {
@@ -32,17 +37,22 @@ export interface SystemdUserServiceOptions {
 }
 
 export function createSystemdUserRuntimeHostService(
+  serviceId: string,
   options: SystemdUserServiceOptions = {},
 ): RuntimeHostServiceBackend {
   const env = options.env ?? process.env;
   const homeDir = options.homeDir ?? homedir();
-  const unitPath = resolveSystemdUserRuntimeHostServicePath(env, homeDir);
   const runSystemctl = options.runSystemctl ?? defaultRunSystemctl;
+  const context: SystemdUnitContext = {
+    unitName: resolveSystemdUserRuntimeHostServiceName(serviceId),
+    unitPath: resolveSystemdUserRuntimeHostServicePath(serviceId, env, homeDir),
+    runSystemctl,
+  };
   const runLoginctl = options.runLoginctl ?? defaultRunLoginctl;
   const uid = options.uid ?? process.getuid?.();
 
   const readStatus = async (): Promise<RuntimeHostServiceBackendStatus> => {
-    const raw = await readSystemdStatus(runSystemctl);
+    const raw = await readSystemdStatus(context);
     return {
       manager: 'systemd_user',
       installed: raw.loadState !== 'not-found',
@@ -55,38 +65,37 @@ export function createSystemdUserRuntimeHostService(
   };
 
   return {
-    operationLockPath: unitPath,
     preflightInstall: async () => {
       await assertUserSystemd(runSystemctl);
       await assertUserLinger(uid, runLoginctl);
     },
     install: async (config) => {
       await validateLaunchFiles(config);
-      const previous = await captureSystemdDeployment(unitPath, readStatus);
+      const previous = await captureSystemdDeployment(context.unitPath, readStatus);
       try {
-        await applySystemdDeployment(unitPath, config, runSystemctl);
+        await applySystemdDeployment(context, config);
       } catch (error) {
-        await restoreFailedSystemdDeployment(previous, unitPath, runSystemctl, error);
+        await restoreFailedSystemdDeployment(previous, context, error);
       }
       let rolledBack = false;
       return {
         rollback: async () => {
           if (rolledBack) return;
           rolledBack = true;
-          await restoreSystemdDeployment(previous, unitPath, runSystemctl);
+          await restoreSystemdDeployment(previous, context);
         },
       } satisfies RuntimeHostServiceDeployment;
     },
     status: readStatus,
-    start: () => runLifecycleAction(runSystemctl, 'start'),
-    stop: () => runLifecycleAction(runSystemctl, 'stop'),
-    restart: () => runLifecycleAction(runSystemctl, 'restart'),
+    start: () => runLifecycleAction(context, 'start'),
+    stop: () => runLifecycleAction(context, 'stop'),
+    restart: () => runLifecycleAction(context, 'restart'),
     uninstall: async () => {
-      const before = await readSystemdStatus(runSystemctl);
+      const before = await readSystemdStatus(context);
       if (before.loadState !== 'not-found') {
         await requireSystemctl(
           runSystemctl,
-          ['stop', SYSTEMD_UNIT_NAME],
+          ['stop', context.unitName],
           'Stopping the Runtime Host service failed',
         );
       }
@@ -97,12 +106,12 @@ export function createSystemdUserRuntimeHostService(
       ) {
         await requireSystemctl(
           runSystemctl,
-          ['disable', SYSTEMD_UNIT_NAME],
+          ['disable', context.unitName],
           'Disabling the Runtime Host service failed',
         );
-        await runSystemctl(['reset-failed', SYSTEMD_UNIT_NAME]);
+        await runSystemctl(['reset-failed', context.unitName]);
       }
-      await removeRuntimeHostServiceFile(unitPath, 'systemd unit');
+      await removeRuntimeHostServiceFile(context.unitPath, 'systemd unit');
       await requireSystemctl(runSystemctl, ['daemon-reload'], 'Reloading systemd failed');
       const after = await readStatus();
       if (after.installed || after.active || after.enabled) {
@@ -116,11 +125,22 @@ export function createSystemdUserRuntimeHostService(
 }
 
 export function resolveSystemdUserRuntimeHostServicePath(
+  serviceId: string,
   env: NodeJS.ProcessEnv = process.env,
   homeDir = homedir(),
 ): string {
   const systemdConfigRoot = resolveXdgConfigHome(env, homeDir);
-  return join(systemdConfigRoot, 'systemd', 'user', SYSTEMD_UNIT_NAME);
+  return join(
+    systemdConfigRoot,
+    'systemd',
+    'user',
+    resolveSystemdUserRuntimeHostServiceName(serviceId),
+  );
+}
+
+function resolveSystemdUserRuntimeHostServiceName(serviceId: string): string {
+  if (!/^[0-9a-f]{64}$/u.test(serviceId)) throw new TypeError('Invalid Runtime Host service ID');
+  return `maka-runtime-host-${serviceId}.service`;
 }
 
 export function renderSystemdUnit(config: RuntimeHostManagedServiceConfig): string {
@@ -191,32 +211,30 @@ async function captureSystemdDeployment(
 }
 
 async function applySystemdDeployment(
-  unitPath: string,
+  context: SystemdUnitContext,
   config: RuntimeHostManagedServiceConfig,
-  runSystemctl: (args: readonly string[]) => Promise<CommandResult>,
 ): Promise<void> {
-  await writeRuntimeHostServiceFile(unitPath, renderSystemdUnit(config), 0o600);
-  await requireSystemctl(runSystemctl, ['daemon-reload'], 'Reloading systemd failed');
+  await writeRuntimeHostServiceFile(context.unitPath, renderSystemdUnit(config), 0o600);
+  await requireSystemctl(context.runSystemctl, ['daemon-reload'], 'Reloading systemd failed');
   await requireSystemctl(
-    runSystemctl,
-    ['enable', SYSTEMD_UNIT_NAME],
+    context.runSystemctl,
+    ['enable', context.unitName],
     'Enabling the Runtime Host service failed',
   );
   await requireSystemctl(
-    runSystemctl,
-    ['restart', SYSTEMD_UNIT_NAME],
+    context.runSystemctl,
+    ['restart', context.unitName],
     'Starting the Runtime Host service failed',
   );
 }
 
 async function restoreFailedSystemdDeployment(
   snapshot: SystemdDeploymentSnapshot,
-  unitPath: string,
-  runSystemctl: (args: readonly string[]) => Promise<CommandResult>,
+  context: SystemdUnitContext,
   originalError: unknown,
 ): Promise<never> {
   try {
-    await restoreSystemdDeployment(snapshot, unitPath, runSystemctl);
+    await restoreSystemdDeployment(snapshot, context);
   } catch (rollbackError) {
     throw new RuntimeHostServiceManagerError(
       'service_manager_operation_failed',
@@ -229,57 +247,54 @@ async function restoreFailedSystemdDeployment(
 
 async function restoreSystemdDeployment(
   snapshot: SystemdDeploymentSnapshot,
-  unitPath: string,
-  runSystemctl: (args: readonly string[]) => Promise<CommandResult>,
+  context: SystemdUnitContext,
 ): Promise<void> {
   if (snapshot.unit === null) {
     let current: SystemdStatus;
     try {
-      current = await readSystemdStatus(runSystemctl);
+      current = await readSystemdStatus(context);
     } catch (error) {
-      await removeRuntimeHostServiceFile(unitPath, 'systemd unit');
+      await removeRuntimeHostServiceFile(context.unitPath, 'systemd unit');
       throw error;
     }
     if (current.loadState !== 'not-found') {
       await requireSystemctl(
-        runSystemctl,
-        ['stop', SYSTEMD_UNIT_NAME],
+        context.runSystemctl,
+        ['stop', context.unitName],
         'Stopping the replacement Runtime Host service failed',
       );
       await requireSystemctl(
-        runSystemctl,
-        ['disable', SYSTEMD_UNIT_NAME],
+        context.runSystemctl,
+        ['disable', context.unitName],
         'Disabling the replacement Runtime Host service failed',
       );
     }
-    await removeRuntimeHostServiceFile(unitPath, 'systemd unit');
-    await requireSystemctl(runSystemctl, ['daemon-reload'], 'Reloading systemd failed');
-    await runSystemctl(['reset-failed', SYSTEMD_UNIT_NAME]);
+    await removeRuntimeHostServiceFile(context.unitPath, 'systemd unit');
+    await requireSystemctl(context.runSystemctl, ['daemon-reload'], 'Reloading systemd failed');
+    await context.runSystemctl(['reset-failed', context.unitName]);
     return;
   }
 
-  await writeRuntimeHostServiceFile(unitPath, snapshot.unit, 0o600);
-  await requireSystemctl(runSystemctl, ['daemon-reload'], 'Reloading systemd failed');
+  await writeRuntimeHostServiceFile(context.unitPath, snapshot.unit, 0o600);
+  await requireSystemctl(context.runSystemctl, ['daemon-reload'], 'Reloading systemd failed');
   await requireSystemctl(
-    runSystemctl,
-    [snapshot.status.enabled ? 'enable' : 'disable', SYSTEMD_UNIT_NAME],
+    context.runSystemctl,
+    [snapshot.status.enabled ? 'enable' : 'disable', context.unitName],
     'Restoring the Runtime Host service enablement failed',
   );
   await requireSystemctl(
-    runSystemctl,
-    [snapshot.status.active ? 'restart' : 'stop', SYSTEMD_UNIT_NAME],
+    context.runSystemctl,
+    [snapshot.status.active ? 'restart' : 'stop', context.unitName],
     'Restoring the Runtime Host service state failed',
   );
 }
 
-async function readSystemdStatus(
-  runSystemctl: (args: readonly string[]) => Promise<CommandResult>,
-): Promise<SystemdStatus> {
+async function readSystemdStatus(context: SystemdUnitContext): Promise<SystemdStatus> {
   let result: CommandResult;
   try {
-    result = await runSystemctl([
+    result = await context.runSystemctl([
       'show',
-      SYSTEMD_UNIT_NAME,
+      context.unitName,
       '--property=LoadState,ActiveState,SubState,UnitFileState,MainPID,ExecMainStatus',
       '--no-pager',
     ]);
@@ -291,14 +306,10 @@ async function readSystemdStatus(
     );
   }
   const properties = parseProperties(result.stdout);
-  const reportedLoadState = properties.get('LoadState');
-  if (
-    (result.exitCode !== 0 && reportedLoadState !== 'not-found') ||
-    reportedLoadState === undefined
-  ) {
+  const loadState = properties.get('LoadState');
+  if (loadState === undefined || (result.exitCode !== 0 && loadState !== 'not-found')) {
     throw managerError('Reading Runtime Host service status failed', result);
   }
-  const loadState = reportedLoadState ?? 'loaded';
   return {
     loadState,
     activeState: properties.get('ActiveState') ?? 'inactive',
@@ -381,12 +392,12 @@ async function assertUserLinger(
 }
 
 async function runLifecycleAction(
-  runSystemctl: (args: readonly string[]) => Promise<CommandResult>,
+  context: SystemdUnitContext,
   action: 'start' | 'stop' | 'restart',
 ): Promise<void> {
   await requireSystemctl(
-    runSystemctl,
-    [action, SYSTEMD_UNIT_NAME],
+    context.runSystemctl,
+    [action, context.unitName],
     `${actionPresentParticiple(action)} the Runtime Host service failed`,
   );
 }

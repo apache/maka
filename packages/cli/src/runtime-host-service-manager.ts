@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -53,7 +53,6 @@ export interface RuntimeHostServiceBackendStatus {
 }
 
 export interface RuntimeHostServiceBackend {
-  readonly operationLockPath: string;
   preflightInstall(): Promise<void>;
   install(config: RuntimeHostManagedServiceConfig): Promise<RuntimeHostServiceDeployment>;
   status(): Promise<RuntimeHostServiceBackendStatus>;
@@ -140,13 +139,14 @@ export async function manageRuntimeHostService(
     ...overrides,
   };
   const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
-  await Promise.all([
-    mkdir(dirname(configPath), { recursive: true, mode: 0o700 }),
-    mkdir(dirname(backend.operationLockPath), { recursive: true, mode: 0o700 }),
-  ]);
+  const configDirectory = dirname(configPath);
+  if (input.action === 'status' && !(await isExistingDirectory(configDirectory))) {
+    return manageRuntimeHostServiceLocked(input, backend, deps, configPath);
+  }
+  await mkdir(configDirectory, { recursive: true, mode: 0o700 });
 
   return withFileUpdateLock(
-    backend.operationLockPath,
+    configPath,
     () => manageRuntimeHostServiceLocked(input, backend, deps, configPath),
     SERVICE_OPERATION_LOCK_TIMEOUT_MS,
   );
@@ -217,6 +217,10 @@ async function manageRuntimeHostServiceLocked(
 
 export function resolveRuntimeHostManagedServiceConfigPath(clientDataRoot: string): string {
   return join(clientDataRoot, SERVICE_CONFIG_FILE);
+}
+
+export function resolveRuntimeHostManagedServiceId(clientDataRoot: string): string {
+  return createHash('sha256').update(resolve(clientDataRoot)).digest('hex');
 }
 
 export async function writeRuntimeHostServiceFile(
@@ -601,4 +605,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
   return error instanceof Error && 'code' in error && error.code === code;
+}
+
+async function isExistingDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) return false;
+    throw error;
+  }
 }
