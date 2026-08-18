@@ -292,7 +292,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     status: import('@maka/runtime/extension-ui-contributions').ExtensionUiReadiness,
     diagnostic?: string,
   ): void {
-    this.#ui.registry.setReadiness(this.#rootId(scopeId), entryId, revision, status, diagnostic);
+    this.#ui.setReadinessForRoot(this.#rootId(scopeId), entryId, revision, status, diagnostic);
   }
 
   inspectUiReadiness(scopeId?: string) {
@@ -345,9 +345,9 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
       throw context.signal.reason ?? new Error('Event emission was aborted');
     if ((context.eventDepth ?? 0) > 8) throw new Error('Extension Event recursion limit exceeded');
     const { scopeIds, committed } = this.#resolvedScopeState(scopeId);
-    const parsed = this.#hooks.registry.parsePayload(scopeIds, committed, event, payload);
-    const definition = this.#hooks.registry.resolveDefinition(scopeIds, committed, event);
-    const listeners = this.#hooks.registry
+    const parsed = this.#hooks.parsePayload(scopeIds, committed, event, payload);
+    const definition = this.#hooks.resolveDefinition(scopeIds, committed, event);
+    const listeners = this.#hooks
       .inspectListeners(scopeIds, committed)
       .filter((listener) => listener.event === event);
     const dispatched = await dispatchExtensionHandlers({
@@ -370,7 +370,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     const result =
       definition.mode === 'emit'
         ? undefined
-        : this.#hooks.registry.parseResult(scopeIds, committed, event, dispatched.value);
+        : this.#hooks.parseResult(scopeIds, committed, event, dispatched.value);
     return Object.freeze({
       event,
       ...(definition.mode === 'emit' ? {} : { mode: definition.mode }),
@@ -395,7 +395,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
       throw context.signal.reason ?? new Error('Core Extension Event was aborted');
     const mode = EXTENSION_CORE_EVENTS[event];
     const { scopeIds, committed } = this.#resolvedScopeState(scopeId);
-    const listeners = this.#hooks.registry
+    const listeners = this.#hooks
       .inspectListeners(scopeIds, committed)
       .filter((listener) => listener.event === event);
     if (listeners.length === 0) {
@@ -449,7 +449,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     if (context.signal.aborted)
       throw context.signal.reason ?? new Error('Core Extension Middleware was aborted');
     const { scopeIds, committed } = this.#resolvedScopeState(scopeId);
-    const listeners = this.#hooks.registry
+    const listeners = this.#hooks
       .inspectListeners(scopeIds, committed)
       .filter((listener) => listener.event === event);
     const dispatched = await dispatchExtensionHandlers({

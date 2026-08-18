@@ -23,15 +23,17 @@ export class PluginHookService extends Service {
 
   define(definition: ExtensionEventDefinition): void {
     const identity = pluginIdentity(this.ctx);
+    const registry = this.registry;
     registerPluginContribution(this.ctx, `event:${definition.name}`, () =>
-      this.registry.registerEvent(identity as never, definition),
+      registry.registerEvent(identity as never, definition),
     );
   }
 
   on(listener: ExtensionEventListenerContribution): void {
     const identity = pluginIdentity(this.ctx);
+    const registry = this.registry;
     registerPluginContribution(this.ctx, `listener:${listener.event}:${listener.id}`, () =>
-      this.registry.registerListener(identity as never, listener),
+      registry.registerListener(identity as never, listener),
     );
   }
 
@@ -47,5 +49,31 @@ export class PluginHookService extends Service {
     committed?: readonly { readonly entryId: string; readonly revision: string }[],
   ): readonly ExtensionEventListenerInspection[] {
     return this.registry.inspectListeners(rootIds, committed);
+  }
+
+  parsePayload(
+    rootIds: readonly string[],
+    committed: readonly { readonly entryId: string; readonly revision: string }[],
+    event: string,
+    payload: unknown,
+  ): unknown {
+    return this.registry.parsePayload(rootIds, committed, event, payload);
+  }
+
+  resolveDefinition(
+    rootIds: readonly string[],
+    committed: readonly { readonly entryId: string; readonly revision: string }[],
+    event: string,
+  ): ExtensionEventDefinitionInspection {
+    return this.registry.resolveDefinition(rootIds, committed, event);
+  }
+
+  parseResult(
+    rootIds: readonly string[],
+    committed: readonly { readonly entryId: string; readonly revision: string }[],
+    event: string,
+    result: unknown,
+  ): unknown {
+    return this.registry.parseResult(rootIds, committed, event, result);
   }
 }

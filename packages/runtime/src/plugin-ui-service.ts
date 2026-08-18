@@ -23,8 +23,9 @@ export class PluginUiService extends Service {
 
   register(contribution: ExtensionUiContribution): void {
     const identity = pluginIdentity(this.ctx);
+    const registry = this.registry;
     registerPluginContribution(this.ctx, `ui:${contribution.id}`, () =>
-      this.registry.register(identity, contribution),
+      registry.register(identity, contribution),
     );
   }
 
@@ -43,6 +44,16 @@ export class PluginUiService extends Service {
   ): void {
     const identity = pluginIdentity(this.ctx);
     this.registry.setReadiness(identity.scopeId, entryId, revision, status, diagnostic);
+  }
+
+  setReadinessForRoot(
+    rootId: string,
+    entryId: string,
+    revision: string,
+    status: ExtensionUiReadiness,
+    diagnostic?: string,
+  ): void {
+    this.registry.setReadiness(rootId, entryId, revision, status, diagnostic);
   }
 
   inspectReadiness(rootId?: string): readonly ExtensionUiReadinessInspection[] {
