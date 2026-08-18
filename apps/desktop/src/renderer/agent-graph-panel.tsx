@@ -162,6 +162,7 @@ export function AgentGraphPanel(props: {
   const [snapshot, setSnapshot] = useState<AgentGraphClientSnapshot>();
   const [epochs, setEpochs] = useState<readonly AgentGraphEpochSummary[]>([]);
   const [epochsTruncated, setEpochsTruncated] = useState(false);
+  const [selectedGraphId, setSelectedGraphId] = useState<string>();
   const [loading, setLoading] = useState(props.enabled);
   const [error, setError] = useState(false);
   const [stopPending, setStopPending] = useState(false);
@@ -178,6 +179,7 @@ export function AgentGraphPanel(props: {
     setSnapshot(undefined);
     setEpochs([]);
     setEpochsTruncated(false);
+    setSelectedGraphId(undefined);
     selectedGraphIdRef.current = undefined;
     followCurrentRef.current = true;
     setError(false);
@@ -206,13 +208,14 @@ export function AgentGraphPanel(props: {
         if (scheduler.isCurrent(fence) && next.graphId === selectedGraphIdRef.current) {
           setEpochs(nextEpochs);
           setEpochsTruncated(directory.truncated);
+          setSelectedGraphId(graphId);
           setSnapshot(next);
           setError(false);
         }
       } catch {
         if (scheduler.isCurrent(fence)) setError(true);
       } finally {
-        setLoading(false);
+        if (scheduler.isCurrent(fence)) setLoading(false);
       }
     });
 
@@ -252,7 +255,7 @@ export function AgentGraphPanel(props: {
     ).length ?? 0;
     return { settled, total: snapshot?.operators.length ?? 0 };
   }, [snapshot]);
-  const selectedEpoch = epochs.find((entry) => entry.graphId === snapshot?.graphId);
+  const selectedEpoch = epochs.find((entry) => entry.graphId === selectedGraphId);
 
   const hasGraphActivity =
     snapshot !== undefined &&
@@ -288,11 +291,15 @@ export function AgentGraphPanel(props: {
   };
   const stopAvailable =
     selectedEpoch?.current === true &&
+    !loading &&
     snapshot !== undefined &&
+    snapshot.graphId === selectedGraphId &&
     ['active', 'waiting', 'closing'].includes(snapshot.status);
   const dismissAvailable =
     selectedEpoch?.current === true &&
+    !loading &&
     snapshot !== undefined &&
+    snapshot.graphId === selectedGraphId &&
     isAgentGraphPanelDismissible(snapshot.status);
 
   return (
@@ -310,7 +317,7 @@ export function AgentGraphPanel(props: {
               size="sm"
               label={copy.epoch}
               isLabelHidden
-              value={snapshot.graphId}
+              value={selectedGraphId ?? snapshot.graphId}
               options={epochs.map((entry) => ({
                 value: entry.graphId,
                 label: `#${entry.epoch} · ${entry.current ? copy.currentEpoch : copy.historicalEpoch}`,
@@ -318,6 +325,7 @@ export function AgentGraphPanel(props: {
               onChange={(graphId: SelectorOptionType) => {
                 if (typeof graphId !== 'string') return;
                 selectedGraphIdRef.current = graphId;
+                setSelectedGraphId(graphId);
                 followCurrentRef.current =
                   epochs.find((entry) => entry.graphId === graphId)?.current === true;
                 refreshRef.current.invalidateAndRefresh();

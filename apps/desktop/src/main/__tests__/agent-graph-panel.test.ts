@@ -9,6 +9,28 @@ import { AgentGraphPanel } from '../../renderer/agent-graph-panel.js';
 
 type GraphListener = () => void;
 
+interface DeferredRead {
+  started: Promise<void>;
+  release(): void;
+}
+
+interface DeferredReadGate extends DeferredRead {
+  markStarted(): void;
+  waitForRelease: Promise<void>;
+}
+
+function deferredReadGate(): DeferredReadGate {
+  let markStarted = () => {};
+  let release = () => {};
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const waitForRelease = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { started, markStarted, release, waitForRelease };
+}
+
 const originalGlobals = {
   document: globalThis.document,
   window: globalThis.window,
@@ -69,6 +91,9 @@ function installGraphRenderer(
   setSnapshot(next: AgentGraphClientSnapshot): Promise<void>;
   evict(graphId: string): void;
   renderSession(sessionId: string): Promise<void>;
+  holdNextEpochList(sessionId: string): DeferredRead;
+  holdNextSnapshot(graphId: string): DeferredRead;
+  stopCalls: string[];
 } {
   const { document, window } = parseHTML('<div id="root"></div>');
   const matchMedia = (media: string) => ({
@@ -96,11 +121,25 @@ function installGraphRenderer(
   const snapshots = new Map(
     [initial, ...historical].map((entry) => [entry.graphId, entry] as const),
   );
-  const currentGraphIds = new Map([[initial.rootSessionId, initial.graphId]]);
+  const currentGraphIds = new Map<string, string>();
+  for (const entry of [initial, ...historical]) {
+    if (!currentGraphIds.has(entry.rootSessionId)) {
+      currentGraphIds.set(entry.rootSessionId, entry.graphId);
+    }
+  }
   const listeners = new Set<GraphListener>();
+  const epochListGates = new Map<string, DeferredReadGate>();
+  const snapshotGates = new Map<string, DeferredReadGate>();
+  const stopCalls: string[] = [];
   (window as unknown as { maka: unknown }).maka = {
     graphs: {
       listEpochs: async (sessionId: string) => {
+        const gate = epochListGates.get(sessionId);
+        if (gate) {
+          epochListGates.delete(sessionId);
+          gate.markStarted();
+          await gate.waitForRelease;
+        }
         const currentGraphId = currentGraphIds.get(sessionId);
         const entries = [...snapshots.values()]
           .filter((entry) => entry.rootSessionId === sessionId)
@@ -117,6 +156,12 @@ function installGraphRenderer(
       },
       getSnapshot: async (sessionId: string, options?: { graphId?: string }) => {
         const graphId = options?.graphId ?? currentGraphIds.get(sessionId);
+        const gate = graphId ? snapshotGates.get(graphId) : undefined;
+        if (gate && graphId) {
+          snapshotGates.delete(graphId);
+          gate.markStarted();
+          await gate.waitForRelease;
+        }
         const next = graphId ? snapshots.get(graphId) : undefined;
         if (!next || next.rootSessionId !== sessionId) {
           throw new Error(`missing graph snapshot for ${sessionId}`);
@@ -132,7 +177,9 @@ function installGraphRenderer(
           listeners.delete(listener);
         };
       },
-      stop: async () => undefined,
+      stop: async (sessionId: string) => {
+        stopCalls.push(sessionId);
+      },
     },
   };
 
@@ -166,6 +213,17 @@ function installGraphRenderer(
         await Promise.resolve();
       });
     },
+    holdNextEpochList(sessionId) {
+      const gate = deferredReadGate();
+      epochListGates.set(sessionId, gate);
+      return gate;
+    },
+    holdNextSnapshot(graphId) {
+      const gate = deferredReadGate();
+      snapshotGates.set(graphId, gate);
+      return gate;
+    },
+    stopCalls,
   };
 }
 
@@ -188,6 +246,37 @@ async function renderPanel(
 }
 
 describe('AgentGraphPanel dismiss', () => {
+  it('keeps the new session loading when a disposed read settles later', async () => {
+    const sessionA = snapshot({ graphId: 'graph-a', status: 'active' });
+    const sessionB = snapshot({
+      graphId: 'graph-b',
+      status: 'active',
+      rootSessionId: 'session-2',
+    });
+    const harness = installGraphRenderer(sessionA, [sessionB]);
+    const readA = harness.holdNextEpochList('session-1');
+    await harness.renderSession('session-1');
+    await readA.started;
+
+    const readB = harness.holdNextEpochList('session-2');
+    await harness.renderSession('session-2');
+    await readB.started;
+    assert.match(harness.container.textContent ?? '', /Loading graph state/);
+
+    await act(async () => {
+      readA.release();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent ?? '', /Loading graph state/);
+
+    await act(async () => {
+      readB.release();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent ?? '', /Agent Graph/);
+    await act(async () => harness.root.unmount());
+  });
+
   it('switches to a historical epoch without exposing current-graph controls', async () => {
     const current = snapshot({ graphId: 'graph-2', status: 'active' });
     const previous = snapshot({ graphId: 'graph-1', status: 'completed' });
@@ -215,14 +304,20 @@ describe('AgentGraphPanel dismiss', () => {
       option.textContent?.includes('History'),
     );
     assert.ok(historyOption);
+    const historyRead = harness.holdNextSnapshot('graph-1');
     await act(async () => {
       (historyOption as HTMLElement).click();
-      await Promise.resolve();
+      await historyRead.started;
     });
 
     assert.match(harness.container.textContent ?? '', /#1 · History \(read-only\)/);
     assert.doesNotMatch(harness.container.textContent ?? '', /Stop graph/);
     assert.equal(harness.container.querySelector('.maka-agent-graph-dismiss'), null);
+    assert.deepEqual(harness.stopCalls, []);
+    await act(async () => {
+      historyRead.release();
+      await Promise.resolve();
+    });
     await act(async () => harness.root.unmount());
   });
 
