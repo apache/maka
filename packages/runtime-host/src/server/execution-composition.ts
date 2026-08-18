@@ -244,7 +244,10 @@ export async function createExecutionRuntimeHostComposition(
         async (sessionId) => (await stores.sessionStore.readHeaderSnapshot(sessionId)).cwd,
       ),
   );
-  const extensions = new HostExtensionRuntime({}, extensionTimers);
+  const extensions = new HostExtensionRuntime({
+    invocationTimeoutMs: 30_000,
+    failureThreshold: 3,
+  }, extensionTimers);
   const toolPackageStore = new ToolPackageStore(context.owner.controlDirectory);
   const uiPackageStore = new UiPackageStore(context.owner.controlDirectory);
   const eventPackageStore = new EventPackageStore(context.owner.controlDirectory);

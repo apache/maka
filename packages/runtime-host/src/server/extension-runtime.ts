@@ -130,6 +130,18 @@ export interface HostExtensionEventDispatchResult {
   readonly result?: unknown;
 }
 
+export interface HostExtensionRuntimeInspection {
+  readonly runtime: ExtensionRuntimeContextDescriptor;
+  readonly scopes: readonly ExtensionBindingInspection[];
+  readonly tools: readonly ExtensionToolContributionInspection[];
+  readonly ui: readonly ExtensionUiContributionInspection[];
+  readonly uiReadiness: readonly import('@maka/runtime/extension-ui-contributions').ExtensionUiReadinessInspection[];
+  readonly timers: readonly ExtensionTimerContributionInspection[];
+  readonly events: readonly ExtensionEventDefinitionInspection[];
+  readonly listeners: readonly ExtensionEventListenerInspection[];
+  readonly services: readonly ExtensionServiceContributionInspection[];
+}
+
 /**
  * Runtime Host-owned Extension authority.
  *
@@ -305,6 +317,20 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
           : [],
       );
     return this.#ui.inspect(scopeId, committed);
+  }
+
+  reportUiReadiness(
+    scopeId: string,
+    bindingId: string,
+    revision: string,
+    status: import('@maka/runtime/extension-ui-contributions').ExtensionUiReadiness,
+    diagnostic?: string,
+  ): void {
+    this.#ui.setReadiness(scopeId, bindingId, revision, status, diagnostic);
+  }
+
+  inspectUiReadiness(scopeId?: string) {
+    return this.#ui.inspectReadiness(scopeId);
   }
 
   inspectEvents(scopeId: string): readonly ExtensionEventDefinitionInspection[] {
@@ -497,6 +523,21 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
 
   inspectRuntime(): ExtensionRuntimeContextDescriptor {
     return this.#lifecycle.inspectRuntime();
+  }
+
+  inspectAll(): HostExtensionRuntimeInspection {
+    const scopes = this.#scopeIds.size === 0 ? [PROFILE_EXTENSION_SCOPE] : [...this.#scopeIds];
+    return Object.freeze({
+      runtime: this.inspectRuntime(),
+      scopes: Object.freeze(scopes.flatMap((scopeId) => this.#lifecycle.inspectScope(scopeId))),
+      tools: Object.freeze(scopes.flatMap((scopeId) => this.inspectTools(scopeId))),
+      ui: Object.freeze(scopes.flatMap((scopeId) => this.inspectUi(scopeId))),
+      uiReadiness: this.inspectUiReadiness(),
+      timers: Object.freeze(scopes.flatMap((scopeId) => this.inspectTimers(scopeId))),
+      events: Object.freeze(scopes.flatMap((scopeId) => this.inspectEvents(scopeId))),
+      listeners: Object.freeze(scopes.flatMap((scopeId) => this.inspectEventListeners(scopeId))),
+      services: Object.freeze(scopes.flatMap((scopeId) => this.inspectServices(scopeId))),
+    });
   }
 
   resolveTools(

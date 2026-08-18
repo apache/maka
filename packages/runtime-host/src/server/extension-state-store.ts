@@ -5,10 +5,12 @@ import {
   isCanonicalExtensionId,
   isCanonicalExtensionScopeId,
 } from '@maka/runtime/extension-lifecycle-kernel';
+import type { ExtensionConfigurationScalar } from './extension-package-manifest.js';
 
 const SCHEMA_VERSION = 1 as const;
 const MAX_STATE_BYTES = 1024 * 1024;
 const STATE_FILE_NAME = 'extension-bindings-v1.json';
+const COMPOSITE_STATE_FILE_NAME = 'extension-state-v2.json';
 
 export interface PersistedExtensionBinding {
   readonly bindingId: string;
@@ -23,6 +25,12 @@ export interface PersistedExtensionBinding {
 interface PersistedExtensionState {
   readonly schemaVersion: typeof SCHEMA_VERSION;
   readonly bindings: readonly PersistedExtensionBinding[];
+}
+
+interface PersistedCompositeState {
+  readonly schemaVersion: 2;
+  readonly bindings: readonly PersistedExtensionBinding[];
+  readonly configuration: Readonly<Record<string, Readonly<Record<string, ExtensionConfigurationScalar>>>>;
 }
 
 export class HostExtensionStateStoreError extends Error {
@@ -43,6 +51,59 @@ export class HostExtensionStateStore {
 
   constructor(controlDirectory: string) {
     this.path = join(controlDirectory, STATE_FILE_NAME);
+  }
+
+  get compositePath(): string {
+    return join(dirname(this.path), COMPOSITE_STATE_FILE_NAME);
+  }
+
+  async readComposite(): Promise<{
+    readonly bindings: readonly PersistedExtensionBinding[];
+    readonly configuration: ReadonlyMap<string, Readonly<Record<string, ExtensionConfigurationScalar>>>;
+  } | undefined> {
+    try {
+      const encoded = await readFile(this.compositePath);
+      const value = JSON.parse(encoded.toString('utf8')) as PersistedCompositeState;
+      if (value.schemaVersion !== 2 || !Array.isArray(value.bindings) || !value.configuration)
+        throw new Error('Extension composite state is invalid');
+      const bindings = decodeState({ schemaVersion: 1, bindings: value.bindings }).bindings;
+      const configuration = new Map<string, Readonly<Record<string, ExtensionConfigurationScalar>>>();
+      for (const [bindingId, values] of Object.entries(value.configuration)) configuration.set(bindingId, Object.freeze({ ...values }));
+      return { bindings, configuration };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw persistenceError('Unable to read Extension composite state', error);
+    }
+  }
+
+  async replaceComposite(
+    bindings: readonly PersistedExtensionBinding[],
+    configuration: ReadonlyMap<string, Readonly<Record<string, ExtensionConfigurationScalar>>>,
+  ): Promise<void> {
+    const encoded = `${JSON.stringify({
+      schemaVersion: 2,
+      bindings: [...bindings].sort((left, right) => compareString(left.bindingId, right.bindingId)),
+      configuration: Object.fromEntries([...configuration].sort()),
+    })}\n`;
+    const directory = dirname(this.compositePath);
+    const temporary = `${this.compositePath}.${randomUUID()}.tmp`;
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      handle = await open(temporary, 'wx', 0o600);
+      await handle.writeFile(encoded, 'utf8');
+      await handle.sync();
+      await handle.close();
+      handle = undefined;
+      await rename(temporary, this.compositePath);
+      const directoryHandle = await open(directory, 'r');
+      try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
+    } catch (error) {
+      throw new HostExtensionStateStoreError('persistence_failed', 'Unable to persist Extension composite state', { cause: error });
+    } finally {
+      await handle?.close().catch(() => undefined);
+      await rm(temporary, { force: true }).catch(() => undefined);
+    }
   }
 
   async read(): Promise<readonly PersistedExtensionBinding[]> {

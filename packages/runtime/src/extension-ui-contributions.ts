@@ -45,6 +45,15 @@ export interface ExtensionUiContributionInspection {
   readonly sessionAccess: boolean;
 }
 
+export type ExtensionUiReadiness = 'pending' | 'ready' | 'failed';
+
+export interface ExtensionUiReadinessInspection {
+  readonly bindingId: string;
+  readonly revision: string;
+  readonly status: ExtensionUiReadiness;
+  readonly diagnostic?: string;
+}
+
 export class ExtensionUiContributionError extends Error {
   readonly name = 'ExtensionUiContributionError';
 
@@ -70,6 +79,29 @@ interface RegisteredUi extends ExtensionUiContributionInspection {
  */
 export class ExtensionUiContributionRegistry {
   readonly #byScope = new Map<string, RegisteredUi[]>();
+  readonly #readiness = new Map<string, ExtensionUiReadinessInspection>();
+
+  setReadiness(
+    scopeId: string,
+    bindingId: string,
+    revision: string,
+    status: ExtensionUiReadiness,
+    diagnostic?: string,
+  ): void {
+    validateIdentity('scopeId', scopeId);
+    this.#readiness.set(`${scopeId}\u0000${bindingId}`, Object.freeze({
+      bindingId,
+      revision,
+      status,
+      ...(diagnostic ? { diagnostic } : {}),
+    }));
+  }
+
+  inspectReadiness(scopeId?: string): readonly ExtensionUiReadinessInspection[] {
+    return Object.freeze([...this.#readiness.entries()]
+      .filter(([key]) => !scopeId || key.startsWith(`${scopeId}\u0000`))
+      .map(([, value]) => value));
+  }
 
   register(
     context: Pick<ExtensionActivationContext, 'bindingId' | 'scopeId' | 'extensionId' | 'revision'>,
@@ -116,6 +148,7 @@ export class ExtensionUiContributionRegistry {
       const index = current.findIndex(({ token }) => token === entry.token);
       if (index >= 0) current.splice(index, 1);
       if (current.length === 0) this.#byScope.delete(context.scopeId);
+      this.#readiness.delete(`${context.scopeId}\u0000${context.bindingId}`);
     };
   }
 

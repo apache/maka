@@ -35,7 +35,8 @@ import {
   UiPackageStoreError,
 } from './ui-package-store.js';
 import { UiPackageService } from './ui-package-service.js';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import { unlink, writeFile } from 'node:fs/promises';
 import { exportExtensionBundle, materializeExtensionPackage } from './extension-bundle.js';
 import {
   type ExtensionPackageManifest,
@@ -187,6 +188,7 @@ export class StaticTrustedToolExtensionLoader implements HostTrustedToolExtensio
 
 /** Combines Host-composed static Tools with real packages installed in the root-private Store. */
 export class InstalledToolPackageExtensionLoader implements HostTrustedToolExtensionLoader {
+  readonly #transactionPath: string;
   #configurationFor: (bindingId: string) => Readonly<Record<string, ExtensionConfigurationScalar>> =
     () => Object.freeze({});
   #emitEvent: (
@@ -212,7 +214,9 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
     private readonly packages: ToolPackageStore,
     private readonly uiPackages?: UiPackageStore,
     private readonly eventPackages?: EventPackageStore,
-  ) {}
+  ) {
+    this.#transactionPath = join(dirname(packages.root), 'extension-package-transaction-v1.json');
+  }
 
   setConfigurationResolver(
     resolver: (bindingId: string) => Readonly<Record<string, ExtensionConfigurationScalar>>,
@@ -310,6 +314,7 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
   }
 
   async installPackage(sourcePath: string): Promise<TrustedExtensionRevisionProjection> {
+    await writeFile(this.#transactionPath, `${JSON.stringify({ operation: 'install', sourcePath, startedAt: Date.now() })}\n`, { mode: 0o600 }).catch(() => undefined);
     const materialized = await materializeExtensionPackage(
       sourcePath,
       dirname(this.packages.root),
@@ -473,6 +478,7 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
       throw translatePackageError(error);
     } finally {
       await materialized.dispose();
+      await unlink(this.#transactionPath).catch(() => undefined);
     }
   }
 
@@ -533,6 +539,7 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
   }
 
   async uninstallPackage(extensionId: string, revision: string): Promise<void> {
+    await writeFile(this.#transactionPath, `${JSON.stringify({ operation: 'uninstall', extensionId, revision, startedAt: Date.now() })}\n`, { mode: 0o600 }).catch(() => undefined);
     const staticRevision = (await this.statics.list()).some(
       (item) => item.extensionId === extensionId && item.revision === revision,
     );
@@ -576,6 +583,8 @@ export class InstalledToolPackageExtensionLoader implements HostTrustedToolExten
       }
     } catch (error) {
       throw translatePackageError(error);
+    } finally {
+      await unlink(this.#transactionPath).catch(() => undefined);
     }
   }
 

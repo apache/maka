@@ -42,11 +42,15 @@ interface RegisteredExtensionTool extends ExtensionToolContributionInspection {
   readonly tool: MakaTool;
   readonly token: symbol;
   retired: boolean;
+  failures: number;
+  circuitOpen: boolean;
 }
 
 export interface ExtensionToolContributionRegistryOptions {
   /** Core Tool names protected from Extension shadowing at activation time. */
   readonly protectedToolNames?: (scopeId: string) => readonly string[];
+  readonly invocationTimeoutMs?: number;
+  readonly failureThreshold?: number;
 }
 
 /**
@@ -99,16 +103,47 @@ export class ExtensionToolContributionRegistry {
       );
     }
     const token = Symbol(tool.name);
-    const entry: RegisteredExtensionTool = {
+    let entry!: RegisteredExtensionTool;
+    const guardedTool: MakaTool = this.options.invocationTimeoutMs === undefined && this.options.failureThreshold === undefined
+      ? tool
+      : {
+      ...tool,
+      impl: async (args: any, context: Parameters<typeof tool.impl>[1]) => {
+        if (entry.retired) throw new Error(`Extension Tool "${tool.name}" is no longer active`);
+        if (entry.circuitOpen)
+          throw new Error(`Extension Tool "${tool.name}" circuit is open after repeated failures`);
+        const timeoutMs = this.options.invocationTimeoutMs ?? 30_000;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const result = await Promise.race([
+            Promise.resolve(tool.impl(args, context)),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error(`Extension Tool "${tool.name}" timed out`)), timeoutMs);
+            }),
+          ]);
+          entry.failures = 0;
+          return result;
+        } catch (error) {
+          entry.failures += 1;
+          if (entry.failures >= (this.options.failureThreshold ?? 3)) entry.circuitOpen = true;
+          throw error;
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      },
+      };
+    entry = {
       key,
       scopeId: context.scopeId,
       bindingId: context.bindingId,
       extensionId: context.extensionId,
       revision: context.revision,
       toolName: tool.name,
-      tool,
+      tool: guardedTool,
       token,
       retired: false,
+      failures: 0,
+      circuitOpen: false,
     };
     scope.set(key, entry);
 

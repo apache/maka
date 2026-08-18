@@ -103,10 +103,14 @@ export class HostExtensionController {
   async recover(): Promise<void> {
     if (this.#recovered) return;
     try {
-      for (const [bindingId, configuration] of await this.configurationStore.read()) {
-        this.#configuration.set(bindingId, configuration);
+      const composite = await this.store.readComposite();
+      if (composite) {
+        for (const [bindingId, configuration] of composite.configuration) this.#configuration.set(bindingId, configuration);
+        for (const binding of composite.bindings) this.#bindings.set(binding.bindingId, binding);
+      } else {
+        for (const [bindingId, configuration] of await this.configurationStore.read()) this.#configuration.set(bindingId, configuration);
+        for (const binding of await this.store.read()) this.#bindings.set(binding.bindingId, binding);
       }
-      for (const binding of await this.store.read()) this.#bindings.set(binding.bindingId, binding);
       await this.#recoverEnabledBindings();
       await this.#refreshRuntimeState();
       await this.#pruneOrphanDependencyBindings();
@@ -205,7 +209,7 @@ export class HostExtensionController {
       const previous = this.#configuration.get(input.bindingId);
       this.#configuration.set(input.bindingId, configuration);
       try {
-        await this.configurationStore.replace(this.#configuration);
+        await this.#persist();
         if (binding.enabled && this.#tryInspect(binding.bindingId)) {
           await this.runtime.stop(binding.bindingId);
           await this.runtime.start(binding.bindingId);
@@ -220,7 +224,7 @@ export class HostExtensionController {
       } catch (error) {
         if (previous) this.#configuration.set(input.bindingId, previous);
         else this.#configuration.delete(input.bindingId);
-        await this.configurationStore.replace(this.#configuration).catch(() => undefined);
+        await this.#persist().catch(() => undefined);
         if (binding.enabled) await this.#convergeBinding(binding.bindingId).catch(() => undefined);
         return {
           ok: false,
@@ -1014,8 +1018,7 @@ export class HostExtensionController {
   }
 
   async #persist(): Promise<void> {
-    await this.store.replace([...this.#bindings.values()].sort(compareBinding));
-    await this.configurationStore.replace(this.#configuration);
+    await this.store.replaceComposite([...this.#bindings.values()].sort(compareBinding), this.#configuration);
   }
 
   #bindingProjections(): readonly ExtensionBindingProjection[] {
