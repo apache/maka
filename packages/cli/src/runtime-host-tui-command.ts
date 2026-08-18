@@ -5,7 +5,11 @@ import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { readRuntimeHostConnectionCatalog } from '@maka/runtime-host/client';
 import { createForeignSessionStore } from '@maka/storage';
 import { formatMakaResumeHint } from './cli-invocation.js';
-import { connectRuntimeHostCli, RuntimeHostCliConflictError } from './runtime-host-cli-context.js';
+import {
+  connectRuntimeHostCli,
+  RuntimeHostCliConflictError,
+  shouldRetryRuntimeHostConflict,
+} from './runtime-host-cli-context.js';
 import { createRuntimeHostOnboardingSurface } from './runtime-host-onboarding.js';
 import type { MakaPiTuiTurnActivitySurface } from './pi-tui-contracts.js';
 import { runMakaPiTui } from './pi-tui-runner.js';
@@ -101,24 +105,18 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
 async function createTuiContextWithHostConflictPrompt(
   input: Parameters<typeof createRuntimeHostTuiContext>[0],
 ): Promise<Awaited<ReturnType<typeof createRuntimeHostTuiContext>> | null> {
-  let waitingForHost = false;
   while (true) {
     try {
       return await createRuntimeHostTuiContext(input);
     } catch (error) {
       if (!(error instanceof RuntimeHostCliConflictError) || !process.stdin.isTTY) throw error;
-      if (waitingForHost) {
-        await waitForHostRetry();
-        continue;
-      }
       process.stderr.write(`${error.message}\n`);
       const readline = createInterface({ input: process.stdin, output: process.stderr });
       try {
-        const answer = (await readline.question('Wait and try again, or cancel? [W/c] '))
-          .trim()
-          .toLowerCase();
-        if (answer === 'c' || answer === 'cancel') return null;
-        waitingForHost = true;
+        const answer = await readline.question(
+          'Wait only if the existing Host is expected to become idle, or cancel? [w/C] ',
+        );
+        if (!shouldRetryRuntimeHostConflict(answer)) return null;
       } finally {
         readline.close();
       }

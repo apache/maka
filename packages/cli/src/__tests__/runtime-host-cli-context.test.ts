@@ -15,7 +15,11 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
 } from '@maka/runtime-host/protocol';
-import { connectRuntimeHostCli, RuntimeHostCliConflictError } from '../runtime-host-cli-context.js';
+import {
+  connectRuntimeHostCli,
+  RuntimeHostCliConflictError,
+  shouldRetryRuntimeHostConflict,
+} from '../runtime-host-cli-context.js';
 
 test('CLI Runtime Host bootstrap launches the execution composition', async () => {
   let candidateEntrypoint: string | URL | undefined;
@@ -94,10 +98,63 @@ test('non-interactive CLI reports how to retire an incompatible Runtime Host', a
     (error: unknown) => {
       assert.ok(error instanceof RuntimeHostCliConflictError);
       assert.equal(error.code, 'RUNTIME_HOST_RESTART_REQUIRED');
-      assert.match(error.message, /Stop the previous Maka Desktop or CLI process/);
+      assert.match(
+        error.message,
+        new RegExp(
+          `PID 42; lifecycle ephemeral; compatibility epoch ${RUNTIME_HOST_COMPATIBILITY_EPOCH - 1}`,
+        ),
+      );
+      assert.match(
+        error.message,
+        /ephemeral Host is not currently idle and cannot be replaced by this Client/,
+      );
+      assert.match(error.message, /previous compatible Maka build/);
       return true;
     },
   );
+});
+
+test('CLI explains a service Host without inventing resident work', async () => {
+  await assert.rejects(
+    connectRuntimeHostCli(
+      { rootPath: '/runtime-host-root', surface: 'run' },
+      {
+        connectOrSpawn: async () => ({
+          kind: 'incompatible',
+          registration: hostRegistration({ lifecycleMode: 'service' }),
+          handshake: {
+            kind: 'incompatible',
+            hostEpoch: 'host-old',
+            protocolMin: 0,
+            protocolMax: 0,
+            compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+            compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+            compositionRevision: 'legacy',
+            state: 'ready',
+            replacement: 'blocked_by_residency',
+          },
+        }),
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof RuntimeHostCliConflictError);
+      assert.match(error.message, /service Host is managed by its operator/);
+      assert.match(error.message, /service operator to inspect or upgrade/);
+      assert.doesNotMatch(error.message, /not idle/);
+      return true;
+    },
+  );
+});
+
+test('Runtime Host conflict waits only after an explicit wait answer', () => {
+  assert.equal(shouldRetryRuntimeHostConflict('w'), true);
+  assert.equal(shouldRetryRuntimeHostConflict(' wait '), true);
+  assert.equal(shouldRetryRuntimeHostConflict(' W '), true);
+  assert.equal(shouldRetryRuntimeHostConflict('WAIT'), true);
+  assert.equal(shouldRetryRuntimeHostConflict(''), false);
+  assert.equal(shouldRetryRuntimeHostConflict('c'), false);
+  assert.equal(shouldRetryRuntimeHostConflict('cancel'), false);
+  assert.equal(shouldRetryRuntimeHostConflict('unexpected'), false);
 });
 
 test('CLI reports an actionable stored-data startup failure', async () => {
@@ -253,7 +310,12 @@ test('remote CLI profile state and Client identity use the explicit Client Data 
   await context.close();
 });
 
-function hostRegistration(overrides: Partial<{ compatibilityEpoch: number }> = {}) {
+function hostRegistration(
+  overrides: Partial<{
+    compatibilityEpoch: number;
+    lifecycleMode: 'ephemeral' | 'service';
+  }> = {},
+) {
   return {
     kind: 'maka-runtime-host' as const,
     schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
@@ -265,6 +327,7 @@ function hostRegistration(overrides: Partial<{ compatibilityEpoch: number }> = {
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
     compositionRevision: 'legacy',
+    lifecycleMode: 'ephemeral' as const,
     state: 'ready' as const,
     pid: 42,
     createdAt: '2026-08-10T00:00:00.000Z',
