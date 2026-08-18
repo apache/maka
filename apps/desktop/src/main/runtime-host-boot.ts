@@ -40,6 +40,10 @@ import { releaseBrowserSession } from "./browser/session.js";
 import { createE2eFixtureBotOnboardingAdapters } from "./bot-onboarding-e2e-fixture.js";
 import { resolveBuildInfo } from "./build-info.js";
 import { computerUseServiceHealth } from "./computer-use-host.js";
+import {
+  ComputerHistoryService,
+  registerComputerHistoryIpc,
+} from "./computer-history-main.js";
 import { registerDesktopDiagnosticsIpc } from "./desktop-diagnostics-ipc-main.js";
 import { assembleDesktopNativeCapabilities } from "./desktop-native-capability-assembly.js";
 import { buildRiveWorkflowTool } from "./rive-workflow-tool.js";
@@ -231,6 +235,13 @@ const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
   ipcMain,
   send: (channel, event) => mainWindowController.send(channel, event),
 });
+const computerHistoryService = new ComputerHistoryService({
+  home: join(userDataDir, "computer-history"),
+  helperPath: app.isPackaged
+    ? join(process.resourcesPath, "bin", "open-history")
+    : join(app.getAppPath(), "resources", "bin", "open-history"),
+});
+await computerHistoryService.initialize();
 const native = assembleDesktopNativeCapabilities({
   isComputerUseRealModelE2e,
   settings: settingsStore,
@@ -900,6 +911,7 @@ function registerHostClientIpc(
         ),
       };
     },
+    getComputerHistoryStatus: () => computerHistoryService.status(),
   });
   registerPermissionOverlayIpc({
     controller: permissionOverlay,
@@ -1072,6 +1084,7 @@ function registerPersistentClientIpc(): void {
     updateService,
   });
   registerMarkdownSaveIpc({ ipcMain, mainWindowController });
+  registerComputerHistoryIpc({ ipcMain, service: computerHistoryService });
   registerDesktopRuntimeHostProfileIpc(ipcMain, runtimeHostProfileService);
   registerClientSettingsIpc({
     ipcMain,
@@ -1318,6 +1331,7 @@ async function closeRuntimeHostDesktop(): Promise<void> {
   const results = await Promise.allSettled([
     runtimeHostManager?.close(),
     runtimeHostSshTerminal.close(),
+    computerHistoryService.dispose(),
     botRegistry.stopAll(),
     mcpManager.close(),
     mainWindowController.disposeBrowserViews(),

@@ -126,6 +126,35 @@ async function seedE2eLocale(userDataDir: string, locale: 'zh' | 'en'): Promise<
   });
 }
 
+async function seedE2eComputerHistory(userDataDir: string): Promise<void> {
+  const historyRoot = path.join(userDataDir, 'computer-history');
+  const segmentRoot = path.join(historyRoot, 'segments', '2026-08-15T09-20-00Z-e2e');
+  await mkdir(segmentRoot, { recursive: true });
+  const event = (timestamp: string, kind: string, app: string, window: string) =>
+    JSON.stringify({
+      timestamp,
+      kind,
+      app: { name: app, bundleIdentifier: `com.maka.e2e.${app.toLowerCase()}` },
+      window: { title: window },
+    });
+  await writeFile(
+    path.join(segmentRoot, 'events.jsonl'),
+    [
+      event('2026-08-15T09:20:00.000Z', 'window.changed', 'Notes', 'Launch checklist'),
+      event('2026-08-15T09:20:03.000Z', 'keyboard.shortcut', 'Notes', 'Launch checklist'),
+      event('2026-08-15T09:20:08.000Z', 'mouse.click', 'Notes', 'Launch checklist'),
+      event('2026-08-15T09:34:00.000Z', 'window.changed', 'Browser', 'Release dashboard'),
+      event('2026-08-15T09:34:05.000Z', 'mouse.click', 'Browser', 'Release dashboard'),
+    ].join('\n') + '\n',
+    'utf8',
+  );
+  await writeFile(
+    path.join(segmentRoot, 'metadata.json'),
+    JSON.stringify({ suppressedEventCount: 1 }),
+    'utf8',
+  );
+}
+
 async function seedE2eInvocableSkills(userDataDir: string): Promise<void> {
   const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
   const projectRoot = path.join(userDataDir, 'project');
@@ -249,6 +278,7 @@ async function withE2eWindow(
     scrollMotion,
     invocableSkills,
     gitReviewExtraFiles,
+    computerHistory,
   }: {
     seed: boolean;
     readinessSelector: string;
@@ -262,6 +292,7 @@ async function withE2eWindow(
     showWindow?: boolean;
     invocableSkills?: boolean;
     gitReviewExtraFiles?: number;
+    computerHistory?: boolean;
   },
   use: (page: Page, context: { userDataDir: string }) => Promise<void>,
 ): Promise<void> {
@@ -279,6 +310,7 @@ async function withE2eWindow(
     if (gitReviewExtraFiles !== undefined) {
       await seedE2eGitReviewProject(userDataDir, gitReviewExtraFiles);
     }
+    if (computerHistory) await seedE2eComputerHistory(userDataDir);
     // Legacy E2E specs assert Chinese labels and should not inherit the CI
     // host locale. E2e-fixture workspaces use the explicit renderer override.
     if (locale && !e2eFixtureScenario) await seedE2eLocale(userDataDir, locale);
@@ -345,6 +377,7 @@ export const test = base.extend<{
   projectSidebarWindow: Page;
   promptRailWindow: Page;
   promptRailMotionWindow: Page;
+  computerHistoryWindow: Page;
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
@@ -418,6 +451,15 @@ export const test = base.extend<{
       e2eFixtureScenario: 'chat-prompt-rail',
       showWindow: true,
       scrollMotion: 'smooth',
+    }, use);
+  },
+  computerHistoryWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: true,
+      readinessSelector: COMPOSER_INPUT,
+      locale: 'zh',
+      computerHistory: true,
+      showWindow: true,
     }, use);
   },
 });

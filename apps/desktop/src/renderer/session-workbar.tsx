@@ -36,6 +36,7 @@ import {
   FolderOpen,
   GitBranch,
   Globe,
+  History,
   ListTodo,
   Loader2,
   MessageCircleQuestion,
@@ -95,6 +96,11 @@ const SessionReviewPanel = lazy(() =>
 const SessionTerminalPanel = lazy(() =>
   import('./session-terminal-panel').then((module) => ({
     default: module.SessionTerminalPanel,
+  })),
+);
+const ComputerHistoryPanel = lazy(() =>
+  import('./computer-history-panel').then((module) => ({
+    default: module.ComputerHistoryPanel,
   })),
 );
 
@@ -166,6 +172,8 @@ function tabLabel(
       return copy.tasks;
     case 'browser':
       return copy.browser;
+    case 'computer-history':
+      return copy.computerHistory;
     case 'files':
       return copy.files;
     case 'inspector':
@@ -202,6 +210,8 @@ function tabIcon(tab: SessionWorkbarTab, active: boolean): ReactNode {
           ? ListTodo
           : tab.kind === 'browser'
             ? Globe
+            : tab.kind === 'computer-history'
+              ? History
             : tab.kind === 'files'
               ? FolderOpen
               : tab.kind === 'inspector'
@@ -593,6 +603,12 @@ function WorkbarLauncher(props: {
       shortcut: 'mod+t',
     },
     {
+      kind: 'computer-history',
+      label: copy.computerHistory,
+      description: copy.launcher.computerHistory,
+      icon: History,
+    },
+    {
       kind: 'files',
       label: copy.files,
       description: copy.launcher.files,
@@ -686,6 +702,7 @@ export function SessionWorkbar(props: {
   modelChoices?: readonly ChatModelChoice[];
   mentionSkills?: ComponentProps<typeof Composer>['mentionSkills'];
   onSearchMentionFiles?: ComponentProps<typeof Composer>['onSearchMentionFiles'];
+  onAppendComputerHistoryContext?: (context: string) => void;
 }) {
   const copy = getDesktopConversationCopy(useUiLocale()).workbar;
   const sessionTasks = useSessionTasks(props.sessionId);
@@ -812,6 +829,15 @@ export function SessionWorkbar(props: {
                 sessionId={props.sessionId}
                 onCountChange={setArtifactCount}
                 onDismiss={() => props.onDismissPanel(placement)}
+              />
+            </Suspense>
+          );
+        } else if (tab.kind === 'computer-history') {
+          content = (
+            <Suspense fallback={<WorkbarPanelLoading label={copy.computerHistory} />}>
+              <ComputerHistoryPanel
+                active={!props.hidden && active}
+                onAppendContext={props.onAppendComputerHistoryContext ?? (() => {})}
               />
             </Suspense>
           );
