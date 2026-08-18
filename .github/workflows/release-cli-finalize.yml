@@ -194,7 +194,6 @@ jobs:
             exit 1
           fi
 
-          release_endpoint="repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG"
           release_json="$RUNNER_TEMP/github-release.json"
           release_assets=(
             "$RELEASE_DIRECTORY/$RELEASE_TARBALL_NAME"
@@ -203,7 +202,12 @@ jobs:
             "$RELEASE_DIRECTORY/release.json"
           )
 
-          if ! gh api "$release_endpoint" > "$release_json" 2>/dev/null; then
+          # The REST release-by-tag endpoint does not return drafts. Resolve both draft and
+          # published releases through gh, then use the immutable API URL for exact reads.
+          if ! release_api_url="$(gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json apiUrl \
+            --jq .apiUrl 2>/dev/null)"; then
             if ! gh release create "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
@@ -213,8 +217,16 @@ jobs:
               --notes-file "$RELEASE_DIRECTORY/release-notes.md"; then
               echo "GitHub Release creation did not confirm success; inspecting remote state" >&2
             fi
-            gh api "$release_endpoint" > "$release_json"
+            release_api_url="$(gh release view "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json apiUrl \
+              --jq .apiUrl)"
           fi
+          if [[ ! "$release_api_url" =~ ^https://api\.github\.com/repos/$GITHUB_REPOSITORY/releases/[1-9][0-9]*$ ]]; then
+            echo "GitHub Release API URL is not bound to the expected repository: $release_api_url" >&2
+            exit 1
+          fi
+          gh api "$release_api_url" > "$release_json"
 
           release_draft="$(RELEASE_JSON="$release_json" node -e '
             const fs = require("node:fs");
@@ -243,7 +255,7 @@ jobs:
               --notes-file "$RELEASE_DIRECTORY/release-notes.md"
           fi
 
-          gh api "$release_endpoint" > "$release_json"
+          gh api "$release_api_url" > "$release_json"
           node scripts/release-cli-publication.mjs validate-github-release \
             "$RELEASE_DIRECTORY" \
             "$release_json"

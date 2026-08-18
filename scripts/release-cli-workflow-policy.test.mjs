@@ -84,6 +84,9 @@ test('finalize propagates verified artifacts and idempotently publishes an exact
   assert.match(publish, /gh release create[\s\S]*?--draft/u);
   assert.match(publish, /gh release upload[\s\S]*?--clobber/u);
   assert.match(publish, /gh release edit[\s\S]*?--draft=false/u);
+  assert.match(publish, /gh release view[\s\S]*?--json apiUrl/u);
+  assert.match(publish, /gh api "\$release_api_url"/u);
+  assert.doesNotMatch(publish, /releases\/tags\/\$RELEASE_TAG/u);
   assert.match(publish, /--prerelease/u);
   assert.match(publish, /--latest=false/u);
   assert.match(publish, /validate-github-release/u);
