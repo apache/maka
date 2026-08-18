@@ -1358,9 +1358,15 @@ export const Composer = forwardRef<
    * The mark Astryx draws for a chosen option — a check when chosen, nothing
    * when not — which is what its own `Selector` puts on a selected option.
    * A menu radio item draws a circle instead, so the mark is passed as
-   * `endContent` and composer.css suppresses the circle for this panel only.
+   * `endContent` and a rule scoped to this panel suppresses the circle.
    * Read through `useIndicator` rather than an icon, so a theme replacing the
    * `check` indicator reaches these rows too.
+   *
+   * That rule lives in the host, with the rest of `.maka-composer-*` — this
+   * component ships markup and class names, and every composer rule is the
+   * host's (`apps/desktop/src/renderer/styles/composer.css` today). A second
+   * host has to bring composer styling with it; that is the existing split,
+   * not something this control introduced.
    *
    * Upstream ask: let a radio item choose its indicator, and this pair of
    * workarounds goes away.
