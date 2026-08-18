@@ -36,6 +36,9 @@ test('stage consumes the validated artifact and makes provenance staging the fin
     /artifact-ids: \$\{\{ needs\.validate\.outputs\.release_candidate_artifact_id \}\}/u,
   );
   assert.match(workflow, /RELEASE_RUN_ATTEMPT/u);
+  const guidance = namedStep(steps, 'Record the post-staging approval step');
+  assert.match(guidance, /if \[\[ "\$RELEASE_DIST_TAG" == "latest" \]\]/u);
+  assert.match(guidance, /npm dist-tag add/u);
   const submit = namedStep(steps, 'Submit the candidate to npm staging');
   assert.equal(steps.at(-1), submit);
   assert.match(submit, /npm stage publish/u);

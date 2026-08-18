@@ -95,6 +95,7 @@ jobs:
           retention-days: 30
       - name: Record the post-staging approval step
         env:
+          RELEASE_DIST_TAG: ${{ steps.release.outputs.dist_tag }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
           RELEASE_RUN_ID: ${{ github.run_id }}
           RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -108,6 +109,12 @@ jobs:
             echo "- stage run ID: \`$RELEASE_RUN_ID\`"
             echo "- stage run attempt: \`$RELEASE_RUN_ATTEMPT\`"
             echo "- version: \`$RELEASE_VERSION\`"
+            if [[ "$RELEASE_DIST_TAG" == "latest" ]]; then
+              echo
+              echo "Before finalizing this stable release, inspect npm dist-tags. If \`next\` is older than \`latest\`, authenticate interactively with npm and run:"
+              echo
+              echo "\`npm dist-tag add \"maka-agent@$RELEASE_VERSION\" next --registry https://registry.npmjs.org/\`"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Submit the candidate to npm staging
         env:

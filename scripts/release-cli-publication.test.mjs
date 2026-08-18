@@ -11,6 +11,7 @@ import {
   prepareSignatureAuditTree,
   prepareStageRelease,
   validateGitHubRelease,
+  validateRegistryChannels,
   validateSignatureAudit,
   validateStageRun,
 } from './release-cli-publication.mjs';
@@ -29,6 +30,47 @@ test('release versions map prereleases and stable versions to distinct channels'
   for (const version of ['01.0.0', '0.1', '0.1.0+local', '0.1.0-beta..1', '../0.1.0']) {
     assert.throws(() => parseCliReleaseVersion(version), /valid CLI release version/u);
   }
+});
+
+test('release channels never leave next behind latest', () => {
+  for (const next of ['0.1.0', '0.2.0-beta.1']) {
+    assert.doesNotThrow(() =>
+      validateRegistryChannels({
+        releaseVersion: '0.1.0',
+        releaseDistTag: 'latest',
+        distTags: { latest: '0.1.0', next },
+      }),
+    );
+  }
+
+  for (const next of [undefined, '0.1.0-beta.1']) {
+    assert.throws(
+      () =>
+        validateRegistryChannels({
+          releaseVersion: '0.1.0',
+          releaseDistTag: 'latest',
+          distTags: { latest: '0.1.0', ...(next ? { next } : {}) },
+        }),
+      /npm dist-tag add "maka-agent@0\.1\.0" next/u,
+    );
+  }
+
+  assert.doesNotThrow(() =>
+    validateRegistryChannels({
+      releaseVersion: '0.2.0-beta.1',
+      releaseDistTag: 'next',
+      distTags: { latest: '0.1.0', next: '0.2.0-beta.1' },
+    }),
+  );
+  assert.throws(
+    () =>
+      validateRegistryChannels({
+        releaseVersion: '0.1.0-beta.2',
+        releaseDistTag: 'next',
+        distTags: { latest: '0.1.0', next: '0.1.0-beta.2' },
+      }),
+    /cannot advance the next channel/u,
+  );
 });
 
 test('stage records bind the checked candidate to one source workflow run', () => {
@@ -167,8 +209,8 @@ test('registry downloads stop reading as soon as the tarball exceeds its bound',
   const fallback = registryFetch({ fixture });
   const tarballUrl = `https://registry.npmjs.org/maka-agent/-/${fixture.tarball}`;
   let pulls = 0;
-  const fetchImpl = async (input) => {
-    if (String(input) !== tarballUrl) return fallback(input);
+  const fetchImpl = async (input, options) => {
+    if (String(input) !== tarballUrl) return fallback(input, options);
     return new Response(
       new ReadableStream({
         pull(controller) {
@@ -393,9 +435,10 @@ function registryFetch({ fixture, bytes = fixture.bytes }) {
   const integrity = `sha512-${digest('sha512', bytes, 'base64')}`;
   const shasum = digest('sha1', bytes, 'hex');
   const tarballUrl = `https://registry.npmjs.org/maka-agent/-/${fixture.tarball}`;
-  return async (input) => {
+  return async (input, options = {}) => {
     const url = String(input);
     if (url === `https://registry.npmjs.org/maka-agent/${fixture.version}`) {
+      assert.equal(options.headers?.accept, 'application/json');
       return Response.json({
         name: 'maka-agent',
         version: fixture.version,
@@ -403,6 +446,7 @@ function registryFetch({ fixture, bytes = fixture.bytes }) {
       });
     }
     if (url === 'https://registry.npmjs.org/maka-agent') {
+      assert.equal(options.headers?.accept, 'application/vnd.npm.install-v1+json');
       return Response.json({ 'dist-tags': { next: fixture.version } });
     }
     if (url === tarballUrl) return new Response(bytes);

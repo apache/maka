@@ -9,7 +9,9 @@ validated by the Stage workflow.
 ## Release invariants
 
 - Dispatch release workflows only from `main`.
-- Publish prereleases under `next` and stable versions under `latest`.
+- Publish prereleases under `next` and stable versions under `latest`. `next` must never resolve to
+  a version older than `latest`; when no newer prerelease exists, both tags point to the stable
+  version.
 - Use the Git tag `cli-v<version>`; CLI releases never replace the Desktop GitHub Latest release.
 - Do not run `npm publish`. GitHub Actions may only run `npm stage publish`; a human package
   maintainer approves the staged package with npm 2FA.
@@ -118,14 +120,32 @@ npm stage approve "$stage_id" --registry https://registry.npmjs.org/
 The same review and approval can be performed from the package's **Staged Packages** page on
 npmjs.com.
 
+For a stable release, inspect the public tags after approval:
+
+```sh
+version=0.1.0
+npm view maka-agent dist-tags --json --registry https://registry.npmjs.org/
+```
+
+If `next` is absent or older than `latest`, authenticate interactively as an npm package owner and
+advance it to the new stable version before running Finalize:
+
+```sh
+npm dist-tag add "maka-agent@$version" next --registry https://registry.npmjs.org/
+```
+
+Do not change `next` when it already points to a newer version such as `0.2.0-beta.1`. This step is
+intentionally manual: npm Trusted Publishing authenticates `npm publish` and `npm stage publish`,
+not dist-tag mutations, and the release workflows must not gain a long-lived npm token.
+
 ## Finalize the public release
 
 After npm reports the version as public:
 
 1. Open **Actions → Finalize CLI npm release → Run workflow** on `main`.
 2. Enter the successful Stage run ID, its exact run attempt, and the version.
-3. Let the inspection job verify the public tarball bytes, checksum, inventory, dist-tag, npm
-   signature, and Trusted Publishing provenance.
+3. Let the inspection job verify the public tarball bytes, checksum, inventory, npm signature,
+   Trusted Publishing provenance, the release dist-tag, and that `next` is not older than `latest`.
 4. Review and approve the `npm-release` Environment deployment for the Git tag and GitHub Release.
 5. Confirm the workflow created `cli-v<version>` at the Stage source commit. A prerelease must be
    marked prerelease; no CLI release may become the repository's GitHub Latest release.

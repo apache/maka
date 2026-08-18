@@ -22,28 +22,33 @@ const RELEASE_RECORD_KEYS = [
 ];
 
 export function parseCliReleaseVersion(version) {
-  if (typeof version !== 'string') throw new Error('Expected a valid CLI release version');
-  const match =
-    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u.exec(
-      version,
-    );
-  if (!match) throw new Error(`Expected a valid CLI release version; found ${version}`);
-  const prerelease = match[4];
-  if (
-    prerelease
-      ?.split('.')
-      .some(
-        (identifier) => /^\d+$/u.test(identifier) && identifier.length > 1 && identifier[0] === '0',
-      )
-  ) {
-    throw new Error(`Expected a valid CLI release version; found ${version}`);
-  }
+  const { prerelease } = parseReleaseSemver(version);
   return {
     version,
-    distTag: prerelease ? 'next' : 'latest',
+    distTag: prerelease.length > 0 ? 'next' : 'latest',
     gitTag: `cli-v${version}`,
     tarball: `${PACKAGE_NAME}-${version}.tgz`,
   };
+}
+
+export function validateRegistryChannels({ releaseVersion, releaseDistTag, distTags }) {
+  if (!distTags || typeof distTags !== 'object' || Array.isArray(distTags)) {
+    throw new Error('Registry package metadata has no valid dist-tags');
+  }
+  if (distTags[releaseDistTag] !== releaseVersion) {
+    throw new Error(`Registry dist-tag ${releaseDistTag} does not point to ${releaseVersion}`);
+  }
+
+  const latest = distTags.latest;
+  const next = distTags.next;
+  if (releaseDistTag === 'latest' && typeof next !== 'string') {
+    throw channelLagError({ releaseVersion, releaseDistTag, latest, next });
+  }
+  if (typeof latest === 'string' && typeof next === 'string') {
+    if (compareReleaseSemver(next, latest) < 0) {
+      throw channelLagError({ releaseVersion, releaseDistTag, latest, next });
+    }
+  }
 }
 
 export function prepareStageRelease({
@@ -122,14 +127,21 @@ export async function fetchRegistryRelease({
 }) {
   const record = loadReleaseRecord(releaseDirectory);
   const versionUrl = `${REGISTRY_ORIGIN}/${PACKAGE_NAME}/${encodeURIComponent(record.version)}`;
-  const metadata = await fetchJson(fetchImpl, versionUrl, 'package version metadata');
+  const metadata = await fetchJson(
+    fetchImpl,
+    versionUrl,
+    'package version metadata',
+    'application/json',
+  );
   if (metadata.name !== PACKAGE_NAME || metadata.version !== record.version) {
     throw new Error('Registry package identity does not match the staged release');
   }
   const tags = await fetchJson(fetchImpl, `${REGISTRY_ORIGIN}/${PACKAGE_NAME}`, 'package metadata');
-  if (tags['dist-tags']?.[record.distTag] !== record.version) {
-    throw new Error(`Registry dist-tag ${record.distTag} does not point to ${record.version}`);
-  }
+  validateRegistryChannels({
+    releaseVersion: record.version,
+    releaseDistTag: record.distTag,
+    distTags: tags['dist-tags'],
+  });
   const tarballUrl = parseRegistryTarballUrl(metadata.dist?.tarball, record.tarball);
   const response = await fetchImpl(tarballUrl, { redirect: 'error' });
   if (!response.ok) {
@@ -304,9 +316,69 @@ function validateSourceIdentity({ sourceSha, runId, runAttempt, repository, work
   }
 }
 
-async function fetchJson(fetchImpl, url, label) {
+function parseReleaseSemver(version) {
+  if (typeof version !== 'string') throw new Error('Expected a valid CLI release version');
+  const match =
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u.exec(
+      version,
+    );
+  if (!match) throw new Error(`Expected a valid CLI release version; found ${version}`);
+  const prerelease = match[4]?.split('.') ?? [];
+  if (
+    prerelease.some(
+      (identifier) => /^\d+$/u.test(identifier) && identifier.length > 1 && identifier[0] === '0',
+    )
+  ) {
+    throw new Error(`Expected a valid CLI release version; found ${version}`);
+  }
+  return {
+    core: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])],
+    prerelease,
+  };
+}
+
+function compareReleaseSemver(left, right) {
+  const a = parseReleaseSemver(left);
+  const b = parseReleaseSemver(right);
+  for (let index = 0; index < a.core.length; index += 1) {
+    if (a.core[index] < b.core[index]) return -1;
+    if (a.core[index] > b.core[index]) return 1;
+  }
+  if (a.prerelease.length === 0) return b.prerelease.length === 0 ? 0 : 1;
+  if (b.prerelease.length === 0) return -1;
+  for (let index = 0; index < Math.max(a.prerelease.length, b.prerelease.length); index += 1) {
+    const leftIdentifier = a.prerelease[index];
+    const rightIdentifier = b.prerelease[index];
+    if (leftIdentifier === undefined) return -1;
+    if (rightIdentifier === undefined) return 1;
+    if (leftIdentifier === rightIdentifier) continue;
+    const leftNumeric = /^\d+$/u.test(leftIdentifier);
+    const rightNumeric = /^\d+$/u.test(rightIdentifier);
+    if (leftNumeric && rightNumeric) {
+      return BigInt(leftIdentifier) < BigInt(rightIdentifier) ? -1 : 1;
+    }
+    if (leftNumeric) return -1;
+    if (rightNumeric) return 1;
+    return leftIdentifier < rightIdentifier ? -1 : 1;
+  }
+  return 0;
+}
+
+function channelLagError({ releaseVersion, releaseDistTag, latest, next }) {
+  const current = typeof next === 'string' ? next : 'missing';
+  if (releaseDistTag === 'next') {
+    return new Error(
+      `Registry next dist-tag (${current}) is behind latest (${latest}); prerelease ${releaseVersion} cannot advance the next channel`,
+    );
+  }
+  return new Error(
+    `Registry next dist-tag (${current}) is behind the latest release. Before finalizing, authenticate interactively with npm and run: npm dist-tag add "${PACKAGE_NAME}@${releaseVersion}" next --registry ${REGISTRY_ORIGIN}/`,
+  );
+}
+
+async function fetchJson(fetchImpl, url, label, accept = 'application/vnd.npm.install-v1+json') {
   const response = await fetchImpl(url, {
-    headers: { accept: 'application/vnd.npm.install-v1+json' },
+    headers: { accept },
     redirect: 'error',
   });
   if (!response.ok)

@@ -8,7 +8,8 @@
 ## 发布不变量
 
 - 只从 `main` dispatch 发布 workflow；
-- 预发布版本使用 `next`，稳定版本使用 `latest`；
+- 预发布版本使用 `next`，稳定版本使用 `latest`；`next` 不得指向比 `latest` 更旧的版本；没有
+  更新的预发布版本时，两个 tag 都指向稳定版；
 - Git tag 使用 `cli-v<version>`；CLI release 不得替换 Desktop 的 GitHub Latest release；
 - 不运行 `npm publish`。GitHub Actions 只能运行 `npm stage publish`，由人工 package
   maintainer 使用 npm 2FA 批准 staged package；
@@ -114,14 +115,32 @@ npm stage approve "$stage_id" --registry https://registry.npmjs.org/
 
 也可以在 npmjs.com package 的 **Staged Packages** 页面完成相同的检查和批准。
 
+稳定版获得批准后，检查公共 dist-tags：
+
+```sh
+version=0.1.0
+npm view maka-agent dist-tags --json --registry https://registry.npmjs.org/
+```
+
+如果 `next` 不存在或比 `latest` 更旧，使用 npm package owner 身份进行交互式认证，并在运行
+Finalize 前将其推进到新的稳定版：
+
+```sh
+npm dist-tag add "maka-agent@$version" next --registry https://registry.npmjs.org/
+```
+
+如果 `next` 已经指向 `0.2.0-beta.1` 之类的更新版本，则不要修改。此步骤有意保留为人工操作：
+npm Trusted Publishing 只认证 `npm publish` 和 `npm stage publish`，不认证 dist-tag 变更，而
+release workflow 不得获得长期 npm token。
+
 ## Finalize 公共发布
 
 npm 显示该版本已经公开后：
 
 1. 在 `main` 上打开 **Actions → Finalize CLI npm release → Run workflow**；
 2. 输入成功 Stage 的 run ID、精确 run attempt 和 version；
-3. 让 inspection job 验证公共 tarball 字节、checksum、inventory、dist-tag、npm signature 和
-   Trusted Publishing provenance；
+3. 让 inspection job 验证公共 tarball 字节、checksum、inventory、npm signature、Trusted
+   Publishing provenance、发布 dist-tag，并确认 `next` 不比 `latest` 更旧；
 4. 审查并批准用于 Git tag 和 GitHub Release 的 `npm-release` Environment deployment；
 5. 确认 workflow 在 Stage source commit 上创建了 `cli-v<version>`。预发布版本必须标记为
    prerelease；任何 CLI release 都不得成为仓库的 GitHub Latest release。
