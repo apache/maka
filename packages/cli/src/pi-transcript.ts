@@ -742,10 +742,7 @@ export function applyMakaSessionEventToTranscript(
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text:
-          event.boundedProviderMessage === true
-            ? event.message
-            : 'The task run failed. Try again later.',
+        text: transcriptErrorMessage(event),
       });
       break;
 
@@ -774,6 +771,46 @@ export function applyMakaSessionEventToTranscript(
         state.entries.push({ kind: 'notice', level: 'info', text: STEP_LIMIT_NOTICE_TEXT });
       }
       break;
+  }
+}
+
+function chatItemToTranscriptEntries(item: ChatItem): MakaPiTranscriptEntry[] {
+  switch (item.kind) {
+    case 'user':
+      return [
+        {
+          kind:
+            item.message.origin?.kind === 'legacy_automation'
+              ? 'legacy_automation'
+              : item.message.origin?.kind === 'goal'
+                ? 'goal_continuation'
+                : 'user',
+          text: item.message.displayText ?? item.message.text,
+        },
+      ];
+    case 'assistant': {
+      const entries: MakaPiTranscriptEntry[] = [];
+      // Stored thinking happened before the reply text, so it resumes above it.
+      const thinking = item.message.thinking?.text;
+      if (thinking?.trim()) {
+        // Replay resets the expansion defaults to collapsed, so replayed
+        // entries start collapsed too.
+        entries.push({
+          kind: 'thinking',
+          messageId: item.message.id,
+          text: thinking,
+          expanded: false,
+        });
+      }
+      entries.push({ kind: 'assistant', messageId: item.message.id, text: item.message.text });
+      return entries;
+    }
+    case 'tool':
+      return [toolActivityToTranscriptEntry(item.item)];
+    case 'system_note': {
+      const entry = systemNoteToTranscriptEntry(item.message);
+      return entry ? [entry] : [];
+    }
   }
 }
 
