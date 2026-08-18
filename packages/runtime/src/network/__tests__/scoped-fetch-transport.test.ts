@@ -180,7 +180,9 @@ describe('connection effect network transport', () => {
       const response = await fetchForConnectionEffect(
         undefined,
         `http://127.0.0.1:${port}/models`,
-        { timeoutMs: 50 },
+        // Leave enough time for the production proxy to establish the response;
+        // the assertion is that its deadline remains armed while the body stalls.
+        { timeoutMs: 250 },
       );
       await assert.rejects(
         response.readJson(),
