@@ -286,11 +286,14 @@ describe('InteractiveUsageStores', () => {
           await new Promise((resolve) => setImmediate(resolve));
         }
       })();
-      await assert.rejects(stores.usageSnapshotRevision(), /Usage revision did not settle/);
-      stop = true;
-      await writer;
-      await stores.close();
-      await owner.close();
+      try {
+        await assert.rejects(stores.usageSnapshotRevision(), /Usage revision did not settle/);
+      } finally {
+        stop = true;
+        await writer;
+        await stores.close();
+        await owner.close();
+      }
     });
   });
 
