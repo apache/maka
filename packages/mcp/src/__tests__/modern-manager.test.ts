@@ -60,7 +60,8 @@ describe('McpClientManager modern Streamable HTTP E2E', () => {
 
   test('does not issue tools/list when a modern server omits the tools capability', async () => {
     const fixture = await createModernRemoteFixture({ advertiseTools: false });
-    const manager = createManager();
+    let now = 1;
+    const manager = createManager({ now: () => now });
 
     await manager.sync(modernConfig(fixture.url, 'auto'));
 
@@ -72,7 +73,12 @@ describe('McpClientManager modern Streamable HTTP E2E', () => {
     assert.deepEqual(manager.toolSnapshot().tools, []);
     assert.equal(fixture.protocolMethods.includes('tools/list'), false);
 
+    now = 2;
     assert.deepEqual(await manager.refreshTools('remote'), []);
+    assert.equal(manager.status('remote')?.updatedAt, 2);
+    now = 3;
+    assert.deepEqual(await manager.refreshTools('remote'), []);
+    assert.equal(manager.status('remote')?.updatedAt, 3);
     assert.equal(fixture.protocolMethods.includes('tools/list'), false);
   });
 
@@ -151,8 +157,9 @@ describe('McpClientManager modern Streamable HTTP E2E', () => {
   });
 });
 
-function createManager(): McpClientManager {
+function createManager(options: { now?: () => number } = {}): McpClientManager {
   const manager = new McpClientManager({
+    ...options,
     timeouts: { remoteConnectMs: 5_000, listToolsMs: 5_000, callToolMs: 5_000 },
   });
   managers.push(manager);

@@ -399,8 +399,10 @@ export class McpClientManager {
       pendingNotification: notification,
       promise: Promise.resolve({ descriptors: [], suppressed: false }),
     };
-    state.promise = this.refreshToolLoop(serverId, entry, state);
     entry.refreshState = state;
+    // Start on the next microtask so the generation-owned gate is installed
+    // before even a synchronous no-capability refresh can settle and release it.
+    state.promise = Promise.resolve().then(() => this.refreshToolLoop(serverId, entry, state));
     return state.promise;
   }
 
