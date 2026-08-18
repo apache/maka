@@ -1315,7 +1315,9 @@ test('Pier rejects configured mounts that collide with framework log ownership',
             },
             'experiment.json',
           ),
-        new RegExp(`Pier mount target ${target.replaceAll('/', '\\/')} is reserved`, 'u'),
+        (error) =>
+          error instanceof Error &&
+          error.message === `Pier mount target ${target} is reserved for framework logs`,
       );
     }
   } finally {
