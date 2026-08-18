@@ -366,6 +366,10 @@ export class RuntimeHostSessionChannel {
       this.#now,
       this.#subscription.activeAssistantStreams,
     );
+    // Deltas a lagging consumer has not seen are superseded by this canonical
+    // resync; keeping them would shed the fresh post-recovery stream behind
+    // them.
+    for (const queue of this.#turns.values()) queue.shedLaggedDeltas();
     if (!replacedLiveState) {
       for (const event of this.#projector.seedActive(false)) this.#emit(event);
       return false;
@@ -588,22 +592,38 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
     if (this.#items.length >= MAX_PENDING_EVENTS_PER_TURN) {
       // A consumer that falls behind must not kill the stream. Shed
       // offset-bearing deltas (the next canonical resync or completion heals
-      // them) and make room for every other event so terminal records always
-      // land; the channel resubscribes to re-sync state, like the Desktop
-      // subscription owner does (#2630).
+      // them) and make room for every other event; the channel resubscribes
+      // to re-sync state, like the Desktop subscription owner does (#2630).
       if (isSheddableDelta(event)) {
         this.#noteLag();
         return;
       }
       const shedIndex = this.#items.findIndex(isSheddableDelta);
-      if (shedIndex === -1) {
+      if (shedIndex !== -1) {
+        this.#items.splice(shedIndex, 1);
+      } else if (isTerminalOutcome(event)) {
+        // Terminal outcomes always land, even when the backlog holds no
+        // delta to evict: without one the consumer reaches end-of-stream
+        // without a result.
+        this.#items.shift();
+      } else {
         this.#noteLag();
         return;
       }
-      this.#items.splice(shedIndex, 1);
       this.#noteLag();
     }
     this.#items.push(event);
+  }
+
+  /**
+   * Drop sheddable deltas a lagging consumer has not seen. Called when the
+   * channel re-syncs from canonical state, which heals the omitted ranges.
+   */
+  shedLaggedDeltas(): void {
+    if (!this.#lagging) return;
+    for (let index = this.#items.length - 1; index >= 0; index -= 1) {
+      if (isSheddableDelta(this.#items[index]!)) this.#items.splice(index, 1);
+    }
   }
 
   #noteLag(): void {
@@ -633,6 +653,10 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
 
 function isSheddableDelta(event: SessionEvent): boolean {
   return event.type === 'text_delta' || event.type === 'thinking_delta';
+}
+
+function isTerminalOutcome(event: SessionEvent): boolean {
+  return event.type === 'complete' || event.type === 'abort' || event.type === 'error';
 }
 
 function sameTerminalTurn(
