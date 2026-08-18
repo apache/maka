@@ -6,8 +6,8 @@ import {
 
 const TOKEN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const EXPECTED_QUERY_KEYS = Object.freeze([
-  'bindingId',
   'contributionId',
+  'entryId',
   'extensionId',
   'revision',
   'scopeId',
@@ -36,7 +36,7 @@ export function createUiExtensionFrameRequestHandler(
       });
       const contribution = snapshot.contributions.find(
         (item) =>
-          item.bindingId === identity.bindingId &&
+          item.entryId === identity.entryId &&
           item.extensionId === identity.extensionId &&
           item.revision === identity.revision &&
           item.id === identity.contributionId,
@@ -65,7 +65,7 @@ export function createUiExtensionFrameRequestHandler(
 
 function decodeFrameIdentity(urlValue: string): {
   readonly scopeId: 'desktop-ui';
-  readonly bindingId: string;
+  readonly entryId: string;
   readonly extensionId: string;
   readonly revision: string;
   readonly contributionId: string;
@@ -79,14 +79,14 @@ function decodeFrameIdentity(urlValue: string): {
     return null;
   }
   const scopeId = url.searchParams.get('scopeId');
-  const bindingId = url.searchParams.get('bindingId');
+  const entryId = url.searchParams.get('entryId');
   const extensionId = url.searchParams.get('extensionId');
   const revision = url.searchParams.get('revision');
   const contributionId = url.searchParams.get('contributionId');
   const token = url.searchParams.get('token');
   if (
     scopeId !== 'desktop-ui' ||
-    !bindingId ||
+    !entryId ||
     !extensionId ||
     !revision ||
     !contributionId ||
@@ -95,7 +95,7 @@ function decodeFrameIdentity(urlValue: string): {
   ) {
     return null;
   }
-  return { scopeId, bindingId, extensionId, revision, contributionId, token };
+  return { scopeId, entryId, extensionId, revision, contributionId, token };
 }
 
 function response(body: string, status: number): Response {

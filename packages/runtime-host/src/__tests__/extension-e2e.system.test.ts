@@ -62,7 +62,7 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
     await seedProvider(root, provider.baseUrl);
     ({ host, client } = await startHost(root, revisions));
 
-    assert.deepEqual(await client.request('extension.catalog.query', {}), {
+    assert.deepEqual(await client.request('extension.composition.query', {}), {
       revisions: [
         {
           extensionId: 'weather',
@@ -86,23 +86,23 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
           eventContributionIds: [],
         },
       ],
-      bindings: [],
+      entries: [],
     });
     await createSession(client, 'extension-session-a', root);
     await createSession(client, 'extension-session-b', root);
 
-    const enabled = await client.request('extension.catalog.mutate', {
+    const enabled = await client.request('extension.composition.mutate', {
       kind: 'enable',
-      bindingId: 'weather-binding',
+      entryId: 'weather-entry',
       scopeId: 'extension-session-a',
       extensionId: 'weather',
       revision: '1',
     });
-    assert.deepEqual(enabled.binding, {
-      bindingId: 'weather-binding',
+    assert.deepEqual(enabled.entry, {
+      entryId: 'weather-entry',
       scopeId: 'extension-session-a',
       extensionId: 'weather',
-      desiredRevision: '1',
+      revision: '1',
       enabled: true,
       status: 'active',
       error: null,
@@ -126,9 +126,9 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
     assert.deepEqual(await invocationRevisions(invocationLog), ['1']);
 
     await assert.rejects(
-      client.request('extension.catalog.mutate', {
+      client.request('extension.composition.mutate', {
         kind: 'enable',
-        bindingId: 'duplicate-weather-binding',
+        entryId: 'duplicate-weather-entry',
         scopeId: 'extension-session-a',
         extensionId: 'weather',
         revision: '1',
@@ -136,9 +136,9 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
       operationError('operation_conflict'),
     );
 
-    const upgraded = await client.request('extension.catalog.mutate', {
+    const upgraded = await client.request('extension.composition.mutate', {
       kind: 'update',
-      bindingId: 'weather-binding',
+      entryId: 'weather-entry',
       revision: '2',
     });
     const second = await runTurn(client, provider, 'extension-session-a', 'call weather v2');
@@ -147,23 +147,23 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
     assert.deepEqual(await invocationRevisions(invocationLog), ['1', '2']);
 
     await assert.rejects(
-      client.request('extension.catalog.mutate', {
+      client.request('extension.composition.mutate', {
         kind: 'update',
-        bindingId: 'weather-binding',
+        entryId: 'weather-entry',
         revision: '3',
       }),
       operationError('operation_conflict', /failed its real health check/u),
     );
-    const failed = await client.request('extension.catalog.query', {});
-    assert.deepEqual(failed.bindings[0], {
-      bindingId: 'weather-binding',
+    const failed = await client.request('extension.composition.query', {});
+    assert.deepEqual(failed.entries[0], {
+      entryId: 'weather-entry',
       scopeId: 'extension-session-a',
       extensionId: 'weather',
-      desiredRevision: '3',
+      revision: '3',
       enabled: true,
       status: 'failed',
       error:
-        'Unable to activate entry weather-binding: weather revision 3 failed its real health check',
+        'Unable to activate entry weather-entry: weather revision 3 failed its real health check',
     });
     const afterFailure = await runTurn(
       client,
@@ -180,9 +180,9 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
     host = undefined;
     ({ host, client } = await startHost(root, revisions));
 
-    const recovered = await client.request('extension.catalog.query', {});
-    assert.equal(recovered.bindings[0]?.desiredRevision, '3');
-    assert.equal(recovered.bindings[0]?.status, 'failed');
+    const recovered = await client.request('extension.composition.query', {});
+    assert.equal(recovered.entries[0]?.revision, '3');
+    assert.equal(recovered.entries[0]?.status, 'failed');
     const afterRestart = await runTurn(
       client,
       provider,
@@ -193,11 +193,11 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
     assert.equal(afterRestart.toolResult, undefined);
     assert.deepEqual(await invocationRevisions(invocationLog), ['1', '2', '2']);
 
-    const disabled = await client.request('extension.catalog.mutate', {
+    const disabled = await client.request('extension.composition.mutate', {
       kind: 'disable',
-      bindingId: 'weather-binding',
+      entryId: 'weather-entry',
     });
-    assert.equal(disabled.binding?.status, 'disabled');
+    assert.equal(disabled.entry?.status, 'disabled');
     const afterDisable = await runTurn(
       client,
       provider,
@@ -212,8 +212,8 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
     await host.close();
     host = undefined;
     ({ host, client } = await startHost(root, revisions));
-    const disabledAfterRestart = await client.request('extension.catalog.query', {});
-    assert.equal(disabledAfterRestart.bindings[0]?.status, 'disabled');
+    const disabledAfterRestart = await client.request('extension.composition.query', {});
+    assert.equal(disabledAfterRestart.entries[0]?.status, 'disabled');
     const stillDisabled = await runTurn(
       client,
       provider,
@@ -222,9 +222,9 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
     );
     assert.equal(stillDisabled.tools.includes('Weather'), false);
 
-    await client.request('extension.catalog.mutate', {
+    await client.request('extension.composition.mutate', {
       kind: 'enable',
-      bindingId: 'weather-binding',
+      entryId: 'weather-entry',
       scopeId: 'extension-session-a',
       extensionId: 'weather',
       revision: '1',
@@ -239,11 +239,11 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
     assert.deepEqual(await invocationRevisions(invocationLog), ['1', '2', '2', '1']);
 
     assert.deepEqual(
-      await client.request('extension.catalog.mutate', {
+      await client.request('extension.composition.mutate', {
         kind: 'remove',
-        bindingId: 'weather-binding',
+        entryId: 'weather-entry',
       }),
-      { binding: null },
+      { entry: null },
     );
     const afterRemove = await runTurn(
       client,
@@ -262,7 +262,7 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
     await host.close();
     host = undefined;
     ({ host, client } = await startHost(root, revisions));
-    assert.deepEqual((await client.request('extension.catalog.query', {})).bindings, []);
+    assert.deepEqual((await client.request('extension.composition.query', {})).entries, []);
     const removedAfterRestart = await runTurn(
       client,
       provider,
@@ -304,14 +304,14 @@ test('installed Tool package works through real UDS, provider execution, sandbox
     assert.match(installed.revision, /^sha256-[a-f0-9]{64}$/u);
 
     await createSession(client, 'package-extension-session', root);
-    const enabled = await client.request('extension.catalog.mutate', {
+    const enabled = await client.request('extension.composition.mutate', {
       kind: 'enable',
-      bindingId: 'package-weather-binding',
+      entryId: 'package-weather-entry',
       scopeId: 'package-extension-session',
       extensionId: installed.extensionId,
       revision: installed.revision,
     });
-    assert.equal(enabled.binding?.status, 'active');
+    assert.equal(enabled.entry?.status, 'active');
     const first = await runTurn(
       client,
       provider,
@@ -328,8 +328,8 @@ test('installed Tool package works through real UDS, provider execution, sandbox
     await host.close();
     host = undefined;
     ({ host, client } = await startHost(root, []));
-    const recovered = await client.request('extension.catalog.query', {});
-    assert.equal(recovered.bindings[0]?.status, 'active');
+    const recovered = await client.request('extension.composition.query', {});
+    assert.equal(recovered.entries[0]?.status, 'active');
     assert.equal(recovered.revisions[0]?.revision, installed.revision);
     const afterRestart = await runTurn(
       client,
@@ -340,17 +340,17 @@ test('installed Tool package works through real UDS, provider execution, sandbox
     assert.match(afterRestart.toolResult ?? '', /"source":"installed-package"/u);
     assert.equal((await readFile(invocationLog, 'utf8')).trim().split('\n').length, 2);
 
-    await client.request('extension.catalog.mutate', {
+    await client.request('extension.composition.mutate', {
       kind: 'remove',
-      bindingId: 'package-weather-binding',
+      entryId: 'package-weather-entry',
     });
     await client.request('extension.package.uninstall', {
       extensionId: installed.extensionId,
       revision: installed.revision,
     });
-    assert.deepEqual(await client.request('extension.catalog.query', {}), {
+    assert.deepEqual(await client.request('extension.composition.query', {}), {
       revisions: [],
-      bindings: [],
+      entries: [],
     });
     const removed = await runTurn(
       client,
@@ -396,16 +396,16 @@ test('installed package runs real Tool execution through trusted around middlewa
     assert.ok(installed.timerContributionIds?.some((id) => id.includes('heartbeat')));
 
     await createSession(client, 'around-extension-session', root);
-    const enabled = await client.request('extension.catalog.mutate', {
+    const enabled = await client.request('extension.composition.mutate', {
       kind: 'enable',
-      bindingId: 'around-package-binding',
+      entryId: 'around-package-entry',
       scopeId: 'profile',
       extensionId: installed.extensionId,
       revision: installed.revision,
     });
-    assert.equal(enabled.binding?.status, 'active');
+    assert.equal(enabled.entry?.status, 'active');
     const configured = await client.request('extension.configuration.mutate', {
-      bindingId: 'around-package-binding',
+      entryId: 'around-package-entry',
       configuration: { region: 'Hangzhou' },
     });
     assert.deepEqual(configured.configuration, { region: 'Hangzhou' });

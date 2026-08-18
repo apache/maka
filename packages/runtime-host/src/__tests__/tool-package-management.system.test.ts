@@ -15,7 +15,7 @@ import { HostToolPackageManagementTools } from '../server/tool-package-managemen
 import { PluginPackageStore } from '../server/plugin-package-store.js';
 
 const emptyInspection = {
-  catalog: { revisions: [], bindings: [] },
+  catalog: { revisions: [], entries: [] },
   contracts: { packages: [] },
 };
 
@@ -102,10 +102,10 @@ test('Agent can inspect, define, test, activate, immediately invoke, update safe
       { action: 'activate', extensionId: 'calculator', revision: v1.revision },
       context,
     )) as {
-      binding: { status: string };
+      entry: { status: string };
       tools: Array<{ name: string; inputSchema: Record<string, unknown> }>;
     };
-    assert.equal(activated.binding.status, 'active');
+    assert.equal(activated.entry.status, 'active');
     assert.deepEqual(activated.tools, [
       {
         name: 'Add',
@@ -144,7 +144,7 @@ test('Agent can inspect, define, test, activate, immediately invoke, update safe
     });
 
     assert.deepEqual(await manage.impl({ action: 'stop', extensionId: 'calculator' }, context), {
-      binding: null,
+      entry: null,
     });
     assert.equal(
       runtime.resolveTools('session-agent', []).some(({ name }) => name === 'Add'),

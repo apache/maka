@@ -9,9 +9,9 @@ import {
 import { invalidProtocolFrame } from './errors.js';
 import { defineHostPathOperation, defineOperation } from './operation-spec.js';
 
-export const EXTENSION_CATALOG_MAX_REVISIONS = 256;
-export const EXTENSION_CATALOG_MAX_BINDINGS = 256;
-export const EXTENSION_CATALOG_RESULT_MAX_BYTES = 96 * 1024;
+export const EXTENSION_COMPOSITION_MAX_REVISIONS = 256;
+export const EXTENSION_COMPOSITION_MAX_ENTRIES = 256;
+export const EXTENSION_COMPOSITION_RESULT_MAX_BYTES = 96 * 1024;
 export const EXTENSION_REVISION_MAX_BYTES = 128;
 export const EXTENSION_ERROR_MAX_BYTES = 4 * 1024;
 export const EXTENSION_UI_OFFICIAL_SLOTS = Object.freeze([
@@ -49,23 +49,23 @@ export interface TrustedExtensionRevisionProjection {
   readonly timerContributionIds?: readonly string[];
 }
 
-export type ExtensionBindingStatus = 'disabled' | 'active' | 'waiting' | 'failed';
+export type ExtensionCompositionEntryStatus = 'disabled' | 'active' | 'waiting' | 'failed';
 
-export interface ExtensionBindingProjection {
-  readonly bindingId: string;
+export interface ExtensionCompositionEntryProjection {
+  readonly entryId: string;
   readonly scopeId: string;
   readonly extensionId: string;
-  readonly desiredRevision: string;
+  readonly revision: string;
   readonly enabled: boolean;
-  readonly status: ExtensionBindingStatus;
+  readonly status: ExtensionCompositionEntryStatus;
   readonly error: string | null;
 }
 
-export interface ExtensionCatalogQueryInput {}
+export interface ExtensionCompositionQueryInput {}
 
-export interface ExtensionCatalogQueryResult {
+export interface ExtensionCompositionQueryResult {
   readonly revisions: readonly TrustedExtensionRevisionProjection[];
-  readonly bindings: readonly ExtensionBindingProjection[];
+  readonly entries: readonly ExtensionCompositionEntryProjection[];
 }
 
 export type ExtensionConfigurationScalar = string | number | boolean;
@@ -125,7 +125,7 @@ export interface ExtensionContractQueryResult {
 }
 
 export interface ExtensionConfigurationQueryInput {
-  readonly bindingId: string;
+  readonly entryId: string;
 }
 
 export interface ExtensionConfigurationQueryResult {
@@ -143,7 +143,7 @@ export interface ExtensionUiSnapshotInput {
 }
 
 export interface ExtensionUiContributionProjection {
-  readonly bindingId: string;
+  readonly entryId: string;
   readonly extensionId: string;
   readonly revision: string;
   readonly id: string;
@@ -175,7 +175,7 @@ export type ExtensionUiStateValue =
 
 export interface ExtensionUiStateQueryInput {
   readonly scopeId: string;
-  readonly bindingId: string;
+  readonly entryId: string;
   readonly extensionId: string;
   readonly revision: string;
   readonly key: string;
@@ -195,7 +195,7 @@ export interface ExtensionUiStateMutateResult {
 
 export interface ExtensionUiRpcInvokeInput {
   readonly scopeId: string;
-  readonly bindingId: string;
+  readonly entryId: string;
   readonly extensionId: string;
   readonly revision: string;
   readonly method: string;
@@ -206,20 +206,20 @@ export interface ExtensionUiRpcInvokeResult {
   readonly value: ExtensionUiStateValue;
 }
 
-export type ExtensionCatalogMutateInput =
+export type ExtensionCompositionMutateInput =
   | {
       readonly kind: 'enable';
-      readonly bindingId: string;
+      readonly entryId: string;
       readonly scopeId: string;
       readonly extensionId: string;
       readonly revision: string;
     }
-  | { readonly kind: 'disable'; readonly bindingId: string }
-  | { readonly kind: 'update'; readonly bindingId: string; readonly revision: string }
-  | { readonly kind: 'remove'; readonly bindingId: string };
+  | { readonly kind: 'disable'; readonly entryId: string }
+  | { readonly kind: 'update'; readonly entryId: string; readonly revision: string }
+  | { readonly kind: 'remove'; readonly entryId: string };
 
-export interface ExtensionCatalogMutateResult {
-  readonly binding: ExtensionBindingProjection | null;
+export interface ExtensionCompositionMutateResult {
+  readonly entry: ExtensionCompositionEntryProjection | null;
 }
 
 export interface ToolPackageInstallInput {
@@ -246,27 +246,27 @@ export interface ExtensionPackageExportResult {
 }
 
 export const EXTENSION_OPERATION_SPECS = {
-  'extension.catalog.query': defineOperation<
-    ExtensionCatalogQueryInput,
-    ExtensionCatalogQueryResult,
+  'extension.composition.query': defineOperation<
+    ExtensionCompositionQueryInput,
+    ExtensionCompositionQueryResult,
     (typeof QUERY_ERRORS)[number]
   >({
     mode: 'query',
     availability: 'ready',
     errors: QUERY_ERRORS,
-    decodeInput: decodeExtensionCatalogQueryInput,
-    decodeOutput: decodeExtensionCatalogQueryResult,
+    decodeInput: decodeExtensionCompositionQueryInput,
+    decodeOutput: decodeExtensionCompositionQueryResult,
   }),
-  'extension.catalog.mutate': defineOperation<
-    ExtensionCatalogMutateInput,
-    ExtensionCatalogMutateResult,
+  'extension.composition.mutate': defineOperation<
+    ExtensionCompositionMutateInput,
+    ExtensionCompositionMutateResult,
     (typeof MUTATION_ERRORS)[number]
   >({
     mode: 'command',
     availability: 'ready',
     errors: MUTATION_ERRORS,
-    decodeInput: decodeExtensionCatalogMutateInput,
-    decodeOutput: decodeExtensionCatalogMutateResult,
+    decodeInput: decodeExtensionCompositionMutateInput,
+    decodeOutput: decodeExtensionCompositionMutateResult,
   }),
   'extension.contract.query': defineOperation<
     ExtensionContractQueryInput,
@@ -380,8 +380,10 @@ export const EXTENSION_OPERATION_SPECS = {
   }),
 } as const;
 
-export function decodeExtensionCatalogQueryInput(value: unknown): ExtensionCatalogQueryInput {
-  requireExactRecord(value, 'extension catalog query input', []);
+export function decodeExtensionCompositionQueryInput(
+  value: unknown,
+): ExtensionCompositionQueryInput {
+  requireExactRecord(value, 'extension composition query input', []);
   return {};
 }
 
@@ -392,7 +394,10 @@ export function decodeExtensionContractQueryInput(value: unknown): ExtensionCont
 
 export function decodeExtensionContractQueryResult(value: unknown): ExtensionContractQueryResult {
   const result = requireExactRecord(value, 'extension contract query result', ['packages']);
-  if (!Array.isArray(result.packages) || result.packages.length > EXTENSION_CATALOG_MAX_REVISIONS) {
+  if (
+    !Array.isArray(result.packages) ||
+    result.packages.length > EXTENSION_COMPOSITION_MAX_REVISIONS
+  ) {
     throw invalidProtocolFrame('Invalid extension contract packages');
   }
   const decoded = { packages: result.packages.map(decodePackageContract) };
@@ -403,8 +408,8 @@ export function decodeExtensionContractQueryResult(value: unknown): ExtensionCon
 export function decodeExtensionConfigurationQueryInput(
   value: unknown,
 ): ExtensionConfigurationQueryInput {
-  const input = requireExactRecord(value, 'extension configuration query input', ['bindingId']);
-  return { bindingId: requireEntityId(input.bindingId, 'extension bindingId') };
+  const input = requireExactRecord(value, 'extension configuration query input', ['entryId']);
+  return { entryId: requireEntityId(input.entryId, 'extension entryId') };
 }
 
 export function decodeExtensionConfigurationQueryResult(
@@ -420,11 +425,11 @@ export function decodeExtensionConfigurationMutateInput(
   value: unknown,
 ): ExtensionConfigurationMutateInput {
   const input = requireExactRecord(value, 'extension configuration mutation input', [
-    'bindingId',
+    'entryId',
     'configuration',
   ]);
   return {
-    bindingId: requireEntityId(input.bindingId, 'extension bindingId'),
+    entryId: requireEntityId(input.entryId, 'extension entryId'),
     configuration: decodeConfigurationValues(input.configuration),
   };
 }
@@ -455,7 +460,7 @@ export function decodeExtensionUiSnapshotResult(value: unknown): ExtensionUiSnap
 export function decodeExtensionUiStateQueryInput(value: unknown): ExtensionUiStateQueryInput {
   const input = requireExactRecord(value, 'extension UI state query input', [
     'scopeId',
-    'bindingId',
+    'entryId',
     'extensionId',
     'revision',
     'key',
@@ -478,7 +483,7 @@ export function decodeExtensionUiStateMutateInput(value: unknown): ExtensionUiSt
   if (record.kind === 'set') {
     const input = requireExactRecord(record, 'extension UI state set input', [
       'scopeId',
-      'bindingId',
+      'entryId',
       'extensionId',
       'revision',
       'key',
@@ -496,7 +501,7 @@ export function decodeExtensionUiStateMutateInput(value: unknown): ExtensionUiSt
   if (record.kind === 'delete') {
     const input = requireExactRecord(record, 'extension UI state delete input', [
       'scopeId',
-      'bindingId',
+      'entryId',
       'extensionId',
       'revision',
       'key',
@@ -515,7 +520,7 @@ export function decodeExtensionUiStateMutateResult(value: unknown): ExtensionUiS
 export function decodeExtensionUiRpcInvokeInput(value: unknown): ExtensionUiRpcInvokeInput {
   const input = requireExactRecord(value, 'extension UI RPC invoke input', [
     'scopeId',
-    'bindingId',
+    'entryId',
     'extensionId',
     'revision',
     'method',
@@ -523,7 +528,7 @@ export function decodeExtensionUiRpcInvokeInput(value: unknown): ExtensionUiRpcI
   ]);
   const decoded = {
     scopeId: decodeExtensionScopeId(input.scopeId, 'extension UI scopeId'),
-    bindingId: requireEntityId(input.bindingId, 'extension bindingId'),
+    entryId: requireEntityId(input.entryId, 'extension entryId'),
     extensionId: decodeExtensionId(input.extensionId),
     revision: decodeRevision(input.revision),
     method: requireUtf8String(input.method, 'extension UI RPC method', 128),
@@ -540,41 +545,49 @@ export function decodeExtensionUiRpcInvokeResult(value: unknown): ExtensionUiRpc
   return decoded;
 }
 
-export function decodeExtensionCatalogQueryResult(value: unknown): ExtensionCatalogQueryResult {
-  const result = requireExactRecord(value, 'extension catalog query result', [
+export function decodeExtensionCompositionQueryResult(
+  value: unknown,
+): ExtensionCompositionQueryResult {
+  const result = requireExactRecord(value, 'extension composition query result', [
     'revisions',
-    'bindings',
+    'entries',
   ]);
   if (
     !Array.isArray(result.revisions) ||
-    result.revisions.length > EXTENSION_CATALOG_MAX_REVISIONS ||
-    !Array.isArray(result.bindings) ||
-    result.bindings.length > EXTENSION_CATALOG_MAX_BINDINGS
+    result.revisions.length > EXTENSION_COMPOSITION_MAX_REVISIONS ||
+    !Array.isArray(result.entries) ||
+    result.entries.length > EXTENSION_COMPOSITION_MAX_ENTRIES
   ) {
-    throw invalidProtocolFrame('Invalid extension catalog result');
+    throw invalidProtocolFrame('Invalid extension composition result');
   }
   const decoded = {
     revisions: result.revisions.map(decodeRevisionProjection),
-    bindings: result.bindings.map(decodeBindingProjection),
+    entries: result.entries.map(decodeEntryProjection),
   };
-  requireEncodedByteLimit(decoded, 'extension catalog result', EXTENSION_CATALOG_RESULT_MAX_BYTES);
+  requireEncodedByteLimit(
+    decoded,
+    'extension composition result',
+    EXTENSION_COMPOSITION_RESULT_MAX_BYTES,
+  );
   return decoded;
 }
 
-export function decodeExtensionCatalogMutateInput(value: unknown): ExtensionCatalogMutateInput {
-  const record = requireRecord(value, 'extension catalog mutation input');
+export function decodeExtensionCompositionMutateInput(
+  value: unknown,
+): ExtensionCompositionMutateInput {
+  const record = requireRecord(value, 'extension composition mutation input');
   switch (record.kind) {
     case 'enable': {
       const input = requireExactRecord(record, 'extension enable input', [
         'kind',
-        'bindingId',
+        'entryId',
         'scopeId',
         'extensionId',
         'revision',
       ]);
       return {
         kind: 'enable',
-        bindingId: requireEntityId(input.bindingId, 'extension bindingId'),
+        entryId: requireEntityId(input.entryId, 'extension entryId'),
         scopeId: decodeExtensionScopeId(input.scopeId, 'extension scopeId'),
         extensionId: decodeExtensionId(input.extensionId),
         revision: decodeRevision(input.revision),
@@ -584,34 +597,36 @@ export function decodeExtensionCatalogMutateInput(value: unknown): ExtensionCata
     case 'remove': {
       const input = requireExactRecord(record, `extension ${record.kind} input`, [
         'kind',
-        'bindingId',
+        'entryId',
       ]);
       return {
         kind: record.kind,
-        bindingId: requireEntityId(input.bindingId, 'extension bindingId'),
+        entryId: requireEntityId(input.entryId, 'extension entryId'),
       };
     }
     case 'update': {
       const input = requireExactRecord(record, 'extension update input', [
         'kind',
-        'bindingId',
+        'entryId',
         'revision',
       ]);
       return {
         kind: 'update',
-        bindingId: requireEntityId(input.bindingId, 'extension bindingId'),
+        entryId: requireEntityId(input.entryId, 'extension entryId'),
         revision: decodeRevision(input.revision),
       };
     }
     default:
-      throw invalidProtocolFrame('Invalid extension catalog mutation kind');
+      throw invalidProtocolFrame('Invalid extension composition mutation kind');
   }
 }
 
-export function decodeExtensionCatalogMutateResult(value: unknown): ExtensionCatalogMutateResult {
-  const result = requireExactRecord(value, 'extension catalog mutation result', ['binding']);
+export function decodeExtensionCompositionMutateResult(
+  value: unknown,
+): ExtensionCompositionMutateResult {
+  const result = requireExactRecord(value, 'extension composition mutation result', ['entry']);
   return {
-    binding: result.binding === null ? null : decodeBindingProjection(result.binding),
+    entry: result.entry === null ? null : decodeEntryProjection(result.entry),
   };
 }
 
@@ -964,7 +979,7 @@ function decodeConfigurationValues(
 function decodeUiContributionProjection(value: unknown): ExtensionUiContributionProjection {
   const candidate = value as Record<string, unknown> | null;
   const fields = [
-    'bindingId',
+    'entryId',
     'extensionId',
     'revision',
     'id',
@@ -1020,7 +1035,7 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
     throw invalidProtocolFrame('Invalid extension UI Host methods');
   }
   return {
-    bindingId: requireEntityId(item.bindingId, 'extension bindingId'),
+    entryId: requireEntityId(item.entryId, 'extension entryId'),
     extensionId: decodeExtensionId(item.extensionId),
     revision: decodeRevision(item.revision),
     id: requireUtf8String(item.id, 'extension UI contribution id', 128),
@@ -1055,7 +1070,7 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
 function decodeUiStateIdentity(input: Record<string, unknown>): ExtensionUiStateQueryInput {
   return {
     scopeId: decodeExtensionScopeId(input.scopeId, 'extension UI scopeId'),
-    bindingId: requireEntityId(input.bindingId, 'extension bindingId'),
+    entryId: requireEntityId(input.entryId, 'extension entryId'),
     extensionId: decodeExtensionId(input.extensionId),
     revision: decodeRevision(input.revision),
     key: requireUtf8String(input.key, 'extension UI state key', 128),
@@ -1081,27 +1096,27 @@ function decodeUiStateValue(value: unknown, depth = 0): ExtensionUiStateValue {
   throw invalidProtocolFrame('Invalid extension UI state value');
 }
 
-function decodeBindingProjection(value: unknown): ExtensionBindingProjection {
-  const binding = requireExactRecord(value, 'extension binding', [
-    'bindingId',
+function decodeEntryProjection(value: unknown): ExtensionCompositionEntryProjection {
+  const entry = requireExactRecord(value, 'extension entry', [
+    'entryId',
     'scopeId',
     'extensionId',
-    'desiredRevision',
+    'revision',
     'enabled',
     'status',
     'error',
   ]);
   return {
-    bindingId: requireEntityId(binding.bindingId, 'extension bindingId'),
-    scopeId: decodeExtensionScopeId(binding.scopeId, 'extension scopeId'),
-    extensionId: decodeExtensionId(binding.extensionId),
-    desiredRevision: decodeRevision(binding.desiredRevision),
-    enabled: decodeBoolean(binding.enabled, 'extension enabled'),
-    status: decodeBindingStatus(binding.status),
+    entryId: requireEntityId(entry.entryId, 'extension entryId'),
+    scopeId: decodeExtensionScopeId(entry.scopeId, 'extension scopeId'),
+    extensionId: decodeExtensionId(entry.extensionId),
+    revision: decodeRevision(entry.revision),
+    enabled: decodeBoolean(entry.enabled, 'extension enabled'),
+    status: decodeEntryStatus(entry.status),
     error:
-      binding.error === null
+      entry.error === null
         ? null
-        : requireUtf8String(binding.error, 'extension error', EXTENSION_ERROR_MAX_BYTES),
+        : requireUtf8String(entry.error, 'extension error', EXTENSION_ERROR_MAX_BYTES),
   };
 }
 
@@ -1128,9 +1143,9 @@ function decodeBoolean(value: unknown, label: string): boolean {
   return value;
 }
 
-function decodeBindingStatus(value: unknown): ExtensionBindingStatus {
+function decodeEntryStatus(value: unknown): ExtensionCompositionEntryStatus {
   if (value !== 'disabled' && value !== 'active' && value !== 'waiting' && value !== 'failed') {
-    throw invalidProtocolFrame('Invalid extension binding status');
+    throw invalidProtocolFrame('Invalid extension entry status');
   }
   return value;
 }

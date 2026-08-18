@@ -37,14 +37,14 @@ export class PluginHookService extends Service {
 
   inspectEvents(
     rootIds: readonly string[],
-    committed?: readonly { readonly bindingId: string; readonly revision: string }[],
+    committed?: readonly { readonly entryId: string; readonly revision: string }[],
   ): readonly ExtensionEventDefinitionInspection[] {
     return this.registry.inspectEvents(rootIds, committed);
   }
 
   inspectListeners(
     rootIds: readonly string[],
-    committed?: readonly { readonly bindingId: string; readonly revision: string }[],
+    committed?: readonly { readonly entryId: string; readonly revision: string }[],
   ): readonly ExtensionEventListenerInspection[] {
     return this.registry.inspectListeners(rootIds, committed);
   }

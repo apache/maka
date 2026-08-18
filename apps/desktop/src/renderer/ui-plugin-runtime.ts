@@ -58,11 +58,11 @@ export class UiPluginRuntime {
   ): Promise<readonly ExtensionUiContributionProjection[]> {
     const grouped = new Map<string, ExtensionUiContributionProjection[]>();
     for (const contribution of contributions) {
-      const entries = grouped.get(contribution.bindingId) ?? [];
+      const entries = grouped.get(contribution.entryId) ?? [];
       entries.push(contribution);
-      grouped.set(contribution.bindingId, entries);
+      grouped.set(contribution.entryId, entries);
     }
-    for (const [bindingId, items] of grouped) {
+    for (const [entryId, items] of grouped) {
       const signature = JSON.stringify(
         items.map(({ revision, id, documentSha256, priority, surface, slot }) => ({
           revision,
@@ -73,9 +73,9 @@ export class UiPluginRuntime {
           slot,
         })),
       );
-      const current = this.#entries.get(bindingId);
+      const current = this.#entries.get(entryId);
       if (current?.signature === signature) continue;
-      const context = this.#root.extend({ clientEntryId: bindingId });
+      const context = this.#root.extend({ clientEntryId: entryId });
       const candidate = context.plugin(
         Object.assign(
           (ctx: Context) => {
@@ -90,12 +90,12 @@ export class UiPluginRuntime {
         await candidate.dispose().catch(() => undefined);
         throw error;
       }
-      this.#entries.set(bindingId, { signature, fiber: candidate });
+      this.#entries.set(entryId, { signature, fiber: candidate });
       await current?.fiber.dispose();
     }
-    for (const [bindingId, entry] of [...this.#entries]) {
-      if (grouped.has(bindingId)) continue;
-      this.#entries.delete(bindingId);
+    for (const [entryId, entry] of [...this.#entries]) {
+      if (grouped.has(entryId)) continue;
+      this.#entries.delete(entryId);
       await entry.fiber.dispose();
     }
     return this.#registry.inspect();

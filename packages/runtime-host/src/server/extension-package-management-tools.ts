@@ -293,7 +293,7 @@ export class HostExtensionPackageManagementTools {
       recoveryMode: 'replay_safe',
       impl: async () => ({
         catalog: unwrap(
-          await this.controller.handlers['extension.catalog.query']({}, this.#connection),
+          await this.controller.handlers['extension.composition.query']({}, this.#connection),
         ),
         contracts: unwrap(
           await this.controller.handlers['extension.contract.query']({}, this.#connection),
@@ -377,20 +377,20 @@ export class HostExtensionPackageManagementTools {
     return Object.freeze({
       name: 'manage_package',
       description:
-        'Activate, update, stop, or delete one trusted Extension package. Tool, Event, Listener, Service, and Timer contributions bind once to the current Session; UI contributions bind once to the Desktop UI scope. Activation executes package code in the Runtime Host process with application-level authority. Multi-scope activation and update roll back to the prior bindings if either scope fails, so a combined package never remains half-switched.',
+        'Activate, update, stop, or delete one trusted Extension package. Tool, Event, Listener, Service, and Timer contributions bind once to the current Session; UI contributions bind once to the Desktop UI scope. Activation executes package code in the Runtime Host process with application-level authority. Multi-scope activation and update roll back to the prior entries if either scope fails, so a combined package never remains half-switched.',
       parameters: managePackageInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
       permissionArgs: (input: z.infer<typeof managePackageInput>) => input,
       impl: async (input: z.infer<typeof managePackageInput>, context: MakaToolContext) => {
-        const slots = packageBindingSlots(context.sessionId, input.extensionId);
+        const slots = packageEntrySlots(context.sessionId, input.extensionId);
         if (input.action === 'stop') {
-          await this.#stopBindings(slots);
-          return { extensionId: input.extensionId, revision: null, bindings: [] };
+          await this.#stopEntries(slots);
+          return { extensionId: input.extensionId, revision: null, entries: [] };
         }
         const revision = requireRevision(input);
         if (input.action === 'delete') {
-          await this.#stopBindings(slots);
+          await this.#stopEntries(slots);
           return unwrap(
             await this.controller.handlers['extension.package.uninstall'](
               { extensionId: input.extensionId, revision },
@@ -399,7 +399,7 @@ export class HostExtensionPackageManagementTools {
           );
         }
         const catalog = unwrap(
-          await this.controller.handlers['extension.catalog.query']({}, this.#connection),
+          await this.controller.handlers['extension.composition.query']({}, this.#connection),
         );
         const candidate = catalog.revisions.find(
           (item) => item.extensionId === input.extensionId && item.revision === revision,
@@ -419,32 +419,32 @@ export class HostExtensionPackageManagementTools {
           { ...slots.desktop, needed: candidate.uiContributionIds.length > 0 },
         ];
         const previous = new Map(
-          catalog.bindings
-            .filter(({ bindingId }) => desired.some((slot) => slot.bindingId === bindingId))
-            .map((binding) => [binding.bindingId, binding]),
+          catalog.entries
+            .filter(({ entryId }) => desired.some((slot) => slot.entryId === entryId))
+            .map((entry) => [entry.entryId, entry]),
         );
         try {
           for (const slot of desired) {
-            const current = previous.get(slot.bindingId);
+            const current = previous.get(slot.entryId);
             if (!slot.needed) {
-              if (current) await this.#removeBinding(slot.bindingId);
+              if (current) await this.#removeEntry(slot.entryId);
               continue;
             }
             if (current) {
-              if (current.desiredRevision !== revision || current.status !== 'active') {
+              if (current.revision !== revision || current.status !== 'active') {
                 unwrap(
-                  await this.controller.handlers['extension.catalog.mutate'](
-                    { kind: 'update', bindingId: slot.bindingId, revision },
+                  await this.controller.handlers['extension.composition.mutate'](
+                    { kind: 'update', entryId: slot.entryId, revision },
                     this.#connection,
                   ),
                 );
               }
             } else {
               unwrap(
-                await this.controller.handlers['extension.catalog.mutate'](
+                await this.controller.handlers['extension.composition.mutate'](
                   {
                     kind: 'enable',
-                    bindingId: slot.bindingId,
+                    entryId: slot.entryId,
                     scopeId: slot.scopeId,
                     extensionId: input.extensionId,
                     revision,
@@ -455,85 +455,85 @@ export class HostExtensionPackageManagementTools {
             }
           }
         } catch (error) {
-          await this.#restoreBindings(desired, previous, input.extensionId);
+          await this.#restoreEntries(desired, previous, input.extensionId);
           throw error;
         }
         const updated = unwrap(
-          await this.controller.handlers['extension.catalog.query']({}, this.#connection),
+          await this.controller.handlers['extension.composition.query']({}, this.#connection),
         );
         return {
           extensionId: input.extensionId,
           revision,
-          bindings: updated.bindings.filter(({ bindingId }) =>
-            desired.some((slot) => slot.bindingId === bindingId),
+          entries: updated.entries.filter(({ entryId }) =>
+            desired.some((slot) => slot.entryId === entryId),
           ),
         };
       },
     });
   }
 
-  async #stopBindings(slots: ReturnType<typeof packageBindingSlots>): Promise<void> {
+  async #stopEntries(slots: ReturnType<typeof packageEntrySlots>): Promise<void> {
     const catalog = unwrap(
-      await this.controller.handlers['extension.catalog.query']({}, this.#connection),
+      await this.controller.handlers['extension.composition.query']({}, this.#connection),
     );
-    const ids = new Set<string>([slots.session.bindingId, slots.desktop.bindingId]);
-    for (const binding of catalog.bindings.filter(({ bindingId }) => ids.has(bindingId))) {
-      await this.#removeBinding(binding.bindingId);
+    const ids = new Set<string>([slots.session.entryId, slots.desktop.entryId]);
+    for (const entry of catalog.entries.filter(({ entryId }) => ids.has(entryId))) {
+      await this.#removeEntry(entry.entryId);
     }
   }
 
-  async #removeBinding(bindingId: string): Promise<void> {
+  async #removeEntry(entryId: string): Promise<void> {
     unwrap(
-      await this.controller.handlers['extension.catalog.mutate'](
-        { kind: 'remove', bindingId },
+      await this.controller.handlers['extension.composition.mutate'](
+        { kind: 'remove', entryId },
         this.#connection,
       ),
     );
   }
 
-  async #restoreBindings(
+  async #restoreEntries(
     desired: readonly {
-      bindingId: string;
+      entryId: string;
       scopeId: string;
       needed: boolean;
     }[],
     previous: ReadonlyMap<
       string,
       {
-        readonly bindingId: string;
+        readonly entryId: string;
         readonly scopeId: string;
         readonly extensionId: string;
-        readonly desiredRevision: string;
+        readonly revision: string;
       }
     >,
     extensionId: string,
   ): Promise<void> {
     const current = unwrap(
-      await this.controller.handlers['extension.catalog.query']({}, this.#connection),
+      await this.controller.handlers['extension.composition.query']({}, this.#connection),
     );
-    const currentById = new Map(current.bindings.map((binding) => [binding.bindingId, binding]));
+    const currentById = new Map(current.entries.map((entry) => [entry.entryId, entry]));
     for (const slot of [...desired].reverse()) {
-      const before = previous.get(slot.bindingId);
-      const now = currentById.get(slot.bindingId);
+      const before = previous.get(slot.entryId);
+      const now = currentById.get(slot.entryId);
       try {
         if (!before && now) {
-          await this.#removeBinding(slot.bindingId);
-        } else if (before && now && now.desiredRevision !== before.desiredRevision) {
+          await this.#removeEntry(slot.entryId);
+        } else if (before && now && now.revision !== before.revision) {
           unwrap(
-            await this.controller.handlers['extension.catalog.mutate'](
-              { kind: 'update', bindingId: slot.bindingId, revision: before.desiredRevision },
+            await this.controller.handlers['extension.composition.mutate'](
+              { kind: 'update', entryId: slot.entryId, revision: before.revision },
               this.#connection,
             ),
           );
         } else if (before && !now) {
           unwrap(
-            await this.controller.handlers['extension.catalog.mutate'](
+            await this.controller.handlers['extension.composition.mutate'](
               {
                 kind: 'enable',
-                bindingId: before.bindingId,
+                entryId: before.entryId,
                 scopeId: before.scopeId,
                 extensionId,
-                revision: before.desiredRevision,
+                revision: before.revision,
               },
               this.#connection,
             ),
@@ -643,16 +643,16 @@ function requireRevision(input: z.infer<typeof managePackageInput>): string {
   return input.revision;
 }
 
-function packageBindingSlots(sessionId: string, extensionId: string) {
+function packageEntrySlots(sessionId: string, extensionId: string) {
   const digestFor = (scope: string) =>
     createHash('sha256').update(scope).update('\0').update(extensionId).digest('hex').slice(0, 32);
   return {
     session: {
-      bindingId: `agent_package_session_${digestFor(sessionId)}`,
+      entryId: `agent_package_session_${digestFor(sessionId)}`,
       scopeId: sessionId,
     },
     desktop: {
-      bindingId: `agent_package_ui_${digestFor('desktop-ui')}`,
+      entryId: `agent_package_ui_${digestFor('desktop-ui')}`,
       scopeId: 'desktop-ui',
     },
   } as const;

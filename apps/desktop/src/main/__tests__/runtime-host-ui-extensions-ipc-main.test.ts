@@ -59,8 +59,8 @@ test('user import previews, confirms, installs, and enables one trusted UI and E
         if (operation === 'extension.package.install') {
           return { extensionId: 'dev.maka.user.ui', revision: 'sha256-demo', toolNames: [], uiContributionIds: ['root'], eventContributionIds: ['event:dev.maka.user.ui.changed', 'listener:dev.maka.user.ui.changed:changed'] };
         }
-        if (operation === 'extension.catalog.query') return { revisions: [], bindings: [] };
-        if (operation === 'extension.catalog.mutate') return { binding: null };
+        if (operation === 'extension.composition.query') return { revisions: [], entries: [] };
+        if (operation === 'extension.composition.mutate') return { entry: null };
         throw new Error(`unexpected ${operation}`);
       },
     } as unknown as DesktopRuntimeHostClient;
@@ -80,13 +80,13 @@ test('user import previews, confirms, installs, and enables one trusted UI and E
     assert.ok(handler);
     assert.deepEqual(await handler({} as never), { ok: true, extensionId: 'dev.maka.user.ui', revision: 'sha256-demo' });
     assert.equal(requests[0]?.operation, 'extension.package.install');
-    const mutations = requests.filter(({ operation }) => operation === 'extension.catalog.mutate');
+    const mutations = requests.filter(({ operation }) => operation === 'extension.composition.mutate');
     assert.equal(mutations.length, 2);
     assert.deepEqual(mutations[0], {
-      operation: 'extension.catalog.mutate',
+      operation: 'extension.composition.mutate',
       input: {
         kind: 'enable',
-        bindingId: mutations[0] && (mutations[0].input as { bindingId: string }).bindingId,
+        entryId: mutations[0] && (mutations[0].input as { entryId: string }).entryId,
         scopeId: 'desktop-ui',
         extensionId: 'dev.maka.user.ui',
         revision: 'sha256-demo',

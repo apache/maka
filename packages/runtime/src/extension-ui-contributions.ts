@@ -25,7 +25,7 @@ export interface ExtensionUiContribution {
 
 export interface ExtensionUiContributionInspection {
   readonly scopeId: string;
-  readonly bindingId: string;
+  readonly entryId: string;
   readonly extensionId: string;
   readonly revision: string;
   readonly id: string;
@@ -44,7 +44,7 @@ export interface ExtensionUiContributionInspection {
 export type ExtensionUiReadiness = 'pending' | 'ready' | 'failed';
 
 export interface ExtensionUiReadinessInspection {
-  readonly bindingId: string;
+  readonly entryId: string;
   readonly revision: string;
   readonly status: ExtensionUiReadiness;
   readonly diagnostic?: string;
@@ -71,7 +71,7 @@ interface RegisteredUi extends ExtensionUiContributionInspection {
  * Entries are retained by activation token rather than overwritten. That is
  * important during current/candidate updates: readers select only the exact
  * revisions committed by the lifecycle kernel, so an activating candidate is
- * never exposed before the Binding commit and the current UI never blinks out.
+ * never exposed before the Entry commit and the current UI never blinks out.
  */
 export class ExtensionUiContributionRegistry {
   readonly #byScope = new Map<string, RegisteredUi[]>();
@@ -79,16 +79,16 @@ export class ExtensionUiContributionRegistry {
 
   setReadiness(
     scopeId: string,
-    bindingId: string,
+    entryId: string,
     revision: string,
     status: ExtensionUiReadiness,
     diagnostic?: string,
   ): void {
     validateIdentity('scopeId', scopeId);
     this.#readiness.set(
-      `${scopeId}\u0000${bindingId}`,
+      `${scopeId}\u0000${entryId}`,
       Object.freeze({
-        bindingId,
+        entryId,
         revision,
         status,
         ...(diagnostic ? { diagnostic } : {}),
@@ -105,7 +105,7 @@ export class ExtensionUiContributionRegistry {
   }
 
   register(
-    context: Pick<MakaContributionContext, 'bindingId' | 'scopeId' | 'extensionId' | 'revision'>,
+    context: Pick<MakaContributionContext, 'entryId' | 'scopeId' | 'extensionId' | 'revision'>,
     contribution: ExtensionUiContribution,
   ): () => void {
     validateContext(context);
@@ -114,7 +114,7 @@ export class ExtensionUiContributionRegistry {
     const conflict = entries.find(
       (entry) =>
         entry.id === contribution.id &&
-        (entry.bindingId !== context.bindingId || entry.extensionId !== context.extensionId),
+        (entry.entryId !== context.entryId || entry.extensionId !== context.extensionId),
     );
     if (conflict) {
       throw new ExtensionUiContributionError(
@@ -126,7 +126,7 @@ export class ExtensionUiContributionRegistry {
       // ExtensionActivationContext also carries runtime-only capabilities such as
       // AbortSignal and effect/dependency functions. Never retain those in the UI
       // inspection record: inspections cross the durable Tool-result boundary.
-      bindingId: context.bindingId,
+      entryId: context.entryId,
       scopeId: context.scopeId,
       extensionId: context.extensionId,
       revision: context.revision,
@@ -149,19 +149,19 @@ export class ExtensionUiContributionRegistry {
       const index = current.findIndex(({ token }) => token === entry.token);
       if (index >= 0) current.splice(index, 1);
       if (current.length === 0) this.#byScope.delete(context.scopeId);
-      this.#readiness.delete(`${context.scopeId}\u0000${context.bindingId}`);
+      this.#readiness.delete(`${context.scopeId}\u0000${context.entryId}`);
     };
   }
 
   inspect(
     scopeId: string,
-    committed: readonly { readonly bindingId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly revision: string }[],
   ): readonly ExtensionUiContributionInspection[] {
     validateIdentity('scopeId', scopeId);
-    const revisions = new Map(committed.map(({ bindingId, revision }) => [bindingId, revision]));
+    const revisions = new Map(committed.map(({ entryId, revision }) => [entryId, revision]));
     return Object.freeze(
       (this.#byScope.get(scopeId) ?? [])
-        .filter((entry) => revisions.get(entry.bindingId) === entry.revision)
+        .filter((entry) => revisions.get(entry.entryId) === entry.revision)
         .map(({ token: _token, ...entry }) => Object.freeze(entry))
         .sort(compareUi),
     );
@@ -256,9 +256,9 @@ export function validateExtensionUiContribution(contribution: ExtensionUiContrib
 }
 
 function validateContext(
-  context: Pick<MakaContributionContext, 'bindingId' | 'scopeId' | 'extensionId' | 'revision'>,
+  context: Pick<MakaContributionContext, 'entryId' | 'scopeId' | 'extensionId' | 'revision'>,
 ): void {
-  validateIdentity('bindingId', context.bindingId);
+  validateIdentity('entryId', context.entryId);
   validateIdentity('scopeId', context.scopeId);
   validateIdentity('extensionId', context.extensionId);
   if (!context.revision || typeof context.revision !== 'string') {

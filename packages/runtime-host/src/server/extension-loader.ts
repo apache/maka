@@ -54,7 +54,7 @@ export interface HostTrustedToolExtensionLoader {
   contracts?(): Promise<readonly ExtensionPackageContractProjection[]>;
   exportPackage?(extensionId: string, revision: string, targetPath: string): Promise<void>;
   setConfigurationResolver?(
-    resolver: (bindingId: string) => Readonly<Record<string, ExtensionConfigurationScalar>>,
+    resolver: (entryId: string) => Readonly<Record<string, ExtensionConfigurationScalar>>,
   ): void;
   setEventEmitter?(
     emitter: (
@@ -176,7 +176,7 @@ export class StaticTrustedToolExtensionLoader implements HostTrustedToolExtensio
 
 /** Combines Host-composed static Tools with real packages installed in the root-private Store. */
 export class InstalledPluginPackageLoader implements HostTrustedToolExtensionLoader {
-  #configurationFor: (bindingId: string) => Readonly<Record<string, ExtensionConfigurationScalar>> =
+  #configurationFor: (entryId: string) => Readonly<Record<string, ExtensionConfigurationScalar>> =
     () => Object.freeze({});
   #emitEvent: (
     scopeId: string,
@@ -202,7 +202,7 @@ export class InstalledPluginPackageLoader implements HostTrustedToolExtensionLoa
   ) {}
 
   setConfigurationResolver(
-    resolver: (bindingId: string) => Readonly<Record<string, ExtensionConfigurationScalar>>,
+    resolver: (entryId: string) => Readonly<Record<string, ExtensionConfigurationScalar>>,
   ): void {
     this.#configurationFor = resolver;
   }
@@ -514,7 +514,7 @@ async function combinedPackageRevisionInput(input: {
   readonly event?: InstalledEventPackage;
   readonly metadata?: ExtensionPackageManifest;
   readonly configurationFor: (
-    bindingId: string,
+    entryId: string,
   ) => Readonly<Record<string, ExtensionConfigurationScalar>>;
   readonly emitEvent: (
     scopeId: string,
@@ -573,7 +573,7 @@ async function combinedPackageRevisionInput(input: {
         }
       : {}),
     load: async (context: Parameters<HostPreparedPluginPackageInput['load']>[0]) => {
-      const configuration = configurationFor(context.bindingId);
+      const configuration = configurationFor(context.entryId);
       const emitEvent = (
         event: string,
         payload: unknown,

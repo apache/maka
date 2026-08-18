@@ -27,7 +27,7 @@ export class ExtensionToolContributionError extends Error {
 
 export interface ExtensionToolContributionInspection {
   readonly scopeId: string;
-  readonly bindingId: string;
+  readonly entryId: string;
   readonly extensionId: string;
   readonly revision: string;
   readonly toolName: string;
@@ -62,7 +62,7 @@ export class ExtensionToolContributionRegistry {
   constructor(private readonly options: ExtensionToolContributionRegistryOptions = {}) {}
 
   register(
-    context: Pick<MakaContributionContext, 'bindingId' | 'scopeId' | 'extensionId' | 'revision'>,
+    context: Pick<MakaContributionContext, 'entryId' | 'scopeId' | 'extensionId' | 'revision'>,
     tool: MakaTool,
   ): () => void {
     validateContext(context);
@@ -91,7 +91,7 @@ export class ExtensionToolContributionRegistry {
     const existing = scope.get(key);
     if (
       existing &&
-      (existing.bindingId !== context.bindingId || existing.extensionId !== context.extensionId)
+      (existing.entryId !== context.entryId || existing.extensionId !== context.extensionId)
     ) {
       throw new ExtensionToolContributionError(
         'tool_name_conflict',
@@ -139,7 +139,7 @@ export class ExtensionToolContributionRegistry {
     entry = {
       key,
       scopeId: context.scopeId,
-      bindingId: context.bindingId,
+      entryId: context.entryId,
       extensionId: context.extensionId,
       revision: context.revision,
       toolName: tool.name,
@@ -202,7 +202,7 @@ export class ExtensionToolContributionRegistry {
       this.#scopeEntries(scopeId).map((entry) =>
         Object.freeze({
           scopeId: entry.scopeId,
-          bindingId: entry.bindingId,
+          entryId: entry.entryId,
           extensionId: entry.extensionId,
           revision: entry.revision,
           toolName: entry.toolName,
@@ -234,9 +234,9 @@ export function contributeExtensionTool(
 }
 
 function validateContext(
-  context: Pick<MakaContributionContext, 'bindingId' | 'scopeId' | 'extensionId' | 'revision'>,
+  context: Pick<MakaContributionContext, 'entryId' | 'scopeId' | 'extensionId' | 'revision'>,
 ): void {
-  validateIdentity('bindingId', context.bindingId);
+  validateIdentity('entryId', context.entryId);
   validateIdentity('scopeId', context.scopeId);
   validateIdentity('extensionId', context.extensionId);
   if (!context.revision || typeof context.revision !== 'string') {

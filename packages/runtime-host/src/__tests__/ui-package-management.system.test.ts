@@ -103,7 +103,7 @@ test('agent-authored client-only UI survives update, rollback boundary, and Host
     const active = fixture.runtime.inspectUi(DESKTOP_UI_EXTENSION_SCOPE)[0]!;
     const stateIdentity = {
       scopeId: DESKTOP_UI_EXTENSION_SCOPE,
-      bindingId: active.bindingId,
+      entryId: active.entryId,
       extensionId: active.extensionId,
       revision: active.revision,
       key: 'counter',
@@ -148,7 +148,7 @@ test('agent-authored client-only UI survives update, rollback boundary, and Host
     );
     const rpcIdentity = {
       scopeId: DESKTOP_UI_EXTENSION_SCOPE,
-      bindingId: active.bindingId,
+      entryId: active.entryId,
       extensionId: active.extensionId,
       revision: active.revision,
       method: 'add',
@@ -222,7 +222,7 @@ test('agent-authored client-only UI survives update, rollback boundary, and Host
       await fixture.controller.handlers['extension.ui.state.query'](
         {
           scopeId: DESKTOP_UI_EXTENSION_SCOPE,
-          bindingId: recoveredContribution.bindingId,
+          entryId: recoveredContribution.entryId,
           extensionId: recoveredContribution.extensionId,
           revision: recoveredContribution.revision,
           key: 'counter',
@@ -235,7 +235,7 @@ test('agent-authored client-only UI survives update, rollback boundary, and Host
       await fixture.controller.handlers['extension.ui.rpc.invoke'](
         {
           scopeId: DESKTOP_UI_EXTENSION_SCOPE,
-          bindingId: recoveredContribution.bindingId,
+          entryId: recoveredContribution.entryId,
           extensionId: recoveredContribution.extensionId,
           revision: recoveredContribution.revision,
           method: 'add',
@@ -392,16 +392,16 @@ test('one immutable package Revision carries a Tool and a complete Maka root sna
       uiStore,
     );
     await controller.recover();
-    for (const binding of [
-      { bindingId: 'project-canvas-ui', scopeId: DESKTOP_UI_EXTENSION_SCOPE },
-      { bindingId: 'project-canvas-session', scopeId: 'session-1' },
+    for (const entry of [
+      { entryId: 'project-canvas-ui', scopeId: DESKTOP_UI_EXTENSION_SCOPE },
+      { entryId: 'project-canvas-session', scopeId: 'session-1' },
     ]) {
       assert.equal(
         (
-          await controller.handlers['extension.catalog.mutate'](
+          await controller.handlers['extension.composition.mutate'](
             {
               kind: 'enable',
-              ...binding,
+              ...entry,
               extensionId: installed.extensionId,
               revision: installed.revision,
             },
@@ -437,7 +437,7 @@ test('one immutable package Revision carries a Tool and a complete Maka root sna
       await controller.handlers['extension.ui.state.query'](
         {
           scopeId: DESKTOP_UI_EXTENSION_SCOPE,
-          bindingId: activeUi.bindingId,
+          entryId: activeUi.entryId,
           extensionId: activeUi.extensionId,
           revision: activeUi.revision,
           key: 'project-plan',

@@ -6,10 +6,10 @@ import type {
 } from '@maka/runtime/plugin-runtime';
 import { createHash } from 'node:crypto';
 import {
-  type ExtensionBindingProjection,
-  type ExtensionCatalogMutateInput,
-  type ExtensionCatalogMutateResult,
-  type ExtensionCatalogQueryResult,
+  type ExtensionCompositionEntryProjection,
+  type ExtensionCompositionMutateInput,
+  type ExtensionCompositionMutateResult,
+  type ExtensionCompositionQueryResult,
   type ExtensionConfigurationMutateInput,
   type ExtensionConfigurationMutateResult,
   type ExtensionConfigurationQueryInput,
@@ -60,7 +60,7 @@ type MutationFailureCode =
   | 'commit_outcome_unknown';
 
 interface CompositionEntryState {
-  readonly bindingId: string;
+  readonly entryId: string;
   readonly scopeId: string;
   readonly extensionId: string;
   readonly revision: string;
@@ -69,11 +69,11 @@ interface CompositionEntryState {
   readonly config: Readonly<Record<string, string | number | boolean>>;
 }
 
-/** Durable control plane that converges persisted desired bindings into the Host runtime. */
+/** Durable control plane that converges persisted desired entries into the Host runtime. */
 export class HostExtensionController {
   readonly handlers: ExtensionOperationHandlerMap = {
-    'extension.catalog.query': () => this.#query(),
-    'extension.catalog.mutate': (input) => this.#mutate(input),
+    'extension.composition.query': () => this.#query(),
+    'extension.composition.mutate': (input) => this.#mutate(input),
     'extension.contract.query': () => this.#contractQuery(),
     'extension.configuration.query': (input) => this.#configurationQuery(input),
     'extension.configuration.mutate': (input) => this.#configurationMutate(input),
@@ -86,13 +86,18 @@ export class HostExtensionController {
     'extension.package.export': (input) => this.#exportPackage(input),
   };
 
-  readonly #bindings = new Map<string, CompositionEntryState>();
+  readonly #entries = new CompositionEntryIndex(
+    () => this.#persistedComposition,
+    (composition) => {
+      this.#persistedComposition = composition;
+    },
+  );
   #mutationTail: Promise<void> = Promise.resolve();
   #recovered = false;
   #draining = false;
   #persistenceFailure: HostPluginCompositionStoreError | undefined;
   #compositionGeneration = 0;
-  #persistedComposition: PersistedPluginComposition | undefined;
+  #persistedComposition: PersistedPluginComposition = emptyComposition();
 
   constructor(
     private readonly runtime: HostExtensionRuntime,
@@ -102,9 +107,7 @@ export class HostExtensionController {
     private readonly uiState = new HostExtensionUiStateStore(),
     private readonly uiPackages?: PluginPackageStore,
   ) {
-    this.loader.setConfigurationResolver?.(
-      (bindingId) => this.#configurationForBinding(bindingId),
-    );
+    this.loader.setConfigurationResolver?.((entryId) => this.#configurationForEntry(entryId));
     this.loader.setEventEmitter?.((scopeId, event, payload, context) =>
       this.runtime.emitEvent(scopeId, event, payload, context),
     );
@@ -121,21 +124,6 @@ export class HostExtensionController {
       if (composition) {
         this.#persistedComposition = composition;
         this.#compositionGeneration = composition.generation;
-        for (const [scopeId, entry] of persistedEntries(composition)) {
-          if (!entry.packageId || !entry.revision) continue;
-          this.#bindings.set(
-            entry.id,
-            bindingState({
-              bindingId: entry.id,
-              scopeId,
-              extensionId: entry.packageId,
-              revision: entry.revision,
-              enabled: !entry.disabled,
-              error: entry.error ?? null,
-              config: entry.config,
-            }),
-          );
-        }
         for (const [, entry] of persistedEntries(composition)) {
           if (!entry.packageId || !entry.revision || entry.disabled) continue;
           await this.#ensureInstalled(entry.packageId, entry.revision);
@@ -152,9 +140,9 @@ export class HostExtensionController {
           }
         }
       }
-      await this.#recoverEnabledBindings();
+      await this.#recoverEnabledEntries();
       await this.#refreshRuntimeState();
-      await this.#pruneOrphanDependencyBindings();
+      await this.#pruneOrphanDependencyEntries();
       await this.#garbageCollectRevisions();
       await this.#persist();
     } catch (error) {
@@ -168,13 +156,13 @@ export class HostExtensionController {
     this.#draining = true;
   }
 
-  async #query(): Promise<OperationOutcome<'extension.catalog.query'>> {
+  async #query(): Promise<OperationOutcome<'extension.composition.query'>> {
     if (this.#persistenceFailure) {
       return queryFailure('persistence_failed', 'Extension state is unavailable');
     }
-    const result: ExtensionCatalogQueryResult = {
+    const result: ExtensionCompositionQueryResult = {
       revisions: await this.loader.list(),
-      bindings: this.#bindingProjections(),
+      entries: this.#entryProjections(),
     };
     return { ok: true, result };
   }
@@ -201,15 +189,15 @@ export class HostExtensionController {
   async #configurationQuery(
     input: ExtensionConfigurationQueryInput,
   ): Promise<OperationOutcome<'extension.configuration.query'>> {
-    const binding = this.#readEntryState(input.bindingId);
-    if (!binding) {
-      return { ok: false, error: { code: 'not_found', message: 'Extension binding not found' } };
+    const entry = this.#readEntryState(input.entryId);
+    if (!entry) {
+      return { ok: false, error: { code: 'not_found', message: 'Extension entry not found' } };
     }
     try {
-      const contract = await this.#requireContract(binding.extensionId, binding.revision);
+      const contract = await this.#requireContract(entry.extensionId, entry.revision);
       const configuration = validateExtensionConfiguration(
         contract.configuration,
-        this.#configurationForBinding(input.bindingId),
+        this.#configurationForEntry(input.entryId),
       );
       const result: ExtensionConfigurationQueryResult = {
         configuration: redactSecretConfiguration(contract, configuration),
@@ -233,13 +221,13 @@ export class HostExtensionController {
       });
     }
     return this.#serializeMutation(async () => {
-      const binding = this.#bindings.get(input.bindingId);
-      if (!binding) {
-        return { ok: false, error: { code: 'not_found', message: 'Extension binding not found' } };
+      const entry = this.#entries.get(input.entryId);
+      if (!entry) {
+        return { ok: false, error: { code: 'not_found', message: 'Extension entry not found' } };
       }
       let configuration: Readonly<Record<string, string | number | boolean>>;
       try {
-        const contract = await this.#requireContract(binding.extensionId, binding.revision);
+        const contract = await this.#requireContract(entry.extensionId, entry.revision);
         configuration = validateExtensionConfiguration(contract.configuration, input.configuration);
       } catch (error) {
         return {
@@ -247,16 +235,16 @@ export class HostExtensionController {
           error: { code: 'invalid_request', message: boundedErrorMessage(error) },
         };
       }
-      const previous = binding;
-      this.#bindings.set(input.bindingId, bindingState({ ...binding, config: configuration }));
+      const previous = entry;
+      this.#entries.set(input.entryId, entryState({ ...entry, config: configuration }));
       try {
         await this.#persist();
-        if (binding.enabled && this.#tryInspect(binding.bindingId)) {
+        if (entry.enabled && this.#tryInspect(entry.entryId)) {
           await this.#applyComposition({
             operations: [
               {
                 type: 'update',
-                entryId: binding.bindingId,
+                entryId: entry.entryId,
                 patch: { config: configuration },
               },
             ],
@@ -264,15 +252,15 @@ export class HostExtensionController {
           await this.#refreshRuntimeState();
           await this.#persist();
         }
-        const contract = await this.#requireContract(binding.extensionId, binding.revision);
+        const contract = await this.#requireContract(entry.extensionId, entry.revision);
         const result: ExtensionConfigurationMutateResult = {
           configuration: redactSecretConfiguration(contract, configuration),
         };
         return { ok: true, result };
       } catch (error) {
-        this.#bindings.set(input.bindingId, previous);
+        this.#entries.set(input.entryId, previous);
         await this.#persist().catch(() => undefined);
-        if (binding.enabled) await this.#convergeBinding(binding.bindingId).catch(() => undefined);
+        if (entry.enabled) await this.#convergeEntry(entry.entryId).catch(() => undefined);
         return {
           ok: false,
           error: { code: 'persistence_failed', message: boundedErrorMessage(error) },
@@ -291,7 +279,7 @@ export class HostExtensionController {
       .inspectUi(input.scopeId)
       .map((item) =>
         Object.freeze({
-          bindingId: item.bindingId,
+          entryId: item.entryId,
           extensionId: item.extensionId,
           revision: item.revision,
           id: item.id,
@@ -383,13 +371,13 @@ export class HostExtensionController {
   #authorizeUiState(
     input: ExtensionUiStateQueryInput,
   ): { code: 'not_found' | 'invalid_request'; message: string } | undefined {
-    const binding = this.#readEntryState(input.bindingId);
-    if (!binding) return { code: 'not_found', message: 'UI Extension binding is not installed' };
-    const current = this.runtime.inspect(input.bindingId).current;
+    const entry = this.#readEntryState(input.entryId);
+    if (!entry) return { code: 'not_found', message: 'UI Extension entry is not installed' };
+    const current = this.runtime.inspect(input.entryId).current;
     if (
-      !binding.enabled ||
-      binding.scopeId !== input.scopeId ||
-      binding.extensionId !== input.extensionId ||
+      !entry.enabled ||
+      entry.scopeId !== input.scopeId ||
+      entry.extensionId !== input.extensionId ||
       current?.revision !== input.revision
     ) {
       return {
@@ -401,7 +389,7 @@ export class HostExtensionController {
       .inspectUi(input.scopeId)
       .some(
         (item) =>
-          item.bindingId === input.bindingId &&
+          item.entryId === input.entryId &&
           item.extensionId === input.extensionId &&
           item.revision === input.revision &&
           item.hostState,
@@ -414,13 +402,13 @@ export class HostExtensionController {
   #authorizeUiRpc(
     input: ExtensionUiRpcInvokeInput,
   ): { code: 'not_found' | 'invalid_request'; message: string } | undefined {
-    const binding = this.#readEntryState(input.bindingId);
-    if (!binding) return { code: 'not_found', message: 'UI Extension binding is not installed' };
-    const current = this.runtime.inspect(input.bindingId).current;
+    const entry = this.#readEntryState(input.entryId);
+    if (!entry) return { code: 'not_found', message: 'UI Extension entry is not installed' };
+    const current = this.runtime.inspect(input.entryId).current;
     if (
-      !binding.enabled ||
-      binding.scopeId !== input.scopeId ||
-      binding.extensionId !== input.extensionId ||
+      !entry.enabled ||
+      entry.scopeId !== input.scopeId ||
+      entry.extensionId !== input.extensionId ||
       current?.revision !== input.revision
     ) {
       return {
@@ -432,7 +420,7 @@ export class HostExtensionController {
       .inspectUi(input.scopeId)
       .some(
         (item) =>
-          item.bindingId === input.bindingId &&
+          item.entryId === input.entryId &&
           item.extensionId === input.extensionId &&
           item.revision === input.revision &&
           item.hostMethods.includes(input.method),
@@ -483,15 +471,15 @@ export class HostExtensionController {
           'Tool package uninstallation is unavailable',
         );
       }
-      const referenced = [...this.#bindings.values()].find(
-        (binding) =>
-          binding.extensionId === input.extensionId &&
-          uniqueRevisions(binding).includes(input.revision),
+      const referenced = [...this.#entries.values()].find(
+        (entry) =>
+          entry.extensionId === input.extensionId &&
+          uniqueRevisions(entry).includes(input.revision),
       );
       if (referenced) {
         return packageFailure(
           'operation_conflict',
-          `Tool package revision is retained by binding ${referenced.bindingId}`,
+          `Tool package revision is retained by entry ${referenced.entryId}`,
         );
       }
       try {
@@ -543,8 +531,8 @@ export class HostExtensionController {
   }
 
   #mutate(
-    input: ExtensionCatalogMutateInput,
-  ): Promise<OperationOutcome<'extension.catalog.mutate'>> {
+    input: ExtensionCompositionMutateInput,
+  ): Promise<OperationOutcome<'extension.composition.mutate'>> {
     if (this.#draining) {
       return Promise.resolve(mutationFailure('host_draining', 'Runtime Host is draining'));
     }
@@ -556,60 +544,57 @@ export class HostExtensionController {
         case 'enable':
           return this.#enable(input);
         case 'disable':
-          return this.#disable(input.bindingId);
+          return this.#disable(input.entryId);
         case 'update':
-          return this.#update(input.bindingId, input.revision);
+          return this.#update(input.entryId, input.revision);
         case 'remove':
-          return this.#remove(input.bindingId);
+          return this.#remove(input.entryId);
       }
     });
   }
 
   async #enable(
-    input: Extract<ExtensionCatalogMutateInput, { kind: 'enable' }>,
-  ): Promise<OperationOutcome<'extension.catalog.mutate'>> {
+    input: Extract<ExtensionCompositionMutateInput, { kind: 'enable' }>,
+  ): Promise<OperationOutcome<'extension.composition.mutate'>> {
     const available = await this.#requireAvailable(input.extensionId, input.revision);
     if (available) return available;
-    const current = this.#bindings.get(input.bindingId);
+    const current = this.#entries.get(input.entryId);
     if (
       current &&
       (current.scopeId !== input.scopeId || current.extensionId !== input.extensionId)
     ) {
       return mutationFailure(
         'operation_conflict',
-        `Binding ${input.bindingId} cannot change scope or Extension identity`,
+        `Entry ${input.entryId} cannot change scope or Extension identity`,
       );
     }
-    const scopeOwner = [...this.#bindings.values()].find(
-      (binding) =>
-        binding.bindingId !== input.bindingId &&
-        binding.scopeId === input.scopeId &&
-        binding.extensionId === input.extensionId,
+    const scopeOwner = [...this.#entries.values()].find(
+      (entry) =>
+        entry.entryId !== input.entryId &&
+        entry.scopeId === input.scopeId &&
+        entry.extensionId === input.extensionId,
     );
     if (scopeOwner) {
       return mutationFailure(
         'operation_conflict',
-        `Scope ${input.scopeId} already binds ${input.extensionId} as ${scopeOwner.bindingId}`,
+        `Scope ${input.scopeId} already binds ${input.extensionId} as ${scopeOwner.entryId}`,
       );
     }
-    const bindingSnapshot = new Map(this.#bindings);
-    let dependencyBindings: readonly string[];
+    const compositionSnapshot = this.#persistedComposition;
+    let dependencyEntries: readonly string[];
     let configuration: Readonly<Record<string, string | number | boolean>>;
     try {
       const contract = await this.#requireContract(input.extensionId, input.revision);
-      dependencyBindings = await this.#stageDependencies(input.scopeId, contract, new Set());
-      configuration = validateExtensionConfiguration(
-        contract.configuration,
-        current?.config,
-      );
+      dependencyEntries = await this.#stageDependencies(input.scopeId, contract, new Set());
+      configuration = validateExtensionConfiguration(contract.configuration, current?.config);
     } catch (error) {
-      this.#replaceMap(this.#bindings, bindingSnapshot);
+      this.#persistedComposition = compositionSnapshot;
       return mutationFailure('operation_conflict', boundedErrorMessage(error));
     }
-    this.#bindings.set(
-      input.bindingId,
-      bindingState({
-        bindingId: input.bindingId,
+    this.#entries.set(
+      input.entryId,
+      entryState({
+        entryId: input.entryId,
         scopeId: input.scopeId,
         extensionId: input.extensionId,
         revision: input.revision,
@@ -618,203 +603,201 @@ export class HostExtensionController {
         config: configuration,
       }),
     );
-    const committed = await this.#commitDesiredState();
+    const committed = await this.#commitDesiredState(compositionSnapshot);
     if (committed) return committed;
-    for (const dependencyBindingId of dependencyBindings) {
-      const dependency = await this.#convergeMutation(dependencyBindingId);
+    for (const dependencyEntryId of dependencyEntries) {
+      const dependency = await this.#convergeMutation(dependencyEntryId);
       if (!dependency.ok) return dependency;
     }
-    return this.#convergeMutation(input.bindingId);
+    return this.#convergeMutation(input.entryId);
   }
 
   async #update(
-    bindingId: string,
+    entryId: string,
     revision: string,
-  ): Promise<OperationOutcome<'extension.catalog.mutate'>> {
-    const binding = this.#bindings.get(bindingId);
-    if (!binding) return mutationFailure('not_found', `Extension binding not found: ${bindingId}`);
-    const available = await this.#requireAvailable(binding.extensionId, revision);
+  ): Promise<OperationOutcome<'extension.composition.mutate'>> {
+    const entry = this.#entries.get(entryId);
+    if (!entry) return mutationFailure('not_found', `Extension entry not found: ${entryId}`);
+    const available = await this.#requireAvailable(entry.extensionId, revision);
     if (available) return available;
-    const bindingSnapshot = new Map(this.#bindings);
-    let dependencyBindings: readonly string[];
+    const compositionSnapshot = this.#persistedComposition;
+    let dependencyEntries: readonly string[];
     let configuration: Readonly<Record<string, string | number | boolean>>;
     try {
-      const contract = await this.#requireContract(binding.extensionId, revision);
-      dependencyBindings = await this.#stageDependencies(binding.scopeId, contract, new Set());
-      configuration = validateExtensionConfiguration(
-        contract.configuration,
-        binding.config,
-      );
+      const contract = await this.#requireContract(entry.extensionId, revision);
+      dependencyEntries = await this.#stageDependencies(entry.scopeId, contract, new Set());
+      configuration = validateExtensionConfiguration(contract.configuration, entry.config);
     } catch (error) {
-      this.#replaceMap(this.#bindings, bindingSnapshot);
+      this.#persistedComposition = compositionSnapshot;
       return mutationFailure('operation_conflict', boundedErrorMessage(error));
     }
-    this.#bindings.set(
-      bindingId,
-      bindingState({
-        ...binding,
+    this.#entries.set(
+      entryId,
+      entryState({
+        ...entry,
         revision,
         enabled: true,
         error: null,
         config: configuration,
       }),
     );
-    const committed = await this.#commitDesiredState();
+    const committed = await this.#commitDesiredState(compositionSnapshot);
     if (committed) return committed;
-    for (const dependencyBindingId of dependencyBindings) {
-      const dependency = await this.#convergeMutation(dependencyBindingId);
+    for (const dependencyEntryId of dependencyEntries) {
+      const dependency = await this.#convergeMutation(dependencyEntryId);
       if (!dependency.ok) return dependency;
     }
-    return this.#convergeMutation(bindingId);
+    return this.#convergeMutation(entryId);
   }
 
-  async #disable(bindingId: string): Promise<OperationOutcome<'extension.catalog.mutate'>> {
-    const binding = this.#bindings.get(bindingId);
-    if (!binding) return mutationFailure('not_found', `Extension binding not found: ${bindingId}`);
+  async #disable(entryId: string): Promise<OperationOutcome<'extension.composition.mutate'>> {
+    const entry = this.#entries.get(entryId);
+    if (!entry) return mutationFailure('not_found', `Extension entry not found: ${entryId}`);
     let dependent: CompositionEntryState | undefined;
     try {
-      dependent = await this.#requiredBy(binding);
+      dependent = await this.#requiredBy(entry);
     } catch (error) {
       return mutationFailure('operation_conflict', boundedErrorMessage(error));
     }
     if (dependent) {
       return mutationFailure(
         'operation_conflict',
-        `Extension binding ${bindingId} is required by ${dependent.bindingId}`,
+        `Extension entry ${entryId} is required by ${dependent.entryId}`,
       );
     }
-    this.#bindings.set(bindingId, bindingState({ ...binding, enabled: false, error: null }));
-    const committed = await this.#commitDesiredState();
+    const compositionSnapshot = this.#persistedComposition;
+    this.#entries.set(entryId, entryState({ ...entry, enabled: false, error: null }));
+    const committed = await this.#commitDesiredState(compositionSnapshot);
     if (committed) return committed;
     try {
-      if (this.#tryInspect(bindingId)) {
+      if (this.#tryInspect(entryId)) {
         await this.#applyComposition({
-          operations: [{ type: 'update', entryId: bindingId, patch: { disabled: true } }],
+          operations: [{ type: 'update', entryId: entryId, patch: { disabled: true } }],
         });
       }
-      await this.#pruneOrphanDependencyBindings();
+      await this.#pruneOrphanDependencyEntries();
       await this.#refreshRuntimeState();
       const persisted = await this.#commitDesiredState();
-      return persisted ?? mutationSuccess(this.#projection(bindingId));
+      return persisted ?? mutationSuccess(this.#projection(entryId));
     } catch (error) {
-      return this.#recordRuntimeFailure(bindingId, error);
+      return this.#recordRuntimeFailure(entryId, error);
     }
   }
 
-  async #remove(bindingId: string): Promise<OperationOutcome<'extension.catalog.mutate'>> {
-    const binding = this.#bindings.get(bindingId);
-    if (!binding) return mutationFailure('not_found', `Extension binding not found: ${bindingId}`);
+  async #remove(entryId: string): Promise<OperationOutcome<'extension.composition.mutate'>> {
+    const entry = this.#entries.get(entryId);
+    if (!entry) return mutationFailure('not_found', `Extension entry not found: ${entryId}`);
     let dependent: CompositionEntryState | undefined;
     try {
-      dependent = await this.#requiredBy(binding);
+      dependent = await this.#requiredBy(entry);
     } catch (error) {
       return mutationFailure('operation_conflict', boundedErrorMessage(error));
     }
     if (dependent) {
       return mutationFailure(
         'operation_conflict',
-        `Extension binding ${bindingId} is required by ${dependent.bindingId}`,
+        `Extension entry ${entryId} is required by ${dependent.entryId}`,
       );
     }
+    const compositionSnapshot = this.#persistedComposition;
+    this.#entries.delete(entryId);
+    const committed = await this.#commitDesiredState(compositionSnapshot);
+    if (committed) return committed;
     try {
-      if (this.#tryInspect(bindingId)) {
+      if (this.#tryInspect(entryId)) {
         await this.#applyComposition({
-          operations: [{ type: 'remove', entryId: bindingId }],
+          operations: [{ type: 'remove', entryId: entryId }],
         });
       }
-      await this.uiState.clear(binding.scopeId, binding.extensionId);
-      this.#bindings.delete(bindingId);
-      await this.#pruneOrphanDependencyBindings();
+      await this.uiState.clear(entry.scopeId, entry.extensionId);
+      await this.#pruneOrphanDependencyEntries();
       await this.#garbageCollectRevisions();
       const persisted = await this.#commitDesiredState();
       return persisted ?? mutationSuccess(null);
     } catch (error) {
-      return this.#recordRuntimeFailure(bindingId, error);
+      return mutationFailure('operation_conflict', boundedErrorMessage(error));
     }
   }
 
   async #convergeMutation(
-    bindingId: string,
-  ): Promise<OperationOutcome<'extension.catalog.mutate'>> {
+    entryId: string,
+  ): Promise<OperationOutcome<'extension.composition.mutate'>> {
     try {
-      await this.#convergeBinding(bindingId);
+      await this.#convergeEntry(entryId);
       await this.#refreshRuntimeState();
-      await this.#pruneOrphanDependencyBindings();
+      await this.#pruneOrphanDependencyEntries();
       await this.#garbageCollectRevisions();
       const persisted = await this.#commitDesiredState();
-      return persisted ?? mutationSuccess(this.#projection(bindingId));
+      return persisted ?? mutationSuccess(this.#projection(entryId));
     } catch (error) {
-      return this.#recordRuntimeFailure(bindingId, error);
+      return this.#recordRuntimeFailure(entryId, error);
     }
   }
 
   async #recordRuntimeFailure(
-    bindingId: string,
+    entryId: string,
     error: unknown,
-  ): Promise<OperationOutcome<'extension.catalog.mutate'>> {
-    const binding = this.#bindings.get(bindingId);
-    if (binding) {
-      this.#bindings.set(
-        bindingId,
-        bindingState({ ...binding, error: boundedErrorMessage(error) }),
-      );
+  ): Promise<OperationOutcome<'extension.composition.mutate'>> {
+    const entry = this.#entries.get(entryId);
+    if (entry) {
+      this.#entries.set(entryId, entryState({ ...entry, error: boundedErrorMessage(error) }));
     }
     const persisted = await this.#commitDesiredState();
     return persisted ?? mutationFailure('operation_conflict', boundedErrorMessage(error));
   }
 
-  async #recoverEnabledBindings(): Promise<void> {
-    const enabled = [...this.#bindings.values()]
-      .filter((binding) => binding.enabled && !binding.error)
-      .sort(compareBinding);
-    for (const binding of enabled) {
-      for (const revision of uniqueRevisions(binding)) {
+  async #recoverEnabledEntries(): Promise<void> {
+    const enabled = [...this.#entries.values()]
+      .filter((entry) => entry.enabled && !entry.error)
+      .sort(compareEntry);
+    for (const entry of enabled) {
+      for (const revision of uniqueRevisions(entry)) {
         try {
-          await this.#ensureInstalled(binding.extensionId, revision);
+          await this.#ensureInstalled(entry.extensionId, revision);
         } catch (error) {
-          this.#bindings.set(
-            binding.bindingId,
-            bindingState({ ...binding, error: boundedErrorMessage(error) }),
+          this.#entries.set(
+            entry.entryId,
+            entryState({ ...entry, error: boundedErrorMessage(error) }),
           );
         }
       }
     }
     for (const original of enabled) {
-      const binding = this.#bindings.get(original.bindingId)!;
+      const entry = this.#entries.get(original.entryId)!;
       try {
-        await this.#convergeBinding(binding.bindingId);
+        await this.#convergeEntry(entry.entryId);
       } catch (error) {
-        const latest = this.#bindings.get(binding.bindingId)!;
-        this.#bindings.set(
-          binding.bindingId,
-          bindingState({ ...latest, error: boundedErrorMessage(error) }),
+        const latest = this.#entries.get(entry.entryId)!;
+        this.#entries.set(
+          entry.entryId,
+          entryState({ ...latest, error: boundedErrorMessage(error) }),
         );
       }
     }
   }
 
-  async #convergeBinding(bindingId: string): Promise<void> {
-    const binding = this.#bindings.get(bindingId);
-    if (!binding || !binding.enabled) return;
-    await this.#ensureInstalled(binding.extensionId, binding.revision);
-    const inspection = this.#tryInspect(bindingId);
+  async #convergeEntry(entryId: string): Promise<void> {
+    const entry = this.#entries.get(entryId);
+    if (!entry || !entry.enabled) return;
+    await this.#ensureInstalled(entry.extensionId, entry.revision);
+    const inspection = this.#tryInspect(entryId);
     const rootId: MakaPluginRootId =
-      binding.scopeId === 'profile'
+      entry.scopeId === 'profile'
         ? 'profile'
-        : binding.scopeId === 'desktop-ui'
+        : entry.scopeId === 'desktop-ui'
           ? 'desktop-ui'
-          : `session:${binding.scopeId}`;
+          : `session:${entry.scopeId}`;
     await this.#applyComposition({
       operations: inspection
         ? [
             {
               type: 'update',
-              entryId: binding.bindingId,
+              entryId: entry.entryId,
               patch: {
-                packageId: binding.extensionId,
-                revision: binding.revision,
+                packageId: entry.extensionId,
+                revision: entry.revision,
                 disabled: false,
-                config: this.#configurationForBinding(binding.bindingId),
+                config: this.#configurationForEntry(entry.entryId),
               },
             },
           ]
@@ -823,10 +806,10 @@ export class HostExtensionController {
               type: 'insert',
               rootId,
               entry: {
-                id: binding.bindingId,
-                packageId: binding.extensionId,
-                revision: binding.revision,
-                config: this.#configurationForBinding(binding.bindingId),
+                id: entry.entryId,
+                packageId: entry.extensionId,
+                revision: entry.revision,
+                config: this.#configurationForEntry(entry.entryId),
               },
             },
           ],
@@ -873,11 +856,11 @@ export class HostExtensionController {
         ],
       });
     } catch (error) {
-      const binding = this.#bindings.get(entry.id);
-      if (binding)
-        this.#bindings.set(
+      const currentEntry = this.#entries.get(entry.id);
+      if (currentEntry)
+        this.#entries.set(
           entry.id,
-          bindingState({ ...binding, error: boundedErrorMessage(error) }),
+          entryState({ ...currentEntry, error: boundedErrorMessage(error) }),
         );
       return;
     }
@@ -887,10 +870,10 @@ export class HostExtensionController {
 
   async #garbageCollectRevisions(): Promise<void> {
     const retained = new Set(
-      [...this.#bindings.values()].flatMap((binding) =>
-        [binding.revision, this.#tryInspect(binding.bindingId)?.current?.revision]
+      [...this.#entries.values()].flatMap((entry) =>
+        [entry.revision, this.#tryInspect(entry.entryId)?.current?.revision]
           .filter((revision): revision is string => typeof revision === 'string')
-          .map((revision) => revisionKey(binding.extensionId, revision)),
+          .map((revision) => revisionKey(entry.extensionId, revision)),
       ),
     );
     for (const installed of [...this.runtime.installedRevisions()].reverse()) {
@@ -905,23 +888,23 @@ export class HostExtensionController {
   }
 
   async #refreshRuntimeState(): Promise<void> {
-    for (const binding of [...this.#bindings.values()]) {
-      const inspection = this.#tryInspect(binding.bindingId);
+    for (const entry of [...this.#entries.values()]) {
+      const inspection = this.#tryInspect(entry.entryId);
       if (!inspection) continue;
-      const error = inspection.diagnostic?.message ?? binding.error;
-      this.#bindings.set(
-        binding.bindingId,
-        bindingState({
-          ...binding,
+      const error = inspection.diagnostic?.message ?? entry.error;
+      this.#entries.set(
+        entry.entryId,
+        entryState({
+          ...entry,
           error: !inspection.diagnostic && inspection.status === 'active' ? null : error,
         }),
       );
     }
   }
 
-  #tryInspect(bindingId: string): MakaPluginMountInspection | undefined {
+  #tryInspect(entryId: string): MakaPluginMountInspection | undefined {
     try {
-      return this.runtime.inspect(bindingId);
+      return this.runtime.inspect(entryId);
     } catch {
       return undefined;
     }
@@ -933,37 +916,18 @@ export class HostExtensionController {
     await this.runtime.applyComposition(input);
   }
 
-  #configurationForBinding(
-    bindingId: string,
-  ): Readonly<Record<string, string | number | boolean>> {
-    return this.#readEntryState(bindingId)?.config ?? Object.freeze({});
+  #configurationForEntry(entryId: string): Readonly<Record<string, string | number | boolean>> {
+    return this.#readEntryState(entryId)?.config ?? Object.freeze({});
   }
 
-  #readEntryState(bindingId: string): CompositionEntryState | undefined {
-    const persisted = this.#persistedComposition
-      ? persistedEntries(this.#persistedComposition).find(([, entry]) => entry.id === bindingId)
-      : undefined;
-    if (persisted) {
-      const [scopeId, entry] = persisted;
-      if (entry.packageId && entry.revision) {
-        return bindingState({
-          bindingId: entry.id,
-          scopeId,
-          extensionId: entry.packageId,
-          revision: entry.revision,
-          enabled: !entry.disabled,
-          error: entry.error ?? null,
-          config: entry.config,
-        });
-      }
-    }
-    return this.#bindings.get(bindingId);
+  #readEntryState(entryId: string): CompositionEntryState | undefined {
+    return this.#entries.get(entryId);
   }
 
   async #requireAvailable(
     extensionId: string,
     revision: string,
-  ): Promise<OperationOutcome<'extension.catalog.mutate'> | undefined> {
+  ): Promise<OperationOutcome<'extension.composition.mutate'> | undefined> {
     try {
       await this.loader.load(extensionId, revision);
       return undefined;
@@ -1015,10 +979,10 @@ export class HostExtensionController {
             `Required dependency is not installed: ${dependency.id}@${dependency.version}`,
           );
         }
-        const existing = [...this.#bindings.values()].find(
-          (binding) => binding.scopeId === scopeId && binding.extensionId === dependency.id,
+        const existing = [...this.#entries.values()].find(
+          (entry) => entry.scopeId === scopeId && entry.extensionId === dependency.id,
         );
-        const bindingId = existing?.bindingId ?? dependencyBindingId(scopeId, dependency.id);
+        const entryId = existing?.entryId ?? dependencyEntryId(scopeId, dependency.id);
         if (existing) {
           const existingContract = contracts.find(
             (candidate) =>
@@ -1029,9 +993,9 @@ export class HostExtensionController {
             !existingContract ||
             !extensionVersionSatisfies(existingContract.version, dependency.version)
           ) {
-            this.#bindings.set(
-              bindingId,
-              bindingState({
+            this.#entries.set(
+              entryId,
+              entryState({
                 ...existing,
                 revision: selected.revision,
                 enabled: true,
@@ -1039,16 +1003,13 @@ export class HostExtensionController {
               }),
             );
           } else if (!existing.enabled) {
-            this.#bindings.set(
-              bindingId,
-              bindingState({ ...existing, enabled: true, error: null }),
-            );
+            this.#entries.set(entryId, entryState({ ...existing, enabled: true, error: null }));
           }
         } else {
-          this.#bindings.set(
-            bindingId,
-            bindingState({
-              bindingId,
+          this.#entries.set(
+            entryId,
+            entryState({
+              entryId,
               scopeId,
               extensionId: selected.extensionId,
               revision: selected.revision,
@@ -1058,20 +1019,17 @@ export class HostExtensionController {
             }),
           );
         }
-        const stagedBinding = this.#bindings.get(bindingId);
-        if (stagedBinding) {
-          this.#bindings.set(
-            bindingId,
-            bindingState({
-              ...stagedBinding,
-              config: validateExtensionConfiguration(
-                selected.configuration,
-                stagedBinding.config,
-              ),
+        const stagedEntry = this.#entries.get(entryId);
+        if (stagedEntry) {
+          this.#entries.set(
+            entryId,
+            entryState({
+              ...stagedEntry,
+              config: validateExtensionConfiguration(selected.configuration, stagedEntry.config),
             }),
           );
         }
-        staged.push(...(await this.#stageDependencies(scopeId, selected, visiting)), bindingId);
+        staged.push(...(await this.#stageDependencies(scopeId, selected, visiting)), entryId);
       }
       return Object.freeze([...new Set(staged)]);
     } finally {
@@ -1079,74 +1037,68 @@ export class HostExtensionController {
     }
   }
 
-  async #requiredBy(
-    target: CompositionEntryState,
-  ): Promise<CompositionEntryState | undefined> {
+  async #requiredBy(target: CompositionEntryState): Promise<CompositionEntryState | undefined> {
     const contracts = this.loader.contracts ? await this.loader.contracts() : [];
-    return [...this.#bindings.values()].find((binding) => {
-      if (!binding.enabled || binding.bindingId === target.bindingId) return false;
-      if (binding.scopeId !== target.scopeId) return false;
+    return [...this.#entries.values()].find((entry) => {
+      if (!entry.enabled || entry.entryId === target.entryId) return false;
+      if (entry.scopeId !== target.scopeId) return false;
       const contract = contracts.find(
         (candidate) =>
-          candidate.extensionId === binding.extensionId &&
-          candidate.revision === binding.revision,
+          candidate.extensionId === entry.extensionId && candidate.revision === entry.revision,
       );
       return contract?.dependencies.some((dependency) => dependency.id === target.extensionId);
     });
   }
 
-  async #pruneOrphanDependencyBindings(): Promise<void> {
+  async #pruneOrphanDependencyEntries(): Promise<void> {
     const contracts = this.loader.contracts ? await this.loader.contracts() : [];
     const required = new Set<string>();
-    const visit = (binding: CompositionEntryState, visiting: Set<string>): void => {
-      if (visiting.has(binding.bindingId)) return;
-      visiting.add(binding.bindingId);
+    const visit = (entry: CompositionEntryState, visiting: Set<string>): void => {
+      if (visiting.has(entry.entryId)) return;
+      visiting.add(entry.entryId);
       const contract = contracts.find(
         (candidate) =>
-          candidate.extensionId === binding.extensionId &&
-          candidate.revision === binding.revision,
+          candidate.extensionId === entry.extensionId && candidate.revision === entry.revision,
       );
       for (const dependency of contract?.dependencies ?? []) {
-        const dependencyBinding = [...this.#bindings.values()].find(
+        const dependencyEntry = [...this.#entries.values()].find(
           (candidate) =>
             candidate.enabled &&
-            candidate.scopeId === binding.scopeId &&
+            candidate.scopeId === entry.scopeId &&
             candidate.extensionId === dependency.id,
         );
-        if (!dependencyBinding) continue;
-        required.add(dependencyBinding.bindingId);
-        visit(dependencyBinding, visiting);
+        if (!dependencyEntry) continue;
+        required.add(dependencyEntry.entryId);
+        visit(dependencyEntry, visiting);
       }
-      visiting.delete(binding.bindingId);
+      visiting.delete(entry.entryId);
     };
-    for (const binding of this.#bindings.values()) {
-      if (binding.enabled && !binding.bindingId.startsWith('dependency_')) {
-        visit(binding, new Set());
+    for (const entry of this.#entries.values()) {
+      if (entry.enabled && !entry.entryId.startsWith('dependency_')) {
+        visit(entry, new Set());
       }
     }
-    for (const binding of [...this.#bindings.values()]) {
-      if (!binding.bindingId.startsWith('dependency_') || required.has(binding.bindingId)) continue;
-      if (this.#tryInspect(binding.bindingId)) {
+    for (const entry of [...this.#entries.values()]) {
+      if (!entry.entryId.startsWith('dependency_') || required.has(entry.entryId)) continue;
+      if (this.#tryInspect(entry.entryId)) {
         await this.#applyComposition({
-          operations: [{ type: 'remove', entryId: binding.bindingId }],
+          operations: [{ type: 'remove', entryId: entry.entryId }],
         });
       }
-      this.#bindings.delete(binding.bindingId);
+      this.#entries.delete(entry.entryId);
     }
   }
 
-  #replaceMap<K, V>(target: Map<K, V>, source: ReadonlyMap<K, V>): void {
-    target.clear();
-    for (const [key, value] of source) target.set(key, value);
-  }
-
-  async #commitDesiredState(): Promise<OperationOutcome<'extension.catalog.mutate'> | undefined> {
+  async #commitDesiredState(
+    rollback?: PersistedPluginComposition,
+  ): Promise<OperationOutcome<'extension.composition.mutate'> | undefined> {
     try {
       await this.#persist();
       return undefined;
     } catch (error) {
       const failure = asPersistenceFailure(error);
       if (failure.code === 'commit_outcome_unknown') this.requestDrain();
+      else if (rollback) this.#persistedComposition = rollback;
       return mutationFailure(
         failure.code === 'invalid_state' ? 'persistence_failed' : failure.code,
         failure.message,
@@ -1155,72 +1107,34 @@ export class HostExtensionController {
   }
 
   async #persist(): Promise<void> {
-    const profile: PersistedPluginEntry[] = [];
-    const desktopUi: PersistedPluginEntry[] = [];
-    const sessions: Record<string, PersistedPluginEntry[]> = {};
-    for (const binding of [...this.#bindings.values()].sort(compareBinding)) {
-      const entry: PersistedPluginEntry = Object.freeze({
-        id: binding.bindingId,
-        packageId: binding.extensionId,
-        revision: binding.revision,
-        disabled: !binding.enabled,
-        config: binding.config,
-        error: binding.error,
-      });
-      if (binding.scopeId === 'profile') profile.push(entry);
-      else if (binding.scopeId === 'desktop-ui') desktopUi.push(entry);
-      else (sessions[binding.scopeId] ??= []).push(entry);
-    }
-    const previous = this.#persistedComposition;
-    const sessionIds = new Set([
-      ...Object.keys(previous?.roots.sessions ?? {}),
-      ...Object.keys(sessions),
-    ]);
     const snapshot: PersistedPluginComposition = {
       schemaVersion: 1,
       generation: ++this.#compositionGeneration,
-      roots: Object.freeze({
-        profile: reconcileEntries(previous?.roots.profile, profile),
-        desktopUi: reconcileEntries(previous?.roots.desktopUi, desktopUi),
-        sessions: Object.freeze(
-          Object.fromEntries(
-            [...sessionIds]
-              .sort(compareString)
-              .map((scopeId) => [
-                scopeId,
-                reconcileEntries(previous?.roots.sessions[scopeId], sessions[scopeId] ?? []),
-              ]),
-          ),
-        ),
-      }),
+      roots: this.#persistedComposition.roots,
     };
     await this.store.replace(snapshot);
     this.#persistedComposition = snapshot;
   }
 
-  #bindingProjections(): readonly ExtensionBindingProjection[] {
-    const bindingIds = this.#persistedComposition
-      ? persistedEntries(this.#persistedComposition)
-          .filter(([, entry]) => entry.packageId && entry.revision)
-          .map(([, entry]) => entry.id)
-      : [...this.#bindings.keys()];
-    return bindingIds
-      .sort(compareString)
-      .map((bindingId) => this.#projection(bindingId));
+  #entryProjections(): readonly ExtensionCompositionEntryProjection[] {
+    const entryIds = persistedEntries(this.#persistedComposition)
+      .filter(([, entry]) => entry.packageId && entry.revision)
+      .map(([, entry]) => entry.id);
+    return entryIds.sort(compareString).map((entryId) => this.#projection(entryId));
   }
 
-  #projection(bindingId: string): ExtensionBindingProjection {
-    const binding = this.#readEntryState(bindingId);
-    if (!binding) throw new Error(`Extension binding not found: ${bindingId}`);
-    const inspection = this.#tryInspect(bindingId);
+  #projection(entryId: string): ExtensionCompositionEntryProjection {
+    const entry = this.#readEntryState(entryId);
+    if (!entry) throw new Error(`Extension entry not found: ${entryId}`);
+    const inspection = this.#tryInspect(entryId);
     return {
-      bindingId: binding.bindingId,
-      scopeId: binding.scopeId,
-      extensionId: binding.extensionId,
-      desiredRevision: binding.revision,
-      enabled: binding.enabled,
-      status: projectStatus(binding, inspection),
-      error: binding.error,
+      entryId: entry.entryId,
+      scopeId: entry.scopeId,
+      extensionId: entry.extensionId,
+      revision: entry.revision,
+      enabled: entry.enabled,
+      status: projectStatus(entry, inspection),
+      error: entry.error,
     };
   }
 
@@ -1234,22 +1148,82 @@ export class HostExtensionController {
   }
 }
 
+class CompositionEntryIndex {
+  constructor(
+    private readonly read: () => PersistedPluginComposition,
+    private readonly write: (composition: PersistedPluginComposition) => void,
+  ) {}
+
+  get(entryId: string): CompositionEntryState | undefined {
+    const persisted = persistedEntries(this.read()).find(([, entry]) => entry.id === entryId);
+    return persisted ? compositionEntryState(...persisted) : undefined;
+  }
+
+  values(): IterableIterator<CompositionEntryState> {
+    return persistedEntries(this.read())
+      .flatMap(([scopeId, entry]) => {
+        const state = compositionEntryState(scopeId, entry);
+        return state ? [state] : [];
+      })
+      .values();
+  }
+
+  set(entryId: string, state: CompositionEntryState): void {
+    if (entryId !== state.entryId) throw new Error('Composition entry identity is immutable');
+    const composition = this.read();
+    const entry = persistedEntryState(state);
+    const updated = replacePersistedEntry(composition, entryId, entry);
+    this.write(updated ?? appendPersistedEntry(composition, state.scopeId, entry));
+  }
+
+  delete(entryId: string): void {
+    this.write(removePersistedEntry(this.read(), entryId));
+  }
+}
+
 function projectStatus(
-  binding: CompositionEntryState,
+  entry: CompositionEntryState,
   inspection: MakaPluginMountInspection | undefined,
-): ExtensionBindingProjection['status'] {
-  if (!binding.enabled) return 'disabled';
-  if (binding.error || inspection?.status === 'failed') return 'failed';
-  if (inspection?.current?.revision === binding.revision) return 'active';
+): ExtensionCompositionEntryProjection['status'] {
+  if (!entry.enabled) return 'disabled';
+  if (entry.error || inspection?.status === 'failed') return 'failed';
+  if (inspection?.current?.revision === entry.revision) return 'active';
   return 'waiting';
 }
 
-function bindingState(binding: CompositionEntryState): CompositionEntryState {
-  return Object.freeze({ ...binding });
+function entryState(entry: CompositionEntryState): CompositionEntryState {
+  return Object.freeze({ ...entry });
 }
 
-function uniqueRevisions(binding: CompositionEntryState): readonly string[] {
-  return [binding.revision];
+function compositionEntryState(
+  scopeId: string,
+  entry: PersistedPluginEntry,
+): CompositionEntryState | undefined {
+  if (!entry.packageId || !entry.revision) return undefined;
+  return entryState({
+    entryId: entry.id,
+    scopeId,
+    extensionId: entry.packageId,
+    revision: entry.revision,
+    enabled: !entry.disabled,
+    error: entry.error ?? null,
+    config: entry.config,
+  });
+}
+
+function persistedEntryState(state: CompositionEntryState): PersistedPluginEntry {
+  return Object.freeze({
+    id: state.entryId,
+    packageId: state.extensionId,
+    revision: state.revision,
+    disabled: !state.enabled,
+    config: state.config,
+    error: state.error,
+  });
+}
+
+function uniqueRevisions(entry: CompositionEntryState): readonly string[] {
+  return [entry.revision];
 }
 
 function boundedErrorMessage(error: unknown): string {
@@ -1272,16 +1246,16 @@ function asPersistenceFailure(error: unknown): HostPluginCompositionStoreError {
 }
 
 function mutationSuccess(
-  binding: ExtensionBindingProjection | null,
-): OperationOutcome<'extension.catalog.mutate'> {
-  const result: ExtensionCatalogMutateResult = { binding };
+  entry: ExtensionCompositionEntryProjection | null,
+): OperationOutcome<'extension.composition.mutate'> {
+  const result: ExtensionCompositionMutateResult = { entry };
   return { ok: true, result };
 }
 
 function queryFailure(
   code: 'persistence_failed',
   message: string,
-): OperationOutcome<'extension.catalog.query'> {
+): OperationOutcome<'extension.composition.query'> {
   return { ok: false, error: { code, message } };
 }
 
@@ -1321,7 +1295,7 @@ function uiRpcFailure(
 function mutationFailure(
   code: MutationFailureCode,
   message: string,
-): OperationOutcome<'extension.catalog.mutate'> {
+): OperationOutcome<'extension.composition.mutate'> {
   return { ok: false, error: { code, message } };
 }
 
@@ -1360,11 +1334,11 @@ function packageLoaderFailure(
   return packageFailure('operation_conflict', boundedErrorMessage(error));
 }
 
-function compareBinding(
-  left: Pick<CompositionEntryState, 'bindingId'>,
-  right: Pick<CompositionEntryState, 'bindingId'>,
+function compareEntry(
+  left: Pick<CompositionEntryState, 'entryId'>,
+  right: Pick<CompositionEntryState, 'entryId'>,
 ): number {
-  return compareString(left.bindingId, right.bindingId);
+  return compareString(left.entryId, right.entryId);
 }
 
 function persistedEntries(
@@ -1389,34 +1363,125 @@ function flattenPersistedEntries(
   ]);
 }
 
-function reconcileEntries(
-  previous: readonly PersistedPluginEntry[] | undefined,
-  current: readonly PersistedPluginEntry[],
-): readonly PersistedPluginEntry[] {
-  const remaining = new Map(current.map((entry) => [entry.id, entry]));
-  const preserve = (entry: PersistedPluginEntry): PersistedPluginEntry | undefined => {
-    if (entry.packageId) {
-      const replacement = remaining.get(entry.id);
-      if (!replacement) return undefined;
-      remaining.delete(entry.id);
-      return replacement;
-    }
-    const children = (entry.children ?? []).flatMap((child) => {
-      const next = preserve(child);
-      return next ? [next] : [];
-    });
-    return Object.freeze({ ...entry, children: Object.freeze(children) });
-  };
-  const retained = (previous ?? []).flatMap((entry) => {
-    if (entry.packageId) {
-      const replacement = remaining.get(entry.id);
-      if (!replacement) return [];
-      remaining.delete(entry.id);
-      return [replacement];
-    }
-    return [preserve(entry)!];
+function emptyComposition(): PersistedPluginComposition {
+  return Object.freeze({
+    schemaVersion: 1,
+    generation: 0,
+    roots: Object.freeze({
+      profile: Object.freeze([]),
+      desktopUi: Object.freeze([]),
+      sessions: Object.freeze({}),
+    }),
   });
-  return Object.freeze([...retained, ...remaining.values()]);
+}
+
+function replacePersistedEntry(
+  composition: PersistedPluginComposition,
+  entryId: string,
+  replacement: PersistedPluginEntry,
+): PersistedPluginComposition | undefined {
+  const update = (
+    entries: readonly PersistedPluginEntry[],
+  ): readonly PersistedPluginEntry[] | undefined => {
+    let changed = false;
+    const next = entries.map((entry) => {
+      if (entry.id === entryId) {
+        changed = true;
+        return Object.freeze({ ...entry, ...replacement });
+      }
+      const children = update(entry.children ?? []);
+      if (!children) return entry;
+      changed = true;
+      return Object.freeze({ ...entry, children });
+    });
+    return changed ? Object.freeze(next) : undefined;
+  };
+  const profile = update(composition.roots.profile);
+  if (profile) return replaceCompositionRoots(composition, { profile });
+  const desktopUi = update(composition.roots.desktopUi);
+  if (desktopUi) return replaceCompositionRoots(composition, { desktopUi });
+  for (const [scopeId, entries] of Object.entries(composition.roots.sessions)) {
+    const session = update(entries);
+    if (session) {
+      return replaceCompositionRoots(composition, {
+        sessions: Object.freeze({ ...composition.roots.sessions, [scopeId]: session }),
+      });
+    }
+  }
+  return undefined;
+}
+
+function appendPersistedEntry(
+  composition: PersistedPluginComposition,
+  scopeId: string,
+  entry: PersistedPluginEntry,
+): PersistedPluginComposition {
+  if (scopeId === 'profile') {
+    return replaceCompositionRoots(composition, {
+      profile: Object.freeze([...composition.roots.profile, entry]),
+    });
+  }
+  if (scopeId === 'desktop-ui') {
+    return replaceCompositionRoots(composition, {
+      desktopUi: Object.freeze([...composition.roots.desktopUi, entry]),
+    });
+  }
+  return replaceCompositionRoots(composition, {
+    sessions: Object.freeze({
+      ...composition.roots.sessions,
+      [scopeId]: Object.freeze([...(composition.roots.sessions[scopeId] ?? []), entry]),
+    }),
+  });
+}
+
+function removePersistedEntry(
+  composition: PersistedPluginComposition,
+  entryId: string,
+): PersistedPluginComposition {
+  const remove = (
+    entries: readonly PersistedPluginEntry[],
+  ): readonly PersistedPluginEntry[] | undefined => {
+    let changed = false;
+    const next = entries.flatMap((entry) => {
+      if (entry.id === entryId) {
+        changed = true;
+        return [];
+      }
+      const children = remove(entry.children ?? []);
+      if (!children) return [entry];
+      changed = true;
+      return [Object.freeze({ ...entry, children })];
+    });
+    return changed ? Object.freeze(next) : undefined;
+  };
+  const profile = remove(composition.roots.profile);
+  const desktopUi = remove(composition.roots.desktopUi);
+  const sessions = Object.entries(composition.roots.sessions).map(([scopeId, entries]) => {
+    const next = remove(entries);
+    return [scopeId, next ?? entries] as const;
+  });
+  if (
+    !profile &&
+    !desktopUi &&
+    sessions.every(([scopeId, entries]) => entries === composition.roots.sessions[scopeId])
+  ) {
+    return composition;
+  }
+  return replaceCompositionRoots(composition, {
+    profile: profile ?? composition.roots.profile,
+    desktopUi: desktopUi ?? composition.roots.desktopUi,
+    sessions: Object.freeze(Object.fromEntries(sessions)),
+  });
+}
+
+function replaceCompositionRoots(
+  composition: PersistedPluginComposition,
+  patch: Partial<PersistedPluginComposition['roots']>,
+): PersistedPluginComposition {
+  return Object.freeze({
+    ...composition,
+    roots: Object.freeze({ ...composition.roots, ...patch }),
+  });
 }
 
 function runtimeSnapshot(composition: PersistedPluginComposition): MakaCompositionSnapshot {
@@ -1465,7 +1530,7 @@ function revisionKey(extensionId: string, revision: string): string {
   return `${extensionId}\u0000${revision}`;
 }
 
-function dependencyBindingId(scopeId: string, extensionId: string): string {
+function dependencyEntryId(scopeId: string, extensionId: string): string {
   return `dependency_${createHash('sha256')
     .update(`${scopeId}\u0000${extensionId}`)
     .digest('hex')

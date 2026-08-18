@@ -190,12 +190,12 @@ test('define_package installs Tool, UI, Event, dependencies, and secret configur
       action: 'activate',
       extensionId: result.extensionId,
       revision: result.revision,
-    })) as { bindings: Array<{ scopeId: string; desiredRevision: string }> };
+    })) as { entries: Array<{ scopeId: string; revision: string }> };
     assert.deepEqual(
-      activated.bindings.map(({ scopeId, desiredRevision }) => ({ scopeId, desiredRevision })),
+      activated.entries.map(({ scopeId, revision }) => ({ scopeId, revision })),
       [
-        { scopeId: 'session-package-test', desiredRevision: result.revision },
-        { scopeId: 'desktop-ui', desiredRevision: result.revision },
+        { scopeId: 'session-package-test', revision: result.revision },
+        { scopeId: 'desktop-ui', revision: result.revision },
       ],
     );
     assert.ok(

@@ -130,7 +130,7 @@ describe('Desktop UI extension shell', () => {
     const contribution = item('root', 'app.root', 1);
     const url = uiExtensionFrameUrl({
       scopeId: 'desktop-ui',
-      bindingId: contribution.bindingId,
+      entryId: contribution.entryId,
       extensionId: contribution.extensionId,
       revision: contribution.revision,
       contributionId: contribution.id,
@@ -161,7 +161,7 @@ describe('Desktop UI extension shell', () => {
     }));
     const response = await handler(new Request(uiExtensionFrameUrl({
       scopeId: 'desktop-ui',
-      bindingId: contribution.bindingId,
+      entryId: contribution.entryId,
       extensionId: contribution.extensionId,
       revision: contribution.revision,
       contributionId: contribution.id,
@@ -180,7 +180,7 @@ function item(
   slot?: string,
 ): ExtensionUiContributionProjection {
   return {
-    bindingId: `binding-${id}`,
+    entryId: `entry-${id}`,
     extensionId: 'demo',
     revision: '1',
     id,

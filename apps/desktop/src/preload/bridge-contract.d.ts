@@ -329,8 +329,8 @@ export interface UiExtensionEntry {
     }>>;
     readonly required: readonly string[];
   };
-  readonly bindings: readonly {
-    readonly bindingId: string;
+  readonly entries: readonly {
+    readonly entryId: string;
     readonly scopeId: string;
     readonly enabled: boolean;
     readonly status: 'disabled' | 'active' | 'waiting' | 'failed';
@@ -357,8 +357,8 @@ export interface MakaBridge {
     list(): Promise<readonly UiExtensionEntry[]>;
     importLocal(): Promise<{ ok: true; extensionId: string; revision: string } | { ok: false; reason: 'cancelled' }>;
     setEnabled(extensionId: string, enabled: boolean): Promise<{ ok: true }>;
-    getConfiguration(bindingId: string): Promise<{ configuration: Record<string, string | number | boolean> }>;
-    configure(bindingId: string, configuration: Record<string, string | number | boolean>): Promise<{ ok: true; configuration: Record<string, string | number | boolean> }>;
+    getConfiguration(entryId: string): Promise<{ configuration: Record<string, string | number | boolean> }>;
+    configure(entryId: string, configuration: Record<string, string | number | boolean>): Promise<{ ok: true; configuration: Record<string, string | number | boolean> }>;
     export(extensionId: string, revision: string): Promise<{ ok: true; path: string } | { ok: false; reason: 'cancelled' }>;
     remove(extensionId: string): Promise<{ ok: true }>;
   };

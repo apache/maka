@@ -47,10 +47,10 @@ test('production composition exposes trusted Extension control and restores it a
       trustedToolExtensions,
     });
     await composition.recover();
-    const enabled = await composition.handlers['extension.catalog.mutate'](
+    const enabled = await composition.handlers['extension.composition.mutate'](
       {
         kind: 'enable',
-        bindingId: 'weather-binding',
+        entryId: 'weather-entry',
         scopeId: 'session-1',
         extensionId: 'weather',
         revision: '1',
@@ -98,9 +98,9 @@ test('production composition exposes trusted Extension control and restores it a
       trustedToolExtensions,
     });
     await composition.recover();
-    const restored = await composition.handlers['extension.catalog.query']({}, connection);
+    const restored = await composition.handlers['extension.composition.query']({}, connection);
     assert.equal(restored.ok, true);
-    assert.equal(restored.ok && restored.result.bindings[0]?.status, 'active');
+    assert.equal(restored.ok && restored.result.entries[0]?.status, 'active');
     assert.deepEqual(
       composition.extensions.resolveTools('session-1', []).map(({ name }) => name),
       [

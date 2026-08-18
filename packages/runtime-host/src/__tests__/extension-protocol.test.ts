@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  decodeExtensionCatalogMutateInput,
-  decodeExtensionCatalogQueryResult,
+  decodeExtensionCompositionMutateInput,
+  decodeExtensionCompositionQueryResult,
   decodeExtensionContractQueryResult,
   decodeExtensionConfigurationMutateInput,
   decodeExtensionPackageExportInput,
@@ -15,16 +15,16 @@ import { operationAllowsRemoteOwner } from '../protocol/operations.js';
 
 test('Extension control protocol strictly decodes catalog and lifecycle mutations', () => {
   assert.deepEqual(
-    decodeExtensionCatalogMutateInput({
+    decodeExtensionCompositionMutateInput({
       kind: 'enable',
-      bindingId: 'weather-binding',
+      entryId: 'weather-entry',
       scopeId: 'session:1',
       extensionId: 'dev.maka.weather',
       revision: '2',
     }),
     {
       kind: 'enable',
-      bindingId: 'weather-binding',
+      entryId: 'weather-entry',
       scopeId: 'session:1',
       extensionId: 'dev.maka.weather',
       revision: '2',
@@ -108,10 +108,10 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
   );
   assert.deepEqual(
     decodeExtensionConfigurationMutateInput({
-      bindingId: 'weather-binding',
+      entryId: 'weather-entry',
       configuration: { apiKey: 'secret', retries: 3 },
     }),
-    { bindingId: 'weather-binding', configuration: { apiKey: 'secret', retries: 3 } },
+    { entryId: 'weather-entry', configuration: { apiKey: 'secret', retries: 3 } },
   );
   assert.deepEqual(
     decodeExtensionPackageExportInput({
@@ -128,7 +128,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
   assert.deepEqual(
     decodeExtensionUiRpcInvokeInput({
       scopeId: 'desktop-ui',
-      bindingId: 'ui-binding',
+      entryId: 'ui-entry',
       extensionId: 'dev.maka.appearance',
       revision: '2',
       method: 'lookup',
@@ -136,7 +136,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
     }),
     {
       scopeId: 'desktop-ui',
-      bindingId: 'ui-binding',
+      entryId: 'ui-entry',
       extensionId: 'dev.maka.appearance',
       revision: '2',
       method: 'lookup',
@@ -149,7 +149,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
       digest: 'sha256-demo',
       contributions: [
         {
-          bindingId: 'ui-binding',
+          entryId: 'ui-entry',
           extensionId: 'dev.maka.appearance',
           revision: '2',
           id: 'root',
@@ -161,7 +161,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
           sessionAccess: true,
         },
         {
-          bindingId: 'legacy-overlay-binding',
+          entryId: 'legacy-overlay-entry',
           extensionId: 'dev.maka.legacy-overlay',
           revision: '1',
           id: 'legacy-overlay',
@@ -178,7 +178,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
       digest: 'sha256-demo',
       contributions: [
         {
-          bindingId: 'ui-binding',
+          entryId: 'ui-entry',
           extensionId: 'dev.maka.appearance',
           revision: '2',
           id: 'root',
@@ -190,7 +190,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
           sessionAccess: true,
         },
         {
-          bindingId: 'legacy-overlay-binding',
+          entryId: 'legacy-overlay-entry',
           extensionId: 'dev.maka.legacy-overlay',
           revision: '1',
           id: 'legacy-overlay',
@@ -204,7 +204,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
     },
   );
   assert.deepEqual(
-    decodeExtensionCatalogQueryResult({
+    decodeExtensionCompositionQueryResult({
       revisions: [
         {
           extensionId: 'dev.maka.weather',
@@ -214,12 +214,12 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
           eventContributionIds: [],
         },
       ],
-      bindings: [
+      entries: [
         {
-          bindingId: 'weather-binding',
+          entryId: 'weather-entry',
           scopeId: 'session:1',
           extensionId: 'dev.maka.weather',
-          desiredRevision: '2',
+          revision: '2',
           enabled: true,
           status: 'active',
           error: null,
@@ -236,12 +236,12 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
           eventContributionIds: [],
         },
       ],
-      bindings: [
+      entries: [
         {
-          bindingId: 'weather-binding',
+          entryId: 'weather-entry',
           scopeId: 'session:1',
           extensionId: 'dev.maka.weather',
-          desiredRevision: '2',
+          revision: '2',
           enabled: true,
           status: 'active',
           error: null,
@@ -252,9 +252,9 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
 
   assert.throws(
     () =>
-      decodeExtensionCatalogMutateInput({
+      decodeExtensionCompositionMutateInput({
         kind: 'enable',
-        bindingId: 'weather-binding',
+        entryId: 'weather-entry',
         scopeId: 'session-1',
         extensionId: 'weather',
         revision: '2',
@@ -264,9 +264,9 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
   );
   assert.throws(
     () =>
-      decodeExtensionCatalogMutateInput({
+      decodeExtensionCompositionMutateInput({
         kind: 'update',
-        bindingId: 'weather-binding',
+        entryId: 'weather-entry',
         revision: 'bad\nrevision',
       }),
     /Invalid extension revision/,
@@ -285,8 +285,8 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
     () => decodeToolPackageInstallInput({ sourcePath: '/tmp/weather-tool', source: 'inline' }),
     /Unknown Tool package install input field/u,
   );
-  assert.equal(operationAllowsRemoteOwner('extension.catalog.query'), false);
-  assert.equal(operationAllowsRemoteOwner('extension.catalog.mutate'), false);
+  assert.equal(operationAllowsRemoteOwner('extension.composition.query'), false);
+  assert.equal(operationAllowsRemoteOwner('extension.composition.mutate'), false);
   assert.equal(operationAllowsRemoteOwner('extension.ui.snapshot'), false);
   assert.equal(operationAllowsRemoteOwner('extension.ui.rpc.invoke'), false);
   assert.equal(operationAllowsRemoteOwner('extension.package.install'), false);

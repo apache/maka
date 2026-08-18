@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { z } from 'zod';
 import type {
-  ExtensionCatalogMutateResult,
-  ExtensionCatalogQueryResult,
+  ExtensionCompositionMutateResult,
+  ExtensionCompositionQueryResult,
   ExtensionUiStateValue,
   OperationKey,
   OperationOutcome,
@@ -165,7 +165,7 @@ export class HostToolPackageManagementTools {
     ]);
   }
 
-  /** Safe child-authoring subset: install and test candidates without binding or deleting them. */
+  /** Safe child-authoring subset: install and test candidates without entry or deleting them. */
   authorTools(): readonly MakaTool[] {
     return Object.freeze(this.tools().filter((tool) => AUTHOR_TOOL_NAMES.has(tool.name)));
   }
@@ -174,13 +174,13 @@ export class HostToolPackageManagementTools {
     return Object.freeze({
       name: 'inspect_tools',
       description:
-        'Inspect installed Tool package revisions and active, failed, waiting, or disabled bindings before defining or changing a Tool.',
+        'Inspect installed Tool package revisions and active, failed, waiting, or disabled entries before defining or changing a Tool.',
       parameters: z.object({}),
       categoryHint: 'read',
       recoveryMode: 'replay_safe',
       impl: async () => ({
         catalog: unwrap(
-          await this.controller.handlers['extension.catalog.query']({}, this.#connection),
+          await this.controller.handlers['extension.composition.query']({}, this.#connection),
         ),
         contracts: unwrap(
           await this.controller.handlers['extension.contract.query']({}, this.#connection),
@@ -292,15 +292,15 @@ export class HostToolPackageManagementTools {
       recoveryMode: 'idempotent',
       permissionArgs: (args: z.infer<typeof manageInput>) => args,
       impl: async (input: z.infer<typeof manageInput>, context: MakaToolContext) => {
-        const bindingId = bindingIdFor(context.sessionId, input.extensionId);
+        const entryId = entryIdFor(context.sessionId, input.extensionId);
         switch (input.action) {
           case 'activate': {
             const revision = requireRevision(input);
             const result = unwrap(
-              await this.controller.handlers['extension.catalog.mutate'](
+              await this.controller.handlers['extension.composition.mutate'](
                 {
                   kind: 'enable',
-                  bindingId,
+                  entryId,
                   scopeId: context.sessionId,
                   extensionId: input.extensionId,
                   revision,
@@ -313,8 +313,8 @@ export class HostToolPackageManagementTools {
           case 'update': {
             const revision = requireRevision(input);
             const result = unwrap(
-              await this.controller.handlers['extension.catalog.mutate'](
-                { kind: 'update', bindingId, revision },
+              await this.controller.handlers['extension.composition.mutate'](
+                { kind: 'update', entryId, revision },
                 this.#connection,
               ),
             );
@@ -322,19 +322,19 @@ export class HostToolPackageManagementTools {
           }
           case 'stop':
             return unwrap(
-              await this.controller.handlers['extension.catalog.mutate'](
-                { kind: 'remove', bindingId },
+              await this.controller.handlers['extension.composition.mutate'](
+                { kind: 'remove', entryId },
                 this.#connection,
               ),
             );
           case 'delete': {
             const catalog = unwrap(
-              await this.controller.handlers['extension.catalog.query']({}, this.#connection),
+              await this.controller.handlers['extension.composition.query']({}, this.#connection),
             );
-            if (catalog.bindings.some((binding) => binding.bindingId === bindingId)) {
+            if (catalog.entries.some((entry) => entry.entryId === entryId)) {
               unwrap(
-                await this.controller.handlers['extension.catalog.mutate'](
-                  { kind: 'remove', bindingId },
+                await this.controller.handlers['extension.composition.mutate'](
+                  { kind: 'remove', entryId },
                   this.#connection,
                 ),
               );
@@ -352,7 +352,7 @@ export class HostToolPackageManagementTools {
   }
 
   async #withToolDeclarations(
-    result: ExtensionCatalogMutateResult,
+    result: ExtensionCompositionMutateResult,
     extensionId: string,
     revision: string,
   ): Promise<Record<string, unknown>> {
@@ -411,7 +411,7 @@ export class HostToolPackageManagementTools {
               await this.controller.handlers['extension.ui.state.mutate'](
                 {
                   scopeId: 'desktop-ui',
-                  bindingId: contribution.bindingId,
+                  entryId: contribution.entryId,
                   extensionId: contribution.extensionId,
                   revision: contribution.revision,
                   key: stateKey,
@@ -469,7 +469,7 @@ async function validateArgs(tool: MakaTool, args: unknown): Promise<void> {
   }
 }
 
-function bindingIdFor(sessionId: string, extensionId: string): string {
+function entryIdFor(sessionId: string, extensionId: string): string {
   const digest = createHash('sha256')
     .update(sessionId)
     .update('\0')

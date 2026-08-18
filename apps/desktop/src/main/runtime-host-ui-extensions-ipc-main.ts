@@ -57,23 +57,23 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
         });
     if (confirmation.response !== 0) return { ok: false as const, reason: 'cancelled' as const };
     const installed = await input.client.request('extension.package.install', { sourcePath });
-    const catalog = await input.client.request('extension.catalog.query', {});
+    const catalog = await input.client.request('extension.composition.query', {});
     for (const scopeId of new Set([
       ...(installed.uiContributionIds.length > 0 ? [DESKTOP_UI_SCOPE] : []),
       ...(installed.toolNames.length > 0 || installed.eventContributionIds.length > 0 || (installed.serviceContributionIds?.length ?? 0) > 0 || (installed.timerContributionIds?.length ?? 0) > 0
         ? [PROFILE_EXTENSION_SCOPE]
         : []),
     ])) {
-      const current = catalog.bindings.find(
-        (binding) => binding.scopeId === scopeId && binding.extensionId === installed.extensionId,
+      const current = catalog.entries.find(
+        (entry) => entry.scopeId === scopeId && entry.extensionId === installed.extensionId,
       );
       await input.client.request(
-        'extension.catalog.mutate',
+        'extension.composition.mutate',
         current
-          ? { kind: 'update', bindingId: current.bindingId, revision: installed.revision }
+          ? { kind: 'update', entryId: current.entryId, revision: installed.revision }
           : {
               kind: 'enable',
-              bindingId: userBindingId(installed.extensionId, scopeId),
+              entryId: userEntryId(installed.extensionId, scopeId),
               scopeId,
               extensionId: installed.extensionId,
               revision: installed.revision,
@@ -84,21 +84,21 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
   });
 
   input.ipcMain.handle('ui-extensions:setEnabled', async (_event, extensionId: string, enabled: boolean) => {
-    const catalog = await input.client.request('extension.catalog.query', {});
-    const bindings = catalog.bindings.filter((item) => item.extensionId === extensionId);
-    if (bindings.length === 0) throw new Error('Extension binding is not installed');
-    for (const binding of bindings) {
-      await input.client.request('extension.catalog.mutate', enabled
-        ? { kind: 'enable', bindingId: binding.bindingId, scopeId: binding.scopeId, extensionId: binding.extensionId, revision: binding.desiredRevision }
-        : { kind: 'disable', bindingId: binding.bindingId });
+    const catalog = await input.client.request('extension.composition.query', {});
+    const entries = catalog.entries.filter((item) => item.extensionId === extensionId);
+    if (entries.length === 0) throw new Error('Extension entry is not installed');
+    for (const entry of entries) {
+      await input.client.request('extension.composition.mutate', enabled
+        ? { kind: 'enable', entryId: entry.entryId, scopeId: entry.scopeId, extensionId: entry.extensionId, revision: entry.revision }
+        : { kind: 'disable', entryId: entry.entryId });
     }
     return { ok: true as const };
   });
 
   input.ipcMain.handle('ui-extensions:remove', async (_event, extensionId: string) => {
-    const catalog = await input.client.request('extension.catalog.query', {});
-    for (const binding of catalog.bindings.filter((item) => item.extensionId === extensionId)) {
-      await input.client.request('extension.catalog.mutate', { kind: 'remove', bindingId: binding.bindingId });
+    const catalog = await input.client.request('extension.composition.query', {});
+    for (const entry of catalog.entries.filter((item) => item.extensionId === extensionId)) {
+      await input.client.request('extension.composition.mutate', { kind: 'remove', entryId: entry.entryId });
     }
     for (const revision of catalog.revisions.filter((item) => item.extensionId === extensionId)) {
       await input.client.request('extension.package.uninstall', { extensionId, revision: revision.revision });
@@ -106,13 +106,13 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
     return { ok: true as const };
   });
 
-  input.ipcMain.handle('ui-extensions:configure', async (_event, bindingId: string, configuration: Record<string, string | number | boolean>) => {
-    const result = await input.client.request('extension.configuration.mutate', { bindingId, configuration });
+  input.ipcMain.handle('ui-extensions:configure', async (_event, entryId: string, configuration: Record<string, string | number | boolean>) => {
+    const result = await input.client.request('extension.configuration.mutate', { entryId, configuration });
     return { ok: true as const, configuration: result.configuration };
   });
 
-  handleReconnectableRead(input.ipcMain, 'ui-extensions:getConfiguration', async (_event, bindingId: string) =>
-    input.client.request('extension.configuration.query', { bindingId }),
+  handleReconnectableRead(input.ipcMain, 'ui-extensions:getConfiguration', async (_event, entryId: string) =>
+    input.client.request('extension.configuration.query', { entryId }),
   );
 
   input.ipcMain.handle('ui-extensions:export', async (_event, extensionId: string, revision: string) => {
@@ -129,12 +129,12 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
 }
 
 async function listUiExtensions(client: DesktopRuntimeHostClient) {
-  const catalog = await client.request('extension.catalog.query', {});
+  const catalog = await client.request('extension.composition.query', {});
   const contracts = await client.request('extension.contract.query', {}).catch(() => ({ packages: [] }));
   return catalog.revisions
     .map((revision) => {
-      const bindings = catalog.bindings.filter((item) => item.extensionId === revision.extensionId);
-      const binding = bindings.find((item) => item.lastGoodRevision === revision.revision) ?? bindings[0];
+      const entries = catalog.entries.filter((item) => item.extensionId === revision.extensionId);
+      const entry = entries.find((item) => item.revision === revision.revision) ?? entries[0];
       const contract = contracts.packages.find((item) => item.extensionId === revision.extensionId && item.revision === revision.revision);
       return {
         extensionId: revision.extensionId,
@@ -156,11 +156,11 @@ async function listUiExtensions(client: DesktopRuntimeHostClient) {
         timerContributionIds: revision.timerContributionIds ?? [],
         dependencies: contract?.dependencies ?? [],
         configuration: contract?.configuration ?? { properties: {}, required: [] },
-        bindings,
-        active: bindings.some((item) => item.status === 'active' && item.lastGoodRevision === revision.revision),
-        enabled: bindings.some((item) => item.enabled),
-        status: bindings.some((item) => item.status === 'failed') ? 'failed' : bindings.some((item) => item.status === 'active') ? 'active' : bindings.some((item) => item.status === 'waiting') ? 'waiting' : 'disabled',
-        error: bindings.find((item) => item.error)?.error ?? null,
+        entries,
+        active: entries.some((item) => item.status === 'active' && item.revision === revision.revision),
+        enabled: entries.some((item) => item.enabled),
+        status: entries.some((item) => item.status === 'failed') ? 'failed' : entries.some((item) => item.status === 'active') ? 'active' : entries.some((item) => item.status === 'waiting') ? 'waiting' : 'disabled',
+        error: entries.find((item) => item.error)?.error ?? null,
       };
     });
 }
@@ -241,6 +241,6 @@ function previewManifest(value: Record<string, unknown>): Awaited<ReturnType<typ
   };
 }
 
-function userBindingId(extensionId: string, scopeId: string): string {
+function userEntryId(extensionId: string, scopeId: string): string {
   return `user_extension_${createHash('sha256').update(`${scopeId}\u0000${extensionId}`).digest('hex').slice(0, 32)}`;
 }

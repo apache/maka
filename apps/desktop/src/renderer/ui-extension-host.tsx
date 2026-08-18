@@ -266,7 +266,7 @@ function SandboxedUiFrame({
   const [slotRects, setSlotRects] = useState<ReadonlyMap<string, UiSlotRect>>(new Map());
   const token = useMemo(
     () => crypto.randomUUID(),
-    [contribution.bindingId, contribution.revision, contribution.id],
+    [contribution.entryId, contribution.revision, contribution.id],
   );
   useLayoutEffect(() => {
     const receive = (event: MessageEvent) => {
@@ -288,7 +288,7 @@ function SandboxedUiFrame({
       }
       const identity = {
         scopeId: DESKTOP_UI_SCOPE,
-        bindingId: contribution.bindingId,
+        entryId: contribution.entryId,
         extensionId: contribution.extensionId,
         revision: contribution.revision,
       };
@@ -296,7 +296,7 @@ function SandboxedUiFrame({
         ? runSessionBridgeRequest(contribution, request)
         : request.kind === 'config'
           ? window.maka.runtimeHost.query('extension.configuration.query', {
-              bindingId: contribution.bindingId,
+              entryId: contribution.entryId,
             })
         : request.kind === 'invoke'
         ? window.maka.runtimeHost.command('extension.ui.rpc.invoke', {
@@ -336,7 +336,7 @@ function SandboxedUiFrame({
         referrerPolicy="no-referrer"
         src={uiExtensionFrameUrl({
           scopeId: DESKTOP_UI_SCOPE,
-          bindingId: contribution.bindingId,
+          entryId: contribution.entryId,
           extensionId: contribution.extensionId,
           revision: contribution.revision,
           contributionId: contribution.id,
@@ -434,7 +434,7 @@ function slotChildren(
 }
 
 function contributionKey(contribution: ExtensionUiContributionProjection): string {
-  return `${contribution.bindingId}:${contribution.revision}:${contribution.id}`;
+  return `${contribution.entryId}:${contribution.revision}:${contribution.id}`;
 }
 
 function postBridgeReady(frame: HTMLIFrameElement | null, token: string): void {

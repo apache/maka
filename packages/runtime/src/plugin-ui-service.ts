@@ -30,7 +30,7 @@ export class PluginUiService extends Service {
 
   inspect(
     rootId: string,
-    committed: readonly { readonly bindingId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly revision: string }[],
   ): readonly ExtensionUiContributionInspection[] {
     return this.registry.inspect(rootId, committed);
   }

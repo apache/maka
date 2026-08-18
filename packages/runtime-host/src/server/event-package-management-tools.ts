@@ -190,7 +190,7 @@ export class HostEventPackageManagementTools {
     return Object.freeze({
       name: 'inspect_events',
       description:
-        'Inspect active plugin-defined Event contracts, Event Listeners, immutable revisions, and bindings. Events are in-process Runtime notifications and never create an Agent Turn.',
+        'Inspect active plugin-defined Event contracts, Event Listeners, immutable revisions, and entries. Events are in-process Runtime notifications and never create an Agent Turn.',
       parameters: z.object({}),
       categoryHint: 'read',
       recoveryMode: 'replay_safe',
@@ -205,7 +205,7 @@ export class HostEventPackageManagementTools {
           .map(({ invoke: _invoke, ...service }) => service),
         timers: this.runtime.inspectTimers(context.sessionId),
         catalog: unwrap(
-          await this.controller.handlers['extension.catalog.query']({}, this.#connection),
+          await this.controller.handlers['extension.composition.query']({}, this.#connection),
         ),
         contracts: unwrap(
           await this.controller.handlers['extension.contract.query']({}, this.#connection),
@@ -409,14 +409,14 @@ export class HostEventPackageManagementTools {
       recoveryMode: 'idempotent',
       permissionArgs: (input: z.infer<typeof manageInput>) => input,
       impl: async (input: z.infer<typeof manageInput>, context: MakaToolContext) => {
-        const bindingId = bindingIdFor(context.sessionId, input.extensionId);
+        const entryId = entryIdFor(context.sessionId, input.extensionId);
         switch (input.action) {
           case 'activate':
             return unwrap(
-              await this.controller.handlers['extension.catalog.mutate'](
+              await this.controller.handlers['extension.composition.mutate'](
                 {
                   kind: 'enable',
-                  bindingId,
+                  entryId,
                   scopeId: context.sessionId,
                   extensionId: input.extensionId,
                   revision: requireRevision(input),
@@ -426,26 +426,26 @@ export class HostEventPackageManagementTools {
             );
           case 'update':
             return unwrap(
-              await this.controller.handlers['extension.catalog.mutate'](
-                { kind: 'update', bindingId, revision: requireRevision(input) },
+              await this.controller.handlers['extension.composition.mutate'](
+                { kind: 'update', entryId, revision: requireRevision(input) },
                 this.#connection,
               ),
             );
           case 'stop':
             return unwrap(
-              await this.controller.handlers['extension.catalog.mutate'](
-                { kind: 'remove', bindingId },
+              await this.controller.handlers['extension.composition.mutate'](
+                { kind: 'remove', entryId },
                 this.#connection,
               ),
             );
           case 'delete': {
             const catalog = unwrap(
-              await this.controller.handlers['extension.catalog.query']({}, this.#connection),
+              await this.controller.handlers['extension.composition.query']({}, this.#connection),
             );
-            if (catalog.bindings.some((binding) => binding.bindingId === bindingId)) {
+            if (catalog.entries.some((entry) => entry.entryId === entryId)) {
               unwrap(
-                await this.controller.handlers['extension.catalog.mutate'](
-                  { kind: 'remove', bindingId },
+                await this.controller.handlers['extension.composition.mutate'](
+                  { kind: 'remove', entryId },
                   this.#connection,
                 ),
               );
@@ -490,7 +490,7 @@ function requireRevision(input: z.infer<typeof manageInput>): string {
   return input.revision;
 }
 
-function bindingIdFor(sessionId: string, extensionId: string): string {
+function entryIdFor(sessionId: string, extensionId: string): string {
   const digest = createHash('sha256')
     .update(sessionId)
     .update('\0')

@@ -23,7 +23,7 @@ export interface ExtensionTimerContribution {
 }
 
 export interface ExtensionTimerContributionInspection {
-  readonly bindingId: string;
+  readonly entryId: string;
   readonly scopeId: string;
   readonly extensionId: string;
   readonly revision: string;

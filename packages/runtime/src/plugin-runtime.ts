@@ -102,7 +102,7 @@ export interface MakaPluginMountInspection {
   readonly entryId: string;
   readonly rootId: string;
   readonly packageId: string;
-  readonly desiredRevision: string;
+  readonly revision: string;
   readonly enabled: boolean;
   readonly status: MakaCompositionEntryStatus;
   readonly current?: { readonly revision: string; readonly generation: number };
@@ -135,7 +135,7 @@ export interface MakaPluginMetadata {
 }
 
 export interface MakaContributionIdentity {
-  readonly bindingId: string;
+  readonly entryId: string;
   readonly scopeId: string;
   readonly extensionId: string;
   readonly revision: string;
@@ -257,7 +257,7 @@ export function pluginIdentity(ctx: Context): MakaContributionIdentity {
     );
   }
   return Object.freeze({
-    bindingId: metadata.entryId,
+    entryId: metadata.entryId,
     scopeId: metadata.rootId,
     extensionId: metadata.packageId,
     revision: metadata.revision,

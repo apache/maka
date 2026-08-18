@@ -41,14 +41,14 @@ export interface ExtensionEventListenerContribution {
 
 export interface ExtensionEventDefinitionInspection extends Omit<ExtensionEventDefinition, 'mode'> {
   readonly mode: ExtensionEventDispatchMode;
-  readonly bindingId: string;
+  readonly entryId: string;
   readonly scopeId: string;
   readonly extensionId: string;
   readonly revision: string;
 }
 
 export interface ExtensionEventListenerInspection extends ExtensionEventListenerContribution {
-  readonly bindingId: string;
+  readonly entryId: string;
   readonly scopeId: string;
   readonly extensionId: string;
   readonly revision: string;
@@ -102,7 +102,7 @@ export class ExtensionEventContributionRegistry {
     const conflict = current.find(
       (entry) =>
         entry.name === definition.name &&
-        (entry.bindingId !== context.bindingId || entry.extensionId !== context.extensionId),
+        (entry.entryId !== context.entryId || entry.extensionId !== context.extensionId),
     );
     if (conflict) {
       throw new ExtensionEventContributionError(
@@ -111,7 +111,7 @@ export class ExtensionEventContributionRegistry {
       );
     }
     const entry: RegisteredEvent = Object.freeze({
-      bindingId: context.bindingId,
+      entryId: context.entryId,
       scopeId: context.scopeId,
       extensionId: context.extensionId,
       revision: context.revision,
@@ -140,7 +140,7 @@ export class ExtensionEventContributionRegistry {
       (entry) =>
         entry.event === listener.event &&
         entry.id === listener.id &&
-        (entry.bindingId !== context.bindingId || entry.extensionId !== context.extensionId),
+        (entry.entryId !== context.entryId || entry.extensionId !== context.extensionId),
     );
     if (conflict) {
       throw new ExtensionEventContributionError(
@@ -149,7 +149,7 @@ export class ExtensionEventContributionRegistry {
       );
     }
     const entry: RegisteredListener = Object.freeze({
-      bindingId: context.bindingId,
+      entryId: context.entryId,
       scopeId: context.scopeId,
       extensionId: context.extensionId,
       revision: context.revision,
@@ -162,13 +162,13 @@ export class ExtensionEventContributionRegistry {
 
   inspectEvents(
     scopeIds: readonly string[],
-    committed?: readonly { readonly bindingId: string; readonly revision: string }[],
+    committed?: readonly { readonly entryId: string; readonly revision: string }[],
   ): readonly ExtensionEventDefinitionInspection[] {
     const revisions = committedRevisions(committed);
     const resolved = new Map<string, RegisteredEvent>();
     for (const scopeId of scopeIds) {
       for (const entry of this.#events.get(scopeId) ?? []) {
-        if (revisions && revisions.get(entry.bindingId) !== entry.revision) continue;
+        if (revisions && revisions.get(entry.entryId) !== entry.revision) continue;
         resolved.set(entry.name, entry);
       }
     }
@@ -183,13 +183,13 @@ export class ExtensionEventContributionRegistry {
 
   inspectListeners(
     scopeIds: readonly string[],
-    committed?: readonly { readonly bindingId: string; readonly revision: string }[],
+    committed?: readonly { readonly entryId: string; readonly revision: string }[],
   ): readonly ExtensionEventListenerInspection[] {
     const revisions = committedRevisions(committed);
     const resolved = new Map<string, RegisteredListener>();
     for (const scopeId of scopeIds) {
       for (const entry of this.#listeners.get(scopeId) ?? []) {
-        if (revisions && revisions.get(entry.bindingId) !== entry.revision) continue;
+        if (revisions && revisions.get(entry.entryId) !== entry.revision) continue;
         resolved.set(`${entry.event}\0${entry.extensionId}\0${entry.id}`, entry);
       }
     }
@@ -202,7 +202,7 @@ export class ExtensionEventContributionRegistry {
 
   parsePayload(
     scopeIds: readonly string[],
-    committed: readonly { readonly bindingId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly revision: string }[],
     event: string,
     payload: unknown,
   ): unknown {
@@ -226,7 +226,7 @@ export class ExtensionEventContributionRegistry {
     let definition: RegisteredEvent | undefined;
     for (const scopeId of scopeIds) {
       const candidate = (this.#events.get(scopeId) ?? []).find(
-        (entry) => entry.name === event && revisions.get(entry.bindingId) === entry.revision,
+        (entry) => entry.name === event && revisions.get(entry.entryId) === entry.revision,
       );
       if (candidate) definition = candidate;
     }
@@ -248,7 +248,7 @@ export class ExtensionEventContributionRegistry {
 
   resolveDefinition(
     scopeIds: readonly string[],
-    committed: readonly { readonly bindingId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly revision: string }[],
     event: string,
   ): ExtensionEventDefinitionInspection {
     const definition = this.#definition(scopeIds, committed, event);
@@ -258,7 +258,7 @@ export class ExtensionEventContributionRegistry {
 
   parseResult(
     scopeIds: readonly string[],
-    committed: readonly { readonly bindingId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly revision: string }[],
     event: string,
     value: unknown,
   ): unknown {
@@ -295,14 +295,14 @@ export class ExtensionEventContributionRegistry {
 
   #definition(
     scopeIds: readonly string[],
-    committed: readonly { readonly bindingId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly revision: string }[],
     event: string,
   ): RegisteredEvent {
     const revisions = committedRevisions(committed)!;
     let definition: RegisteredEvent | undefined;
     for (const scopeId of scopeIds) {
       const candidate = (this.#events.get(scopeId) ?? []).find(
-        (entry) => entry.name === event && revisions.get(entry.bindingId) === entry.revision,
+        (entry) => entry.name === event && revisions.get(entry.entryId) === entry.revision,
       );
       if (candidate) definition = candidate;
     }
@@ -428,10 +428,10 @@ function removeRegistered<T extends { readonly token: symbol }>(
 }
 
 function committedRevisions(
-  committed?: readonly { readonly bindingId: string; readonly revision: string }[],
+  committed?: readonly { readonly entryId: string; readonly revision: string }[],
 ): Map<string, string> | undefined {
   return committed
-    ? new Map(committed.map(({ bindingId, revision }) => [bindingId, revision]))
+    ? new Map(committed.map(({ entryId, revision }) => [entryId, revision]))
     : undefined;
 }
 

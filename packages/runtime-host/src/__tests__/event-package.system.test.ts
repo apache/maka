@@ -25,7 +25,7 @@ const connection: ConnectionContext = {
   acquireResidency: () => ({ release: () => undefined }),
 };
 
-test('cross-plugin Event contracts dispatch trusted in-process Listeners and recover bindings', {
+test('cross-plugin Event contracts dispatch trusted in-process Listeners and recover entries', {
   timeout: 60_000,
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-event-package-'));
@@ -51,10 +51,10 @@ test('cross-plugin Event contracts dispatch trusted in-process Listeners and rec
     await fixture.controller.recover();
     assert.equal(
       (
-        await fixture.controller.handlers['extension.catalog.mutate'](
+        await fixture.controller.handlers['extension.composition.mutate'](
           {
             kind: 'enable',
-            bindingId: 'provider-binding',
+            entryId: 'provider-entry',
             scopeId: 'session-1',
             extensionId: provider.extensionId,
             revision: provider.revision,
@@ -66,10 +66,10 @@ test('cross-plugin Event contracts dispatch trusted in-process Listeners and rec
     );
     assert.equal(
       (
-        await fixture.controller.handlers['extension.catalog.mutate'](
+        await fixture.controller.handlers['extension.composition.mutate'](
           {
             kind: 'enable',
-            bindingId: 'consumer-binding',
+            entryId: 'consumer-entry',
             scopeId: 'session-1',
             extensionId: consumer.extensionId,
             revision: consumer.revision,
@@ -150,8 +150,8 @@ test('cross-plugin Event contracts dispatch trusted in-process Listeners and rec
       ).listenerCount,
       2,
     );
-    await fixture.controller.handlers['extension.catalog.mutate'](
-      { kind: 'remove', bindingId: 'consumer-binding' },
+    await fixture.controller.handlers['extension.composition.mutate'](
+      { kind: 'remove', entryId: 'consumer-entry' },
       connection,
     );
     assert.equal(fixture.runtime.inspectEventListeners('session-1').length, 0);
@@ -175,14 +175,14 @@ test('cross-plugin Service calls require a declared package dependency', {
     const provider = await fixture.loader.installPackage(providerSource);
     const rogue = await fixture.loader.installPackage(rogueSource);
     await fixture.controller.recover();
-    for (const [bindingId, installed] of [
-      ['provider-binding', provider],
-      ['rogue-binding', rogue],
+    for (const [entryId, installed] of [
+      ['provider-entry', provider],
+      ['rogue-entry', rogue],
     ] as const) {
-      const result = await fixture.controller.handlers['extension.catalog.mutate'](
+      const result = await fixture.controller.handlers['extension.composition.mutate'](
         {
           kind: 'enable',
-          bindingId,
+          entryId,
           scopeId: 'session-1',
           extensionId: installed.extensionId,
           revision: installed.revision,
@@ -213,7 +213,7 @@ test('serverless Extension Timers retain their next fire across Host restart', a
   const control = join(root, 'control');
   let fires = 0;
   const context = {
-    bindingId: 'timer-binding',
+    entryId: 'timer-entry',
     scopeId: 'session-timer',
     extensionId: 'dev.maka.timer',
     revision: 'revision-1',
@@ -273,7 +273,7 @@ test('serverless Extension Timers never overlap and collapse a missed interval',
     firstStarted = resolve;
   });
   const context = {
-    bindingId: 'non-overlap-binding',
+    entryId: 'non-overlap-entry',
     scopeId: 'session-non-overlap',
     extensionId: 'dev.maka.non-overlap',
     revision: 'revision-1',
@@ -360,7 +360,7 @@ test('Agent Event tools define, test, activate, emit, inspect, and stop a packag
           type: 'insert',
           rootId: 'session:session-1',
           entry: {
-            id: 'timer-observer-binding',
+            id: 'timer-observer-entry',
             packageId: 'timer-observer',
             revision: '1',
           },

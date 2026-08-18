@@ -258,8 +258,8 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     return this.#composition.uninstall(extensionId, revision);
   }
 
-  inspect(bindingId: string): MakaPluginMountInspection {
-    const entry = this.#composition.inspect(bindingId);
+  inspect(entryId: string): MakaPluginMountInspection {
+    const entry = this.#composition.inspect(entryId);
     return this.#mountInspection(entry);
   }
 
@@ -279,20 +279,20 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
   }
 
   inspectUi(scopeId: string): readonly ExtensionUiContributionInspection[] {
-    const committed = this.inspectScope(scopeId).flatMap((binding) =>
-      binding.current ? [{ bindingId: binding.entryId, revision: binding.current.revision }] : [],
+    const committed = this.inspectScope(scopeId).flatMap((entry) =>
+      entry.current ? [{ entryId: entry.entryId, revision: entry.current.revision }] : [],
     );
     return this.#ui.inspect(this.#rootId(scopeId), committed);
   }
 
   reportUiReadiness(
     scopeId: string,
-    bindingId: string,
+    entryId: string,
     revision: string,
     status: import('@maka/runtime/extension-ui-contributions').ExtensionUiReadiness,
     diagnostic?: string,
   ): void {
-    this.#ui.registry.setReadiness(this.#rootId(scopeId), bindingId, revision, status, diagnostic);
+    this.#ui.registry.setReadiness(this.#rootId(scopeId), entryId, revision, status, diagnostic);
   }
 
   inspectUiReadiness(scopeId?: string) {
@@ -533,15 +533,15 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
 
   #resolvedScopeState(scopeId: string): {
     scopeIds: readonly string[];
-    committed: readonly { readonly bindingId: string; readonly revision: string }[];
+    committed: readonly { readonly entryId: string; readonly revision: string }[];
   } {
     const scopeIds =
       scopeId === PROFILE_EXTENSION_SCOPE
         ? [this.#rootId(scopeId)]
         : [this.#rootId(PROFILE_EXTENSION_SCOPE), this.#rootId(scopeId)];
     const committed = scopeIds.flatMap((resolvedScopeId) =>
-      this.inspectScope(resolvedScopeId).flatMap((binding) =>
-        binding.current ? [{ bindingId: binding.entryId, revision: binding.current.revision }] : [],
+      this.inspectScope(resolvedScopeId).flatMap((entry) =>
+        entry.current ? [{ entryId: entry.entryId, revision: entry.current.revision }] : [],
       ),
     );
     return { scopeIds, committed };
@@ -610,7 +610,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
       entryId: entry.id,
       rootId: this.#scopeId(entry.rootId),
       packageId: entry.packageId!,
-      desiredRevision: entry.revision!,
+      revision: entry.revision!,
       enabled: entry.status !== 'disabled' && entry.status !== 'disposed',
       status: entry.status,
       ...(active && entry.generation !== undefined

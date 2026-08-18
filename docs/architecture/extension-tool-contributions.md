@@ -8,15 +8,15 @@ path. It supports trusted static Tool revisions; it does not load arbitrary pack
 Phase 2 is complete when all of these statements are true:
 
 - installing a revision remains effect-free;
-- activating a binding publishes its declared Tools into that binding's scope;
+- activating an entry publishes its declared Tools into that entry's scope;
 - the next Backend `send()` sees Core and active Extension Tools through one catalog;
 - an Extension Tool call settles through the existing `ToolRuntime` rather than a parallel
   executor;
 - Tool availability, argument validation, permissions, sandbox boundaries, durable settlement,
   and product routing remain authoritative;
-- updating a binding switches the complete Tool surface transactionally, and a failed candidate
+- updating an entry switches the complete Tool surface transactionally, and a failed candidate
   restores the prior surface;
-- stopping, removing, or disposing the binding retracts every Tool registration;
+- stopping, removing, or disposing the entry retracts every Tool registration;
 - Extension Tools cannot shadow Core Tools, Runtime protocol names, other extensions, or claim a
   provider-native protocol;
 - an empty Extension registry produces the same Core Tool surface as before.
@@ -27,7 +27,7 @@ Phase 2 is complete when all of these statements are true:
 through `contributeExtensionTool`, which immediately hands the matching unregister function to
 `ExtensionActivationContext.ownEffect`.
 
-Candidate replacement is transactional. A candidate from the same binding may temporarily replace
+Candidate replacement is transactional. A candidate from the same entry may temporarily replace
 its current Tool name while activating. Candidate cleanup restores the old entry; after commit, old
 activation cleanup retires the replaced entry so a later stop cannot resurrect it.
 
@@ -61,22 +61,25 @@ domains, disposes every tracked Scope, and only then uninstalls its in-memory re
 
 The Runtime Host composition may register a bounded catalog of trusted static Tool revisions.
 `StaticTrustedToolExtensionLoader` resolves only those definitions; it never imports a workspace
-path or executes user-authored code. The local owner can use `extension.catalog.query` and
-`extension.catalog.mutate` to list, enable, disable, update, and remove bindings. These operations
+path or executes user-authored code. The local owner can use `extension.composition.query` and
+`extension.composition.mutate` to list, enable, disable, update, and remove entries. These operations
 are deliberately absent from the remote-owner grant list.
 
-`HostExtensionController` persists desired bindings, enabled state, last-good revision, and the
-latest diagnostic in the root-private Host control directory. Desired state is committed before
-enable, update, and disable convergence so a process crash can resume the command. At startup it:
+`HostExtensionController` persists one Composition Entry tree containing package identity,
+revision, configuration, enabled state, hierarchy, and the latest diagnostic in the root-private
+Host control directory. The Controller has no parallel entry-state or configuration map. Desired tree
+changes are committed before Runtime convergence so a process crash can resume from the same
+authority. At startup it:
 
-1. loads every available last-good and desired revision without activating code during install;
-2. restores last-good bindings first;
-3. attempts the desired upgrade through the lifecycle candidate transaction;
-4. retains last-good Tools and records a diagnostic when loading, health check, or activation
-   fails;
+1. reads the persisted Composition Entry tree and installs revisions referenced by enabled entries;
+2. projects the snapshot into the Runtime Context/Fiber tree through the Composition Loader;
+3. retries entries individually when whole-snapshot activation fails and records diagnostics on the
+   corresponding persisted entry;
+4. restores Tool, UI, Hook, Event, Listener, Service, and Timer contributions from the same revision;
 5. leaves the rest of Runtime Host available when Extension state cannot be recovered.
 
-This completes the minimum trusted-static product slice: a Host integrator registers Tool
-revisions, a local administrator controls them through the Runtime Host protocol, and enabled
-bindings survive process restart. Manifest/npm discovery, third-party code isolation, UI, an Agent
-authoring Tools, and model-call-level hot swapping remain outside this trust boundary.
+This completes the trusted in-process package lifecycle: a local administrator or Agent can install
+one immutable package revision, control its Composition entries through the Runtime Host protocol,
+and recover the same hierarchy and contributions after restart. Installed code is trusted with
+application-level authority; manifest permissions remain approval and audit metadata rather than a
+malicious-code isolation boundary.

@@ -172,7 +172,7 @@ export class HostUiPackageManagementTools {
     ]);
   }
 
-  /** Safe child-authoring subset: install and test candidates without Desktop binding or state authority. */
+  /** Safe child-authoring subset: install and test candidates without Desktop entry or state authority. */
   authorTools(): readonly MakaTool[] {
     return Object.freeze(this.tools().filter((tool) => AUTHOR_UI_TOOL_NAMES.has(tool.name)));
   }
@@ -181,13 +181,13 @@ export class HostUiPackageManagementTools {
     return Object.freeze({
       name: 'inspect_ui',
       description:
-        'Inspect the independent UI extension surface, official composition slots, installed immutable UI revisions, active Desktop bindings, and the current committed client snapshot.',
+        'Inspect the independent UI extension surface, official composition slots, installed immutable UI revisions, active Desktop entries, and the current committed client snapshot.',
       parameters: z.object({}),
       categoryHint: 'read',
       recoveryMode: 'replay_safe',
       impl: async () => {
         const catalog = unwrap(
-          await this.controller.handlers['extension.catalog.query']({}, this.#connection),
+          await this.controller.handlers['extension.composition.query']({}, this.#connection),
         );
         const snapshot = unwrap(
           await this.controller.handlers['extension.ui.snapshot'](
@@ -353,7 +353,7 @@ export class HostUiPackageManagementTools {
         await previewRuntime.installUiRevision(loaded);
         const nonce = randomUUID().replaceAll('-', '');
         const scopeId = `ui-preview-${nonce}`;
-        const bindingId = `ui-preview-binding-${nonce}`;
+        const entryId = `ui-preview-entry-${nonce}`;
         try {
           await previewRuntime.applyComposition({
             operations: [
@@ -361,7 +361,7 @@ export class HostUiPackageManagementTools {
                 type: 'insert',
                 rootId: `session:${scopeId}`,
                 entry: {
-                  id: bindingId,
+                  id: entryId,
                   packageId: input.extensionId,
                   revision: input.revision,
                 },
@@ -386,13 +386,13 @@ export class HostUiPackageManagementTools {
       recoveryMode: 'idempotent',
       permissionArgs: (input: z.infer<typeof manageInput>) => input,
       impl: async (input: z.infer<typeof manageInput>) => {
-        const bindingId = bindingIdFor(input.extensionId);
+        const entryId = entryIdFor(input.extensionId);
         if (input.action === 'activate') {
           return unwrap(
-            await this.controller.handlers['extension.catalog.mutate'](
+            await this.controller.handlers['extension.composition.mutate'](
               {
                 kind: 'enable',
-                bindingId,
+                entryId,
                 scopeId: DESKTOP_UI_EXTENSION_SCOPE,
                 extensionId: input.extensionId,
                 revision: requireRevision(input),
@@ -403,10 +403,10 @@ export class HostUiPackageManagementTools {
         }
         if (input.action === 'update') {
           return unwrap(
-            await this.controller.handlers['extension.catalog.mutate'](
+            await this.controller.handlers['extension.composition.mutate'](
               {
                 kind: 'update',
-                bindingId,
+                entryId,
                 revision: requireRevision(input),
               },
               this.#connection,
@@ -414,12 +414,12 @@ export class HostUiPackageManagementTools {
           );
         }
         const catalog = unwrap(
-          await this.controller.handlers['extension.catalog.query']({}, this.#connection),
+          await this.controller.handlers['extension.composition.query']({}, this.#connection),
         );
-        if (catalog.bindings.some((binding) => binding.bindingId === bindingId)) {
+        if (catalog.entries.some((entry) => entry.entryId === entryId)) {
           unwrap(
-            await this.controller.handlers['extension.catalog.mutate'](
-              { kind: 'remove', bindingId },
+            await this.controller.handlers['extension.composition.mutate'](
+              { kind: 'remove', entryId },
               this.#connection,
             ),
           );
@@ -435,7 +435,7 @@ export class HostUiPackageManagementTools {
             ),
           );
         }
-        return { binding: null };
+        return { entry: null };
       },
     });
   }
@@ -474,7 +474,7 @@ export class HostUiPackageManagementTools {
           await this.controller.handlers['extension.ui.state.mutate'](
             {
               scopeId: DESKTOP_UI_EXTENSION_SCOPE,
-              bindingId: contribution.bindingId,
+              entryId: contribution.entryId,
               extensionId: contribution.extensionId,
               revision: contribution.revision,
               key: input.key,
@@ -498,7 +498,7 @@ export class HostUiPackageManagementTools {
 function reachableSlots(
   root: {
     readonly slots?: readonly string[];
-    readonly bindingId: string;
+    readonly entryId: string;
     readonly revision: string;
     readonly id: string;
   },
@@ -506,7 +506,7 @@ function reachableSlots(
     readonly surface: string;
     readonly slot?: string;
     readonly slots?: readonly string[];
-    readonly bindingId: string;
+    readonly entryId: string;
     readonly revision: string;
     readonly id: string;
     readonly priority: number;
@@ -514,12 +514,12 @@ function reachableSlots(
   }[],
 ): readonly string[] {
   const available = new Set(root.slots ?? []);
-  const visited = new Set([`${root.bindingId}:${root.revision}:${root.id}`]);
+  const visited = new Set([`${root.entryId}:${root.revision}:${root.id}`]);
   let changed = true;
   while (changed) {
     changed = false;
     for (const item of contributions) {
-      const key = `${item.bindingId}:${item.revision}:${item.id}`;
+      const key = `${item.entryId}:${item.revision}:${item.id}`;
       if (
         item.surface !== 'app.slot' ||
         !item.slot ||
@@ -540,7 +540,7 @@ function reachableSlots(
   return Object.freeze([...available].sort());
 }
 
-function bindingIdFor(extensionId: string): string {
+function entryIdFor(extensionId: string): string {
   return `agent_ui_${createHash('sha256').update(extensionId).digest('hex').slice(0, 32)}`;
 }
 

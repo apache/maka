@@ -106,8 +106,8 @@ describe('Runtime Host operator commands', () => {
       [
         'access.credential.issue',
         'access.credential.revoke',
-        'extension.catalog.mutate',
-        'extension.catalog.query',
+        'extension.composition.mutate',
+        'extension.composition.query',
         'extension.configuration.mutate',
         'extension.configuration.query',
         'extension.contract.query',

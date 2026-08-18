@@ -36,7 +36,7 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
 
   try {
     await controller.recover();
-    const initial = await controller.handlers['extension.catalog.query']({}, connection);
+    const initial = await controller.handlers['extension.composition.query']({}, connection);
     assert.equal(initial.ok, true);
     assert.deepEqual(initial.ok && initial.result.revisions.map(({ revision: item }) => item), [
       '1',
@@ -44,10 +44,10 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
       '3',
     ]);
 
-    const enabled = await controller.handlers['extension.catalog.mutate'](
+    const enabled = await controller.handlers['extension.composition.mutate'](
       {
         kind: 'enable',
-        bindingId: 'weather-binding',
+        entryId: 'weather-entry',
         scopeId: 'session-1',
         extensionId: 'weather',
         revision: '1',
@@ -55,27 +55,27 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
       connection,
     );
     assert.equal(enabled.ok, true);
-    assert.deepEqual(enabled.ok && enabled.result.binding, {
-      bindingId: 'weather-binding',
+    assert.deepEqual(enabled.ok && enabled.result.entry, {
+      entryId: 'weather-entry',
       scopeId: 'session-1',
       extensionId: 'weather',
-      desiredRevision: '1',
+      revision: '1',
       enabled: true,
       status: 'active',
       error: null,
     });
     assert.equal(await invoke(runtime, 'session-1'), '1');
 
-    const upgraded = await controller.handlers['extension.catalog.mutate'](
-      { kind: 'update', bindingId: 'weather-binding', revision: '2' },
+    const upgraded = await controller.handlers['extension.composition.mutate'](
+      { kind: 'update', entryId: 'weather-entry', revision: '2' },
       connection,
     );
     assert.equal(upgraded.ok, true);
     assert.equal(await invoke(runtime, 'session-1'), '2');
     assert.deepEqual(runtime.installedRevisions(), [{ extensionId: 'weather', revision: '2' }]);
 
-    const failed = await controller.handlers['extension.catalog.mutate'](
-      { kind: 'update', bindingId: 'weather-binding', revision: '3' },
+    const failed = await controller.handlers['extension.composition.mutate'](
+      { kind: 'update', entryId: 'weather-entry', revision: '3' },
       connection,
     );
     assert.deepEqual(failed.ok, false);
@@ -83,16 +83,16 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
     assert.match(!failed.ok ? failed.error.message : '', /weather v3 is unhealthy/);
     assert.equal(await invoke(runtime, 'session-1'), '2');
 
-    const afterFailure = await controller.handlers['extension.catalog.query']({}, connection);
+    const afterFailure = await controller.handlers['extension.composition.query']({}, connection);
     assert.equal(afterFailure.ok, true);
-    assert.deepEqual(afterFailure.ok && afterFailure.result.bindings[0], {
-      bindingId: 'weather-binding',
+    assert.deepEqual(afterFailure.ok && afterFailure.result.entries[0], {
+      entryId: 'weather-entry',
       scopeId: 'session-1',
       extensionId: 'weather',
-      desiredRevision: '3',
+      revision: '3',
       enabled: true,
       status: 'failed',
-      error: 'Unable to activate entry weather-binding: weather v3 is unhealthy',
+      error: 'Unable to activate entry weather-entry: weather v3 is unhealthy',
     });
 
     await runtime.close();
@@ -102,17 +102,17 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
     );
     await controller.recover();
     assert.deepEqual(runtime.resolveTools('session-1', []), []);
-    const recovered = await controller.handlers['extension.catalog.query']({}, connection);
+    const recovered = await controller.handlers['extension.composition.query']({}, connection);
     assert.equal(recovered.ok, true);
-    assert.equal(recovered.ok && recovered.result.bindings[0]?.desiredRevision, '3');
-    assert.equal(recovered.ok && recovered.result.bindings[0]?.status, 'failed');
+    assert.equal(recovered.ok && recovered.result.entries[0]?.revision, '3');
+    assert.equal(recovered.ok && recovered.result.entries[0]?.status, 'failed');
 
-    const disabled = await controller.handlers['extension.catalog.mutate'](
-      { kind: 'disable', bindingId: 'weather-binding' },
+    const disabled = await controller.handlers['extension.composition.mutate'](
+      { kind: 'disable', entryId: 'weather-entry' },
       connection,
     );
     assert.equal(disabled.ok, true);
-    assert.equal(disabled.ok && disabled.result.binding?.status, 'disabled');
+    assert.equal(disabled.ok && disabled.result.entry?.status, 'disabled');
     assert.deepEqual(runtime.resolveTools('session-1', []), []);
 
     await runtime.close();
@@ -130,11 +130,11 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
     assert.equal(persisted.roots.sessions['session-1']?.[0]?.disabled, true);
     assert.equal(persisted.roots.sessions['session-1']?.[0]?.revision, '3');
 
-    const removed = await controller.handlers['extension.catalog.mutate'](
-      { kind: 'remove', bindingId: 'weather-binding' },
+    const removed = await controller.handlers['extension.composition.mutate'](
+      { kind: 'remove', entryId: 'weather-entry' },
       connection,
     );
-    assert.deepEqual(removed, { ok: true, result: { binding: null } });
+    assert.deepEqual(removed, { ok: true, result: { entry: null } });
     assert.deepEqual(runtime.installedRevisions(), []);
     const empty = JSON.parse(await readFile(store.path, 'utf8')) as {
       roots: { sessions: Record<string, unknown[]> };
@@ -160,7 +160,7 @@ test('Extension recovery isolates corrupt state from normal Runtime Host startup
     const { writeFile } = await import('node:fs/promises');
     await writeFile(store.path, '{not-json', 'utf8');
     await controller.recover();
-    assert.deepEqual(await controller.handlers['extension.catalog.query']({}, connection), {
+    assert.deepEqual(await controller.handlers['extension.composition.query']({}, connection), {
       ok: false,
       error: { code: 'persistence_failed', message: 'Extension state is unavailable' },
     });
@@ -189,7 +189,7 @@ test('Composition Snapshot restores and preserves nested groups', async () => {
             intercept: { locale: 'zh-CN' },
             children: [
               {
-                id: 'weather-binding',
+                id: 'weather-entry',
                 packageId: 'weather',
                 revision: '1',
                 disabled: false,
@@ -205,7 +205,7 @@ test('Composition Snapshot restores and preserves nested groups', async () => {
   const runtime = new HostExtensionRuntime();
   const controller = new HostExtensionController(
     runtime,
-    new StaticTrustedToolExtensionLoader([revision('1')]),
+    new StaticTrustedToolExtensionLoader([revision('1'), revision('2')]),
     store,
     () => assert.fail('tree recovery must not drain the Host'),
   );
@@ -213,11 +213,18 @@ test('Composition Snapshot restores and preserves nested groups', async () => {
     await controller.recover();
     assert.deepEqual(
       runtime.inspectRuntime().map(({ id, children }) => [id, children[0]?.id]),
-      [['workspace-group', 'weather-binding']],
+      [['workspace-group', 'weather-entry']],
     );
     assert.equal(await invoke(runtime, 'session-1'), '1');
+    const updated = await controller.handlers['extension.composition.mutate'](
+      { kind: 'update', entryId: 'weather-entry', revision: '2' },
+      connection,
+    );
+    assert.equal(updated.ok, true);
+    assert.equal(await invoke(runtime, 'session-1'), '2');
     const persisted = await store.read();
-    assert.equal(persisted?.roots.sessions['session-1']?.[0]?.children?.[0]?.id, 'weather-binding');
+    assert.equal(persisted?.roots.sessions['session-1']?.[0]?.children?.[0]?.id, 'weather-entry');
+    assert.equal(persisted?.roots.sessions['session-1']?.[0]?.children?.[0]?.revision, '2');
     assert.deepEqual(persisted?.roots.sessions['session-1']?.[0]?.intercept, { locale: 'zh-CN' });
   } finally {
     await runtime.close();

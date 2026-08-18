@@ -36,7 +36,7 @@ export interface ExtensionServiceContribution {
 }
 
 export interface ExtensionServiceContributionInspection extends ExtensionServiceContribution {
-  readonly bindingId: string;
+  readonly entryId: string;
   readonly scopeId: string;
   readonly extensionId: string;
   readonly revision: string;
@@ -75,7 +75,7 @@ export class ExtensionServiceContributionRegistry {
     validateExtensionServiceContribution(context.extensionId, contribution);
     const current = this.#scopes.get(context.scopeId) ?? [];
     const conflict = current.find(
-      (entry) => entry.name === contribution.name && entry.bindingId !== context.bindingId,
+      (entry) => entry.name === contribution.name && entry.entryId !== context.entryId,
     );
     if (conflict) {
       throw new ExtensionServiceContributionError(
@@ -99,7 +99,7 @@ export class ExtensionServiceContributionRegistry {
       );
     }
     const entry: RegisteredService = Object.freeze({
-      bindingId: context.bindingId,
+      entryId: context.entryId,
       scopeId: context.scopeId,
       extensionId: context.extensionId,
       revision: context.revision,
@@ -114,13 +114,13 @@ export class ExtensionServiceContributionRegistry {
 
   inspect(
     scopeIds: readonly string[],
-    committed: readonly { readonly bindingId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly revision: string }[],
   ): readonly ExtensionServiceContributionInspection[] {
-    const revisions = new Map(committed.map(({ bindingId, revision }) => [bindingId, revision]));
+    const revisions = new Map(committed.map(({ entryId, revision }) => [entryId, revision]));
     const resolved = new Map<string, RegisteredService>();
     for (const scopeId of scopeIds) {
       for (const entry of this.#scopes.get(scopeId) ?? []) {
-        if (revisions.get(entry.bindingId) !== entry.revision) continue;
+        if (revisions.get(entry.entryId) !== entry.revision) continue;
         resolved.set(entry.name, entry);
       }
     }
@@ -133,7 +133,7 @@ export class ExtensionServiceContributionRegistry {
 
   async call(
     scopeIds: readonly string[],
-    committed: readonly { readonly bindingId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly revision: string }[],
     service: string,
     method: string,
     input: unknown,
@@ -168,14 +168,14 @@ export class ExtensionServiceContributionRegistry {
 
   #resolve(
     scopeIds: readonly string[],
-    committed: readonly { readonly bindingId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly revision: string }[],
     service: string,
   ): RegisteredService {
-    const revisions = new Map(committed.map(({ bindingId, revision }) => [bindingId, revision]));
+    const revisions = new Map(committed.map(({ entryId, revision }) => [entryId, revision]));
     let resolved: RegisteredService | undefined;
     for (const scopeId of scopeIds) {
       const candidate = (this.#scopes.get(scopeId) ?? []).find(
-        (entry) => entry.name === service && revisions.get(entry.bindingId) === entry.revision,
+        (entry) => entry.name === service && revisions.get(entry.entryId) === entry.revision,
       );
       if (candidate) resolved = candidate;
     }

@@ -66,10 +66,10 @@ test('real Tool package installs, runs in process, updates, drains, and uninstal
     assert.notEqual(revisionV1, revisionV2);
     assert.equal((await stat(join(packageStore.root, 'weather', revisionV1))).isDirectory(), true);
 
-    const enabled = await controller.handlers['extension.catalog.mutate'](
+    const enabled = await controller.handlers['extension.composition.mutate'](
       {
         kind: 'enable',
-        bindingId: 'weather-binding',
+        entryId: 'weather-entry',
         scopeId: 'session-1',
         extensionId: 'weather',
         revision: revisionV1,
@@ -77,7 +77,7 @@ test('real Tool package installs, runs in process, updates, drains, and uninstal
       connection,
     );
     assert.equal(enabled.ok, true, JSON.stringify(enabled));
-    assert.equal(enabled.ok && enabled.result.binding?.status, 'active');
+    assert.equal(enabled.ok && enabled.result.entry?.status, 'active');
     assert.deepEqual(await invoke(runtime, workspace, 'v1'), {
       label: 'v1',
       temperature: 21,
@@ -100,8 +100,8 @@ test('real Tool package installs, runs in process, updates, drains, and uninstal
       },
     );
     await slowStarted;
-    const upgradeTask = controller.handlers['extension.catalog.mutate'](
-      { kind: 'update', bindingId: 'weather-binding', revision: revisionV2 },
+    const upgradeTask = controller.handlers['extension.composition.mutate'](
+      { kind: 'update', entryId: 'weather-entry', revision: revisionV2 },
       connection,
     );
     await waitForRevision(runtime, revisionV2);
@@ -131,11 +131,11 @@ test('real Tool package installs, runs in process, updates, drains, and uninstal
     assert.equal(!retained.ok && retained.error.code, 'operation_conflict');
 
     assert.deepEqual(
-      await controller.handlers['extension.catalog.mutate'](
-        { kind: 'remove', bindingId: 'weather-binding' },
+      await controller.handlers['extension.composition.mutate'](
+        { kind: 'remove', entryId: 'weather-entry' },
         connection,
       ),
-      { ok: true, result: { binding: null } },
+      { ok: true, result: { entry: null } },
     );
     assert.deepEqual(
       await controller.handlers['extension.package.uninstall'](
@@ -152,9 +152,9 @@ test('real Tool package installs, runs in process, updates, drains, and uninstal
       { ok: true, result: {} },
     );
     assert.deepEqual(await packageStore.list(), []);
-    assert.deepEqual(await controller.handlers['extension.catalog.query']({}, connection), {
+    assert.deepEqual(await controller.handlers['extension.composition.query']({}, connection), {
       ok: true,
-      result: { revisions: [], bindings: [] },
+      result: { revisions: [], entries: [] },
     });
   } finally {
     await runtime.close().catch(() => undefined);
@@ -406,7 +406,7 @@ function invocationContext(cwd: string): Parameters<MakaTool['impl']>[1] {
 async function waitForRevision(runtime: HostExtensionRuntime, revision: string): Promise<void> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
-    if (runtime.inspect('weather-binding').current?.revision === revision) return;
+    if (runtime.inspect('weather-entry').current?.revision === revision) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail(`Tool revision did not become current: ${revision}`);

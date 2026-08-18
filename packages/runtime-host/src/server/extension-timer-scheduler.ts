@@ -13,7 +13,7 @@ const MAX_STATE_BYTES = 2 * 1024 * 1024;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
 interface TimerState {
-  readonly bindingId: string;
+  readonly entryId: string;
   readonly scopeId: string;
   readonly extensionId: string;
   readonly revision: string;
@@ -59,7 +59,7 @@ export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
   ): Promise<() => Promise<void>> {
     if (this.#closed) throw new Error('Extension Timer scheduler is closed');
     await this.#load();
-    const key = timerKey(context.bindingId, contribution.id);
+    const key = timerKey(context.entryId, contribution.id);
     const stack = this.#active.get(key) ?? [];
     const previous = stack.at(-1);
     if (previous?.handle) clearTimeout(previous.handle);
@@ -72,7 +72,7 @@ export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
     const state: TimerState = reusable
       ? persisted
       : {
-          bindingId: context.bindingId,
+          entryId: context.entryId,
           scopeId: context.scopeId,
           extensionId: context.extensionId,
           revision: context.revision,
@@ -238,7 +238,7 @@ export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
       throw new Error('Extension Timer state is invalid');
     for (const item of value.timers) {
       if (!validState(item)) throw new Error('Extension Timer state contains an invalid record');
-      this.#states.set(timerKey(item.bindingId, item.id), { ...item, running: false });
+      this.#states.set(timerKey(item.entryId, item.id), { ...item, running: false });
     }
   }
 
@@ -248,7 +248,7 @@ export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
       .map((state) => ({ ...state, running: false }))
       .sort(
         (left, right) =>
-          left.bindingId.localeCompare(right.bindingId) || left.id.localeCompare(right.id),
+          left.entryId.localeCompare(right.entryId) || left.id.localeCompare(right.id),
       );
     const encoded = `${JSON.stringify({ schemaVersion: 1, timers })}\n`;
     if (Buffer.byteLength(encoded, 'utf8') > MAX_STATE_BYTES)
@@ -270,15 +270,15 @@ export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
   }
 }
 
-function timerKey(bindingId: string, id: string): string {
-  return `${bindingId}\0${id}`;
+function timerKey(entryId: string, id: string): string {
+  return `${entryId}\0${id}`;
 }
 
 function validState(value: unknown): value is TimerState {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const state = value as Record<string, unknown>;
   return (
-    ['bindingId', 'scopeId', 'extensionId', 'revision', 'id'].every(
+    ['entryId', 'scopeId', 'extensionId', 'revision', 'id'].every(
       (key) => typeof state[key] === 'string' && (state[key] as string).length > 0,
     ) &&
     Number.isSafeInteger(state.intervalMs) &&

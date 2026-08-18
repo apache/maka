@@ -73,19 +73,19 @@ export function UiExtensionsPage({ hubHeader }: { hubHeader: ModuleHubHeader }) 
                     onChange={(enabled) => void act(`toggle:${entry.extensionId}`, () => window.maka.uiExtensions.setEnabled(entry.extensionId, enabled))}
                   />
                   {Object.keys(entry.configuration.properties).length > 0
-                    ? entry.bindings.map((binding) => (
+                    ? entry.entries.map((compositionEntry) => (
                         <Button
-                          key={binding.bindingId}
+                          key={compositionEntry.entryId}
                           variant="ghost"
-                          label={`配置${binding.scopeId === 'profile' ? ' Tool / Event / Service / Timer' : ' UI'}`}
+                          label={`配置${compositionEntry.scopeId === 'profile' ? ' Tool / Event / Service / Timer' : ' UI'}`}
                           isDisabled={busy !== null}
                           onClick={() =>
-                            void act(`configure:${binding.bindingId}`, async () => {
+                            void act(`configure:${compositionEntry.entryId}`, async () => {
                               const current = await window.maka.uiExtensions.getConfiguration(
-                                binding.bindingId,
+                                compositionEntry.entryId,
                               );
                               const encoded = window.prompt(
-                                `编辑 ${entry.displayName} · ${binding.scopeId} 配置（JSON）`,
+                                `编辑 ${entry.displayName} · ${compositionEntry.scopeId} 配置（JSON）`,
                                 JSON.stringify(current.configuration, null, 2),
                               );
                               if (encoded === null) return;
@@ -94,7 +94,7 @@ export function UiExtensionsPage({ hubHeader }: { hubHeader: ModuleHubHeader }) 
                                 string | number | boolean
                               >;
                               await window.maka.uiExtensions.configure(
-                                binding.bindingId,
+                                compositionEntry.entryId,
                                 parsed,
                               );
                             })

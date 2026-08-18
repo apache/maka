@@ -57,10 +57,10 @@ test('unified Extension package resolves dependencies, configures workers, survi
     const dependency = await fixture.loader.installPackage(dependencySource);
     const application = await fixture.loader.installPackage(applicationSource);
     await fixture.controller.recover();
-    const enabled = await fixture.controller.handlers['extension.catalog.mutate'](
+    const enabled = await fixture.controller.handlers['extension.composition.mutate'](
       {
         kind: 'enable',
-        bindingId: 'application-profile',
+        entryId: 'application-profile',
         scopeId: PROFILE_EXTENSION_SCOPE,
         extensionId: application.extensionId,
         revision: application.revision,
@@ -68,24 +68,24 @@ test('unified Extension package resolves dependencies, configures workers, survi
       connection,
     );
     assert.equal(enabled.ok, true);
-    const catalog = await fixture.controller.handlers['extension.catalog.query']({}, connection);
+    const catalog = await fixture.controller.handlers['extension.composition.query'](
+      {},
+      connection,
+    );
     assert.ok(catalog.ok);
-    assert.equal(catalog.ok && catalog.result.bindings.length, 2);
+    assert.equal(catalog.ok && catalog.result.entries.length, 2);
     assert.ok(
       catalog.ok &&
-        catalog.result.bindings.some(
-          (binding) =>
-            binding.extensionId === dependency.extensionId && binding.status === 'active',
+        catalog.result.entries.some(
+          (entry) => entry.extensionId === dependency.extensionId && entry.status === 'active',
         ),
     );
-    const dependencyBinding = catalog.ok
-      ? catalog.result.bindings.find(
-          (binding) => binding.extensionId === 'dev.maka.platform.dependency',
-        )
+    const dependencyEntry = catalog.ok
+      ? catalog.result.entries.find((entry) => entry.extensionId === 'dev.maka.platform.dependency')
       : undefined;
-    assert.ok(dependencyBinding);
-    const protectedDependency = await fixture.controller.handlers['extension.catalog.mutate'](
-      { kind: 'disable', bindingId: dependencyBinding.bindingId },
+    assert.ok(dependencyEntry);
+    const protectedDependency = await fixture.controller.handlers['extension.composition.mutate'](
+      { kind: 'disable', entryId: dependencyEntry.entryId },
       connection,
     );
     assert.equal(protectedDependency.ok, false);
@@ -115,7 +115,7 @@ test('unified Extension package resolves dependencies, configures workers, survi
     );
 
     const initial = await fixture.controller.handlers['extension.configuration.query'](
-      { bindingId: 'application-profile' },
+      { entryId: 'application-profile' },
       connection,
     );
     assert.deepEqual(initial, {
@@ -129,7 +129,7 @@ test('unified Extension package resolves dependencies, configures workers, survi
 
     const configured = await fixture.controller.handlers['extension.configuration.mutate'](
       {
-        bindingId: 'application-profile',
+        entryId: 'application-profile',
         configuration: { endpoint: 'https://api.example', apiKey: 'rotated-secret' },
       },
       connection,
@@ -161,19 +161,19 @@ test('unified Extension package resolves dependencies, configures workers, survi
       apiKey: 'rotated-secret',
     });
 
-    const disabled = await fixture.controller.handlers['extension.catalog.mutate'](
-      { kind: 'disable', bindingId: 'application-profile' },
+    const disabled = await fixture.controller.handlers['extension.composition.mutate'](
+      { kind: 'disable', entryId: 'application-profile' },
       connection,
     );
     assert.equal(disabled.ok, true);
-    const disabledCatalog = await fixture.controller.handlers['extension.catalog.query'](
+    const disabledCatalog = await fixture.controller.handlers['extension.composition.query'](
       {},
       connection,
     );
     assert.ok(disabledCatalog.ok);
     assert.deepEqual(
       disabledCatalog.ok
-        ? disabledCatalog.result.bindings.map(({ extensionId, enabled }) => ({
+        ? disabledCatalog.result.entries.map(({ extensionId, enabled }) => ({
             extensionId,
             enabled,
           }))
