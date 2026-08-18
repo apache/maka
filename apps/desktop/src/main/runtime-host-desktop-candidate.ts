@@ -586,6 +586,7 @@ export async function createDesktopRuntimeHostCandidate(
     registerRuntimeHostSessionCatalogIpc(
       {
         client,
+        runningTurnIds: (sessionId) => sessionObserver.observedRunningTurnIds(sessionId),
         resolveCreateProject: (input) => deps.resolveSessionCreateProject(input, target),
         emitSessionsChanged,
         releaseSessionResources: releaseNativeSession,

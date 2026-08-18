@@ -44,6 +44,8 @@ export interface DesktopHostSessionSummary extends SessionSummary {
 
 export interface RuntimeHostSessionCatalogIpcDeps {
   client: RuntimeHostSessionCatalogClient;
+  /** Live execution identity is observer-owned and must not be inferred from the durable header. */
+  runningTurnIds: (sessionId: string) => readonly string[];
   resolveCreateProject: (
     input: Pick<CreateSessionRequestInput, 'cwd' | 'projectId'>,
   ) => Promise<WorkspaceTarget>;
@@ -76,7 +78,9 @@ export function registerRuntimeHostSessionCatalogIpc(
       .filter((session) =>
         parentSessionId === undefined ? true : session.subagent?.parentSessionId === parentSessionId,
       )
-      .map(toDesktopHostSessionSummary);
+      .map((session) =>
+        toDesktopHostSessionListSummary(session, deps.runningTurnIds(session.id)),
+      );
   };
   const actionIds = (sessionId: string, options: unknown) =>
     resolveSessionActionIds(() => listSessions(), sessionId, options);
@@ -343,4 +347,14 @@ export function toDesktopHostSessionSummary(
     collaborationMode: session.collaborationMode,
     orchestrationMode: session.orchestrationMode,
   };
+}
+
+function toDesktopHostSessionListSummary(
+  session: SessionCatalogProjection,
+  runningTurnIds: readonly string[],
+): DesktopHostSessionSummary {
+  const summary = toDesktopHostSessionSummary(session);
+  return runningTurnIds.length === 0
+    ? summary
+    : { ...summary, runningTurnIds: [...runningTurnIds] };
 }

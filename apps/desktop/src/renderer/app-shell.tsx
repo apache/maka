@@ -183,7 +183,6 @@ import {
   useAppShellNavRefSync,
   useSessionEventHealthPolling,
   useShellRunUpdates,
-  useSettledSessionTransientReconcile,
 } from './app-shell-effects';
 import {
   EMPTY_LIVE_CONTENT_SEED,
@@ -391,7 +390,6 @@ function AppShellContent({
     setSessionEventHealthBySession,
     setPendingPermissionModeBySession,
     setPendingSessionModelBySession,
-    clearTurnTransientState,
   } = useAppShellSessionWorkspace(toastApi);
   const interactionHydrationEpochRef = useRef(new Map<string, number>());
   const markInteractionChanged = useCallback((sessionId: string) => {
@@ -2600,13 +2598,6 @@ function AppShellContent({
     sessionEventHealthBySessionRef,
     setSessionEventHealthBySession,
   });
-  useSettledSessionTransientReconcile({
-    activeId,
-    sessions,
-    liveTurnBySessionRef,
-    clearTurnTransientState,
-  });
-
   function captureComposerImportOwner(): ComposerImportOwner {
     return {
       sessionId: activeIdRef.current,

@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import type { StoredMessage } from '@maka/core/session';
-import { useUiLocale } from '@maka/ui';
+import { type LiveTurnProjection, useUiLocale } from '@maka/ui';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import { normalizeSessionSummaryForDisplay } from './session-status-presentation';
@@ -11,13 +11,26 @@ import {
   type SessionListRefresher,
   type SessionReadBoundaries,
 } from './session-read-state';
+import { reconcileSettledSessionTransients } from './settled-session-transients.js';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 
 type ToastApi = {
   error(title: string, description?: string): void;
 };
 
-export function useAppShellSessionList(toastApi: ToastApi) {
+type RefBox<T> = { current: T };
+
+export function useAppShellSessionList(
+  toastApi: ToastApi,
+  options: {
+    activeIdRef: RefBox<string | undefined>;
+    liveTurnBySessionRef: RefBox<Record<string, LiveTurnProjection>>;
+    clearTurnTransientStateIfCurrent: (
+      sessionId: string,
+      expected: LiveTurnProjection | undefined,
+    ) => void;
+  },
+) {
   const uiLocale = useUiLocale();
   const uiLocaleRef = useRef(uiLocale);
   uiLocaleRef.current = uiLocale;
@@ -45,11 +58,18 @@ export function useAppShellSessionList(toastApi: ToastApi) {
 
   if (!refresherRef.current) {
     refresherRef.current = createSessionListRefresher({
+      captureRequestContext: () => options.liveTurnBySessionRef.current,
       listSessions: () => window.maka.sessions.list(),
       readBoundaries: () => sessionReadBoundariesRef.current,
       currentSessions: () => sessionsRef.current,
-      commitSessions: (next) => {
+      commitSessions: (next, observedLiveTurnBySession) => {
         const normalized = next.map(normalizeSessionSummaryForDisplay);
+        reconcileSettledSessionTransients({
+          activeId: options.activeIdRef.current,
+          sessions: normalized,
+          observedLiveTurnBySession,
+          clearTurnTransientStateIfCurrent: options.clearTurnTransientStateIfCurrent,
+        });
         commitSessions(normalized);
         setAuthoritativeSessionIds(new Set(normalized.map(({ id }) => id)));
       },
