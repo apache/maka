@@ -18,6 +18,17 @@ import {
   shouldShowAgentGraphPanel,
   type AgentGraphPanelDismissals,
 } from './agent-graph-panel-visibility.js';
+import {
+  createAgentGraphRefreshScheduler,
+  type AgentGraphRefreshScheduler,
+} from './agent-graph-refresh.js';
+
+const noopAgentGraphRefreshScheduler: AgentGraphRefreshScheduler = {
+  requestRefresh() {},
+  invalidateAndRefresh() {},
+  isCurrent: () => false,
+  dispose() {},
+};
 
 type GraphPanelCopy = {
   title: string;
@@ -158,17 +169,12 @@ export function AgentGraphPanel(props: {
   const [collapsed, setCollapsed] = useState(false);
   const [dismissedBySession, setDismissedBySession] = useState<AgentGraphPanelDismissals>({});
   const contentId = useId();
-  const refreshRef = useRef<() => void>(() => {});
+  const refreshRef = useRef<AgentGraphRefreshScheduler>(noopAgentGraphRefreshScheduler);
   const selectedGraphIdRef = useRef<string | undefined>(undefined);
   const followCurrentRef = useRef(true);
   const copy = getAgentGraphPanelCopy(props.locale);
 
   useEffect(() => {
-    let disposed = false;
-    let queued = false;
-    let refreshGeneration = 0;
-    let task: Promise<void> | undefined;
-
     setSnapshot(undefined);
     setEpochs([]);
     setEpochsTruncated(false);
@@ -179,66 +185,47 @@ export function AgentGraphPanel(props: {
     setCollapsed(false);
     setLoading(props.enabled);
 
-    const refresh = (): void => {
-      if (disposed) return;
-      refreshGeneration += 1;
-      if (task) {
-        queued = true;
-        return;
-      }
-      const generation = refreshGeneration;
+    const scheduler = createAgentGraphRefreshScheduler(async (fence) => {
       setLoading(true);
-      task = window.maka.graphs
-        .listEpochs(props.rootSessionId)
-        .then(async (directory) => {
-          const nextEpochs = directory.epochs;
-          const current = nextEpochs.find((entry) => entry.current) ?? nextEpochs[0];
-          const selected = followCurrentRef.current
-            ? current
-            : nextEpochs.find((entry) => entry.graphId === selectedGraphIdRef.current);
-          // An evicted selection must not pin the panel on the fallback:
-          // resume following the current epoch so later rollovers refresh.
-          if (!selected && !followCurrentRef.current) {
-            followCurrentRef.current = true;
-          }
-          const graphId = (selected ?? current)?.graphId;
-          if (!graphId) throw new Error('Agent graph epoch directory is empty');
-          selectedGraphIdRef.current = graphId;
-          const next = await window.maka.graphs.getSnapshot(props.rootSessionId, { graphId });
-          return { next, nextEpochs, truncated: directory.truncated };
-        })
-        .then(({ next, nextEpochs, truncated }) => {
-          if (
-            !disposed &&
-            generation === refreshGeneration &&
-            next.graphId === selectedGraphIdRef.current
-          ) {
-            setEpochs(nextEpochs);
-            setEpochsTruncated(truncated);
-            setSnapshot(next);
-            setError(false);
-          }
-        })
-        .catch(() => {
-          if (!disposed && generation === refreshGeneration) setError(true);
-        })
-        .finally(() => {
-          if (disposed) return;
-          setLoading(false);
-          task = undefined;
-          if (queued) {
-            queued = false;
-            refresh();
-          }
-        });
-    };
+      try {
+        const directory = await window.maka.graphs.listEpochs(props.rootSessionId);
+        const nextEpochs = directory.epochs;
+        const current = nextEpochs.find((entry) => entry.current) ?? nextEpochs[0];
+        const selected = followCurrentRef.current
+          ? current
+          : nextEpochs.find((entry) => entry.graphId === selectedGraphIdRef.current);
+        // An evicted selection must not pin the panel on the fallback:
+        // resume following the current epoch so later rollovers refresh.
+        if (!selected && !followCurrentRef.current) {
+          followCurrentRef.current = true;
+        }
+        const graphId = (selected ?? current)?.graphId;
+        if (!graphId) throw new Error('Agent graph epoch directory is empty');
+        selectedGraphIdRef.current = graphId;
+        const next = await window.maka.graphs.getSnapshot(props.rootSessionId, { graphId });
+        if (scheduler.isCurrent(fence) && next.graphId === selectedGraphIdRef.current) {
+          setEpochs(nextEpochs);
+          setEpochsTruncated(directory.truncated);
+          setSnapshot(next);
+          setError(false);
+        }
+      } catch {
+        if (scheduler.isCurrent(fence)) setError(true);
+      } finally {
+        setLoading(false);
+      }
+    });
 
-    refreshRef.current = refresh;
-    const unsubscribe = window.maka.graphs.subscribe(props.rootSessionId, refresh);
-    refresh();
+    refreshRef.current = scheduler;
+    const unsubscribe = window.maka.graphs.subscribe(props.rootSessionId, () =>
+      scheduler.requestRefresh(),
+    );
+    scheduler.requestRefresh();
     return () => {
-      disposed = true;
-      if (refreshRef.current === refresh) refreshRef.current = () => {};
+      scheduler.dispose();
+      if (refreshRef.current === scheduler) {
+        refreshRef.current = noopAgentGraphRefreshScheduler;
+      }
       unsubscribe();
     };
   }, [props.rootSessionId, props.enabled]);
@@ -333,7 +320,7 @@ export function AgentGraphPanel(props: {
                 selectedGraphIdRef.current = graphId;
                 followCurrentRef.current =
                   epochs.find((entry) => entry.graphId === graphId)?.current === true;
-                refreshRef.current();
+                refreshRef.current.invalidateAndRefresh();
               }}
             />
           ) : null}
@@ -408,7 +395,7 @@ export function AgentGraphPanel(props: {
                   variant="secondary"
                   size="sm"
                   label={copy.retry}
-                  onClick={() => refreshRef.current()}
+                  onClick={() => refreshRef.current.requestRefresh()}
                 />
               )}
             />
