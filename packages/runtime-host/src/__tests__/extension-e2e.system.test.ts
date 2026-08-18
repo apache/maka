@@ -103,7 +103,6 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
       scopeId: 'extension-session-a',
       extensionId: 'weather',
       desiredRevision: '1',
-      lastGoodRevision: '1',
       enabled: true,
       status: 'active',
       error: null,
@@ -142,7 +141,6 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
       bindingId: 'weather-binding',
       revision: '2',
     });
-    assert.equal(upgraded.binding?.lastGoodRevision, '2');
     const second = await runTurn(client, provider, 'extension-session-a', 'call weather v2');
     assert.match(second.toolResult ?? '', /"revision":"2"/u);
     assert.match(second.toolResult ?? '', /"temperature":27/u);
@@ -162,7 +160,6 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
       scopeId: 'extension-session-a',
       extensionId: 'weather',
       desiredRevision: '3',
-      lastGoodRevision: '2',
       enabled: true,
       status: 'failed',
       error:
@@ -172,7 +169,7 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
       client,
       provider,
       'extension-session-a',
-      'failed upgrade must still call last-good',
+      'failed upgrade must preserve the current Fiber',
     );
     assert.match(afterFailure.toolResult ?? '', /"revision":"2"/u);
     assert.deepEqual(await invocationRevisions(invocationLog), ['1', '2', '2']);
@@ -185,16 +182,16 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
 
     const recovered = await client.request('extension.catalog.query', {});
     assert.equal(recovered.bindings[0]?.desiredRevision, '3');
-    assert.equal(recovered.bindings[0]?.lastGoodRevision, '2');
     assert.equal(recovered.bindings[0]?.status, 'failed');
     const afterRestart = await runTurn(
       client,
       provider,
       'extension-session-a',
-      'restart must restore last-good',
+      'failed persisted entry must remain unavailable after restart',
     );
-    assert.match(afterRestart.toolResult ?? '', /"revision":"2"/u);
-    assert.deepEqual(await invocationRevisions(invocationLog), ['1', '2', '2', '2']);
+    assert.equal(afterRestart.tools.includes('Weather'), false);
+    assert.equal(afterRestart.toolResult, undefined);
+    assert.deepEqual(await invocationRevisions(invocationLog), ['1', '2', '2']);
 
     const disabled = await client.request('extension.catalog.mutate', {
       kind: 'disable',
@@ -239,7 +236,7 @@ test('trusted Tool Extension works through UDS, provider execution, rollback, an
       're-enabled extension must return',
     );
     assert.match(reenabled.toolResult ?? '', /"revision":"1"/u);
-    assert.deepEqual(await invocationRevisions(invocationLog), ['1', '2', '2', '2', '1']);
+    assert.deepEqual(await invocationRevisions(invocationLog), ['1', '2', '2', '1']);
 
     assert.deepEqual(
       await client.request('extension.catalog.mutate', {

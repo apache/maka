@@ -56,7 +56,6 @@ export interface ExtensionBindingProjection {
   readonly scopeId: string;
   readonly extensionId: string;
   readonly desiredRevision: string;
-  readonly lastGoodRevision: string | null;
   readonly enabled: boolean;
   readonly status: ExtensionBindingStatus;
   readonly error: string | null;
@@ -1088,7 +1087,6 @@ function decodeBindingProjection(value: unknown): ExtensionBindingProjection {
     'scopeId',
     'extensionId',
     'desiredRevision',
-    'lastGoodRevision',
     'enabled',
     'status',
     'error',
@@ -1098,8 +1096,6 @@ function decodeBindingProjection(value: unknown): ExtensionBindingProjection {
     scopeId: decodeExtensionScopeId(binding.scopeId, 'extension scopeId'),
     extensionId: decodeExtensionId(binding.extensionId),
     desiredRevision: decodeRevision(binding.desiredRevision),
-    lastGoodRevision:
-      binding.lastGoodRevision === null ? null : decodeRevision(binding.lastGoodRevision),
     enabled: decodeBoolean(binding.enabled, 'extension enabled'),
     status: decodeBindingStatus(binding.status),
     error:

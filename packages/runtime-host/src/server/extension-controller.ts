@@ -140,7 +140,17 @@ export class HostExtensionController {
           if (!entry.packageId || !entry.revision || entry.disabled) continue;
           await this.#ensureInstalled(entry.packageId, entry.revision);
         }
-        await this.runtime.replaceCompositionSnapshot(runtimeSnapshot(composition));
+        const hasPersistedFailures = [...persistedEntries(composition)].some(
+          ([, entry]) => entry.error,
+        );
+        if (hasPersistedFailures) await this.#recoverCompositionEntries(composition);
+        else {
+          try {
+            await this.runtime.replaceCompositionSnapshot(runtimeSnapshot(composition));
+          } catch {
+            await this.#recoverCompositionEntries(composition);
+          }
+        }
       }
       await this.#recoverEnabledBindings();
       await this.#refreshRuntimeState();
@@ -755,7 +765,7 @@ export class HostExtensionController {
 
   async #recoverEnabledBindings(): Promise<void> {
     const enabled = [...this.#bindings.values()]
-      .filter((binding) => binding.enabled)
+      .filter((binding) => binding.enabled && !binding.error)
       .sort(compareBinding);
     for (const binding of enabled) {
       for (const revision of uniqueRevisions(binding)) {
@@ -832,6 +842,47 @@ export class HostExtensionController {
       return;
     }
     await this.runtime.installRevision(await this.loader.load(extensionId, revision));
+  }
+
+  async #recoverCompositionEntries(composition: PersistedPluginComposition): Promise<void> {
+    const roots: readonly (readonly [MakaPluginRootId, readonly PersistedPluginEntry[]])[] = [
+      ['profile', composition.roots.profile],
+      ['desktop-ui', composition.roots.desktopUi],
+      ...Object.entries(composition.roots.sessions).map(
+        ([scopeId, entries]) => [`session:${scopeId}` as MakaPluginRootId, entries] as const,
+      ),
+    ];
+    for (const [rootId, entries] of roots)
+      for (const entry of entries) await this.#recoverCompositionEntry(rootId, entry);
+  }
+
+  async #recoverCompositionEntry(
+    rootId: MakaPluginRootId,
+    entry: PersistedPluginEntry,
+    parentId?: string,
+  ): Promise<void> {
+    try {
+      await this.runtime.applyComposition({
+        operations: [
+          {
+            type: 'insert',
+            rootId,
+            parentId,
+            entry: persistedRuntimeEntry(entry),
+          },
+        ],
+      });
+    } catch (error) {
+      const binding = this.#bindings.get(entry.id);
+      if (binding)
+        this.#bindings.set(
+          entry.id,
+          bindingState({ ...binding, error: boundedErrorMessage(error) }),
+        );
+      return;
+    }
+    for (const child of entry.children ?? [])
+      await this.#recoverCompositionEntry(rootId, child, entry.id);
   }
 
   async #garbageCollectRevisions(): Promise<void> {
@@ -1123,7 +1174,6 @@ export class HostExtensionController {
       scopeId: binding.scopeId,
       extensionId: binding.extensionId,
       desiredRevision: binding.desiredRevision,
-      lastGoodRevision: null,
       enabled: binding.enabled,
       status: projectStatus(binding, inspection),
       error: binding.error,
@@ -1327,20 +1377,7 @@ function reconcileEntries(
 
 function runtimeSnapshot(composition: PersistedPluginComposition): MakaCompositionSnapshot {
   const convert = (entry: PersistedPluginEntry): MakaCompositionEntry =>
-    Object.freeze({
-      id: entry.id,
-      ...(entry.packageId && entry.revision
-        ? { packageId: entry.packageId, revision: entry.revision }
-        : {}),
-      config: entry.config,
-      disabled: entry.disabled,
-      ...(entry.inject === undefined ? {} : { inject: entry.inject }),
-      ...(entry.isolate === undefined ? {} : { isolate: entry.isolate }),
-      ...(entry.intercept === undefined ? {} : { intercept: entry.intercept }),
-      ...(entry.children === undefined
-        ? {}
-        : { children: Object.freeze(entry.children.map(convert)) }),
-    });
+    persistedRuntimeEntry(entry);
   return Object.freeze({
     schemaVersion: 1,
     generation: composition.generation,
@@ -1356,6 +1393,23 @@ function runtimeSnapshot(composition: PersistedPluginComposition): MakaCompositi
         ),
       ),
     }),
+  });
+}
+
+function persistedRuntimeEntry(entry: PersistedPluginEntry): MakaCompositionEntry {
+  return Object.freeze({
+    id: entry.id,
+    ...(entry.packageId && entry.revision
+      ? { packageId: entry.packageId, revision: entry.revision }
+      : {}),
+    config: entry.config,
+    disabled: entry.disabled,
+    ...(entry.inject === undefined ? {} : { inject: entry.inject }),
+    ...(entry.isolate === undefined ? {} : { isolate: entry.isolate }),
+    ...(entry.intercept === undefined ? {} : { intercept: entry.intercept }),
+    ...(entry.children === undefined
+      ? {}
+      : { children: Object.freeze(entry.children.map(persistedRuntimeEntry)) }),
   });
 }
 

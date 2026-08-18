@@ -117,7 +117,6 @@ test('real Tool package installs, runs in process, updates, drains, and uninstal
     });
     const upgraded = await upgradeTask;
     assert.equal(upgraded.ok, true);
-    assert.equal(upgraded.ok && upgraded.result.binding?.lastGoodRevision, revisionV2);
     assert.deepEqual(await invoke(runtime, workspace, 'v2'), {
       label: 'v2',
       temperature: 27,

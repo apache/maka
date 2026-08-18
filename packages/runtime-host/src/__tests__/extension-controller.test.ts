@@ -60,7 +60,6 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
       scopeId: 'session-1',
       extensionId: 'weather',
       desiredRevision: '1',
-      lastGoodRevision: null,
       enabled: true,
       status: 'active',
       error: null,
@@ -72,7 +71,6 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
       connection,
     );
     assert.equal(upgraded.ok, true);
-    assert.equal(upgraded.ok && upgraded.result.binding?.lastGoodRevision, null);
     assert.equal(await invoke(runtime, 'session-1'), '2');
     assert.deepEqual(runtime.installedRevisions(), [{ extensionId: 'weather', revision: '2' }]);
 
@@ -83,7 +81,7 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
     assert.deepEqual(failed.ok, false);
     assert.equal(!failed.ok && failed.error.code, 'operation_conflict');
     assert.match(!failed.ok ? failed.error.message : '', /weather v3 is unhealthy/);
-    assert.deepEqual(runtime.resolveTools('session-1', []), []);
+    assert.equal(await invoke(runtime, 'session-1'), '2');
 
     const afterFailure = await controller.handlers['extension.catalog.query']({}, connection);
     assert.equal(afterFailure.ok, true);
@@ -92,7 +90,6 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
       scopeId: 'session-1',
       extensionId: 'weather',
       desiredRevision: '3',
-      lastGoodRevision: null,
       enabled: true,
       status: 'failed',
       error: 'Unable to activate entry weather-binding: weather v3 is unhealthy',
@@ -108,7 +105,6 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
     const recovered = await controller.handlers['extension.catalog.query']({}, connection);
     assert.equal(recovered.ok, true);
     assert.equal(recovered.ok && recovered.result.bindings[0]?.desiredRevision, '3');
-    assert.equal(recovered.ok && recovered.result.bindings[0]?.lastGoodRevision, null);
     assert.equal(recovered.ok && recovered.result.bindings[0]?.status, 'failed');
 
     const disabled = await controller.handlers['extension.catalog.mutate'](
