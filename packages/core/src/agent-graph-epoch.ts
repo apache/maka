@@ -31,6 +31,13 @@ export interface AgentGraphEpochPageRequest {
 export interface AgentGraphEpochPage {
   readonly epochs: readonly AgentGraphEpochBinding[];
   readonly nextBeforeEpoch: number | null;
+  /**
+   * Current epoch observed by the same read as the page rows, or null when the
+   * store holds no durable rows for the root Session. Keeping this on the page
+   * prevents a rollover between two reads from splitting the current marker
+   * from the directory it annotates.
+   */
+  readonly currentEpoch: number | null;
 }
 
 /**

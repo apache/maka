@@ -2761,7 +2761,11 @@ export class SqliteSessionMetadataStore {
     rootSessionId: string;
     beforeEpoch?: number;
     limit: number;
-  }): Promise<{ epochs: AgentGraphEpochBinding[]; nextBeforeEpoch: number | null }> {
+  }): Promise<{
+    epochs: AgentGraphEpochBinding[];
+    nextBeforeEpoch: number | null;
+    currentEpoch: number | null;
+  }> {
     this.assertOpen();
     assertSafeSessionId(request.rootSessionId);
     if (
@@ -2773,32 +2777,36 @@ export class SqliteSessionMetadataStore {
     ) {
       throw new Error('Invalid Agent Graph epoch page request');
     }
-    const rows = this.db
-      .prepare(
-        `
-        SELECT
-          schema_version AS schemaVersion,
-          root_session_id AS rootSessionId,
-          epoch,
-          graph_id AS graphId,
-          created_at AS createdAt
-        FROM agent_graph_epochs
-        WHERE root_session_id = ? AND epoch < ?
-        ORDER BY epoch DESC
-        LIMIT ?
-      `,
-      )
-      .all(
-        request.rootSessionId,
-        request.beforeEpoch ?? Number.MAX_SAFE_INTEGER,
-        request.limit + 1,
-      ) as unknown as AgentGraphEpochRow[];
-    const hasMore = rows.length > request.limit;
-    const epochs = rows.slice(0, request.limit).map(decodeAgentGraphEpochBinding);
-    return {
-      epochs,
-      nextBeforeEpoch: hasMore ? (epochs.at(-1)?.epoch ?? null) : null,
-    };
+    return this.readTransaction(() => {
+      const current = this.readCurrentAgentGraphEpochSync(request.rootSessionId);
+      const rows = this.db
+        .prepare(
+          `
+          SELECT
+            schema_version AS schemaVersion,
+            root_session_id AS rootSessionId,
+            epoch,
+            graph_id AS graphId,
+            created_at AS createdAt
+          FROM agent_graph_epochs
+          WHERE root_session_id = ? AND epoch < ?
+          ORDER BY epoch DESC
+          LIMIT ?
+        `,
+        )
+        .all(
+          request.rootSessionId,
+          request.beforeEpoch ?? Number.MAX_SAFE_INTEGER,
+          request.limit + 1,
+        ) as unknown as AgentGraphEpochRow[];
+      const hasMore = rows.length > request.limit;
+      const epochs = rows.slice(0, request.limit).map(decodeAgentGraphEpochBinding);
+      return {
+        epochs,
+        nextBeforeEpoch: hasMore ? (epochs.at(-1)?.epoch ?? null) : null,
+        currentEpoch: current?.epoch ?? null,
+      };
+    });
   }
 
   async purgeAgentGraphEpochs(rootSessionId: string): Promise<number> {

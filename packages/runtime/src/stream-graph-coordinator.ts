@@ -306,8 +306,8 @@ export class AgentGraphCoordinator {
     options: { readonly beforeEpoch?: number; readonly limit: number },
   ): Promise<AgentGraphEpochPage & { readonly currentEpoch: number }> {
     requireRootSessionId(rootSessionId);
-    const current = await this.currentGraphEpoch(rootSessionId);
     if (!this.#input.epochStore) {
+      const current = await this.currentGraphEpoch(rootSessionId);
       return {
         epochs:
           options.beforeEpoch === undefined || current.epoch < options.beforeEpoch ? [current] : [],
@@ -315,14 +315,27 @@ export class AgentGraphCoordinator {
         currentEpoch: current.epoch,
       };
     }
+    // Page rows and the current marker must describe one storage observation:
+    // a rollover between two reads would mark a non-first row current, which
+    // the protocol rejects.
     const page = await this.#input.epochStore.listAgentGraphEpochPage({
       rootSessionId,
       ...options,
     });
-    if (page.epochs.length > 0 || options.beforeEpoch !== undefined) {
-      return { ...page, currentEpoch: current.epoch };
+    if (page.currentEpoch !== null) {
+      return {
+        epochs: page.epochs,
+        nextBeforeEpoch: page.nextBeforeEpoch,
+        currentEpoch: page.currentEpoch,
+      };
     }
-    return { epochs: [current], nextBeforeEpoch: null, currentEpoch: current.epoch };
+    // No durable rows yet: synthesize the legacy virtual epoch identity.
+    const current = await this.currentGraphEpoch(rootSessionId);
+    return {
+      epochs: options.beforeEpoch === undefined ? [current] : [],
+      nextBeforeEpoch: null,
+      currentEpoch: current.epoch,
+    };
   }
 
   async listGraphIds(rootSessionId: string): Promise<readonly string[]> {

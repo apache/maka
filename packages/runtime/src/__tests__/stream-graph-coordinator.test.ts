@@ -512,7 +512,11 @@ describe('host-managed agent graph coordinator', () => {
         },
         listAgentGraphEpochs: async () => [],
         readAgentGraphEpochByGraphId: async () => undefined,
-        listAgentGraphEpochPage: async () => ({ epochs: [], nextBeforeEpoch: null }),
+        listAgentGraphEpochPage: async () => ({
+          epochs: [],
+          nextBeforeEpoch: null,
+          currentEpoch: null,
+        }),
       },
       runtime: {
         provisionAgentGraphOperator: async () => {
@@ -532,6 +536,82 @@ describe('host-managed agent graph coordinator', () => {
       assert.equal(coordinator.wake('root-session'), undefined);
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.deepEqual(errors, [failure]);
+    } finally {
+      await coordinator.close();
+      controlStore.close();
+    }
+  });
+
+  test('reads the epoch page and current marker from one storage observation', async () => {
+    const controlStore = createSqliteSessionMetadataStore(':memory:');
+    let resolveCalls = 0;
+    const coordinator = new AgentGraphCoordinator({
+      sessionStore: {
+        listForRecovery: async () => [],
+        readHeader: async () => {
+          throw new Error('epoch listing must not read the Session header');
+        },
+      },
+      runStore: { listSessionRuns: async () => [] },
+      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      controlStore,
+      epochStore: {
+        resolveCurrentAgentGraphEpoch: async () => {
+          resolveCalls += 1;
+          // A second, separate read could observe a stale epoch after a
+          // rollover; the listing must not consult it when the page is
+          // authoritative.
+          return {
+            schemaVersion: 1 as const,
+            rootSessionId: 'root-session',
+            epoch: 2,
+            graphId: 'agent_graph_2',
+            createdAt: 2,
+          };
+        },
+        advanceAgentGraphEpoch: async () => {
+          throw new Error('unexpected epoch advance');
+        },
+        listAgentGraphEpochs: async () => [],
+        readAgentGraphEpochByGraphId: async () => undefined,
+        listAgentGraphEpochPage: async () => ({
+          epochs: [
+            {
+              schemaVersion: 1 as const,
+              rootSessionId: 'root-session',
+              epoch: 3,
+              graphId: 'agent_graph_3',
+              createdAt: 3,
+            },
+            {
+              schemaVersion: 1 as const,
+              rootSessionId: 'root-session',
+              epoch: 2,
+              graphId: 'agent_graph_2',
+              createdAt: 2,
+            },
+          ],
+          nextBeforeEpoch: null,
+          currentEpoch: 3,
+        }),
+      },
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('unexpected operator provision');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('unexpected operator dispatch');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+      onError: () => {},
+    });
+    try {
+      const page = await coordinator.listGraphEpochPage('root-session', { limit: 32 });
+      assert.equal(page.currentEpoch, 3);
+      assert.equal(page.epochs[0]?.graphId, 'agent_graph_3');
+      assert.equal(resolveCalls, 0);
     } finally {
       await coordinator.close();
       controlStore.close();
@@ -867,7 +947,11 @@ describe('host-managed agent graph coordinator', () => {
                   createdAt: 2,
                 }
               : undefined,
-        listAgentGraphEpochPage: async () => ({ epochs: [], nextBeforeEpoch: null }),
+        listAgentGraphEpochPage: async () => ({
+          epochs: [],
+          nextBeforeEpoch: null,
+          currentEpoch: null,
+        }),
       },
       controlStore: {
         listAgentGraphOperatorProvisions: async () => [],
