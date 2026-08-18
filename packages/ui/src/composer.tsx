@@ -1366,9 +1366,13 @@ export const Composer = forwardRef<
    * workarounds goes away.
    */
   const SelectionMark = useIndicator('check');
-  const showPlusMenu = Boolean(
-    props.onPickAttachments || props.mentionSkills || props.onSessionModeChange,
-  );
+  /**
+   * Whether any action row precedes the mode group. The divider separates two
+   * groups, so with nothing above it there is nothing to separate — a host
+   * that wires only the mode choice would open the menu on a rule.
+   */
+  const hasPlusMenuActions = Boolean(props.onPickAttachments || props.mentionSkills);
+  const showPlusMenu = Boolean(hasPlusMenuActions || props.onSessionModeChange);
 
   return (
     <>
@@ -1632,7 +1636,7 @@ export const Composer = forwardRef<
                     ) : null}
                     {props.onSessionModeChange ? (
                       <>
-                        <DropdownMenuDivider />
+                        {hasPlusMenuActions ? <DropdownMenuDivider /> : null}
                         <DropdownMenuRadioGroup
                           label={copy.sessionModeAriaLabel}
                           value={sessionMode}
