@@ -1840,6 +1840,43 @@ describe('turn consumer lag recovery (#3180)', () => {
     assert.fail('stream ended without the terminal complete event');
   });
 
+  test('resubscribes when the live stream ends without a terminal close', async () => {
+    const initial = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+    );
+    const replacement = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 2 }),
+      Promise.resolve([assistantMessage('turn-1', 'Hello world')]),
+      'subscription-2',
+    );
+    const connection = new FakeConnection([initial, replacement], true);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 50,
+    });
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+    const transcript = deferred<StoredMessage[]>();
+    driver.subscribeTranscriptReplacements!((_sessionId, _turnId, messages, reason) => {
+      assert.equal(reason, 'reconnect');
+      transcript.resolve(messages);
+    });
+
+    // A clean iterator end with no subscription.closed frame — e.g. the Host
+    // evicted the subscription as a slow consumer while the channel was still
+    // buffering the catch-up transcript — used to fail the channel
+    // permanently. It must resubscribe and continue the live stream instead.
+    await initial.close();
+    assert.deepEqual(await transcript.promise, [assistantMessage('turn-1', 'Hello world')]);
+    assert.equal(connection.openedSubscriptions, 2);
+    replacement.push(deltaFrame(1, 'turn-1', 11, '!', 'subscription-2'));
+    assert.equal((await nextEvent(switched.activeTurn.events)).text, '!');
+  });
+
   test('re-arms lag detection exactly at the hysteresis watermark', async () => {
     const initial = new FakeSubscription(
       continuitySnapshot(),

@@ -265,7 +265,16 @@ export class RuntimeHostSessionChannel {
           this.#accept(frame);
         }
       }
-      if (!this.#closing) throw new Error('Runtime Host Session subscription ended unexpectedly');
+      // A stream that ends without a subscription.closed frame is a broken
+      // live channel, not a terminal state: the Host may have torn the
+      // subscription down mid-recovery (e.g. slow_consumer eviction while the
+      // transcript reload was still buffering). Route it through the same
+      // resync recovery as an explicit close instead of killing the channel.
+      if (!this.#closing)
+        throw new RuntimeHostSubscriptionError(
+          'connection_closed',
+          'Runtime Host Session subscription ended unexpectedly',
+        );
     } catch (error) {
       if (this.#closing || this.#subscription !== subscription) return;
       // A subscription retired because a turn consumer fell behind is closed
