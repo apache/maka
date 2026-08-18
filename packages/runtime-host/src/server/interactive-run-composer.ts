@@ -338,6 +338,8 @@ export interface InteractiveRunComposerFactoryInput
   readonly worktreePatchWriteBackAvailable?: boolean;
   readonly planStore?: PlanStore;
   readonly deepResearchTools?: readonly MakaTool[];
+  /** Internal dependency seam for deterministic Host shell-resolution tests. */
+  readonly resolveTurnShellPlan?: typeof resolveTurnShellPlan;
 }
 
 export interface InteractiveRunToolSurfaceInput {
@@ -402,7 +404,7 @@ export function createInteractiveRunComposerFactory(
     // Turn admission: resolve the Host-owned plan once per backend. The
     // captured setupError keeps a moved/uninstalled Git Bash scoped to the
     // Bash/PTY boundary instead of failing text-only turns here.
-    const shell = resolveTurnShellPlan(runtimePolicy.policy.shell);
+    const shell = (input.resolveTurnShellPlan ?? resolveTurnShellPlan)(runtimePolicy.policy.shell);
     const clientCapabilities = backendContext.tools
       ? undefined
       : input.clientCapabilities.snapshotForSession(backendContext.sessionId);

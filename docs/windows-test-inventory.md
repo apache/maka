@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 20 |
-| portable-candidate | 9 |
+| portable-candidate | 7 |
 | platform-contract | 35 |
 
-Total Windows-excluded declarations: **64**
+Total Windows-excluded declarations: **62**
 
 ## Inventory
 
@@ -30,6 +30,7 @@ Total Windows-excluded declarations: **64**
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` keeps the inherited PATH and does not log shell stderr when capture fails | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` kills login-shell descendants when capture times out | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` bounds shell output instead of buffering until the global timeout | `process.platform === 'win32'` |
+| portable-candidate | `packages/eval/src/__tests__/install-preflight.test.ts` rejects an unusable trials root before invoking external prerequisites | `process.platform === 'win32' \|\| process.geteuid?.() === 0` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/connection-effect-coordinator.test.ts` leaves canonical onboarding state unchanged when the durable intent cannot be published | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/connection-effect-coordinator.test.ts` recovers a durable onboarding intent instead of rolling back a partial publication | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/control-endpoint.test.ts` runtime host control endpoint | `process.platform === 'win32'` |
@@ -57,15 +58,11 @@ Total Windows-excluded declarations: **64**
 | portable-candidate | `packages/runtime/src/__tests__/node-pty-write-lifecycle.test.ts` does not carry queued Unix PTY writes past native exit | `process.platform === 'win32' ? 'Unix PTY file-descriptor lifecycle only' : false` |
 | portable-candidate | `packages/runtime/src/__tests__/shell-exec.test.ts` writes a legacy WSL Bash command through stdin | `process.platform === 'win32' ? 'uses /bin/sh as a portable stdin probe' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-exec.test.ts` bounds output drain after the root exits while a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
-| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves CJK PowerShell output through pipes | `process.platform === 'win32' ? false : 'Windows PowerShell 5.1 regression'` |
-| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves the requested cwd through a real Git Bash login PTY | `process.platform === 'win32' ? false : 'Git Bash PTY regression'` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` latches timeout when the root exits during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves cancellation when timeout fires during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` ignores a Stop abort that occurs after another admitted Stop commits termination | `process.platform === 'win32' ? 'Windows termination has no asynchronous POSIX snapshot window' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps a pipe task alive when Stop aborts during process-tree preparation | `process.platform === 'win32' ? 'Windows termination does not take a POSIX process snapshot' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps a PTY task controllable when Stop aborts during process-tree preparation | `process.platform === 'win32' ? 'Windows termination does not take a POSIX process snapshot' : false` |
-| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves CJK PowerShell output through a real PTY | `process.platform === 'win32' ? false : 'Windows PowerShell 5.1 regression'` |
-| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves the caller environment through a PowerShell PTY | `process.platform === 'win32' ? false : 'Windows PowerShell 5.1 regression'` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` settles after root exit when a detached descendant retains inherited stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps the first committed lifecycle cause across Stop and timeout races | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps SIGTERM final output and escalates an ignored SIGTERM without leaking slots | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
@@ -89,3 +86,4 @@ Total Windows-excluded declarations: **64**
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` fails closed on final symlinks, FIFOs, and oversized documents without changing bytes | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/usage-stores.test.ts` classifies a renamed or replaced live root as a draining persistence failure | `process.platform === 'win32' ? 'Windows does not permit renaming a directory with an open SQLite database' : false` |
 | platform-contract | `packages/storage/src/__tests__/workspace-identity.test.ts` an unmarked read-only workspace fails without leaving marker state | `process.platform === 'win32' ? 'POSIX permissions are required to create a read-only workspace fixture' : false` |
+| portable-candidate | `scripts/release-cli-eval-support.test.mjs` preserves the primary process failure when diagnostics cannot be read | `process.platform === 'win32'` |

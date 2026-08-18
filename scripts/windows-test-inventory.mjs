@@ -224,6 +224,12 @@ function classifySkip(path, title, expression) {
 
 function excludesWindows(expression) {
   const compact = expression.replaceAll(/\s+/gu, ' ');
+  // A Windows-only regression commonly uses `false` on Windows and a skip
+  // reason elsewhere. Mentioning win32 in that ternary means the opposite of
+  // excluding Windows, so do not count it in the Windows skip inventory.
+  if (/process\.platform\s*===\s*['"]win32['"]\s*\?\s*false\s*:/u.test(compact)) {
+    return false;
+  }
   return (
     /process\.platform\s*===\s*['"]win32['"]/u.test(compact) ||
     /process\.platform\s*!==\s*['"]darwin['"]/u.test(compact)

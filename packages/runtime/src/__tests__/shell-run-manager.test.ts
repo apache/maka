@@ -29,6 +29,7 @@ import { PTY_PROTOCOL_REPLY_MAX_BYTES } from '../pty-screen-collector.js';
 
 const NO_ABORT = new AbortController().signal;
 const TEMPORARY_WORKSPACES = new Set<string>();
+const REAL_WINDOWS_GIT_BASH = windowsGitBashPlan();
 
 after(async () => {
   await Promise.all(
@@ -118,10 +119,15 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('preserves the requested cwd through a real Git Bash login PTY', {
-    skip: process.platform === 'win32' ? false : 'Git Bash PTY regression',
+    skip:
+      process.platform !== 'win32'
+        ? 'Git Bash PTY regression'
+        : REAL_WINDOWS_GIT_BASH
+          ? false
+          : 'Git Bash is not installed on this Windows runner',
   }, async () => {
-    const shell = windowsGitBashPlan();
-    assert.ok(shell, 'Git Bash must exist on the Windows baseline runner');
+    const shell = REAL_WINDOWS_GIT_BASH;
+    assert.ok(shell, 'the test skip requires a discovered Git Bash plan');
     const cwd = await workspace();
     await writeFile(join(cwd, 'maka-cwd-marker'), 'expected workspace', 'utf8');
     const manager = await createTestManager();

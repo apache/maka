@@ -35,7 +35,7 @@ import {
 } from '@maka/runtime/network/scoped-fetch-transport';
 import { type ScannedSkill } from '@maka/runtime/skills';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
-import { ShellPreferenceError } from '@maka/runtime/shell-detect';
+import { resolveTurnShellPlan, ShellPreferenceError } from '@maka/runtime/shell-detect';
 import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
 import { SESSION_RECAP_INSTRUCTION } from '@maka/runtime/session-recap';
 import { hostedExecutionToolNames } from '../server/hosted-execution-tool-profile.js';
@@ -2726,6 +2726,11 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
     } as unknown as HostClientCapabilityCoordinator,
     resolveTavilyWebSearchReadiness: async () => false,
     builtinTools: {},
+    resolveTurnShellPlan: (settings) =>
+      resolveTurnShellPlan(settings, {
+        platform: 'win32',
+        fileExists: () => false,
+      }),
   });
   const connection = readyExecutionConnection()
     .connection as unknown as import('@maka/core/llm-connections').RuntimeExecutionConnection;
@@ -2742,6 +2747,11 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
     | MakaTool<{ command: string }, unknown>
     | undefined;
   assert.ok(bash, 'expected the default tool surface to include Bash');
+  const unavailableShell = resolveTurnShellPlan(policy.shell, {
+    platform: 'win32',
+    fileExists: () => false,
+  });
+  assert.equal(unavailableShell.setupError?.code, 'executable_missing');
   assert.match(bash.description, /unavailable this turn/);
   assert.doesNotMatch(bash.description, /write PowerShell syntax/);
   await assert.rejects(
@@ -2755,7 +2765,8 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
         emitOutput: () => {},
       } satisfies MakaToolContext);
     },
-    (error: unknown) => error instanceof ShellPreferenceError,
+    (error: unknown) =>
+      error instanceof ShellPreferenceError && error.code === 'executable_missing',
   );
 
   // Text-only composition — prompts and the rest of the tool surface — is unaffected.
