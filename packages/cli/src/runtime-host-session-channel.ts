@@ -24,6 +24,7 @@ import type { MakaPreparedSessionTurn } from './session-driver.js';
 
 const MAX_PENDING_FRAMES = 512;
 const MAX_PENDING_EVENTS_PER_TURN = 1_024;
+const LAG_REARM_PENDING_EVENTS = MAX_PENDING_EVENTS_PER_TURN / 2;
 
 export interface RuntimeHostSessionChannelOpenResult {
   channel: RuntimeHostSessionChannel;
@@ -566,7 +567,10 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
   next(): Promise<IteratorResult<SessionEvent>> {
     const item = this.#items.shift();
     if (item) {
-      if (this.#items.length === 0) this.#lagging = false;
+      // Re-arm with hysteresis: a consumer that has drained half the backlog
+      // is making progress, so a later lag episode may trigger another
+      // recovery; a wedged consumer never drains and cannot loop resubscribes.
+      if (this.#items.length <= LAG_REARM_PENDING_EVENTS) this.#lagging = false;
       return Promise.resolve({ done: false, value: item });
     }
     if (this.#error !== undefined) return Promise.reject(this.#error);
