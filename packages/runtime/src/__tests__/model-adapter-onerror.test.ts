@@ -80,7 +80,6 @@ describe('ModelAdapter.startStream onError', () => {
       {
         type: 'model_failure',
         kind: 'rate_limit',
-        code: '429',
         message: 'Rate limit exceeded',
         retryable: true,
         retryAfterMs: 2500,
