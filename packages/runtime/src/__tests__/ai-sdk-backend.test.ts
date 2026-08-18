@@ -3095,6 +3095,119 @@ describe('AiSdkBackend model history', () => {
     assert.equal(JSON.stringify(prompt).includes('tool-result'), false);
   });
 
+  test('keeps unrelated client tool history when degrading a hosted tool pair', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: '[redacted]',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: '',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-u-mixed',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'read then search',
+          }),
+          runtimeEvent({
+            id: 'rt-read-call',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            refs: { stepId: 'client-step' },
+            content: {
+              kind: 'function_call',
+              id: 'read-1',
+              name: 'Read',
+              args: { path: '/tmp/sentinel.ts' },
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-read-result',
+            turnId: 'turn-prev',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'read-1',
+              name: 'Read',
+              result: [{ type: 'text', text: 'CLIENT_READ_SENTINEL_CONTENT' }],
+              isError: false,
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-search-call',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            refs: { stepId: 'provider-step' },
+            content: {
+              kind: 'function_call',
+              id: 'search-1',
+              name: 'WebSearch',
+              args: { query: 'latest Maka' },
+              providerExecuted: true,
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-search-result',
+            turnId: 'turn-prev',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'search-1',
+              name: 'WebSearch',
+              result: { type: 'web_search_result', query: 'latest Maka' },
+              providerExecuted: true,
+              isError: false,
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-mixed-text',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            refs: { providerEventId: 'provider-step' },
+            content: { kind: 'text', text: 'Maka shipped the feature.' },
+          }),
+        ],
+        continuation: {
+          sourceInvocationId: 'invocation-source',
+          sourceRunId: 'run-source',
+          sourceTurnId: 'turn-prev',
+          sourceRuntimeEventHighWater: 6,
+        },
+      }),
+    );
+
+    const wire = JSON.stringify(compactPrompt(model));
+    // The unsupported provider-executed pair degrades away…
+    assert.equal(wire.includes('latest Maka'), false, wire);
+    // …but the unrelated client Read call and its result survive (#2972).
+    assert.match(wire, /CLIENT_READ_SENTINEL_CONTENT/);
+    assert.match(wire, /"toolName":"Read"|\\"toolName\\":\\"Read\\"/);
+    assert.match(wire, /Maka shipped the feature/);
+  });
+
   test('replays an image tool result as provider image data', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
     const model = completionModel();

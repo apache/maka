@@ -9,7 +9,7 @@ import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { resolveModelRuntime } from '../model-runtime.js';
 import { lowerModelTools } from '../model-adapter.js';
 import { openAiCodexCompactionMessages } from '../openai-codex-history-compactor.js';
-import { openResponsesUrl } from '../provider-urls.js';
+import { openAiResponsesBaseUrl, openResponsesUrl } from '../provider-urls.js';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
   return {
@@ -54,7 +54,77 @@ describe('responses wire contract', () => {
     assert.equal(openResponsesUrl('https://relay.example/'), 'https://relay.example/responses');
   });
 
-  test('every encrypted Responses dialect asks for encrypted reasoning', () => {
+  test('reduces an endpoint-form override to the base the native adapter expects', async () => {
+    assert.equal(
+      openAiResponsesBaseUrl('https://relay.example/v1/responses'),
+      'https://relay.example/v1',
+    );
+    assert.equal(openAiResponsesBaseUrl('https://relay.example/v1'), 'https://relay.example/v1');
+    assert.equal(openAiResponsesBaseUrl('https://relay.example/'), 'https://relay.example/');
+
+    // Behavior level: the probe accepts the endpoint form; the native OpenAI
+    // adapter appends `/responses` internally, so the request must not land on
+    // `/responses/responses` (#2972).
+    const urls: string[] = [];
+    const fetch = (async (url: string | URL | Request, _init?: RequestInit) => {
+      urls.push(String(url));
+      return Response.json({
+        id: 'r',
+        object: 'response',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const connection = {
+      ...conn('openai-responses-compatible'),
+      baseUrl: 'https://relay.example/v1/responses',
+    };
+    const model = getAIModel({ connection, apiKey: '[redacted]', modelId: 'relay-model', fetch });
+
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+    });
+
+    assert.deepEqual(urls, ['https://relay.example/v1/responses']);
+  });
+
+  test('resolves the SDK adapter independently from reasoning continuation', () => {
+    const deepseek = resolveModelRuntime({ providerType: 'deepseek' }, 'deepseek-v4-flash');
+    assert.equal(deepseek.responsesAdapter, 'open-responses');
+    assert.equal(deepseek.reasoningReplay.kind, 'responses-plaintext-content');
+
+    const xai = resolveModelRuntime({ providerType: 'xai' }, 'grok-4.5');
+    assert.equal(xai.responsesAdapter, 'openai');
+    assert.equal(xai.reasoningReplay.kind, 'responses-encrypted-content');
+
+    const relay = resolveModelRuntime(
+      { providerType: 'openai-responses-compatible' },
+      'relay-model',
+    );
+    assert.equal(relay.responsesAdapter, 'openai');
+    assert.equal(relay.reasoningReplay.kind, 'responses-encrypted-content');
+  });
+
+  test('enables Open Responses only for providers with an explicit continuation contract', () => {
+    const configured = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
+      const adapter = definition.runtimeAdapter;
+      return adapter.kind === 'openai-compatible' && adapter.responsesAdapter === 'open-responses'
+        ? [{ providerType, reasoningReplay: adapter.responsesReasoningReplay }]
+        : [];
+    });
+
+    assert.deepEqual(configured, [
+      { providerType: 'deepseek', reasoningReplay: 'plaintext-content' },
+    ]);
+
+    const relay = PROVIDER_REGISTRY['openai-responses-compatible'].runtimeAdapter;
+    assert.equal(relay.kind, 'openai-compatible');
+    assert.equal(relay.responsesAdapter, 'openai');
+    assert.equal(relay.responsesReasoningReplay, 'encrypted-content');
+  });
+
+  test('every encrypted-content Responses contract asks for encrypted reasoning', () => {
     // `store: false` is not a privacy preference here, it is the switch that
     // makes the SDK add `include: ['reasoning.encrypted_content']` and drop
     // reasoning items that came back without one. Asking is the only way a

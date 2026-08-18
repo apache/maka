@@ -27,7 +27,12 @@ import {
   type OpenAiChatReasoningTransportState,
 } from './openai-chat-reasoning-transport.js';
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
-import { anthropicV1BaseUrl, googleV1BetaBaseUrl, openResponsesUrl } from './provider-urls.js';
+import {
+  anthropicV1BaseUrl,
+  googleV1BetaBaseUrl,
+  openAiResponsesBaseUrl,
+  openResponsesUrl,
+} from './provider-urls.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
@@ -119,7 +124,9 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
     case 'openai': {
       const openai = createOpenAI({
         apiKey,
-        baseURL,
+        // The native adapter appends `/responses`; reduce endpoint-form
+        // overrides back to their base so probe-approved relay URLs work.
+        baseURL: wire === 'openai-responses' && baseURL ? openAiResponsesBaseUrl(baseURL) : baseURL,
         fetch:
           !hasRequestCustomization && openAiResponsesTransportState
             ? openAiResponsesTransportState.wrapFetch(requestFetch)
@@ -155,7 +162,9 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         }
         return createOpenAI({
           apiKey,
-          baseURL,
+          // Endpoint-form overrides (`…/responses`) probe successfully; the
+          // native adapter appends `/responses` itself, so pass the base.
+          baseURL: baseURL ? openAiResponsesBaseUrl(baseURL) : baseURL,
           fetch: requestFetch,
         }).responses(modelId);
       }

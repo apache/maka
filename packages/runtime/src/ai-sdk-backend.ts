@@ -3841,9 +3841,22 @@ export class AiSdkBackend implements AgentBackend {
     }
 
     if (!this.canReplayProviderNative(plan)) {
+      // Degrade per item, not per plan: an unsupported provider-executed pair
+      // must not cost unrelated client tool history (#2972). Thinking items
+      // stay in the plan; materializeRuntimeReplayPlan degrades unsupported
+      // reasoning per item via reasoningReplay.
+      const degradedPlan = this.dropUnsupportedReplayItems(plan);
       return {
         status: 'ready',
-        messages: await materializeReplayFallback(),
+        messages:
+          degradedPlan.items.length > 0 || hasProviderHistoryCompactCheckpoint
+            ? await this.materializeRuntimeReplayPlan(
+                degradedPlan,
+                scope.imageBudget,
+                undefined,
+                projectedHistoryCompactCheckpoint,
+              )
+            : await materializeReplayFallback(),
         gate: input.continuation
           ? 'runtime_replay_text_only'
           : 'runtime_replay_unsupported_semantics',
@@ -3885,6 +3898,29 @@ export class AiSdkBackend implements AgentBackend {
       if (item.kind === 'thinking' && item.signature && !support.signedThinking) return false;
     }
     return true;
+  }
+
+  /**
+   * Per-item counterpart to {@link canReplayProviderNative}: drop only the
+   * items the adapter cannot represent so one unsupported provider-executed
+   * pair does not cost unrelated client tool history (#2972). Call and result
+   * items fall together — a call without its result is a dangling wire item,
+   * and provider-executed pairs are flagged on both items by the plan.
+   */
+  private dropUnsupportedReplayItems(
+    plan: RuntimeEventModelReplayPlan,
+  ): RuntimeEventModelReplayPlan {
+    const support = this.modelAdapter.runtimeEventReplaySupport();
+    return {
+      ...plan,
+      items: plan.items.filter((item) => {
+        if (item.kind === 'tool_call' || item.kind === 'tool_result') {
+          if (!support.toolCalls || !support.toolResults) return false;
+          if (item.providerExecuted === true && !support.providerExecutedTools) return false;
+        }
+        return true;
+      }),
+    };
   }
 
   /**
