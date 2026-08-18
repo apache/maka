@@ -940,6 +940,7 @@ function registerHostClientIpc(
   registerRuntimeHostUsageIpc({
     ipcMain: scopedIpc,
     client,
+    host: scope,
     sendToRenderer,
   });
   registerRuntimeHostWorkspaceIpc({

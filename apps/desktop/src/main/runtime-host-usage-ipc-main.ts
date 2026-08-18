@@ -26,10 +26,15 @@ import type {
   DesktopPricingSnapshot,
   DesktopRuntimeHostClient,
 } from "./runtime-host-client.js";
+import {
+  desktopSessionKey,
+  type DesktopHostRef,
+} from "../shared/runtime-host-identity.js";
 
 interface RuntimeHostUsageIpcDeps {
   readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: DesktopRuntimeHostClient;
+  readonly host: DesktopHostRef;
   readonly sendToRenderer: (channel: string, ...args: unknown[]) => void;
   readonly now?: () => number;
 }
@@ -59,7 +64,12 @@ export function registerRuntimeHostUsageIpc(
     deps.ipcMain,
     "settings:usageStats",
     (_event, range: UsageRange = "24h") =>
-      loadUsageStatsSnapshot(deps.client, range, deps.now?.() ?? Date.now()),
+      loadUsageStatsSnapshot(
+        deps.client,
+        deps.host,
+        range,
+        deps.now?.() ?? Date.now(),
+      ),
   );
 
   handleReconnectableRead(
@@ -199,6 +209,7 @@ async function loadAllBuckets(
 
 export async function loadUsageStatsSnapshot(
   client: DesktopRuntimeHostClient,
+  host: DesktopHostRef,
   range: UsageRange,
   now: number,
 ): Promise<UsageStats> {
@@ -240,6 +251,7 @@ export async function loadUsageStatsSnapshot(
       )
     ) {
       return projectUsageStats(
+        host,
         summaryResult.summary,
         summaryResult.provenance,
         providerResult.buckets,
@@ -406,6 +418,7 @@ function sumRequests(buckets: readonly UsageBucket[]): number {
 }
 
 function projectUsageStats(
+  host: DesktopHostRef,
   summary: UsageSummaryV2,
   provenance: UsageProvenance,
   providerBuckets: readonly UsageBucket[],
@@ -434,7 +447,14 @@ function projectUsageStats(
         id: row.id,
         ts: row.ts,
         kind: "model" as const,
-        ...(row.sessionId === undefined ? {} : { sessionId: row.sessionId }),
+        ...(row.sessionId === undefined
+          ? {}
+          : {
+              sessionId: desktopSessionKey({
+                hostId: host.hostId,
+                sessionId: row.sessionId,
+              }),
+            }),
         ...(row.turnId === undefined ? {} : { turnId: row.turnId }),
         provider: row.connectionSlug ?? row.providerId,
         model: row.modelId,
@@ -454,7 +474,14 @@ function projectUsageStats(
         id: row.id,
         ts: row.ts,
         kind: "tool" as const,
-        ...(row.sessionId === undefined ? {} : { sessionId: row.sessionId }),
+        ...(row.sessionId === undefined
+          ? {}
+          : {
+              sessionId: desktopSessionKey({
+                hostId: host.hostId,
+                sessionId: row.sessionId,
+              }),
+            }),
         ...(row.turnId === undefined ? {} : { turnId: row.turnId }),
         provider: row.providerId ?? "",
         model: row.modelId ?? "",

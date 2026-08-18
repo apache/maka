@@ -769,7 +769,7 @@ export interface MakaBridge {
     subscribeExternalChanged(handler: () => void, host?: DesktopRuntimeHostRef): () => void;
     testNetworkProxy(input?: TestProxyInput, host?: DesktopRuntimeHostRef): Promise<SettingsTestResult>;
     testBotChannel(provider: BotProvider): Promise<SettingsTestResult>;
-    usageStats(range?: UsageRange): Promise<UsageStats>;
+    usageStats(range: UsageRange | undefined, host: DesktopRuntimeHostRef): Promise<UsageStats>;
     bots: {
       listStatuses(): Promise<Record<BotProvider, BotStatus>>;
       restart(provider: BotProvider): Promise<BotStatus>;

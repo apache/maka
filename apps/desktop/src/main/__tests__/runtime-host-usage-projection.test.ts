@@ -3,12 +3,14 @@ import { describe, test } from "node:test";
 import type { UsageQuery } from "@maka/core/usage-stats/types";
 import { loadUsageStatsSnapshot } from "../runtime-host-usage-ipc-main.js";
 
+const HOST_A = { hostId: "host-a" };
+
 describe("Runtime Host Usage projection", () => {
   test("preserves missing model usage and aborted tools", async () => {
     const queries: UsageQuery[] = [];
     const client = usageClient({ queries });
 
-    const stats = await loadUsageStatsSnapshot(client as never, "all", 2_000);
+    const stats = await loadUsageStatsSnapshot(client as never, HOST_A, "all", 2_000);
 
     assert.equal(stats.summary.totalRequests, 2);
     assert.equal(stats.logs[0]?.usageBasis, "reported");
@@ -47,7 +49,7 @@ describe("Runtime Host Usage projection", () => {
         snapshotAttempt === 1 && groupBy === "provider" ? 1 : 2,
     });
 
-    const stats = await loadUsageStatsSnapshot(client as never, "all", 2_000);
+    const stats = await loadUsageStatsSnapshot(client as never, HOST_A, "all", 2_000);
 
     assert.equal(stats.summary.totalRequests, 2);
     assert.equal(snapshotAttempt, 2);
@@ -67,7 +69,7 @@ describe("Runtime Host Usage projection", () => {
         snapshotAttempt === 1 && groupBy === "provider" ? 9 : 5,
     });
 
-    const stats = await loadUsageStatsSnapshot(client as never, "all", 2_000);
+    const stats = await loadUsageStatsSnapshot(client as never, HOST_A, "all", 2_000);
 
     assert.equal(snapshotAttempt, 2);
     assert.equal(stats.summary.totalTokens, 5);
@@ -97,7 +99,7 @@ describe("Runtime Host Usage projection", () => {
       ],
     });
 
-    const stats = await loadUsageStatsSnapshot(client as never, "all", 2_000);
+    const stats = await loadUsageStatsSnapshot(client as never, HOST_A, "all", 2_000);
 
     assert.deepEqual(stats.pricing, [
       {
@@ -107,6 +109,28 @@ describe("Runtime Host Usage projection", () => {
         outputPerMTokUsd: 2.5,
       },
     ]);
+  });
+
+  test("projects Host-local session IDs into collision-safe Desktop keys", async () => {
+    const client = usageClient({});
+
+    const [first, second] = await Promise.all([
+      loadUsageStatsSnapshot(client as never, HOST_A, "all", 2_000),
+      loadUsageStatsSnapshot(client as never, { hostId: "host-b" }, "all", 2_000),
+    ]);
+
+    assert.equal(first.logs[0]?.sessionId, '["host-a","session-1"]');
+    assert.equal(first.logs[2]?.sessionId, '["host-a","session-1"]');
+    assert.equal(second.logs[0]?.sessionId, '["host-b","session-1"]');
+    assert.notEqual(first.logs[0]?.sessionId, second.logs[0]?.sessionId);
+  });
+
+  test("preserves an absent Host-local session ID", async () => {
+    const client = usageClient({ omitSessionId: true });
+
+    const stats = await loadUsageStatsSnapshot(client as never, HOST_A, "all", 2_000);
+
+    assert.ok(stats.logs.every((row) => row.sessionId === undefined));
   });
 });
 
@@ -125,6 +149,7 @@ function usageClient(options: {
     source: "custom" | "builtin";
     resetEffect?: "restore_builtin" | "become_unpriced";
   }[];
+  omitSessionId?: boolean;
 }) {
   return {
     async queryUsage(input: Record<string, unknown>) {
@@ -162,7 +187,7 @@ function usageClient(options: {
           kind: "logs",
           source: "tool",
           revision: options.revision?.(input) ?? 0,
-          rows: [toolLog()],
+          rows: [toolLog(options.omitSessionId)],
           offset: 0,
           total: 1,
           nextOffset: null,
@@ -173,8 +198,8 @@ function usageClient(options: {
         source: "llm",
         revision: options.revision?.(input) ?? 0,
         rows: [
-          llmLog("reported", "priced", 2_000),
-          llmLog("missing", "unpriced", 1_500),
+          llmLog("reported", "priced", 2_000, options.omitSessionId),
+          llmLog("missing", "unpriced", 1_500, options.omitSessionId),
         ],
         offset: 0,
         total: 2,
@@ -251,6 +276,7 @@ function llmLog(
   usageBasis: "reported" | "missing",
   costBasis: "priced" | "unpriced",
   ts: number,
+  omitSessionId = false,
 ) {
   const reported = usageBasis === "reported";
   return {
@@ -272,12 +298,12 @@ function llmLog(
     costBasis,
     latencyMs: 250,
     status: "success",
-    sessionId: "session-1",
+    ...(omitSessionId ? {} : { sessionId: "session-1" }),
     turnId: `turn-${usageBasis}`,
   };
 }
 
-function toolLog() {
+function toolLog(omitSessionId = false) {
   return {
     source: "tool",
     id: "tool-1",
@@ -289,7 +315,7 @@ function toolLog() {
     bytesIn: 1,
     bytesOut: 0,
     startedAt: 500,
-    sessionId: "session-1",
+    ...(omitSessionId ? {} : { sessionId: "session-1" }),
     turnId: "turn-missing",
   };
 }
