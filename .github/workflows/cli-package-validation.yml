@@ -144,3 +144,36 @@ jobs:
           path: packages/cli/release
       - name: Validate the installed tarball
         run: node scripts/smoke-release-cli-package.mjs
+
+  eval:
+    name: Validate installed CLI Eval
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: Select the release npm toolchain
+        run: npm install --global --no-audit --no-fund npm@11.12.1
+      - name: Install pinned Eval frameworks
+        run: |
+          python -m venv "$RUNNER_TEMP/maka-harbor"
+          "$RUNNER_TEMP/maka-harbor/bin/python" -m pip install --disable-pip-version-check 'harbor==0.20.0'
+          python -m venv "$RUNNER_TEMP/maka-pier"
+          "$RUNNER_TEMP/maka-pier/bin/python" -m pip install --disable-pip-version-check 'datacurve-pier==0.3.0'
+          echo "MAKA_RELEASE_HARBOR_PYTHON=$RUNNER_TEMP/maka-harbor/bin/python" >> "$GITHUB_ENV"
+          echo "MAKA_RELEASE_PIER_PYTHON=$RUNNER_TEMP/maka-pier/bin/python" >> "$GITHUB_ENV"
+      - name: Download the release candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-release-candidate
+          path: packages/cli/release
+      - name: Validate real Harbor and Pier cells
+        run: npm run release:cli:eval

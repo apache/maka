@@ -1295,7 +1295,7 @@ test('pier cannot declare an egress proxy it never enforces', () => {
   );
 });
 
-test('launched trial environment does not inherit MAKA_EVAL_FRAMEWORK', {
+test('Pier preserves its log mounts without inheriting MAKA_EVAL_FRAMEWORK', {
   timeout: 10_000,
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-eval-framework-env-'));
@@ -1309,6 +1309,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 const config = JSON.parse(await readFile(process.argv.at(-1), 'utf8'));
 await writeFile(process.env.MAKA_TEST_ENV, JSON.stringify({
   framework: process.env.MAKA_EVAL_FRAMEWORK ?? null,
+  mounts: config.environment.mounts,
+  trialName: config.trial_name,
 }));
 const socket = connect(config.agent.kwargs.relay_port, config.agent.kwargs.relay_host);
 socket.setEncoding('utf8');
@@ -1344,14 +1346,33 @@ socket.end();
     MAKA_TEST_PYTHON: executable,
     MAKA_TEST_TRIALS: root,
     MAKA_TEST_ENV: envDump,
+    MAKA_TEST_MOUNT: root,
+    MAKA_TEST_TASKS: root,
     MAKA_EVAL_FRAMEWORK: 'pier',
   });
   try {
+    const spec: ExperimentSpec = {
+      ...experiment(),
+      executor: {
+        kind: 'pier',
+        config: {
+          ...executorConfig(),
+          tasksRootEnv: 'MAKA_TEST_TASKS',
+          mounts: [{ sourceEnv: 'MAKA_TEST_MOUNT', target: '/input', readOnly: true }],
+        },
+      },
+      tasks: [{ id: 'task', input: 'solve', config: { pier: { path: 'task' } } }],
+    };
     const results = await runExperiment({
-      spec: experiment(),
+      spec,
       store: new FileAttemptStore(join(root, 'attempts')),
-      executor: createHarborExecutor(
-        { ...executorConfig(), preparationEnvironment: ['MAKA_TEST_ENV'] },
+      executor: createPierExecutor(
+        {
+          ...executorConfig(),
+          tasksRootEnv: 'MAKA_TEST_TASKS',
+          preparationEnvironment: ['MAKA_TEST_ENV'],
+          mounts: [{ sourceEnv: 'MAKA_TEST_MOUNT', target: '/input', readOnly: true }],
+        },
         join(root, 'experiment.json'),
       ),
       subjects: [
@@ -1372,7 +1393,26 @@ socket.end();
       ],
     });
     assert.equal(results.get('task::1::external')?.result.status, 'completed');
-    assert.deepEqual(JSON.parse(await readFile(envDump, 'utf8')), { framework: null });
+    const launched = JSON.parse(await readFile(envDump, 'utf8')) as {
+      framework: string | null;
+      mounts: Array<{ source: string; target: string }>;
+      trialName: string;
+    };
+    assert.equal(launched.framework, null);
+    assert.deepEqual(launched.mounts, [
+      { type: 'bind', source: root, target: '/input', read_only: true },
+      { type: 'bind', source: join(root, launched.trialName, 'agent'), target: '/logs/agent' },
+      {
+        type: 'bind',
+        source: join(root, launched.trialName, 'verifier'),
+        target: '/logs/verifier',
+      },
+      {
+        type: 'bind',
+        source: join(root, launched.trialName, 'artifacts'),
+        target: '/logs/artifacts',
+      },
+    ]);
   } finally {
     restoreEnvironment();
     await rm(root, { recursive: true, force: true });

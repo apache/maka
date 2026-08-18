@@ -143,6 +143,9 @@ async function validateInstalledProduct(root) {
   );
   validateInstalledRuntimeFiles(packageRoot);
 
+  logStep('checking installed Eval spec decoding and framework preflight');
+  smokeEvalPreflight({ crossSpawn: crossSpawn.sync, environment: baseEnvironment, maka, root });
+
   logStep('checking installed native PTY and file-lock modules');
   const nodePty = await importInstalled(packageRoot, 'node_modules/node-pty/lib/index.js');
   const ptySpawn = nodePty.spawn ?? nodePty.default?.spawn;
@@ -228,6 +231,78 @@ function validateInstalledRuntimeFiles(packageRoot) {
     readFileSync(join(packageRoot, 'node_modules/@ai-sdk/provider-utils/dist/index.js'), 'utf8'),
     'function absentIfBlank',
   );
+}
+
+function smokeEvalPreflight({ crossSpawn, environment, maka, root }) {
+  const evalRoot = join(root, 'eval-preflight');
+  mkdirSync(evalRoot, { recursive: true });
+  const machineEnvironment = {
+    ...environment,
+    MAKA_RELEASE_EVAL_PYTHON: process.execPath,
+    MAKA_RELEASE_EVAL_TASKS: evalRoot,
+    MAKA_RELEASE_EVAL_TRIALS: join(evalRoot, 'trials'),
+  };
+  for (const framework of ['harbor', 'pier']) {
+    const specPath = join(evalRoot, `${framework}.json`);
+    writeFileSync(specPath, `${JSON.stringify(evalPreflightSpec(framework))}\n`, 'utf8');
+    const result = crossSpawn(maka, ['eval', 'run', specPath, '--out', join(evalRoot, framework)], {
+      cwd: evalRoot,
+      env: machineEnvironment,
+      encoding: 'utf8',
+      timeout: 30_000,
+      maxBuffer: MAX_OUTPUT_BYTES,
+    });
+    if (result.error) throw result.error;
+    if (result.status === 0) {
+      throw new Error(`${framework} Eval preflight unexpectedly accepted the Node executable`);
+    }
+    assertOutput(
+      `${result.stdout ?? ''}\n${result.stderr ?? ''}`,
+      `${framework} Python environment MAKA_RELEASE_EVAL_PYTHON is unavailable or does not provide`,
+    );
+  }
+}
+
+function evalPreflightSpec(framework) {
+  return {
+    schemaVersion: 'maka.eval.v1',
+    id: `release-${framework}-preflight`,
+    benchmark: {
+      id: 'release-preflight',
+      version: '0000000000000000000000000000000000000000',
+      config: { repository: 'https://invalid.invalid/release-preflight.git' },
+    },
+    executor: {
+      kind: framework,
+      config: {
+        frameworkVersion: framework === 'harbor' ? '0.20.0' : '0.3.0',
+        pythonPathEnv: 'MAKA_RELEASE_EVAL_PYTHON',
+        trialsRootEnv: 'MAKA_RELEASE_EVAL_TRIALS',
+        ...(framework === 'pier' ? { tasksRootEnv: 'MAKA_RELEASE_EVAL_TASKS' } : {}),
+        environment: { type: 'docker', delete: true },
+        preparationEnvironment: [],
+        mounts: [],
+      },
+    },
+    subjects: [
+      {
+        id: 'subject',
+        kind: 'external',
+        credentials: [],
+        config: { command: process.execPath, args: ['--version'], result: 'exit-code' },
+      },
+    ],
+    tasks: [
+      {
+        id: 'task',
+        input: 'Do not execute this preflight-only task.',
+        config: framework === 'harbor' ? { harbor: { path: 'task' } } : { pier: { path: 'task' } },
+      },
+    ],
+    repetitions: 1,
+    budget: { timeoutMultiplier: 1 },
+    verifier: { reward: 'reward' },
+  };
 }
 
 async function smokePty(ptySpawn, environment, cwd) {

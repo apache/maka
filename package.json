@@ -44,6 +44,7 @@
     "check:cli-third-party-notices": "node scripts/generate-third-party-notices.mjs --target cli --check",
     "release:cli:pack": "node scripts/release-cli-package.mjs",
     "release:cli:smoke": "node scripts/smoke-release-cli-package.mjs",
+    "release:cli:eval": "node scripts/release-cli-eval-package.mjs",
     "generate:windows-cargo-notices": "node scripts/generate-windows-cargo-notices.mjs",
     "check:windows-cargo-notices": "node scripts/generate-windows-cargo-notices.mjs --check",
     "check:release": "npm run check:stale && npm run check:third-party-notices && npm run check:cli-third-party-notices && node --test scripts/release-cli-file-policy.test.mjs scripts/release-cli-artifact-policy.test.mjs",
