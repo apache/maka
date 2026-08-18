@@ -137,6 +137,18 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       const fixture = await createRemoteFixture('sse');
       const gate = fixture.holdNextToolList();
       const manager = createManager();
+      const publications: Array<{
+        state: string;
+        statusToolCount: number;
+        snapshotToolCount: number;
+      }> = [];
+      manager.onChange((status) => {
+        publications.push({
+          state: status.state,
+          statusToolCount: status.toolCount,
+          snapshotToolCount: manager.toolSnapshot().tools.length,
+        });
+      });
       const syncPromise = manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
       await gate.started;
 
@@ -164,6 +176,37 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
         ),
         2,
       );
+      assert.equal(
+        publications.some(
+          ({ state, statusToolCount, snapshotToolCount }) =>
+            state !== 'connected' && (statusToolCount > 0 || snapshotToolCount > 0),
+        ),
+        false,
+      );
+      assert.equal(
+        publications.some(
+          ({ state, statusToolCount, snapshotToolCount }) =>
+            state === 'connected' && statusToolCount === 1 && snapshotToolCount === 1,
+        ),
+        true,
+      );
+    });
+
+    test('keeps the connection and latest initial snapshot when notifications exhaust the refresh budget', async () => {
+      const fixture = await createRemoteFixture('sse');
+      fixture.setNotifyBeforeEveryToolListResponse(true);
+      const manager = createManager();
+
+      await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
+
+      assert.equal(manager.status('remote')?.state, 'connected');
+      assert.equal(countProtocolMethod(fixture, 'tools/list'), 4);
+      assert.match(manager.status('remote')?.error ?? '', /changed too frequently/u);
+      const binding = bindingFor(manager, 'remote', 'echo');
+      assert.deepEqual(await manager.callTool(binding, { value: 'still-callable' }), {
+        content: [{ type: 'text', text: 'still-callable' }],
+        structuredContent: undefined,
+      });
     });
 
     test('bounds raw Tool definitions without replacing the callable snapshot', async () => {
@@ -946,6 +989,7 @@ interface RemoteFixture {
   setToolListMode(mode: ToolListMode): void;
   setHttpFailure(method: string, body: string): void;
   holdNextToolList(): { started: Promise<void>; release(): void };
+  setNotifyBeforeEveryToolListResponse(enabled: boolean): void;
   setNotifyOnEveryToolList(enabled: boolean): void;
   setToolListClockAdvance(advance: () => void): void;
   setToolListResponseClockAdvance(advance: () => void): void;
@@ -970,6 +1014,7 @@ async function createRemoteFixture(
   let toolListMode: ToolListMode = 'valid';
   let httpFailure: { method: string; body: string } | undefined;
   let nextToolListGate: InternalToolListGate | undefined;
+  let notifyBeforeEveryToolListResponse = false;
   let notifyOnEveryToolList = false;
   let toolListClockAdvance = () => {};
   let toolListResponseClockAdvance = () => {};
@@ -1023,6 +1068,7 @@ async function createRemoteFixture(
           toolListMode: () => toolListMode,
           beforeToolList,
           afterToolList: () => toolListResponseClockAdvance(),
+          notifyBeforeEveryToolListResponse: () => notifyBeforeEveryToolListResponse,
           notifyOnEveryToolList: () => notifyOnEveryToolList,
         });
         await server.connect(transport);
@@ -1040,6 +1086,7 @@ async function createRemoteFixture(
           toolListMode: () => toolListMode,
           beforeToolList,
           afterToolList: () => toolListResponseClockAdvance(),
+          notifyBeforeEveryToolListResponse: () => notifyBeforeEveryToolListResponse,
           notifyOnEveryToolList: () => notifyOnEveryToolList,
         });
         sseTransports.set(transport.sessionId, { transport, server });
@@ -1094,6 +1141,9 @@ async function createRemoteFixture(
       nextToolListGate = { markStarted, waitForRelease };
       return { started, release };
     },
+    setNotifyBeforeEveryToolListResponse: (enabled) => {
+      notifyBeforeEveryToolListResponse = enabled;
+    },
     setNotifyOnEveryToolList: (enabled) => {
       notifyOnEveryToolList = enabled;
     },
@@ -1129,6 +1179,7 @@ function createProtocolServer(options: {
   toolListMode: () => ToolListMode;
   beforeToolList: () => Promise<void>;
   afterToolList: () => void;
+  notifyBeforeEveryToolListResponse: () => boolean;
   notifyOnEveryToolList: () => boolean;
 }): McpServer {
   const server = new McpServer(
@@ -1173,6 +1224,9 @@ function createProtocolServer(options: {
                     : [remoteToolDefinition('echo'), remoteToolDefinition('invalid-output')],
     };
     options.afterToolList();
+    if (options.notifyBeforeEveryToolListResponse()) {
+      await server.sendToolListChanged();
+    }
     if (options.notifyOnEveryToolList()) {
       setTimeout(() => {
         void server.sendToolListChanged().catch(() => {});
