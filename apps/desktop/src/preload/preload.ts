@@ -29,6 +29,7 @@ import type {
   DesktopRuntimeHostRef,
   DesktopProjectSnapshot,
   DesktopAppInfo,
+  SessionModeFields,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import {
@@ -78,8 +79,7 @@ import type {
 } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
-import type { CollaborationMode } from '@maka/core/collaboration';
-import type { OrchestrationMode } from '@maka/core/orchestration';
+
 import type { TurnOrchestration, SessionListFilter, RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
@@ -1504,11 +1504,8 @@ const makaBridge = {
     setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionSummary> {
       return invokeSessionSummary('sessions:setPermissionMode', sessionId, mode);
     },
-    setCollaborationMode(sessionId: string, mode: CollaborationMode): Promise<DesktopSessionSummary> {
-      return invokeSessionSummary('sessions:setCollaborationMode', sessionId, mode);
-    },
-    setOrchestrationMode(sessionId: string, mode: OrchestrationMode): Promise<DesktopSessionSummary> {
-      return invokeSessionSummary('sessions:setOrchestrationMode', sessionId, mode);
+    setSessionMode(sessionId: string, mode: SessionModeFields): Promise<DesktopSessionSummary> {
+      return invokeSessionSummary('sessions:setSessionMode', sessionId, mode);
     },
     getPlanState(sessionId: string): Promise<PlanSessionState> {
       return invokeProjectedSessionRuntimeHost('plan-mode:getState', sessionId);

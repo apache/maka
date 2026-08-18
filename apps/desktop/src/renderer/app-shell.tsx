@@ -226,11 +226,7 @@ function rebaseWorkspaceFileReferences(
 
 import { useSettingsModal } from './use-settings-modal';
 import { RemoteProjectDirectoryDialog } from './remote-project-directory-dialog';
-import {
-  SESSION_MODE_FIELDS,
-  sessionModeOf,
-  sessionModeWriteOrder,
-} from './session-mode';
+import { SESSION_MODE_FIELDS, sessionModeOf } from './session-mode';
 import { useSystemUiLocale } from './use-system-ui-locale';
 import {
   isSessionWorkspaceUnavailableError,
@@ -1025,10 +1021,10 @@ function AppShellContent({
    * The projection can be a frame behind; the question "does this discard a
    * pending plan proposal" has an authoritative answer and deserves it.
    *
-   * The field values and the order they are written in come from
-   * `session-mode.ts`, which is also where the reason for the order is
-   * written down. Making the pair atomic means one persisted field instead of
-   * two — a Runtime Host change, not a renderer one.
+   * The two fields travel as one patch, so the Session is never left between
+   * two modes: `updateSessionConfiguration` merges them into the whole
+   * configuration and writes it against the Session revision. A failure
+   * changes nothing.
    */
   async function applySessionMode(
     mode: ComposerSessionMode,
@@ -1066,12 +1062,8 @@ function AppShellContent({
         await window.maka.sessions.abandonPlanProposal(sessionId, latestProposal.proposalId);
       }
 
-      for (const field of sessionModeWriteOrder(mode)) {
-        const next = field === 'collaboration'
-          ? await window.maka.sessions.setCollaborationMode(sessionId, fields.collaborationMode)
-          : await window.maka.sessions.setOrchestrationMode(sessionId, fields.orchestrationMode);
-        setSessions((current) => current.map((session) => session.id === next.id ? next : session));
-      }
+      const next = await window.maka.sessions.setSessionMode(sessionId, fields);
+      setSessions((current) => current.map((session) => session.id === next.id ? next : session));
       await refreshSessions();
       return true;
     } catch (error) {

@@ -32,6 +32,12 @@ import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
+
+/** The two persisted fields the Session's one-of-four mode lands in. */
+export interface SessionModeFields {
+  readonly collaborationMode: CollaborationMode;
+  readonly orchestrationMode: OrchestrationMode;
+}
 import type {
   TurnOrchestration,
   SessionListFilter,
@@ -594,8 +600,13 @@ export interface MakaBridge {
     setFlagged(sessionId: string, isFlagged: boolean, options?: { revisionFamily?: boolean }): Promise<void>;
     rename(sessionId: string, name: string, options?: { revisionFamily?: boolean }): Promise<void>;
     setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionSummary>;
-    setCollaborationMode(sessionId: string, mode: CollaborationMode): Promise<DesktopSessionSummary>;
-    setOrchestrationMode(sessionId: string, mode: OrchestrationMode): Promise<DesktopSessionSummary>;
+    /**
+     * Put the Session in one mode. Both fields travel together because the
+     * choice is one value: the Host merges them into the whole configuration
+     * and writes it against the Session revision, so no reader ever sees one
+     * field changed without the other.
+     */
+    setSessionMode(sessionId: string, mode: SessionModeFields): Promise<DesktopSessionSummary>;
     getPlanState(sessionId: string): Promise<PlanSessionState>;
     subscribePlanChanges(sessionId: string, handler: () => void): () => void;
     requestPlanRevision(sessionId: string, proposalId: string): Promise<PlanSessionState>;

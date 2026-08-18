@@ -8,14 +8,10 @@
  * what Swarm and Graph are made of, so `plan` + anything is a combination the
  * runtime cannot honour. This module is the one place that mapping lives.
  */
-import type { CollaborationMode } from '@maka/core/collaboration';
-import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ComposerSessionMode } from '@maka/ui';
+import type { SessionModeFields } from '../preload/bridge-contract.js';
 
-export interface SessionModeFields {
-  readonly collaborationMode: CollaborationMode;
-  readonly orchestrationMode: OrchestrationMode;
-}
+export type { SessionModeFields };
 
 /**
  * Every mode names BOTH fields, on purpose: a transition is then computed from
@@ -30,25 +26,6 @@ export const SESSION_MODE_FIELDS: Readonly<Record<ComposerSessionMode, SessionMo
     swarm: { collaborationMode: 'agent', orchestrationMode: 'swarm' },
     graph: { collaborationMode: 'agent', orchestrationMode: 'graph' },
   });
-
-export type SessionModeField = 'collaboration' | 'orchestration';
-
-/**
- * The order to write the two fields in, so that the state between them is
- * never an illegal combination.
- *
- * The rule is one sentence: the field taking a non-neutral value is written
- * last. Entering Plan therefore clears orchestration first; every other target
- * clears collaboration first. Two writes are still two Session mutations, so a
- * failure on the second leaves the Session in `default` — its prior mode lost,
- * with a toast. That is the better of the two failures available without an
- * atomic write: the opposite order fails into Plan-plus-orchestration.
- */
-export function sessionModeWriteOrder(
-  mode: ComposerSessionMode,
-): readonly [SessionModeField, SessionModeField] {
-  return mode === 'plan' ? ['orchestration', 'collaboration'] : ['collaboration', 'orchestration'];
-}
 
 /** Whether a persisted pair is a combination the runtime can honour. */
 export function isLegalSessionModePair(fields: SessionModeFields): boolean {

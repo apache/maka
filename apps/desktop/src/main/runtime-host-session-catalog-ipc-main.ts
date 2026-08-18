@@ -157,24 +157,29 @@ export function registerRuntimeHostSessionCatalogIpc(
     if (!isPermissionMode(mode)) throw new Error(`Invalid permission mode: ${String(mode)}`);
     return updateConfiguration(deps, sessionId, { permissionMode: mode }, 'mode-change');
   });
-  ipcMain.handle(
-    'sessions:setCollaborationMode',
-    async (_event, sessionId: string, mode: unknown) => {
-      if (!isCollaborationMode(mode)) {
-        throw new Error(`Invalid collaboration mode: ${String(mode)}`);
-      }
-      return updateConfiguration(deps, sessionId, { collaborationMode: mode }, 'mode-change');
-    },
-  );
-  ipcMain.handle(
-    'sessions:setOrchestrationMode',
-    async (_event, sessionId: string, mode: unknown) => {
-      if (!isOrchestrationMode(mode)) {
-        throw new Error(`Invalid orchestration mode: ${String(mode)}`);
-      }
-      return updateConfiguration(deps, sessionId, { orchestrationMode: mode }, 'mode-change');
-    },
-  );
+  // The Session's mode is one choice spread over two persisted fields, so it
+  // travels as one patch. `updateSessionConfiguration` merges a patch into the
+  // whole configuration and writes it back against the Session revision, which
+  // makes both fields land in a single revision-checked mutation — there is no
+  // moment where one has changed and the other has not.
+  ipcMain.handle('sessions:setSessionMode', async (_event, sessionId: string, mode: unknown) => {
+    if (typeof mode !== 'object' || mode === null) {
+      throw new Error('Invalid session mode');
+    }
+    const { collaborationMode, orchestrationMode } = mode as Record<string, unknown>;
+    if (!isCollaborationMode(collaborationMode)) {
+      throw new Error(`Invalid collaboration mode: ${String(collaborationMode)}`);
+    }
+    if (!isOrchestrationMode(orchestrationMode)) {
+      throw new Error(`Invalid orchestration mode: ${String(orchestrationMode)}`);
+    }
+    return updateConfiguration(
+      deps,
+      sessionId,
+      { collaborationMode, orchestrationMode },
+      'mode-change',
+    );
+  });
   ipcMain.handle('sessions:setModel', async (_event, sessionId: string, input: unknown) => {
     const modelTarget = normalizeExplicitModel(input);
     return updateConfiguration(
