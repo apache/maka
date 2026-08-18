@@ -2,6 +2,8 @@
 
 This page is the authority map for Maka documentation. Code and contract tests remain the final authority when documentation disagrees with the implementation.
 
+Public entry points: [website](https://maka-agent.com/) · [download](https://maka-agent.com/download/) · [documentation index](https://maka-agent.com/docs/) · [architecture overview](https://maka-agent.com/architecture/) · [security overview](https://maka-agent.com/security/)
+
 ## Where information belongs
 
 - Root and package READMEs describe stable product entry points, public seams, and local ownership.

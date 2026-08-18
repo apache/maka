@@ -1,6 +1,24 @@
 {
   "name": "maka",
   "version": "0.1.10",
+  "description": "Maka — local-first AI desktop assistant",
+  "homepage": "https://maka-agent.com/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maka-agent/maka-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/maka-agent/maka-agent/issues"
+  },
+  "keywords": [
+    "ai-agent",
+    "desktop-app",
+    "local-first",
+    "agent-runtime",
+    "electron",
+    "cli",
+    "tui"
+  ],
   "license": "Apache-2.0",
   "private": true,
   "engines": {

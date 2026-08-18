@@ -4,6 +4,8 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![docs](https://img.shields.io/badge/docs-English-blue?logo=googletranslate&logoColor=white)](./README.md)
 
+[官网](https://maka-agent.com/zh/) · [下载](https://maka-agent.com/download/) · [文档](https://maka-agent.com/docs/) · [架构](https://maka-agent.com/architecture/) · [最新版本](https://github.com/maka-agent/maka-agent/releases/latest)
+
 ![Maka——你的工作，你的 Agent。](./.github/assets/maka-hero.zh-CN.png)
 
 **一个为真实工作而生的本地优先 Agent 工作台。**
@@ -55,16 +57,18 @@ Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具
 
 ## 快速开始
 
-### 下载 macOS 桌面版
+### 下载桌面版
 
-已签名并完成 Apple 公证的桌面应用可从 [GitHub Releases](https://github.com/Maka-Agent/maka-agent/releases/latest) 下载，目前仅支持 Apple Silicon Mac（`arm64`）。
+已签名并完成 Apple 公证的 Apple Silicon macOS 版本，以及未签名的 Windows x64 预览版，可以从 [Maka 下载页](https://maka-agent.com/download/) 或 [GitHub Releases](https://github.com/Maka-Agent/maka-agent/releases/latest) 获取。
+
+在 macOS 上：
 
 1. 下载 `Maka-<version>-mac-arm64.dmg`；
 2. 打开 DMG，将 Maka 拖入“应用程序”；
 3. 执行 `brew install ripgrep`，启用 Runtime 的 `Grep` 工具；
 4. 启动 Maka，在`设置 → 模型`中配置自己的模型连接。
 
-首个公开版本不包含 Computer Use，暂不支持 Intel Mac、Windows 和 Linux 安装包。
+Windows x64 安装包目前未签名，首次启动可能触发 SmartScreen。打开前请使用 Release 中附带的 `.sha256` 文件校验。Intel Mac 和 Linux 暂无发布安装包。当前版本不包含 Computer Use。
 
 ### Windows x64 预览版
 

@@ -4,6 +4,8 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![docs](https://img.shields.io/badge/docs-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue?logo=googletranslate&logoColor=white)](./README.zh-CN.md)
 
+[Website](https://maka-agent.com/) · [Download](https://maka-agent.com/download/) · [Documentation](https://maka-agent.com/docs/) · [Architecture](https://maka-agent.com/architecture/) · [Latest release](https://github.com/maka-agent/maka-agent/releases/latest)
+
 ![Maka — Your work. Your agent.](./.github/assets/maka-hero.en.png)
 
 **A local-first Agent workspace built for real work.**
@@ -55,16 +57,18 @@ Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 
 ## Quick start
 
-### Download Desktop for macOS
+### Download Desktop
 
-The signed and notarized Desktop app is available from [GitHub Releases](https://github.com/Maka-Agent/maka-agent/releases/latest) for Apple Silicon Macs only (`arm64`).
+The signed and notarized Apple Silicon macOS build and an unsigned Windows x64 preview are available from the [Maka download page](https://maka-agent.com/download/) and [GitHub Releases](https://github.com/Maka-Agent/maka-agent/releases/latest).
+
+On macOS:
 
 1. Download `Maka-<version>-mac-arm64.dmg`;
 2. Open the DMG and drag Maka to Applications;
 3. Install `ripgrep` with `brew install ripgrep` to enable Runtime's `Grep` tool;
 4. Launch Maka and configure your own model connection under `Settings → Models`.
 
-Computer Use is not included in this first public build. Intel Macs, Windows, and Linux packages are not supported yet.
+The Windows x64 installer is currently unsigned and may trigger SmartScreen. Verify it against the attached `.sha256` file before opening it. Intel Macs and Linux do not have published installers. Computer Use is not included in the current release.
 
 ### Windows x64 preview
 
