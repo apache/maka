@@ -6,6 +6,8 @@ import importlib
 import json
 import os
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -540,7 +542,7 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
             server.close()
             await server.wait_closed()
 
-    async def test_framework_timeout_leaves_the_environment_for_the_verifier(self):
+    async def test_unconfirmed_framework_timeout_is_not_reported_as_scoreable(self):
         relay = load_relay()
         environment = FrameworkTimeoutEnvironment()
         token = f"framework-timeout-{os.getpid()}"
@@ -566,14 +568,11 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
             await writer.drain()
             await environment.started.wait()
             running.cancel()
-            executed = __import__("json").loads(await asyncio.wait_for(reader.readline(), 0.5))
-            self.assertEqual(executed["termination"], "framework_timeout")
-            self.assertEqual(executed["exitCode"], 124)
-            self.assertEqual(executed["diagnostic"]["category"], "result-frame-missing")
-            # The verifier still runs after a timeout. Deleting the environment
-            # here would score a different trial than the one the subject left.
-            self.assertFalse(environment.stopped)
-            with self.assertRaises(asyncio.CancelledError):
+            self.assertEqual(await asyncio.wait_for(reader.readline(), 0.5), b"")
+            # The subject never acknowledged either leader-only signal. Do not
+            # let the verifier race a process that may still mutate its input.
+            self.assertTrue(environment.stopped)
+            with self.assertRaisesRegex(RuntimeError, "could not confirm subject exit"):
                 await running
         finally:
             writer.close()
@@ -739,6 +738,70 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(late_write.exists())
             finally:
                 Path(scope_path).unlink(missing_ok=True)
+
+    @unittest.skipUnless(shutil.which("setsid"), "requires GNU setsid")
+    async def test_framework_timeout_preserves_a_live_background_service(self):
+        relay = load_relay()
+        environment = LocalEnvironment()
+        token = f"timeout-service-{os.getpid()}"
+        scope_path = f"/tmp/maka-eval-{token}.pid"
+        service_pid = None
+        execution = None
+        with tempfile.TemporaryDirectory() as directory:
+            pid_path = Path(directory) / "service.pid"
+            port_path = Path(directory) / "service.port"
+            server = (
+                "import os,socket;"
+                "server=socket.socket();"
+                "server.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);"
+                "server.bind(('127.0.0.1',0));server.listen(1);"
+                f"open({str(pid_path)!r},'w').write(str(os.getpid()));"
+                f"open({str(port_path)!r},'w').write(str(server.getsockname()[1]));"
+                "connection,_=server.accept();connection.sendall(b'alive');connection.close()"
+            )
+            subject = (
+                "import subprocess,sys,time;"
+                f"subprocess.Popen([sys.executable,'-c',{server!r}],"
+                "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+                "time.sleep(60)"
+            )
+            request = {
+                "command": sys.executable,
+                "args": ["-c", subject],
+                "credentials": {},
+                "resultToken": "0" * 32,
+            }
+            try:
+                command = await relay._prepare_command(
+                    environment, request, token, scope_path
+                )
+                execution = asyncio.create_task(
+                    environment.exec(command, cwd=directory)
+                )
+                deadline = time.monotonic() + 2
+                while not (pid_path.exists() and port_path.exists()):
+                    if time.monotonic() >= deadline:
+                        self.fail("background service did not start")
+                    await asyncio.sleep(0.01)
+                service_pid = int(pid_path.read_text())
+                result = await relay._stop_subject_for_timeout(
+                    environment, directory, scope_path, execution, 2
+                )
+                self.assertIsNotNone(result)
+                with socket.create_connection(
+                    ("127.0.0.1", int(port_path.read_text())), timeout=1
+                ) as connection:
+                    self.assertEqual(connection.recv(5), b"alive")
+            finally:
+                if execution is not None and not execution.done():
+                    with contextlib.suppress(Exception):
+                        await relay._settle(
+                            environment, directory, scope_path, execution
+                        )
+                Path(scope_path).unlink(missing_ok=True)
+                if service_pid is not None:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.kill(service_pid, signal.SIGTERM)
 
     async def test_an_exited_subject_is_left_alone_whatever_it_reported(self):
         # The verifier scores the environment the task was left in, so a subject

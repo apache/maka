@@ -568,7 +568,10 @@ test('the Maka shim projects only a completed subject as a zero exit', async () 
       const client = join(root, 'client.mjs');
       await writeFile(
         client,
-        `export async function runHostedExecution() { return ${JSON.stringify(frame)}; }\n`,
+        `export async function runHostedExecution(input) {
+  if (input.abortPolicy !== 'preserve_environment') throw new Error('missing Eval abort policy');
+  return ${JSON.stringify(frame)};
+}\n`,
       );
       const { exitCode, stdout } = await execFileAsync(
         process.execPath,

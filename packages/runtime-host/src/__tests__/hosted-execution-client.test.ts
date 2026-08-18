@@ -91,6 +91,47 @@ test('post-connect cancellation reports the owned Host settlement outcome', asyn
   }
 });
 
+test('environment-preserving abort detaches without cancelling or settling the Host', async () => {
+  const abort = new AbortController();
+  const started = deferred();
+  const closed = deferred();
+  const events: string[] = [];
+  const connected = ownedHost({
+    request: async (operation: string) => {
+      events.push(operation);
+      if (operation !== 'hosted.execution.start') {
+        throw new Error(`Unexpected operation ${operation}`);
+      }
+      started.resolve();
+      await closed.promise;
+      throw new Error('connection detached');
+    },
+  });
+  connected.connection.close = async () => {
+    if (events.includes('close')) return;
+    events.push('close');
+    closed.resolve();
+  };
+  connected.host.releaseToEnvironment = () => {
+    events.push('release');
+  };
+  connected.host.settle = async () => {
+    assert.fail('a detached Host must not settle');
+  };
+
+  const execution = runHostedExecutionWithDependencies(
+    { ...input(abort.signal), abortPolicy: 'preserve_environment' },
+    { connectOwnedRuntimeHost: async () => connected as never },
+  );
+  await started.promise;
+  abort.abort();
+  const result = await execution;
+
+  assert.equal(result.kind, 'indeterminate');
+  assert.equal(result.failureReason, 'Hosted execution continues for environment verification');
+  assert.deepEqual(events, ['hosted.execution.start', 'release', 'close']);
+});
+
 test('explicit target mutation settles the first Host before execution reconnects', async () => {
   const projection = settled('completed');
   const events: string[] = [];
@@ -338,4 +379,12 @@ function ownedHost(connection: Record<string, unknown>, clean = false) {
       settle: async () => clean,
     },
   };
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
 }

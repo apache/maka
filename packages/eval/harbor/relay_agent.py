@@ -590,12 +590,29 @@ async def _stop_subject_for_timeout(
         return execution.result()
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
+    destroy_reserve = min(20.0, timeout * 0.2)
+    stop_deadline = deadline - destroy_reserve
     result = None
     for signal, slice_timeout in (("TERM", 20.0), ("KILL", 10.0)):
-        remaining = deadline - loop.time()
+        remaining = stop_deadline - loop.time()
         if remaining <= 0:
             break
-        await _signal_leader(environment, cwd, scope_path, signal)
+        signalled = await _signal_leader(environment, cwd, scope_path, signal)
+        if not signalled:
+            # A vanished leader can race the environment.exec completion by a
+            # few scheduling turns. Admit that terminal result, but do not
+            # spend the rest of the timeout pretending an unissued signal is
+            # evidence that a live subject stopped.
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(execution), timeout=min(0.1, remaining)
+                )
+            except asyncio.CancelledError:
+                if execution.cancelled():
+                    raise RuntimeError("Maka Eval subject execution was cancelled") from None
+                raise
+            except (TimeoutError, asyncio.TimeoutError):
+                break
         try:
             result = await asyncio.wait_for(
                 asyncio.shield(execution),
@@ -612,12 +629,21 @@ async def _stop_subject_for_timeout(
         return result
     if execution.done() and not execution.cancelled():
         return execution.result()
-    if not execution.done():
-        execution.cancel()
+    # A verifier cannot measure a stable environment while the subject may
+    # still be mutating it. Fail closed instead of publishing a scoreable
+    # framework_timeout frame without positive leader-exit evidence.
+    try:
+        remaining = max(0.001, deadline - loop.time())
+        await asyncio.wait_for(environment.stop(delete=True), timeout=remaining)
+    except Exception:
+        pass
+    finally:
+        if not execution.done():
+            execution.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             remaining = max(0.001, deadline - loop.time())
             await asyncio.wait_for(execution, timeout=remaining)
-    return None
+    raise RuntimeError("Maka Eval could not confirm subject exit after framework timeout")
 
 
 async def _settle_or_destroy(
@@ -664,18 +690,21 @@ async def _signal_group(environment: Any, cwd: str, scope_path: str, signal: str
         )
 
 
-async def _signal_leader(environment: Any, cwd: str, scope_path: str, signal: str) -> None:
+async def _signal_leader(environment: Any, cwd: str, scope_path: str, signal: str) -> bool:
     command = (
-        f"pgid=$(cat {shlex.quote(scope_path)} 2>/dev/null) || exit 0; "
-        "case $pgid in ''|0|*[!0-9]*) exit 0;; esac; "
+        f"pgid=$(cat {shlex.quote(scope_path)} 2>/dev/null) || exit 1; "
+        "case $pgid in ''|0|*[!0-9]*) exit 1;; esac; "
         f"kill -{signal} -- \"$pgid\""
     )
-    with contextlib.suppress(Exception):
-        await environment.exec(
+    try:
+        result = await environment.exec(
             command,
             cwd=cwd,
             timeout_sec=5,
         )
+        return result.return_code == 0
+    except Exception:
+        return False
 
 
 async def _quiesce_scope(environment: Any, cwd: str, scope_path: str) -> None:

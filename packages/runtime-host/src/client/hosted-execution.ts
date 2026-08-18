@@ -14,6 +14,7 @@ export interface RunHostedExecutionInput {
   readonly execution: HostedExecutionStartInput;
   readonly baseUrl?: string;
   readonly signal?: AbortSignal;
+  readonly abortPolicy?: 'cancel' | 'preserve_environment';
   readonly hostSettlementTimeoutMs?: number;
 }
 
@@ -58,6 +59,7 @@ export async function runHostedExecutionWithDependencies(
     { kind: 'connected' }
   > = initial;
   let projection: HostedExecutionProjection;
+  let detached = false;
   try {
     input.signal?.throwIfAborted();
     const target = input.execution.session.modelTarget;
@@ -97,7 +99,15 @@ export async function runHostedExecutionWithDependencies(
         connected = reconnected;
       }
     }
-    projection = await executeHostedExecution(connected.connection, input.execution, input.signal);
+    const execution = await executeHostedExecution(
+      connected.connection,
+      connected.host,
+      input.execution,
+      input.signal,
+      input.abortPolicy ?? 'cancel',
+    );
+    projection = execution.projection;
+    detached = execution.detached;
   } catch {
     projection = input.signal?.aborted
       ? indeterminate(input.execution.executionId, 'Hosted execution was cancelled')
@@ -109,6 +119,7 @@ export async function runHostedExecutionWithDependencies(
     await connected.connection.close().catch(() => undefined);
   }
 
+  if (detached) return projection;
   if (preservesHostedExecutionEnvironment(projection)) {
     connected.host.releaseToEnvironment();
     return projection;
@@ -120,11 +131,25 @@ export async function runHostedExecutionWithDependencies(
 }
 
 async function executeHostedExecution(
-  connection: Pick<RuntimeHostConnection, 'request'>,
+  connection: Pick<RuntimeHostConnection, 'request' | 'close'>,
+  host: { releaseToEnvironment(): void },
   execution: HostedExecutionStartInput,
   signal: AbortSignal | undefined,
-): Promise<HostedExecutionProjection> {
+  abortPolicy: NonNullable<RunHostedExecutionInput['abortPolicy']>,
+): Promise<{ readonly projection: HostedExecutionProjection; readonly detached: boolean }> {
+  let detached = false;
+  let closeForDetach: Promise<void> | undefined;
+  const detach = () => {
+    if (abortPolicy !== 'preserve_environment' || detached) return;
+    detached = true;
+    host.releaseToEnvironment();
+    closeForDetach = connection.close().catch(() => undefined);
+  };
   const cancel = () => {
+    if (abortPolicy === 'preserve_environment') {
+      detach();
+      return;
+    }
     void connection
       .request('hosted.execution.cancel', { executionId: execution.executionId })
       .catch(() => undefined);
@@ -132,9 +157,31 @@ async function executeHostedExecution(
   signal?.addEventListener('abort', cancel, { once: true });
   if (signal?.aborted) cancel();
   try {
-    return await connection.request('hosted.execution.start', execution);
+    const projection = await connection.request('hosted.execution.start', execution);
+    return {
+      projection:
+        detached && !preservesHostedExecutionEnvironment(projection)
+          ? indeterminate(
+              execution.executionId,
+              'Hosted execution continues for environment verification',
+            )
+          : projection,
+      detached,
+    };
+  } catch (error) {
+    if (detached) {
+      return {
+        projection: indeterminate(
+          execution.executionId,
+          'Hosted execution continues for environment verification',
+        ),
+        detached: true,
+      };
+    }
+    throw error;
   } finally {
     signal?.removeEventListener('abort', cancel);
+    await closeForDetach;
   }
 }
 
