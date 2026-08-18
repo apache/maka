@@ -57,6 +57,29 @@ iterables, and streams no longer cross a JSON or RPC boundary.
 
 ## Composition
 
+### Canonical management surface
+
+`define_package` and `manage_package` are the canonical control surface for a
+multi-contribution Extension Revision. One immutable package may contain
+Tools, UI, Events, Listeners, Services, and Timers, so activation, update,
+stop, and delete share one composition transaction and rollback boundary.
+The older `*_tool`, `*_ui`, and `*_event` management tools remain compatibility
+adapters for existing callers; they must not create a second package or
+activation authority.
+
+Events, Hooks, and Timers are related but not interchangeable:
+
+- An Event is a typed fact or request with a payload and dispatch mode.
+- A Hook is an Event listener, usually attached to a core Maka Event such as
+  `maka.tools.execute` or `maka.llm.stream`; it observes or transforms a
+  lifecycle operation.
+- A Timer is a Host-owned scheduler that invokes a callback on a schedule. The
+  callback may emit an Event, but the schedule itself is neither an Event nor a
+  Hook.
+
+All three are contributions of the same package and share lifecycle ownership;
+only their execution authorities differ.
+
 ### Context runtime
 
 The live Runtime is organized as an owned Context tree rather than one flat
