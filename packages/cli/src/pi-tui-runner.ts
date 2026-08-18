@@ -381,7 +381,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     requestRender();
   });
   // Attaching to a session whose durable goal auto-continues after recovery
-  // must never resume a token-burning loop silently.
+  // must never resume a token-burning loop silently. This covers a driver
+  // that is already attached at startup; a resumeSessionId attach happens
+  // later, so switchSession repeats the check after adopting the session.
   if (
     currentGoal !== null &&
     (currentGoal.status === 'active' || currentGoal.status === 'waiting')
@@ -1437,6 +1439,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       relocateCwd === undefined ? undefined : { relocateCwd },
     );
     await applySwitchResult(result);
+    // Sync the transition cache to the adopted session's goal, then announce a
+    // live durable goal: the init-time check ran before the driver attached
+    // the resumed session, and the goal subscription only announces pause
+    // transitions. Emitting here — after the transcript replacement that
+    // would erase a notice from adoption time — keeps an auto-continuing
+    // token-burning loop from resuming silently.
+    currentGoal = input.driver.getGoal?.() ?? null;
+    if (
+      currentGoal !== null &&
+      (currentGoal.status === 'active' || currentGoal.status === 'waiting')
+    ) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: goalAttachedNoticeText(currentGoal),
+      });
+    }
     if (result.relocation?.changed) {
       const warning =
         result.relocation.oldCwdDirty === true
@@ -2580,7 +2599,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       notice(action === 'clear' ? 'Goal cleared.' : 'The goal no longer exists.');
       return;
     }
+    // Keep the transition cache on the authoritative response: a trailing push
+    // of this same transition then folds onto an identical previous state and
+    // is not mistaken for a fresh one.
+    currentGoal = result;
     if (action === 'pause') {
+      // Settle the suppression flag: the command's own confirmation has told
+      // the user, and a lingering flag would suppress a later host-initiated
+      // pause of this goal (e.g. the Ctrl+C auto-pause).
+      selfInitiatedPauseGoalId = null;
       notice('Goal paused. /goal resume continues it, /goal clear stops it.');
     } else if (action === 'resume') {
       notice('Goal resumed.');
