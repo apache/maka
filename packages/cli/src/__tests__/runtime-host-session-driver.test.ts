@@ -1969,6 +1969,80 @@ describe('turn consumer lag recovery (#3180)', () => {
     assert.equal((await nextEvent(switched.activeTurn.events)).text, '!');
   });
 
+  for (const [name, replacementRoot] of [
+    ['the same terminal turn', completedTurn('turn-1', 'run-1')],
+    ['a successor turn', runningTurn('turn-2', 'run-2')],
+  ] as const) {
+    test(`preserves an unconsumed terminal event across a replacement with ${name}`, async () => {
+      const initial = new FakeSubscription(
+        continuitySnapshot(),
+        Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+      );
+      const replacement = new FakeSubscription(
+        continuitySnapshot({ projectionRevision: 3, rootTurn: replacementRoot }),
+        Promise.resolve([
+          assistantMessage('turn-1', 'Hello'),
+          turnStateMessage('turn-1', 'completed'),
+          ...(replacementRoot.turnId === 'turn-2' ? [userMessage('turn-2', 'Continue')] : []),
+        ]),
+        'subscription-2',
+      );
+      const connection = new FakeConnection([initial, replacement], true);
+      const driver = createRuntimeHostMakaSessionDriver({
+        connection: connection.value,
+        cwd: '/tmp',
+        llmConnectionSlug: 'openai-main',
+        model: 'gpt-5',
+        now: () => 50,
+      });
+      const switched = await driver.switchSession('session-1');
+      assert.ok(switched.activeTurn);
+
+      initial.push(projectionFrame(1, completedTurn('turn-1', 'run-1'), 2));
+      await delay(0);
+      initial.fail(new RuntimeHostSubscriptionError('connection_closed', 'connection lost'));
+      await waitForSubscriptions(connection, 2);
+
+      assert.equal((await nextEvent(switched.activeTurn.events)).type, 'complete');
+      assert.equal((await switched.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
+    });
+  }
+
+  test('exhausts recovery after repeated one-frame clean-EOF replacements', async () => {
+    const initial = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+    );
+    const ended = Array.from({ length: 8 }, (_, index) => {
+      const subscription = new FakeSubscription(
+        continuitySnapshot({ projectionRevision: index + 2 }),
+        Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+        `subscription-${index + 2}`,
+      );
+      subscription.push(deltaFrame(1, 'turn-1', 5, String(index), `subscription-${index + 2}`));
+      return subscription;
+    });
+    for (const subscription of ended) await subscription.close();
+    const connection = new FakeConnection([initial, ...ended], true);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 50,
+    });
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+
+    await initial.close();
+    await assert.rejects(async () => {
+      for await (const _event of switched.activeTurn!.events) {
+        // Drain each replacement's single live frame until recovery fails.
+      }
+    }, /recovery exhausted its retry budget/u);
+    assert.equal(connection.openedSubscriptions, 9);
+  });
+
   test('re-arms lag detection exactly at the hysteresis watermark', async () => {
     const initial = new FakeSubscription(
       continuitySnapshot(),

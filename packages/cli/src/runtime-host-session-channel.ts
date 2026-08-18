@@ -260,7 +260,6 @@ export class RuntimeHostSessionChannel {
     try {
       for await (const frame of subscription) {
         if (this.#closing || this.#subscription !== subscription) return;
-        if (frame.kind !== 'subscription.closed') this.#markRecoveryStable(subscription);
         if (!this.#ready) {
           if (this.#pendingFrames.length >= MAX_PENDING_FRAMES) {
             throw new RuntimeHostSubscriptionError(
@@ -483,12 +482,6 @@ export class RuntimeHostSessionChannel {
     this.#recoveryAttemptsWithoutLiveFrame += 1;
   }
 
-  #markRecoveryStable(subscription: RuntimeHostSessionSubscription): void {
-    if (this.#subscription !== subscription) return;
-    this.#clearRecoveryStableTimer();
-    this.#recoveryAttemptsWithoutLiveFrame = 0;
-  }
-
   #scheduleRecoveryStable(subscription: RuntimeHostSessionSubscription): void {
     this.#clearRecoveryStableTimer();
     const timer = setTimeout(() => {
@@ -702,9 +695,11 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
     this.#items.push(event);
   }
 
-  /** Drop the entire unseen pre-cut backlog after canonical replacement. */
+  /** Drop unseen pre-cut work, retaining an unconsumed terminal guarantee. */
   cutBacklog(): void {
+    const terminal = this.#finishAfterItems ? this.#items.find(isTurnTerminalOutcome) : undefined;
     this.#items.length = 0;
+    if (terminal) this.#items.push(terminal);
   }
 
   #noteLag(): void {
@@ -748,12 +743,11 @@ function isGuaranteedOutcome(event: SessionEvent): boolean {
   // complete/abort/error close the turn; tool_result is the authoritative
   // terminal result for its tool — losing it leaves the live tool card
   // running until the durable transcript heals it on a later reload.
-  return (
-    event.type === 'complete' ||
-    event.type === 'abort' ||
-    event.type === 'error' ||
-    event.type === 'tool_result'
-  );
+  return isTurnTerminalOutcome(event) || event.type === 'tool_result';
+}
+
+function isTurnTerminalOutcome(event: SessionEvent): boolean {
+  return event.type === 'complete' || event.type === 'abort' || event.type === 'error';
 }
 
 function sameTerminalTurn(
