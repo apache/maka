@@ -84,10 +84,6 @@ try {
       $rendered -notmatch '"desktop":"maka-sandbox-desktop\.') {
     throw "AppContainer boundary was not established: exit=$exitCode output=$rendered"
   }
-  # The confined child must never land on the shared interactive desktop.
-  if ($rendered -match '"desktop":"Default"') {
-    throw "Confined child ran on the interactive Default desktop: $rendered"
-  }
   $readAcl = (& icacls.exe $allowedReadPath 2>&1) -join "`n"
   $writeAcl = (& icacls.exe $allowedWriteRoot 2>&1) -join "`n"
   if ($readAcl -match 'S-1-15-2-' -or $writeAcl -match 'S-1-15-2-') {

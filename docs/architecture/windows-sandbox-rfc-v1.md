@@ -147,9 +147,11 @@ Lexical prefix checks are never authorization evidence.
   there is no runnable pre-assignment window.
 - The Job kills all descendants when its owner closes and does not permit breakaway.
 - Only declared stdio/protocol handles are inherited through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`.
-- Non-interactive workers run on a private desktop and cannot enumerate or post window messages to
-  the user's interactive windows, or install desktop hooks against them. _(Partially enforced as
-  initial-desktop **placement**, not escape-proof confinement: each launch and the readiness probe
+- Non-interactive workers start on a launcher-created private (alternate) desktop, never the
+  interactive `Default` desktop; keeping a worker *unable* to enumerate, message, or hook the user's
+  interactive windows even after in-process escape attempts additionally requires the deferred
+  no-Win32k/window-station gates (§6.5). _(Enforced as initial-desktop **placement**, not
+  escape-proof confinement: each launch and the readiness probe
   create a per-launch alternate desktop whose DACL grants only the launching user, Local System, and
   that launch's AppContainer SID — granting the AppContainer SID only the minimal non-interactive
   rights, and leading with a deny ACE that strips `DESKTOP_SWITCHDESKTOP`, `DESKTOP_HOOKCONTROL`, and

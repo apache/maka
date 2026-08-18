@@ -4,7 +4,7 @@ use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::Foundation::{
@@ -13,6 +13,9 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
+use windows_sys::Win32::Security::Cryptography::{
+    BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
 };
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
@@ -431,8 +434,7 @@ unsafe fn probe_appcontainer_child(
     // gate (RFC §6.5). Success reports the private desktop the child was placed
     // on so the caller can emit a machine-readable attestation of the verified
     // facts instead of a bare success bit.
-    let desktop_name =
-        String::from_utf16_lossy(&desktop.name[..desktop.name.len().saturating_sub(1)]);
+    let desktop_name = desktop.name_string();
     match (verify, settled) {
         (Err(error), _) => Err(error),
         (Ok(_), Err(cleanup)) => Err(cleanup),
@@ -699,6 +701,13 @@ pub(crate) struct ConfinedDesktop {
     name: Vec<u16>,
 }
 
+impl ConfinedDesktop {
+    /// The desktop's name without the trailing NUL, for attestation and tests.
+    pub(crate) fn name_string(&self) -> String {
+        String::from_utf16_lossy(&self.name[..self.name.len().saturating_sub(1)])
+    }
+}
+
 impl Drop for ConfinedDesktop {
     fn drop(&mut self) {
         unsafe {
@@ -730,20 +739,45 @@ impl Drop for ConfinedDesktop {
 /// system desktop heap. Fails closed: if the desktop or its security
 /// descriptor cannot be built, the caller aborts the launch rather than fall
 /// back to the interactive desktop.
+/// 128-bit nonce from the OS CSPRNG for per-launch desktop names. Fails closed:
+/// no fallback to a predictable value when the RNG is unavailable.
+fn desktop_name_nonce() -> Result<u128, String> {
+    let mut bytes = [0u8; 16];
+    let status = unsafe {
+        BCryptGenRandom(
+            null_mut(),
+            bytes.as_mut_ptr(),
+            bytes.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status != 0 {
+        return Err(format!(
+            "BCryptGenRandom(desktop nonce) failed with NTSTATUS 0x{:08x}",
+            status as u32
+        ));
+    }
+    Ok(u128::from_le_bytes(bytes))
+}
+
 pub(crate) unsafe fn create_confined_desktop(
     app_container_sid: *mut c_void,
 ) -> Result<ConfinedDesktop, String> {
     let owner_sid = current_user_sid_string()?;
     let package_sid = unsafe { sid_string(app_container_sid) }?;
     // A per-launch name so concurrent sandboxes never share a desktop, and a
-    // name leaked by a killed launch never collides with a live one. Mirrors
-    // the readiness-probe profile nonce (§6.4).
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or(0);
+    // name leaked by a killed launch never collides with a live one. The nonce
+    // must be unforgeable-by-accident: `CreateDesktopExW` *opens* an existing
+    // desktop when the name already exists — the supplied security descriptor
+    // and heap size are then silently ignored — so a predictable nonce (wall
+    // clock, PID) would let PID reuse, clock rollback, or same-tick calls
+    // reopen an older desktop while the prefix attestation still passed. A
+    // 128-bit CSPRNG nonce makes collision cryptographically negligible, and
+    // an RNG failure fails the launch closed instead of collapsing to a
+    // constant name.
+    let nonce = desktop_name_nonce()?;
     let name = wide(&format!(
-        "maka-sandbox-desktop.{}.{nonce}",
+        "maka-sandbox-desktop.{}.{nonce:032x}",
         std::process::id()
     ));
 

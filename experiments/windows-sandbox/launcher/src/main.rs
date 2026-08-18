@@ -315,25 +315,11 @@ fn desktop_is_private_placement(name: &str) -> bool {
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case(PRIVATE_DESKTOP_PREFIX))
 }
 
-/// Minimal JSON string escaping for the desktop name embedded in probe output.
+/// JSON string encoding for names embedded in probe output. Delegates to
+/// `serde_json` (already a dependency) instead of hand-rolled escaping; string
+/// serialization is infallible.
 fn json_string(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len() + 2);
-    escaped.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            control if (control as u32) < 0x20 => {
-                escaped.push_str(&format!("\\u{:04x}", control as u32));
-            }
-            other => escaped.push(other),
-        }
-    }
-    escaped.push('"');
-    escaped
+    serde_json::to_string(value).expect("JSON string encoding cannot fail")
 }
 
 /// Name of the desktop the current thread is attached to. Fails closed: a

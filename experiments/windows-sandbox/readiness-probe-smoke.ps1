@@ -31,9 +31,6 @@ function Assert-ReadinessAttestation {
       $Rendered -notmatch '"desktopPrivatePlacement":true') {
     throw "Readiness probe ($Phase) did not attest the verified boundary: $Rendered"
   }
-  if ($Rendered -match '"desktop":"Default"') {
-    throw "Readiness child was placed on the interactive Default desktop: $Rendered"
-  }
 }
 
 $firstOutput = & $launcher --readiness-probe 2>&1

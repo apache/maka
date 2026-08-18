@@ -11,8 +11,8 @@ use std::ptr::null_mut;
 use windows_sys::Win32::Security::FreeSid;
 use windows_sys::Win32::Security::Isolation::DeriveAppContainerSidFromAppContainerName;
 
+use crate::desktop_is_private_placement;
 use crate::windows_launcher::{create_confined_desktop, desktop_sddl};
-use crate::{desktop_is_private_placement, json_string};
 
 const APP_SID: &str =
     "S-1-15-2-1234567890-1234567890-1234567890-1234567890-1234567890-1234567890-1234567890";
@@ -122,16 +122,23 @@ fn ten_confined_desktops_can_be_held_live() {
         })
         .collect();
     assert_eq!(desktops.len(), 10);
+    // Ten *distinct* objects, not ten handles to a reopened one:
+    // `CreateDesktopExW` opens an existing desktop on a name collision (and
+    // then silently ignores the supplied DACL and heap size), so the CSPRNG
+    // nonce must have produced ten different names while all handles are held
+    // live simultaneously.
+    let names: std::collections::HashSet<String> = desktops
+        .iter()
+        .map(|desktop| desktop.name_string())
+        .collect();
+    assert_eq!(names.len(), 10, "desktop names must be unique: {names:?}");
+    for name in &names {
+        assert!(
+            desktop_is_private_placement(name),
+            "every created desktop must pass the placement attestation: {name}"
+        );
+    }
     // Drop order releases all ten handles; the kernel reclaims the desktops.
     drop(desktops);
     unsafe { FreeSid(sid) };
-}
-
-#[test]
-fn desktop_name_is_json_escaped() {
-    assert_eq!(
-        json_string("maka-sandbox-desktop.1.2"),
-        "\"maka-sandbox-desktop.1.2\""
-    );
-    assert_eq!(json_string("a\"b\\c"), "\"a\\\"b\\\\c\"");
 }

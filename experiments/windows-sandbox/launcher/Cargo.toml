@@ -18,6 +18,8 @@ windows-sys = { version = "0.61", features = [
   # windows-sys only exposes it when Win32_Graphics_Gdi is also enabled.
   "Win32_Graphics_Gdi",
   "Win32_Security",
+  # BCryptGenRandom: CSPRNG nonce for per-launch desktop names.
+  "Win32_Security_Cryptography",
   "Win32_Security_Isolation",
   "Win32_Security_Authentication_Identity",
   "Win32_Security_Authorization",
