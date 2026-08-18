@@ -1,7 +1,7 @@
-import { Context, Service, type Fiber } from '@deepseek-ai/cordis';
+import { Context, Service, type Fiber } from '@maka/runtime/plugin-kernel';
 import type { ExtensionUiContributionProjection } from '@maka/runtime-host/protocol';
 
-declare module '@deepseek-ai/cordis' {
+declare module '@maka/runtime/plugin-kernel' {
   interface Context {
     clientUi: ClientUiRegistry;
   }

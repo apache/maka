@@ -1,4 +1,4 @@
-import { Service, type Context } from '@deepseek-ai/cordis';
+import { Service, type Context } from './plugin-kernel.js';
 import type { MakaTool } from './tool-runtime.js';
 import {
   ExtensionToolContributionRegistry,
@@ -7,7 +7,7 @@ import {
 } from './extension-tool-contributions.js';
 import { pluginIdentity, registerPluginContribution } from './plugin-runtime.js';
 
-declare module '@deepseek-ai/cordis' {
+declare module './plugin-kernel.js' {
   interface Context {
     tools: PluginToolService;
   }

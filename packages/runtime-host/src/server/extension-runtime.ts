@@ -1,4 +1,4 @@
-import { Context, type Plugin } from '@deepseek-ai/cordis';
+import { Context, type Plugin } from '@maka/runtime/plugin-kernel';
 import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
 import {
   type MakaContributionContext,

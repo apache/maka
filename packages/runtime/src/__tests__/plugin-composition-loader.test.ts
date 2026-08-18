@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Context, type Plugin } from '@deepseek-ai/cordis';
+import { Context, type Plugin } from '../plugin-kernel.js';
 import { z } from 'zod';
 import { MakaCompositionLoader } from '../plugin-composition-loader.js';
 import { PluginToolService } from '../plugin-tool-service.js';

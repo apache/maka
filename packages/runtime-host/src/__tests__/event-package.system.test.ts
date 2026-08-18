@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { MakaToolContext } from '@maka/runtime/tool-runtime';
-import { Context } from '@deepseek-ai/cordis';
+import { Context } from '@maka/runtime/plugin-kernel';
 import { HostExtensionController } from '../server/extension-controller.js';
 import {
   InstalledPluginPackageLoader,

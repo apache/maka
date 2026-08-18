@@ -1,4 +1,4 @@
-import { Service, type Context } from '@deepseek-ai/cordis';
+import { Service, type Context } from './plugin-kernel.js';
 import {
   type ExtensionUiContribution,
   type ExtensionUiContributionInspection,
@@ -8,7 +8,7 @@ import {
 } from './extension-ui-contributions.js';
 import { pluginIdentity, registerPluginContribution } from './plugin-runtime.js';
 
-declare module '@deepseek-ai/cordis' {
+declare module './plugin-kernel.js' {
   interface Context {
     ui: PluginUiService;
   }

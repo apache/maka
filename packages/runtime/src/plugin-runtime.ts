@@ -1,4 +1,4 @@
-import type { Context, FiberState, Plugin } from '@deepseek-ai/cordis';
+import type { Context, FiberState, Plugin } from './plugin-kernel.js';
 
 const ID_PATTERN = /^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/u;
 
@@ -129,7 +129,7 @@ export interface MakaPluginTransaction {
   rollback(): void | Promise<void>;
 }
 
-declare module '@deepseek-ai/cordis' {
+declare module './plugin-kernel.js' {
   interface Context {
     maka?: MakaPluginMetadata;
     makaTransaction?: MakaPluginTransaction;

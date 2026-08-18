@@ -1,4 +1,4 @@
-import { Context, type Fiber, type Inject, type Plugin } from '@deepseek-ai/cordis';
+import { Context, type Fiber, type Inject, type Plugin } from './plugin-kernel.js';
 import {
   fiberStateName,
   type MakaCompositionEntry,
