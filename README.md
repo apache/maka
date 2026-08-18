@@ -115,6 +115,9 @@ The app distinguishes configured, send-ready, and experimental connection states
 
 ## Terminal entry points
 
+For the public npm package, see the [CLI installation and usage guide](./packages/cli/README.md).
+The commands below run the development CLI from a source checkout.
+
 Build the workspaces first:
 
 ```sh

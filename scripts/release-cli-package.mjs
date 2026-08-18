@@ -443,6 +443,7 @@ function copyEvalMirror() {
 
 function copyReleaseDocuments() {
   copyFileSync(join(cliSource, 'README.md'), join(stageRoot, 'README.md'));
+  copyFileSync(join(cliSource, 'README.zh-CN.md'), join(stageRoot, 'README.zh-CN.md'));
   copyFileSync(join(repoRoot, 'LICENSE'), join(stageRoot, 'LICENSE'));
   copyFileSync(join(repoRoot, 'NOTICE'), join(stageRoot, 'NOTICE'));
   copyFileSync(
@@ -489,7 +490,15 @@ function writeReleaseManifest(cli, publishable) {
           registry: 'http://127.0.0.1:9/',
           tag: 'development',
         },
-    files: ['dist', 'packages/eval', 'README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.txt'],
+    files: [
+      'dist',
+      'packages/eval',
+      'README.md',
+      'README.zh-CN.md',
+      'LICENSE',
+      'NOTICE',
+      'THIRD_PARTY_NOTICES.txt',
+    ],
     dependencies,
     bundledDependencies: Object.keys(dependencies).sort(),
     ...(!publishable ? { private: true } : {}),
@@ -500,6 +509,7 @@ function writeReleaseManifest(cli, publishable) {
 function validateStaging() {
   const required = [
     'dist/cli.js',
+    'README.zh-CN.md',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'packages/eval/dist/harbor-external-subject.js',

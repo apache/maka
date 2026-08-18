@@ -114,6 +114,9 @@ Maka 不内置共享模型账号。第一次打开时：
 
 ## 使用终端入口
 
+公共 npm 包的安装和使用方式请查看 [CLI 中文指南](./packages/cli/README.zh-CN.md)。下面的命令
+用于从源码 checkout 运行开发版 CLI。
+
 先构建 workspace：
 
 ```sh
