@@ -201,7 +201,7 @@ export class HostExtensionController {
   async #configurationQuery(
     input: ExtensionConfigurationQueryInput,
   ): Promise<OperationOutcome<'extension.configuration.query'>> {
-    const binding = this.#bindings.get(input.bindingId);
+    const binding = this.#readEntryState(input.bindingId);
     if (!binding) {
       return { ok: false, error: { code: 'not_found', message: 'Extension binding not found' } };
     }
@@ -383,7 +383,7 @@ export class HostExtensionController {
   #authorizeUiState(
     input: ExtensionUiStateQueryInput,
   ): { code: 'not_found' | 'invalid_request'; message: string } | undefined {
-    const binding = this.#bindings.get(input.bindingId);
+    const binding = this.#readEntryState(input.bindingId);
     if (!binding) return { code: 'not_found', message: 'UI Extension binding is not installed' };
     const current = this.runtime.inspect(input.bindingId).current;
     if (
@@ -414,7 +414,7 @@ export class HostExtensionController {
   #authorizeUiRpc(
     input: ExtensionUiRpcInvokeInput,
   ): { code: 'not_found' | 'invalid_request'; message: string } | undefined {
-    const binding = this.#bindings.get(input.bindingId);
+    const binding = this.#readEntryState(input.bindingId);
     if (!binding) return { code: 'not_found', message: 'UI Extension binding is not installed' };
     const current = this.runtime.inspect(input.bindingId).current;
     if (
@@ -936,10 +936,28 @@ export class HostExtensionController {
   #configurationForBinding(
     bindingId: string,
   ): Readonly<Record<string, string | number | boolean>> {
+    return this.#readEntryState(bindingId)?.config ?? Object.freeze({});
+  }
+
+  #readEntryState(bindingId: string): CompositionEntryState | undefined {
     const persisted = this.#persistedComposition
-      ? persistedEntries(this.#persistedComposition).find(([, entry]) => entry.id === bindingId)?.[1]
+      ? persistedEntries(this.#persistedComposition).find(([, entry]) => entry.id === bindingId)
       : undefined;
-    return this.#bindings.get(bindingId)?.config ?? persisted?.config ?? Object.freeze({});
+    if (persisted) {
+      const [scopeId, entry] = persisted;
+      if (entry.packageId && entry.revision) {
+        return bindingState({
+          bindingId: entry.id,
+          scopeId,
+          extensionId: entry.packageId,
+          revision: entry.revision,
+          enabled: !entry.disabled,
+          error: entry.error ?? null,
+          config: entry.config,
+        });
+      }
+    }
+    return this.#bindings.get(bindingId);
   }
 
   async #requireAvailable(
@@ -1181,13 +1199,18 @@ export class HostExtensionController {
   }
 
   #bindingProjections(): readonly ExtensionBindingProjection[] {
-    return [...this.#bindings.keys()]
+    const bindingIds = this.#persistedComposition
+      ? persistedEntries(this.#persistedComposition)
+          .filter(([, entry]) => entry.packageId && entry.revision)
+          .map(([, entry]) => entry.id)
+      : [...this.#bindings.keys()];
+    return bindingIds
       .sort(compareString)
       .map((bindingId) => this.#projection(bindingId));
   }
 
   #projection(bindingId: string): ExtensionBindingProjection {
-    const binding = this.#bindings.get(bindingId);
+    const binding = this.#readEntryState(bindingId);
     if (!binding) throw new Error(`Extension binding not found: ${bindingId}`);
     const inspection = this.#tryInspect(bindingId);
     return {
