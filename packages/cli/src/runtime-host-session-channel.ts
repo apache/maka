@@ -66,6 +66,7 @@ export class RuntimeHostSessionChannel {
   readonly #pendingResolvedInteractions: InteractionPendingSnapshot[] = [];
   readonly #pendingTerminalTurns: TerminalTurnSnapshot[] = [];
   readonly #failedSubscriptions = new WeakSet<RuntimeHostSessionSubscription>();
+  readonly #retiringSubscriptions = new WeakSet<RuntimeHostSessionSubscription>();
   #projector: RuntimeHostSessionProjector | undefined;
   #ready = false;
   #activated = false;
@@ -266,6 +267,10 @@ export class RuntimeHostSessionChannel {
       if (!this.#closing) throw new Error('Runtime Host Session subscription ended unexpectedly');
     } catch (error) {
       if (this.#closing || this.#subscription !== subscription) return;
+      // A subscription retired because a turn consumer fell behind is closed
+      // deliberately; its pump must not turn that expected close into a
+      // channel failure.
+      if (this.#retiringSubscriptions.has(subscription)) return;
       if (this.#canRecover(error)) {
         this.#failedSubscriptions.add(subscription);
         if (!this.#ready) return;
@@ -506,11 +511,23 @@ export class RuntimeHostSessionChannel {
   #queue(turnId: string): SessionEventQueue {
     let queue = this.#turns.get(turnId);
     if (!queue) {
-      queue = new SessionEventQueue();
+      queue = new SessionEventQueue(() => this.#noteTurnConsumerLagging());
       this.#turns.set(turnId, queue);
       if (this.#failure) queue.fail(this.#failure);
     }
     return queue;
+  }
+
+  /**
+   * A turn consumer that cannot keep up is a slow client: retire the healthy
+   * subscription through the same recovery path a Host eviction would take so
+   * the session re-syncs from canonical state instead of dying mid-turn.
+   */
+  #noteTurnConsumerLagging(): void {
+    if (this.#closing || this.#failure || !this.#ready) return;
+    const subscription = this.#subscription;
+    this.#retiringSubscriptions.add(subscription);
+    this.#scheduleRecovery(subscription);
   }
 
   #fail(error: unknown): void {
@@ -522,6 +539,7 @@ export class RuntimeHostSessionChannel {
 
 class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<SessionEvent> {
   readonly #items: SessionEvent[] = [];
+  readonly #onLag: () => void;
   #waiting:
     | {
         resolve(value: IteratorResult<SessionEvent>): void;
@@ -531,6 +549,11 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
   #done = false;
   #finishAfterItems = false;
   #error: unknown;
+  #lagging = false;
+
+  constructor(onLag: () => void) {
+    this.#onLag = onLag;
+  }
 
   [Symbol.asyncIterator](): AsyncIterator<SessionEvent> {
     return this;
@@ -538,7 +561,10 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
 
   next(): Promise<IteratorResult<SessionEvent>> {
     const item = this.#items.shift();
-    if (item) return Promise.resolve({ done: false, value: item });
+    if (item) {
+      if (this.#items.length === 0) this.#lagging = false;
+      return Promise.resolve({ done: false, value: item });
+    }
     if (this.#error !== undefined) return Promise.reject(this.#error);
     if (this.#done || this.#finishAfterItems) {
       this.#done = true;
@@ -560,10 +586,30 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
       return;
     }
     if (this.#items.length >= MAX_PENDING_EVENTS_PER_TURN) {
-      this.fail(new Error('Runtime Host Session event consumer is too slow'));
-      return;
+      // A consumer that falls behind must not kill the stream. Shed
+      // offset-bearing deltas (the next canonical resync or completion heals
+      // them) and make room for every other event so terminal records always
+      // land; the channel resubscribes to re-sync state, like the Desktop
+      // subscription owner does (#2630).
+      if (isSheddableDelta(event)) {
+        this.#noteLag();
+        return;
+      }
+      const shedIndex = this.#items.findIndex(isSheddableDelta);
+      if (shedIndex === -1) {
+        this.#noteLag();
+        return;
+      }
+      this.#items.splice(shedIndex, 1);
+      this.#noteLag();
     }
     this.#items.push(event);
+  }
+
+  #noteLag(): void {
+    if (this.#lagging) return;
+    this.#lagging = true;
+    this.#onLag();
   }
 
   finish(): void {
@@ -583,6 +629,10 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
     this.#waiting?.reject(error);
     this.#waiting = undefined;
   }
+}
+
+function isSheddableDelta(event: SessionEvent): boolean {
+  return event.type === 'text_delta' || event.type === 'thinking_delta';
 }
 
 function sameTerminalTurn(
