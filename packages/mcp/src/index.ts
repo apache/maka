@@ -1048,12 +1048,6 @@ export class McpClientManager {
         if (!this.ownsToolRefresh(serverId, entry, state)) {
           throw safeMcpOperationError(serverId, 'connection changed during tool refresh', failure);
         }
-        // A notification that arrived while this list was in flight supersedes
-        // its result: skip the stale publish and let the trailing notification
-        // pass own the snapshot. A manual refresh queued during the list is
-        // different: its result is still a valid latest snapshot, so publish it
-        // below and only then run the trailing pass.
-        if (state.pendingNotification) continue;
         const notificationState = entry.refreshNotificationState;
         const notificationStateMatches =
           notificationState?.client === state.client &&
