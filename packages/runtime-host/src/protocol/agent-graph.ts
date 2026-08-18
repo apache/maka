@@ -908,6 +908,12 @@ function decodeSelectedResultInputs(
   if (!Array.isArray(value) || value.length === 0 || value.length > AGENT_GRAPH_MAX_WORK_INPUTS) {
     throw invalidProtocolFrame('Invalid selected graph result inputs');
   }
+  // The durable schedule contract caps current and selected historical inputs
+  // COMBINED at AGENT_GRAPH_MAX_WORK_INPUTS; the decoder must not admit a
+  // wider frame than the contract it projects.
+  if (currentInputIds.size + value.length > AGENT_GRAPH_MAX_WORK_INPUTS) {
+    throw invalidProtocolFrame('Graph input ids exceed the combined current and historical cap');
+  }
   const selected = value.map((item) => {
     const record = requireExactRecord(item, 'selected graph result input', [
       'sourceGraphId',

@@ -331,6 +331,58 @@ describe('Host Agent Graph coordinator', () => {
     assert.equal(JSON.stringify(projected).includes('secret'), false);
     assert.doesNotThrow(() => decodeAgentGraphClientSnapshot(projected));
   });
+
+  test('rejects work whose current and selected historical inputs exceed the combined cap', () => {
+    const work = {
+      workId: 'work-1',
+      target: { kind: 'agent', agentId: 'local-read' },
+      inputIds: Array.from({ length: 64 }, (_, index) => `input-${index}`),
+      selectedResultInputs: [{ sourceGraphId: 'graph-prev', resultId: 'result-1' }],
+      status: 'requested',
+      instructionPreview: 'continue',
+      instructionTruncated: false,
+      revision: 1,
+      committedAt: 1,
+    };
+    const frame = {
+      schemaVersion: 1,
+      rootSessionId: 'session-root',
+      graphId: 'graph-1',
+      orchestrationMode: 'graph',
+      snapshotVersion: `sha256:${'a'.repeat(64)}`,
+      status: 'active',
+      scheduleRevision: 1,
+      topologyFingerprint: `sha256:${'b'.repeat(64)}`,
+      closed: false,
+      operators: [],
+      edges: [],
+      work: [work],
+      reconciliationFailures: [],
+      stoppedTargets: [],
+      claims: [],
+      recentControlDecisions: [],
+      recentActivity: [],
+      terminalHistory: { records: [] },
+      omitted: {
+        operators: 0,
+        edges: 0,
+        work: 0,
+        reconciliationFailures: 0,
+        stoppedTargets: 0,
+        claims: 0,
+        controlDecisions: 0,
+        recentActivity: 0,
+      },
+    };
+    // The durable schedule contract caps current + selected historical inputs
+    // combined at 64; 64 + 1 must not decode (#2992 P3 follow-up).
+    assert.throws(() => decodeAgentGraphClientSnapshot(frame), /combined current and historical/);
+    const atCap = {
+      ...frame,
+      work: [{ ...work, inputIds: work.inputIds.slice(0, 63) }],
+    };
+    assert.doesNotThrow(() => decodeAgentGraphClientSnapshot(atCap));
+  });
 });
 
 type GraphAuthority = Pick<
