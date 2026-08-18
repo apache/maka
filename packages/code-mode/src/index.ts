@@ -1,3 +1,5 @@
+import type { CodeModeExecutionPolicy } from '@ai-sdk/code-mode';
+
 export interface CodeModeToolDefinition {
   name: string;
 }
@@ -146,30 +148,24 @@ function addSerializedBytes(budget: SerializedByteBudget, bytes: number): boolea
   return true;
 }
 
-export interface CodeModeLimits {
-  maxSourceBytes: number;
-  /** Sandbox invocation deadline; aborted host operations still drain before settlement. */
-  maxSandboxTimeMs: number;
-  maxMemoryBytes: number;
-  maxStackBytes: number;
-  maxToolCalls: number;
-  maxToolConcurrency: number;
-  maxToolInputBytes: number;
-  maxToolOutputBytes: number;
-  maxOutputBytes: number;
-}
-
-export const DEFAULT_CODE_MODE_LIMITS: Readonly<CodeModeLimits> = Object.freeze({
-  maxSourceBytes: 64 * 1024,
-  maxSandboxTimeMs: 30_000,
-  maxMemoryBytes: 64 * 1024 * 1024,
-  maxStackBytes: 2 * 1024 * 1024,
-  maxToolCalls: 32,
-  maxToolConcurrency: 8,
-  maxToolInputBytes: 1024 * 1024,
-  maxToolOutputBytes: 1024 * 1024,
-  maxOutputBytes: 1024 * 1024,
-});
+/**
+ * Product limits for a Code Mode cell, expressed in the SDK's own policy shape.
+ * The SDK applies looser defaults; these are the values Maka ships.
+ */
+export const DEFAULT_CODE_MODE_EXECUTION_POLICY: Readonly<Required<CodeModeExecutionPolicy>> =
+  Object.freeze({
+    /** Sandbox invocation deadline; aborted host operations still drain before settlement. */
+    timeoutMs: 30_000,
+    memoryLimitBytes: 64 * 1024 * 1024,
+    maxStackSizeBytes: 2 * 1024 * 1024,
+    maxResultBytes: 1024 * 1024,
+    maxConsoleOutputBytes: 1,
+    maxSourceBytes: 64 * 1024,
+    maxToolInputBytes: 1024 * 1024,
+    maxToolOutputBytes: 1024 * 1024,
+    maxBridgeRequests: 32,
+    maxInFlightBridgeRequests: 8,
+  });
 
 export type CodeModeDiagnosticKind =
   | 'parse_error'
@@ -208,7 +204,7 @@ export interface ExecuteCodeCellInput {
   callTool(name: string, input: unknown, signal: AbortSignal): Promise<unknown>;
   isFatalToolError?: (error: unknown) => boolean;
   signal?: AbortSignal;
-  limits?: Partial<CodeModeLimits>;
+  executionPolicy?: CodeModeExecutionPolicy;
 }
 
 interface QueuedCodeCell {

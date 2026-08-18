@@ -89,7 +89,7 @@ import type {
   ToolInvocationRecord,
 } from '@maka/core/usage-stats/types';
 import type { ContextBudgetDiagnostic, PromptSegmentEstimate } from '@maka/core/usage-stats/types';
-import { DEFAULT_CODE_MODE_LIMITS, executeCodeCell } from '@maka/code-mode';
+import { DEFAULT_CODE_MODE_EXECUTION_POLICY, executeCodeCell } from '@maka/code-mode';
 import type {
   JSONValue,
   ModelFinishReason,
@@ -3079,7 +3079,7 @@ export class AiSdkBackend implements AgentBackend {
           const nextBytes = new TextEncoder().encode(event.chunk).byteLength;
           if (
             nestedOutputLimitExceeded ||
-            nestedOutputBytes + nextBytes > DEFAULT_CODE_MODE_LIMITS.maxToolOutputBytes
+            nestedOutputBytes + nextBytes > DEFAULT_CODE_MODE_EXECUTION_POLICY.maxToolOutputBytes
           ) {
             nestedOutputLimitExceeded = true;
             return;
@@ -3111,7 +3111,7 @@ export class AiSdkBackend implements AgentBackend {
           origin: 'code_mode',
           parentToolCallId: context.toolCallId,
           ...(context.operationId ? { parentOperationId: context.operationId } : {}),
-          maxResultBytes: DEFAULT_CODE_MODE_LIMITS.maxToolOutputBytes,
+          maxResultBytes: DEFAULT_CODE_MODE_EXECUTION_POLICY.maxToolOutputBytes,
         });
         if (settlement.providerError !== undefined) {
           throw new Error(settlement.providerError);

@@ -1,5 +1,6 @@
 import {
   CodeModeError,
+  type CodeModeExecutionPolicy,
   CodeModeToolError,
   experimental_runCodeMode as runCodeMode,
 } from '@ai-sdk/code-mode';
@@ -10,25 +11,17 @@ import type {
   CodeModeToolCall,
   ExecuteCodeCellInput,
 } from './index.js';
-import { DEFAULT_CODE_MODE_LIMITS } from './index.js';
+import { DEFAULT_CODE_MODE_EXECUTION_POLICY } from './index.js';
 
 export async function executeCodeCellImpl(
   input: ExecuteCodeCellInput,
 ): Promise<CodeModeExecutionResult> {
-  const limits = {
-    maxSourceBytes: input.limits?.maxSourceBytes ?? DEFAULT_CODE_MODE_LIMITS.maxSourceBytes,
-    maxSandboxTimeMs: input.limits?.maxSandboxTimeMs ?? DEFAULT_CODE_MODE_LIMITS.maxSandboxTimeMs,
-    maxMemoryBytes: input.limits?.maxMemoryBytes ?? DEFAULT_CODE_MODE_LIMITS.maxMemoryBytes,
-    maxStackBytes: input.limits?.maxStackBytes ?? DEFAULT_CODE_MODE_LIMITS.maxStackBytes,
-    maxToolCalls: input.limits?.maxToolCalls ?? DEFAULT_CODE_MODE_LIMITS.maxToolCalls,
-    maxToolConcurrency:
-      input.limits?.maxToolConcurrency ?? DEFAULT_CODE_MODE_LIMITS.maxToolConcurrency,
-    maxToolInputBytes:
-      input.limits?.maxToolInputBytes ?? DEFAULT_CODE_MODE_LIMITS.maxToolInputBytes,
-    maxToolOutputBytes:
-      input.limits?.maxToolOutputBytes ?? DEFAULT_CODE_MODE_LIMITS.maxToolOutputBytes,
-    maxOutputBytes: input.limits?.maxOutputBytes ?? DEFAULT_CODE_MODE_LIMITS.maxOutputBytes,
-  };
+  // An explicit `undefined` override keeps the product default rather than
+  // falling through to the SDK's looser one.
+  const executionPolicy: CodeModeExecutionPolicy = { ...DEFAULT_CODE_MODE_EXECUTION_POLICY };
+  for (const [key, value] of Object.entries(input.executionPolicy ?? {})) {
+    if (value !== undefined) (executionPolicy as Record<string, unknown>)[key] = value;
+  }
   const toolCalls: CodeModeToolCall[] = [];
   const hostToolOperations = new Set<Promise<unknown>>();
   const fatalAbortController = new AbortController();
@@ -75,20 +68,7 @@ export async function executeCodeCellImpl(
       js: input.code,
       tools,
       toolExecutionOptions: { abortSignal: invocationSignal },
-      options: {
-        executionPolicy: {
-          timeoutMs: limits.maxSandboxTimeMs,
-          memoryLimitBytes: limits.maxMemoryBytes,
-          maxStackSizeBytes: limits.maxStackBytes,
-          maxResultBytes: limits.maxOutputBytes,
-          maxConsoleOutputBytes: 1,
-          maxSourceBytes: limits.maxSourceBytes,
-          maxToolInputBytes: limits.maxToolInputBytes,
-          maxToolOutputBytes: limits.maxToolOutputBytes,
-          maxBridgeRequests: limits.maxToolCalls,
-          maxInFlightBridgeRequests: limits.maxToolConcurrency,
-        },
-      },
+      options: { executionPolicy },
     });
     await drainHostToolOperations(hostToolOperations);
     if (fatalToolFailure) throw fatalToolFailure.reason;

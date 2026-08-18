@@ -268,14 +268,14 @@ test('reports uncaught runtime and tool failures', async (t) => {
 
 test('enforces byte and bridge limits', async (t) => {
   await t.test('source', async () => {
-    const result = await execute('return null;', { limits: { maxSourceBytes: 1 } });
+    const result = await execute('return null;', { executionPolicy: { maxSourceBytes: 1 } });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
   });
 
   await t.test('tool input', async () => {
     const result = await execute("return await tools.echo({ value: '12345' });", {
       tools: [{ name: 'echo' }],
-      limits: { maxToolInputBytes: 4 },
+      executionPolicy: { maxToolInputBytes: 4 },
       callTool: async () => null,
     });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
@@ -284,21 +284,21 @@ test('enforces byte and bridge limits', async (t) => {
   await t.test('tool output', async () => {
     const result = await execute('return await tools.echo({});', {
       tools: [{ name: 'echo' }],
-      limits: { maxToolOutputBytes: 4 },
+      executionPolicy: { maxToolOutputBytes: 4 },
       callTool: async () => '12345',
     });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
   });
 
   await t.test('cell output', async () => {
-    const result = await execute("return '12345';", { limits: { maxOutputBytes: 4 } });
+    const result = await execute("return '12345';", { executionPolicy: { maxResultBytes: 4 } });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
   });
 
   await t.test('tool calls', async () => {
     const result = await execute('await tools.echo({}); return await tools.echo({});', {
       tools: [{ name: 'echo' }],
-      limits: { maxToolCalls: 1 },
+      executionPolicy: { maxBridgeRequests: 1 },
       callTool: async () => null,
     });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
@@ -312,7 +312,9 @@ test('enforces byte and bridge limits', async (t) => {
       `,
       {
         tools: [{ name: 'echo' }],
-        limits: { maxToolCalls: undefined } as unknown as ExecuteCodeCellInput['limits'],
+        executionPolicy: {
+          maxBridgeRequests: undefined,
+        } as unknown as ExecuteCodeCellInput['executionPolicy'],
         callTool: async () => null,
       },
     );
@@ -323,7 +325,7 @@ test('enforces byte and bridge limits', async (t) => {
     let started = 0;
     const result = await execute('return await Promise.all([tools.echo({}), tools.echo({})]);', {
       tools: [{ name: 'echo' }],
-      limits: { maxToolConcurrency: 1, maxSandboxTimeMs: 500 },
+      executionPolicy: { maxInFlightBridgeRequests: 1, timeoutMs: 500 },
       callTool: async (_name, _input, signal) => {
         started += 1;
         await new Promise<void>((resolve) => {
@@ -340,7 +342,7 @@ test('enforces byte and bridge limits', async (t) => {
 
 test('enforces the configured VM stack limit', async () => {
   const result = await execute('function recurse() { return recurse(); } return recurse();', {
-    limits: { maxStackBytes: 64 * 1024 },
+    executionPolicy: { maxStackSizeBytes: 64 * 1024 },
   });
 
   assert.equal(result.ok, false);
@@ -349,7 +351,7 @@ test('enforces the configured VM stack limit', async () => {
 
 test('enforces the configured VM memory limit', async () => {
   const result = await execute('return new ArrayBuffer(16 * 1024 * 1024).byteLength;', {
-    limits: { maxMemoryBytes: 8 * 1024 * 1024, maxSandboxTimeMs: 5_000 },
+    executionPolicy: { memoryLimitBytes: 8 * 1024 * 1024, timeoutMs: 5_000 },
   });
 
   assert.equal(result.ok, false);
@@ -357,7 +359,7 @@ test('enforces the configured VM memory limit', async () => {
 });
 
 test('preempts a pure compute loop at the sandbox-time limit', async () => {
-  const result = await execute('while (true) {}', { limits: { maxSandboxTimeMs: 20 } });
+  const result = await execute('while (true) {}', { executionPolicy: { timeoutMs: 20 } });
 
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.error.kind, 'limit_exceeded');
