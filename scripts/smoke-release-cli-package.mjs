@@ -11,6 +11,7 @@ import {
   rmSync,
   statSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -26,6 +27,7 @@ const CONNECTION_SLUG = 'maka-release-smoke';
 const API_KEY = 'maka-release-smoke-key';
 const FILE_SENTINEL = 'MAKA_RELEASE_FILESYSTEM_WORKER_OK';
 const RESPONSE_SENTINEL = 'MAKA_RELEASE_SMOKE_OK';
+const INSTALLED_ROOT_ENV = 'MAKA_CLI_RELEASE_INSTALLED_ROOT';
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const cliVersion = JSON.parse(
@@ -35,18 +37,19 @@ const tarballPath = resolve(
   process.argv[2] ?? join(repoRoot, `packages/cli/release/maka-agent-${cliVersion}.tgz`),
 );
 
-await main();
-// ConPTY may retain its native event-loop handle after every PTY child has
-// emitted onExit. All product processes and temporary state are settled above,
-// so terminate the verifier explicitly only on that platform.
-if (process.platform === 'win32') process.exit(0);
+const installedRoot = process.env[INSTALLED_ROOT_ENV];
+if (installedRoot) await runInstalledVerifier(resolve(installedRoot));
+else await main();
 
 async function main() {
   validateReleaseArtifact(tarballPath);
   const root = mkdtempSync(join(tmpdir(), 'maka-cli-tarball-smoke-'));
+  let primaryError;
+  let cleanupError;
   try {
     const prefix = join(root, 'prefix');
     const cache = join(root, 'empty-npm-cache');
+    logStep('installing the immutable tarball with an empty offline npm cache');
     execFileSync(
       'npm',
       [
@@ -67,58 +70,112 @@ async function main() {
         stdio: 'inherit',
       }),
     );
-
-    const packageRoot =
-      process.platform === 'win32'
-        ? join(prefix, 'node_modules/maka-agent')
-        : join(prefix, 'lib/node_modules/maka-agent');
-    const baseEnvironment = isolatedEnvironment(join(root, 'home'));
-    const maka = process.platform === 'win32' ? join(prefix, 'maka.cmd') : join(prefix, 'bin/maka');
-    const makaAgent =
-      process.platform === 'win32'
-        ? join(prefix, 'maka-agent.cmd')
-        : join(prefix, 'bin/maka-agent');
-    const cliEntrypoint = join(packageRoot, 'dist/cli.js');
-    const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
-
-    const version = runSync(maka, ['--version'], baseEnvironment, root).trim();
-    if (version !== manifest.version) {
-      throw new Error(`Installed CLI reports ${version}; package manifest is ${manifest.version}`);
-    }
-    assertOutput(runSync(maka, ['--help'], baseEnvironment, root), 'Usage: maka');
-    assertOutput(runSync(makaAgent, ['--help'], baseEnvironment, root), 'Usage: maka');
-    assertOutput(runSync(maka, ['eval', '--help'], baseEnvironment, root), 'usage: maka eval run');
-    validateInstalledRuntimeFiles(packageRoot);
-
-    const nodePty = await importInstalled(packageRoot, 'node_modules/node-pty/lib/index.js');
-    const ptySpawn = nodePty.spawn ?? nodePty.default?.spawn;
-    if (typeof ptySpawn !== 'function') throw new Error('Installed node-pty has no spawn function');
-    await smokePty(ptySpawn, baseEnvironment, root);
-    await smokeNativeFileLock(packageRoot, root);
-    await smokeInteractiveTui({
-      packageRoot,
-      cliEntrypoint,
-      ptySpawn,
-      root: join(root, 'first-run'),
+    logStep('validating the installed product in an isolated verifier process');
+    execFileSync(process.execPath, [process.argv[1], tarballPath], {
+      cwd: repoRoot,
+      env: { ...process.env, [INSTALLED_ROOT_ENV]: root },
+      stdio: 'inherit',
     });
-    await smokeRuntimeHostService({
-      packageRoot,
-      cliEntrypoint,
-      ptySpawn,
-      root: join(root, 'runtime-host-service'),
-    });
-    await smokeControlledRun({
-      packageRoot,
-      cliEntrypoint,
-      root: join(root, 'controlled-run'),
-    });
-
-    console.log(
-      `[release-cli-smoke] OK — installed ${basename(tarballPath)} offline as ${version}`,
-    );
+  } catch (error) {
+    primaryError = error;
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    logStep('removing the isolated installation');
+    try {
+      rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch (error) {
+      cleanupError = error;
+    }
   }
+  if (primaryError && cleanupError) {
+    throw new AggregateError(
+      [primaryError, cleanupError],
+      'Installed CLI validation and isolated-install cleanup both failed',
+    );
+  }
+  if (primaryError) throw primaryError;
+  if (cleanupError) throw cleanupError;
+}
+
+async function runInstalledVerifier(root) {
+  try {
+    await validateInstalledProduct(root);
+    // Native PTY libraries can retain an event-loop handle after their product
+    // processes settle. This child owns those libraries, so exiting here both
+    // unloads them and gives the parent a reliable cleanup boundary.
+    process.exit(0);
+  } catch (error) {
+    writeSync(2, `${formatError(error)}\n`);
+    process.exit(1);
+  }
+}
+
+async function validateInstalledProduct(root) {
+  const prefix = join(root, 'prefix');
+  const packageRoot =
+    process.platform === 'win32'
+      ? join(prefix, 'node_modules/maka-agent')
+      : join(prefix, 'lib/node_modules/maka-agent');
+  const baseEnvironment = isolatedEnvironment(join(root, 'home'));
+  const maka = process.platform === 'win32' ? join(prefix, 'maka.cmd') : join(prefix, 'bin/maka');
+  const makaAgent =
+    process.platform === 'win32' ? join(prefix, 'maka-agent.cmd') : join(prefix, 'bin/maka-agent');
+  const cliEntrypoint = join(packageRoot, 'dist/cli.js');
+  const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
+  const crossSpawnModule = await importInstalled(packageRoot, 'node_modules/cross-spawn/index.js');
+  const crossSpawn = crossSpawnModule.default ?? crossSpawnModule;
+  if (typeof crossSpawn.sync !== 'function') {
+    throw new Error('Installed cross-spawn sync API is unavailable');
+  }
+
+  logStep('checking bins, Eval assets, and patched runtime files');
+  const version = runSync(crossSpawn.sync, maka, ['--version'], baseEnvironment, root).trim();
+  if (version !== manifest.version) {
+    throw new Error(`Installed CLI reports ${version}; package manifest is ${manifest.version}`);
+  }
+  assertOutput(runSync(crossSpawn.sync, maka, ['--help'], baseEnvironment, root), 'Usage: maka');
+  assertOutput(
+    runSync(crossSpawn.sync, makaAgent, ['--help'], baseEnvironment, root),
+    'Usage: maka',
+  );
+  assertOutput(
+    runSync(crossSpawn.sync, maka, ['eval', '--help'], baseEnvironment, root),
+    'usage: maka eval run',
+  );
+  validateInstalledRuntimeFiles(packageRoot);
+
+  logStep('checking installed native PTY and file-lock modules');
+  const nodePty = await importInstalled(packageRoot, 'node_modules/node-pty/lib/index.js');
+  const ptySpawn = nodePty.spawn ?? nodePty.default?.spawn;
+  if (typeof ptySpawn !== 'function') throw new Error('Installed node-pty has no spawn function');
+  await smokePty(ptySpawn, baseEnvironment, root);
+  await smokeNativeFileLock(packageRoot, root);
+
+  logStep('checking the interactive TUI setup path');
+  await smokeInteractiveTui({
+    packageRoot,
+    cliEntrypoint,
+    ptySpawn,
+    root: join(root, 'first-run'),
+  });
+
+  logStep('checking the managed Runtime Host lifecycle');
+  await smokeRuntimeHostService({
+    packageRoot,
+    cliEntrypoint,
+    ptySpawn,
+    root: join(root, 'runtime-host-service'),
+  });
+
+  logStep('checking a filesystem-backed controlled model turn');
+  await smokeControlledRun({
+    packageRoot,
+    cliEntrypoint,
+    root: join(root, 'controlled-run'),
+  });
+
+  console.log(
+    `[release-cli-validation] OK — installed ${basename(tarballPath)} offline as ${version}`,
+  );
 }
 
 function validateReleaseArtifact(path) {
@@ -209,72 +266,70 @@ async function smokeInteractiveTui({ packageRoot, cliEntrypoint, ptySpawn, root 
   mkdirSync(workspace, { recursive: true });
   const environment = isolatedEnvironment(home);
   const dataRoots = await resolveInstalledDataRoots(packageRoot, environment, home);
-  let completed = false;
-  try {
-    const result = await runPtyScenario({
-      ptySpawn,
-      command: process.execPath,
-      args: [cliEntrypoint],
-      cwd: workspace,
-      environment,
-      marker: 'Set Up Provider',
-      onOutput: (terminal, output) => {
-        if (!output.includes('/setup    配置模型提供商')) return false;
-        terminal.write('/setup\r');
-        return true;
-      },
-      onMarker: (terminal) => {
-        terminal.write('\x03');
-        setTimeout(() => terminal.write('\x04'), 250);
-      },
-      timeoutMs: PROCESS_TIMEOUT_MS,
-    });
-    if (result.exitCode !== 0) throw new Error(`Interactive TUI exited with ${result.exitCode}`);
-    completed = true;
-  } finally {
-    await settleRuntimeHost(packageRoot, dataRoots.workspaceRoot, completed);
-  }
+  await withCleanup(
+    async () => {
+      const result = await runPtyScenario({
+        ptySpawn,
+        command: process.execPath,
+        args: [cliEntrypoint],
+        cwd: workspace,
+        environment,
+        marker: 'Set Up Provider',
+        onOutput: (terminal, output) => {
+          if (!output.includes('/setup')) return false;
+          terminal.write('/setup\r');
+          return true;
+        },
+        onMarker: (terminal) => {
+          terminal.write('\x03');
+          setTimeout(() => terminal.write('\x04'), 250);
+        },
+        timeoutMs: PROCESS_TIMEOUT_MS,
+      });
+      if (result.exitCode !== 0) throw new Error(`Interactive TUI exited with ${result.exitCode}`);
+    },
+    (completed) => settleRuntimeHost(packageRoot, dataRoots.workspaceRoot, completed),
+  );
 }
 
 async function smokeRuntimeHostService({ packageRoot, cliEntrypoint, ptySpawn, root }) {
   mkdirSync(root, { recursive: true });
   const environment = isolatedEnvironment(join(root, 'home'));
   let ready;
-  let completed = false;
-  try {
-    const result = await runPtyScenario({
-      ptySpawn,
-      command: process.execPath,
-      args: [cliEntrypoint, 'runtime-host', 'serve', '--root', root, '--json'],
-      cwd: root,
-      environment,
-      marker: '"event":"runtime_host_ready"',
-      onMarker: (terminal, output) => {
-        const line = output
-          .split(/\r?\n/u)
-          .map((candidate) => candidate.trim())
-          .find((candidate) => candidate.includes('"event":"runtime_host_ready"'));
-        ready = line ? JSON.parse(line) : undefined;
-        terminal.write('\x03');
-      },
-      timeoutMs: PROCESS_TIMEOUT_MS,
-    });
-    if (result.exitCode !== 0) {
-      throw new Error(`Runtime Host service exited with ${result.exitCode}`);
-    }
-    if (
-      ready?.schemaVersion !== 1 ||
-      ready.protocol?.version === undefined ||
-      !ready.hostEpoch ||
-      !ready.rootId ||
-      !ready.listeners?.some((listener) => listener.kind === 'local_ipc')
-    ) {
-      throw new Error('Runtime Host ready event is incomplete');
-    }
-    completed = true;
-  } finally {
-    await settleRuntimeHost(packageRoot, root, completed);
-  }
+  await withCleanup(
+    async () => {
+      const result = await runPtyScenario({
+        ptySpawn,
+        command: process.execPath,
+        args: [cliEntrypoint, 'runtime-host', 'serve', '--root', root, '--json'],
+        cwd: root,
+        environment,
+        marker: '"event":"runtime_host_ready"',
+        onMarker: (terminal, output) => {
+          const line = output
+            .split(/\r?\n/u)
+            .map((candidate) => candidate.trim())
+            .find((candidate) => candidate.includes('"event":"runtime_host_ready"'));
+          ready = line ? parseTerminalJsonObject(line) : undefined;
+          terminal.write('\x03');
+        },
+        timeoutMs: PROCESS_TIMEOUT_MS,
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(`Runtime Host service exited with ${result.exitCode}`);
+      }
+      if (
+        ready?.schemaVersion !== 1 ||
+        ready.protocol?.version === undefined ||
+        !ready.hostEpoch ||
+        !ready.rootId ||
+        !ready.listeners?.some((listener) => listener.kind === 'local_ipc')
+      ) {
+        throw new Error('Runtime Host ready event is incomplete');
+      }
+    },
+    (completed) => settleRuntimeHost(packageRoot, root, completed),
+  );
 }
 
 async function smokeControlledRun({ packageRoot, cliEntrypoint, root }) {
@@ -286,46 +341,48 @@ async function smokeControlledRun({ packageRoot, cliEntrypoint, root }) {
   const environment = isolatedEnvironment(home);
   const dataRoots = await resolveInstalledDataRoots(packageRoot, environment, home);
   const provider = await startProvider();
-  let behaviorCompleted = false;
-  try {
-    await configureRuntimePolicy(packageRoot, dataRoots.workspaceRoot, provider.baseUrl);
-    const result = await runProcess(
-      process.execPath,
-      [
-        cliEntrypoint,
-        'run',
-        'Read smoke.txt, then report the exact release-smoke result.',
-        '--cwd',
-        workspace,
-        '--connection',
-        CONNECTION_SLUG,
-        '--model',
-        MODEL_ID,
-        '--timeout',
-        '45',
-        '--max-steps',
-        '4',
-        '--yolo',
-      ],
-      {
-        cwd: workspace,
-        environment,
-        timeoutMs: PROCESS_TIMEOUT_MS,
-      },
-    );
-    if (result.exitCode !== 0) {
-      throw new Error(`Controlled maka run exited with ${result.exitCode}: ${result.stderr}`);
-    }
-    assertOutput(result.stdout, RESPONSE_SENTINEL);
-    if (!provider.sawReadTool || !provider.sawFileSentinel) {
-      throw new Error('Controlled maka run did not execute the installed filesystem worker');
-    }
-    if (provider.error) throw provider.error;
-    behaviorCompleted = true;
-  } finally {
-    await provider.close();
-    await settleRuntimeHost(packageRoot, dataRoots.workspaceRoot, behaviorCompleted);
-  }
+  await withCleanup(
+    async () => {
+      await configureRuntimePolicy(packageRoot, dataRoots.workspaceRoot, provider.baseUrl);
+      const result = await runProcess(
+        process.execPath,
+        [
+          cliEntrypoint,
+          'run',
+          'Read smoke.txt, then report the exact release-smoke result.',
+          '--cwd',
+          workspace,
+          '--connection',
+          CONNECTION_SLUG,
+          '--model',
+          MODEL_ID,
+          '--timeout',
+          '45',
+          '--max-steps',
+          '4',
+          '--yolo',
+        ],
+        {
+          cwd: workspace,
+          environment,
+          timeoutMs: PROCESS_TIMEOUT_MS,
+        },
+      );
+      if (result.exitCode !== 0) {
+        throw new Error(`Controlled maka run exited with ${result.exitCode}: ${result.stderr}`);
+      }
+      if (provider.error) throw provider.error;
+      assertOutput(result.stdout, RESPONSE_SENTINEL);
+      if (!provider.sawReadTool || !provider.sawFileSentinel) {
+        throw new Error('Controlled maka run did not execute the installed filesystem worker');
+      }
+    },
+    (completed) =>
+      runCleanupSteps([
+        () => provider.close(),
+        () => settleRuntimeHost(packageRoot, dataRoots.workspaceRoot, completed),
+      ]),
+  );
 }
 
 async function configureRuntimePolicy(packageRoot, rootPath, baseUrl) {
@@ -589,42 +646,97 @@ async function waitForRuntimeHostShutdown(packageRoot, rootPath) {
   throw new Error(`Runtime Host did not release its root: ${rootPath}`);
 }
 
+async function withCleanup(action, cleanup) {
+  let primaryError;
+  let cleanupError;
+  try {
+    await action();
+  } catch (error) {
+    primaryError = error;
+  }
+  try {
+    await cleanup(primaryError === undefined);
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (primaryError && cleanupError) {
+    throw new AggregateError([primaryError, cleanupError], 'Validation and cleanup both failed');
+  }
+  if (primaryError) throw primaryError;
+  if (cleanupError) throw cleanupError;
+}
+
+async function runCleanupSteps(steps) {
+  const errors = [];
+  for (const step of steps) {
+    try {
+      await step();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, 'Multiple cleanup steps failed');
+}
+
 async function settleRuntimeHost(packageRoot, rootPath, requireNaturalShutdown) {
+  let naturalShutdownError;
   try {
     await waitForRuntimeHostShutdown(packageRoot, rootPath);
     return;
   } catch (error) {
-    if (requireNaturalShutdown) throw error;
+    naturalShutdownError = error;
   }
-  const authority = await importInstalled(
-    packageRoot,
-    'node_modules/@maka/storage/dist/root-authority.js',
-  );
-  const capability = await authority.resolveStorageRoot({ path: rootPath, kind: 'interactive' });
-  const { controlDirectory } = await authority.prepareStorageRootControlDirectory(capability);
-  const registrationPath = join(controlDirectory, 'registration.json');
-  if (!existsSync(registrationPath)) return;
-  const registration = JSON.parse(readFileSync(registrationPath, 'utf8'));
-  if (
-    registration.rootId !== capability.rootId ||
-    !Number.isSafeInteger(registration.pid) ||
-    registration.pid <= 0
-  ) {
-    throw new Error('Refusing to clean up a Runtime Host with an unexpected registration');
-  }
+  let forcedCleanupError;
   try {
-    process.kill(registration.pid, 'SIGTERM');
+    const authority = await importInstalled(
+      packageRoot,
+      'node_modules/@maka/storage/dist/root-authority.js',
+    );
+    const capability = await authority.resolveStorageRoot({ path: rootPath, kind: 'interactive' });
+    const { controlDirectory } = await authority.prepareStorageRootControlDirectory(capability);
+    const registrationPath = join(controlDirectory, 'registration.json');
+    if (existsSync(registrationPath)) {
+      const registration = JSON.parse(readFileSync(registrationPath, 'utf8'));
+      if (
+        registration.rootId !== capability.rootId ||
+        !Number.isSafeInteger(registration.pid) ||
+        registration.pid <= 0
+      ) {
+        throw new Error('Refusing to clean up a Runtime Host with an unexpected registration');
+      }
+      await terminateRegisteredProcess(registration.pid);
+    }
+  } catch (error) {
+    forcedCleanupError = error;
+  }
+  if (naturalShutdownError && forcedCleanupError) {
+    throw new AggregateError(
+      [naturalShutdownError, forcedCleanupError],
+      'Runtime Host did not stop naturally and forced cleanup failed',
+    );
+  }
+  if (forcedCleanupError) throw forcedCleanupError;
+  if (requireNaturalShutdown) throw naturalShutdownError;
+}
+
+async function terminateRegisteredProcess(pid) {
+  try {
+    process.kill(pid, 'SIGTERM');
   } catch (error) {
     if (error?.code !== 'ESRCH') throw error;
   }
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline && processExists(registration.pid)) await delay(100);
-  if (processExists(registration.pid)) {
+  let deadline = Date.now() + 5_000;
+  while (Date.now() < deadline && processExists(pid)) await delay(100);
+  if (processExists(pid)) {
     try {
-      process.kill(registration.pid, 'SIGKILL');
+      process.kill(pid, 'SIGKILL');
     } catch (error) {
       if (error?.code !== 'ESRCH') throw error;
     }
+    deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && processExists(pid)) await delay(100);
+    if (processExists(pid)) throw new Error(`Runtime Host process ${pid} did not exit`);
   }
 }
 
@@ -791,15 +903,21 @@ function importInstalled(packageRoot, relativePath) {
   return import(pathToFileURL(join(packageRoot, relativePath)).href);
 }
 
-function runSync(command, args, environment, cwd) {
-  return execFileSync(command, args, {
+function runSync(spawnSync, command, args, environment, cwd) {
+  const result = spawnSync(command, args, {
     cwd,
     env: environment,
     encoding: 'utf8',
     timeout: 30_000,
     maxBuffer: MAX_OUTPUT_BYTES,
-    shell: process.platform === 'win32' && command.toLowerCase().endsWith('.cmd'),
   });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `Installed command exited with ${result.status ?? result.signal}: ${result.stderr}`,
+    );
+  }
+  return result.stdout;
 }
 
 function appendBounded(previous, chunk) {
@@ -810,10 +928,27 @@ function appendBounded(previous, chunk) {
   return next;
 }
 
+function parseTerminalJsonObject(line) {
+  const start = line.indexOf('{');
+  const end = line.lastIndexOf('}');
+  if (start < 0 || end < start) throw new Error('Terminal output did not contain a JSON object');
+  return JSON.parse(line.slice(start, end + 1));
+}
+
 function assertOutput(output, marker) {
   if (!output.includes(marker)) {
     throw new Error(`Expected output to contain ${JSON.stringify(marker)}`);
   }
+}
+
+function logStep(message) {
+  console.log(`[release-cli-validation] ${message}`);
+}
+
+function formatError(error) {
+  const rendered = error instanceof Error ? (error.stack ?? error.message) : String(error);
+  if (!(error instanceof AggregateError)) return rendered;
+  return [rendered, ...error.errors.map((cause) => `Caused by:\n${formatError(cause)}`)].join('\n');
 }
 
 function delay(ms) {
@@ -826,6 +961,7 @@ function processExists(pid) {
     return true;
   } catch (error) {
     if (error?.code === 'ESRCH') return false;
+    if (error?.code === 'EPERM') return true;
     throw error;
   }
 }

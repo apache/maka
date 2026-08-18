@@ -94,7 +94,7 @@ jobs:
           retention-days: 7
 
   smoke:
-    name: Smoke ${{ matrix.name }}
+    name: Validate installed CLI ${{ matrix.name }}
     needs: build
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
@@ -142,5 +142,5 @@ jobs:
         with:
           name: cli-release-candidate
           path: packages/cli/release
-      - name: Smoke the installed tarball
+      - name: Validate the installed tarball
         run: node scripts/smoke-release-cli-package.mjs
