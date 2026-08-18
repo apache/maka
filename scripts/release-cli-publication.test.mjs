@@ -276,6 +276,47 @@ test('prepare-stage CLI emits only consumed GitHub Actions outputs', () => {
   ]);
 });
 
+test('validate-stage-run CLI emits the canonical cross-job release identity', () => {
+  const fixture = createPreparedCandidate();
+  const runPath = join(fixture.root, 'stage-run.json');
+  const output = join(fixture.root, 'github-output.txt');
+  writeFileSync(
+    runPath,
+    JSON.stringify({
+      id: 321,
+      run_attempt: 1,
+      path: WORKFLOW_PATH,
+      event: 'workflow_dispatch',
+      head_branch: 'main',
+      head_sha: SOURCE_SHA,
+      conclusion: 'success',
+      head_repository: { full_name: 'maka-agent/maka-agent' },
+    }),
+  );
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      resolve(import.meta.dirname, 'release-cli-publication.mjs'),
+      'validate-stage-run',
+      fixture.releaseDirectory,
+      runPath,
+      fixture.version,
+      output,
+    ],
+    { encoding: 'utf8' },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(readFileSync(output, 'utf8').trim().split('\n'), [
+    `version=${fixture.version}`,
+    'dist_tag=next',
+    `git_tag=cli-v${fixture.version}`,
+    `source_sha=${SOURCE_SHA}`,
+    `tarball=${fixture.tarball}`,
+  ]);
+});
+
 function createPreparedCandidate() {
   const fixture = createCandidate();
   prepareStageRelease({

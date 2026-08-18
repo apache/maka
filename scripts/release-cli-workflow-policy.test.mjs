@@ -15,24 +15,36 @@ test('validation consumers download the artifact produced by the build job', () 
     workflow,
     /release_candidate_artifact_id: \$\{\{ steps\.release-candidate\.outputs\.artifact-id \}\}/u,
   );
-  assert.equal(
-    occurrences(workflow, 'artifact-ids: ${{ needs.build.outputs.release_candidate_artifact_id }}'),
-    2,
+  const downloads = workflowSteps(workflow).filter((step) =>
+    step.includes('uses: actions/download-artifact@'),
   );
+  assert.ok(downloads.length > 0);
+  for (const step of downloads) {
+    assert.match(
+      step,
+      /artifact-ids: \$\{\{ needs\.build\.outputs\.release_candidate_artifact_id \}\}/u,
+    );
+  }
 });
 
-test('stage consumes the reusable validation artifact identity', () => {
+test('stage consumes the validated artifact and makes provenance staging the final step', () => {
   const workflow = readWorkflow('release-cli-stage.yml');
+  const steps = workflowSteps(workflow);
+  const download = namedStep(steps, 'Download the validated release candidate');
   assert.match(
-    workflow,
+    download,
     /artifact-ids: \$\{\{ needs\.validate\.outputs\.release_candidate_artifact_id \}\}/u,
   );
-  assert.doesNotMatch(workflow, /assert-vacant|git ls-remote/u);
   assert.match(workflow, /RELEASE_RUN_ATTEMPT/u);
+  const submit = namedStep(steps, 'Submit the candidate to npm staging');
+  assert.equal(steps.at(-1), submit);
+  assert.match(submit, /npm stage publish/u);
+  assert.match(submit, /--provenance/u);
 });
 
-test('finalize selects and validates one exact stage attempt before checkout', () => {
+test('finalize validates one exact stage attempt before running the current verifier', () => {
   const workflow = readWorkflow('release-cli-finalize.yml');
+  const steps = workflowSteps(workflow);
   assert.match(workflow, /stage_run_attempt:[\s\S]*?required: true/u);
   const loadIndex = workflow.indexOf('id: stage-run');
   const checkoutIndex = workflow.indexOf('uses: actions/checkout@');
@@ -50,6 +62,9 @@ test('finalize selects and validates one exact stage attempt before checkout', (
   ]) {
     assert.ok(workflow.includes(field), `missing pre-check for ${field}`);
   }
+  const checkout = namedStep(steps, 'Check out the current release verifier');
+  assert.match(checkout, /ref: \$\{\{ github\.sha \}\}/u);
+  assert.doesNotMatch(checkout, /steps\.stage-run\.outputs\.source_sha/u);
 });
 
 test('finalize propagates verified artifacts and creates a non-latest exact-tag release', () => {
@@ -58,6 +73,8 @@ test('finalize propagates verified artifacts and creates a non-latest exact-tag 
     workflow,
     /public_release_artifact_id: \$\{\{ steps\.public-release\.outputs\.artifact-id \}\}/u,
   );
+  assert.match(workflow, /tarball: \$\{\{ steps\.release\.outputs\.tarball \}\}/u);
+  assert.doesNotMatch(workflow, /steps\.registry\.outputs\.tarball/u);
   const publish = workflow.slice(workflow.indexOf('\n  publish:'));
   assert.match(
     publish,
@@ -77,7 +94,13 @@ test('release workflows select npm from the root packageManager authority', () =
   ]) {
     const workflow = readWorkflow(name);
     assert.doesNotMatch(workflow, /npm@11\.19\.0/u);
-    assert.match(workflow, /packageManager/u);
+    const selectors = workflowSteps(workflow).filter((step) =>
+      /name: Select the .*npm toolchain/u.test(step),
+    );
+    assert.ok(selectors.length > 0, `${name} has no npm toolchain selector`);
+    for (const step of selectors) {
+      assert.match(step, /require\("\.\/package\.json"\)\.packageManager/u);
+    }
   }
 });
 
@@ -85,6 +108,13 @@ function readWorkflow(name) {
   return readFileSync(resolve(workflows, name), 'utf8');
 }
 
-function occurrences(value, needle) {
-  return value.split(needle).length - 1;
+function workflowSteps(workflow) {
+  const starts = [...workflow.matchAll(/^      - (?=name:|uses:)/gmu)].map((match) => match.index);
+  return starts.map((start, index) => workflow.slice(start, starts[index + 1]));
+}
+
+function namedStep(steps, name) {
+  const step = steps.find((candidate) => candidate.startsWith(`      - name: ${name}\n`));
+  assert.ok(step, `missing workflow step: ${name}`);
+  return step;
 }

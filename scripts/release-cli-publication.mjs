@@ -420,6 +420,7 @@ async function main() {
       dist_tag: record.distTag,
       git_tag: record.gitTag,
       source_sha: record.source.commit,
+      tarball: record.tarball,
     });
     return;
   }
@@ -431,14 +432,11 @@ async function main() {
     });
     return;
   }
-  if (command === 'fetch-registry' && args.length === 3) {
-    const [releaseDirectory, registryDirectory, output] = args;
-    const result = await fetchRegistryRelease({
+  if (command === 'fetch-registry' && args.length === 2) {
+    const [releaseDirectory, registryDirectory] = args;
+    await fetchRegistryRelease({
       releaseDirectory: resolve(releaseDirectory),
       registryDirectory: resolve(registryDirectory),
-    });
-    appendOutputs(output, {
-      tarball: result.tarballPath,
     });
     return;
   }

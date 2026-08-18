@@ -34,7 +34,7 @@ jobs:
       git_tag: ${{ steps.release.outputs.git_tag }}
       public_release_artifact_id: ${{ steps.public-release.outputs.artifact-id }}
       source_sha: ${{ steps.release.outputs.source_sha }}
-      tarball: ${{ steps.registry.outputs.tarball }}
+      tarball: ${{ steps.release.outputs.tarball }}
       version: ${{ steps.release.outputs.version }}
     steps:
       - name: Require main
@@ -78,9 +78,10 @@ jobs:
             if (!/^[0-9a-f]{40}$/.test(run.head_sha)) throw new Error("Stage run has no valid source SHA");
             fs.appendFileSync(process.env.GITHUB_OUTPUT, "source_sha=" + run.head_sha + "\n");
           ' "$RUNNER_TEMP/stage-run.json"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out the current release verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.stage-run.outputs.source_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -107,12 +108,10 @@ jobs:
             "$EXPECTED_VERSION" \
             "$GITHUB_OUTPUT"
       - name: Fetch and verify the public registry bytes
-        id: registry
         run: |
           node scripts/release-cli-publication.mjs fetch-registry \
             packages/cli/release \
-            "$RUNNER_TEMP/registry-release" \
-            "$GITHUB_OUTPUT"
+            "$RUNNER_TEMP/registry-release"
       - name: Verify npm signatures and provenance
         run: |
           node scripts/release-cli-publication.mjs prepare-audit \
@@ -156,7 +155,7 @@ jobs:
           RELEASE_DIRECTORY: ${{ runner.temp }}/registry-release
           RELEASE_SHA: ${{ needs.inspect.outputs.source_sha }}
           RELEASE_TAG: ${{ needs.inspect.outputs.git_tag }}
-          RELEASE_TARBALL: ${{ needs.inspect.outputs.tarball }}
+          RELEASE_TARBALL_NAME: ${{ needs.inspect.outputs.tarball }}
           RELEASE_VERSION: ${{ needs.inspect.outputs.version }}
         run: |
           tag_json="$RUNNER_TEMP/release-tag.json"
@@ -187,11 +186,10 @@ jobs:
             echo "Unsupported CLI release dist-tag: $RELEASE_DIST_TAG" >&2
             exit 1
           fi
-          tarball_name=$(basename "$RELEASE_TARBALL")
           gh release create "$RELEASE_TAG" \
-            "$RELEASE_DIRECTORY/$tarball_name" \
-            "$RELEASE_DIRECTORY/$tarball_name.sha256" \
-            "$RELEASE_DIRECTORY/$tarball_name.files.json" \
+            "$RELEASE_DIRECTORY/$RELEASE_TARBALL_NAME" \
+            "$RELEASE_DIRECTORY/$RELEASE_TARBALL_NAME.sha256" \
+            "$RELEASE_DIRECTORY/$RELEASE_TARBALL_NAME.files.json" \
             "$RELEASE_DIRECTORY/release.json" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \

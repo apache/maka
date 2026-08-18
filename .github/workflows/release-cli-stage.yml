@@ -93,6 +93,22 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
+      - name: Record the post-staging approval step
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          {
+            echo "## maka-agent@$RELEASE_VERSION staging"
+            echo
+            echo "After this workflow succeeds, review and approve the staged package with 2FA on npmjs.com."
+            echo "After the package becomes public, run **Finalize CLI npm release** with:"
+            echo
+            echo "- stage run ID: \`$RELEASE_RUN_ID\`"
+            echo "- stage run attempt: \`$RELEASE_RUN_ATTEMPT\`"
+            echo "- version: \`$RELEASE_VERSION\`"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Submit the candidate to npm staging
         env:
           RELEASE_DIST_TAG: ${{ steps.release.outputs.dist_tag }}
@@ -101,19 +117,4 @@ jobs:
           npm stage publish "$RELEASE_TARBALL"
           --tag "$RELEASE_DIST_TAG"
           --registry https://registry.npmjs.org/
-      - name: Record the manual approval step
-        env:
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-          RELEASE_RUN_ID: ${{ github.run_id }}
-          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: |
-          {
-            echo "## maka-agent@$RELEASE_VERSION staged"
-            echo
-            echo "Review and approve the staged package with 2FA on npmjs.com."
-            echo "After it becomes public, run **Finalize CLI npm release** with:"
-            echo
-            echo "- stage run ID: \`$RELEASE_RUN_ID\`"
-            echo "- stage run attempt: \`$RELEASE_RUN_ATTEMPT\`"
-            echo "- version: \`$RELEASE_VERSION\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          --provenance
