@@ -111,6 +111,10 @@ export default {
       to: 'licenses/renderer/MINGCUTE_APACHE_LICENSE.txt',
     },
     {
+      from: 'resources/licenses/open-computer-history/LICENSE',
+      to: 'licenses/open-computer-history/LICENSE',
+    },
+    {
       // Vendored copy of the installed tarball's LICENSE (CC0-1.0): the
       // package hoists to different node_modules depths across majors.
       from: 'resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
@@ -118,6 +122,12 @@ export default {
     },
   ],
   mac: {
+    extraResources: [
+      {
+        from: 'resources/bin/open-history',
+        to: 'bin/open-history',
+      },
+    ],
     target: [
       { target: 'dmg', arch: ['arm64'] },
       { target: 'zip', arch: ['arm64'] },

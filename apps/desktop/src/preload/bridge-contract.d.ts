@@ -72,6 +72,12 @@ import type {
   DailyReviewRange,
   DailyReviewSummary,
 } from '@maka/core/daily-review';
+import type {
+  ComputerHistoryClearScope,
+  ComputerHistorySettings,
+  ComputerHistoryStatus,
+  ComputerHistoryTimeline,
+} from '@maka/core/computer-history';
 import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search';
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
 import type { Task, TaskLedgerChangedEvent } from '@maka/core/task-ledger';
@@ -967,6 +973,15 @@ export interface MakaBridge {
      * (e.g. no model configured). Renderer gracefully handles
      * rejection by showing the disabled / fallback form.
      */
+  };
+  computerHistory: {
+    status(): Promise<ComputerHistoryStatus>;
+    timeline(days?: number): Promise<ComputerHistoryTimeline>;
+    updateSettings(patch: Partial<ComputerHistorySettings>): Promise<ComputerHistorySettings>;
+    requestPermissions(): Promise<ComputerHistoryStatus>;
+    pause(duration?: '30m' | '1h' | 'tomorrow'): Promise<ComputerHistoryStatus>;
+    resume(): Promise<ComputerHistoryStatus>;
+    clear(scope: ComputerHistoryClearScope): Promise<ComputerHistoryStatus>;
   };
   appWindow: {
     setTitlebarControlsVisible(visible: boolean): Promise<void>;

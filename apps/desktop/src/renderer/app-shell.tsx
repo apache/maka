@@ -3476,6 +3476,10 @@ function AppShellContent({
                 modelChoices={chatModelChoices}
                 mentionSkills={mentionSkills}
                 onSearchMentionFiles={searchMentionFiles}
+                onAppendComputerHistoryContext={(context) => {
+                  composerRef.current?.appendText(`\n\n${context}\n`);
+                  composerRef.current?.focus();
+                }}
               />
             )}
           </div>

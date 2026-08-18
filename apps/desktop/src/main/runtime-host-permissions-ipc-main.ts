@@ -31,6 +31,7 @@ interface RuntimeHostPermissionsIpcDeps {
   readonly listConnections: () => Promise<LlmConnection[]>;
   readonly botRegistry: BotRegistry;
   readonly getComputerUseCapabilityInput: () => ComputerUseCapabilityInput;
+  readonly getComputerHistoryStatus: () => ReturnType<import('./computer-history-main.js').ComputerHistoryService['status']>;
 }
 
 export function registerRuntimeHostPermissionsIpc(
@@ -55,21 +56,24 @@ export function registerRuntimeHostPermissionsIpc(
       permissions: snapshot,
       botStatuses: deps.botRegistry.allStatuses(),
       computerUse: deps.getComputerUseCapabilityInput(),
+      computerHistory: await deps.getComputerHistoryStatus(),
       now: snapshot.checkedAt,
     });
   });
   handleReconnectableRead(deps.ipcMain, "health:getSnapshot", async () => {
     const now = Date.now();
     const permissionSnapshot = permissions(now);
-    const [settings, connections] = await Promise.all([
+    const [settings, connections, computerHistory] = await Promise.all([
       deps.getSettings(),
       deps.listConnections(),
+      deps.getComputerHistoryStatus(),
     ]);
     const capabilities = buildCapabilitySnapshotCollection({
       settings,
       permissions: permissionSnapshot,
       botStatuses: deps.botRegistry.allStatuses(),
       computerUse: deps.getComputerUseCapabilityInput(),
+      computerHistory,
       now,
     });
     const connectionSignals = (

@@ -96,6 +96,7 @@ interface ChatWorkbarProps {
   modelChoices?: readonly ChatModelChoice[];
   mentionSkills?: ComponentProps<typeof Composer>['mentionSkills'];
   onSearchMentionFiles?: ComponentProps<typeof Composer>['onSearchMentionFiles'];
+  onAppendComputerHistoryContext?: (context: string) => void;
 }
 
 export function ChatWorkbar(props: ChatWorkbarProps) {
@@ -163,6 +164,7 @@ export function ChatWorkbar(props: ChatWorkbarProps) {
             modelChoices={props.modelChoices}
             mentionSkills={props.mentionSkills}
             onSearchMentionFiles={props.onSearchMentionFiles}
+            onAppendComputerHistoryContext={props.onAppendComputerHistoryContext}
           />
         </Suspense>
       </div>

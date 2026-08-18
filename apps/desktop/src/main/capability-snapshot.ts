@@ -17,6 +17,7 @@ import {
 } from '@maka/core/capabilities';
 import { type AppSettings } from '@maka/core/settings';
 import type { CuBackendId } from '@maka/computer-use';
+import type { ComputerHistoryStatus } from '@maka/core/computer-history';
 import type { BotStatus } from '@maka/runtime/bots';
 import type { computerUseServiceHealth } from './computer-use-host.js';
 import {
@@ -48,32 +49,14 @@ export function buildCapabilitySnapshotCollection(input: {
     backendId: CuBackendId | 'none';
     health: ReturnType<typeof computerUseServiceHealth>;
   };
+  computerHistory?: ComputerHistoryStatus;
   now?: number;
 }): CapabilitySnapshotCollection {
   const now = input.now ?? Date.now();
   const permissions = input.permissions.permissions;
   const capabilities: CapabilitySnapshot[] = [
     computerUseCapability(input.computerUse, permissions, now),
-    staticCapability({
-      id: 'activity_recorder',
-      label: 'Activity Recorder',
-      now,
-      feature: {
-        state: 'partial',
-        source: 'runtime',
-        reason: 'Daily Review 已聚合本地任务 / 工具 / 模型活动；当前不包含屏幕与应用级录制',
-      },
-      requiredPermissions: [
-        { id: 'screen_recording', required: false, status: permissions.screen_recording.status },
-      ],
-      actionApproval: { state: 'not_required', source: 'not_applicable' },
-      memoryAcceptance: { state: 'disabled', source: 'memory_contract' },
-      runtimeProbe: {
-        state: 'not_run',
-        source: 'runtime_probe',
-        reason: '打开 Daily Review 可查看本地活动聚合结果',
-      },
-    }),
+    activityRecorderCapability(input.computerHistory, permissions, now),
     staticCapability({
       id: 'memory_write',
       label: 'Memory',
@@ -98,6 +81,55 @@ export function buildCapabilitySnapshotCollection(input: {
   ];
 
   return { checkedAt: now, capabilities };
+}
+
+function activityRecorderCapability(
+  history: ComputerHistoryStatus | undefined,
+  permissions: PermissionSnapshot['permissions'],
+  now: number,
+): CapabilitySnapshot {
+  const supported = history?.platformSupported === true && history.helperAvailable;
+  const enabled = history?.settings.enabled === true;
+  return staticCapability({
+    id: 'activity_recorder',
+    label: 'Computer History',
+    now,
+    feature: {
+      state: !supported ? 'not_available' : enabled ? 'enabled' : 'disabled',
+      source: enabled ? 'settings' : 'runtime',
+      reason: !supported
+        ? 'Computer History 当前仅支持包含本地采集器的 macOS 版本。'
+        : enabled
+          ? '本机交互事件采集已启用，不使用屏幕录制。'
+          : 'Computer History 已安装但尚未启用。',
+    },
+    requiredPermissions: [
+      {
+        id: 'accessibility',
+        required: true,
+        status: history?.accessibilityGranted ? 'granted' : permissions.accessibility.status,
+      },
+      { id: 'screen_recording', required: false, status: permissions.screen_recording.status },
+    ],
+    actionApproval: { state: 'not_required', source: 'not_applicable' },
+    memoryAcceptance: { state: 'disabled', source: 'memory_contract' },
+    runtimeProbe: {
+      state:
+        history?.state === 'running'
+          ? 'healthy'
+          : history?.state === 'paused' || history?.state === 'needs_permission'
+            ? 'degraded'
+            : history?.state === 'error'
+              ? 'not_available'
+              : 'not_run',
+      source: 'runtime_probe',
+      lastCheckedAt: now,
+      reason: history
+        ? `状态：${history.state}；${history.eventCount} 条本地事件。`
+        : '尚未读取 Computer History 状态。',
+    },
+    canPause: enabled,
+  });
 }
 
 function computerUseCapability(
@@ -185,6 +217,7 @@ function staticCapability(input: {
   memoryAcceptance: CapabilityMemoryAcceptanceSignal;
   runtimeProbe: CapabilityRuntimeProbeSignal;
   guidance?: string[];
+  canPause?: boolean;
 }): CapabilitySnapshot {
   const configuration: CapabilityConfigurationSignal = { state: 'not_required', source: 'not_applicable' };
   return {
@@ -203,7 +236,7 @@ function staticCapability(input: {
     memoryAcceptance: input.memoryAcceptance,
     runtimeProbe: input.runtimeProbe,
     canRevoke: false,
-    canPause: input.feature.state === 'enabled',
+    canPause: input.canPause ?? input.feature.state === 'enabled',
     guidance: input.guidance ?? [],
     auditEvents: [],
     updatedAt: input.now,

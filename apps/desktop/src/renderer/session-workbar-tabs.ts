@@ -5,6 +5,7 @@ export type SessionWorkbarTabKind =
   | 'terminal'
   | 'tasks'
   | 'browser'
+  | 'computer-history'
   | 'files'
   | 'inspector'
   | 'side-chat';
@@ -55,6 +56,7 @@ const PERSISTED_KINDS = new Set<SessionWorkbarTabKind>([
   'review',
   'tasks',
   'browser',
+  'computer-history',
   'files',
   'inspector',
 ]);
@@ -64,6 +66,7 @@ const STATIC_TAB_IDS: Record<Exclude<SessionWorkbarTabKind, 'side-chat'>, string
   terminal: 'workbar:terminal',
   tasks: 'workbar:tasks',
   browser: 'workbar:browser',
+  'computer-history': 'workbar:computer-history',
   files: 'workbar:files',
   inspector: 'workbar:inspector',
 };

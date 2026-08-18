@@ -103,6 +103,12 @@ import type {
 import type { CreateScheduledTaskInput, ScheduledTask, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
 import type { ProjectRecord } from '@maka/core/project';
 import type {
+  ComputerHistoryClearScope,
+  ComputerHistorySettings,
+  ComputerHistoryStatus,
+  ComputerHistoryTimeline,
+} from '@maka/core/computer-history';
+import type {
   DailyReviewArchive,
   DailyReviewArchiveSummary,
   DailyReviewConfig,
@@ -2439,6 +2445,29 @@ const makaBridge = {
       { ok: true; path: string } | { ok: false; reason: 'canceled' | 'write_failed' | 'invalid_input' }
     > {
       return ipcRenderer.invoke('daily-review:saveMarkdownToFile', input);
+    },
+  },
+  computerHistory: {
+    status(): Promise<ComputerHistoryStatus> {
+      return ipcRenderer.invoke('computer-history:status');
+    },
+    timeline(days = 7): Promise<ComputerHistoryTimeline> {
+      return ipcRenderer.invoke('computer-history:timeline', days);
+    },
+    updateSettings(patch: Partial<ComputerHistorySettings>): Promise<ComputerHistorySettings> {
+      return ipcRenderer.invoke('computer-history:update-settings', patch);
+    },
+    requestPermissions(): Promise<ComputerHistoryStatus> {
+      return ipcRenderer.invoke('computer-history:permissions');
+    },
+    pause(duration?: '30m' | '1h' | 'tomorrow'): Promise<ComputerHistoryStatus> {
+      return ipcRenderer.invoke('computer-history:pause', duration);
+    },
+    resume(): Promise<ComputerHistoryStatus> {
+      return ipcRenderer.invoke('computer-history:resume');
+    },
+    clear(scope: ComputerHistoryClearScope): Promise<ComputerHistoryStatus> {
+      return ipcRenderer.invoke('computer-history:clear', scope);
     },
   },
   webSearch: {

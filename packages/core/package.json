@@ -111,6 +111,7 @@
     "./bot-chat-settings": "./dist/bot-chat-settings.js",
     "./bot-onboarding": "./dist/bot-onboarding.js",
     "./computer-use": "./dist/computer-use.js",
+    "./computer-history": "./dist/computer-history.js",
     "./connection-error-copy": "./dist/connection-error-copy.js",
     "./git-review": "./dist/git-review.js",
     "./graph-command": "./dist/graph-command.js",
