@@ -26,7 +26,7 @@ import {
   type ConnectionEffectError,
   type ConnectionTestEffectOutcome,
 } from './connection-effect-outcome.js';
-import { classifyError } from './provider-error-classification.js';
+import { providerFailureResult } from './provider-error-classification.js';
 
 const CONNECTION_TEST_TIMEOUT_MS = 15_000;
 
@@ -435,39 +435,20 @@ async function probeGoogle(
 
 async function httpFailure(r: ConnectionEffectResponse, t0: number): Promise<ConnectionTestResult> {
   const statusCode = r.status;
-  if (statusCode === 429) {
-    await r.cancel();
-    return {
-      ok: false,
-      errorMessage:
-        'OAuth 已登录，但当前账号或 provider 正在 rate limit。请稍后重试，或先切换到其它可用模型。',
-      statusCode,
-      errorClass: 'provider_unavailable',
-      latencyMs: Date.now() - t0,
-    };
-  }
   const errorBody = await r.readText(CONNECTION_EFFECT_ERROR_BODY_MAX_BYTES);
+  const providerFailure = providerFailureResult({ statusCode, responseBody: errorBody });
   return {
     ok: false,
-    errorMessage: `${statusCode} ${errorBody.slice(0, 200)}`,
+    ...(providerFailure.message !== undefined ? { errorMessage: providerFailure.message } : {}),
     statusCode,
-    errorClass: classifyHttpFailure(statusCode, errorBody),
+    errorClass: connectionTestErrorClassFromProviderClass(providerFailure.errorClass),
+    providerFailure,
     latencyMs: Date.now() - t0,
   };
 }
 
 function stripTrailing(u: string): string {
   return u.replace(/\/+$/, '');
-}
-
-function classifyHttpFailure(statusCode: number, body: string): ConnectionTestResult['errorClass'] {
-  // The response body carries the provider's structured envelope; the numeric
-  // status is the fallback when the body is empty or unstructured. Both flow
-  // through the one shared provider-failure authority instead of a parallel
-  // status-only classifier.
-  const fromBody = classifyError(body);
-  const fromStatus = classifyError({ statusCode });
-  return connectionTestErrorClassFromProviderClass(fromBody !== 'Other' ? fromBody : fromStatus);
 }
 
 function connectionTestErrorClassFromProviderClass(errorClass: string): ConnectionTestErrorClass {
@@ -522,6 +503,13 @@ function classifyConnectionTestResult(result: ConnectionTestResult): ConnectionE
   // The body-aware classification computed at the probe boundary is
   // authoritative; the status-only fallback must not override it (a Kimi 403
   // carrying a permission envelope is neutral, not a reauth).
+  if (result.providerFailure !== undefined) {
+    return {
+      kind: connectionTestErrorKind(result.errorClass),
+      ...(result.statusCode === undefined ? {} : { statusCode: result.statusCode }),
+      providerFailure: result.providerFailure,
+    };
+  }
   if (result.errorClass !== undefined && result.errorClass !== 'unknown') {
     return {
       kind: connectionTestErrorKind(result.errorClass),

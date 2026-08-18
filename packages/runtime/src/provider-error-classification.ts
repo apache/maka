@@ -1,5 +1,6 @@
 import { RetryError } from 'ai';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { isProviderFailureClass, type ProviderFailureResult } from '@maka/core/provider-failure';
 import { isAuthenticationErrorText, redactSecrets } from '@maka/core/redaction';
 
 /**
@@ -71,14 +72,11 @@ export interface ProviderRetryMetadata {
   retryAfterMs?: number;
 }
 
-/** Bounded, allowlisted provider failure facts safe for durable telemetry. */
-export interface ProviderFailureDiagnostic {
-  errorClass: string;
-  httpStatus?: number;
-  providerCode?: string;
-  providerRequestId?: string;
-  retryable: boolean;
-}
+/** Bounded provider facts safe for durable telemetry (no presentation text). */
+export type ProviderFailureDiagnostic = Pick<
+  ProviderFailureResult,
+  'errorClass' | 'httpStatus' | 'providerCode' | 'providerRequestId' | 'retryable'
+>;
 
 interface ProviderFailureSummary {
   message: string;
@@ -135,6 +133,10 @@ function parseRetryAfterMs(headers: Record<string, string>): number | null | und
 export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
   const facts = normalizeProviderError(error);
   if (!facts) return { retryable: false };
+  return providerRetryMetadataFromFacts(facts);
+}
+
+function providerRetryMetadataFromFacts(facts: ProviderErrorFacts): ProviderRetryMetadata {
   const { evidence } = facts;
 
   if (RUNTIME_RETRYABLE_ERROR_CODES.has(evidence.code)) return { retryable: true };
@@ -265,6 +267,11 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
     };
     const structuredCodes: string[] = [];
     collectStructuredCodes(record, structuredCodes);
+    const rawBody = safeField(record, 'responseBody');
+    if (typeof rawBody === 'string') {
+      const parsedBody = parsedProviderValue(rawBody);
+      if (parsedBody !== undefined) collectStructuredCodes(parsedBody, structuredCodes);
+    }
     let text: string;
     try {
       // Serialize the whole value so message/code text is evidence no matter
@@ -296,6 +303,12 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
 export function providerFailureSummary(error: unknown): ProviderFailureSummary | undefined {
   const facts = normalizeProviderError(error);
   if (!facts) return undefined;
+  return providerFailureSummaryFromFacts(facts);
+}
+
+function providerFailureSummaryFromFacts(
+  facts: ProviderErrorFacts,
+): ProviderFailureSummary | undefined {
   const sources = facts.summarySources;
   const message = firstProviderMessage(facts);
   const code = firstProviderField(sources, ['code']) ?? firstProviderField(sources, ['type']);
@@ -325,23 +338,29 @@ export function providerFailureSummary(error: unknown): ProviderFailureSummary |
   };
 }
 
-const DURABLE_PROVIDER_ERROR_CLASSES: ReadonlySet<string> = new Set([
-  'Abort',
-  'Auth',
-  'ContextLength',
-  'Network',
-  'ProviderBilling',
-  'ProviderUnavailable',
-  'RateLimit',
-  'Timeout',
-]);
-
 /**
  * Projects provider errors into a small durable fingerprint. Unlike the
  * presentation summary, this intentionally excludes provider messages and
  * response bodies: even redacted free text can echo prompts or credentials.
  */
 export function providerFailureDiagnostic(error: unknown): ProviderFailureDiagnostic {
+  const failure = providerFailureResult(error);
+  return {
+    errorClass: failure.errorClass,
+    ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {}),
+    ...(failure.providerCode !== undefined ? { providerCode: failure.providerCode } : {}),
+    ...(failure.providerRequestId !== undefined
+      ? { providerRequestId: failure.providerRequestId }
+      : {}),
+    retryable: failure.retryable,
+  };
+}
+
+/** The single structured provider-failure authority for Runtime consumers. */
+export function providerFailureResult(error: unknown): ProviderFailureResult {
+  if (RetryError.isInstance(error) && error.reason === 'abort') {
+    return { errorClass: 'Abort', retryable: false };
+  }
   const facts = providerFailureDiagnosticFacts(error);
   if (!facts) return { errorClass: 'Other', retryable: false };
   const sources = facts.summarySources;
@@ -353,26 +372,35 @@ export function providerFailureDiagnostic(error: unknown): ProviderFailureDiagno
       ? numericStatus
       : undefined;
   const classified = classifyProviderFacts(facts);
-  const errorClass = durableProviderErrorClass(classified, httpStatus);
+  const errorClass = normalizedProviderFailureClass(classified, httpStatus);
   const providerCode =
     firstProviderField(sources, ['code']) ?? firstProviderField(sources, ['type']);
   const providerRequestId =
     firstProviderField(sources, ['requestId', 'request_id']) ??
     boundedProviderField(facts.responseHeaders?.['x-request-id']);
+  const retry = providerRetryMetadataFromFacts(facts);
+  const summary = providerFailureSummaryFromFacts(facts);
   return {
     errorClass,
     ...(httpStatus !== undefined ? { httpStatus } : {}),
     ...(providerCode !== undefined ? { providerCode } : {}),
     ...(providerRequestId !== undefined ? { providerRequestId } : {}),
-    retryable: providerRetryMetadata(facts.target).retryable,
+    retryable: retry.retryable,
+    ...(retry.retryAfterMs !== undefined ? { retryAfterMs: retry.retryAfterMs } : {}),
+    ...(summary !== undefined
+      ? { message: summary.message, boundedProviderMessage: true as const }
+      : {}),
   };
 }
 
-function durableProviderErrorClass(classified: string, httpStatus: number | undefined): string {
-  // Structured context-overflow evidence can legitimately arrive behind a
-  // generic 4xx/5xx proxy response and remains stronger than the wrapper code.
-  if (classified === 'ContextLength') return classified;
-  if (httpStatus === 401 || httpStatus === 403) return 'Auth';
+function normalizedProviderFailureClass(
+  classified: string,
+  httpStatus: number | undefined,
+): ProviderFailureResult['errorClass'] {
+  // The semantic class already includes structured provider identifiers and
+  // therefore outranks the transport status used only as a fallback.
+  if (isProviderFailureClass(classified) && classified !== 'Other') return classified;
+  if (httpStatus === 401) return 'Auth';
   if (httpStatus === 402) return 'ProviderBilling';
   if (httpStatus === 408) return 'Timeout';
   if (httpStatus === 413) return 'ContextLength';
@@ -383,7 +411,7 @@ function durableProviderErrorClass(classified: string, httpStatus: number | unde
   if (httpStatus !== undefined && httpStatus >= 500 && httpStatus <= 599) {
     return 'ProviderUnavailable';
   }
-  return DURABLE_PROVIDER_ERROR_CLASSES.has(classified) ? classified : 'Other';
+  return 'Other';
 }
 
 function providerFailureDiagnosticFacts(error: unknown): ProviderErrorFacts | undefined {

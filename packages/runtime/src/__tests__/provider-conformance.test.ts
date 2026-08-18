@@ -572,6 +572,45 @@ describe('models.dev provider conformance', () => {
     assert.equal(result.ok, false);
     assert.equal(result.statusCode, 403);
     assert.equal(result.errorClass, 'unknown');
+    assert.deepEqual(result.providerFailure, {
+      errorClass: 'RequestRejected',
+      httpStatus: 403,
+      providerCode: 'permission_error',
+      retryable: false,
+      message:
+        'You have reached the plan usage limit for this model. (code=permission_error, status=403)',
+      boundedProviderMessage: true,
+    });
+  });
+
+  test('connection probe distinguishes a structured usage limit from transient 429', async () => {
+    const server = await startJsonServer(async (request, response) => {
+      await readBody(request);
+      respondJson(response, 429, {
+        error: {
+          type: 'usage_limit_reached',
+          message: 'Your plan allowance is exhausted.',
+        },
+      });
+    });
+    const connection: LlmConnection = {
+      slug: 'moonshot-usage-limit',
+      name: 'Moonshot Usage Limit',
+      providerType: 'moonshot',
+      baseUrl: `${server.url}/v1`,
+      defaultModel: 'kimi-k2.6',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const result = await testConnection(connection, 'moonshot-key');
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorClass, 'provider_unavailable');
+    assert.equal(result.providerFailure?.errorClass, 'UsageLimit');
+    assert.equal(result.providerFailure?.retryable, false);
+    assert.equal(result.providerFailure?.boundedProviderMessage, true);
   });
 
   test('connection probe still classifies a bare 401 as authentication', async () => {

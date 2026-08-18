@@ -41,21 +41,32 @@ export function openPathActionErrorMessage(
 
 export function commandPaletteConnectionTestFailureMessage(result: ConnectionTestResult, locale: UiLocale): string {
   const fallback = commandPaletteConnectionTestFailureFallback(result, locale);
-  if (!result.errorMessage) return fallback;
-  return localizedErrorMessage(new Error(result.errorMessage), fallback, locale);
+  const failure = result.providerFailure;
+  return failure?.boundedProviderMessage === true && failure.message
+    ? failure.message
+    : fallback;
 }
 
 function commandPaletteConnectionTestFailureFallback(result: ConnectionTestResult, locale: UiLocale): string {
   const copy = getShellCopy(locale).commandActions.connectionFailures;
-  if (result.statusCode === 429) return copy.rateLimit;
+  switch (result.providerFailure?.errorClass) {
+    case 'Auth':
+      return copy.auth;
+    case 'Timeout':
+      return copy.timeout;
+    case 'RateLimit':
+      return copy.rateLimit;
+    case 'Network':
+      return copy.network;
+    case 'ProviderUnavailable':
+      return copy.provider;
+    default:
+      break;
+  }
   if (result.errorClass === 'timeout') return copy.timeout;
-  if (result.errorClass === 'auth' || result.statusCode === 401 || result.statusCode === 403) {
-    return copy.auth;
-  }
+  if (result.errorClass === 'auth') return copy.auth;
   if (result.errorClass === 'network') return copy.network;
-  if (result.errorClass === 'provider_unavailable' || (result.statusCode && result.statusCode >= 500)) {
-    return copy.provider;
-  }
+  if (result.errorClass === 'provider_unavailable') return copy.provider;
   return copy.unknown;
 }
 

@@ -1,5 +1,6 @@
 import type { ModelDiscoverySource, ModelInfo, ProviderType } from '@maka/core/llm-connections';
-import { classifyError } from './provider-error-classification.js';
+import type { ProviderFailureResult } from '@maka/core/provider-failure';
+import { providerFailureResult } from './provider-error-classification.js';
 
 export interface ConnectionEffectConnection {
   readonly providerType: ProviderType;
@@ -21,6 +22,7 @@ export type ConnectionEffectErrorKind =
 export interface ConnectionEffectError {
   readonly kind: ConnectionEffectErrorKind;
   readonly statusCode?: number;
+  readonly providerFailure?: ProviderFailureResult;
 }
 
 export type ConnectionModelDiscoveryEffectOutcome =
@@ -58,18 +60,19 @@ export function classifyConnectionEffectStatus(statusCode: number): ConnectionEf
   // Status-only evidence still routes through the shared provider-failure
   // authority. A bare 403 is intentionally not authentication: providers use
   // it for valid-key permission failures, guardrails, and subscription limits.
-  switch (classifyError({ statusCode })) {
+  const providerFailure = providerFailureResult({ statusCode });
+  switch (providerFailure.errorClass) {
     case 'Auth':
-      return { kind: 'auth', statusCode };
+      return { kind: 'auth', statusCode, providerFailure };
     case 'RateLimit':
     case 'ProviderUnavailable':
     case 'ProviderBilling':
     case 'ProviderPermission':
     case 'UsageLimit':
-      return { kind: 'provider_unavailable', statusCode };
+      return { kind: 'provider_unavailable', statusCode, providerFailure };
     default:
       break;
   }
-  if (statusCode === 408) return { kind: 'timeout', statusCode };
-  return { kind: 'unknown', statusCode };
+  if (statusCode === 408) return { kind: 'timeout', statusCode, providerFailure };
+  return { kind: 'unknown', statusCode, providerFailure };
 }

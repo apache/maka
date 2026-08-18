@@ -40,7 +40,7 @@ import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.
 import {
   classifyError,
   errorPresentationFromClass,
-  providerFailureSummary,
+  providerFailureResult,
   providerRetryMetadata,
 } from './provider-error-classification.js';
 import {
@@ -950,16 +950,23 @@ function normalizeModelFailure(error: unknown): ModelFailure {
 
 function normalizeProviderFailure(error: unknown): ModelFailure {
   if (isModelFailure(error)) return error;
-  const summary = providerFailureSummary(error);
-  const failure = normalizeModelFailure(error);
+  const result = providerFailureResult(error);
+  const presentation = errorPresentationFromClass(result.errorClass);
   // The bounded summary is display-safe provider wording; a generalized
   // presentation message is not. The marker must follow the message, not the
   // presence of a code (Error.code and provider codes both exist here).
-  const boundedProviderMessage = failure.kind === 'unknown' && summary !== undefined;
+  const kind = modelFailureKind(result.errorClass);
+  const boundedProviderMessage = kind === 'unknown' && result.boundedProviderMessage === true;
   return {
-    ...failure,
-    ...(summary?.code !== undefined ? { code: summary.code } : {}),
-    ...(boundedProviderMessage ? { message: summary.message } : {}),
+    type: 'model_failure',
+    kind,
+    retryable: result.retryable,
+    ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {}),
+    ...(result.providerCode !== undefined ? { code: result.providerCode } : {}),
+    message:
+      boundedProviderMessage && result.message
+        ? result.message
+        : (presentation.message ?? generalizedErrorMessage(error)),
     ...(boundedProviderMessage ? { boundedProviderMessage: true } : {}),
   };
 }

@@ -58,7 +58,7 @@ export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale
 }
 
 export interface ConnectionTestTroubleshootingCopy {
-  /** Auth-class failure copy (errorClass 'auth' or HTTP 401/403). */
+  /** Auth-class failure copy from the Runtime-owned structured result. */
   auth: string;
   /** Final fallback copy when no failure class matched. */
   recheck: string;
@@ -73,14 +73,23 @@ export function connectionTestFailureFallback(
   locale: UiLocale = 'zh',
 ): string {
   const shared = getProviderSettingsCopy(locale).shared;
-  if (result.statusCode === 429) return shared.rateLimit;
+  switch (result.providerFailure?.errorClass) {
+    case 'Auth':
+      return copy.auth;
+    case 'Timeout':
+      return shared.timeout;
+    case 'RateLimit':
+      return shared.rateLimit;
+    case 'Network':
+      return shared.network;
+    case 'ProviderUnavailable':
+      return shared.unavailable;
+    default:
+      break;
+  }
+  if (result.errorClass === 'auth') return copy.auth;
   if (result.errorClass === 'timeout') return shared.timeout;
-  if (result.errorClass === 'auth' || result.statusCode === 401 || result.statusCode === 403) {
-    return copy.auth;
-  }
-  if (result.errorClass === 'provider_unavailable' || (result.statusCode !== undefined && result.statusCode >= 500)) {
-    return shared.unavailable;
-  }
+  if (result.errorClass === 'provider_unavailable') return shared.unavailable;
   if (result.errorClass === 'network') return shared.network;
   return copy.recheck;
 }
@@ -91,10 +100,10 @@ export function connectionTestFailureMessage(
   locale: UiLocale = 'zh',
 ): string {
   const fallback = connectionTestFailureFallback(result, copy, locale);
-  if (!result.errorMessage) return fallback;
-  return locale === 'zh'
-    ? generalizedErrorMessageChinese(new Error(result.errorMessage), fallback)
-    : generalizedErrorMessage(new Error(result.errorMessage), fallback);
+  const failure = result.providerFailure;
+  return failure?.boundedProviderMessage === true && failure.message
+    ? failure.message
+    : fallback;
 }
 
 export function connectionLastTestMessageDisplay(message: string | undefined, locale: UiLocale = 'zh'): string | undefined {

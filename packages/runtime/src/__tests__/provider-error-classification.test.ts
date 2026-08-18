@@ -7,6 +7,7 @@ import { z } from 'zod/v4';
 import {
   classifyError,
   providerFailureDiagnostic,
+  providerFailureResult,
   errorPresentationFromClass,
   providerFailureSummary,
   providerRetryMetadata,
@@ -71,6 +72,22 @@ describe('Provider error classification', () => {
       [Object.assign(new Error('bad request'), { statusCode: 400 }), 'RequestRejected'],
       [Object.assign(new Error('slow down'), { statusCode: 429 }), 'RateLimit'],
       [Object.assign(new Error('upstream failed'), { statusCode: 503 }), 'ProviderUnavailable'],
+      [
+        Object.assign(new Error('access denied'), {
+          statusCode: 403,
+          data: { error: { type: 'permission_denied' } },
+        }),
+        'ProviderPermission',
+      ],
+      [
+        Object.assign(new Error('plan exhausted'), {
+          statusCode: 429,
+          data: { error: { type: 'usage_limit_reached' } },
+        }),
+        'UsageLimit',
+      ],
+      [{ error: { type: 'permission_denied' } }, 'ProviderPermission'],
+      [{ error: { type: 'usage_limit_reached' } }, 'UsageLimit'],
       [new DOMException('request timed out', 'TimeoutError'), 'Timeout'],
       [new TypeError('fetch failed'), 'Network'],
       [
@@ -473,6 +490,20 @@ describe('Provider error classification', () => {
     assert.deepEqual(providerFailureSummary(planCycleLimit), {
       message: `${observedMessage} (code=permission_error, status=403)`,
       code: 'permission_error',
+    });
+    assert.deepEqual(providerFailureResult(planCycleLimit), {
+      errorClass: 'RequestRejected',
+      httpStatus: 403,
+      providerCode: 'permission_error',
+      retryable: false,
+      message: `${observedMessage} (code=permission_error, status=403)`,
+      boundedProviderMessage: true,
+    });
+    assert.deepEqual(providerFailureDiagnostic(planCycleLimit), {
+      errorClass: 'RequestRejected',
+      httpStatus: 403,
+      providerCode: 'permission_error',
+      retryable: false,
     });
   });
 

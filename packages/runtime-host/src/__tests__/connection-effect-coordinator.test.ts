@@ -645,7 +645,18 @@ test('keeps a neutral provider permission failure out of needs_reauth', async ()
         assert.equal(modelId, 'gpt-5');
         return {
           ok: false,
-          error: { kind: 'unknown', statusCode: 403 },
+          error: {
+            kind: 'unknown',
+            statusCode: 403,
+            providerFailure: {
+              errorClass: 'RequestRejected',
+              httpStatus: 403,
+              providerCode: 'permission_error',
+              retryable: false,
+              message: 'Plan allowance exhausted. (code=permission_error, status=403)',
+              boundedProviderMessage: true,
+            },
+          },
           modelId: 'gpt-5',
           latencyMs: 17,
         };
@@ -661,6 +672,17 @@ test('keeps a neutral provider permission failure out of needs_reauth', async ()
     if (!outcome.ok || outcome.result.kind !== 'committed') {
       throw new Error('connection test did not commit');
     }
+    assert.deepEqual(
+      outcome.result.test.kind === 'failed' ? outcome.result.test.providerFailure : undefined,
+      {
+        errorClass: 'RequestRejected',
+        httpStatus: 403,
+        providerCode: 'permission_error',
+        retryable: false,
+        message: 'Plan allowance exhausted. (code=permission_error, status=403)',
+        boundedProviderMessage: true,
+      },
+    );
     const persisted = await stores.connectionCatalog.getSnapshot();
     assert.deepEqual(persisted.connections[0]?.lastTest, {
       status: 'error',

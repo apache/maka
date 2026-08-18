@@ -137,6 +137,14 @@ describe('Runtime Host connection effects protocol', () => {
         latencyMs: 42,
         statusCode: 401,
         errorClass: 'auth',
+        providerFailure: {
+          errorClass: 'Auth',
+          retryable: false,
+          httpStatus: 401,
+          providerCode: 'invalid_api_key',
+          message: 'Invalid API key. (code=invalid_api_key, status=401)',
+          boundedProviderMessage: true,
+        },
       },
     };
     const failed = response('connection.test.run', failedResult);
@@ -171,6 +179,27 @@ describe('Runtime Host connection effects protocol', () => {
     assertInvalidResponse('connection.test.run', {
       ...failedResult,
       test: { ...failedResult.test, statusCode: 600 },
+    });
+    assertInvalidResponse('connection.test.run', {
+      ...failedResult,
+      test: {
+        ...failedResult.test,
+        providerFailure: {
+          ...failedResult.test.providerFailure,
+          boundedProviderMessage: true,
+          message: undefined,
+        },
+      },
+    });
+    assertInvalidResponse('connection.test.run', {
+      ...failedResult,
+      test: {
+        ...failedResult.test,
+        providerFailure: {
+          ...failedResult.test.providerFailure,
+          boundedProviderMessage: undefined,
+        },
+      },
     });
   });
 });

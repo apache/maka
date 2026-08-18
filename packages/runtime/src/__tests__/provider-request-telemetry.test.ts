@@ -991,7 +991,7 @@ describe('canonical model-call accounting', () => {
       name: 'AI_APICallError',
       statusCode: 429,
       data: {
-        error: { code: 'rate_limit_exceeded', message: 'private response body' },
+        error: { code: 'usage_limit_reached', message: 'private response body' },
       },
       responseHeaders: { 'x-request-id': 'req-compact-1' },
       requestBodyValues: { input: 'private request body' },
@@ -1011,15 +1011,15 @@ describe('canonical model-call accounting', () => {
 
     const attempt = decodeModelCallAttempt(recorded[0]);
     assert.equal(attempt.historyCompactRoute, 'provider_native');
-    assert.equal(attempt.errorClass, 'RateLimit');
+    assert.equal(attempt.errorClass, 'UsageLimit');
     assert.equal(attempt.httpStatus, 429);
-    assert.equal(attempt.providerCode, 'rate_limit_exceeded');
+    assert.equal(attempt.providerCode, 'usage_limit_reached');
     assert.equal(attempt.providerRequestId, 'req-compact-1');
     assert.equal(attempt.retryable, false);
     assert.deepEqual(diagnosticAttempts[0]?.failure, {
-      errorClass: 'RateLimit',
+      errorClass: 'UsageLimit',
       httpStatus: 429,
-      providerCode: 'rate_limit_exceeded',
+      providerCode: 'usage_limit_reached',
       providerRequestId: 'req-compact-1',
       retryable: false,
     });

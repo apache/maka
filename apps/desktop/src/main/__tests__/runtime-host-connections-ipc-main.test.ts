@@ -332,6 +332,38 @@ test('preserves the Host-tested model and diagnostics for the existing Desktop U
       errorClass: 'provider_unavailable',
     },
   );
+  const providerFailure = {
+    errorClass: 'RequestRejected' as const,
+    httpStatus: 403,
+    providerCode: 'permission_error',
+    retryable: false,
+    message: 'Plan allowance exhausted. (code=permission_error, status=403)',
+    boundedProviderMessage: true as const,
+  };
+  assert.deepEqual(
+    projectHostConnectionTest({
+      kind: 'committed',
+      catalogRevision: 10,
+      connection: { connectionId: 'connection-1', revision: 7 },
+      test: {
+        kind: 'failed',
+        checkedAt: '2026-08-05T00:00:02.000Z',
+        modelId: 'model-1',
+        latencyMs: 300,
+        statusCode: 403,
+        errorClass: 'unknown',
+        providerFailure,
+      },
+    }),
+    {
+      ok: false,
+      modelTested: 'model-1',
+      latencyMs: 300,
+      statusCode: 403,
+      errorClass: 'unknown',
+      providerFailure,
+    },
+  );
 });
 
 function catalog(): ConnectionCatalogSnapshot {

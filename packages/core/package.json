@@ -87,6 +87,7 @@
     "./chat-model-choice": "./dist/chat-model-choice.js",
     "./connection-readiness": "./dist/connection-readiness.js",
     "./provider-auth": "./dist/provider-auth.js",
+    "./provider-failure": "./dist/provider-failure.js",
     "./oauth-subscription": "./dist/oauth-subscription.js",
     "./onboarding": "./dist/onboarding.js",
     "./onboarding-milestone": "./dist/onboarding-milestone.js",

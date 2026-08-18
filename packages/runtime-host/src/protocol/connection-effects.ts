@@ -10,6 +10,7 @@ import {
   type ModelDiscoverySource,
 } from '@maka/core/runtime-policy';
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
+import { isProviderFailureClass, type ProviderFailureResult } from '@maka/core/provider-failure';
 import {
   requireCount,
   requireEntityId,
@@ -138,6 +139,7 @@ export type ConnectionTestProjection =
       readonly latencyMs: number | null;
       readonly statusCode: number | null;
       readonly errorClass: ConnectionEffectFailureClass;
+      readonly providerFailure?: ProviderFailureResult;
     };
 
 export type ConnectionTestRunResult =
@@ -393,6 +395,7 @@ function decodeConnectionTestProjection(value: unknown): ConnectionTestProjectio
     'latencyMs',
     'statusCode',
     'errorClass',
+    ...(Object.hasOwn(projection, 'providerFailure') ? ['providerFailure'] : []),
   ]);
   if (failed.kind !== 'failed') throw invalidProtocolFrame('Invalid connection test projection');
   return {
@@ -407,6 +410,69 @@ function decodeConnectionTestProjection(value: unknown): ConnectionTestProjectio
         ? null
         : boundedInteger(failed.statusCode, 'connection test status code', 100, 599),
     errorClass: effectFailureClass(failed.errorClass),
+    ...(failed.providerFailure === undefined
+      ? {}
+      : { providerFailure: decodeProviderFailureResult(failed.providerFailure) }),
+  };
+}
+
+function decodeProviderFailureResult(value: unknown): ProviderFailureResult {
+  const candidate = requireRecord(value, 'provider failure result');
+  const record = requireExactRecord(candidate, 'provider failure result', [
+    'errorClass',
+    'retryable',
+    ...(Object.hasOwn(candidate, 'retryAfterMs') ? ['retryAfterMs'] : []),
+    ...(Object.hasOwn(candidate, 'httpStatus') ? ['httpStatus'] : []),
+    ...(Object.hasOwn(candidate, 'providerCode') ? ['providerCode'] : []),
+    ...(Object.hasOwn(candidate, 'providerRequestId') ? ['providerRequestId'] : []),
+    ...(Object.hasOwn(candidate, 'message') ? ['message'] : []),
+    ...(Object.hasOwn(candidate, 'boundedProviderMessage') ? ['boundedProviderMessage'] : []),
+  ]);
+  if (!isProviderFailureClass(record.errorClass)) {
+    throw invalidProtocolFrame('Invalid provider failure class');
+  }
+  if (typeof record.retryable !== 'boolean') {
+    throw invalidProtocolFrame('Invalid provider failure retryability');
+  }
+  if (record.boundedProviderMessage !== undefined && record.boundedProviderMessage !== true) {
+    throw invalidProtocolFrame('Invalid bounded provider message marker');
+  }
+  if (record.boundedProviderMessage === true && record.message === undefined) {
+    throw invalidProtocolFrame('Bounded provider message marker requires a message');
+  }
+  if (record.message !== undefined && record.boundedProviderMessage !== true) {
+    throw invalidProtocolFrame('Provider failure message requires bounded provenance');
+  }
+  return {
+    errorClass: record.errorClass,
+    retryable: record.retryable,
+    ...(record.retryAfterMs === undefined
+      ? {}
+      : {
+          retryAfterMs: boundedInteger(
+            record.retryAfterMs,
+            'provider retry delay',
+            1,
+            2_147_483_647,
+          ),
+        }),
+    ...(record.httpStatus === undefined
+      ? {}
+      : {
+          httpStatus: boundedInteger(record.httpStatus, 'provider HTTP status', 100, 599),
+        }),
+    ...(record.providerCode === undefined
+      ? {}
+      : { providerCode: requireString(record.providerCode, 'provider code', 256) }),
+    ...(record.providerRequestId === undefined
+      ? {}
+      : {
+          providerRequestId: requireString(record.providerRequestId, 'provider request id', 256),
+        }),
+    ...(record.message === undefined
+      ? {}
+      : { message: requireString(record.message, 'provider failure message', 2_048) }),
+    ...(record.boundedProviderMessage === true ? { boundedProviderMessage: true } : {}),
   };
 }
 
