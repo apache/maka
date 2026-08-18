@@ -35,3 +35,28 @@ test('agrees with JSON.stringify on the payloads validation bounds', () => {
     );
   }
 });
+
+test('pins the deliberate departure from JSON.stringify at the top level', () => {
+  // `JSON.stringify(undefined)` is unrepresentable, but callers publish `null`
+  // in its place, so an absent value costs the four bytes it actually occupies.
+  // Reporting infinity here would read downstream as "result too large".
+  assert.equal(serializedByteLength(undefined), 4);
+  assert.equal(serializedByteLength(null), 4);
+});
+
+test('reports values JSON cannot represent as unrepresentable', () => {
+  const circular: Record<string, unknown> = {};
+  circular.self = circular;
+
+  for (const value of [
+    () => 'x',
+    Symbol('unserializable'),
+    1n,
+    circular,
+    { toJSON: () => 'x' },
+    new Date(0),
+    new (class Instance {})(),
+  ]) {
+    assert.equal(serializedByteLength(value), Number.POSITIVE_INFINITY, String(value?.toString()));
+  }
+});

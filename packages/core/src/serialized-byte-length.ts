@@ -7,6 +7,13 @@
  * untrusted input without materializing it. Values JSON cannot faithfully
  * represent (a circular reference, a `toJSON` hook, a non-plain prototype)
  * report `Number.POSITIVE_INFINITY` rather than a count.
+ *
+ * One deliberate departure from `JSON.stringify`, which returns `undefined`
+ * for a top-level `undefined`: that case is counted as the four bytes of
+ * `null`, because `null` is what callers actually publish in its place — a
+ * Code Mode cell through `value ?? null`, a tool result through result-content
+ * coercion. Reporting infinity would make a tool that simply returned nothing
+ * fail its result-byte bound as though the result were too large.
  */
 export function serializedByteLength(value: unknown, maxBytes = Number.POSITIVE_INFINITY): number {
   const limit =
