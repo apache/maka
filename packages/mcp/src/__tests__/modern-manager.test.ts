@@ -14,6 +14,7 @@ import { McpClientManager, McpToolCallError } from '../index.js';
 
 const managers: McpClientManager[] = [];
 const fixtures: ModernRemoteFixture[] = [];
+const HOSTILE_HEADER_PATH = `token=sk-live-secret-token-value\r\n${'x'.repeat(1_000)}`;
 
 afterEach(async () => {
   await Promise.all(managers.splice(0).map((manager) => manager.close()));
@@ -152,6 +153,13 @@ describe('McpClientManager modern Streamable HTTP E2E', () => {
         error.toolName === 'header-echo' &&
         /unsafe integer argument at shard/u.test(error.message),
     );
+    await assert.rejects(
+      manager.callTool(binding, { [HOSTILE_HEADER_PATH]: Number.MAX_SAFE_INTEGER + 1 }),
+      (error: unknown) =>
+        error instanceof McpToolCallError &&
+        error.message.length <= 600 &&
+        !/[\r\n]|sk-live|secret-token/u.test(error.message),
+    );
     assert.equal(fixture.protocolMethods.length, methodsBeforeUnsafeCall);
     assert.equal(fixture.toolCalls.get('header-echo'), 1);
   });
@@ -234,6 +242,7 @@ async function createModernRemoteFixture(
                   properties: {
                     shard: { type: 'integer', 'x-mcp-header': 'Shard' },
                     value: { type: 'string' },
+                    [HOSTILE_HEADER_PATH]: { type: 'integer', 'x-mcp-header': 'Hostile' },
                   },
                 },
               },

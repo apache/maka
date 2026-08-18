@@ -492,7 +492,7 @@ export class McpClientManager {
       throw new McpToolCallError(
         serverId,
         toolName,
-        `unsafe integer argument at ${headerArguments.path.join('.')}`,
+        `unsafe integer argument at ${formatMcpDiagnosticText(headerArguments.path.join('.'))}`,
       );
     }
     const preparation =

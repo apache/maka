@@ -116,7 +116,7 @@ timeout 默认值：remote connect 30s、stdio connect 60s、list 15s、call 10m
 5. Desktop 首页侧边栏仅在「扩展」分组下提供「技能」和「MCP」；MCP 模块可搜索市场模板、JSON import、添加、编辑、启停、测试和删除 server，状态与 tools 可见。
 6. market `+` 在安装中变为 progress indicator，hover/focus 变为可访问的取消操作；取消后 config 不复活、server 不残留、tools 不可见。
 7. 更新配置后新 turn 看见新 tools，删除后 tools 消失。
-8. targeted tests、workspace typecheck/build、full tests 和 Electron smoke 均通过。
+8. targeted tests、workspace typecheck/build、full tests 和 Electron smoke 必须通过。
 9. remote legacy/auto/exact pin、modern missing-tools、structured JSON、`input_required`、窄 SSE fallback 和无响应 probe cancellation 有真实 HTTP fixture 覆盖。
 10. modern subscription acknowledgement、initial-list race、burst coalescing、独立 diagnostics、non-local close 和无响应 cancellation teardown 有真实 SDK/event-bus fixture 覆盖。
 11. SEP-2243 定义 partition、bounded warning、safe integer 和 wire 前失败有自动化覆盖；legacy 路径不误启用 modern header 语义。

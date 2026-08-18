@@ -8,7 +8,9 @@ export function parseMcpImport(source: string, locale: UiLocale = 'zh'): McpConf
   const value: unknown = JSON.parse(source);
   if (!isRecord(value)) throw new Error(copy.errors.importObject);
 
-  const wrapped = Object.hasOwn(value, 'mcpServers') || Object.hasOwn(value, 'version');
+  const wrapped =
+    Object.hasOwn(value, 'mcpServers') ||
+    (Object.hasOwn(value, 'version') && !isRecord(value.version));
   const sourceVersion = wrapped && Object.hasOwn(value, 'version') ? value.version : 1;
   let mcpServers: Record<string, unknown>;
 

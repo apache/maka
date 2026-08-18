@@ -854,10 +854,13 @@ function McpEditorDialog(props: {
   };
   const updateTransport = (transport: McpEditorDraft['transport']) => {
     if (props.state.mode !== 'manual') return;
-    props.onChange({
-      ...props.state,
-      draft: withMcpDraftTransport(props.state.draft, transport),
-    });
+    props.onChange(
+      {
+        ...props.state,
+        draft: withMcpDraftTransport(props.state.draft, transport),
+      },
+      'transport',
+    );
   };
   return (
     <Dialog
