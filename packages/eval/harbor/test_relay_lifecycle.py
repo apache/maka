@@ -171,6 +171,7 @@ class IgnoringLeaderEnvironment(SimultaneousEnvironment):
     def __init__(self):
         super().__init__()
         self.commands = []
+        self.signal_timeouts = []
         self.stopped = False
 
     async def stop(self, delete=False):
@@ -178,6 +179,8 @@ class IgnoringLeaderEnvironment(SimultaneousEnvironment):
 
     async def exec(self, command, cwd=None, timeout_sec=None):
         self.commands.append(command)
+        if _is_leader_stop(command):
+            self.signal_timeouts.append(timeout_sec)
         if _is_teardown(command):
             raise AssertionError("framework timeout must not signal the process group")
         if _is_leader_stop(command):
@@ -326,6 +329,41 @@ asyncio.run(module.main())
 
 
 class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    async def test_leader_stop_exec_timeout_stays_inside_the_teardown_budget(self):
+        relay = load_relay()
+        environment = IgnoringLeaderEnvironment()
+        token = f"framework-budget-{os.getpid()}"
+        connected = asyncio.get_running_loop().create_future()
+
+        async def accept(reader, writer):
+            connected.set_result((reader, writer))
+
+        server = await asyncio.start_server(accept, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        agent = relay.RelayAgent(
+            logs_dir=Path(tempfile.gettempdir()), relay_host="127.0.0.1",
+            relay_port=port, relay_token=token, teardown_timeout_ms=50,
+        )
+        running = asyncio.create_task(agent.run("solve", environment, None))
+        reader, writer = await connected
+        try:
+            await reader.readline()
+            writer.write((__import__("json").dumps({
+                "token": token, "kind": "execute", "command": "/bin/true", "args": [],
+                "credentials": {}, "resultToken": "0" * 32,
+            }) + "\n").encode())
+            await writer.drain()
+            await environment.started.wait()
+            running.cancel()
+            with self.assertRaisesRegex(RuntimeError, "could not confirm subject exit"):
+                await asyncio.wait_for(running, timeout=0.5)
+            self.assertNotEqual(environment.signal_timeouts, [])
+            self.assertTrue(all(timeout is not None and timeout <= 0.05 for timeout in environment.signal_timeouts))
+        finally:
+            writer.close()
+            server.close()
+            await server.wait_closed()
+
     def test_scope_predicates_distinguish_group_teardown_from_leader_stop(self):
         group = 'kill -TERM -- "-$pgid"'
         leader = 'kill -TERM -- "$pgid"'

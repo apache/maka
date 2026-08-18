@@ -138,9 +138,10 @@ async function executeHostedExecution(
   abortPolicy: NonNullable<RunHostedExecutionInput['abortPolicy']>,
 ): Promise<{ readonly projection: HostedExecutionProjection; readonly detached: boolean }> {
   let detached = false;
+  let dispatched = false;
   let closeForDetach: Promise<void> | undefined;
   const detach = () => {
-    if (abortPolicy !== 'preserve_environment' || detached) return;
+    if (abortPolicy !== 'preserve_environment' || detached || !dispatched) return;
     detached = true;
     host.releaseToEnvironment();
     closeForDetach = connection.close().catch(() => undefined);
@@ -150,13 +151,24 @@ async function executeHostedExecution(
       detach();
       return;
     }
+    if (!dispatched) return;
     void connection
       .request('hosted.execution.cancel', { executionId: execution.executionId })
       .catch(() => undefined);
   };
   signal?.addEventListener('abort', cancel, { once: true });
-  if (signal?.aborted) cancel();
+  if (signal?.aborted) {
+    if (abortPolicy === 'preserve_environment') {
+      signal.removeEventListener('abort', cancel);
+      return {
+        projection: indeterminate(execution.executionId, 'Hosted execution was cancelled'),
+        detached: false,
+      };
+    }
+    cancel();
+  }
   try {
+    dispatched = true;
     const projection = await connection.request('hosted.execution.start', execution);
     return {
       projection:

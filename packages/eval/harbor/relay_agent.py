@@ -597,7 +597,14 @@ async def _stop_subject_for_timeout(
         remaining = stop_deadline - loop.time()
         if remaining <= 0:
             break
-        signalled = await _signal_leader(environment, cwd, scope_path, signal)
+        signalled = await _signal_leader(
+            environment, cwd, scope_path, signal, timeout_sec=min(5.0, remaining)
+        )
+        remaining = stop_deadline - loop.time()
+        if remaining <= 0:
+            if execution.done() and not execution.cancelled():
+                return execution.result()
+            break
         if not signalled:
             # A vanished leader can race the environment.exec completion by a
             # few scheduling turns. Admit that terminal result, but do not
@@ -689,7 +696,13 @@ async def _signal_group(environment: Any, cwd: str, scope_path: str, signal: str
         )
 
 
-async def _signal_leader(environment: Any, cwd: str, scope_path: str, signal: str) -> bool:
+async def _signal_leader(
+    environment: Any,
+    cwd: str,
+    scope_path: str,
+    signal: str,
+    timeout_sec: float = 5,
+) -> bool:
     command = (
         f"pgid=$(cat {shlex.quote(scope_path)} 2>/dev/null) || exit 1; "
         "case $pgid in ''|0|*[!0-9]*) exit 1;; esac; "
@@ -699,7 +712,7 @@ async def _signal_leader(environment: Any, cwd: str, scope_path: str, signal: st
         result = await environment.exec(
             command,
             cwd=cwd,
-            timeout_sec=5,
+            timeout_sec=max(0.001, timeout_sec),
         )
         return result.return_code == 0
     except Exception:

@@ -132,6 +132,40 @@ test('environment-preserving abort detaches without cancelling or settling the H
   assert.deepEqual(events, ['hosted.execution.start', 'release', 'close']);
 });
 
+test('environment-preserving abort before start does not claim execution continues', async () => {
+  const abort = new AbortController();
+  const events: string[] = [];
+  const connected = ownedHost({
+    request: async (operation: string) => {
+      events.push(operation);
+      throw new Error(`Unexpected operation ${operation}`);
+    },
+  });
+  connected.host.releaseToEnvironment = () => {
+    events.push('release');
+  };
+  connected.host.settle = async () => {
+    events.push('settle');
+    return true;
+  };
+
+  const result = await runHostedExecutionWithDependencies(
+    { ...input(abort.signal), abortPolicy: 'preserve_environment' },
+    {
+      connectOwnedRuntimeHost: async () => {
+        abort.abort();
+        return connected as never;
+      },
+    },
+  );
+
+  assert.equal(result.kind, 'indeterminate');
+  assert.equal(result.failureReason, 'Hosted execution was cancelled');
+  assert.equal(events.includes('hosted.execution.start'), false);
+  assert.equal(events.includes('release'), false);
+  assert.equal(events.includes('settle'), true);
+});
+
 test('explicit target mutation settles the first Host before execution reconnects', async () => {
   const projection = settled('completed');
   const events: string[] = [];
