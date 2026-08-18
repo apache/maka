@@ -225,15 +225,11 @@ const baseComposerProps: ComposerProps = {
   onPermissionModeChange: noop,
   // Fidelity: production app-shell always wires these (app-shell.tsx
   // ~1851-1960), so the daily composer renders the upload button, the
-  // modes menu (Plan / Swarm), and the Skills picker. Omitting them here
-  // understated the persistent element count in every shell story.
+  // mode choice, and the Skills picker. Omitting them here understated the
+  // persistent element count in every shell story.
   onPickAttachments: noop,
-  planModeActive: false,
-  onPlanModeChange: noop,
-  swarmModeActive: false,
-  onSwarmModeChange: noop,
-  graphModeActive: false,
-  onGraphModeChange: noop,
+  sessionMode: 'default',
+  onSessionModeChange: noop,
   // Thinking is a separate right-footer Selector when levels are offered.
   activeThinkingLevels: ['off', 'low', 'medium', 'high', 'xhigh'],
   activeThinkingLevel: 'medium',
@@ -996,23 +992,14 @@ export const TitlebarIdentityTruncated: Story = {
 // footer controls rather than as staged context in the drawer (#1897). It
 // trails the model + thinking pair so switching it never shifts those two.
 export const PlanModeOn: Story = {
-  render: () => <ComposedShell composer={{ planModeActive: true }} />,
+  render: () => <ComposedShell composer={{ sessionMode: 'plan' }} />,
 };
 
 // Real path: the same for the orchestration side. All marks share the one
 // product accent, so the icon is what has to keep the modes distinguishable —
 // this story is where that carries its own weight.
 export const SwarmModeOn: Story = {
-  render: () => <ComposedShell composer={{ swarmModeActive: true }} />,
-};
-
-// Real path: Plan and Swarm are independent switches (collaborationMode vs
-// orchestrationMode), so both can be on at once. This is the widest the mode
-// tail ever gets next to a real model name.
-export const PlanAndSwarmModeOn: Story = {
-  render: () => (
-    <ComposedShell composer={{ planModeActive: true, swarmModeActive: true }} />
-  ),
+  render: () => <ComposedShell composer={{ sessionMode: 'swarm' }} />,
 };
 
 // Real path: a mode is on AND context is staged for the next send. The point of
@@ -1022,7 +1009,7 @@ export const ModeOnWithPendingAttachments: Story = {
   render: () => (
     <ComposedShell
       composer={{
-        planModeActive: true,
+        sessionMode: 'plan',
         pendingAttachments: [
           { displayName: 'design-review.pdf', kind: 'pdf', size: 182_400 },
           { displayName: 'composer.tsx', kind: 'code', size: 41_200 },

@@ -40,6 +40,7 @@ export { Composer } from './composer.js';
 export type {
   ComposerHandle,
   ComposerSendMetadata,
+  ComposerSessionMode,
   ComposerSlashCommandOption,
 } from './composer.js';
 export {

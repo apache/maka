@@ -168,6 +168,24 @@
   padding-block: var(--space-1);
 }
 
+/* The ＋ menu's mode rows carry the mark Astryx draws for a chosen option — a
+   check when chosen, nothing when not — which is what its own Selector puts on
+   a selected option, and what a menu of otherwise identical rows needs: no
+   column of empty circles ahead of the labels. A menu radio item draws the
+   circle instead, so composer.tsx passes the check through `endContent` and
+   the circle is suppressed here.
+
+   `astryx-radio-indicator` is RadioIndicator's published theme target (see its
+   themeProps call), not an internal class. Scoped to the ＋ panel alone: the
+   permission menu beside it keeps its radio circles, and nothing outside these
+   two menus is touched.
+
+   Drop this rule and the `endContent` mark together once a radio item can
+   choose its own indicator upstream. */
+.maka-composer-plus-panel [role="menuitemradio"] .astryx-radio-indicator {
+  display: none;
+}
+
 /* Astryx sizes the popover to its widest row (min-width:anchor-size, no max).
    The model menu lost the 260px/56vw option-label cap with the Selector, so
    the menu itself needs the ceiling: a long model name (BYOK catalogs love
