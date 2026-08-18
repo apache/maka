@@ -5,7 +5,7 @@ import {
   isLegalSessionModePair,
   SESSION_MODE_FIELDS,
   sessionModeOf,
-} from '../../renderer/session-mode.js';
+} from '../../shared/session-mode.js';
 
 const MODES: readonly ComposerSessionMode[] = ['default', 'plan', 'swarm', 'graph'];
 

@@ -22,6 +22,7 @@ import {
 } from './session-family-action.js';
 import { normalizeSessionModelSelection } from './session-model-input.js';
 import type { SessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
+import { isLegalSessionModePair } from '../shared/session-mode.js';
 import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,
@@ -172,6 +173,16 @@ export function registerRuntimeHostSessionCatalogIpc(
     }
     if (!isOrchestrationMode(orchestrationMode)) {
       throw new Error(`Invalid orchestration mode: ${String(orchestrationMode)}`);
+    }
+    // Each field being a valid value does not make the pair one. Plan strips
+    // the subagent-category and agent-graph tools that Swarm and Graph are
+    // made of, so Plan-plus-orchestration is a Session the runtime cannot
+    // honour — and the boundary that can persist it is the one that has to
+    // refuse it, rather than trusting every present and future caller.
+    if (!isLegalSessionModePair({ collaborationMode, orchestrationMode })) {
+      throw new Error(
+        `Invalid session mode: ${collaborationMode} cannot be combined with ${orchestrationMode}`,
+      );
     }
     return updateConfiguration(
       deps,

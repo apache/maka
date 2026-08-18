@@ -82,6 +82,28 @@ test('the whole mode reaches the Host as one configuration patch', async () => {
   assert.equal(ipc.channels.has('sessions:setOrchestrationMode'), false);
 });
 
+test('a complete but illegal pair is refused, not persisted', async () => {
+  const patches: DesktopSessionConfigurationPatch[] = [];
+  const ipc = harness(patches);
+
+  // Both values are individually valid; the pair is not. Plan strips the tools
+  // Swarm and Graph are made of, so this Session could not be honoured.
+  await assert.rejects(
+    ipc.invoke('sessions:setSessionMode', 'session-1', {
+      collaborationMode: 'plan',
+      orchestrationMode: 'swarm',
+    }) as Promise<unknown>,
+    /cannot be combined/,
+  );
+  await assert.rejects(
+    ipc.invoke('sessions:setSessionMode', 'session-1', {
+      collaborationMode: 'plan',
+      orchestrationMode: 'graph',
+    }) as Promise<unknown>,
+  );
+  assert.deepEqual(patches, [], 'nothing reached the Host');
+});
+
 test('a half-named mode is refused rather than half-applied', async () => {
   const patches: DesktopSessionConfigurationPatch[] = [];
   const ipc = harness(patches);

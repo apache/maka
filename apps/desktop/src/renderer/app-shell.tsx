@@ -226,7 +226,7 @@ function rebaseWorkspaceFileReferences(
 
 import { useSettingsModal } from './use-settings-modal';
 import { RemoteProjectDirectoryDialog } from './remote-project-directory-dialog';
-import { SESSION_MODE_FIELDS, sessionModeOf } from './session-mode';
+import { SESSION_MODE_FIELDS, sessionModeOf } from '../shared/session-mode';
 import { useSystemUiLocale } from './use-system-ui-locale';
 import {
   isSessionWorkspaceUnavailableError,
