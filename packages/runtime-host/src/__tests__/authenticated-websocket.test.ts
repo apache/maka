@@ -7,12 +7,15 @@ import { test } from 'node:test';
 import { resolveRootControlNamespace, resolveStorageRoot } from '@maka/storage/root-authority';
 import { classifyRemoteRuntimeHostConnectFailure } from '../client/connection.js';
 import {
+  connectRemoteRuntimeHostProfile,
   connectRemoteRuntimeHost,
   connectRuntimeHost,
   consumeAccessCredentialDelivery,
+  createRuntimeHostReconnectingConnection,
   RuntimeHostOperationError,
   type RuntimeHostConnection,
 } from '../client/index.js';
+import { RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT } from '../client/host-profile.js';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
@@ -372,6 +375,103 @@ test('classifies safe remote connection failures without exposing raw errors', (
     classifyRemoteRuntimeHostConnectFailure(new Error('unexpected sensitive detail')),
     'connect_failed',
   );
+});
+
+test('an authenticated WebSocket Client reconnects after service restart to canonical state', {
+  timeout: 120_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-authenticated-websocket-restart-'));
+  const root = join(base, 'root');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  let host: Awaited<ReturnType<typeof startExecutionRuntimeHostService>> | undefined =
+    await startExecutionRuntimeHostService({
+      rootPath: root,
+      websocket: { host: '127.0.0.1', port: 0 },
+    });
+  let local: RuntimeHostConnection | undefined;
+  let remote: Awaited<ReturnType<typeof createRuntimeHostReconnectingConnection>> | undefined;
+  try {
+    local = requireConnection(
+      await connectRuntimeHost({ rootPath: root, surface: 'desktop', protocol: PROTOCOL }),
+    );
+    const issued = await local.request('access.credential.issue', {
+      principalKind: 'remote_owner',
+      principalId: 'restart-client',
+      operationGrants: ['host.status', 'session.catalog.query'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    const credential = await consumeAccessCredentialDelivery(
+      root,
+      issued.deliveryId,
+      issued.credentialId,
+    );
+    const created = await local.request('session.create', {
+      sessionId: 'session-before-restart',
+      workspace: { kind: 'host_path', path: root },
+      name: 'Created before restart',
+      modelTarget: { kind: 'default' },
+    });
+    assert.ok(!('kind' in created));
+
+    const url = host.websocketEndpoints[0];
+    assert.ok(url);
+    const port = Number(new URL(url).port);
+    const profile = {
+      id: 'restart-host',
+      name: 'Restart Host',
+      kind: 'remote',
+      transport: {
+        kind: 'plaintext',
+        url,
+        acknowledgement: RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT,
+      },
+      rootId: capability.rootId,
+    } as const;
+    const connectRemote = (signal?: AbortSignal) =>
+      connectRemoteRuntimeHostProfile({
+        profile,
+        credential,
+        surface: 'tui',
+        clientInstanceId: 'restart-client-instance',
+        ...(signal ? { signal } : {}),
+        connectTimeoutMs: 1_000,
+        readyTimeoutMs: 5_000,
+      });
+    const initialRemote = await connectRemote();
+    const firstHostEpoch = initialRemote.hostEpoch;
+    remote = await createRuntimeHostReconnectingConnection({
+      initialConnection: initialRemote,
+      connect: connectRemote,
+      backoff: { minMs: 10, maxMs: 25 },
+    });
+
+    await host.close();
+    await Promise.all([initialRemote.closed, local.closed]);
+    host = undefined;
+    local = undefined;
+
+    const recovered = remote.request(
+      'session.catalog.query',
+      { kind: 'get', sessionId: 'session-before-restart' },
+      20_000,
+    );
+    host = await startExecutionRuntimeHostService({
+      rootPath: root,
+      websocket: { host: '127.0.0.1', port },
+    });
+
+    assert.deepEqual(await recovered, { kind: 'session', session: created });
+    assert.notEqual(remote.hostEpoch, firstHostEpoch);
+  } finally {
+    await Promise.allSettled([remote?.close(), local?.close()]);
+    await host?.close().catch(() => undefined);
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await rm(base, { recursive: true, force: true });
+  }
 });
 
 test('access credentials persist only as hashes and stay revoked after reload', async () => {
