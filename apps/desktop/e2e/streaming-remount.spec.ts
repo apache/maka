@@ -124,14 +124,21 @@ test('keeps a completed reply after an interrupted turn and conversation remount
     ), originalSessionId!),
     { timeout: 20_000 },
   ).toBe(0);
-  await composer.fill(FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT);
   await expect(page.getByRole('button', { name: '发送' })).toBeEnabled({
     timeout: 20_000,
   });
+  await composer.fill(FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT);
   await composer.press('Enter');
   await expect(page.locator('.maka-user-message', {
     hasText: FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT,
   })).toBeVisible();
+  await expect.poll(
+    () => page.evaluate(async (sessionId) => (
+      (await window.maka.sessions.list()).find((session) => session.id === sessionId)
+        ?.runningTurnIds?.length ?? 0
+    ), originalSessionId!),
+    { timeout: 20_000 },
+  ).toBeGreaterThan(0);
   await expect(page.getByRole('button', { name: '停止' })).toBeVisible({
     timeout: 20_000,
   });
