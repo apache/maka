@@ -1,0 +1,167 @@
+name: Finalize CLI npm release
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage_run_id:
+        description: Successful Stage CLI npm release workflow run ID
+        required: true
+        type: string
+      version:
+        description: Exact staged maka-agent version
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: cli-npm-finalize
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Require main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Reject non-main dispatches
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          if [[ "$RELEASE_REF" != "refs/heads/main" ]]; then
+            echo "CLI releases must be dispatched from main; found $RELEASE_REF" >&2
+            exit 1
+          fi
+
+  inspect:
+    name: Verify the public npm release
+    needs: authorize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      git_tag: ${{ steps.release.outputs.git_tag }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
+      tarball: ${{ steps.registry.outputs.tarball }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Load the exact stage workflow run
+        id: stage-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGE_RUN_ID: ${{ inputs.stage_run_id }}
+        run: |
+          if [[ ! "$STAGE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Stage workflow run ID must be a positive integer" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$STAGE_RUN_ID" > "$RUNNER_TEMP/stage-run.json"
+          node -e '
+            const fs = require("node:fs");
+            const run = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (!/^[0-9a-f]{40}$/.test(run.head_sha)) throw new Error("Stage run has no valid source SHA");
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "source_sha=" + run.head_sha + "\n");
+            if (!Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1) throw new Error("Stage run has no valid attempt");
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "run_attempt=" + run.run_attempt + "\n");
+          ' "$RUNNER_TEMP/stage-run.json"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.stage-run.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Select the release npm toolchain
+        run: npm install --global --no-audit --no-fund npm@11.19.0
+      - name: Download the exact staged candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-staged-release-${{ steps.stage-run.outputs.run_attempt }}
+          path: packages/cli/release
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.stage_run_id }}
+      - name: Verify the stage run and release record
+        id: release
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          node scripts/release-cli-publication.mjs validate-stage-run \
+            packages/cli/release \
+            "$RUNNER_TEMP/stage-run.json" \
+            "$EXPECTED_VERSION" \
+            "$GITHUB_OUTPUT"
+      - name: Fetch and verify the public registry bytes
+        id: registry
+        run: |
+          node scripts/release-cli-publication.mjs fetch-registry \
+            packages/cli/release \
+            "$RUNNER_TEMP/registry-release" \
+            "$GITHUB_OUTPUT"
+      - name: Validate the registry tarball as installed CLI
+        env:
+          RELEASE_TARBALL: ${{ steps.registry.outputs.tarball }}
+        run: node scripts/smoke-release-cli-package.mjs "$RELEASE_TARBALL"
+      - name: Verify npm signatures and provenance
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          mkdir "$RUNNER_TEMP/signature-audit"
+          cd "$RUNNER_TEMP/signature-audit"
+          npm init --yes
+          npm install --ignore-scripts --no-audit --no-fund --save-exact "maka-agent@$RELEASE_VERSION"
+          npm audit signatures --json --include-attestations > audit.json
+          node "$GITHUB_WORKSPACE/scripts/release-cli-publication.mjs" validate-audit \
+            "$GITHUB_WORKSPACE/packages/cli/release" \
+            "$RUNNER_TEMP/signature-audit/audit.json"
+      - name: Preserve the verified public release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-public-release-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/registry-release
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  publish:
+    name: Create the GitHub CLI release
+    needs: inspect
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: npm-release
+      url: https://github.com/maka-agent/maka-agent/releases/tag/${{ needs.inspect.outputs.git_tag }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.inspect.outputs.source_sha }}
+          persist-credentials: false
+      - name: Download the verified public release
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-public-release-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/registry-release
+      - name: Create the Git tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_DIRECTORY: ${{ runner.temp }}/registry-release
+          RELEASE_SHA: ${{ needs.inspect.outputs.source_sha }}
+          RELEASE_TAG: ${{ needs.inspect.outputs.git_tag }}
+          RELEASE_TARBALL: ${{ needs.inspect.outputs.tarball }}
+          RELEASE_VERSION: ${{ needs.inspect.outputs.version }}
+        run: |
+          tarball_name=$(basename "$RELEASE_TARBALL")
+          gh release create "$RELEASE_TAG" \
+            "$RELEASE_DIRECTORY/$tarball_name" \
+            "$RELEASE_DIRECTORY/$tarball_name.sha256" \
+            "$RELEASE_DIRECTORY/$tarball_name.files.json" \
+            "$RELEASE_DIRECTORY/release.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$RELEASE_SHA" \
+            --title "Maka CLI $RELEASE_VERSION" \
+            --notes-file "$RELEASE_DIRECTORY/release-notes.md"

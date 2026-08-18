@@ -75,7 +75,7 @@ Generated-by: <tool>
 | 要求 | 值 |
 | --- | --- |
 | Node | `>=22.19.0`（根 `package.json` 的 `engines`） |
-| npm | `11.12.1`（`packageManager`） |
+| npm | `11.19.0`（`packageManager`） |
 | 平台 | 桌面端开发需要 macOS Apple Silicon。发版也会产出未签名的 Windows x64 构建，CI 有非阻塞的 `windows_baseline` job，但 Windows 和 Linux 目前还不是受支持的目标平台 |
 
 ```sh

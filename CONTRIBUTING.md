@@ -77,7 +77,7 @@ By contributing you agree that your contributions are licensed under the [Apache
 | Requirement | Value |
 | --- | --- |
 | Node | `>=22.19.0` (`engines`, root `package.json`) |
-| npm | `11.12.1` (`packageManager`) |
+| npm | `11.19.0` (`packageManager`) |
 | Platform | macOS Apple Silicon for desktop work. Releases also ship an unsigned Windows x64 build and CI runs a non-blocking `windows_baseline` job, but Windows and Linux are not supported targets yet |
 
 ```sh
