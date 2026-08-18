@@ -270,7 +270,10 @@ export class RuntimeHostSessionChannel {
       if (this.#closing || this.#subscription !== subscription) return;
       // A subscription retired because a turn consumer fell behind is closed
       // deliberately; its pump must not turn that expected close into a
-      // channel failure.
+      // channel failure. The guard also drops a genuine error racing the
+      // deliberate close on this pump; that is safe because the replacement
+      // subscription's own pump and recovery path re-surface any real
+      // failure through #fail.
       if (this.#retiringSubscriptions.has(subscription)) return;
       if (this.#canRecover(error)) {
         this.#failedSubscriptions.add(subscription);
@@ -527,6 +530,12 @@ export class RuntimeHostSessionChannel {
    * A turn consumer that cannot keep up is a slow client: retire the healthy
    * subscription through the same recovery path a Host eviction would take so
    * the session re-syncs from canonical state instead of dying mid-turn.
+   *
+   * Note this escalates a single lagging queue to a session-wide recovery.
+   * That is a benign superset even when the lagging queue belongs to an
+   * abandoned old turn: the resync heals every turn's state, and the
+   * per-queue lag latch plus hysteresis keep a wedged consumer from looping
+   * resubscribes.
    */
   #noteTurnConsumerLagging(): void {
     if (this.#closing || this.#failure || !this.#ready) return;

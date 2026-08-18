@@ -1840,6 +1840,64 @@ describe('turn consumer lag recovery (#3180)', () => {
     assert.fail('stream ended without the terminal complete event');
   });
 
+  test('re-arms lag detection exactly at the hysteresis watermark', async () => {
+    const initial = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+    );
+    const second = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 2 }),
+      Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+      'subscription-2',
+    );
+    const third = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 3 }),
+      Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+      'subscription-3',
+    );
+    const connection = new FakeConnection([initial, second, third], true);
+    let resyncs = 0;
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 50,
+    });
+    driver.subscribeTranscriptReplacements!((_sessionId, _turnId, _messages, reason) => {
+      if (reason === 'reconnect') resyncs += 1;
+    });
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+
+    // Latch the lag flag with a full non-delta backlog: all 1_024 queued
+    // events stay because nothing is sheddable.
+    await floodToolStream(initial, 1_100);
+    await waitForSubscriptions(connection, 2);
+    await waitFor(() => resyncs === 1);
+
+    // Draining to one event above the watermark (513 pending) must NOT
+    // re-arm: a fresh overflow on the still-latched queue is the same lag
+    // episode and triggers no new recovery. The flood refills the backlog
+    // to the bound.
+    const iterator = switched.activeTurn.events[Symbol.asyncIterator]();
+    for (let index = 0; index < 511; index += 1) {
+      assert.equal((await iterator.next()).done, false);
+    }
+    await floodToolStream(second, 600, 'subscription-2', 2_000);
+    await delay(20);
+    assert.equal(connection.openedSubscriptions, 2, 'lag latch held above the watermark');
+
+    // Draining the refilled backlog down to the watermark (512 pending)
+    // re-arms: the next overflow is a new lag episode and resubscribes again.
+    for (let index = 0; index < 512; index += 1) {
+      assert.equal((await iterator.next()).done, false);
+    }
+    await floodToolStream(second, 600, 'subscription-2', 3_000);
+    await waitForSubscriptions(connection, 3);
+    await waitFor(() => resyncs === 2);
+  });
+
   test('recovers again when the consumer lags again after making progress', async () => {
     const initial = new FakeSubscription(
       continuitySnapshot(),
