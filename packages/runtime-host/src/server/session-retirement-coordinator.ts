@@ -123,6 +123,7 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly taskLedger: Pick<InteractiveTaskLedgerWriter, 'purgeConversationTaskLedger'>;
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
   readonly retireExternalConversations: (sessionIds: readonly string[]) => Promise<void>;
+  readonly listExternalConversationSessionIds: () => Promise<readonly string[]>;
   readonly purgeAgentGraphState: (sessionId: string) => Promise<void>;
   readonly worktrees?: Pick<SubagentWorktreeExecutor, 'retire'>;
   readonly requestDrain: () => void;
@@ -194,6 +195,7 @@ export class HostSessionRetirementCoordinator {
   readonly #taskLedger: HostSessionRetirementCoordinatorOptions['taskLedger'];
   readonly #purgeOperationalState: HostSessionRetirementCoordinatorOptions['purgeOperationalState'];
   readonly #retireExternalConversations: HostSessionRetirementCoordinatorOptions['retireExternalConversations'];
+  readonly #listExternalConversationSessionIds: HostSessionRetirementCoordinatorOptions['listExternalConversationSessionIds'];
   readonly #purgeAgentGraphState: HostSessionRetirementCoordinatorOptions['purgeAgentGraphState'];
   readonly #worktrees: HostSessionRetirementCoordinatorOptions['worktrees'];
   readonly #requestDrain: () => void;
@@ -222,6 +224,7 @@ export class HostSessionRetirementCoordinator {
     this.#taskLedger = options.taskLedger;
     this.#purgeOperationalState = options.purgeOperationalState;
     this.#retireExternalConversations = options.retireExternalConversations;
+    this.#listExternalConversationSessionIds = options.listExternalConversationSessionIds;
     this.#purgeAgentGraphState = options.purgeAgentGraphState;
     this.#worktrees = options.worktrees;
     this.#requestDrain = options.requestDrain;
@@ -232,6 +235,27 @@ export class HostSessionRetirementCoordinator {
     await this.#stores.reconcileOrphanedAgentGraphRetirements();
     await this.#reconcileOrphanedSubagentArchives();
     this.#scheduleCleanup(await this.#stores.listPendingSessionRetirementCleanupIds());
+    await this.#recoverExternalConversationBindings();
+  }
+
+  /**
+   * A binding row is the durable record of an archive-time purge: when an
+   * archive committed but `retireExternalConversations` failed, the leftover
+   * row is the only trace of that unfinished work. Rows whose Session is
+   * archived or gone are stale; rows on live, unarchived Sessions are
+   * legitimate bindings and stay.
+   */
+  async #recoverExternalConversationBindings(): Promise<void> {
+    const stale: string[] = [];
+    for (const sessionId of await this.#listExternalConversationSessionIds()) {
+      const probe = await this.#stores.probeSessionRemoval(sessionId);
+      const live =
+        probe.kind === 'present' &&
+        !probe.record.header.isArchived &&
+        probe.record.header.status !== 'archived';
+      if (!live) stale.push(sessionId);
+    }
+    if (stale.length > 0) await this.#retireExternalConversations(stale);
   }
 
   async close(): Promise<void> {
@@ -247,6 +271,12 @@ export class HostSessionRetirementCoordinator {
         const target = requireFamilyRecord(family, input.sessionId);
         const archived = input.state === 'archived';
         if ([...family.records.values()].every(({ header }) => header.isArchived === archived)) {
+          if (archived) {
+            // A previous archive may have committed without finishing its
+            // external-conversation purge; the leftover binding rows are the
+            // durable record of that work, so the idempotent path retries it.
+            await this.#retireExternalConversations(family.sessionIds);
+          }
           return lifecycleSuccess(
             projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),
           );

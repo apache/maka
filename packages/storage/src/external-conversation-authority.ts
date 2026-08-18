@@ -43,6 +43,12 @@ export interface ExternalConversationAuthority {
   release(conversationId: string, operationId: string): Promise<{ readonly hadBinding: boolean }>;
   remove(conversationId: string, expectedSessionId: string): Promise<boolean>;
   purgeSession(sessionId: string): Promise<number>;
+  /**
+   * Every Session that still holds at least one binding. Recovery reads this to
+   * retry archive-time purges: a leftover binding row is the durable record of
+   * that unfinished work.
+   */
+  listBoundSessionIds(): Promise<string[]>;
 }
 
 export interface InteractiveExternalConversationAuthorityWriter
@@ -133,6 +139,7 @@ function createWriterFacade(
     remove: (conversationId, expectedSessionId) =>
       run(() => store.remove(conversationId, expectedSessionId)),
     purgeSession: (sessionId) => run(() => store.purgeSession(sessionId)),
+    listBoundSessionIds: () => run(() => store.listBoundSessionIds()),
     close: () => {
       if (closed) return;
       closed = true;
@@ -293,6 +300,20 @@ class SqliteExternalConversationAuthority implements ExternalConversationAuthori
             .run(sessionId).changes,
       ),
     );
+  }
+
+  async listBoundSessionIds(): Promise<string[]> {
+    const rows = this.#lease.database
+      .prepare(
+        'SELECT DISTINCT session_id AS sessionId FROM external_conversation_bindings ORDER BY session_id',
+      )
+      .all() as { sessionId?: unknown }[];
+    return rows.map((row) => {
+      if (typeof row.sessionId !== 'string') {
+        throw new Error('External conversation binding carries an invalid Session id');
+      }
+      return row.sessionId;
+    });
   }
 
   close(): void {
