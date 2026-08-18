@@ -200,11 +200,12 @@ export async function reconcileAgentGraphSchedule(
     const committedRecords = new Map(
       snapshot.observation.projection.records.map((record) => [record.recordId, record]),
     );
-    for (const [recordId, record] of snapshot.selectedResultRecords) {
-      if (committedRecords.has(recordId)) {
-        throw new Error(`Selected graph result id ${recordId} collides with the current graph`);
+    for (const record of snapshot.selectedResultRecords.values()) {
+      if (committedRecords.has(record.recordId)) {
+        throw new Error(
+          `Selected graph result id ${record.recordId} collides with the current graph`,
+        );
       }
-      committedRecords.set(recordId, record);
     }
     const deferredWork: AgentGraphScheduleDeferredWork[] = [];
     let topologyChanged = false;
@@ -216,7 +217,11 @@ export async function reconcileAgentGraphSchedule(
         deferredWork.push({ work, reason: 'graph_closed' });
         continue;
       }
-      const missingInputIds = missingWorkInputIds(work, committedRecords);
+      const missingInputIds = missingWorkInputIds(
+        work,
+        committedRecords,
+        snapshot.selectedResultRecords,
+      );
       if (missingInputIds.length > 0) {
         deferredWork.push({ work, reason: 'input_not_committed', missingInputIds });
         continue;
@@ -296,7 +301,11 @@ export async function reconcileAgentGraphSchedule(
         deferredWork.push({ work, reason: 'graph_closed' });
         continue;
       }
-      const missingInputIds = missingWorkInputIds(work, committedRecords);
+      const missingInputIds = missingWorkInputIds(
+        work,
+        committedRecords,
+        snapshot.selectedResultRecords,
+      );
       if (missingInputIds.length > 0) {
         deferredWork.push({
           work,
@@ -338,9 +347,11 @@ export async function reconcileAgentGraphSchedule(
     const rendered = await Promise.allSettled(
       selected.map(async ({ work, intent }): Promise<PreparedWork> => {
         const inputRecords = [
-          ...work.inputIds,
-          ...(work.selectedResultInputs ?? []).map((selected) => selected.resultId),
-        ].map((recordId) => clonePlain(committedRecords.get(recordId)!));
+          ...work.inputIds.map((recordId) => clonePlain(committedRecords.get(recordId)!)),
+          ...(work.selectedResultInputs ?? []).map((selected) =>
+            clonePlain(snapshot.selectedResultRecords.get(selectedResultKey(selected))!),
+          ),
+        ];
         const inputHandoffs = input.hydrateInputHandoffs
           ? await input.hydrateInputHandoffs(inputRecords)
           : [];
@@ -504,12 +515,13 @@ async function readScheduleSnapshot(
 function missingWorkInputIds(
   work: AgentGraphScheduleWorkView,
   committedRecords: ReadonlyMap<string, AgentGraphRecord>,
+  selectedResultRecords: ReadonlyMap<string, AgentGraphRecord>,
 ): string[] {
   return [
     ...work.inputIds.filter((recordId) => !committedRecords.has(recordId)),
     ...(work.selectedResultInputs ?? [])
-      .map((selected) => selected.resultId)
-      .filter((recordId) => !committedRecords.has(recordId)),
+      .filter((selected) => !selectedResultRecords.has(selectedResultKey(selected)))
+      .map((selected) => selected.resultId),
   ];
 }
 
@@ -579,15 +591,22 @@ async function resolveSelectedResultRecords(
     records.forEach((record) => cached.set(record.recordId, record));
   }
   const resolved = new Map<string, AgentGraphRecord>();
+  const sourceByRecordId = new Map<string, string>();
   for (const selected of distinct) {
     const record = cache.get(selected.sourceGraphId)?.get(selected.resultId);
     if (!record) continue;
-    if (resolved.has(record.recordId)) {
+    const previousSource = sourceByRecordId.get(record.recordId);
+    if (previousSource !== undefined && previousSource !== record.graphId) {
       throw new Error(`Selected graph result id ${record.recordId} is ambiguous`);
     }
-    resolved.set(record.recordId, clonePlain(record));
+    sourceByRecordId.set(record.recordId, record.graphId);
+    resolved.set(selectedResultKey(selected), clonePlain(record));
   }
   return resolved;
+}
+
+function selectedResultKey(selected: AgentGraphSelectedResultInput): string {
+  return `${selected.sourceGraphId}\u0000${selected.resultId}`;
 }
 
 async function applyScheduleStops(

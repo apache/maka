@@ -26,7 +26,7 @@ import {
 import type { AgentGraphTraceTopology } from '../stream-graph-trace.js';
 
 describe('stream graph schedule reconciliation', () => {
-  test('hydrates selected results without creating a cross-graph topology edge', async () => {
+  test('hydrates selected results without leaking them into another work item', async () => {
     const store = createSqliteSessionMetadataStore(':memory:', { now: nextNumber(90) });
     const provisions: AgentGraphOperatorProvision[] = [];
     const controlStore = controlStoreWithProvisions(store, provisions);
@@ -43,6 +43,11 @@ describe('stream graph schedule reconciliation', () => {
             selected_result_inputs: [
               { source_graph_id: historical.graphId, result_id: historical.recordId },
             ],
+          },
+          {
+            agent_id: 'local-read',
+            instruction: 'This work only requested a current-graph input.',
+            input_ids: [historical.recordId],
           },
         ],
       });
@@ -85,9 +90,23 @@ describe('stream graph schedule reconciliation', () => {
         },
       });
 
-      assert.equal(result.status, 'reconciled');
+      assert.equal(result.status, 'waiting');
       assert.equal(renderedRecord?.graphId, historical.graphId);
       assert.deepEqual(result.dispatches[0]?.intent.triggerRecordIds, [historical.recordId]);
+      assert.deepEqual(
+        result.deferredWork.map((item) => ({
+          instruction: item.work.instruction,
+          reason: item.reason,
+          missingInputIds: item.missingInputIds,
+        })),
+        [
+          {
+            instruction: 'This work only requested a current-graph input.',
+            reason: 'input_not_committed',
+            missingInputIds: [historical.recordId],
+          },
+        ],
+      );
     } finally {
       store.close();
     }
