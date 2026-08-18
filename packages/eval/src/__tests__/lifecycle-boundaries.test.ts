@@ -541,12 +541,11 @@ test('Maka forwards the configured Runtime Host settlement budget', async () => 
   );
 });
 
-// The relay tears the subject's process group down unless the wrapper exits
-// zero, so every wrapper has to project the same status the same way — an arm
-// whose failures exit zero would keep its background services through the
-// verifier while the others lose theirs. This pins both halves of the Maka
-// side: what the shim projects, and that the adapter reads the frame rather
-// than re-deciding from the code it just projected.
+// The wrapper's exit code is a projection of the status in its result frame,
+// carried for anything that can read only the exit code. An arm that exited
+// zero on failure would disagree with the frame. This pins both halves of the
+// Maka side: what the shim projects, and that the adapter reads the frame
+// rather than re-deciding from the code it just projected.
 test('the Maka shim projects only a completed subject as a zero exit', async () => {
   const shim = new URL('../harbor-maka-subject.js', import.meta.url);
   for (const [projection, expectedExit, expectedStatus] of [

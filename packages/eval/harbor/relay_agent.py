@@ -143,8 +143,9 @@ class RelayAgent(BaseAgent):
             # waiting on those processes here — `environment.exec` has already
             # returned — so tearing them down would not unblock anything; it
             # would only edit the thing about to be measured, and edit it for
-            # some subjects and not others. Cancellation still quiesces, because
-            # there the subject has not stopped and the trial is being abandoned.
+            # some subjects and not others. Host abort still quiesces, because
+            # that trial is abandoned. Framework timeout does not: the verifier
+            # still scores what the subject left.
             if not await _send(
                 writer,
                 {
@@ -173,12 +174,18 @@ class RelayAgent(BaseAgent):
                 # A subject that already exited has nothing left to settle, and
                 # tearing its scope down here would remove what the verifier is
                 # about to score -- the same environment edit this relay stopped
-                # making on the ordinary path. Only a subject still running is
-                # brought to a stop.
+                # making on the ordinary path. A still-running subject is
+                # stopped so the execution call can return. Host abort then
+                # quiesces the leftover group; framework timeout does not,
+                # because the verifier still runs.
                 if terminal_projection is not None:
                     result = terminal_result
-                else:
+                elif _host_teardown_requested:
                     result = await _settle_or_destroy(
+                        environment, cwd, scope_path, execution, self._teardown_timeout
+                    )
+                else:
+                    result = await _stop_subject_for_timeout(
                         environment, cwd, scope_path, execution, self._teardown_timeout
                     )
                 if result is not None:
@@ -551,7 +558,7 @@ async def _settle(environment: Any, cwd: str, scope_path: str, execution: Any) -
     else:
         result = None
         for signal, timeout in (("TERM", 20), ("KILL", 10)):
-            await _signal(environment, cwd, scope_path, signal)
+            await _signal_group(environment, cwd, scope_path, signal)
             try:
                 result = await asyncio.wait_for(asyncio.shield(execution), timeout=timeout)
                 break
@@ -565,6 +572,52 @@ async def _settle(environment: Any, cwd: str, scope_path: str, execution: Any) -
             raise RuntimeError("Maka Eval subject did not settle")
     await _quiesce_scope(environment, cwd, scope_path)
     return result
+
+
+async def _stop_subject_for_timeout(
+    environment: Any,
+    cwd: str,
+    scope_path: str,
+    execution: Any,
+    timeout: float,
+) -> Any | None:
+    # The verifier still scores this trial. Stop only the subject so
+    # `environment.exec` can return; do not hunt descendants or delete the
+    # environment. Those leftovers are what the task asked the subject to leave.
+    if execution.cancelled():
+        raise RuntimeError("Maka Eval subject execution was cancelled")
+    if execution.done():
+        return execution.result()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    result = None
+    for signal, slice_timeout in (("TERM", 20.0), ("KILL", 10.0)):
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        await _signal_leader(environment, cwd, scope_path, signal)
+        try:
+            result = await asyncio.wait_for(
+                asyncio.shield(execution),
+                timeout=min(slice_timeout, remaining),
+            )
+            break
+        except asyncio.CancelledError:
+            if execution.cancelled():
+                raise RuntimeError("Maka Eval subject execution was cancelled") from None
+            raise
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
+    if result is not None:
+        return result
+    if execution.done() and not execution.cancelled():
+        return execution.result()
+    if not execution.done():
+        execution.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            remaining = max(0.001, deadline - loop.time())
+            await asyncio.wait_for(execution, timeout=remaining)
+    return None
 
 
 async def _settle_or_destroy(
@@ -597,7 +650,7 @@ async def _settle_or_destroy(
         return None
 
 
-async def _signal(environment: Any, cwd: str, scope_path: str, signal: str) -> None:
+async def _signal_group(environment: Any, cwd: str, scope_path: str, signal: str) -> None:
     command = (
         f"pgid=$(cat {shlex.quote(scope_path)} 2>/dev/null) || exit 0; "
         "case $pgid in ''|0|*[!0-9]*) exit 0;; esac; "
@@ -611,11 +664,25 @@ async def _signal(environment: Any, cwd: str, scope_path: str, signal: str) -> N
         )
 
 
+async def _signal_leader(environment: Any, cwd: str, scope_path: str, signal: str) -> None:
+    command = (
+        f"pgid=$(cat {shlex.quote(scope_path)} 2>/dev/null) || exit 0; "
+        "case $pgid in ''|0|*[!0-9]*) exit 0;; esac; "
+        f"kill -{signal} -- \"$pgid\""
+    )
+    with contextlib.suppress(Exception):
+        await environment.exec(
+            command,
+            cwd=cwd,
+            timeout_sec=5,
+        )
+
+
 async def _quiesce_scope(environment: Any, cwd: str, scope_path: str) -> None:
     if not await _scope_active(environment, cwd, scope_path):
         return
     for signal, timeout in (("TERM", 10), ("KILL", 5)):
-        await _signal(environment, cwd, scope_path, signal)
+        await _signal_group(environment, cwd, scope_path, signal)
         deadline = asyncio.get_running_loop().time() + timeout
         while asyncio.get_running_loop().time() < deadline:
             if not await _scope_active(environment, cwd, scope_path):

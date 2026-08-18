@@ -142,6 +142,27 @@ class FrameworkTimeoutEnvironment(SimultaneousEnvironment):
         self.stopped = delete
 
 
+class TimeoutScopeEnvironment(SimultaneousEnvironment):
+    """A still-running subject whose descendants must survive framework timeout."""
+
+    def __init__(self):
+        super().__init__()
+        self.commands = []
+        self.stopped = False
+
+    async def stop(self, delete=False):
+        self.stopped = delete
+
+    async def exec(self, command, cwd=None, timeout_sec=None):
+        self.commands.append(command)
+        if _is_teardown(command):
+            raise AssertionError("framework timeout must not signal the process group")
+        if _is_leader_stop(command):
+            self.release.set()
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+        return await super().exec(command, cwd=cwd, timeout_sec=timeout_sec)
+
+
 class LiveScopeEnvironment(SimultaneousEnvironment):
     """A subject whose process group outlives it, as a task's own service does."""
 
@@ -177,9 +198,17 @@ class SettleCompletionEnvironment(SimultaneousEnvironment):
 
 
 def _is_teardown(command: str) -> bool:
-    # `kill -0` is how the relay asks whether the scope is still there; only
-    # TERM and KILL end it.
-    return "kill -TERM" in command or "kill -KILL" in command
+    # Host abort signals the recorded process group. Framework timeout stops
+    # only the subject leader (`"$pgid"`), which must not count as teardown.
+    return ('-"$pgid"' in command) and ("kill -TERM" in command or "kill -KILL" in command)
+
+
+def _is_leader_stop(command: str) -> bool:
+    return (
+        ("kill -TERM" in command or "kill -KILL" in command)
+        and '"$pgid"' in command
+        and '-"$pgid"' not in command
+    )
 
 
 class RecordingEnvironment:
@@ -511,10 +540,10 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
             server.close()
             await server.wait_closed()
 
-    async def test_framework_timeout_survives_destroy_fallback(self):
+    async def test_framework_timeout_leaves_the_environment_for_the_verifier(self):
         relay = load_relay()
         environment = FrameworkTimeoutEnvironment()
-        token = f"framework-destroy-{os.getpid()}"
+        token = f"framework-timeout-{os.getpid()}"
         connected = asyncio.get_running_loop().create_future()
 
         async def accept(reader, writer):
@@ -541,9 +570,88 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(executed["termination"], "framework_timeout")
             self.assertEqual(executed["exitCode"], 124)
             self.assertEqual(executed["diagnostic"]["category"], "result-frame-missing")
-            self.assertTrue(environment.stopped)
+            # The verifier still runs after a timeout. Deleting the environment
+            # here would score a different trial than the one the subject left.
+            self.assertFalse(environment.stopped)
             with self.assertRaises(asyncio.CancelledError):
                 await running
+        finally:
+            writer.close()
+            server.close()
+            await server.wait_closed()
+
+    async def test_framework_timeout_stops_the_subject_without_the_process_group(self):
+        relay = load_relay()
+        environment = TimeoutScopeEnvironment()
+        token = f"framework-leader-{os.getpid()}"
+        connected = asyncio.get_running_loop().create_future()
+
+        async def accept(reader, writer):
+            connected.set_result((reader, writer))
+
+        server = await asyncio.start_server(accept, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        agent = relay.RelayAgent(
+            logs_dir=Path(tempfile.gettempdir()), relay_host="127.0.0.1",
+            relay_port=port, relay_token=token, teardown_timeout_ms=1_000,
+        )
+        running = asyncio.create_task(agent.run("solve", environment, None))
+        reader, writer = await connected
+        try:
+            await reader.readline()
+            writer.write((__import__("json").dumps({
+                "token": token, "kind": "execute", "command": "/bin/true", "args": [],
+                "credentials": {}, "resultToken": "0" * 32,
+            }) + "\n").encode())
+            await writer.drain()
+            await environment.started.wait()
+            running.cancel()
+            executed = __import__("json").loads(await asyncio.wait_for(reader.readline(), 0.5))
+            self.assertEqual(executed["termination"], "framework_timeout")
+            self.assertEqual(executed["exitCode"], 124)
+            self.assertTrue(any(_is_leader_stop(command) for command in environment.commands))
+            self.assertEqual(
+                [command for command in environment.commands if _is_teardown(command)],
+                [],
+            )
+            self.assertFalse(environment.stopped)
+            with self.assertRaises(asyncio.CancelledError):
+                await running
+        finally:
+            writer.close()
+            server.close()
+            await server.wait_closed()
+
+    async def test_host_teardown_of_a_running_subject_still_destroys(self):
+        relay = load_relay()
+        environment = FrameworkTimeoutEnvironment()
+        token = f"host-destroy-{os.getpid()}"
+        connected = asyncio.get_running_loop().create_future()
+
+        async def accept(reader, writer):
+            connected.set_result((reader, writer))
+
+        server = await asyncio.start_server(accept, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        agent = relay.RelayAgent(
+            logs_dir=Path(tempfile.gettempdir()), relay_host="127.0.0.1",
+            relay_port=port, relay_token=token, teardown_timeout_ms=50,
+        )
+        running = asyncio.create_task(agent.run("solve", environment, None))
+        reader, writer = await connected
+        try:
+            await reader.readline()
+            writer.write((__import__("json").dumps({
+                "token": token, "kind": "execute", "command": "/bin/true", "args": [],
+                "credentials": {}, "resultToken": "0" * 32,
+            }) + "\n").encode())
+            await writer.drain()
+            await environment.started.wait()
+            relay.request_host_teardown()
+            running.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(running, timeout=0.5)
+            self.assertTrue(environment.stopped)
         finally:
             writer.close()
             server.close()
