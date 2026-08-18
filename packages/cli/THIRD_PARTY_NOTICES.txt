@@ -535,7 +535,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ================================================================================
 
-Package: @earendil-works/pi-tui@0.83.0
+Package: @earendil-works/pi-tui@0.84.2
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/earendil-works/pi.git#packages/tui
@@ -595,7 +595,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: @larksuiteoapi/node-sdk@1.72.0
+Package: @larksuiteoapi/node-sdk@1.73.0
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/larksuite/node-sdk.git
@@ -1149,7 +1149,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @openai/agents-core@0.14.3
+Package: @openai/agents-core@0.16.0
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/openai/openai-agents-js
@@ -1648,7 +1648,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: @types/node@26.1.2
+Package: @types/node@26.2.0
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/DefinitelyTyped/DefinitelyTyped.git#types/node
@@ -7095,7 +7095,7 @@ IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 
-Package: openai@6.49.0
+Package: openai@7.4.0
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: github:openai/openai-node
@@ -9254,7 +9254,7 @@ IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 
-Package: ws@8.21.2
+Package: ws@8.21.3
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/websockets/ws.git
