@@ -14,10 +14,17 @@
 import { useEffect, useState } from 'react';
 import type { GoalState, GoalStatus } from '@maka/runtime/goal-state';
 
-const RUNNING_GOAL_STATUSES: ReadonlySet<GoalStatus> = new Set(['active', 'waiting', 'paused']);
+type LiveGoalStatus = Extract<GoalStatus, 'active' | 'waiting' | 'paused'>;
+type LiveGoalState = GoalState & { readonly status: LiveGoalStatus };
 
-export function useSessionGoal(sessionId: string | undefined): GoalState | null {
-  const [goal, setGoal] = useState<GoalState | null>(null);
+const LIVE_GOAL_STATUSES: ReadonlySet<GoalStatus> = new Set(['active', 'waiting', 'paused']);
+
+function isLiveGoal(goal: GoalState): goal is LiveGoalState {
+  return LIVE_GOAL_STATUSES.has(goal.status);
+}
+
+export function useSessionGoal(sessionId: string | undefined): LiveGoalState | null {
+  const [goal, setGoal] = useState<LiveGoalState | null>(null);
 
   useEffect(() => {
     if (!sessionId) {
@@ -30,7 +37,7 @@ export function useSessionGoal(sessionId: string | undefined): GoalState | null 
         .get(sessionId)
         .then((g) => {
           if (cancelled) return;
-          setGoal(g && RUNNING_GOAL_STATUSES.has(g.status) ? g : null);
+          setGoal(g && isLiveGoal(g) ? g : null);
         })
         .catch(() => {
           if (!cancelled) setGoal(null);

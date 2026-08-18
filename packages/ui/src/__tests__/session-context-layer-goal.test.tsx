@@ -60,3 +60,23 @@ test('a paused goal reads as paused and offers resume, not pause', () => {
   assert.ok(markup.includes('12m'));
   assert.ok(!markup.includes('12k'));
 });
+
+test('a waiting goal reads as waiting without looking active or paused', () => {
+  const markup = renderGoalChip({
+    condition: 'Wait for CI',
+    status: 'waiting',
+    iterations: 4,
+    maxIterations: 50,
+    setAt: Date.now() - 30_000,
+    tokensSpent: 12_000,
+    tokenBudget: 100_000,
+    onPause: () => undefined,
+    onClear: () => undefined,
+  });
+  assert.ok(markup.includes('Autonomous goal waiting for conditions to change'));
+  assert.ok(!markup.includes('Autonomous goal running'));
+  assert.ok(!markup.includes('Autonomous goal paused'));
+  assert.ok(markup.includes('Pause autonomous goal after 4/50 iterations'));
+  assert.ok(!markup.includes('Resume autonomous goal'));
+  assert.ok(markup.includes('12k / 100k'));
+});

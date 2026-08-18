@@ -16,6 +16,7 @@ import {
 import { getConversationCopy } from './conversation-copy.js';
 import { ICON_SIZE, Pause, Play } from './icons.js';
 import { useUiLocale } from './locale-context.js';
+import { dotForStatus } from './status-vocabulary.js';
 
 export interface SessionContextBranch {
   parentSessionId: string;
@@ -32,7 +33,7 @@ export interface SessionContextRevision {
 
 export interface SessionContextGoal {
   condition: string;
-  status: string;
+  status: 'active' | 'waiting' | 'paused';
   iterations: number;
   maxIterations: number;
   /** Epoch ms when the goal was armed; the chip derives wall-clock elapsed. */
@@ -81,9 +82,11 @@ export function SessionContextLayer(props: {
 
   if (props.goal) {
     const goal = props.goal;
-    // A paused goal burns nothing: it must look distinct (no pulse, warning
-    // tone) from a running loop at a glance.
+    // A paused goal burns nothing, while waiting remains live but is not
+    // currently executing. Both must be visually still; only paused needs an
+    // attention tone.
     const paused = goal.status === 'paused';
+    const waiting = goal.status === 'waiting';
     const elapsedMs =
       paused && goal.pausedAt !== undefined
         ? Math.max(0, goal.pausedAt - goal.setAt)
@@ -122,9 +125,15 @@ export function SessionContextLayer(props: {
       element: (
         <div className="maka-session-context__goal">
           <StatusDot
-            variant={paused ? 'warning' : 'accent'}
-            label={paused ? copy.goalPausedAriaLabel : copy.goalRunningAriaLabel}
-            isPulsing={!paused}
+            variant={dotForStatus(paused ? 'attention' : 'active')}
+            label={
+              paused
+                ? copy.goalPausedAriaLabel
+                : waiting
+                  ? copy.goalWaitingAriaLabel
+                  : copy.goalRunningAriaLabel
+            }
+            isPulsing={!paused && !waiting}
           />
           <Text type="supporting" hasTabularNumbers>
             {goalText}

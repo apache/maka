@@ -868,18 +868,8 @@ const LINEAGE_SESSIONS: SessionSummary[] = [
   }),
 ];
 
-// Real path: open a derived revision that is running an autonomous goal with
-// local memory and Deep Research enabled. Session metadata stays in one context
-// layer above the transcript instead of splitting across header pills and
-// standalone branch/revision rows. The long session name is the point: it is
-// what forces that layer to collapse rather than wrap.
-//
-// The banner reads 分自 without 从中断前: deriveBranchBanner only adds that hint
-// when the caller supplies it, and the renderer deliberately does not until
-// parent-message preloading lands (app-shell.tsx). A story that showed it would
-// be showing a screen the app cannot currently produce.
-export const SessionContextLayer: Story = {
-  render: () => (
+function GoalContextStory(props: { goal: NonNullable<ChatViewProps['goalIndicator']> }) {
+  return (
     <ComposedShell
       relatedSessions={LINEAGE_SESSIONS}
       session={{
@@ -896,19 +886,80 @@ export const SessionContextLayer: Story = {
       chat={{
         memoryActive: true,
         onOpenMemorySettings: noop,
-        goalIndicator: {
-          condition: '把 Session Context Layer 收敛到可 review 状态',
-          status: 'active',
-          iterations: 4,
-          maxIterations: 12,
-          setAt: Date.now() - 12 * 60_000,
-          onClear: noop,
-        },
+        goalIndicator: props.goal,
         onBranchBannerClick: noop,
         onRevisionNavigate: noop,
       }}
     />
+  );
+}
+
+// Real path: open a derived revision that is running an autonomous goal with
+// local memory and Deep Research enabled. Session metadata stays in one context
+// layer above the transcript instead of splitting across header pills and
+// standalone branch/revision rows. The long session name is the point: it is
+// what forces that layer to collapse rather than wrap.
+//
+// The banner reads 分自 without 从中断前: deriveBranchBanner only adds that hint
+// when the caller supplies it, and the renderer deliberately does not until
+// parent-message preloading lands (app-shell.tsx). A story that showed it would
+// be showing a screen the app cannot currently produce.
+export const SessionContextLayer: Story = {
+  render: () => (
+    <GoalContextStory
+      goal={{
+        condition: '把 Session Context Layer 收敛到可 review 状态',
+        status: 'active',
+        iterations: 4,
+        maxIterations: 12,
+        setAt: Date.now() - 12 * 60_000,
+        tokensSpent: 72_000,
+        tokenBudget: 200_000,
+        onPause: noop,
+        onClear: noop,
+      }}
+    />
   ),
+};
+
+export const SessionContextLayerWaiting: Story = {
+  render: () => (
+    <GoalContextStory
+      goal={{
+        condition: '等待 CI 状态变化后继续处理 review',
+        status: 'waiting',
+        iterations: 4,
+        maxIterations: 12,
+        setAt: Date.now() - 12 * 60_000,
+        tokensSpent: 72_000,
+        tokenBudget: 200_000,
+        onPause: noop,
+        onClear: noop,
+      }}
+    />
+  ),
+};
+
+export const SessionContextLayerPaused: Story = {
+  render: () => {
+    const pausedAt = Date.now() - 4 * 60_000;
+    return (
+      <GoalContextStory
+        goal={{
+          condition: '把 Session Context Layer 收敛到可 review 状态',
+          status: 'paused',
+          iterations: 4,
+          maxIterations: 12,
+          setAt: pausedAt - 8 * 60_000,
+          pausedAt,
+          tokensSpent: 72_000,
+          tokenBudget: 200_000,
+          onResume: noop,
+          onClear: noop,
+        }}
+      />
+    );
+  },
 };
 
 // The titlebar states the session's identity in every session view, so the
