@@ -8,6 +8,8 @@ import {
   deriveFailedTurnRecovery,
   describeTurnErrorClass,
 } from '../../renderer/session-status-presentation.js';
+import { commandPaletteConnectionTestFailureMessage } from '../../renderer/app-shell-copy.js';
+import { connectionTestFailureMessage } from '../../renderer/settings/provider-panel-shared.js';
 
 describe('provider failure presentation', () => {
   test('keeps provider account and access failures distinct in both locales', () => {
@@ -85,5 +87,46 @@ describe('provider failure presentation', () => {
 
     assert.equal(sessionEventErrorMessage(event), '任务运行失败，请稍后重试。');
     assert.equal(sessionEventErrorMessage(event, 'en'), 'The task run failed. Try again later.');
+  });
+
+  test('does not reclassify a neutral connection-test 403 as authentication', () => {
+    const result = {
+      ok: false,
+      statusCode: 403,
+      errorClass: 'unknown' as const,
+      errorMessage: '403 permission_error usage limit',
+    };
+
+    assert.equal(
+      connectionTestFailureMessage(result, {
+        auth: 'AUTH SHOULD NOT WIN',
+        recheck: 'RECHECK',
+      }, 'en'),
+      'RECHECK',
+    );
+    assert.notEqual(commandPaletteConnectionTestFailureMessage(result, 'en'), 'Authentication failed. Check the model key, subscription login, or credentials and try again.');
+  });
+
+  test('renders only the Runtime-marked connection-test provider summary verbatim', () => {
+    const message = 'Plan allowance exhausted. (code=permission_error, status=403)';
+    const result = {
+      ok: false,
+      statusCode: 403,
+      errorClass: 'unknown' as const,
+      providerFailure: {
+        errorClass: 'RequestRejected' as const,
+        httpStatus: 403,
+        providerCode: 'permission_error',
+        retryable: false,
+        message,
+        boundedProviderMessage: true as const,
+      },
+    };
+
+    assert.equal(
+      connectionTestFailureMessage(result, { auth: 'AUTH', recheck: 'RECHECK' }, 'en'),
+      message,
+    );
+    assert.equal(commandPaletteConnectionTestFailureMessage(result, 'en'), message);
   });
 });
