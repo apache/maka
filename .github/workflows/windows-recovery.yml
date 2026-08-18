@@ -35,7 +35,9 @@ jobs:
 
       - name: Verify Runtime Host Local IPC trust boundary
         shell: pwsh
-        run: ./scripts/windows-runtime-host-local-ipc-trust.ps1
+        run: |
+          node.exe --test packages/runtime-host/dist/__tests__/control-endpoint.test.js
+          ./scripts/windows-runtime-host-local-ipc-trust.ps1
 
       - name: Verify SQLite crash recovery
         shell: pwsh

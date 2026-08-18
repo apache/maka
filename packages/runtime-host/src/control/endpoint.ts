@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { chmod, lstat, mkdtemp, readdir, rm, rmdir, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +7,20 @@ const FALLBACK_ENDPOINT_ROOT = '/tmp';
 const PORTABLE_UNIX_SOCKET_PATH_LIMIT = 100;
 const ENDPOINT_SOCKET_NAME = 'h.sock';
 const MKDTEMP_SUFFIX_LENGTH = 6;
+const WINDOWS_PIPE_PATH_ENV = 'MAKA_RUNTIME_HOST_PIPE_PATH';
+const WINDOWS_PIPE_ACL_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$security = [System.Security.AccessControl.FileSecurity]::new()
+$security.SetAccessRuleProtection($true, $false)
+$rights = [System.Security.AccessControl.FileSystemRights]::FullControl
+$allow = [System.Security.AccessControl.AccessControlType]::Allow
+$security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($identity.User, $rights, $allow))
+$system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($system, $rights, $allow))
+$pipe = Get-Item -LiteralPath $env:${WINDOWS_PIPE_PATH_ENV}
+$pipe.SetAccessControl($security)
+`;
 
 export interface RuntimeHostEndpointInput {
   rootId: string;
@@ -37,8 +52,7 @@ export async function prepareRuntimeHostEndpoint(
     return {
       path,
       async prepareAfterListen() {
-        // Node creates the pipe with the process token's default DACL. The
-        // blocking cross-user CI pins that a foreign user cannot open it duplex.
+        await secureWindowsNamedPipe(path);
       },
       async cleanup() {},
     };
@@ -87,6 +101,42 @@ export async function prepareRuntimeHostEndpoint(
     await rm(directory, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
+}
+
+function secureWindowsNamedPipe(path: string): Promise<void> {
+  const systemRoot = process.env.SystemRoot;
+  if (!systemRoot) {
+    return Promise.reject(
+      new RuntimeHostEndpointError(
+        'insecure_endpoint_directory',
+        'Runtime Host cannot locate Windows PowerShell to secure its Local IPC endpoint',
+      ),
+    );
+  }
+  const powershell = join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  return new Promise((resolve, reject) => {
+    execFile(
+      powershell,
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_PIPE_ACL_SCRIPT],
+      {
+        env: { ...process.env, [WINDOWS_PIPE_PATH_ENV]: path },
+        timeout: 10_000,
+        windowsHide: true,
+      },
+      (error) => {
+        if (!error) {
+          resolve();
+          return;
+        }
+        reject(
+          new RuntimeHostEndpointError(
+            'insecure_endpoint_directory',
+            'Runtime Host could not restrict its Windows Local IPC endpoint to the current user',
+          ),
+        );
+      },
+    );
+  });
 }
 
 // Honor TMPDIR via os.tmpdir(), but never at the cost of a socket path over

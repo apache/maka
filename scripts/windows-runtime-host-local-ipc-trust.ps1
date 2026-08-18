@@ -34,7 +34,8 @@ public static class MakaWindowsPipeTrustProbe
         string username,
         string domain,
         string password,
-        string pipeName)
+        string pipeName,
+        PipeDirection direction)
     {
         SafeAccessTokenHandle token;
         if (!LogonUser(username, domain, password, 2, 0, out token))
@@ -44,18 +45,18 @@ public static class MakaWindowsPipeTrustProbe
 
         using (token)
         {
-            return WindowsIdentity.RunImpersonated(token, () => TryOpen(pipeName));
+            return WindowsIdentity.RunImpersonated(token, () => TryOpen(pipeName, direction));
         }
     }
 
-    private static string TryOpen(string pipeName)
+    private static string TryOpen(string pipeName, PipeDirection direction)
     {
         try
         {
             using (var client = new NamedPipeClientStream(
                 ".",
                 pipeName,
-                PipeDirection.InOut,
+                direction,
                 PipeOptions.None,
                 TokenImpersonationLevel.Identification))
             {
@@ -104,6 +105,7 @@ $userName = "MakaIpc$(([Guid]::NewGuid().ToString('N')).Substring(0, 8))"
 $password = "Maka-Ipc!$([Guid]::NewGuid().ToString('N'))aA1"
 $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
 $fixture = $null
+$currentUserClients = @()
 $createdUser = $false
 
 try {
@@ -124,11 +126,17 @@ try {
   $startInfo.RedirectStandardError = $true
   $startInfo.CreateNoWindow = $true
 
-  $fixture = [System.Diagnostics.Process]::new()
-  $fixture.StartInfo = $startInfo
-  if (-not $fixture.Start()) {
-    throw 'Unable to start Runtime Host trust fixture'
+  $candidateFixture = [System.Diagnostics.Process]::new()
+  $candidateFixture.StartInfo = $startInfo
+  try {
+    if (-not $candidateFixture.Start()) {
+      throw 'Unable to start Runtime Host trust fixture'
+    }
+  } catch {
+    $candidateFixture.Dispose()
+    throw
   }
+  $fixture = $candidateFixture
 
   $ready = Read-ProcessLine -Process $fixture -TimeoutMilliseconds 10000 | ConvertFrom-Json
   if ($ready.type -ne 'ready' -or $ready.endpoint -notmatch '^\\\\\.\\pipe\\(.+)$') {
@@ -136,53 +144,79 @@ try {
   }
   $pipeName = $Matches[1]
 
-  $currentUserClient = [System.IO.Pipes.NamedPipeClientStream]::new(
-    '.',
-    $pipeName,
-    [System.IO.Pipes.PipeDirection]::InOut,
-    [System.IO.Pipes.PipeOptions]::None,
-    [System.Security.Principal.TokenImpersonationLevel]::Identification
-  )
-  try {
-    $currentUserClient.Connect(5000)
-  } finally {
-    $currentUserClient.Dispose()
+  # Keep enough owner connections open to consume libuv's initial pending pipe
+  # instances and force replacement instances before probing the foreign user.
+  for ($index = 0; $index -lt 8; $index += 1) {
+    $currentUserClient = [System.IO.Pipes.NamedPipeClientStream]::new(
+      '.',
+      $pipeName,
+      [System.IO.Pipes.PipeDirection]::InOut,
+      [System.IO.Pipes.PipeOptions]::None,
+      [System.Security.Principal.TokenImpersonationLevel]::Identification
+    )
+    try {
+      $currentUserClient.Connect(5000)
+      $currentUserClients += $currentUserClient
+    } catch {
+      $currentUserClient.Dispose()
+      throw
+    }
+
+    $accepted = Read-ProcessLine -Process $fixture -TimeoutMilliseconds 5000 | ConvertFrom-Json
+    if ($accepted.type -ne 'accepted' -or $accepted.principalKind -ne 'local_owner') {
+      throw "Current-user connection did not receive Local Owner authority"
+    }
   }
 
-  $accepted = Read-ProcessLine -Process $fixture -TimeoutMilliseconds 5000 | ConvertFrom-Json
-  if ($accepted.type -ne 'accepted' -or $accepted.principalKind -ne 'local_owner') {
-    throw "Current-user connection did not receive Local Owner authority"
-  }
-
-  $foreignResult = [MakaWindowsPipeTrustProbe]::TryOpenAsUser(
-    $userName,
-    $env:COMPUTERNAME,
-    $password,
-    $pipeName
-  )
-  if ($foreignResult -ne 'access_denied') {
-    throw "Foreign Windows user unexpectedly reached the Local IPC listener: $foreignResult"
+  foreach ($direction in @(
+    [System.IO.Pipes.PipeDirection]::In,
+    [System.IO.Pipes.PipeDirection]::Out,
+    [System.IO.Pipes.PipeDirection]::InOut
+  )) {
+    $foreignResult = [MakaWindowsPipeTrustProbe]::TryOpenAsUser(
+      $userName,
+      $env:COMPUTERNAME,
+      $password,
+      $pipeName,
+      $direction
+    )
+    if ($foreignResult -ne 'access_denied') {
+      throw "Foreign Windows user unexpectedly opened the Local IPC listener ($direction): $foreignResult"
+    }
   }
 
   Write-Output 'Runtime Host Windows Local IPC admitted the current user and denied a foreign user.'
 } finally {
-  if ($null -ne $fixture) {
-    if (-not $fixture.HasExited) {
-      $fixture.StandardInput.WriteLine('close')
-      $fixture.StandardInput.Flush()
-      if (-not $fixture.WaitForExit(5000)) {
-        $fixture.Kill($true)
-        $fixture.WaitForExit()
+  try {
+    try {
+      foreach ($client in $currentUserClients) {
+        $client.Dispose()
+      }
+    } finally {
+      if ($null -ne $fixture) {
+        if (-not $fixture.HasExited) {
+          $fixture.StandardInput.WriteLine('close')
+          $fixture.StandardInput.Flush()
+          if (-not $fixture.WaitForExit(5000)) {
+            $fixture.Kill($true)
+            $fixture.WaitForExit()
+          }
+        }
+        if ($fixture.ExitCode -ne 0) {
+          $stderr = $fixture.StandardError.ReadToEnd()
+          throw "Runtime Host trust fixture exited with $($fixture.ExitCode): $stderr"
+        }
       }
     }
-    if ($fixture.ExitCode -ne 0) {
-      $stderr = $fixture.StandardError.ReadToEnd()
-      Write-Warning "Runtime Host trust fixture exited with $($fixture.ExitCode): $stderr"
+  } finally {
+    try {
+      if ($null -ne $fixture) {
+        $fixture.Dispose()
+      }
+    } finally {
+      if ($createdUser) {
+        Remove-LocalUser -Name $userName -ErrorAction Stop
+      }
     }
-    $fixture.Dispose()
-  }
-  if ($createdUser) {
-    Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
   }
 }
-
