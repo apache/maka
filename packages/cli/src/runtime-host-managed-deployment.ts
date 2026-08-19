@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { cp, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
+import { cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -141,7 +141,26 @@ export async function removeRuntimeHostManagedDeployment(
       'Refusing to remove an invalid managed Runtime Host deployment path',
     );
   }
-  await rm(root, { recursive: true, force: true });
+  const requestedRoot = resolve(root);
+  let inspected: readonly [string, Awaited<ReturnType<typeof lstat>>];
+  try {
+    inspected = await Promise.all([realpath(requestedRoot), lstat(requestedRoot)]);
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) return;
+    throw new RuntimeHostManagedDeploymentError(
+      'deployment_failed',
+      'Unable to inspect the managed Runtime Host deployment before removal',
+      { cause: error },
+    );
+  }
+  const [canonicalRoot, target] = inspected;
+  if (canonicalRoot !== requestedRoot || !target.isDirectory() || target.isSymbolicLink()) {
+    throw new RuntimeHostManagedDeploymentError(
+      'deployment_failed',
+      'Refusing to remove a redirected managed Runtime Host deployment path',
+    );
+  }
+  await rm(requestedRoot, { recursive: true, force: true });
 }
 
 async function validatePackage(path: string, version: string): Promise<string> {

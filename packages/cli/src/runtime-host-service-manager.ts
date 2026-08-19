@@ -295,6 +295,7 @@ async function prepareServiceConfig(
       'The current Maka CLI entry point could not be resolved',
     );
   }
+  const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
   const requestedRoot = resolve(input.rootPath ?? previous?.rootPath ?? input.defaultRootPath);
   const projectDirectoryRoots = await normalizeProjectDirectoryRoots(
     input.projectDirectoryRoots ?? previous?.projectDirectoryRoots ?? [],
@@ -315,8 +316,7 @@ async function prepareServiceConfig(
     input.websocketPort ?? previous?.websocket.port ?? (await deps.allocateLoopbackPort());
   const websocketPath = input.websocketPath ?? previous?.websocket.path ?? DEFAULT_WEBSOCKET_PATH;
   const requestedManagedDeploymentRoot =
-    input.managedDeploymentRoot ??
-    (previous?.launch.cliPath === cliPath ? previous.managedDeploymentRoot : undefined);
+    input.managedDeploymentRoot ?? previous?.managedDeploymentRoot;
   const managedDeploymentRoot = requestedManagedDeploymentRoot
     ? await realpath(requestedManagedDeploymentRoot).catch((error) => {
         throw new RuntimeHostServiceManagerError(
@@ -326,6 +326,25 @@ async function prepareServiceConfig(
         );
       })
     : undefined;
+  if (
+    previous?.managedDeploymentRoot &&
+    (managedDeploymentRoot !== previous.managedDeploymentRoot ||
+      !isRuntimeHostManagedDeploymentCli(previous.managedDeploymentRoot, serviceId, cliPath))
+  ) {
+    throw new RuntimeHostServiceManagerError(
+      'invalid_launch',
+      'Uninstall the managed Runtime Host service before replacing its managed package or launch path',
+    );
+  }
+  if (
+    managedDeploymentRoot &&
+    !isRuntimeHostManagedDeploymentCli(managedDeploymentRoot, serviceId, cliPath)
+  ) {
+    throw new RuntimeHostServiceManagerError(
+      'invalid_launch',
+      'The managed Runtime Host CLI must belong to its deployment root',
+    );
+  }
   const config: RuntimeHostManagedServiceConfig = {
     schemaVersion: 1,
     ...(managedDeploymentRoot ? { managedDeploymentRoot } : {}),
@@ -334,7 +353,7 @@ async function prepareServiceConfig(
     websocket: { host: '127.0.0.1', port, path: websocketPath },
     launch: { nodePath, cliPath },
   };
-  validateServiceConfig(config, resolveRuntimeHostManagedServiceId(input.clientDataRoot));
+  validateServiceConfig(config, serviceId);
   return config;
 }
 
