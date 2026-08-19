@@ -3,9 +3,13 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { collectRuntimeHostFailureDiagnostic } from './release-cli-runtime-host-diagnostics.mjs';
+import {
+  collectRuntimeHostFailureDiagnostic,
+  retireCollectedRuntimeHostStartupDiagnostic,
+} from './release-cli-runtime-host-diagnostics.mjs';
 
 const ROOT_ID = 'a'.repeat(64);
+const STARTUP_ATTEMPT_ID = '00000000-0000-4000-8000-000000000001';
 
 test('collects canonical Runtime Host evidence without invoking mutating storage authority', async () => {
   const fixture = createFixture();
@@ -13,6 +17,7 @@ test('collects canonical Runtime Host evidence without invoking mutating storage
     const startupDiagnostic = {
       schemaVersion: 1,
       rootId: ROOT_ID,
+      startupAttemptId: STARTUP_ATTEMPT_ID,
       candidatePid: 123,
       capturedAt: '2026-08-19T00:00:00.000Z',
       reason: 'local_ipc_security_failed',
@@ -59,9 +64,13 @@ test('collects canonical Runtime Host evidence without invoking mutating storage
         }
         throw new Error(`Unexpected installed module: ${relativePath}`);
       },
-      readPathSecurity: async (path) => {
-        securityCalls.push(path);
-        return { state: 'present', owner: 'runner\\user', sddl: 'O:SYD:P' };
+      readPathSecurityBatch: async (paths) => {
+        securityCalls.push(paths);
+        return paths.map(() => ({
+          state: 'present',
+          owner: 'runner\\user',
+          sddl: 'O:SYD:P',
+        }));
       },
     });
 
@@ -76,12 +85,31 @@ test('collects canonical Runtime Host evidence without invoking mutating storage
         'startup_diagnostic',
       ],
     );
-    assert.deepEqual(securityCalls, [fixture.root, fixture.controlRoot, fixture.controlDirectory]);
+    assert.deepEqual(securityCalls, [
+      [fixture.root, fixture.controlRoot, fixture.controlDirectory],
+    ]);
     assert.equal(diagnostic.paths[0].security.owner, 'runner\\user');
     assert.equal(diagnostic.storageAuthority.state, 'valid');
     assert.equal(diagnostic.registration.rootIdMatches, true);
     assert.deepEqual(diagnostic.startup, { state: 'present', diagnostic: startupDiagnostic });
     assert.equal(diagnostic.runner.architecture, undefined);
+
+    let retired;
+    assert.equal(
+      await retireCollectedRuntimeHostStartupDiagnostic('/installed', diagnostic, {
+        loadInstalled: async (_packageRoot, relativePath) => {
+          assert.match(relativePath, /startup-diagnostic\.js$/u);
+          return {
+            clearSelectedCandidateStartupDiagnostic: async (rootId, startupAttemptId) => {
+              retired = { rootId, startupAttemptId };
+              return true;
+            },
+          };
+        },
+      }),
+      true,
+    );
+    assert.deepEqual(retired, { rootId: ROOT_ID, startupAttemptId: STARTUP_ATTEMPT_ID });
   } finally {
     fixture.cleanup();
   }
@@ -106,15 +134,22 @@ test('keeps read-only path evidence when root authority validation fails', async
           resolveRootControlNamespace: () => fixture.controlRoot,
         };
       },
-      readPathSecurity: async (path) => {
-        if (path === fixture.root) throw Object.assign(new Error('ACL lookup failed'), { code: 5 });
-        return { state: 'present', owner: 'runner\\user', sddl: 'O:SYD:P' };
+      readPathSecurityBatch: async (paths) => {
+        return paths.map((path) =>
+          path === fixture.root
+            ? {
+                state: 'unavailable',
+                error: { name: 'UnauthorizedAccessException', nativeErrorCode: 5 },
+              }
+            : { state: 'present', owner: 'runner\\user', sddl: 'O:SYD:P' },
+        );
       },
     });
 
     assert.equal(diagnostic.storageAuthority.state, 'invalid');
     assert.equal(diagnostic.storageAuthority.error.cause.code, 'EACCES');
     assert.equal(diagnostic.paths[0].security.state, 'unavailable');
+    assert.equal(diagnostic.paths[0].security.error.nativeErrorCode, 5);
     assert.deepEqual(
       diagnostic.paths.map(({ role }) => role),
       ['root', 'root_marker', 'control_root'],

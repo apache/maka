@@ -8,6 +8,13 @@ export interface CandidateStartupFailure {
   readonly reason: CandidateStartupFailureReason;
 }
 
+export interface CandidateStartupFailureReport extends CandidateStartupFailure {
+  readonly startupAttemptId: string;
+}
+
+const STARTUP_ATTEMPT_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
 const EXIT_CODE_BY_REASON: Readonly<Record<CandidateStartupFailureReason, number>> = {
   stored_data_incompatible: 65,
   operational_state_migration_blocked: 78,
@@ -51,6 +58,10 @@ export function candidateStartupFailureForExitCode(
     if (exitCode === code) return { reason: reason as CandidateStartupFailureReason };
   }
   return undefined;
+}
+
+export function isCandidateStartupAttemptId(value: unknown): value is string {
+  return typeof value === 'string' && STARTUP_ATTEMPT_ID_PATTERN.test(value);
 }
 
 function primaryErrorChain(root: unknown): unknown[] {

@@ -1,7 +1,9 @@
 import type { InteractiveRuntimeHostCandidateOptions } from './server/candidate.js';
+import { isCandidateStartupAttemptId } from './candidate-startup-failure.js';
 
 export interface ParsedInteractiveRuntimeHostCandidateArguments
   extends InteractiveRuntimeHostCandidateOptions {
+  readonly startupAttemptId: string;
   readonly desktopE2e?: true;
 }
 
@@ -11,6 +13,7 @@ export function parseInteractiveRuntimeHostCandidateArguments(
   const allowedKeys = new Set([
     'root',
     'expected-root-id',
+    'startup-attempt-id',
     'initial-connection-timeout-ms',
     'idle-grace-ms',
     'handshake-timeout-ms',
@@ -36,9 +39,14 @@ export function parseInteractiveRuntimeHostCandidateArguments(
   if (!expectedRootId || !/^[a-f0-9]{64}$/.test(expectedRootId)) {
     throw new Error('Runtime Host candidate requires a valid --expected-root-id');
   }
+  const startupAttemptId = values.get('startup-attempt-id');
+  if (!isCandidateStartupAttemptId(startupAttemptId)) {
+    throw new Error('Runtime Host candidate requires a valid --startup-attempt-id');
+  }
   return {
     rootPath,
     expectedRootId,
+    startupAttemptId,
     initialConnectionTimeoutMs: readOptionalInteger(values, 'initial-connection-timeout-ms'),
     idleGraceMs: readOptionalInteger(values, 'idle-grace-ms'),
     handshakeTimeoutMs: readOptionalInteger(values, 'handshake-timeout-ms'),

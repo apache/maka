@@ -6,14 +6,39 @@ import { pathToFileURL } from 'node:url';
 const RUNTIME_HOST_DIAGNOSTIC_MAX_BYTES = 32 * 1024;
 const WINDOWS_SECURITY_TEXT_MAX_CHARS = 4 * 1024;
 const DIAGNOSTIC_TEXT_MAX_CHARS = 2 * 1024;
-const WINDOWS_DIAGNOSTIC_PATH_ENV = 'MAKA_RUNTIME_HOST_DIAGNOSTIC_PATH';
+const WINDOWS_PATH_SECURITY_TIMEOUT_MS = 30_000;
+const WINDOWS_DIAGNOSTIC_PATHS_ENV = 'MAKA_RUNTIME_HOST_DIAGNOSTIC_PATHS';
 const WINDOWS_PATH_SECURITY_SCRIPT = `
 $ErrorActionPreference = 'Stop'
-$acl = Get-Acl -LiteralPath $env:${WINDOWS_DIAGNOSTIC_PATH_ENV}
-[Console]::Out.Write((@{
-  owner = $acl.Owner
-  sddl = $acl.Sddl
-} | ConvertTo-Json -Compress))
+$paths = ConvertFrom-Json -InputObject $env:${WINDOWS_DIAGNOSTIC_PATHS_ENV}
+$results = @()
+foreach ($path in @($paths)) {
+  try {
+    $acl = Get-Acl -LiteralPath $path
+    $results += [ordered]@{
+      state = 'present'
+      owner = $acl.Owner
+      sddl = $acl.Sddl
+    }
+  } catch {
+    $exception = $_.Exception
+    $nativeErrorCode = $null
+    if ($null -ne $exception.PSObject.Properties['NativeErrorCode']) {
+      $nativeErrorCode = $exception.NativeErrorCode
+    }
+    $results += [ordered]@{
+      state = 'unavailable'
+      error = [ordered]@{
+        name = $exception.GetType().FullName
+        hresult = $exception.HResult
+        nativeErrorCode = $nativeErrorCode
+        message = $exception.Message
+      }
+    }
+  }
+}
+$response = [ordered]@{ results = @($results) }
+[Console]::Out.Write((ConvertTo-Json -InputObject $response -Compress -Depth 5))
 `;
 
 const STORAGE_AUTHORITY_MODULE = 'node_modules/@maka/storage/dist/root-authority.js';
@@ -25,11 +50,11 @@ export async function collectRuntimeHostFailureDiagnostic(packageRoot, rootPath,
   const platform = options.platform ?? process.platform;
   const environment = options.environment ?? process.env;
   const loadInstalled = options.loadInstalled ?? importInstalled;
-  const readPathSecurity =
-    options.readPathSecurity ??
+  const readPathSecurityBatch =
+    options.readPathSecurityBatch ??
     (platform === 'win32'
-      ? (path) => readWindowsPathSecurity(path, environment)
-      : async () => undefined);
+      ? (paths) => readWindowsPathSecurityBatch(paths, environment)
+      : undefined);
   const diagnostic = {
     schemaVersion: 1,
     platform,
@@ -43,22 +68,27 @@ export async function collectRuntimeHostFailureDiagnostic(packageRoot, rootPath,
     paths: [],
   };
 
-  await addPathEvidence(diagnostic.paths, 'root', rootPath, readPathSecurity, true);
+  addPathEvidence(diagnostic.paths, 'root', rootPath);
+
+  const finish = async () => {
+    if (readPathSecurityBatch) {
+      await addPathSecurityEvidence(diagnostic.paths, readPathSecurityBatch);
+    }
+    return diagnostic;
+  };
 
   let authority;
   try {
     authority = await loadInstalled(packageRoot, STORAGE_AUTHORITY_MODULE);
   } catch (error) {
     diagnostic.storageAuthority = { state: 'unavailable', error: summarizeDiagnosticError(error) };
-    return diagnostic;
+    return finish();
   }
 
-  await addPathEvidence(
+  addPathEvidence(
     diagnostic.paths,
     'root_marker',
     join(rootPath, authority.STORAGE_ROOT_MARKER_FILE),
-    readPathSecurity,
-    false,
   );
 
   let capability;
@@ -72,23 +102,17 @@ export async function collectRuntimeHostFailureDiagnostic(packageRoot, rootPath,
   let controlRoot;
   try {
     controlRoot = authority.resolveRootControlNamespace();
-    await addPathEvidence(diagnostic.paths, 'control_root', controlRoot, readPathSecurity, true);
+    addPathEvidence(diagnostic.paths, 'control_root', controlRoot);
   } catch (error) {
     diagnostic.controlNamespace = {
       state: 'unavailable',
       error: summarizeDiagnosticError(error),
     };
   }
-  if (!capability || !controlRoot) return diagnostic;
+  if (!capability || !controlRoot) return finish();
 
   const controlDirectory = join(controlRoot, capability.rootId);
-  await addPathEvidence(
-    diagnostic.paths,
-    'control_directory',
-    controlDirectory,
-    readPathSecurity,
-    true,
-  );
+  addPathEvidence(diagnostic.paths, 'control_directory', controlDirectory);
 
   try {
     const registrationAuthority = await loadInstalled(packageRoot, REGISTRATION_MODULE);
@@ -96,13 +120,7 @@ export async function collectRuntimeHostFailureDiagnostic(packageRoot, rootPath,
       controlDirectory,
       registrationAuthority.RUNTIME_HOST_REGISTRATION_FILE,
     );
-    await addPathEvidence(
-      diagnostic.paths,
-      'registration',
-      registrationPath,
-      readPathSecurity,
-      false,
-    );
+    addPathEvidence(diagnostic.paths, 'registration', registrationPath);
     const registration = await registrationAuthority.readHostRegistration(controlDirectory);
     diagnostic.registration = registration
       ? summarizeRegistration(registration, capability.rootId)
@@ -117,20 +135,14 @@ export async function collectRuntimeHostFailureDiagnostic(packageRoot, rootPath,
       controlDirectory,
       startupAuthority.RUNTIME_HOST_STARTUP_DIAGNOSTIC_FILE,
     );
-    await addPathEvidence(
-      diagnostic.paths,
-      'startup_diagnostic',
-      startupPath,
-      readPathSecurity,
-      false,
-    );
+    addPathEvidence(diagnostic.paths, 'startup_diagnostic', startupPath);
     const startup = await startupAuthority.readCandidateStartupDiagnostic(capability.rootId);
     diagnostic.startup = startup ? { state: 'present', diagnostic: startup } : { state: 'absent' };
   } catch (error) {
     diagnostic.startup = { state: 'unavailable', error: summarizeDiagnosticError(error) };
   }
 
-  return diagnostic;
+  return finish();
 }
 
 export function renderRuntimeHostFailureDiagnostic(diagnostic) {
@@ -141,16 +153,44 @@ export function renderRuntimeHostFailureDiagnostic(diagnostic) {
   );
 }
 
-async function addPathEvidence(paths, role, path, readPathSecurity, includeSecurity) {
-  const evidence = inspectDiagnosticPath(role, path);
-  if (includeSecurity && evidence.state === 'present') {
-    try {
-      evidence.security = await readPathSecurity(path);
-    } catch (error) {
-      evidence.security = { state: 'unavailable', error: summarizeDiagnosticError(error) };
+export async function retireCollectedRuntimeHostStartupDiagnostic(
+  packageRoot,
+  diagnostic,
+  options = {},
+) {
+  const startupAttemptId = diagnostic.startup?.diagnostic?.startupAttemptId;
+  const rootId = diagnostic.storageAuthority?.rootId;
+  if (typeof rootId !== 'string' || typeof startupAttemptId !== 'string') return false;
+  const loadInstalled = options.loadInstalled ?? importInstalled;
+  const startupAuthority = await loadInstalled(packageRoot, STARTUP_DIAGNOSTIC_MODULE);
+  return startupAuthority.clearSelectedCandidateStartupDiagnostic(rootId, startupAttemptId);
+}
+
+function addPathEvidence(paths, role, path) {
+  paths.push(inspectDiagnosticPath(role, path));
+}
+
+async function addPathSecurityEvidence(paths, readPathSecurityBatch) {
+  const evidence = paths.filter(
+    (entry) =>
+      entry.state === 'present' &&
+      (entry.role === 'root' ||
+        entry.role === 'control_root' ||
+        entry.role === 'control_directory'),
+  );
+  if (evidence.length === 0) return;
+  try {
+    const results = await readPathSecurityBatch(evidence.map(({ path }) => path));
+    if (!Array.isArray(results) || results.length !== evidence.length) {
+      throw new Error('Windows path security probe returned an invalid result count');
     }
+    for (let index = 0; index < evidence.length; index += 1) {
+      evidence[index].security = results[index];
+    }
+  } catch (error) {
+    const unavailable = { state: 'unavailable', error: summarizeDiagnosticError(error) };
+    for (const entry of evidence) entry.security = unavailable;
   }
-  paths.push(evidence);
 }
 
 function inspectDiagnosticPath(role, path) {
@@ -169,7 +209,7 @@ function inspectDiagnosticPath(role, path) {
   }
 }
 
-function readWindowsPathSecurity(path, environment) {
+function readWindowsPathSecurityBatch(paths, environment) {
   const systemRoot = environment.SystemRoot;
   if (!systemRoot) throw new Error('SystemRoot is unavailable');
   const output = execFileSync(
@@ -177,8 +217,8 @@ function readWindowsPathSecurity(path, environment) {
     ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_PATH_SECURITY_SCRIPT],
     {
       encoding: 'utf8',
-      env: { ...environment, [WINDOWS_DIAGNOSTIC_PATH_ENV]: path },
-      timeout: 10_000,
+      env: { ...environment, [WINDOWS_DIAGNOSTIC_PATHS_ENV]: JSON.stringify(paths) },
+      timeout: WINDOWS_PATH_SECURITY_TIMEOUT_MS,
       windowsHide: true,
     },
   );
@@ -186,16 +226,52 @@ function readWindowsPathSecurity(path, environment) {
   if (
     typeof parsed !== 'object' ||
     parsed === null ||
-    typeof parsed.owner !== 'string' ||
-    typeof parsed.sddl !== 'string'
+    !Array.isArray(parsed.results) ||
+    parsed.results.length !== paths.length
   ) {
     throw new Error('Windows path security probe returned an invalid response');
   }
-  return {
-    state: 'present',
-    owner: parsed.owner.slice(0, WINDOWS_SECURITY_TEXT_MAX_CHARS),
-    sddl: parsed.sddl.slice(0, WINDOWS_SECURITY_TEXT_MAX_CHARS),
-  };
+  return parsed.results.map(decodeWindowsPathSecurity);
+}
+
+function decodeWindowsPathSecurity(value) {
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    value.state === 'present' &&
+    typeof value.owner === 'string' &&
+    typeof value.sddl === 'string'
+  ) {
+    return {
+      state: 'present',
+      owner: value.owner.slice(0, WINDOWS_SECURITY_TEXT_MAX_CHARS),
+      sddl: value.sddl.slice(0, WINDOWS_SECURITY_TEXT_MAX_CHARS),
+    };
+  }
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    value.state === 'unavailable' &&
+    typeof value.error === 'object' &&
+    value.error !== null &&
+    typeof value.error.message === 'string'
+  ) {
+    return {
+      state: 'unavailable',
+      error: compactObject({
+        name:
+          typeof value.error.name === 'string'
+            ? boundedDiagnosticString(value.error.name)
+            : undefined,
+        hresult: Number.isSafeInteger(value.error.hresult) ? value.error.hresult : undefined,
+        nativeErrorCode: Number.isSafeInteger(value.error.nativeErrorCode)
+          ? value.error.nativeErrorCode
+          : undefined,
+        message: boundedDiagnosticString(value.error.message),
+      }),
+    };
+  }
+  throw new Error('Windows path security probe returned an invalid path result');
 }
 
 function summarizeRegistration(registration, expectedRootId) {

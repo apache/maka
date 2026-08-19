@@ -20,6 +20,7 @@ import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy
 import {
   collectRuntimeHostFailureDiagnostic,
   renderRuntimeHostFailureDiagnostic,
+  retireCollectedRuntimeHostStartupDiagnostic,
 } from './release-cli-runtime-host-diagnostics.mjs';
 import { npmSpawnOptions } from './npm-spawn.mjs';
 
@@ -810,6 +811,7 @@ async function reportRuntimeHostFailureDiagnostics(packageRoot, rootPath) {
   const diagnostic = await collectRuntimeHostFailureDiagnostic(packageRoot, rootPath);
   const rendered = renderRuntimeHostFailureDiagnostic(diagnostic);
   writeSync(2, `[release-cli-validation] Runtime Host failure diagnostics: ${rendered}\n`);
+  await retireCollectedRuntimeHostStartupDiagnostic(packageRoot, diagnostic);
 }
 
 async function terminateRegisteredProcess(pid) {

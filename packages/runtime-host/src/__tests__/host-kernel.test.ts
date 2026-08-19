@@ -36,6 +36,10 @@ import {
   type DetachedCandidateInput,
 } from '../client/launcher.js';
 import { readHostRegistration } from '../control/registration.js';
+import {
+  readCandidateStartupDiagnostic,
+  writeCandidateStartupDiagnostic,
+} from '../control/startup-diagnostic.js';
 import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 import {
   decodeHostFrame,
@@ -81,6 +85,8 @@ const CURRENT_PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 const LEGACY_PROTOCOL = { min: 1, max: 1 } as const;
+const STARTUP_ATTEMPT_A = '00000000-0000-4000-8000-000000000001';
+const STARTUP_ATTEMPT_B = '00000000-0000-4000-8000-000000000002';
 const KERNEL_CANDIDATE_ENTRYPOINT = new URL('./fixtures/kernel-candidate.js', import.meta.url);
 const KERNEL_COMPOSITION = defineInteractiveRuntimeHostComposition(async () => ({
   handlers: createUnavailableDomainOperationHandlers(),
@@ -162,6 +168,7 @@ describe('non-serving Runtime Host kernel', () => {
                 pid: process.pid,
                 startupFailure: Promise.resolve({
                   reason: 'operational_state_migration_blocked' as const,
+                  startupAttemptId: STARTUP_ATTEMPT_A,
                 }),
               }),
             };
@@ -200,11 +207,64 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('publishes the diagnostic from the Candidate failure selected by the election', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      let launches = 0;
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          surface: 'desktop',
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 800,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: () => {
+            launches += 1;
+            if (launches > 2) return { spawned: new Promise(() => undefined) };
+            const startupAttemptId = launches === 1 ? STARTUP_ATTEMPT_A : STARTUP_ATTEMPT_B;
+            const reason =
+              launches === 1
+                ? ('local_ipc_security_failed' as const)
+                : ('internal_startup_failure' as const);
+            return {
+              spawned: writeCandidateStartupDiagnostic({
+                rootId: capability.rootId,
+                startupAttemptId,
+                failure: { reason },
+                error: new Error(`Candidate ${launches} failed`),
+              }).then(() => ({
+                pid: process.pid,
+                startupFailure: Promise.resolve({ reason, startupAttemptId }),
+              })),
+            };
+          },
+        },
+      );
+
+      assert.deepEqual(result, { kind: 'failed', reason: 'local_ipc_security_failed' });
+      assert.equal(
+        (await readCandidateStartupDiagnostic(capability.rootId))?.startupAttemptId,
+        STARTUP_ATTEMPT_A,
+      );
+      assert.equal(
+        await readCandidateStartupDiagnostic(capability.rootId, STARTUP_ATTEMPT_B),
+        undefined,
+      );
+    });
+  });
+
   test('accepts a ready successor launched before a migration blocker is observed', async () => {
     await withHostPaths(async (paths) => {
       let launches = 0;
       let reportBlocker:
-        | ((failure: { reason: 'operational_state_migration_blocked' }) => void)
+        | ((failure: {
+            reason: 'operational_state_migration_blocked';
+            startupAttemptId: string;
+          }) => void)
         | undefined;
       const result = await connectOrSpawnRuntimeHostWithDependencies(
         {
@@ -229,7 +289,10 @@ describe('non-serving Runtime Host kernel', () => {
                 }),
               };
             }
-            reportBlocker?.({ reason: 'operational_state_migration_blocked' });
+            reportBlocker?.({
+              reason: 'operational_state_migration_blocked',
+              startupAttemptId: STARTUP_ATTEMPT_A,
+            });
             return launchTestRuntimeHostCandidate(paths, {
               ...input,
             });
