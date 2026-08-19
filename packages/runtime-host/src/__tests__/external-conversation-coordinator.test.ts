@@ -24,7 +24,9 @@ describe('HostExternalConversationCoordinator', () => {
     const successor = coordinator(authority, sessions, ['session-2']);
     const resolved = await successor.reconcile(resolveInput());
     assert.equal(resolved.ok, true);
-    if (!resolved.ok || resolved.result.kind !== 'resolved') return;
+    if (!resolved.ok || resolved.result.kind !== 'resolved') {
+      assert.fail(JSON.stringify(resolved));
+    }
     assert.equal(resolved.result.session.id, 'session-1');
     assert.equal(resolved.result.disposition, 'created');
     assert.deepEqual(sessions.createdIds, ['session-1']);
@@ -42,7 +44,9 @@ describe('HostExternalConversationCoordinator', () => {
     });
     const outcome = await host.reconcile(resolveInput());
     assert.equal(outcome.ok, true);
-    if (!outcome.ok || outcome.result.kind !== 'resolved') return;
+    if (!outcome.ok || outcome.result.kind !== 'resolved') {
+      assert.fail(JSON.stringify(outcome));
+    }
     assert.equal(outcome.result.session.id, 'session-claimed');
     assert.deepEqual(sessions.createdIds, ['session-claimed']);
   });
@@ -56,7 +60,9 @@ describe('HostExternalConversationCoordinator', () => {
 
     const outcome = await host.reconcile(resolveInput());
     assert.equal(outcome.ok, true);
-    if (!outcome.ok || outcome.result.kind !== 'resolved') return;
+    if (!outcome.ok || outcome.result.kind !== 'resolved') {
+      assert.fail(JSON.stringify(outcome));
+    }
     assert.equal(outcome.result.session.id, 'session-new');
     assert.equal(authority.bindings.get('telegram:chat-1'), 'session-new');
     assert.deepEqual(sessions.createdIds, ['session-new']);
@@ -74,7 +80,9 @@ describe('HostExternalConversationCoordinator', () => {
       conversationId: 'telegram:chat-1',
     });
     assert.equal(outcome.ok, true);
-    if (!outcome.ok || outcome.result.kind !== 'resolved') return;
+    if (!outcome.ok || outcome.result.kind !== 'resolved') {
+      assert.fail(JSON.stringify(outcome));
+    }
     assert.equal(outcome.result.disposition, 'existing');
     assert.equal(outcome.result.session.id, 'session-1');
   });
@@ -118,7 +126,7 @@ describe('HostExternalConversationCoordinator', () => {
       left.result.kind !== 'resolved' ||
       right.result.kind !== 'resolved'
     ) {
-      return;
+      assert.fail(JSON.stringify({ left, right }));
     }
     assert.equal(left.result.disposition, 'created');
     assert.equal(right.result.disposition, 'existing');

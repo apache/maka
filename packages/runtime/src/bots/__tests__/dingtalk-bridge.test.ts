@@ -145,6 +145,14 @@ describe('dingTalkPayloadToEvent', () => {
       dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c', text: { content: 'x' } }, '', 1),
       null,
     );
+    assert.equal(
+      dingTalkPayloadToEvent(
+        { senderId: 'u', conversationId: 'c', text: { content: 'x' } },
+        '   ',
+        1,
+      ),
+      null,
+    );
   });
 });
 
