@@ -430,6 +430,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     paddingX: 1,
     autocompleteMaxVisible: EDITOR_AUTOCOMPLETE_MAX_VISIBLE,
   });
+  editor.setUserCommandHint(primaryGuidance.editor.userCommandHint);
   let refreshEditorCwd: ((cwd: string) => void) | undefined;
   const editorSurface = new MakaAutocompleteAboveEditorComponent(editor);
   const layout = new MakaPiLayoutComponent(

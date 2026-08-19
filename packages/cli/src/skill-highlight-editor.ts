@@ -1,4 +1,4 @@
-import { Editor } from '@earendil-works/pi-tui';
+import { Editor, truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import { ansi } from './tui-ansi.js';
 
@@ -25,6 +25,12 @@ const MID_MESSAGE_SLASH_TOKEN = /(?:\s)\/\S*$/;
  */
 export class MakaSkillHighlightEditor extends Editor {
   private isInvocable: (name: string) => boolean = () => false;
+  private userCommandHint = '';
+
+  setUserCommandHint(hint: string): void {
+    this.userCommandHint = hint;
+    this.invalidate();
+  }
 
   /**
    * Swap the validator used by the render pass. Must be synchronous and
@@ -38,13 +44,27 @@ export class MakaSkillHighlightEditor extends Editor {
 
   override render(width: number): string[] {
     const pattern = new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g');
-    return super
+    const lines = super
       .render(width)
       .map((line) =>
         line.replace(pattern, (whole, name: string) =>
           this.isInvocable(name) ? ansi.accent(whole) : whole,
         ),
       );
+    if (this.getText() !== '!' || !this.userCommandHint) return lines;
+
+    const cursor = '\x1b[7m \x1b[0m';
+    const contentLine = lines.findIndex((line) => line.includes(cursor));
+    if (contentLine === -1) return lines;
+
+    const line = lines[contentLine] ?? '';
+    const cursorEnd = line.indexOf(cursor) + cursor.length;
+    const available = Math.max(0, width - visibleWidth(line.slice(0, cursorEnd)));
+    const hint = truncateToWidth(` ${this.userCommandHint}`, available, '');
+    lines[contentLine] = `${line.slice(0, cursorEnd)}${ansi.dim(hint)}${' '.repeat(
+      Math.max(0, available - visibleWidth(hint)),
+    )}`;
+    return lines;
   }
 
   override handleInput(data: string): void {

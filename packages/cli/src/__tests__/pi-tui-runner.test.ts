@@ -248,6 +248,42 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('a bare ! shows localized user-command guidance without starting a turn', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new UserCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      locale: 'zh',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes(
+        'shell 命令（仅你可见）· Ctrl+O 展开输出',
+      ),
+    );
+    assert.deepEqual(driver.commands, []);
+    assert.deepEqual(driver.prompts, []);
+
+    terminal.input('p');
+    await waitFor(
+      () =>
+        !plainTerminalOutput(terminal.screenOutput()).includes(
+          'shell 命令（仅你可见）· Ctrl+O 展开输出',
+        ),
+    );
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('Ctrl-C stops a running user command without exiting the TUI', async () => {
     const terminal = new FakeTerminal();
     const driver = new RunningUserCommandDriver();

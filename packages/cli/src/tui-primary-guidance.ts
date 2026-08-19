@@ -18,6 +18,9 @@ export interface TuiPrimaryGuidanceCopy {
     readonly keybindingsHeading: string;
     readonly keybindings: readonly string[];
   };
+  readonly editor: {
+    readonly userCommandHint: string;
+  };
 }
 
 const TUI_PRIMARY_GUIDANCE = {
@@ -67,6 +70,9 @@ const TUI_PRIMARY_GUIDANCE = {
         '  Ctrl+D — 输入为空时退出',
       ],
     },
+    editor: {
+      userCommandHint: 'shell 命令（仅你可见）· Ctrl+O 展开输出',
+    },
   },
   en: {
     welcome: {
@@ -113,6 +119,9 @@ const TUI_PRIMARY_GUIDANCE = {
         '  Ctrl+C — stop the turn, clear input, or press twice to exit',
         '  Ctrl+D — exit when input is empty',
       ],
+    },
+    editor: {
+      userCommandHint: 'shell command (visible only to you) · Ctrl+O expands output',
     },
   },
 } satisfies UiCatalog<TuiPrimaryGuidanceCopy>;
