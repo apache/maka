@@ -71,7 +71,7 @@ const TUI_PRIMARY_GUIDANCE = {
       ],
     },
     editor: {
-      userCommandHint: '输入 shell 命令 · Ctrl+O 展开输出',
+      userCommandHint: '输入 shell 命令',
     },
   },
   en: {
@@ -121,7 +121,7 @@ const TUI_PRIMARY_GUIDANCE = {
       ],
     },
     editor: {
-      userCommandHint: 'type a shell command · Ctrl+O expands output',
+      userCommandHint: 'type a shell command',
     },
   },
 } satisfies UiCatalog<TuiPrimaryGuidanceCopy>;

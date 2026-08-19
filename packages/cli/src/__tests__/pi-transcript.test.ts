@@ -1802,11 +1802,49 @@ describe('Maka Pi TUI transcript', () => {
     const tool = state.entries.find((entry) => entry.kind === 'tool');
     assert.equal(tool?.toolName, 'User command');
     assert.equal(tool?.status, 'done');
+    assert.equal(tool?.expanded, true);
     assert.match(tool?.output ?? '', /\/repo/);
     assert.equal(
       state.entries.some((entry) => entry.kind === 'notice'),
       false,
     );
+  });
+
+  test('keeps user commands expanded and outside Ctrl+O model-tool toggles', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserCommandToTranscript(state, {
+      commandId: 'user-command-1',
+      command: 'printf done',
+      result: shellRun({
+        ref: 'maka://runtime/background-tasks/user-command-1',
+        status: 'completed',
+        stdout: 'done\n',
+        completedAt: 2_000,
+        exitCode: 0,
+      }) as ShellRunSnapshotResult,
+    });
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'model-tool-1',
+        toolName: 'Bash',
+        args: { command: 'printf model' },
+      }),
+    );
+    const tools = state.entries.filter((entry) => entry.kind === 'tool');
+    const userCommand = tools.find((entry) => entry.userOwned === true);
+    const modelTool = tools.find((entry) => entry.userOwned !== true);
+    assert.ok(userCommand && modelTool);
+    assert.equal(userCommand.expanded, true);
+    assert.equal(modelTool.expanded, false);
+
+    assert.equal(toggleAllToolExpansion(state), true);
+    assert.equal(userCommand.expanded, true);
+    assert.equal(modelTool.expanded, true);
+    assert.equal(toggleAllToolExpansion(state), true);
+    assert.equal(userCommand.expanded, true);
+    assert.equal(modelTool.expanded, false);
   });
 
   test('preserves local user-command cards only for same-session reconnect replacement', () => {

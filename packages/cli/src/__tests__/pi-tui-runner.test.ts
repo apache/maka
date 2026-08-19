@@ -264,17 +264,12 @@ describe('Maka Pi TUI runner', () => {
 
     await waitForTuiPaint(terminal);
     terminal.input('!');
-    await waitFor(() =>
-      plainTerminalOutput(terminal.screenOutput()).includes('输入 shell 命令 · Ctrl+O 展开输出'),
-    );
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('输入 shell 命令'));
     assert.deepEqual(driver.commands, []);
     assert.deepEqual(driver.prompts, []);
 
     terminal.input('p');
-    await waitFor(
-      () =>
-        !plainTerminalOutput(terminal.screenOutput()).includes('输入 shell 命令 · Ctrl+O 展开输出'),
-    );
+    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('输入 shell 命令'));
 
     exitMaka(terminal);
     await run;

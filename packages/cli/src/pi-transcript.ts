@@ -168,7 +168,7 @@ export type MakaPiTranscriptEntry =
       outputDeltas: BoundedChunkBuffer<MakaPiToolOutputDelta>;
       durationMs?: number;
       status: 'running' | 'done' | 'error' | 'failed' | 'aborted' | 'detached' | 'unavailable';
-      /** Expanded card view; stamped from expandAllTools, retargeted by Ctrl+O. */
+      /** Expanded card view; model tools follow expandAllTools and Ctrl+O. */
       expanded: boolean;
       /** Local-only Runtime Resource started by `!<command>`, never a model tool call. */
       userOwned?: boolean;
@@ -345,7 +345,7 @@ export function appendUserCommandToTranscript(
     progress: createProgressBuffer(),
     outputDeltas: createOutputBuffer(),
     status: shellRunTranscriptStatus(input.result.status),
-    expanded: state.expandAllTools,
+    expanded: true,
     userOwned: true,
   });
 }
@@ -489,7 +489,7 @@ function togglesInert(state: MakaPiTranscriptState): boolean {
 export function toggleAllToolExpansion(state: MakaPiTranscriptState): boolean {
   if (togglesInert(state)) return false;
   const candidates = state.entries.filter(
-    (entry): entry is MakaPiToolEntry => entry.kind === 'tool',
+    (entry): entry is MakaPiToolEntry => entry.kind === 'tool' && entry.userOwned !== true,
   );
   if (candidates.length === 0) return false;
   state.expandAllTools = !state.expandAllTools;
