@@ -80,6 +80,7 @@ export class RuntimeHostSessionChannel {
   #failure: Error | undefined;
   #recoveryTask: Promise<void> | undefined;
   #recoveryAttemptsWithoutLiveFrame = 0;
+  #recoveryAwaitingLiveFrame: RuntimeHostSessionSubscription | undefined;
   #recoveryStableTimer: ReturnType<typeof setTimeout> | undefined;
 
   private constructor(
@@ -155,7 +156,17 @@ export class RuntimeHostSessionChannel {
     );
     for (const event of this.#projector.seedActive(false)) this.#emit(event);
     this.#ready = true;
-    for (const frame of this.#pendingFrames.splice(0)) this.#accept(frame);
+    try {
+      for (const frame of this.#pendingFrames.splice(0)) this.#accept(frame);
+    } catch (error) {
+      if (!this.#canRecover(error)) throw error;
+      this.#failedSubscriptions.add(subscription);
+      await this.#recover(subscription);
+      if (!this.#ready) {
+        throw this.#failure ?? new Error('Runtime Host Session recovery ended before hydration');
+      }
+      return true;
+    }
     return false;
   }
 
@@ -251,6 +262,7 @@ export class RuntimeHostSessionChannel {
     if (this.#closing) return;
     this.#closing = true;
     this.#clearRecoveryStableTimer();
+    this.#recoveryAwaitingLiveFrame = undefined;
     this.#pendingStartedTurns.clear();
     for (const queue of this.#turns.values()) queue.finish();
     await this.#subscription.close();
@@ -270,6 +282,7 @@ export class RuntimeHostSessionChannel {
           this.#pendingFrames.push(frame);
         } else {
           this.#accept(frame);
+          if (frame.kind !== 'subscription.closed') this.#observeRecoveryLiveFrame(subscription);
         }
       }
       // A stream that ends without a subscription.closed frame is a broken
@@ -328,6 +341,9 @@ export class RuntimeHostSessionChannel {
   async #recover(failed: RuntimeHostSessionSubscription): Promise<void> {
     let previous = failed;
     while (!this.#closing && !this.#failure && this.#subscription === previous) {
+      if (this.#recoveryAwaitingLiveFrame === previous) {
+        this.#recoveryAwaitingLiveFrame = undefined;
+      }
       await previous.close().catch(() => undefined);
       await this.#waitForRecoveryAttempt();
       if (this.#closing || this.#failure || this.#subscription !== previous) return;
@@ -362,10 +378,10 @@ export class RuntimeHostSessionChannel {
         }
         if (this.#closing || this.#failure || this.#subscription !== replacement) return;
         const replacedLiveState = this.#acceptCanonicalReplacement(messages);
+        this.#recoveryAwaitingLiveFrame = replacement;
         this.#ready = true;
         for (const frame of this.#pendingFrames.splice(0)) this.#accept(frame);
         if (replacedLiveState) this.#onRecovered();
-        this.#scheduleRecoveryStable(replacement);
         return;
       } catch (error) {
         if (!this.#canRecover(error)) throw error;
@@ -492,6 +508,12 @@ export class RuntimeHostSessionChannel {
     }, RECOVERY_STABLE_AFTER_MS);
     timer.unref?.();
     this.#recoveryStableTimer = timer;
+  }
+
+  #observeRecoveryLiveFrame(subscription: RuntimeHostSessionSubscription): void {
+    if (this.#recoveryAwaitingLiveFrame !== subscription) return;
+    this.#recoveryAwaitingLiveFrame = undefined;
+    this.#scheduleRecoveryStable(subscription);
   }
 
   #clearRecoveryStableTimer(): void {
@@ -740,10 +762,16 @@ function isSheddableDelta(event: SessionEvent): boolean {
 }
 
 function isGuaranteedOutcome(event: SessionEvent): boolean {
-  // complete/abort/error close the turn; tool_result is the authoritative
-  // terminal result for its tool — losing it leaves the live tool card
-  // running until the durable transcript heals it on a later reload.
-  return isTurnTerminalOutcome(event) || event.type === 'tool_result';
+  // complete/abort/error close the turn; text/thinking completion carries the
+  // authoritative assistant accumulator; tool_result is the authoritative
+  // terminal result for its tool. Losing any of them leaves a consumer with
+  // an incomplete outcome even though the projector has already settled it.
+  return (
+    isTurnTerminalOutcome(event) ||
+    event.type === 'text_complete' ||
+    event.type === 'thinking_complete' ||
+    event.type === 'tool_result'
+  );
 }
 
 function isTurnTerminalOutcome(event: SessionEvent): boolean {

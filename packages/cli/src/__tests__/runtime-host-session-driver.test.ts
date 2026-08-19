@@ -1543,6 +1543,31 @@ function deltaFrame(
   };
 }
 
+function textCompleteFrame(
+  sequence: number,
+  turnId: string,
+  startOffset: number,
+  text: string,
+  subscriptionId = 'subscription-1',
+): SubscriptionFrame {
+  return {
+    kind: 'subscription.session_delta',
+    hostEpoch: 'host-1',
+    subscriptionId,
+    sequence,
+    sessionId: 'session-1',
+    delta: {
+      kind: 'text',
+      turnId,
+      runId: 'run-1',
+      messageId: `message-${turnId}`,
+      startOffset,
+      text,
+      complete: true,
+    },
+  };
+}
+
 function thinkingFrame(
   sequence: number,
   messageId: string,
@@ -1810,6 +1835,30 @@ describe('turn consumer lag recovery (#3180)', () => {
     );
   });
 
+  test('admits assistant completion before the terminal outcome over a non-delta backlog', async () => {
+    const { initial, replacement, connection, driver, resynced } = lagRecoveryFixture();
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+
+    await floodToolStream(initial, 1_100);
+    await waitForSubscriptions(connection, 2);
+    await resynced.promise;
+
+    await floodToolStream(replacement, 1_024, 'subscription-2');
+    replacement.push(textCompleteFrame(1_025, 'turn-1', 5, ' final answer', 'subscription-2'));
+    replacement.push(projectionFrame(1_026, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'));
+    await delay(0);
+
+    let finalOutput: string | undefined;
+    let completed = false;
+    for await (const event of switched.activeTurn.events) {
+      if (event.type === 'text_complete') finalOutput = event.text;
+      if (event.type === 'complete') completed = true;
+    }
+    assert.equal(finalOutput, 'Hello final answer');
+    assert.equal(completed, true);
+  });
+
   test('drops the entire pre-resync tool backlog at the canonical cut', async () => {
     const { initial, replacement, connection, driver, resynced } = lagRecoveryFixture();
     const switched = await driver.switchSession('session-1');
@@ -1929,6 +1978,42 @@ describe('turn consumer lag recovery (#3180)', () => {
     assert.equal((await nextEvent(switched.activeTurn.events)).text, '!');
   });
 
+  test('recovers when slow-consumer closure is buffered during initial hydration', async () => {
+    const transcript = deferred<StoredMessage[]>();
+    const initial = new FakeSubscription(continuitySnapshot(), transcript.promise);
+    const replacement = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 2 }),
+      Promise.resolve([assistantMessage('turn-1', 'Hello world')]),
+      'subscription-2',
+    );
+    const connection = new FakeConnection([initial, replacement], true);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 50,
+    });
+
+    const switching = driver.switchSession('session-1');
+    await waitFor(() => initial.nextCalls === 1);
+    initial.push({
+      kind: 'subscription.closed',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      reason: 'slow_consumer',
+    });
+    await waitFor(() => initial.nextCalls === 2);
+    transcript.resolve([assistantMessage('turn-1', 'Hello')]);
+
+    const switched = await switching;
+    assert.ok(switched.activeTurn);
+    assert.equal(connection.openedSubscriptions, 2);
+    replacement.push(deltaFrame(1, 'turn-1', 11, '!', 'subscription-2'));
+    assert.equal((await nextEvent(switched.activeTurn.events)).text, '!');
+  });
+
   test('backs off several immediate clean-EOF replacements before recovering', async () => {
     const initial = new FakeSubscription(
       continuitySnapshot(),
@@ -2043,6 +2128,49 @@ describe('turn consumer lag recovery (#3180)', () => {
     await assert.rejects(async () => {
       for await (const _event of switched.activeTurn!.events) {
         // Drain each replacement's single live frame until recovery fails.
+      }
+    }, /recovery exhausted its retry budget/u);
+    assert.equal(connection.openedSubscriptions, 9);
+  });
+
+  test('does not reset recovery after a silent replacement outlives the stability window', async () => {
+    const initial = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+    );
+    const silent = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 2 }),
+      Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+      'subscription-2',
+    );
+    const ended = Array.from({ length: 7 }, (_, index) => {
+      const subscription = new FakeSubscription(
+        continuitySnapshot({ projectionRevision: index + 3 }),
+        Promise.resolve([assistantMessage('turn-1', 'Hello')]),
+        `subscription-${index + 3}`,
+      );
+      void subscription.close();
+      return subscription;
+    });
+    const connection = new FakeConnection([initial, silent, ...ended], true);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 50,
+    });
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+
+    await initial.close();
+    await waitForSubscriptions(connection, 2);
+    await delay(1_100);
+    await silent.close();
+
+    await assert.rejects(async () => {
+      for await (const _event of switched.activeTurn!.events) {
+        // A silent hydrated subscription is not evidence of live stability.
       }
     }, /recovery exhausted its retry budget/u);
     assert.equal(connection.openedSubscriptions, 9);
