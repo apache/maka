@@ -61,6 +61,7 @@ apps/desktop/src/renderer/settings/provider-enabled-model-manager.tsx
 apps/desktop/src/renderer/settings/provider-oauth-section.tsx
 apps/desktop/src/renderer/settings/providers-panel.tsx
 apps/desktop/src/renderer/settings/request-customization-editor.tsx
+apps/desktop/src/renderer/settings/runtime-host-onboarding-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-profiles-section.tsx
 apps/desktop/src/renderer/settings/runtime-host-settings-target.tsx
 apps/desktop/src/renderer/settings/runtime-host-ssh-terminal-dialog.tsx

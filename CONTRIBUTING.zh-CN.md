@@ -98,6 +98,16 @@ npm --workspace maka-agent exec -- maka          # TUI
 npm --workspace maka-agent exec -- maka run "…"  # 非交互地跑一个 Turn
 ```
 
+如需用当前工作区真实验证 Desktop 的远程 Runtime Host setup，可先构建与正式发布相同形态的
+自包含 package，再让开发版应用显式使用该 archive：
+
+```sh
+npm run release:cli:pack -- --allow-dirty
+MAKA_RUNTIME_HOST_SETUP_ARCHIVE="$PWD/packages/cli/release/<archive>.tgz" npm run dev
+```
+
+开发版应用会通过 SSH 上传这个临时 archive；正式打包应用会忽略该覆盖项。
+
 Eval 的命令与 contract 见 [`packages/eval`](./packages/eval)。
 
 ### 构建

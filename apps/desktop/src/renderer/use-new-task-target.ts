@@ -143,6 +143,22 @@ export function useNewTaskTarget(options: {
     }
   }
 
+  async function chooseProjectForProfile(profileId: string): Promise<void> {
+    const next = await refresh();
+    const host = next.hosts.find(
+      (candidate): candidate is ReadyHost =>
+        candidate.profile.id === profileId &&
+        candidate.readiness === 'ready' &&
+        candidate.state === 'available',
+    );
+    if (!host) {
+      options.toastApi.error(copy.catalogUnavailable);
+      return;
+    }
+    setSelectedProfileId(profileId);
+    if (host.capabilities.chooseHostDirectory) setDirectoryHost(host);
+  }
+
   async function acceptRegisteredProject(
     project: ProjectRecord,
     registeredHost: DesktopRuntimeHostRef,
@@ -200,6 +216,7 @@ export function useNewTaskTarget(options: {
     selectProject,
     selectNoProject,
     addProject,
+    chooseProjectForProfile,
     closeDirectoryPicker: () => setDirectoryHost(undefined),
     acceptRegisteredProject,
     relinkProject,

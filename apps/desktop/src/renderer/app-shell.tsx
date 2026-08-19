@@ -3675,6 +3675,11 @@ function AppShellContent({
           closeSettings();
           openSessionInChat(session.id);
         }}
+        onRemoteHostAdded={(profileId) => {
+          closeSettings();
+          openNewTaskSurface();
+          void newTask.chooseProjectForProfile(profileId);
+        }}
       />
     </div>
   );

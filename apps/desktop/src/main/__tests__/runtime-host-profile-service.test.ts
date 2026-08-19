@@ -286,6 +286,65 @@ test("projects a shared compatibility error through an unavailable enabled remot
   assert.equal(backup?.message, undefined);
 });
 
+test("removes a managed profile when its verified connection cannot be established", async () => {
+  const root = await clientRoot();
+  const disabled: string[] = [];
+  const startup = await resolveDesktopRuntimeHostStartup(root);
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    states: () => [connectingLocal()],
+    enable: async () => {
+      throw new Error("connection refused");
+    },
+    disable: async (profileId) => {
+      disabled.push(profileId);
+    },
+    setDefault: () => undefined,
+  });
+
+  await assert.rejects(
+    () => service.addAndEnableVerified({ profile: PROFILE, credential: "token" }),
+    /connection refused/,
+  );
+
+  assert.deepEqual(disabled, [PROFILE.id]);
+  assert.equal(
+    (await service.getSnapshot()).entries.some((entry) => entry.profile.id === PROFILE.id),
+    false,
+  );
+});
+
+test("refreshes the existing profile when managed setup pairs the same Host again", async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  await catalog.create(PROFILE, "old-token");
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  const connected: ResolvedRuntimeHostProfile[] = [];
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async (target) => {
+      connected.push(target);
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+  });
+
+  const result = await service.addAndEnableVerified({
+    profile: { ...PROFILE, id: "replacement", name: "Renamed office" },
+    credential: "new-token",
+  });
+
+  assert.deepEqual(result, { profileId: PROFILE.id, profileName: "Renamed office" });
+  assert.equal(connected[0]?.profile.id, PROFILE.id);
+  assert.equal(connected[0]?.credential, "new-token");
+  assert.equal((await catalog.resolve(PROFILE.id)).credential, "new-token");
+  assert.deepEqual((await catalog.read()).profiles.map((profile) => profile.id), [PROFILE.id]);
+});
+
 test("keeps enablement, default selection, and removal as separate states", async () => {
   const root = await clientRoot();
   await createClientRuntimeHostProfileCatalog(root).create(PROFILE, "token");

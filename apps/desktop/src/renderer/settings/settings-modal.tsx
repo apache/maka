@@ -56,6 +56,7 @@ export function SettingsModal(props: {
   archivedTasks: ArchivedTasksBridge;
   /** Receives the task 导入任务 just created, and opens it. */
   onTaskImported(session: DesktopSessionSummary): void;
+  onRemoteHostAdded(profileId: string): void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
@@ -109,6 +110,7 @@ export function SettingsModal(props: {
         onOpenSession={props.onOpenSession}
         archivedTasks={props.archivedTasks}
         onTaskImported={props.onTaskImported}
+        onRemoteHostAdded={props.onRemoteHostAdded}
       />
     </div>
   );

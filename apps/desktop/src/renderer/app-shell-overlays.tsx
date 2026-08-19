@@ -62,6 +62,7 @@ export function AppShellOverlays(props: {
   closePalette(): void;
   commandOptions: AppShellCommandListOptions;
   onExternalSessionImported(session: DesktopSessionSummary): void;
+  onRemoteHostAdded(profileId: string): void;
 }) {
   const {
     closeHelp,
@@ -116,6 +117,7 @@ export function AppShellOverlays(props: {
             onOpenSession={props.onOpenSettingsSession}
             archivedTasks={props.archivedTasks}
             onTaskImported={onExternalSessionImported}
+            onRemoteHostAdded={props.onRemoteHostAdded}
           />
         </Suspense>
       )}

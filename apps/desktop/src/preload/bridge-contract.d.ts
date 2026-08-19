@@ -327,6 +327,42 @@ export type DesktopRuntimeHostSshTerminalSnapshot =
       readonly signal: string | null;
     };
 
+export interface DesktopRuntimeHostOnboardingInput {
+  readonly name?: string;
+  readonly destination: string;
+  readonly sshPort?: number;
+}
+
+export type DesktopRuntimeHostOnboardingPhase =
+  | 'connecting_ssh'
+  | 'checking_environment'
+  | 'installing_package'
+  | 'installing_service'
+  | 'pairing_client'
+  | 'verifying_connection'
+  | 'connecting_host';
+
+export type DesktopRuntimeHostOnboardingSnapshot =
+  | { readonly kind: 'idle'; readonly revision: number }
+  | {
+      readonly kind: 'running';
+      readonly revision: number;
+      readonly destination: string;
+      readonly phase: DesktopRuntimeHostOnboardingPhase;
+    }
+  | {
+      readonly kind: 'failed';
+      readonly revision: number;
+      readonly destination: string;
+      readonly message: string;
+    }
+  | {
+      readonly kind: 'complete';
+      readonly revision: number;
+      readonly profileId: string;
+      readonly profileName: string;
+    };
+
 export interface DesktopProjectCapabilities {
   readonly chooseClientDirectory: boolean;
   readonly chooseHostDirectory: boolean;
@@ -413,6 +449,14 @@ export interface MakaBridge {
     resize(sessionId: string, cols: number, rows: number): Promise<void>;
     cancel(sessionId: string): Promise<void>;
     subscribe(handler: (event: DesktopRuntimeHostSshTerminalEvent) => void): () => void;
+  };
+
+  runtimeHostOnboarding: {
+    getSnapshot(): Promise<DesktopRuntimeHostOnboardingSnapshot>;
+    start(input: DesktopRuntimeHostOnboardingInput): Promise<DesktopRuntimeHostOnboardingSnapshot>;
+    cancel(): Promise<void>;
+    reset(): Promise<void>;
+    subscribe(handler: (snapshot: DesktopRuntimeHostOnboardingSnapshot) => void): () => void;
   };
 
   newTasks: {

@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import type { IPty } from 'node-pty';
-import type { RuntimeHostSshProcessFactory } from '@maka/runtime-host/client';
+import {
+  encodeRuntimeHostSetupFrame,
+  type RuntimeHostSshProcessFactory,
+} from '@maka/runtime-host/client';
 import { createDesktopRuntimeHostSshTerminal } from '../runtime-host-ssh-terminal.js';
 
 test('keeps a connecting SSH prompt observable across renderer presentation changes', async () => {
@@ -57,6 +63,110 @@ test('does not reopen a cancelled SSH prompt for late process output', async () 
   await harness.terminal.close();
 });
 
+test('keeps setup credentials out of the interactive terminal projection', async () => {
+  const harness = createHarness('pending');
+  const progress: string[] = [];
+  const setup = harness.terminal.runSetup(
+    {
+      destination: 'operator@example.com',
+      setupPackage: { kind: 'npm', specifier: 'maka-agent@next' },
+      principalId: 'desktop:stable-client',
+    },
+    (frame) => progress.push(frame.phase),
+  );
+  await waitFor(() => harness.pty.hasDataListener());
+  harness.pty.emitData('Password: ');
+  const progressFrame = encodeRuntimeHostSetupFrame({
+    schemaVersion: 1,
+    sequence: 0,
+    kind: 'progress',
+    phase: 'installing_service',
+  });
+  harness.pty.emitData(progressFrame.slice(0, 12));
+  harness.pty.emitData(progressFrame.slice(12));
+  const completeFrame = encodeRuntimeHostSetupFrame({
+    schemaVersion: 1,
+    sequence: 1,
+    kind: 'complete',
+    version: '0.1.0-beta.1',
+    rootId: 'a'.repeat(64),
+    endpoint: 'ws://127.0.0.1:7443/runtime-host',
+    credentialId: 'credential-1',
+    credential: 'secret-access-token',
+  });
+  harness.pty.emitData(completeFrame);
+  harness.pty.exit(0);
+
+  const result = await setup;
+  assert.equal(result.credential, 'secret-access-token');
+  assert.deepEqual(progress, ['installing_service']);
+  assert.doesNotMatch(JSON.stringify(harness.events), /secret-access-token|MAKA_RUNTIME/u);
+  assert.match(JSON.stringify(harness.events), /Password/u);
+  await harness.terminal.close();
+});
+
+test('uploads a development release archive before running the same remote setup', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-runtime-host-development-package-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const archive = join(directory, 'maka-agent-development.tgz');
+  await writeFile(archive, 'development package');
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const launches: Array<{ file: string; args: string[]; pty: FakePty }> = [];
+  const terminal = createDesktopRuntimeHostSshTerminal({
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    send: () => undefined,
+    spawnPty: ((file: string, args: string[]) => {
+      const pty = new FakePty();
+      launches.push({ file, args, pty });
+      return pty as unknown as IPty;
+    }) as typeof import('node-pty').spawn,
+  });
+  t.after(() => terminal.close());
+
+  const setup = terminal.runSetup(
+    {
+      destination: 'operator@example.com',
+      setupPackage: { kind: 'development_archive', path: archive },
+      principalId: 'desktop:stable-client',
+    },
+    () => undefined,
+  );
+  await waitFor(() => launches.length === 1);
+  assert.equal(launches[0]?.file, 'scp');
+  assert.match(launches[0]?.args.at(-2) ?? '', /maka-agent-development\.tgz$/u);
+  assert.match(launches[0]?.args.at(-1) ?? '', /^operator@example\.com:\/tmp\/maka-runtime-host-setup-.+\.tgz$/u);
+  launches[0]?.pty.exit(0);
+
+  await waitFor(() => launches.length === 2);
+  assert.equal(launches[1]?.file, 'ssh');
+  const remoteCommand = launches[1]?.args.at(-1) ?? '';
+  assert.match(
+    remoteCommand,
+    /npx.*--package.*maka-runtime-host-setup-.+\.tgz.*maka.*runtime-host.*setup/u,
+  );
+  assert.match(remoteCommand, /rm -f/u);
+  assert.doesNotMatch(remoteCommand, /status=0; 'exec'/u);
+  launches[1]?.pty.emitData(
+    encodeRuntimeHostSetupFrame({
+      schemaVersion: 1,
+      sequence: 0,
+      kind: 'complete',
+      version: '0.1.0-beta.1',
+      rootId: 'a'.repeat(64),
+      endpoint: 'ws://127.0.0.1:7443/runtime-host',
+      credentialId: 'credential-1',
+      credential: 'secret-access-token',
+    }),
+  );
+  launches[1]?.pty.exit(0);
+
+  assert.equal((await setup).rootId, 'a'.repeat(64));
+  await terminal.close();
+});
+
 function createHarness(mode: 'pending' | 'exit') {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const events: Array<{ kind: string }> = [];
@@ -96,6 +206,7 @@ function createHarness(mode: 'pending' | 'exit') {
     pty,
     releaseTunnel,
     eventKinds: () => events.map(({ kind }) => kind),
+    events,
     getSnapshot: () => invoke('runtime-host-ssh-terminal:getSnapshot'),
     cancel: (sessionId: string) => invoke('runtime-host-ssh-terminal:cancel', sessionId),
   };
@@ -139,6 +250,10 @@ class FakePty {
     for (const listener of this.#dataListeners) listener(data);
   }
 
+  hasDataListener(): boolean {
+    return this.#dataListeners.size > 0;
+  }
+
   exit(code: number): void {
     if (this.#exited) return;
     this.#exited = true;
@@ -151,4 +266,12 @@ class FakePty {
   kill(): void {
     if (!this.deferKill) this.exit(0);
   }
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.fail('Condition was not reached');
 }

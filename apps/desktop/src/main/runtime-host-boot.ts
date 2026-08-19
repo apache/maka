@@ -115,6 +115,7 @@ import {
   resolveDesktopRuntimeHostStartup,
 } from "./runtime-host-profile-service.js";
 import { createDesktopRuntimeHostSshTerminal } from "./runtime-host-ssh-terminal.js";
+import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
@@ -293,6 +294,22 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
     runtimeHostManager.setDefaultProfile(profileId);
   },
+});
+const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
+  ipcMain,
+  clientInstanceId: runtimeHostClientInstanceId,
+  profiles: runtimeHostProfileService,
+  runSetup: runtimeHostSshTerminal.runSetup,
+  ...(!app.isPackaged && process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE
+    ? {
+        setupPackage: {
+          kind: "development_archive" as const,
+          path: process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE,
+        },
+      }
+    : {}),
+  send: (snapshot) =>
+    mainWindowController.send("runtime-host-onboarding:changed", snapshot),
 });
 const defaultRuntimeHostRecovery = createRuntimeHostDefaultRecovery({
   defaultProfileId: () =>
@@ -1328,7 +1345,7 @@ async function closeRuntimeHostDesktop(): Promise<void> {
   permissionOverlay.dismiss();
   const results = await Promise.allSettled([
     runtimeHostManager?.close(),
-    runtimeHostSshTerminal.close(),
+    runtimeHostOnboarding.close().then(() => runtimeHostSshTerminal.close()),
     botRegistry.stopAll(),
     mcpManager.close(),
     mainWindowController.disposeBrowserViews(),

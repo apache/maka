@@ -25,6 +25,7 @@ import { getSettingsProjectsCopy } from "../locales/settings-projects-copy.js";
 import { PasswordInput } from "./password-input.js";
 import { settingsActionErrorMessage } from "./settings-error-copy.js";
 import { SettingsField, SettingsRow, SettingsSection } from "./settings-section.js";
+import { RuntimeHostOnboardingDialog } from './runtime-host-onboarding-dialog.js';
 
 type RemoteTransportKind = RuntimeHostRemoteTransport["kind"];
 
@@ -44,7 +45,9 @@ function createRemoteHostDraft() {
   };
 }
 
-export function RuntimeHostProfilesSection() {
+export function RuntimeHostProfilesSection(props: {
+  readonly onChooseProject?: (profileId: string) => void;
+}) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
   const mountedRef = useMountedRef();
@@ -53,6 +56,7 @@ export function RuntimeHostProfilesSection() {
     Awaited<ReturnType<typeof window.maka.runtimeHostProfiles.getSnapshot>>
   >();
   const [showAdd, setShowAdd] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
@@ -183,13 +187,22 @@ export function RuntimeHostProfilesSection() {
         title={copy.remoteTitle}
         description={copy.remoteDescription}
         action={
-          <Button
-            variant="secondary"
-            size="sm"
-            label={showAdd ? copy.cancel : copy.add}
-            isDisabled={switching}
-            onClick={toggleAdd}
-          />
+          <HStack gap={2} align="center">
+            <Button
+              variant="primary"
+              size="sm"
+              label={copy.addComputer}
+              isDisabled={switching}
+              onClick={() => setShowOnboarding(true)}
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              label={showAdd ? copy.cancel : copy.configureManually}
+              isDisabled={switching}
+              onClick={toggleAdd}
+            />
+          </HStack>
         }
       >
         {showAdd ? (
@@ -326,6 +339,14 @@ export function RuntimeHostProfilesSection() {
           </List>
         )}
       </SettingsSection>
+      <RuntimeHostOnboardingDialog
+        isOpen={showOnboarding}
+        onClose={() => {
+          setShowOnboarding(false);
+          void reload();
+        }}
+        onChooseProject={(profileId) => props.onChooseProject?.(profileId)}
+      />
     </>
   );
 }

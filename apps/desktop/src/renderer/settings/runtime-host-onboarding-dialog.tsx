@@ -1,0 +1,184 @@
+import { useEffect, useRef, useState } from 'react';
+import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
+import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
+import { Text } from '@astryxdesign/core/Text';
+import { Banner, Button, FormLayout, Spinner, TextInput, useUiLocale } from '@maka/ui';
+import type { DesktopRuntimeHostOnboardingSnapshot } from '../../preload/bridge-contract.js';
+import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
+
+export function RuntimeHostOnboardingDialog(props: {
+  readonly isOpen: boolean;
+  readonly onClose: () => void;
+  readonly onChooseProject: (profileId: string) => void;
+}) {
+  const locale = useUiLocale();
+  const copy = getSettingsProjectsCopy(locale).runtimeHost;
+  const revision = useRef(-1);
+  const [snapshot, setSnapshot] = useState<DesktopRuntimeHostOnboardingSnapshot>({
+    kind: 'idle',
+    revision: 0,
+  });
+  const [name, setName] = useState('');
+  const [destination, setDestination] = useState('');
+  const [sshPort, setSshPort] = useState('');
+
+  useEffect(() => {
+    if (!props.isOpen) return;
+    let disposed = false;
+    const accept = (next: DesktopRuntimeHostOnboardingSnapshot) => {
+      if (disposed || next.revision <= revision.current) return;
+      revision.current = next.revision;
+      setSnapshot(next);
+    };
+    const unsubscribe = window.maka.runtimeHostOnboarding.subscribe(accept);
+    void window.maka.runtimeHostOnboarding.getSnapshot().then(accept);
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [props.isOpen]);
+
+  const running = snapshot.kind === 'running';
+  const canStart = destination.trim().length > 0 && validOptionalPort(sshPort);
+
+  async function start(): Promise<void> {
+    const next = await window.maka.runtimeHostOnboarding.start({
+      destination: destination.trim(),
+      ...(name.trim() ? { name: name.trim() } : {}),
+      ...(sshPort.trim() ? { sshPort: Number(sshPort) } : {}),
+    });
+    if (next.revision > revision.current) {
+      revision.current = next.revision;
+      setSnapshot(next);
+    }
+  }
+
+  function close(): void {
+    if (running) void window.maka.runtimeHostOnboarding.cancel();
+    else void window.maka.runtimeHostOnboarding.reset();
+    props.onClose();
+  }
+
+  function reset(): Promise<void> {
+    return window.maka.runtimeHostOnboarding.reset();
+  }
+
+  return (
+    <Dialog
+      isOpen={props.isOpen}
+      onOpenChange={(open) => {
+        if (!open) close();
+      }}
+      purpose="form"
+      width={520}
+      maxHeight="calc(100dvh - 64px)"
+    >
+      <Layout
+        header={(
+          <DialogHeader
+            title={copy.setupTitle}
+            subtitle={copy.setupDescription}
+            onOpenChange={(open) => {
+              if (!open) close();
+            }}
+          />
+        )}
+        content={(
+          <LayoutContent padding={4}>
+            <FormLayout>
+              {snapshot.kind === 'failed' ? (
+                <Banner status="error" title={snapshot.message} />
+              ) : null}
+              {snapshot.kind === 'complete' ? (
+                <Banner status="success" title={copy.setupComplete} />
+              ) : null}
+              {running ? (
+                <div role="status" aria-live="polite" className="settingsRuntimeHostSetupProgress">
+                  <Spinner size="sm" />
+                  <Text type="body">{copy.setupPhase[snapshot.phase]}</Text>
+                </div>
+              ) : snapshot.kind !== 'complete' ? (
+                <>
+                  <TextInput
+                    label={copy.setupName}
+                    value={name}
+                    isDisabled={running}
+                    onChange={setName}
+                  />
+                  <TextInput
+                    label={copy.sshDestination}
+                    value={destination}
+                    placeholder="user@host.example"
+                    isDisabled={running}
+                    onChange={setDestination}
+                  />
+                  <TextInput
+                    label={copy.setupSshPort}
+                    value={sshPort}
+                    placeholder="22"
+                    isDisabled={running}
+                    onChange={setSshPort}
+                  />
+                </>
+              ) : null}
+            </FormLayout>
+          </LayoutContent>
+        )}
+        footer={(
+          <LayoutFooter hasDivider>
+            <div className="settingsRuntimeHostSshTerminalActions">
+              {snapshot.kind === 'complete' ? (
+                <>
+                  <Button variant="secondary" label={copy.setupDone} onClick={close} />
+                  <Button
+                    variant="primary"
+                    label={copy.setupChooseProject}
+                    onClick={() => {
+                      props.onChooseProject(snapshot.profileId);
+                      void reset();
+                      props.onClose();
+                    }}
+                  />
+                </>
+              ) : running ? (
+                <Button
+                  variant="secondary"
+                  label={copy.setupCancel}
+                  clickAction={() => window.maka.runtimeHostOnboarding.cancel()}
+                />
+              ) : snapshot.kind === 'failed' ? (
+                <>
+                  <Button variant="secondary" label={copy.setupCancel} onClick={close} />
+                  <Button
+                    variant="primary"
+                    label={copy.setupRetry}
+                    clickAction={async () => {
+                      await reset();
+                      await start();
+                    }}
+                  />
+                </>
+              ) : (
+                <>
+                  <Button variant="secondary" label={copy.setupCancel} onClick={close} />
+                  <Button
+                    variant="primary"
+                    label={copy.setupConnect}
+                    isDisabled={!canStart}
+                    clickAction={start}
+                  />
+                </>
+              )}
+            </div>
+          </LayoutFooter>
+        )}
+      />
+    </Dialog>
+  );
+}
+
+function validOptionalPort(value: string): boolean {
+  if (!value.trim()) return true;
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65_535;
+}

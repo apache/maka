@@ -54,6 +54,7 @@ export function ProjectsSettingsPage(props: {
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
   onRetryRuntimeHost(): Promise<void>;
+  onRemoteHostAdded(profileId: string): void;
 }) {
   const host = useOptionalRuntimeHostSettingsTarget();
   const locale = useUiLocale();
@@ -144,7 +145,7 @@ export function ProjectsSettingsPage(props: {
   if (!host) {
     return (
       <SettingsPage as="section" aria-label={copy.section}>
-        <RuntimeHostProfilesSection />
+        <RuntimeHostProfilesSection onChooseProject={props.onRemoteHostAdded} />
         <Banner
           status={props.runtimeHostStatus === 'error' ? 'error' : 'warning'}
           title={props.runtimeHostStatus === 'loading'
@@ -165,7 +166,7 @@ export function ProjectsSettingsPage(props: {
 
   return (
     <SettingsPage as="section" aria-label={copy.section}>
-      <RuntimeHostProfilesSection />
+      <RuntimeHostProfilesSection onChooseProject={props.onRemoteHostAdded} />
       {/* No section title: the page header already says 项目, and repeating it
           straight above the rows is the same duplicate-heading noise we
           removed from the skills page. The rule this page exists for lives in

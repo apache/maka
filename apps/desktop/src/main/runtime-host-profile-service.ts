@@ -41,6 +41,9 @@ export interface DesktopRuntimeHostProfileService {
   addAndEnable(
     input: DesktopRuntimeHostProfileAddInput,
   ): Promise<DesktopRuntimeHostProfileAddResult>;
+  addAndEnableVerified(
+    input: DesktopRuntimeHostProfileAddInput & { readonly credential: string },
+  ): Promise<{ readonly profileId: string; readonly profileName: string }>;
   setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
   setDefault(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
   remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
@@ -251,6 +254,78 @@ export function createDesktopRuntimeHostProfileService(input: {
         return error
           ? { kind: "unavailable", snapshot: await snapshot(), message: error.message }
           : { kind: "connected", snapshot: await snapshot() };
+      });
+    },
+    addAndEnableVerified(value) {
+      requireSaveInput(value);
+      return mutateProfiles(async () => {
+        const currentDocument = await catalog.read();
+        const existing = currentDocument.profiles.find(
+          (profile) => profile.rootId === value.profile.rootId,
+        );
+        if (existing) {
+          const profile = { ...existing, name: value.profile.name };
+          await catalog.save(profile, value.credential);
+          const target = await catalog.resolve(profile.id);
+          try {
+            await input.enable(target);
+            const current = await catalog.resolve(profile.id);
+            if (!sameResolvedRuntimeHostProfileTarget(current, target)) {
+              throw new Error("Runtime Host profile changed while it was connecting");
+            }
+            if (!preferences.enabledRemoteProfileIds.includes(profile.id)) {
+              const next = withEnabled(preferences, profile.id, true);
+              try {
+                await persistIfCurrentTarget(
+                  catalog,
+                  profilePath,
+                  preferencesPath,
+                  target,
+                  next,
+                );
+              } catch (error) {
+                await input.disable(profile.id).catch(() => undefined);
+                throw error;
+              }
+              preferences = next;
+            }
+            unavailable.delete(profile.id);
+            return { profileId: profile.id, profileName: profile.name };
+          } catch (error) {
+            unavailable.set(profile.id, asError(error));
+            throw error;
+          }
+        }
+
+        const document = await catalog.create(value.profile, value.credential);
+        const profile = document.profiles.find((candidate) => candidate.id === value.profile.id);
+        if (!profile) throw new Error("Runtime Host profile creation did not persist");
+        const target = { profile, credential: value.credential } as const;
+        try {
+          assertRootIsNotEnabled(target, preferences, document, input.states());
+          await input.enable(target);
+          const current = await catalog.resolve(profile.id);
+          if (!sameResolvedRuntimeHostProfileTarget(current, target)) {
+            throw new Error("Runtime Host profile changed while it was connecting");
+          }
+          const next = withEnabled(preferences, profile.id, true);
+          await persistIfCurrentTarget(catalog, profilePath, preferencesPath, target, next);
+          preferences = next;
+          unavailable.delete(profile.id);
+          return { profileId: profile.id, profileName: profile.name };
+        } catch (failure) {
+          const rollbackFailures: unknown[] = [];
+          await input.disable(profile.id).catch((error) => rollbackFailures.push(error));
+          await catalog.removeIfCurrent(target).catch((error) => rollbackFailures.push(error));
+          unavailable.delete(profile.id);
+          if (rollbackFailures.length > 0) {
+            throw new AggregateError(
+              [failure, ...rollbackFailures],
+              "Runtime Host setup failed and its incomplete profile could not be removed",
+            );
+          }
+          throw failure;
+        }
       });
     },
     setEnabled(profileId, isEnabled) {
