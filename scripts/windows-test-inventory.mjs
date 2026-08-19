@@ -223,7 +223,7 @@ function classifySkip(path, title, expression) {
 }
 
 export function excludesWindows(expression) {
-  const compact = expression.replaceAll(/\s+/gu, ' ');
+  const compact = stripBalancedOuterParentheses(expression.replaceAll(/\s+/gu, ' ').trim());
   // A Windows-only regression commonly uses `false` on Windows and a skip
   // reason elsewhere. Exempt only when that ternary is the complete skip
   // expression: a surrounding boolean expression may still skip on Windows.
@@ -238,6 +238,39 @@ export function excludesWindows(expression) {
     /process\.platform\s*===\s*['"]win32['"]/u.test(compact) ||
     /process\.platform\s*!==\s*['"]darwin['"]/u.test(compact)
   );
+}
+
+function stripBalancedOuterParentheses(expression) {
+  let compact = expression;
+  while (hasCompleteOuterParentheses(compact)) compact = compact.slice(1, -1).trim();
+  return compact;
+}
+
+function hasCompleteOuterParentheses(expression) {
+  if (!expression.startsWith('(') || !expression.endsWith(')')) return false;
+  let depth = 0;
+  let quote;
+  let escaped = false;
+  for (let index = 0; index < expression.length; index += 1) {
+    const char = expression[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') depth += 1;
+    else if (char === ')') {
+      depth -= 1;
+      if (depth === 0) return index === expression.length - 1;
+      if (depth < 0) return false;
+    }
+  }
+  return false;
 }
 
 function nearbyTestTitle(lines, skipIndex) {
