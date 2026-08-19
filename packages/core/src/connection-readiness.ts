@@ -27,6 +27,7 @@ import {
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
   providerAuthRequiresSecret,
+  providerDefaultsOf,
   type LlmConnection,
 } from './llm-connections.js';
 import { isModelExplicitlyUnsupportedForChat } from './model-catalog.js';
@@ -184,5 +185,5 @@ export function isRealConnection(connection: Pick<LlmConnection, 'providerType'>
 }
 
 function isKnownProvider(connection: Pick<LlmConnection, 'providerType'>): boolean {
-  return PROVIDER_DEFAULTS[connection.providerType] !== undefined;
+  return providerDefaultsOf(connection.providerType) !== undefined;
 }

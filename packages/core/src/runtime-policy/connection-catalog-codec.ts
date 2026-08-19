@@ -1,4 +1,9 @@
-import { PROVIDER_DEFAULTS, validateSlug, type ProviderType } from '../llm-connections.js';
+import {
+  PROVIDER_DEFAULTS,
+  providerDefaultsOf,
+  validateSlug,
+  type ProviderType,
+} from '../llm-connections.js';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   isThinkingLevel,
@@ -36,8 +41,6 @@ import {
   revisionValue,
   stringValue,
 } from './domain-codec.js';
-
-const PROVIDER_TYPES = new Set<string>(Object.keys(PROVIDER_DEFAULTS));
 
 export const CONNECTION_CATALOG_MAX_CONNECTIONS = 1_024;
 export const CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION = 2_048;
@@ -566,7 +569,7 @@ function decodeConnectionModelIds(value: unknown): string[] {
 }
 
 export function decodeProviderType(value: unknown): ProviderType {
-  if (typeof value !== 'string' || !PROVIDER_TYPES.has(value)) {
+  if (typeof value !== 'string' || providerDefaultsOf(value) === undefined) {
     throw domainError('connection provider type is not registered');
   }
   return value as ProviderType;

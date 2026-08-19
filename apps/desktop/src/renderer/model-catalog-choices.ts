@@ -7,6 +7,7 @@ import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
+  providerDefaultsOf,
 } from '@maka/core/llm-connections';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -141,7 +142,7 @@ function isModelConsumerConnection(connection: Pick<LlmConnection, 'enabled' | '
   // Unknown providerType (legacy seed, or a connection persisted on a branch
   // that registers a provider this build doesn't know) → not a model consumer.
   // Mirrors `isRealConnection` in connection-readiness.ts.
-  return connection.enabled && PROVIDER_DEFAULTS[connection.providerType] !== undefined;
+  return connection.enabled && providerDefaultsOf(connection.providerType) !== undefined;
 }
 
 function enabledProviderCounts(connections: readonly LlmConnection[]): Map<ProviderType, number> {

@@ -12,12 +12,14 @@ import {
   normalizeConnectionBaseUrl,
   persistedBaseUrl,
   providerAuthRequiresSecret,
+  providerDefaultsOf,
   providerAuthSupportsApiKey,
   reconcileConnectionAfterModelFetch,
   validateConnectionBaseUrl,
   type ProviderType,
 } from '../llm-connections.js';
 import { isRealConnection } from '../connection-readiness.js';
+import { buildChatModelChoices } from '../chat-model-choice.js';
 
 test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs', () => {
   assert.equal(validateConnectionBaseUrl(undefined), null);
@@ -64,6 +66,7 @@ test('unknown provider ids fail closed without breaking persisted connections', 
   // answer to "can this connection be used?".
   assert.throws(() => backendKindOf({ providerType: unknown }), /Unknown providerType/);
   assert.equal(isRealConnection({ providerType: unknown }), false);
+  assert.equal(providerDefaultsOf(unknown), undefined);
   assert.equal(
     effectiveBaseUrl({ providerType: unknown, baseUrl: 'https://example.test/v1' }),
     'https://example.test/v1',
@@ -197,5 +200,33 @@ test('the alias table is selected by provider and names only renames', () => {
     assert.ok(offered.includes(target), `${target} is not offered by the curated inventory`);
     // A withdrawn model must be repaired against the live list, never rewritten.
     assert.notEqual(lookupModelMetadata('anthropic', renamed).lifecycle, 'deprecated');
+  }
+});
+
+test('provider recognition does not resolve inherited object members', () => {
+  // `PROVIDER_DEFAULTS` is an object literal, so plain indexing answers truthy
+  // for `__proto__` / `toString` / `constructor` and they would read as
+  // registered providers. #3211 made `backendKindOf` throw for unknown types,
+  // which turns that leak from a wrong-but-closed `'fake'` into an `undefined`
+  // masquerading as a BackendKind — so recognition owns the own-property check.
+  for (const inherited of ['__proto__', 'toString', 'constructor', 'valueOf']) {
+    const providerType = inherited as ProviderType;
+    assert.equal(providerDefaultsOf(inherited), undefined, inherited);
+    assert.equal(isRealConnection({ providerType }), false, inherited);
+    assert.throws(() => backendKindOf({ providerType }), /Unknown providerType/, inherited);
+    assert.deepEqual(
+      buildChatModelChoices([
+        {
+          slug: 'inherited',
+          name: 'inherited',
+          providerType,
+          enabled: true,
+          defaultModel: 'm',
+          models: [{ id: 'm' }],
+        } as unknown as Parameters<typeof buildChatModelChoices>[0][number],
+      ]),
+      [],
+      inherited,
+    );
   }
 });

@@ -349,6 +349,22 @@ export interface ConnectionTestResult {
 
 export const PROVIDER_DEFAULTS = PROVIDER_REGISTRY;
 
+/**
+ * The registry entry for a provider, or `undefined` when this build does not
+ * register one.
+ *
+ * Sole owner of the question "is this `providerType` one we know". Plain
+ * indexing cannot answer it: `PROVIDER_DEFAULTS` is an object literal, so
+ * `PROVIDER_DEFAULTS['__proto__']` and `['toString']` resolve to inherited
+ * members and read as registered providers. Every recognition site goes
+ * through here rather than repeating the own-property check.
+ */
+export function providerDefaultsOf(providerType: string): ProviderDefaults | undefined {
+  return Object.hasOwn(PROVIDER_DEFAULTS, providerType)
+    ? PROVIDER_DEFAULTS[providerType as ProviderType]
+    : undefined;
+}
+
 export function defaultEnabledModelIdsWhenOmitted(
   providerType: ProviderType,
 ): readonly string[] | undefined {
@@ -382,7 +398,7 @@ export function providerSupportsModelDiscovery(providerType: ProviderType): bool
  * / `isConnectionReady` from `connection-readiness.ts`.
  */
 export function backendKindOf(c: Pick<LlmConnection, 'providerType'>): BackendKind {
-  const defaults = PROVIDER_DEFAULTS[c.providerType];
+  const defaults = providerDefaultsOf(c.providerType);
   if (!defaults) throw new Error(`Unknown providerType: ${c.providerType}`);
   return defaults.backendKind;
 }

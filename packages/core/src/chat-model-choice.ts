@@ -3,8 +3,8 @@ import { buildConnectionModelCatalogEntries } from './model-catalog.js';
 import { thinkingVariantsForConnection, type ThinkingLevel } from './model-thinking.js';
 import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
-  PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
+  providerDefaultsOf,
   type LlmConnection,
   type ProviderType,
 } from './llm-connections.js';
@@ -39,7 +39,7 @@ export function buildChatModelChoices(connections: readonly LlmConnection[]): Ch
   const choices: ChatModelChoice[] = [];
   for (const rawConnection of connections) {
     const connection = normalizeOpenAiCodexConnection(rawConnection);
-    const provider = PROVIDER_DEFAULTS[connection.providerType];
+    const provider = providerDefaultsOf(connection.providerType);
     if (!connection.enabled || !provider) {
       continue;
     }
