@@ -93,9 +93,12 @@ export async function verifyPackagedWindowsApp(
     // which cannot be required to carry resources added after it shipped. A
     // caller verifying a *current* build under a different version (the
     // auto-update gate's upgraded install) overrides these to true so the
-    // sandbox and disclaimer checks are not silently skipped.
-    requireWindowsSandbox = expectedVersion === undefined,
-    requireDisclaimer = expectedVersion === undefined,
+    // sandbox and disclaimer checks are not silently skipped. `== null`
+    // matches the `expectedVersion ?? desktopManifest.version` fallback below,
+    // so a `null` cannot disable these checks while also meaning "no expected
+    // version".
+    requireWindowsSandbox = expectedVersion == null,
+    requireDisclaimer = expectedVersion == null,
   } = {},
 ) {
   const desktopManifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));

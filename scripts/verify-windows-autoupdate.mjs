@@ -72,7 +72,10 @@ async function startFeedServer(files) {
   }
   const server = createServer((request, response) => {
     const method = request.method ?? 'GET';
-    const pathName = decodeURIComponent(new URL(request.url ?? '/', 'http://127.0.0.1').pathname);
+    // The raw request target is matched, before any decoding and including
+    // any query: `/%6catest.yml` or `/latest.yml?cache=1` must count as
+    // unexpected, or "exact root-level paths" would be an overclaim.
+    const pathName = request.url ?? '/';
     const record = { method, path: pathName, status: 0 };
     requests.push(record);
     const known = [...files.keys()].some((name) => `/${name}` === pathName);
@@ -333,8 +336,9 @@ export async function verifyWindowsAutoupdate(
     // The differential probe is a deterministic part of the flow: the updater
     // asks for the running version's blockmap before deciding between a
     // differential and a full download. Both outcomes are valid production
-    // shapes; the probe itself must have happened, and which path was taken is
-    // logged as evidence.
+    // shapes; the probe itself must have happened. The mode is reported from
+    // the installer transfer responses themselves — a served previous blockmap
+    // alone proves nothing about which download the updater then performed.
     const oldBlockmapProbe = feed.requests.find(
       (request) => request.path === `/${basename(candidateInstaller)}.blockmap`,
     );
@@ -343,10 +347,13 @@ export async function verifyWindowsAutoupdate(
         `The updater never probed the previous blockmap for a differential download: ${JSON.stringify(feed.requests)}`,
       );
     }
+    const installerResponses = feed.requests
+      .filter((request) => request.method === 'GET' && request.path === `/${nextInstallerName}`)
+      .map((request) => request.status);
     step(
-      oldBlockmapProbe.status === 200
-        ? 'differential download path exercised (previous blockmap served)'
-        : 'full-download fallback exercised (previous blockmap absent)',
+      `installer transfer observed: previous blockmap ${oldBlockmapProbe.status}, ` +
+        `installer responses [${installerResponses.join(', ')}] ` +
+        `(${installerResponses.includes(206) ? 'ranged/differential transfer' : 'single full download'})`,
     );
     if (feed.unexpectedCount() > 0) {
       throw new Error(`The app requested unexpected feed paths: ${JSON.stringify(feed.requests)}`);
@@ -416,9 +423,14 @@ export async function verifyWindowsAutoupdate(
     await waitForInstalledProcessesToExit(installDirectory);
 
     step('running the full packaged smoke against the upgraded install');
+    // The sandbox probe writes its manifest into workingDirectory before the
+    // renderer smoke would have created any subdirectories, so the directory
+    // must exist first.
+    const smokeDirectory = join(temporaryDirectory, 'smoke');
+    await mkdir(smokeDirectory, { recursive: true });
     const upgradedStatusExpression = 'window.maka.app.updateStatus()';
     await verifyPackagedWindowsApp(installDirectory, {
-      workingDirectory: join(temporaryDirectory, 'smoke'),
+      workingDirectory: smokeDirectory,
       expectedVersion: nextVersion,
       // The upgraded install is a current build (only its version is bumped),
       // so it gets the full sandbox and disclaimer verification a released
