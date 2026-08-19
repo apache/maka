@@ -118,6 +118,7 @@ Before approval:
 Immediately before approval, recheck the live product authority recorded by the Stage run:
 
 ```sh
+set -eu
 git fetch --no-tags origin main:refs/remotes/origin/main "refs/tags/v$version:refs/tags/v$version"
 source_commit=replace-with-stage-recorded-commit
 tag_commit="$(git rev-parse "refs/tags/v$version^{commit}")"

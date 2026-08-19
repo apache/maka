@@ -113,6 +113,7 @@ npm stage download "$stage_id" --registry https://registry.npmjs.org/
 批准前的最后一步，重新检查 Stage run 记录的 live 产品权威：
 
 ```sh
+set -eu
 git fetch --no-tags origin main:refs/remotes/origin/main "refs/tags/v$version:refs/tags/v$version"
 source_commit=replace-with-stage-recorded-commit
 tag_commit="$(git rev-parse "refs/tags/v$version^{commit}")"

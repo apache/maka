@@ -88,14 +88,14 @@ boundary.
 
 ## Acceptance on a Windows x64 machine
 
-Download the installer and checksum through a browser from the same Draft.
+Download the installer, Windows Desktop ZIP, and both checksum files through a browser from the same Draft.
 
-1. Verify the SHA-256 in PowerShell.
-2. Run the installer and confirm the expected unsigned-publisher SmartScreen flow.
-3. Launch Maka from the Start menu, configure a model connection, send one prompt, and run one
-   representative file-tool task.
-4. Run one terminal task and confirm packaged `node-pty` behavior.
-5. Confirm the documented Computer Use limitation remains accurate.
+1. Verify both SHA-256 checksums in PowerShell.
+2. Expand the ZIP and launch its Maka executable once to confirm the portable artifact starts.
+3. Run the installer and confirm the expected unsigned-publisher SmartScreen flow.
+4. Launch Maka from the Start menu, configure a model connection, send one prompt, and run one representative file-tool task.
+5. Run one terminal task and confirm packaged `node-pty` behavior.
+6. Confirm the documented Computer Use limitation remains accurate.
 
 Publish only after both independent-machine acceptance passes. If any required artifact or
 acceptance step fails, keep the Draft unpublished, fix the issue, increment the root product
