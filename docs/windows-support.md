@@ -1,6 +1,6 @@
 # Windows support baseline
 
-Windows is an active enablement target, not a fully supported Maka platform yet. The CLI and Electron desktop application can run from source, and release workflows produce a verified unsigned Windows x64 preview. The x64 package includes an AppContainer sandbox for restricted managed execution; signing, the complete adversarial sandbox matrix, automatic updates, and computer-use guarantees remain incomplete. Progress is tracked in [GitHub issue #2142](https://github.com/maka-agent/maka-agent/issues/2142).
+Windows is an active enablement target, not a fully supported Maka platform yet. The CLI and Electron desktop application can run from source, and release workflows produce a verified unsigned Windows x64 preview. The x64 package includes an AppContainer sandbox for restricted managed execution, and automatic updates are verified end to end in CI on the unsigned preview channel; signing, the complete adversarial sandbox matrix, and computer-use guarantees remain incomplete. Progress is tracked in [GitHub issue #2142](https://github.com/maka-agent/maka-agent/issues/2142).
 
 ## Install the Windows x64 preview
 
@@ -25,8 +25,14 @@ Only use Windows assets attached to a Maka GitHub Release. The NSIS installer is
 
 The release gate installs a pinned v0.1.9 build, fully smokes it, upgrades the same installation to
 the candidate, fully smokes the candidate, waits for installed processes to exit, and runs the real
-uninstaller. This proves a closed-app upgrade and uninstall path. It does not prove automatic update,
-running-app upgrade, persisted business-data migration, or rollback after a mid-install failure.
+uninstaller. A second gate proves the automatic, running-app upgrade path: the installed candidate,
+running, discovers a newer build through its packaged electron-updater against a loopback test feed,
+downloads it in the background, hands off to the NSIS installer, relaunches as the new version, and
+passes the full packaged smoke — with the feed requests, every updater state, and the final version
+asserted individually. What is still not proven: update signature verification (no Authenticode
+certificate yet — the feed configuration for the production GitHub channel is pinned by unit tests
+and exercised routinely on real releases instead), persisted business-data migration, and rollback
+after a mid-install failure.
 
 To uninstall, use **Settings → Apps → Installed apps → Maka → Uninstall**. Back up any important
 workspace data first; the preview does not yet claim installer rollback or migration guarantees.
@@ -51,8 +57,11 @@ workspace data first; the preview does not yet claim installer rollback or migra
    `winget install BurntSushi.ripgrep.MSVC`，并在 `PATH` 更新后重启 Maka。
 
 发布门禁会安装固定的 v0.1.9、执行完整 smoke、在同一目录升级候选版本、再次完整 smoke、等待安装目录内
-进程退出，并运行真实卸载器。这证明关闭应用后的升级与卸载路径，不证明自动更新、运行中升级、业务数据迁移，
-也不证明安装中途失败后的 rollback。
+进程退出，并运行真实卸载器。另一个门禁证明**运行中的自动更新路径**：已安装且正在运行的候选版本通过打包的
+electron-updater 从 loopback 测试 feed 发现新版本、后台下载、交接给 NSIS 安装器、以新版本自动重启并通过
+完整打包 smoke——feed 请求、每个 updater 状态与最终版本均逐项断言。仍未证明的是：更新签名校验（尚无
+Authenticode 证书；生产 GitHub 通道的 feed 配置由单测钉死，并在每次真实 release 中例行使用）、业务数据
+迁移，以及安装中途失败后的 rollback。
 
 卸载入口为 **设置 → 应用 → 已安装的应用 → Maka → 卸载**。预览版尚未承诺安装器 rollback 或数据迁移，
 请先备份重要 workspace 数据。
@@ -69,7 +78,7 @@ The initial target is a native Windows 11 x64 development environment with:
 - WebView/runtime components installed by a current Windows 11 installation;
 - Windows Developer Mode or elevation only for tests that create file symlinks. Normal CLI and desktop startup must not require either.
 
-Windows 10, Windows on Arm, automatic updates, the final sandbox support declaration, and computer-use are not covered by the current support target. Packaged installation is available only as the unsigned Windows 11 x64 preview described above.
+Windows 10, Windows on Arm, signed automatic updates, the final sandbox support declaration, and computer-use are not covered by the current support target. Packaged installation is available only as the unsigned Windows 11 x64 preview described above; its automatic-update path is CI-verified but unsigned.
 
 ## Reproducible checks
 
@@ -148,6 +157,9 @@ The root test timeout is tracked separately from individual test failures. Phase
 - Restricted managed profiles use the packaged AppContainer broker when available and fail closed
   when the native capability or requested policy is unavailable.
 - Computer-use has no Windows backend.
-- The Windows x64 NSIS installer is unsigned and there is no supported automatic-update channel.
+- The Windows x64 NSIS installer is unsigned. The in-app automatic-update path (electron-updater →
+  NSIS handoff → relaunch) is verified end to end in CI against a loopback feed; the production
+  GitHub feed configuration is pinned by unit tests. Updates are not signature-verified until an
+  Authenticode certificate lands.
 
 Do not describe Windows as released or fully supported until the support criteria in issue #2142 are complete for the claimed support tier.
