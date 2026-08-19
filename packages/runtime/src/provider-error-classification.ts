@@ -727,8 +727,9 @@ export function isContextOverflowErrorText(text: string): boolean {
 /**
  * Classifies a provider error by DESCENDING evidence strength over the
  * normalized evidence (Error, string, or plain stream-error-part object):
- * abort → structured account state → 402 → 429 → 401 (numeric fields,
- * never substrings) → the provider's structured overflow code → bare 413
+ * abort wrapper → structured account state → the provider's structured
+ * overflow code → text/status fallbacks (abort, 402, 429, 401; numeric fields,
+ * never substrings) → bare 413
  * (HTTP: request entity too large — itself input-side evidence, Cerebras sends it with no body) →
  * vetoable free-text overflow relations → generic 5xx → weak word
  * heuristics. Specific overflow evidence outranks a generic 5xx because
@@ -753,6 +754,9 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   if (structuredCodes.some((value) => PROVIDER_RATE_LIMIT_CODES.has(value))) return 'RateLimit';
   if (structuredCodes.some((value) => PROVIDER_UNAVAILABLE_CODES.has(value)))
     return 'ProviderUnavailable';
+  // The provider's structured context code is unconditional input-overflow
+  // evidence. It outranks outer transport status and message fallbacks.
+  if (structuredCodes.some((c) => CONTEXT_OVERFLOW_PROVIDER_CODES.has(c))) return 'ContextLength';
   if (text.includes('abort')) return 'Abort';
   if (statusCode === '402' || code === '402') return 'ProviderBilling';
   if (statusCode === '429' || code === '429') return 'RateLimit';
@@ -760,9 +764,6 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   // A bare 403 is intentionally unknown: providers use it for valid-key
   // permission failures, guardrails, subscription limits, and occasionally
   // authentication. The provider's bounded diagnostic remains available.
-  // Structured provider evidence: the parsed error JSON's code/type is the
-  // only unconditional signal for a context overflow.
-  if (structuredCodes.some((c) => CONTEXT_OVERFLOW_PROVIDER_CODES.has(c))) return 'ContextLength';
   if (statusCode === '413' || code === '413') return 'ContextLength';
   // Free-text overflow relations on the composite text, veto-first inside.
   if (isContextOverflowErrorText(text)) return 'ContextLength';

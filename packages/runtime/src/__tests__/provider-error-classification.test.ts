@@ -90,6 +90,23 @@ describe('Provider error classification', () => {
     }
   });
 
+  test('ranks structured context overflow above numeric and text fallbacks', () => {
+    const cases = [
+      Object.assign(new Error('provider rejected the request'), {
+        statusCode: 429,
+        data: { error: { code: 'context_length_exceeded' } },
+      }),
+      Object.assign(new Error('request aborted because the prompt is too long'), {
+        data: { error: { code: 'context_length_exceeded' } },
+      }),
+    ];
+
+    for (const error of cases) {
+      assert.equal(classifyError(error), 'ContextLength');
+      assert.deepEqual(providerRetryMetadata(error), { retryable: false });
+    }
+  });
+
   test('durable diagnostics distinguish the provider failure classes used by fail-open handling', () => {
     const cases: Array<[unknown, string]> = [
       [Object.assign(new Error('bad request'), { statusCode: 400 }), 'RequestRejected'],
