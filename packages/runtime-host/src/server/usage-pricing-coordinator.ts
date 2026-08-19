@@ -80,6 +80,8 @@ export class HostUsagePricingCoordinator {
   readonly #activation: RuntimePolicyActivationGate;
   readonly #onCommittedPricingMutation: () => void;
   #poisonDrainRequested = false;
+  #activeUsageQueries = 0;
+  #usageRepairTask: Promise<CanonicalUsageRepairStats> | undefined;
 
   constructor(
     stores: InteractiveUsageStoresWriter,
@@ -108,14 +110,13 @@ export class HostUsagePricingCoordinator {
   }
 
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
+    this.#activeUsageQueries += 1;
     try {
-      // One bounded repair pass runs before the fence. The fence itself only
-      // reads: repair writes advance the snapshot revision, and fencing them in
-      // would retry forever whenever more than one pass's worth of runs remain.
-      const repair = await repairCanonicalUsageProjection(
-        this.#stores,
-        input.query.sessionId,
-      );
+      // Concurrent Desktop views share one bounded repair pass and therefore
+      // one qualified pending-repair observation. The fence itself only reads:
+      // repair writes advance the snapshot revision, and fencing them in would
+      // retry forever whenever more than one pass's worth of runs remain.
+      const repair = await this.#sharedUsageRepair(input.query.sessionId);
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const before = await this.#stores.usageSnapshotRevision();
         const result = await this.#queryUsageResult(input, before, repair);
@@ -142,7 +143,15 @@ export class HostUsagePricingCoordinator {
         };
       }
       return this.#mapReadFailure<'usage.query'>(error, 'Usage authority');
+    } finally {
+      this.#activeUsageQueries -= 1;
+      if (this.#activeUsageQueries === 0) this.#usageRepairTask = undefined;
     }
+  }
+
+  #sharedUsageRepair(sessionId: string | undefined): Promise<CanonicalUsageRepairStats> {
+    this.#usageRepairTask ??= repairCanonicalUsageProjection(this.#stores, sessionId);
+    return this.#usageRepairTask;
   }
 
   async #queryUsageResult(

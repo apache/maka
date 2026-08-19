@@ -50,6 +50,7 @@ import {
   type EffectivePricingEntry,
   type LlmUsageLogProjection,
   type ToolUsageLogProjection,
+  type UsageQueryInput,
 } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostUsagePricingCoordinator } from '../server/usage-pricing-coordinator.js';
