@@ -1,7 +1,7 @@
 /**
- * Connection readiness — pure, sync judgment shared between the
- * send-path (chat-readiness.ts) and the onboarding state machine
- * (onboarding.ts). PR110a.
+ * Connection readiness — pure, sync judgment shared by task-submission
+ * readiness, the onboarding state machine, and legacy-session health
+ * projection.
  *
  * Source of truth for "is this LlmConnection ready to send a message
  * right now?". Caller is responsible for resolving async inputs
@@ -34,8 +34,8 @@ import { isModelExplicitlyUnsupportedForChat } from './model-catalog.js';
 /**
  * Canonical reasons why an LlmConnection is not ready to send.
  *
- * Moved from `apps/desktop/src/main/chat-readiness.ts` to keep the
- * taxonomy stable across the send path and onboarding surfaces.
+ * Kept in core so the taxonomy stays stable across readiness and onboarding
+ * surfaces.
  * Adding a new reason MUST update both this enum AND the matching
  * `OnboardingState` mapping in `onboarding.ts`.
  */
@@ -145,8 +145,8 @@ export function isConnectionReady(input: IsConnectionReadyInput): IsConnectionRe
  * the enabled list and the default falls back to the first servable
  * model, so the readiness gate below judges the models that would
  * actually be used. Pure; returns the input unchanged for non-Codex
- * providers. Moved from the desktop send path (#1038) so the send gate
- * and the session send projection share one normalization.
+ * providers. Moved from the former desktop send gate (#1038) so onboarding
+ * and the session compatibility projection share one normalization.
  */
 export function normalizeOpenAiCodexConnection(connection: LlmConnection): LlmConnection {
   if (connection.providerType !== 'openai-codex') return connection;

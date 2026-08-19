@@ -103,7 +103,7 @@ export function createAppShellSessionStartActions(deps: {
       // is not the other one":
       //
       //   workspace_unavailable → `SESSION_WORKSPACE_UNAVAILABLE:` (project-context-root.ts)
-      //   setup_required        → `NO_REAL_CONNECTION:<reason>:`   (chat-readiness.ts)
+      //   setup_required        → `NO_REAL_CONNECTION:<reason>:`   (Runtime Host execution composition)
       //
       // Anything else is a genuine failure (storage, disk, a bug) and must
       // not be silently relabelled as "your setup is incomplete".

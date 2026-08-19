@@ -110,7 +110,7 @@ export function registerRuntimeHostConfigIpc(
   );
 }
 
-async function gatherRuntimeHostConfig(
+export async function gatherRuntimeHostConfig(
   categories: readonly ConfigCategory[],
   deps: RuntimeHostConfigIpcDeps,
 ) {
@@ -173,18 +173,14 @@ function runtimeHostTransferDeps(
       save: (connection) => saveConnection(deps.client, connection),
     },
     settingsStore: {
-      get: deps.getSettings,
       update: deps.updateSettings,
     },
     credentialStore: {
-      getSecret: async () => null,
       setSecret: (slug, kind, value) =>
         saveConnectionCredential(deps.client, slug, kind, value),
     },
-    readMemory: () => readRuntimeHostMemoryDocument(deps.client, 'memory'),
     writeMemory: (content) =>
       replaceRuntimeHostMemoryDocument(deps.client, content),
-    appVersion: deps.appVersion,
   };
 }
 
