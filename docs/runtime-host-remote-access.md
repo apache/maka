@@ -4,7 +4,28 @@
 
 Maka Desktop, TUI, and CLI can connect to a Runtime Host through TLS, SSH, or explicitly enabled plaintext WebSocket.
 
-## Prepare the Host
+## Set up a Linux Host
+
+On a Linux machine with Node.js 22.19 or newer and a working systemd user manager, the released CLI
+can install and verify a persistent Runtime Host in one command:
+
+```sh
+npx --yes maka-agent@next runtime-host setup \
+  --principal my-desktop \
+  --preset desktop-client \
+  --root /srv/maka \
+  --project-root projects=/srv/projects
+```
+
+Use a stable identifier for `--principal`; rerunning the command replaces that Client's credential
+instead of accumulating credentials. The command installs its exact Maka package into a managed
+directory, starts a loopback-only service, verifies the new credential, and then prints the connection
+details once. Use `terminal-client` for TUI or CLI.
+
+Run `maka runtime-host service uninstall` on the Host to remove the service and managed package. The
+State Root and Project data are retained.
+
+## Manual Host setup
 
 Build Maka on the remote machine, choose a persistent State Root, and register each Project remote Clients may use:
 
@@ -37,7 +58,7 @@ npm --workspace maka-agent exec -- maka runtime-host access issue \
 
 Use `terminal-client` for TUI or CLI. The command prints the credential once.
 
-On Linux with a systemd user manager, the released CLI can keep the loopback Host running after the
+On Linux with a systemd user manager, a persistent CLI installation can keep the loopback Host running after the
 SSH session ends:
 
 ```sh

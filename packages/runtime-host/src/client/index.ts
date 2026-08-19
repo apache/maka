@@ -71,6 +71,13 @@ export { startRuntimeHostCapabilityProviderService } from './capability-provider
 export { loadOrCreateRuntimeHostClientInstanceId } from './client-instance-identity.js';
 export { consumeAccessCredentialDelivery } from '../control/access-credential-delivery.js';
 export {
+  RUNTIME_HOST_SETUP_FRAME_PREFIX,
+  decodeRuntimeHostSetupFrame,
+  encodeRuntimeHostSetupFrame,
+  type RuntimeHostSetupFrame,
+  type RuntimeHostSetupPhase,
+} from './setup-frame.js';
+export {
   createOAuthPresentationClientProvider,
   type OAuthPresentationBackend,
 } from './oauth-presentation.js';

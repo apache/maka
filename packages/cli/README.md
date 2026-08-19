@@ -84,6 +84,19 @@ Do not use a bare `npm update --global maka-agent` for beta upgrades: global npm
 `latest` tag and may select a different release line. After a stable release is available, install it
 with `npm install --global maka-agent@latest`.
 
+## Remote Runtime Host setup
+
+To set up a persistent remote Runtime Host from an exact released package on Linux:
+
+```sh
+npx --yes maka-agent@next runtime-host setup \
+  --principal my-client \
+  --preset terminal-client
+```
+
+Rerunning setup safely rotates that Client credential. The service no longer depends on the temporary
+`npx` cache after setup succeeds.
+
 ## Uninstall
 
 ```sh

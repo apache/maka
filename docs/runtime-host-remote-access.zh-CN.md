@@ -4,7 +4,23 @@
 
 Maka Desktop、TUI 和 CLI 可以通过 TLS、SSH 或明确启用的明文 WebSocket 连接 Runtime Host。
 
-## 准备 Host
+## 设置 Linux Host
+
+在具备 Node.js 22.19 或更新版本以及可用 systemd user manager 的 Linux 机器上，发布版 CLI 可以用一个命令安装并验证持久 Runtime Host：
+
+```sh
+npx --yes maka-agent@next runtime-host setup \
+  --principal my-desktop \
+  --preset desktop-client \
+  --root /srv/maka \
+  --project-root projects=/srv/projects
+```
+
+`--principal` 应使用稳定标识；重复执行会替换该 Client 的 credential，不会不断累积 credential。命令会把当前精确版本的 Maka 安装到托管目录，启动仅监听 loopback 的服务，验证新 credential，然后只显示一次连接信息。TUI 或 CLI 使用 `terminal-client`。
+
+在 Host 上运行 `maka runtime-host service uninstall` 会删除 service 与托管 package，但保留 State Root 和 Project 数据。
+
+## 手动设置 Host
 
 在远程机器构建 Maka，选择持久的 State Root，并注册允许 remote Client 使用的 Project：
 
@@ -37,7 +53,7 @@ npm --workspace maka-agent exec -- maka runtime-host access issue \
 
 TUI 或 CLI 使用 `terminal-client`。命令只显示 credential 一次。
 
-在使用 systemd user manager 的 Linux 上，发布版 CLI 可以让 loopback Host 在 SSH 会话结束后
+在使用 systemd user manager 的 Linux 上，持久安装的 CLI 可以让 loopback Host 在 SSH 会话结束后
 继续运行：
 
 ```sh

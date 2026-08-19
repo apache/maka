@@ -168,6 +168,7 @@ test('credential revocation during WebSocket upgrade cannot admit stale authorit
       });
     },
     issue: async () => assert.fail('Credential issue is not expected'),
+    replace: async () => assert.fail('Credential replacement is not expected'),
     revoke: async () => assert.fail('Credential revoke is not expected'),
     subscribeRevocations: () => () => undefined,
   };

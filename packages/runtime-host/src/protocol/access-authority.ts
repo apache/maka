@@ -34,6 +34,9 @@ export interface AccessCredentialIssueResult {
   readonly canUseHostPaths: boolean;
 }
 
+export type AccessCredentialReplaceInput = AccessCredentialIssueInput;
+export type AccessCredentialReplaceResult = AccessCredentialIssueResult;
+
 export interface AccessCredentialRevokeInput {
   readonly credentialId: string;
 }
@@ -47,6 +50,17 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
   'access.credential.issue': defineOperation<
     AccessCredentialIssueInput,
     AccessCredentialIssueResult,
+    (typeof ACCESS_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: ACCESS_ERRORS,
+    decodeInput: decodeAccessCredentialIssueInput,
+    decodeOutput: decodeAccessCredentialIssueResult,
+  }),
+  'access.credential.replace': defineOperation<
+    AccessCredentialReplaceInput,
+    AccessCredentialReplaceResult,
     (typeof ACCESS_ERRORS)[number]
   >({
     mode: 'command',

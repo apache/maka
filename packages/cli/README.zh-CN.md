@@ -78,6 +78,18 @@ Beta 升级不要使用不带 tag 的 `npm update --global maka-agent`：npm 的
 `latest`，可能选中不同的发布线。稳定版发布后，使用
 `npm install --global maka-agent@latest` 安装。
 
+## 设置远程 Runtime Host
+
+在 Linux 上从精确的发布 package 设置持久 remote Runtime Host：
+
+```sh
+npx --yes maka-agent@next runtime-host setup \
+  --principal my-client \
+  --preset terminal-client
+```
+
+重复设置会安全轮换该 Client credential。设置成功后，service 不再依赖临时 `npx` cache。
+
 ## 卸载
 
 ```sh

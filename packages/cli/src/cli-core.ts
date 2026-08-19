@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { formatMakaResumeHint } from './cli-invocation.js';
 import { resolveMakaDataRoots } from './workspace-root.js';
 import { parseRuntimeHostCommand, type RuntimeHostCliCommand } from './runtime-host-cli.js';
@@ -100,6 +101,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} -p ...       Alias for ${cliCommand} run`,
     `  ${cliCommand} eval ...     Run one declarative multi-arm experiment`,
     `  ${cliCommand} runtime-host serve [options]  Run a Runtime Host service`,
+    `  ${cliCommand} runtime-host setup --principal <id> --preset <desktop-client|terminal-client> [options]`,
     `  ${cliCommand} runtime-host service install [options]`,
     `  ${cliCommand} runtime-host service status|start|stop|restart|uninstall [--json]`,
     `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
@@ -142,6 +144,15 @@ function helpText(cliCommand: string): string {
     '  --websocket-port <port>       Persist a loopback port (chosen automatically by default)',
     '  --websocket-path <path>       Persist the upgrade path (default: /runtime-host)',
     '  --json                        Emit a machine-readable result',
+    '',
+    'Managed Runtime Host setup options (Linux):',
+    '  --principal <id>              Stable Client pairing identity',
+    '  --preset <name>               Pair a desktop-client or terminal-client',
+    '  --root <path>                 Select the canonical data root',
+    '  --project-root <label>=<path> Publish an absolute directory root (repeatable)',
+    '  --websocket-port <port>       Persist a loopback port (chosen automatically by default)',
+    '  --websocket-path <path>       Persist the upgrade path (default: /runtime-host)',
+    '  --json                        Emit framed machine-readable progress and result records',
     '',
     'Runtime Host access issue options:',
     '  --root <path>                 Select the canonical data root',
@@ -204,6 +215,24 @@ export async function runMakaCli(
           ? { projectDirectoryRoots: command.projectDirectoryRoots }
           : {}),
         ...(command.websocket ? { websocket: command.websocket } : {}),
+      });
+    }
+    case 'runtime-host-setup': {
+      const { runRuntimeHostSetupCli } = await import('./runtime-host-setup-command.js');
+      return runRuntimeHostSetupCli({
+        json: command.json,
+        clientDataRoot: dataRoots.clientDataRoot,
+        defaultRootPath: dataRoots.workspaceRoot,
+        sourcePackageRoot: fileURLToPath(new URL('..', import.meta.url)),
+        version,
+        principalId: command.principalId,
+        preset: command.preset,
+        ...(command.rootPath ? { rootPath: command.rootPath } : {}),
+        ...(command.projectDirectoryRoots
+          ? { projectDirectoryRoots: command.projectDirectoryRoots }
+          : {}),
+        ...(command.websocketPort === undefined ? {} : { websocketPort: command.websocketPort }),
+        ...(command.websocketPath ? { websocketPath: command.websocketPath } : {}),
       });
     }
     case 'runtime-host-service-manage': {

@@ -48,6 +48,22 @@ describe('managed Runtime Host service', () => {
       json: true,
     });
     assert.equal(parseRuntimeHostCommand(['service', 'status', '--root', '/tmp']).kind, 'error');
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'setup',
+        '--principal',
+        'desktop.client-1',
+        '--preset',
+        'desktop-client',
+        '--json',
+      ]),
+      {
+        kind: 'runtime-host-setup',
+        json: true,
+        principalId: 'desktop.client-1',
+        preset: 'desktop-client',
+      },
+    );
   });
 
   it('installs, reports, and cleanly uninstalls while retaining the State Root', async (t) => {

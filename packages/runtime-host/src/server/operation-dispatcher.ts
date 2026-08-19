@@ -244,6 +244,13 @@ export function createUnavailableAccessAuthorityOperationHandlers(): AccessAutho
         message: 'Runtime Host access credentials are unavailable',
       },
     }),
+    'access.credential.replace': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host access credentials are unavailable',
+      },
+    }),
     'access.credential.revoke': async () => ({
       ok: false,
       error: {

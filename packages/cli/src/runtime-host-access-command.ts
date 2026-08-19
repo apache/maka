@@ -44,6 +44,17 @@ export interface RuntimeHostAccessRevokeOptions {
   readonly credentialId: string;
 }
 
+export interface ReplacedRuntimeHostAccessCredential {
+  readonly rootId: string;
+  readonly credential: string;
+  readonly credentialId: string;
+  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalId: string;
+  readonly operationGrants: readonly OperationKey[];
+  readonly canPublishClientCapabilities: boolean;
+  readonly canUseHostPaths: boolean;
+}
+
 export async function runRuntimeHostAccessIssueCli(
   options: RuntimeHostAccessIssueOptions,
 ): Promise<number> {
@@ -65,6 +76,31 @@ export async function runRuntimeHostAccessIssueCli(
     const { deliveryId: _deliveryId, ...metadata } = result;
     process.stdout.write(`${JSON.stringify({ ...metadata, credential }, null, 2)}\n`);
     return 0;
+  } finally {
+    await connection.close();
+  }
+}
+
+export async function replaceRuntimeHostAccessCredential(
+  options: RuntimeHostAccessIssueOptions,
+): Promise<ReplacedRuntimeHostAccessCredential> {
+  const resolved = resolveRuntimeHostAccessIssue(options);
+  const connection = await connectLocalOwner(options.rootPath);
+  try {
+    const result = await connection.request('access.credential.replace', {
+      principalKind: resolved.principalKind,
+      principalId: options.principalId,
+      operationGrants: resolved.operationGrants,
+      canPublishClientCapabilities: resolved.canPublishClientCapabilities,
+      canUseHostPaths: resolved.canUseHostPaths,
+    });
+    const credential = await consumeAccessCredentialDelivery(
+      options.rootPath,
+      result.deliveryId,
+      result.credentialId,
+    );
+    const { deliveryId: _deliveryId, ...metadata } = result;
+    return { rootId: connection.rootId, credential, ...metadata };
   } finally {
     await connection.close();
   }
