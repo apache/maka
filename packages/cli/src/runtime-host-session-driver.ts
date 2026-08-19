@@ -652,7 +652,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     // an operation_conflict retries against a freshly queried projection —
     // the pushed snapshot may lag the conflicting mutation by a frame.
     const goalId = goal.goalId;
-    let conflict: RuntimeHostOperationError | null = null;
     for (let attempt = 0; attempt < GOAL_CONTROL_MAX_ATTEMPTS; attempt += 1) {
       try {
         const result = await this.#request('goal.control', {
@@ -666,24 +665,21 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         if (!(error instanceof RuntimeHostOperationError) || error.code !== 'operation_conflict') {
           throw error;
         }
-        conflict = error;
-        if (attempt === GOAL_CONTROL_MAX_ATTEMPTS - 1) break; // a re-query would have no retry to serve
+        if (attempt === GOAL_CONTROL_MAX_ATTEMPTS - 1) throw error;
+        const current = (await this.#request('goal.query', { sessionId })).goal;
+        if (!current || current.goalId !== goalId) return null;
+        if (current.revision === goal.revision) {
+          // The host folds invalid transitions into operation_conflict too
+          // ("Goal cannot pause from status paused"). Every accepted transition
+          // bumps the revision, so a conflict at an unchanged revision is a
+          // status refusal, not a race — retrying is futile. Surface the host's
+          // reason instead of a misleading "revision conflict" exhaustion error.
+          throw error;
+        }
+        goal = current;
       }
-      const current = (await this.#request('goal.query', { sessionId })).goal;
-      if (!current || current.goalId !== goalId) return null;
-      if (current.revision === goal.revision) {
-        // The host folds invalid transitions into operation_conflict too
-        // ("Goal cannot pause from status paused"). Every accepted transition
-        // bumps the revision, so a conflict at an unchanged revision is a
-        // status refusal, not a race — retrying is futile. Surface the host's
-        // reason instead of a misleading "revision conflict" exhaustion error.
-        throw conflict;
-      }
-      goal = current;
     }
-    throw new Error(
-      `Goal ${action} failed: revision conflict after ${GOAL_CONTROL_MAX_ATTEMPTS} attempts`,
-    );
+    throw new Error(`Goal ${action} failed without a result`);
   }
 
   async getContextDiagnostics(): Promise<ContextDiagnostics> {

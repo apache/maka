@@ -252,6 +252,23 @@ describe('Runtime Host Maka Session driver', () => {
       ({ operation }) => operation === 'goal.control',
     ).length;
     assert.equal(attempts, 5); // 1 clean + 2 raced + 1 raced-then-gone + 1 refused — no futile retries
+
+    // A third conflict has no retry left to serve, so preserve that final Host
+    // reason instead of replacing it with a generic retry-exhaustion message.
+    connection.goalControlOutcomes.push(
+      new RuntimeHostOperationError('goal.control', 'operation_conflict', 'revision conflict 1'),
+      new RuntimeHostOperationError('goal.control', 'operation_conflict', 'revision conflict 2'),
+      new RuntimeHostOperationError(
+        'goal.control',
+        'operation_conflict',
+        'Goal cannot resume from status active',
+      ),
+    );
+    connection.goalQueryResults.push(
+      goalProjection({ status: 'paused', revision: 3, pausedAt: 95 }),
+      goalProjection({ status: 'paused', revision: 4, pausedAt: 95 }),
+    );
+    await assert.rejects(driver.controlGoal!('resume'), /Goal cannot resume from status active/);
   });
 
   test('honors explicit Project intent before inheriting the current workspace', async () => {

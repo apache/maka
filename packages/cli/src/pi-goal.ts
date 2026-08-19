@@ -9,6 +9,7 @@
 import type { GoalStatus } from '@maka/core/goal';
 import type { GoalProjection } from '@maka/runtime-host/protocol';
 import { formatTokenCount } from './pi-transcript-format.js';
+import { stripAnsi } from './tui-ansi.js';
 
 /**
  * Statuses a watching user still cares about. Terminal goals are hidden from
@@ -96,7 +97,10 @@ export function goalStatusLineText(
 
 /** Conditions and evaluator notes may legally embed newlines; collapse whitespace so notices stay one line per field. */
 function inlineGoalText(value: string): string {
-  return value.replace(/\s+/g, ' ').trim();
+  return stripAnsi(value)
+    .replace(/[\u0000-\u001f\u007f-\u009f]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**

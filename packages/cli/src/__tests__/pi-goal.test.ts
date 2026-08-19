@@ -99,6 +99,19 @@ describe('pi-goal display helpers', () => {
     assert.equal(messy[0], 'Goal: Ship the feature');
     assert.equal(messy.at(-1), 'Last evaluator note: line one line two');
 
+    const hostile = goalSummaryLines(
+      goal({
+        condition: 'Ship\x1b[2J the\x00 feature',
+        lastReason: 'safe\x1b]0;spoofed title\x07\nUnicode ✓',
+      }),
+      61_000,
+    );
+    assert.equal(hostile[0], 'Goal: Ship the feature');
+    assert.equal(hostile.at(-1), 'Last evaluator note: safe Unicode ✓');
+    for (const line of hostile) {
+      assert.doesNotMatch(line, /[\u0000-\u001f\u007f-\u009f]/u);
+    }
+
     // A cleared goal keeps its terminal record; the summary must not present
     // the condition as if it were still armed.
     const cleared = goalSummaryLines(goal({ status: 'cleared' }), 61_000);
