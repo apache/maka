@@ -258,6 +258,12 @@ export function reconcileConnectionAfterModelFetch(
      * caller that knows the provider's naming supplies the table.
      */
     readonly aliases?: Readonly<Record<string, string>>;
+    /**
+     * Model-fact-backed ids that were already enabled on this connection.
+     * These remain selectable when a provider omits them from live discovery;
+     * the ids are never added to the provider inventory itself.
+     */
+    readonly factBackedModelIds?: ReadonlySet<string>;
   },
 ): {
   defaultModel: string;
@@ -290,6 +296,7 @@ export function reconcileConnectionAfterModelFetch(
       ),
     ),
   ];
+  const factBackedModelIds = options?.factBackedModelIds ?? new Set<string>();
 
   if (liveIds.length === 0) {
     const defaultModel = previousDefault;
@@ -308,20 +315,24 @@ export function reconcileConnectionAfterModelFetch(
     if (connection.hasModelInventory || previousEnabled.length > 0) {
       return {
         defaultModel: '',
-        enabledModelIds: previousEnabled.filter((id) => live.has(id)),
+        enabledModelIds: previousEnabled.filter((id) => live.has(id) || factBackedModelIds.has(id)),
       };
     }
     return { defaultModel: liveIds[0]!, enabledModelIds: [liveIds[0]!] };
   }
 
   const defaultModel =
-    (live.has(previousDefault) ? previousDefault : undefined) ??
+    (live.has(previousDefault) || factBackedModelIds.has(previousDefault)
+      ? previousDefault
+      : undefined) ??
     previousEnabled.find((id) => live.has(id)) ??
     liveIds[0]!;
 
   // Keep previously enabled ids that still exist live, plus the (possibly
   // repaired) default. Do not auto-enable the entire discovered catalog.
-  const keptEnabled = previousEnabled.filter((id) => live.has(id) || id === defaultModel);
+  const keptEnabled = previousEnabled.filter(
+    (id) => live.has(id) || factBackedModelIds.has(id) || id === defaultModel,
+  );
   return {
     defaultModel,
     enabledModelIds: connectionEnabledModelIds({

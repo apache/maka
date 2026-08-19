@@ -35,6 +35,7 @@ import {
 import {
   applyModelFactOverridesToConnection,
   applyModelFactOverridesToCatalogSnapshot,
+  modelFactOverrideIdsForProvider,
   type ModelFactOverrides,
 } from '@maka/core/model-facts';
 import { deriveProviderAuthContract, type ProviderAuthAction } from '@maka/core/provider-auth';
@@ -931,16 +932,29 @@ export class RuntimePolicyCoordinator {
     const claimed = this.claimTicket(ticket, 'model_fetch');
     return this.completeClaimedTicket(claimed, () =>
       this.inLane(async (root) => {
+        const facts = await this.readModelFacts(root);
         const catalog = await this.catalog.read(root);
         const checked = await this.checkSemanticConnectionBasis(root, catalog, claimed.basis);
         if (checked.changed.length > 0 || !checked.connection) {
           return deepFreeze({ kind: 'superseded' as const, changed: checked.changed });
+        }
+        const selectedModelIds = new Set(checked.connection.enabledModelIds);
+        if (catalog.defaultTarget?.connectionId === checked.connection.connectionId) {
+          selectedModelIds.add(catalog.defaultTarget.modelId);
         }
         const snapshot = await this.catalog.writeModelFetchResult(
           root,
           catalog,
           connectionBasis(checked.connection),
           result,
+          {
+            factBackedModelIds: new Set(
+              modelFactOverrideIdsForProvider(
+                facts.document.overrides,
+                checked.connection.providerType,
+              ).filter((modelId) => selectedModelIds.has(modelId)),
+            ),
+          },
         );
         return deepFreeze({
           kind: 'committed' as const,

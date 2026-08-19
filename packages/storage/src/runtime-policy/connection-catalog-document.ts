@@ -301,6 +301,9 @@ export class ConnectionCatalogDocumentOwner {
     current: ConnectionCatalogDocument,
     expected: ConnectionVersionBasis,
     rawResult: ConnectionModelDiscoveryResult,
+    options?: {
+      readonly factBackedModelIds?: ReadonlySet<string>;
+    },
   ): Promise<ConnectionCatalogSnapshot> {
     const result = decodeConnectionInput(() => normalizeConnectionModelDiscoveryResult(rawResult));
     if (result.models.length === 0) {
@@ -328,7 +331,10 @@ export class ConnectionCatalogDocumentOwner {
               hasModelInventory: previous.models.length > 0,
             },
             result.models,
-            { aliases: modelIdAliasesForProvider(previous.providerType) },
+            {
+              aliases: modelIdAliasesForProvider(previous.providerType),
+              factBackedModelIds: options?.factBackedModelIds,
+            },
           )
         : {
             defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0] ?? '',

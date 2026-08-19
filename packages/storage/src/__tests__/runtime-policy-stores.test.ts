@@ -997,8 +997,12 @@ describe('runtime policy stores', () => {
       if (discovered.kind !== 'committed') return;
       const afterDiscovery = discovered.snapshot.connections[0];
       assert.ok(afterDiscovery);
-      assert.deepEqual(afterDiscovery.models, [{ id: 'gpt-5.1' }, { id: 'gpt-5.2' }]);
-      assert.deepEqual(afterDiscovery.enabledModelIds, ['gpt-5.1']);
+      assert.deepEqual(afterDiscovery.models, [
+        { id: 'gpt-5.1' },
+        { id: 'gpt-5.2' },
+        { id: 'gpt-5', apiProtocol: 'openai-responses' },
+      ]);
+      assert.deepEqual(afterDiscovery.enabledModelIds, ['gpt-5']);
       assert.equal(afterDiscovery.modelSource, 'fetched');
       assert.equal(afterDiscovery.modelsFetchedAt, 42);
 

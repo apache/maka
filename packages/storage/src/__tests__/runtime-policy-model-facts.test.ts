@@ -85,6 +85,71 @@ test('runtime policy catalog overlays enabled custom model facts without changin
   }
 });
 
+test('model fetch keeps an enabled facts-backed model outside provider inventory', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-runtime-facts-refresh-'));
+  try {
+    const coordinator = new RuntimePolicyCoordinator((operation) => operation(root));
+    const connectionId = await createTestConnection(coordinator);
+    await coordinator.replaceModelFacts({
+      'ollama:custom-model': { contextWindow: 64_000 },
+      'ollama:unselected-model': { contextWindow: 128_000 },
+    });
+    const beforeRefresh = await coordinator.getCatalogSnapshot();
+    const defaulted = await coordinator.setDefaultTarget({
+      expectedCatalogRevision: beforeRefresh.revision,
+      target: { connectionId, modelId: 'custom-model' },
+    });
+    assert.equal(defaulted.kind, 'committed');
+
+    const fetch = await coordinator.beginModelFetch(connectionId);
+    assert.equal(fetch.kind, 'ready');
+    if (fetch.kind !== 'ready') return;
+    const refreshed = await coordinator.completeModelFetch(fetch.ticket, {
+      models: [{ id: 'live-model' }],
+      source: 'fetched',
+      fetchedAt: 1,
+    });
+    assert.equal(refreshed.kind, 'committed');
+    if (refreshed.kind !== 'committed') return;
+
+    const raw = await (
+      coordinator as unknown as {
+        catalog: {
+          read(root: string): Promise<{
+            connections: readonly { models: readonly unknown[] }[];
+          }>;
+        };
+      }
+    ).catalog.read(root);
+    assert.deepEqual(raw.connections[0]?.models, [{ id: 'live-model' }]);
+    const projected = refreshed.snapshot.connections[0];
+    assert.deepEqual(projected?.enabledModelIds, ['custom-model']);
+    assert.deepEqual(refreshed.snapshot.defaultTarget, {
+      connectionId,
+      modelId: 'custom-model',
+    });
+    assert.equal(
+      projected?.models.find((model) => model.id === 'custom-model')?.contextWindow,
+      64_000,
+    );
+    assert.equal(
+      projected?.models.some((model) => model.id === 'unselected-model'),
+      false,
+    );
+
+    const execution = await coordinator.resolveExecutionConnection('custom-openai');
+    assert.equal(execution.kind, 'ready');
+    if (execution.kind === 'ready') {
+      assert.equal(
+        execution.connection.models?.some((model) => model.id === 'custom-model'),
+        true,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('model facts are not persisted when verification invalidation fails', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-runtime-facts-invalidation-'));
   try {

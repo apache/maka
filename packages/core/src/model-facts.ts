@@ -44,6 +44,18 @@ export function lookupModelFactOverride(
   }
 }
 
+/** Return model ids with facts for one provider without exposing other providers. */
+export function modelFactOverrideIdsForProvider(
+  overrides: ModelFactOverrides | undefined,
+  providerType: ProviderType | string,
+): string[] {
+  if (!overrides) return [];
+  const prefix = `${providerType.trim()}:`;
+  return Object.keys(overrides)
+    .filter((key) => key.startsWith(prefix))
+    .map((key) => key.slice(prefix.length));
+}
+
 export function decodeModelFactsDocument(value: unknown): ModelFactsDocument {
   if (!isRecord(value) || value.schemaVersion !== MODEL_FACTS_SCHEMA_VERSION) {
     throw new Error('model-facts.json has an unsupported schema');
