@@ -38,6 +38,8 @@ test('managed setup converges on one exact package and verified Client pairing',
   let config: RuntimeHostManagedServiceConfig | null = null;
   let installCount = 0;
   let pairCount = 0;
+  let rejectVerification = false;
+  const revokedCredentialIds: string[] = [];
   let installedCliPath = '';
   const outputs: string[] = [];
   const options = {
@@ -73,7 +75,7 @@ test('managed setup converges on one exact package and verified Client pairing',
     },
     prepareDeployment: (input: Parameters<typeof prepareRuntimeHostManagedPackageDeployment>[0]) =>
       prepareRuntimeHostManagedPackageDeployment(input, deploymentPathOptions),
-    replaceCredential: async () => {
+    issueCredential: async () => {
       pairCount += 1;
       return {
         rootId: 'a'.repeat(64),
@@ -89,14 +91,22 @@ test('managed setup converges on one exact package and verified Client pairing',
     verifyCredential: async (input: { readonly endpoint: string; readonly credential: string }) => {
       assert.equal(input.endpoint, 'ws://127.0.0.1:42111/runtime-host');
       assert.match(input.credential, /^secret-/u);
+      if (rejectVerification) throw new Error('verification failed');
+    },
+    revokeCredential: async ({ credentialId }: { readonly credentialId: string }) => {
+      revokedCredentialIds.push(credentialId);
+      return { credentialId, revoked: true };
     },
     writeOutput: (value: string) => outputs.push(value),
   };
 
   assert.equal(await runRuntimeHostSetupCli(options, overrides), 0);
   assert.equal(await runRuntimeHostSetupCli(options, overrides), 0);
-  assert.equal(installCount, 2);
-  assert.equal(pairCount, 2);
+  rejectVerification = true;
+  assert.equal(await runRuntimeHostSetupCli(options, overrides), 1);
+  assert.equal(installCount, 3);
+  assert.equal(pairCount, 3);
+  assert.deepEqual(revokedCredentialIds, ['credential-3']);
   assert.ok(installedCliPath.startsWith(deploymentRoot));
   assert.equal(
     outputs.some((output) => output.includes('secret-')),
@@ -144,6 +154,69 @@ test('managed setup frames reject malformed machine output', () => {
     ),
     undefined,
   );
+});
+
+test('managed setup replaces one exact development package with another', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-development-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const previousVersion = '0.2.0-dev.111111111111';
+  const nextVersion = '0.2.0-dev.222222222222';
+  const previousPackage = await createReleasePackage(base, previousVersion);
+  const nextPackage = await createReleasePackage(base, nextVersion);
+  const clientDataRoot = join(base, 'config', 'Maka');
+  const stateRoot = join(clientDataRoot, 'workspaces', 'default');
+  const previousConfig: RuntimeHostManagedServiceConfig = {
+    schemaVersion: 1,
+    rootPath: stateRoot,
+    projectDirectoryRoots: [],
+    websocket: { host: '127.0.0.1', port: 42_111, path: '/runtime-host' },
+    launch: { nodePath: process.execPath, cliPath: join(previousPackage, 'dist', 'cli.js') },
+  };
+  let installedCliPath: string | undefined;
+
+  const exitCode = await runRuntimeHostSetupCli(
+    {
+      json: true,
+      clientDataRoot,
+      defaultRootPath: stateRoot,
+      sourcePackageRoot: nextPackage,
+      version: nextVersion,
+      principalId: 'desktop.client-1',
+      preset: 'desktop-client',
+    },
+    {
+      createBackend: () => unusedBackend(),
+      manageService: async (input: { readonly action: string; readonly cliPath: string }) => {
+        if (input.action === 'status') return serviceResult('status', previousConfig);
+        installedCliPath = input.cliPath;
+        return serviceResult('install', {
+          ...previousConfig,
+          launch: { ...previousConfig.launch, cliPath: input.cliPath },
+        });
+      },
+      prepareDeployment: (input) =>
+        prepareRuntimeHostManagedPackageDeployment(input, {
+          env: { XDG_DATA_HOME: join(base, 'data') },
+          homeDir: join(base, 'home'),
+          platform: 'linux',
+        }),
+      issueCredential: async () => ({
+        rootId: 'a'.repeat(64),
+        credential: 'new-development-secret',
+        credentialId: 'new-development-credential',
+        principalKind: 'remote_owner',
+        principalId: 'desktop.client-1',
+        operationGrants: ['host.status'],
+        canPublishClientCapabilities: true,
+        canUseHostPaths: false,
+      }),
+      verifyCredential: async () => undefined,
+      writeOutput: () => undefined,
+    },
+  );
+
+  assert.equal(exitCode, 0);
+  assert.match(installedCliPath ?? '', /0\.2\.0-dev\.222222222222/u);
 });
 
 test('managed setup removes a newly copied package when service installation fails', async (t) => {
@@ -201,7 +274,7 @@ test('managed setup removes a newly copied package when service installation fai
 });
 
 async function createReleasePackage(base: string, version: string): Promise<string> {
-  const root = join(base, 'source-package');
+  const root = join(base, `source-package-${version}`);
   await mkdir(join(root, 'dist'), { recursive: true });
   await mkdir(join(root, 'node_modules', '@maka', 'runtime-host'), { recursive: true });
   await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'maka-agent', version }));

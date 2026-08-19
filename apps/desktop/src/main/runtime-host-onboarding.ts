@@ -11,10 +11,6 @@ import type {
   DesktopRuntimeHostSshSetupInput,
 } from './runtime-host-ssh-terminal.js';
 
-const SETUP_PACKAGE: DesktopRuntimeHostSetupPackage = {
-  kind: 'npm',
-  specifier: 'maka-agent@next',
-};
 type OnboardingState = DesktopRuntimeHostOnboardingSnapshot extends infer Snapshot
   ? Snapshot extends DesktopRuntimeHostOnboardingSnapshot
     ? Omit<Snapshot, 'revision'>
@@ -34,12 +30,16 @@ export function createDesktopRuntimeHostOnboarding(input: {
     readonly credential: string;
   }>;
   readonly send: (snapshot: DesktopRuntimeHostOnboardingSnapshot) => void;
-  readonly setupPackage?: DesktopRuntimeHostSetupPackage;
+  readonly setupPackage: DesktopRuntimeHostSetupPackage;
 }): { close(): Promise<void> } {
   let revision = 0;
   let snapshot: DesktopRuntimeHostOnboardingSnapshot = { kind: 'idle', revision };
   let active:
-    | { readonly abort: AbortController; readonly task: Promise<DesktopRuntimeHostOnboardingSnapshot> }
+    | {
+        readonly abort: AbortController;
+        readonly task: Promise<DesktopRuntimeHostOnboardingSnapshot>;
+        cancellable: boolean;
+      }
     | undefined;
 
   const publish = (
@@ -55,11 +55,11 @@ export function createDesktopRuntimeHostOnboarding(input: {
     if (active) throw new Error('A remote Runtime Host setup is already in progress');
     const request = requireOnboardingInput(value);
     const abort = new AbortController();
-    publish({ kind: 'running', destination: request.destination, phase: 'connecting_ssh' });
+    publish({ kind: 'running', phase: 'connecting_ssh' });
     const task = run(request, abort.signal).finally(() => {
       if (active?.task === task) active = undefined;
     });
-    active = { abort, task };
+    active = { abort, task, cancellable: true };
     return task;
   };
 
@@ -72,22 +72,21 @@ export function createDesktopRuntimeHostOnboarding(input: {
         {
           destination: request.destination,
           ...(request.sshPort === undefined ? {} : { sshPort: request.sshPort }),
-          setupPackage: input.setupPackage ?? SETUP_PACKAGE,
+          setupPackage: input.setupPackage,
           principalId: `desktop:${input.clientInstanceId}`,
           signal,
         },
         (progress) => {
           publish({
             kind: 'running',
-            destination: request.destination,
             phase: progress.phase,
           });
         },
       );
       signal.throwIfAborted();
+      if (active) active.cancellable = false;
       publish({
         kind: 'running',
-        destination: request.destination,
         phase: 'connecting_host',
       });
       const endpoint = requireSetupEndpoint(complete.endpoint);
@@ -112,13 +111,11 @@ export function createDesktopRuntimeHostOnboarding(input: {
       return publish({
         kind: 'complete',
         profileId: connected.profileId,
-        profileName: connected.profileName,
       });
     } catch (error) {
       if (signal.aborted) return publish({ kind: 'idle' });
       return publish({
         kind: 'failed',
-        destination: request.destination,
         message: error instanceof Error ? error.message : String(error),
       });
     }
@@ -135,7 +132,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
   input.ipcMain.handle(channels[2], async () => {
     const current = active;
     if (!current) return;
-    current.abort.abort();
+    if (current.cancellable) current.abort.abort();
     await current.task;
   });
   input.ipcMain.handle(channels[3], () => {
@@ -148,7 +145,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
       for (const channel of channels) input.ipcMain.removeHandler(channel);
       const current = active;
       if (!current) return;
-      current.abort.abort();
+      if (current.cancellable) current.abort.abort();
       await current.task;
     },
   };

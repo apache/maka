@@ -140,7 +140,7 @@ export function RuntimeHostOnboardingDialog(props: {
                     }}
                   />
                 </>
-              ) : running ? (
+              ) : running && snapshot.phase !== 'connecting_host' ? (
                 <Button
                   variant="secondary"
                   label={copy.setupCancel}

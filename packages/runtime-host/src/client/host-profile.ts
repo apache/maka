@@ -98,6 +98,14 @@ export interface RuntimeHostProfileCatalog {
     readonly removed: boolean;
     readonly document: RuntimeHostProfileDocument;
   }>;
+  rebindIfCurrent(
+    target: ResolvedRuntimeHostProfile,
+    profile: RemoteRuntimeHostProfile,
+    credential: string,
+  ): Promise<{
+    readonly rebound: boolean;
+    readonly document: RuntimeHostProfileDocument;
+  }>;
 }
 
 export interface RuntimeHostProfileCredentialStore {
@@ -431,6 +439,82 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
         return { removed: false, document: current };
       }
       return { removed: true, document: await this.#removeProfile(current, profile) };
+    });
+  }
+
+  rebindIfCurrent(
+    target: ResolvedRuntimeHostProfile,
+    value: RemoteRuntimeHostProfile,
+    credential: string,
+  ): Promise<{
+    readonly rebound: boolean;
+    readonly document: RuntimeHostProfileDocument;
+  }> {
+    if (target.profile.kind !== 'remote' || target.credential === undefined) {
+      return Promise.reject(new Error('Expected a resolved remote Runtime Host profile'));
+    }
+    const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
+    const profile = decodeRemoteRuntimeHostProfile(value);
+    if (profile.id !== expectedProfile.id || profile.rootId !== expectedProfile.rootId) {
+      return Promise.reject(
+        new Error('A Runtime Host profile rebind must retain its Host identity'),
+      );
+    }
+    return this.#exclusive(async () => {
+      const current = await this.read();
+      const stored = current.profiles.find((candidate) => candidate.id === expectedProfile.id);
+      if (
+        !stored ||
+        !sameRemoteRuntimeHostProfile(stored, expectedProfile) ||
+        (await this.credentials.get(stored)) !== target.credential
+      ) {
+        return { rebound: false, document: current };
+      }
+      const next = decodeRuntimeHostProfileDocument({
+        schemaVersion: PROFILE_SCHEMA_VERSION,
+        profiles: current.profiles.map((candidate) =>
+          candidate.id === profile.id ? profile : candidate,
+        ),
+      });
+      const bindingChanged = profileCredentialBinding(stored) !== profileCredentialBinding(profile);
+      const displacedCredential = bindingChanged
+        ? await this.credentials.get(profile)
+        : target.credential;
+      await this.credentials.set(profile, credential);
+      try {
+        await writeProfileDocument(this.path, next);
+      } catch (error) {
+        await restoreCredential(this.credentials, profile, displacedCredential).catch(
+          (rollbackError) => {
+            throw new AggregateError(
+              [error, rollbackError],
+              'Runtime Host profile rebind failed and its credential could not be restored',
+            );
+          },
+        );
+        throw error;
+      }
+      if (bindingChanged) {
+        try {
+          await this.credentials.delete(stored);
+        } catch (error) {
+          const rollbackFailures: unknown[] = [];
+          await writeProfileDocument(this.path, current).catch((failure) =>
+            rollbackFailures.push(failure),
+          );
+          await restoreCredential(this.credentials, profile, displacedCredential).catch((failure) =>
+            rollbackFailures.push(failure),
+          );
+          if (rollbackFailures.length > 0) {
+            throw new AggregateError(
+              [error, ...rollbackFailures],
+              'Runtime Host profile rebind failed and its prior target could not be restored',
+            );
+          }
+          throw error;
+        }
+      }
+      return { rebound: true, document: next };
     });
   }
 

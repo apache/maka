@@ -46,6 +46,13 @@ export interface AccessCredentialRevokeResult {
   readonly revoked: boolean;
 }
 
+export type AccessCredentialFinalizeInput = Record<string, never>;
+
+export interface AccessCredentialFinalizeResult {
+  readonly credentialId: string;
+  readonly revokedCredentialIds: readonly string[];
+}
+
 export const ACCESS_AUTHORITY_OPERATION_SPECS = {
   'access.credential.issue': defineOperation<
     AccessCredentialIssueInput,
@@ -79,6 +86,17 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
     errors: ACCESS_ERRORS,
     decodeInput: decodeAccessCredentialRevokeInput,
     decodeOutput: decodeAccessCredentialRevokeResult,
+  }),
+  'access.credential.finalize': defineOperation<
+    AccessCredentialFinalizeInput,
+    AccessCredentialFinalizeResult,
+    (typeof ACCESS_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: ACCESS_ERRORS,
+    decodeInput: decodeAccessCredentialFinalizeInput,
+    decodeOutput: decodeAccessCredentialFinalizeResult,
   }),
 } as const;
 
@@ -146,6 +164,29 @@ export function decodeAccessCredentialRevokeResult(value: unknown): AccessCreden
   return {
     credentialId: requireId(record.credentialId, 'credentialId'),
     revoked: boolean(record.revoked, 'revoked'),
+  };
+}
+
+export function decodeAccessCredentialFinalizeInput(value: unknown): AccessCredentialFinalizeInput {
+  requireExactRecord(value, 'access credential finalize input', []);
+  return {};
+}
+
+export function decodeAccessCredentialFinalizeResult(
+  value: unknown,
+): AccessCredentialFinalizeResult {
+  const record = requireExactRecord(value, 'access credential finalize result', [
+    'credentialId',
+    'revokedCredentialIds',
+  ]);
+  if (!Array.isArray(record.revokedCredentialIds)) {
+    throw invalidProtocolFrame('Invalid revokedCredentialIds');
+  }
+  return {
+    credentialId: requireId(record.credentialId, 'credentialId'),
+    revokedCredentialIds: record.revokedCredentialIds.map((credentialId) =>
+      requireId(credentialId, 'revokedCredentialId'),
+    ),
   };
 }
 

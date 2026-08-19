@@ -1,5 +1,6 @@
 import { app, clipboard, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { arch as osArch, homedir, release as osRelease } from "node:os";
 import { basename, join } from "node:path";
 import { type ConnectionEvent } from '@maka/core/connections';
@@ -114,7 +115,10 @@ import {
   registerDesktopRuntimeHostProfileIpc,
   resolveDesktopRuntimeHostStartup,
 } from "./runtime-host-profile-service.js";
-import { createDesktopRuntimeHostSshTerminal } from "./runtime-host-ssh-terminal.js";
+import {
+  createDesktopRuntimeHostSshTerminal,
+  type DesktopRuntimeHostSetupPackage,
+} from "./runtime-host-ssh-terminal.js";
 import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
@@ -290,6 +294,10 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
     await runtimeHostManager.disable(profileId);
   },
+  finalizePairing: async (profileId) => {
+    if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
+    await runtimeHostManager.finalizePairing(profileId);
+  },
   setDefault: (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
     runtimeHostManager.setDefaultProfile(profileId);
@@ -300,17 +308,27 @@ const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
   clientInstanceId: runtimeHostClientInstanceId,
   profiles: runtimeHostProfileService,
   runSetup: runtimeHostSshTerminal.runSetup,
-  ...(!app.isPackaged && process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE
-    ? {
-        setupPackage: {
-          kind: "development_archive" as const,
-          path: process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE,
-        },
-      }
-    : {}),
+  setupPackage: runtimeHostSetupPackage(),
   send: (snapshot) =>
     mainWindowController.send("runtime-host-onboarding:changed", snapshot),
 });
+
+function runtimeHostSetupPackage(): DesktopRuntimeHostSetupPackage {
+  if (!app.isPackaged && process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE) {
+    return { kind: "development_archive", path: process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE };
+  }
+  const manifest = JSON.parse(
+    readFileSync(join(app.getAppPath(), "package.json"), "utf8"),
+  ) as { runtimeHostSetupPackage?: unknown };
+  const specifier = manifest.runtimeHostSetupPackage;
+  if (
+    typeof specifier !== "string" ||
+    !/^maka-agent@[0-9][0-9A-Za-z.+-]*$/u.test(specifier)
+  ) {
+    throw new Error("Desktop does not declare an exact Runtime Host setup package");
+  }
+  return { kind: "npm", specifier };
+}
 const defaultRuntimeHostRecovery = createRuntimeHostDefaultRecovery({
   defaultProfileId: () =>
     runtimeHostManager?.defaultProfileId() ??

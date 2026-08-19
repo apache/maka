@@ -468,10 +468,9 @@ function writeReleaseManifest(cli, publishable) {
   }
   const undici = findDependency(cli, 'undici', '8.10.0');
   const dependencies = { ...source.dependencies, undici: undici.version };
-  const version = publishable ? source.version : developmentPackageVersion(source.version);
   const manifest = {
     name: source.name,
-    version,
+    version: source.version,
     description: 'Local-first agent workspace for the terminal.',
     license: source.license,
     type: source.type,
@@ -511,10 +510,13 @@ function writeReleaseManifest(cli, publishable) {
     bundledDependencies: Object.keys(dependencies).sort(),
     ...(!publishable ? { private: true } : {}),
   };
+  if (!publishable) {
+    manifest.version = developmentPackageVersion(source.version, manifest);
+  }
   writeFileSync(join(stageRoot, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
-function developmentPackageVersion(baseVersion) {
+function developmentPackageVersion(baseVersion, manifest) {
   const digest = createHash('sha256');
   for (const path of walkFiles(stageRoot)
     .filter((candidate) => lstatSync(candidate).isFile())
@@ -524,6 +526,10 @@ function developmentPackageVersion(baseVersion) {
     digest.update(readFileSync(path));
     digest.update('\0');
   }
+  const { version: _version, ...manifestIdentity } = manifest;
+  digest.update('package.json\0');
+  digest.update(JSON.stringify(manifestIdentity));
+  digest.update('\0');
   return `${baseVersion}${baseVersion.includes('-') ? '.' : '-'}dev.${digest.digest('hex').slice(0, 12)}`;
 }
 

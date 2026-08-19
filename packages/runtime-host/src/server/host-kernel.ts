@@ -39,6 +39,7 @@ import {
 } from './operation-dispatcher.js';
 import {
   issueAccessCredential,
+  finalizeAccessCredential,
   replaceAccessCredential,
   revokeAccessCredential,
   type RuntimeHostAccessAuthority,
@@ -626,6 +627,8 @@ export class RuntimeHostKernel {
           replaceAccessCredential(this.#options.accessAuthority, input),
         'access.credential.revoke': async (input) =>
           revokeAccessCredential(this.#options.accessAuthority, input),
+        'access.credential.finalize': async (_input, context) =>
+          finalizeAccessCredential(this.#options.accessAuthority, context.credentialId),
       },
       domainHandlers,
     );

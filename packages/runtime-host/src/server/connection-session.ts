@@ -203,6 +203,9 @@ export class RuntimeHostConnectionSession {
       const response = await dispatchOperation(frame, this.#options.resolveHandlers(), {
         ...this.#options.connection,
         principal: this.#options.connection.authority.principalId,
+        ...(this.#options.connection.authority.credentialId
+          ? { credentialId: this.#options.connection.authority.credentialId }
+          : {}),
         acquireResidency: () => admission.acquireResidency(),
       });
       admission.seal();

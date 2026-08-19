@@ -44,7 +44,7 @@ export interface RuntimeHostAccessRevokeOptions {
   readonly credentialId: string;
 }
 
-export interface ReplacedRuntimeHostAccessCredential {
+export interface IssuedRuntimeHostAccessCredential {
   readonly rootId: string;
   readonly credential: string;
   readonly credentialId: string;
@@ -58,42 +58,44 @@ export interface ReplacedRuntimeHostAccessCredential {
 export async function runRuntimeHostAccessIssueCli(
   options: RuntimeHostAccessIssueOptions,
 ): Promise<number> {
-  const resolved = resolveRuntimeHostAccessIssue(options);
-  const connection = await connectLocalOwner(options.rootPath);
-  try {
-    const result = await connection.request('access.credential.issue', {
-      principalKind: resolved.principalKind,
-      principalId: options.principalId,
-      operationGrants: resolved.operationGrants,
-      canPublishClientCapabilities: resolved.canPublishClientCapabilities,
-      canUseHostPaths: resolved.canUseHostPaths,
-    });
-    const credential = await consumeAccessCredentialDelivery(
-      options.rootPath,
-      result.deliveryId,
-      result.credentialId,
-    );
-    const { deliveryId: _deliveryId, ...metadata } = result;
-    process.stdout.write(`${JSON.stringify({ ...metadata, credential }, null, 2)}\n`);
-    return 0;
-  } finally {
-    await connection.close();
-  }
+  const result = await issueRuntimeHostAccessCredential(options);
+  const { rootId: _rootId, ...output } = result;
+  process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+  return 0;
+}
+
+export function issueRuntimeHostAccessCredential(
+  options: RuntimeHostAccessIssueOptions,
+): Promise<IssuedRuntimeHostAccessCredential> {
+  return mutateRuntimeHostAccessCredential(options, 'access.credential.issue');
 }
 
 export async function replaceRuntimeHostAccessCredential(
   options: RuntimeHostAccessIssueOptions,
 ): Promise<ReplacedRuntimeHostAccessCredential> {
+  return mutateRuntimeHostAccessCredential(options, 'access.credential.replace');
+}
+
+export type ReplacedRuntimeHostAccessCredential = IssuedRuntimeHostAccessCredential;
+
+async function mutateRuntimeHostAccessCredential(
+  options: RuntimeHostAccessIssueOptions,
+  operation: 'access.credential.issue' | 'access.credential.replace',
+): Promise<IssuedRuntimeHostAccessCredential> {
   const resolved = resolveRuntimeHostAccessIssue(options);
   const connection = await connectLocalOwner(options.rootPath);
   try {
-    const result = await connection.request('access.credential.replace', {
+    const credentialInput = {
       principalKind: resolved.principalKind,
       principalId: options.principalId,
       operationGrants: resolved.operationGrants,
       canPublishClientCapabilities: resolved.canPublishClientCapabilities,
       canUseHostPaths: resolved.canUseHostPaths,
-    });
+    };
+    const result =
+      operation === 'access.credential.issue'
+        ? await connection.request('access.credential.issue', credentialInput)
+        : await connection.request('access.credential.replace', credentialInput);
     const credential = await consumeAccessCredentialDelivery(
       options.rootPath,
       result.deliveryId,
@@ -133,13 +135,17 @@ export function resolveRuntimeHostAccessIssue(
 export async function runRuntimeHostAccessRevokeCli(
   options: RuntimeHostAccessRevokeOptions,
 ): Promise<number> {
+  const result = await revokeRuntimeHostAccessCredential(options);
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  return result.revoked ? 0 : 1;
+}
+
+export async function revokeRuntimeHostAccessCredential(options: RuntimeHostAccessRevokeOptions) {
   const connection = await connectLocalOwner(options.rootPath);
   try {
-    const result = await connection.request('access.credential.revoke', {
+    return await connection.request('access.credential.revoke', {
       credentialId: options.credentialId,
     });
-    process.stdout.write(`${JSON.stringify(result)}\n`);
-    return result.revoked ? 0 : 1;
   } finally {
     await connection.close();
   }

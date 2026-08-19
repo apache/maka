@@ -104,6 +104,7 @@ test("starts Local and preserves remote preferences when the profile catalog is 
     enable: async () => undefined,
     disable: async () => undefined,
     setDefault: () => undefined,
+    finalizePairing: async () => undefined,
   });
   await service.setEnabled(PROFILE.id, true);
   assert.equal(
@@ -135,6 +136,7 @@ test("does not overwrite Runtime Host preferences that were unreadable at startu
     enable: async () => assert.fail("an unreadable preference authority must not mutate"),
     disable: async () => assert.fail("an unreadable preference authority must not mutate"),
     setDefault: () => assert.fail("an unreadable preference authority must not mutate"),
+    finalizePairing: async () => assert.fail("an unreadable preference authority must not mutate"),
   });
 
   await assert.rejects(
@@ -159,6 +161,7 @@ test("keeps Local enabled while a new remote Host connects", async () => {
     },
     disable: async () => undefined,
     setDefault: () => undefined,
+    finalizePairing: async () => undefined,
   });
 
   const result = await service.addAndEnable({ profile: PROFILE, credential: "opaque-token" });
@@ -193,6 +196,7 @@ test("does not enable the same State Root twice", async () => {
     enable: async () => assert.fail("duplicate root must not connect"),
     disable: async () => undefined,
     setDefault: () => undefined,
+    finalizePairing: async () => undefined,
   });
 
   await assert.rejects(
@@ -217,6 +221,7 @@ test("preserves an enabled remote profile when that Host is unavailable", async 
     },
     disable: async () => undefined,
     setDefault: () => undefined,
+    finalizePairing: async () => undefined,
   });
 
   const result = await service.addAndEnable({ profile: PROFILE, credential: "token" });
@@ -301,6 +306,7 @@ test("removes a managed profile when its verified connection cannot be establish
       disabled.push(profileId);
     },
     setDefault: () => undefined,
+    finalizePairing: async () => undefined,
   });
 
   await assert.rejects(
@@ -319,8 +325,17 @@ test("refreshes the existing profile when managed setup pairs the same Host agai
   const root = await clientRoot();
   const catalog = createClientRuntimeHostProfileCatalog(root);
   await catalog.create(PROFILE, "old-token");
+  await writeFile(
+    join(root, "runtime-host-profile-selection.json"),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      defaultProfileId: "local",
+      enabledRemoteProfileIds: [PROFILE.id],
+    })}\n`,
+  );
   const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
   const connected: ResolvedRuntimeHostProfile[] = [];
+  const finalized: string[] = [];
   const service = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
     startup,
@@ -331,18 +346,84 @@ test("refreshes the existing profile when managed setup pairs the same Host agai
     },
     disable: async () => undefined,
     setDefault: () => undefined,
+    finalizePairing: async (profileId) => {
+      finalized.push(profileId);
+    },
   });
 
   const result = await service.addAndEnableVerified({
-    profile: { ...PROFILE, id: "replacement", name: "Renamed office" },
+    profile: {
+      ...PROFILE,
+      id: "replacement",
+      name: "Renamed office",
+      transport: { kind: "tls", url: "wss://new-runtime.example.com" },
+    },
     credential: "new-token",
   });
 
-  assert.deepEqual(result, { profileId: PROFILE.id, profileName: "Renamed office" });
+  assert.deepEqual(result, { profileId: PROFILE.id });
   assert.equal(connected[0]?.profile.id, PROFILE.id);
+  const connectedProfile = connected[0]?.profile;
+  assert.equal(connectedProfile?.kind, "remote");
+  assert.deepEqual(connectedProfile?.kind === "remote" ? connectedProfile.transport : undefined, {
+    kind: "tls",
+    url: "wss://new-runtime.example.com/",
+  });
   assert.equal(connected[0]?.credential, "new-token");
   assert.equal((await catalog.resolve(PROFILE.id)).credential, "new-token");
+  assert.deepEqual(finalized, [PROFILE.id]);
   assert.deepEqual((await catalog.read()).profiles.map((profile) => profile.id), [PROFILE.id]);
+});
+
+test("restores an existing profile when its replacement cannot connect", async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  await catalog.create(PROFILE, "old-token");
+  await writeFile(
+    join(root, "runtime-host-profile-selection.json"),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      defaultProfileId: "local",
+      enabledRemoteProfileIds: [PROFILE.id],
+    })}\n`,
+  );
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  const enabled: ResolvedRuntimeHostProfile[] = [];
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async (target) => {
+      enabled.push(target);
+      if (target.credential === "new-token") throw new Error("replacement unavailable");
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => assert.fail("an unconnected credential cannot be finalized"),
+  });
+
+  await assert.rejects(
+    () =>
+      service.addAndEnableVerified({
+        profile: {
+          ...PROFILE,
+          id: "replacement",
+          transport: { kind: "tls", url: "wss://new-runtime.example.com" },
+        },
+        credential: "new-token",
+      }),
+    /replacement unavailable/,
+  );
+
+  assert.deepEqual(await catalog.resolve(PROFILE.id), {
+    profile: {
+      ...PROFILE,
+      transport: { kind: "tls", url: "wss://runtime.example.com/" },
+    },
+    credential: "old-token",
+  });
+  assert.equal(enabled.at(-1)?.credential, "old-token");
 });
 
 test("keeps enablement, default selection, and removal as separate states", async () => {
@@ -360,6 +441,7 @@ test("keeps enablement, default selection, and removal as separate states", asyn
       disabled.push(profileId);
     },
     setDefault: (profileId) => defaults.push(profileId),
+    finalizePairing: async () => undefined,
   });
 
   await service.setEnabled(PROFILE.id, true);

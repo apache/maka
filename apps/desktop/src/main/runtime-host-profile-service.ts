@@ -43,7 +43,7 @@ export interface DesktopRuntimeHostProfileService {
   ): Promise<DesktopRuntimeHostProfileAddResult>;
   addAndEnableVerified(
     input: DesktopRuntimeHostProfileAddInput & { readonly credential: string },
-  ): Promise<{ readonly profileId: string; readonly profileName: string }>;
+  ): Promise<{ readonly profileId: string }>;
   setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
   setDefault(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
   remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
@@ -142,6 +142,7 @@ export function createDesktopRuntimeHostProfileService(input: {
   readonly states: () => readonly RuntimeHostDesktopTargetState[];
   readonly enable: (target: ResolvedRuntimeHostProfile) => Promise<void>;
   readonly disable: (profileId: string) => Promise<void>;
+  readonly finalizePairing: (profileId: string) => Promise<void>;
   readonly setDefault: (profileId: string) => void;
   readonly catalog?: RuntimeHostProfileCatalog;
 }): DesktopRuntimeHostProfileService {
@@ -264,8 +265,21 @@ export function createDesktopRuntimeHostProfileService(input: {
           (profile) => profile.rootId === value.profile.rootId,
         );
         if (existing) {
-          const profile = { ...existing, name: value.profile.name };
-          await catalog.save(profile, value.credential);
+          const previousTarget = await catalog.resolve(existing.id);
+          if (previousTarget.profile.kind !== "remote" || !previousTarget.credential) {
+            throw new Error("The existing Runtime Host profile has no access credential");
+          }
+          const wasEnabled = preferences.enabledRemoteProfileIds.includes(existing.id);
+          const previousPreferences = preferences;
+          const profile = { ...value.profile, id: existing.id };
+          const rebound = await catalog.rebindIfCurrent(
+            previousTarget,
+            profile,
+            value.credential,
+          );
+          if (!rebound.rebound) {
+            throw new Error("Runtime Host profile changed before it could be updated");
+          }
           const target = await catalog.resolve(profile.id);
           try {
             await input.enable(target);
@@ -289,8 +303,48 @@ export function createDesktopRuntimeHostProfileService(input: {
               }
               preferences = next;
             }
+          } catch (error) {
+            const rollbackFailures: unknown[] = [];
+            await input.disable(profile.id).catch((failure) => rollbackFailures.push(failure));
+            const restored = await catalog
+              .rebindIfCurrent(target, existing, previousTarget.credential)
+              .catch((failure) => {
+                rollbackFailures.push(failure);
+                return undefined;
+              });
+            if (restored && !restored.rebound) {
+              rollbackFailures.push(new Error("Runtime Host profile changed during rollback"));
+            }
+            if (restored?.rebound && wasEnabled) {
+              await input.enable(previousTarget).catch((failure) => rollbackFailures.push(failure));
+            }
+            if (preferences !== previousPreferences) {
+              await persistIfCurrentTarget(
+                catalog,
+                profilePath,
+                preferencesPath,
+                previousTarget,
+                previousPreferences,
+              ).then(
+                () => {
+                  preferences = previousPreferences;
+                },
+                (failure) => rollbackFailures.push(failure),
+              );
+            }
+            unavailable.set(profile.id, asError(error));
+            if (rollbackFailures.length > 0) {
+              throw new AggregateError(
+                [error, ...rollbackFailures],
+                "Runtime Host setup failed and its previous profile could not be restored",
+              );
+            }
+            throw error;
+          }
+          try {
+            await input.finalizePairing(profile.id);
             unavailable.delete(profile.id);
-            return { profileId: profile.id, profileName: profile.name };
+            return { profileId: profile.id };
           } catch (error) {
             unavailable.set(profile.id, asError(error));
             throw error;
@@ -311,8 +365,6 @@ export function createDesktopRuntimeHostProfileService(input: {
           const next = withEnabled(preferences, profile.id, true);
           await persistIfCurrentTarget(catalog, profilePath, preferencesPath, target, next);
           preferences = next;
-          unavailable.delete(profile.id);
-          return { profileId: profile.id, profileName: profile.name };
         } catch (failure) {
           const rollbackFailures: unknown[] = [];
           await input.disable(profile.id).catch((error) => rollbackFailures.push(error));
@@ -325,6 +377,14 @@ export function createDesktopRuntimeHostProfileService(input: {
             );
           }
           throw failure;
+        }
+        try {
+          await input.finalizePairing(profile.id);
+          unavailable.delete(profile.id);
+          return { profileId: profile.id };
+        } catch (error) {
+          unavailable.set(profile.id, asError(error));
+          throw error;
         }
       });
     },

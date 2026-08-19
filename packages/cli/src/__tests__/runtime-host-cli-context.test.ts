@@ -242,6 +242,9 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
         removeIfCurrent: async () => {
           throw new Error('unexpected write');
         },
+        rebindIfCurrent: async () => {
+          throw new Error('unexpected write');
+        },
       },
       loadClientInstanceId: async () => '11111111-1111-4111-8111-111111111111',
       readConnectionCatalog: async () => ({ revision: 1, defaultTarget: null, connections: [] }),

@@ -28,6 +28,7 @@ export interface RuntimeHostDesktopManager {
   ownsScope(scope: { readonly hostId: string; readonly targetEpoch: string }): boolean;
   defaultProfileId(): string;
   handleBotIncomingMessage(message: BotIncomingMessage): Promise<void>;
+  finalizePairing(profileId: string): Promise<void>;
   stopSession(ref: DesktopTargetSessionRef): Promise<void>;
   closeTranscript(consumerId: string, targetId: number): Promise<void>;
   acknowledgeTranscript(
@@ -228,6 +229,19 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       this.#requireLifecycle(target),
     );
     await candidate.botIncoming.handleBotIncomingMessage(message);
+  }
+
+  async finalizePairing(profileId: string): Promise<void> {
+    const target = this.#requireTarget(profileId);
+    if (target.target.profile.kind !== 'remote') {
+      throw new Error('Only remote Runtime Host profiles can finalize pairing');
+    }
+    const lifecycle = this.#requireLifecycle(target);
+    const candidate = await this.#waitForReadyCandidate(lifecycle);
+    if (!target.valid || candidate.client.hostId !== target.target.profile.rootId) {
+      throw new Error('Runtime Host target changed before pairing was finalized');
+    }
+    await candidate.client.finalizeAccessCredential();
   }
 
   current(profileId?: string): RuntimeHostDesktopTargetSnapshot | undefined {

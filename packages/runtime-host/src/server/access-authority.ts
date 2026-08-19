@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import {
   type AccessCredentialIssueInput,
   type AccessCredentialIssueResult,
+  type AccessCredentialFinalizeResult,
   type AccessCredentialReplaceInput,
   type AccessCredentialReplaceResult,
   type AccessCredentialRevokeInput,
@@ -42,6 +43,7 @@ export interface RuntimeHostAccessAuthority {
   issue(input: AccessCredentialIssueInput): Promise<AccessCredentialIssueResult>;
   replace(input: AccessCredentialReplaceInput): Promise<AccessCredentialReplaceResult>;
   revoke(input: AccessCredentialRevokeInput): Promise<AccessCredentialRevokeResult>;
+  finalize(credentialId: string): Promise<AccessCredentialFinalizeResult>;
   subscribeRevocations(listener: (credentialId: string) => void): () => void;
 }
 
@@ -187,6 +189,36 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     });
   }
 
+  finalize(credentialId: string): Promise<AccessCredentialFinalizeResult> {
+    return this.#mutate(async () => {
+      const retained = this.#file.credentials.find(
+        (credential) => credential.credentialId === credentialId && credential.status === 'active',
+      );
+      if (!retained) {
+        throw new RuntimeHostAccessInputError('The current access credential is no longer active');
+      }
+      const revoked = this.#file.credentials.filter(
+        (credential) =>
+          credential.credentialId !== credentialId &&
+          credential.status === 'active' &&
+          credential.principalKind === retained.principalKind &&
+          credential.principalId === retained.principalId,
+      );
+      if (revoked.length > 0) {
+        await this.#commit(
+          createAccessCredentialFile(
+            this.#file.credentials.filter((credential) => !revoked.includes(credential)),
+          ),
+        );
+        for (const credential of revoked) this.#publishRevocation(credential.credentialId);
+      }
+      return {
+        credentialId,
+        revokedCredentialIds: revoked.map((credential) => credential.credentialId),
+      };
+    });
+  }
+
   subscribeRevocations(listener: (credentialId: string) => void): () => void {
     this.#revocationListeners.add(listener);
     return () => this.#revocationListeners.delete(listener);
@@ -288,15 +320,44 @@ export async function revokeAccessCredential(
   }
 }
 
+export async function finalizeAccessCredential(
+  authority: RuntimeHostAccessAuthority | undefined,
+  credentialId: string | undefined,
+): Promise<OperationOutcome<'access.credential.finalize'>> {
+  if (!authority) return unavailable('finalize');
+  if (!credentialId) {
+    return {
+      ok: false,
+      error: { code: 'invalid_request', message: 'A remote access credential is required' },
+    };
+  }
+  try {
+    return { ok: true, result: await authority.finalize(credentialId) };
+  } catch (error) {
+    if (error instanceof RuntimeHostAccessInputError) {
+      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+    }
+    return {
+      ok: false,
+      error: {
+        code: 'persistence_failed',
+        message: 'Access credential pairing could not be finalized',
+      },
+    };
+  }
+}
+
 function unavailable(operation: 'issue'): OperationOutcome<'access.credential.issue'>;
 function unavailable(operation: 'replace'): OperationOutcome<'access.credential.replace'>;
 function unavailable(operation: 'revoke'): OperationOutcome<'access.credential.revoke'>;
+function unavailable(operation: 'finalize'): OperationOutcome<'access.credential.finalize'>;
 function unavailable(
-  _operation: 'issue' | 'replace' | 'revoke',
+  _operation: 'issue' | 'replace' | 'revoke' | 'finalize',
 ):
   | OperationOutcome<'access.credential.issue'>
   | OperationOutcome<'access.credential.replace'>
-  | OperationOutcome<'access.credential.revoke'> {
+  | OperationOutcome<'access.credential.revoke'>
+  | OperationOutcome<'access.credential.finalize'> {
   return {
     ok: false,
     error: {

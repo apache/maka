@@ -15,7 +15,8 @@ import {
 } from '@maka/runtime-host/protocol';
 import { withFileUpdateLock } from '@maka/storage/file-update-lock';
 import {
-  replaceRuntimeHostAccessCredential,
+  issueRuntimeHostAccessCredential,
+  revokeRuntimeHostAccessCredential,
   type RuntimeHostAccessPreset,
 } from './runtime-host-access-command.js';
 import {
@@ -51,7 +52,8 @@ interface RuntimeHostSetupDeps {
   readonly manageService: typeof manageRuntimeHostService;
   readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
   readonly prepareDeployment: typeof prepareRuntimeHostManagedPackageDeployment;
-  readonly replaceCredential: typeof replaceRuntimeHostAccessCredential;
+  readonly issueCredential: typeof issueRuntimeHostAccessCredential;
+  readonly revokeCredential: typeof revokeRuntimeHostAccessCredential;
   readonly verifyCredential: typeof verifyRuntimeHostSetupCredential;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
@@ -76,7 +78,8 @@ export async function runRuntimeHostSetupCli(
     manageService: manageRuntimeHostService,
     createBackend: createPlatformRuntimeHostServiceBackend,
     prepareDeployment: prepareRuntimeHostManagedPackageDeployment,
-    replaceCredential: replaceRuntimeHostAccessCredential,
+    issueCredential: issueRuntimeHostAccessCredential,
+    revokeCredential: revokeRuntimeHostAccessCredential,
     verifyCredential: verifyRuntimeHostSetupCredential,
     writeOutput: (value) => process.stdout.write(value),
     writeError: (value) => process.stderr.write(value),
@@ -153,9 +156,9 @@ async function runRuntimeHostSetupLocked(
   }
 
   emit({ kind: 'progress', phase: 'pairing_client' });
-  let paired: Awaited<ReturnType<typeof replaceRuntimeHostAccessCredential>>;
+  let paired: Awaited<ReturnType<typeof issueRuntimeHostAccessCredential>>;
   try {
-    paired = await deps.replaceCredential({
+    paired = await deps.issueCredential({
       rootPath: config.rootPath,
       principalKind: 'remote_owner',
       principalId: options.principalId,
@@ -174,19 +177,34 @@ async function runRuntimeHostSetupLocked(
 
   const endpoint = websocketUrl(config.websocket);
   emit({ kind: 'progress', phase: 'verifying_connection' });
-  await deps.verifyCredential({
-    endpoint,
-    rootId: paired.rootId,
-    credential: paired.credential,
-  });
-  emit({
-    kind: 'complete',
-    version: deployment.version,
-    rootId: paired.rootId,
-    endpoint,
-    credentialId: paired.credentialId,
-    credential: paired.credential,
-  });
+  try {
+    await deps.verifyCredential({
+      endpoint,
+      rootId: paired.rootId,
+      credential: paired.credential,
+    });
+    emit({
+      kind: 'complete',
+      version: deployment.version,
+      rootId: paired.rootId,
+      endpoint,
+      credentialId: paired.credentialId,
+      credential: paired.credential,
+    });
+  } catch (error) {
+    try {
+      await deps.revokeCredential({
+        rootPath: config.rootPath,
+        credentialId: paired.credentialId,
+      });
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        'Runtime Host pairing failed and its candidate credential could not be revoked',
+      );
+    }
+    throw error;
+  }
 }
 
 async function assertCompatibleExistingVersion(
@@ -210,12 +228,19 @@ async function assertCompatibleExistingVersion(
       { cause: error },
     );
   }
-  if (existingVersion !== version) {
+  if (
+    existingVersion !== version &&
+    !(isDevelopmentPackageVersion(existingVersion) && isDevelopmentPackageVersion(version))
+  ) {
     throw new RuntimeHostSetupError(
       'version_change_requires_update',
       `Runtime Host ${String(existingVersion)} is already installed; changing to ${version} requires the update workflow`,
     );
   }
+}
+
+function isDevelopmentPackageVersion(value: unknown): value is string {
+  return typeof value === 'string' && /(?:-|\.)dev\.[0-9a-f]{12}$/u.test(value);
 }
 
 async function verifyRuntimeHostSetupCredential(input: {

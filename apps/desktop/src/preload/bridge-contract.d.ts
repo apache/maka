@@ -347,20 +347,17 @@ export type DesktopRuntimeHostOnboardingSnapshot =
   | {
       readonly kind: 'running';
       readonly revision: number;
-      readonly destination: string;
       readonly phase: DesktopRuntimeHostOnboardingPhase;
     }
   | {
       readonly kind: 'failed';
       readonly revision: number;
-      readonly destination: string;
       readonly message: string;
     }
   | {
       readonly kind: 'complete';
       readonly revision: number;
       readonly profileId: string;
-      readonly profileName: string;
     };
 
 export interface DesktopProjectCapabilities {
