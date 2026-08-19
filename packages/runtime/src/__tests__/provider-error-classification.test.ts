@@ -99,6 +99,10 @@ describe('Provider error classification', () => {
       Object.assign(new Error('request aborted because the prompt is too long'), {
         data: { error: { code: 'context_length_exceeded' } },
       }),
+      Object.assign(new Error('proxy service unavailable'), {
+        statusCode: 503,
+        data: { error: { code: 'context_length_exceeded' } },
+      }),
     ];
 
     for (const error of cases) {

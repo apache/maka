@@ -155,7 +155,8 @@ function providerRetryMetadataFromFacts(facts: ProviderErrorFacts): ProviderRetr
     errorClass === 'Auth' ||
     errorClass === 'ProviderBilling' ||
     errorClass === 'ProviderPermission' ||
-    errorClass === 'UsageLimit'
+    errorClass === 'UsageLimit' ||
+    errorClass === 'ContextLength'
   ) {
     return { retryable: false };
   }
