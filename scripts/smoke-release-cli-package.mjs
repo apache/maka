@@ -17,13 +17,15 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
+import {
+  collectRuntimeHostFailureDiagnostic,
+  renderRuntimeHostFailureDiagnostic,
+} from './release-cli-runtime-host-diagnostics.mjs';
 import { npmSpawnOptions } from './npm-spawn.mjs';
 
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const PROCESS_TIMEOUT_MS = 90_000;
 const RUNTIME_HOST_SHUTDOWN_TIMEOUT_MS = 45_000;
-const RUNTIME_HOST_DIAGNOSTIC_MAX_BYTES = 32 * 1024;
-const WINDOWS_ACL_DIAGNOSTIC_MAX_CHARS = 8 * 1024;
 const MODEL_ID = 'maka-release-smoke-model';
 const CONNECTION_SLUG = 'maka-release-smoke';
 const API_KEY = 'maka-release-smoke-key';
@@ -805,135 +807,9 @@ async function settleRuntimeHost(packageRoot, rootPath, requireNaturalShutdown) 
 
 async function reportRuntimeHostFailureDiagnostics(packageRoot, rootPath) {
   if (process.platform !== 'win32') return;
-  const diagnostic = {
-    schemaVersion: 1,
-    platform: process.platform,
-    architecture: process.arch,
-    runner: compactObject({
-      imageOS: process.env.ImageOS,
-      imageVersion: process.env.ImageVersion,
-      name: process.env.RUNNER_NAME,
-      architecture: process.env.RUNNER_ARCH,
-      environment: process.env.RUNNER_ENVIRONMENT,
-    }),
-    rootPath,
-  };
-  try {
-    const authority = await importInstalled(
-      packageRoot,
-      'node_modules/@maka/storage/dist/root-authority.js',
-    );
-    const capability = await authority.resolveStorageRoot({ path: rootPath, kind: 'interactive' });
-    const { controlRoot, controlDirectory } =
-      await authority.prepareStorageRootControlDirectory(capability);
-    const registrationPath = join(controlDirectory, 'registration.json');
-    Object.assign(diagnostic, {
-      rootId: capability.rootId,
-      controlRoot,
-      controlDirectory,
-      registration: readSafeRegistrationSummary(registrationPath, capability.rootId),
-      paths: [rootPath, controlRoot, controlDirectory, registrationPath].map(inspectDiagnosticPath),
-      accessControl: [rootPath, controlRoot, controlDirectory]
-        .filter((path) => existsSync(path))
-        .map(readWindowsAccessControl),
-    });
-  } catch (error) {
-    diagnostic.diagnosticError = summarizeDiagnosticError(error);
-  }
-  const rendered = truncateUtf8Text(
-    JSON.stringify(diagnostic),
-    RUNTIME_HOST_DIAGNOSTIC_MAX_BYTES,
-    '<diagnostic truncated>',
-  );
+  const diagnostic = await collectRuntimeHostFailureDiagnostic(packageRoot, rootPath);
+  const rendered = renderRuntimeHostFailureDiagnostic(diagnostic);
   writeSync(2, `[release-cli-validation] Runtime Host failure diagnostics: ${rendered}\n`);
-}
-
-function readSafeRegistrationSummary(path, expectedRootId) {
-  if (!existsSync(path)) return { state: 'absent' };
-  try {
-    const registration = JSON.parse(readFileSync(path, 'utf8'));
-    return compactObject({
-      state: 'present',
-      schemaVersion: registration.schemaVersion,
-      rootIdMatches: registration.rootId === expectedRootId,
-      hostEpoch: registration.hostEpoch,
-      lifecycleState: registration.state,
-      lifecycleMode: registration.lifecycleMode,
-      pid: registration.pid,
-      endpointKind:
-        typeof registration.endpoint === 'string' &&
-        registration.endpoint.startsWith('\\\\.\\pipe\\')
-          ? 'windows_named_pipe'
-          : 'other',
-    });
-  } catch (error) {
-    return { state: 'unreadable', error: summarizeDiagnosticError(error) };
-  }
-}
-
-function inspectDiagnosticPath(path) {
-  try {
-    const pathStat = statSync(path);
-    return {
-      path,
-      state: 'present',
-      kind: pathStat.isDirectory() ? 'directory' : pathStat.isFile() ? 'file' : 'other',
-      size: pathStat.size,
-      mode: pathStat.mode,
-    };
-  } catch (error) {
-    return { path, state: 'unavailable', error: summarizeDiagnosticError(error) };
-  }
-}
-
-function readWindowsAccessControl(path) {
-  const systemRoot = process.env.SystemRoot;
-  if (!systemRoot) return { path, error: { message: 'SystemRoot is unavailable' } };
-  try {
-    const output = execFileSync(join(systemRoot, 'System32', 'icacls.exe'), [path], {
-      encoding: 'utf8',
-      timeout: 10_000,
-      windowsHide: true,
-    });
-    return { path, output: output.slice(0, WINDOWS_ACL_DIAGNOSTIC_MAX_CHARS).trim() };
-  } catch (error) {
-    return {
-      path,
-      error: summarizeDiagnosticError(error),
-      stdout:
-        typeof error?.stdout === 'string'
-          ? error.stdout.slice(0, WINDOWS_ACL_DIAGNOSTIC_MAX_CHARS).trim()
-          : undefined,
-      stderr:
-        typeof error?.stderr === 'string'
-          ? error.stderr.slice(0, WINDOWS_ACL_DIAGNOSTIC_MAX_CHARS).trim()
-          : undefined,
-    };
-  }
-}
-
-function compactObject(value) {
-  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
-}
-
-function summarizeDiagnosticError(error) {
-  if (!(error instanceof Error)) return { message: String(error) };
-  return compactObject({
-    name: error.name,
-    code: error.code,
-    message: error.message,
-  });
-}
-
-function truncateUtf8Text(value, maximumBytes, marker) {
-  const encoded = Buffer.from(value, 'utf8');
-  if (encoded.byteLength <= maximumBytes) return value;
-  const markerBytes = Buffer.byteLength(marker, 'utf8');
-  const prefix = encoded
-    .subarray(0, Math.max(0, maximumBytes - markerBytes))
-    .toString('utf8')
-    .replace(/\uFFFD$/u, '');
-  return `${prefix}${marker}`;
 }
 
 async function terminateRegisteredProcess(pid) {
