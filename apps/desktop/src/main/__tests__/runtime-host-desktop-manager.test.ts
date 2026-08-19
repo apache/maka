@@ -219,6 +219,31 @@ test('replays pairing finalization after an unknown commit and reconnect', async
   await manager.close();
 });
 
+test('does not replay a pairing command rejected before dispatch', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remoteHostId = 'a'.repeat(64);
+  const remote = candidateHarness({
+    hostId: remoteHostId,
+    finalizeFailures: [
+      new RuntimeHostOperationError(
+        'access.credential.finalize',
+        'host_draining',
+        'Runtime Host is draining',
+      ),
+    ],
+  });
+  const queue = [local.candidate, remote.candidate];
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    { startCandidate: async () => ready(queue.shift()!) },
+  );
+  await manager.enable(remoteTarget('office'));
+
+  await assert.rejects(() => manager.finalizePairing('office'), /draining/u);
+  assert.equal(remote.finalizeCalls, 1);
+  await manager.close();
+});
+
 test('coalesces concurrent enable requests for one remote profile', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
   const remote = candidateHarness({ hostId: 'host-b', lifecycleMode: 'remote' });

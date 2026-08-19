@@ -20,7 +20,12 @@ export interface RuntimeHostManagedPackageDeployment {
   readonly version: string;
   readonly root: string;
   readonly cliPath: string;
+  commit(): Promise<void>;
   rollback(): Promise<void>;
+}
+
+export function isRuntimeHostDevelopmentPackageVersion(value: unknown): value is string {
+  return typeof value === 'string' && /(?:-|\.)dev\.[0-9a-f]{12}$/u.test(value);
 }
 
 export async function prepareRuntimeHostManagedPackageDeployment(
@@ -211,9 +216,27 @@ function deployment(
     version,
     root,
     cliPath,
+    commit: () => pruneInactiveDevelopmentPackages(dirname(packageRoot), version),
     rollback: () =>
       created ? rm(packageRoot, { recursive: true, force: true }) : Promise.resolve(),
   };
+}
+
+async function pruneInactiveDevelopmentPackages(
+  versionsRoot: string,
+  retainedVersion: string,
+): Promise<void> {
+  if (!isRuntimeHostDevelopmentPackageVersion(retainedVersion)) return;
+  await Promise.all(
+    (await readdir(versionsRoot, { withFileTypes: true }))
+      .filter(
+        (entry) =>
+          entry.isDirectory() &&
+          entry.name !== retainedVersion &&
+          isRuntimeHostDevelopmentPackageVersion(entry.name),
+      )
+      .map((entry) => rm(join(versionsRoot, entry.name), { recursive: true, force: true })),
+  );
 }
 
 function assertVersion(version: string): void {

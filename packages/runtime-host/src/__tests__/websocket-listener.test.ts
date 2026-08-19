@@ -173,6 +173,7 @@ test('credential revocation during WebSocket upgrade cannot admit stale authorit
     revoke: async () => assert.fail('Credential revoke is not expected'),
     finalize: async () => assert.fail('Credential finalize is not expected'),
     subscribeRevocations: () => () => undefined,
+    close: async () => undefined,
   };
   const listener = await startRuntimeHostWebSocketListener({
     host: '127.0.0.1',

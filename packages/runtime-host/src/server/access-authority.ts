@@ -50,6 +50,7 @@ export interface RuntimeHostAccessAuthority {
   revoke(input: AccessCredentialRevokeInput): Promise<AccessCredentialRevokeResult>;
   finalize(credentialId: string): Promise<AccessCredentialFinalizeResult>;
   subscribeRevocations(listener: (credentialId: string) => void): () => void;
+  close(): Promise<void>;
 }
 
 export async function openRuntimeHostAccessAuthority(
@@ -70,6 +71,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   #file: AccessCredentialFile;
   #mutation = Promise.resolve();
   #expiryTimer: NodeJS.Timeout | undefined;
+  #closed = false;
   readonly #revocationListeners = new Set<(credentialId: string) => void>();
 
   constructor(controlDirectory: string, path: string, file: AccessCredentialFile) {
@@ -80,6 +82,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   }
 
   authenticate(credential: string): RuntimeHostConnectionAuthority | undefined {
+    if (this.#closed) return undefined;
     const candidate = hashCredential(credential);
     let match: StoredAccessCredential | undefined;
     for (const stored of this.#file.credentials) {
@@ -259,11 +262,25 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   }
 
   subscribeRevocations(listener: (credentialId: string) => void): () => void {
+    if (this.#closed) return () => undefined;
     this.#revocationListeners.add(listener);
     return () => this.#revocationListeners.delete(listener);
   }
 
+  close(): Promise<void> {
+    if (!this.#closed) {
+      this.#closed = true;
+      if (this.#expiryTimer) clearTimeout(this.#expiryTimer);
+      this.#expiryTimer = undefined;
+      this.#revocationListeners.clear();
+    }
+    return this.#mutation;
+  }
+
   #mutate<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.#closed) {
+      return Promise.reject(new Error('Runtime Host access authority is closed'));
+    }
     const result = this.#mutation.then(operation, operation);
     this.#mutation = result.then(
       () => undefined,
@@ -297,6 +314,10 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
 
   #schedulePendingExpiry(retryMs?: number): void {
     if (this.#expiryTimer) clearTimeout(this.#expiryTimer);
+    if (this.#closed) {
+      this.#expiryTimer = undefined;
+      return;
+    }
     const nextExpiry = this.#file.credentials.reduce<number | undefined>((earliest, credential) => {
       if (credential.status !== 'pending') return earliest;
       const expiresAt = Date.parse(credential.expiresAt!);
@@ -310,7 +331,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       () => {
         this.#expiryTimer = undefined;
         void this.#mutate(() => this.#expirePending()).catch(() => {
-          this.#schedulePendingExpiry(1_000);
+          if (!this.#closed) this.#schedulePendingExpiry(1_000);
         });
       },
       retryMs ?? Math.max(0, nextExpiry - Date.now()),

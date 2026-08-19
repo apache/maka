@@ -739,12 +739,13 @@ function pairingFinalizeRetry(error: unknown): boolean {
   if (
     error instanceof RuntimeHostRequestInterruptedError &&
     error.operation === 'access.credential.finalize' &&
-    error.reason === 'connection_lost'
+    error.reason === 'connection_lost' &&
+    error.dispatch === 'dispatched'
   ) {
     return true;
   }
   if (error instanceof RuntimeHostOperationError && error.operation === 'access.credential.finalize') {
-    return error.code === 'commit_outcome_unknown' || error.code === 'host_draining';
+    return error.code === 'commit_outcome_unknown';
   }
   return false;
 }

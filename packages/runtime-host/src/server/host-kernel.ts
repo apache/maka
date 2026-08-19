@@ -232,6 +232,7 @@ export class RuntimeHostKernel {
           await host.#abortStartup();
         }
       } else {
+        await options.accessAuthority?.close().catch(() => undefined);
         await owner.close();
       }
       throw error;
@@ -850,6 +851,8 @@ export class RuntimeHostKernel {
     this.#assertShutdownCanContinue();
     await this.#listeners?.cleanup().catch((error: unknown) => errors.push(error));
     this.#assertShutdownCanContinue();
+    await this.#options.accessAuthority?.close().catch((error: unknown) => errors.push(error));
+    this.#assertShutdownCanContinue();
     await removeHostRegistration(this.#options.owner.controlDirectory, this.hostEpoch).catch(
       (error: unknown) => errors.push(error),
     );
@@ -871,6 +874,7 @@ export class RuntimeHostKernel {
     for (const transport of this.#acceptedTransports) transport.abort();
     await this.#listeners?.closeAdmission().catch(() => undefined);
     await this.#listeners?.cleanup().catch(() => undefined);
+    await this.#options.accessAuthority?.close().catch(() => undefined);
     await removeHostRegistration(this.#options.owner.controlDirectory, this.hostEpoch).catch(
       () => undefined,
     );

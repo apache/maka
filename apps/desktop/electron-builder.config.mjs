@@ -1,8 +1,24 @@
+import { readFileSync } from 'node:fs';
+
+const cliManifest = JSON.parse(
+  readFileSync(new URL('../../packages/cli/package.json', import.meta.url), 'utf8'),
+);
+if (
+  cliManifest.name !== 'maka-agent' ||
+  typeof cliManifest.version !== 'string' ||
+  !/^[0-9][0-9A-Za-z.+-]*$/u.test(cliManifest.version)
+) {
+  throw new Error('Desktop packaging requires a valid Maka CLI release identity');
+}
+
 export default {
   appId: 'com.maka.desktop',
   productName: 'Maka',
   artifactName: 'Maka-${version}-mac-${arch}.${ext}',
   asar: true,
+  extraMetadata: {
+    runtimeHostSetupPackage: `maka-agent@${cliManifest.version}`,
+  },
   directories: {
     output: 'release',
   },

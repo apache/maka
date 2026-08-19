@@ -612,6 +612,67 @@ test('expired pairing candidates are denied and removed from durable access stat
   }
 });
 
+test('closed access authority cannot expire credentials owned by its successor', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-close-'));
+  const path = join(directory, 'runtime-host-access.json');
+  const storedCredential = (
+    credentialId: string,
+    credential: string,
+    status: 'pending' | 'active',
+    expiresAt?: string,
+  ) => ({
+    credentialId,
+    credentialHash: createHash('sha256').update(credential).digest('hex'),
+    principalId: 'desktop-client',
+    principalKind: 'remote_owner',
+    status,
+    operationGrants: ['host.status', 'access.credential.finalize'],
+    canPublishClientCapabilities: false,
+    canUseHostPaths: false,
+    createdAt: new Date().toISOString(),
+    ...(expiresAt ? { expiresAt } : {}),
+  });
+  try {
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        credentials: [
+          storedCredential(
+            'pending-credential',
+            'maka_rh_pending',
+            'pending',
+            new Date(Date.now() + 100).toISOString(),
+          ),
+        ],
+      })}\n`,
+      { mode: 0o600 },
+    );
+    const authority = await openRuntimeHostAccessAuthority(directory);
+    await authority.close();
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        credentials: [storedCredential('successor-credential', 'maka_rh_successor', 'active')],
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 200));
+
+    const file = JSON.parse(await readFile(path, 'utf8')) as {
+      credentials?: Array<{ credentialId?: string }>;
+    };
+    assert.deepEqual(
+      file.credentials?.map((credential) => credential.credentialId),
+      ['successor-credential'],
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('keeps a formerly accepted local-only grant inert when opening an existing access file', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-legacy-'));
   const credential = 'maka_rh_existing';

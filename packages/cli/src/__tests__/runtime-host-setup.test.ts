@@ -181,12 +181,22 @@ test('managed setup replaces one exact development package with another', async 
   const nextPackage = await createReleasePackage(base, nextVersion);
   const clientDataRoot = join(base, 'config', 'Maka');
   const stateRoot = join(clientDataRoot, 'workspaces', 'default');
+  const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
+  const deploymentPathOptions = {
+    env: { XDG_DATA_HOME: join(base, 'data') },
+    homeDir: join(base, 'home'),
+    platform: 'linux' as const,
+  };
+  const previousDeployment = await prepareRuntimeHostManagedPackageDeployment(
+    { serviceId, sourcePackageRoot: previousPackage, version: previousVersion },
+    deploymentPathOptions,
+  );
   const previousConfig: RuntimeHostManagedServiceConfig = {
     schemaVersion: 1,
     rootPath: stateRoot,
     projectDirectoryRoots: [],
     websocket: { host: '127.0.0.1', port: 42_111, path: '/runtime-host' },
-    launch: { nodePath: process.execPath, cliPath: join(previousPackage, 'dist', 'cli.js') },
+    launch: { nodePath: process.execPath, cliPath: previousDeployment.cliPath },
   };
   let installedCliPath: string | undefined;
 
@@ -211,11 +221,7 @@ test('managed setup replaces one exact development package with another', async 
         });
       },
       prepareDeployment: (input) =>
-        prepareRuntimeHostManagedPackageDeployment(input, {
-          env: { XDG_DATA_HOME: join(base, 'data') },
-          homeDir: join(base, 'home'),
-          platform: 'linux',
-        }),
+        prepareRuntimeHostManagedPackageDeployment(input, deploymentPathOptions),
       replaceCredential: async () => ({
         rootId: 'a'.repeat(64),
         credential: 'new-development-secret',
@@ -233,6 +239,7 @@ test('managed setup replaces one exact development package with another', async 
 
   assert.equal(exitCode, 0);
   assert.match(installedCliPath ?? '', /0\.2\.0-dev\.222222222222/u);
+  assert.deepEqual(await readdir(join(previousDeployment.root, 'versions')), [nextVersion]);
 });
 
 test('managed setup removes a newly copied package when service installation fails', async (t) => {

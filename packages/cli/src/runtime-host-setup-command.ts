@@ -21,6 +21,7 @@ import {
   type RuntimeHostAccessPreset,
 } from './runtime-host-access-command.js';
 import {
+  isRuntimeHostDevelopmentPackageVersion,
   prepareRuntimeHostManagedPackageDeployment,
   RuntimeHostManagedDeploymentError,
 } from './runtime-host-managed-deployment.js';
@@ -190,6 +191,7 @@ async function runRuntimeHostSetupLocked(
       rootId: paired.rootId,
       credential: paired.credential,
     });
+    await deployment.commit().catch(() => undefined);
     emit({
       kind: 'complete',
       version: deployment.version,
@@ -239,17 +241,16 @@ async function assertCompatibleExistingVersion(
   }
   if (
     existingVersion !== version &&
-    !(isDevelopmentPackageVersion(existingVersion) && isDevelopmentPackageVersion(version))
+    !(
+      isRuntimeHostDevelopmentPackageVersion(existingVersion) &&
+      isRuntimeHostDevelopmentPackageVersion(version)
+    )
   ) {
     throw new RuntimeHostSetupError(
       'version_change_requires_update',
       `Runtime Host ${String(existingVersion)} is already installed; changing to ${version} requires the update workflow`,
     );
   }
-}
-
-function isDevelopmentPackageVersion(value: unknown): value is string {
-  return typeof value === 'string' && /(?:-|\.)dev\.[0-9a-f]{12}$/u.test(value);
 }
 
 async function verifyRuntimeHostSetupCredential(input: {

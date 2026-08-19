@@ -3,7 +3,6 @@
   "productName": "Maka",
   "description": "A local-first agent workspace built for real work.",
   "version": "0.1.11",
-  "runtimeHostSetupPackage": "maka-agent@0.1.0-beta.1",
   "author": "The Maka Authors",
   "license": "Apache-2.0",
   "private": true,

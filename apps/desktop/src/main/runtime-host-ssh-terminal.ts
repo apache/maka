@@ -592,9 +592,10 @@ function runtimeHostSetupRemoteCommand(
     '--json',
   ].map(quotePosix).join(' ');
   const command = setupPackage.removeAfterSetup
-    ? `status=0; ${setup} || status=$?; rm -f -- ${quotePosix(setupPackage.removeAfterSetup)}; exit "$status"`
+    ? `maka_setup_exit=0; ${setup} || maka_setup_exit=$?; rm -f -- ${quotePosix(setupPackage.removeAfterSetup)}; exit "$maka_setup_exit"`
     : `exec ${setup}`;
-  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(command)}`;
+  const loginCommand = `exec /bin/sh -c ${quotePosix(command)}`;
+  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(loginCommand)}`;
 }
 
 function quotePosix(value: string): string {

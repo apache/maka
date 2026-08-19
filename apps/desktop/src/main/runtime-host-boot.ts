@@ -318,10 +318,19 @@ function runtimeHostSetupPackage(): DesktopRuntimeHostSetupPackage {
   if (!app.isPackaged && process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE) {
     return { kind: "development_archive", path: process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE };
   }
-  const manifest = JSON.parse(
-    readFileSync(join(app.getAppPath(), "package.json"), "utf8"),
-  ) as { runtimeHostSetupPackage?: unknown };
-  const specifier = manifest.runtimeHostSetupPackage;
+  const manifestPath = app.isPackaged
+    ? join(app.getAppPath(), "package.json")
+    : join(app.getAppPath(), "..", "..", "packages", "cli", "package.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+    name?: unknown;
+    version?: unknown;
+    runtimeHostSetupPackage?: unknown;
+  };
+  const specifier = app.isPackaged
+    ? manifest.runtimeHostSetupPackage
+    : manifest.name === "maka-agent" && typeof manifest.version === "string"
+      ? `maka-agent@${manifest.version}`
+      : undefined;
   if (!isExactRuntimeHostSetupPackageSpecifier(specifier)) {
     throw new Error("Desktop does not declare an exact Runtime Host setup package");
   }

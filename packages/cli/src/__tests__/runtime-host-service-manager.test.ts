@@ -311,6 +311,7 @@ describe('managed Runtime Host service', () => {
     const unit = renderSystemdUnit(config);
     assert.match(unit, /"\/srv\/Maka 100%%"/u);
     assert.match(unit, /"Cash\$\$=\/home\/ada\/My Projects"/u);
+    assert.match(unit, /^Restart=always$/mu);
   });
 
   it('emits one stable machine error for an unmet service prerequisite', async () => {

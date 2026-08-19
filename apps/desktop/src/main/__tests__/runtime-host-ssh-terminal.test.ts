@@ -176,7 +176,9 @@ test('uploads a development release archive before running the same remote setup
   );
   assert.match(remoteCommand, /--defer-pairing-commit/u);
   assert.match(remoteCommand, /rm -f/u);
-  assert.doesNotMatch(remoteCommand, /status=0; 'exec'/u);
+  assert.match(remoteCommand, /exec \/bin\/sh -c/u);
+  assert.match(remoteCommand, /maka_setup_exit/u);
+  assert.doesNotMatch(remoteCommand, /\bstatus=/u);
   launches[1]?.pty.exit(255);
   await assert.rejects(setup, /exited with code 255/u);
 

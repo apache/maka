@@ -171,7 +171,7 @@ export function renderSystemdUnit(config: RuntimeHostManagedServiceConfig): stri
     '[Service]',
     'Type=simple',
     `ExecStart=${args.map(quoteSystemdArgument).join(' ')}`,
-    'Restart=on-failure',
+    'Restart=always',
     'RestartSec=2s',
     'KillMode=mixed',
     'TimeoutStopSec=45s',
