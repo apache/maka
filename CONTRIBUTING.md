@@ -152,8 +152,8 @@ npx knip --workspace apps/desktop
 npx knip --workspace packages/ui
 ```
 
-The CI job named `typecheck` runs all of them under `bash -e`, so the first
-failure aborts the rest — read which step failed, not the job name.
+The CI job named `test` runs all of them as separate steps, so read which step
+failed rather than relying on the job name.
 
 ## Branch naming
 

@@ -145,7 +145,7 @@ npx knip --workspace apps/desktop
 npx knip --workspace packages/ui
 ```
 
-CI 里名为 `typecheck` 的 job 会在 `bash -e` 下跑完上面全部命令，第一个失败会中止其余——要看是哪个 step 失败，别看 job 名字。
+CI 里名为 `test` 的 job 会把上面这些命令作为独立 step 依次执行，第一个失败会中止其余——要看是哪个 step 失败，别看 job 名字。
 
 ## 分支命名
 

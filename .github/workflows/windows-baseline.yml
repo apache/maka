@@ -1,11 +1,6 @@
 name: Windows baseline
 
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
-  # Nightly full storage suite (PR/push keep curated OS-sensitive gates only).
   schedule:
     - cron: '17 6 * * *'
   workflow_dispatch:
@@ -17,53 +12,12 @@ on:
 
 concurrency:
   group: windows-baseline-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      windows: ${{ steps.plan.outputs.windows }}
-      windows_runtime: ${{ steps.plan.outputs.windows_runtime }}
-      windows_storage: ${{ steps.plan.outputs.windows_storage }}
-      # Full suite is never selected by path plan — only schedule / dispatch.
-      windows_storage_full: ${{ steps.full.outputs.windows_storage_full }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - id: plan
-        name: Select affected Windows surfaces
-        env:
-          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.head.sha }}
-        run: |
-          # schedule / manual dispatch have no meaningful PR base; use full
-          # surface selection so the job still runs install+smoke+gates.
-          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            node scripts/ci-test-plan.mjs --full >> "$GITHUB_OUTPUT"
-          elif [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
-            node scripts/ci-test-plan.mjs --full >> "$GITHUB_OUTPUT"
-          else
-            node scripts/ci-test-plan.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
-          fi
-      - id: full
-        name: Decide full storage suite
-        run: |
-          if [[ "${{ github.event_name }}" == "schedule" ]]; then
-            echo "windows_storage_full=true" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.full_storage }}" == "true" ]]; then
-            echo "windows_storage_full=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "windows_storage_full=false" >> "$GITHUB_OUTPUT"
-          fi
-
   windows_baseline:
-    needs: changes
-    if: needs.changes.outputs.windows == 'true'
     name: windows_baseline (non-blocking)
     runs-on: windows-latest
     timeout-minutes: 45
@@ -125,17 +79,6 @@ jobs:
           Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/build.log"
           exit $exitCode
 
-      - id: inventory
-        name: Check Windows skip inventory
-        if: always() && steps.install.outcome == 'success'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          npm.cmd run windows:inventory *> "$env:WINDOWS_BASELINE_LOG_DIR/inventory.log"
-          $exitCode = $LASTEXITCODE
-          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/inventory.log"
-          exit $exitCode
-
       - id: smoke
         name: Run CLI and Electron startup smoke
         if: always() && steps.build.outcome == 'success'
@@ -153,7 +96,7 @@ jobs:
 
       - id: runtime_pty_input
         name: Run Runtime PTY input gates
-        if: always() && steps.build.outcome == 'success' && needs.changes.outputs.windows_runtime == 'true'
+        if: always() && steps.build.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 5
         shell: pwsh
@@ -170,7 +113,7 @@ jobs:
 
       - id: runtime_powershell_encoding
         name: Run Runtime PowerShell UTF-8 gates
-        if: always() && steps.build.outcome == 'success' && needs.changes.outputs.windows_runtime == 'true'
+        if: always() && steps.build.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 5
         shell: pwsh
@@ -193,7 +136,7 @@ jobs:
       # fight for disk under high fan-out.
       - id: storage
         name: Run Windows storage path and lock gates
-        if: always() && steps.build.outcome == 'success' && needs.changes.outputs.windows_storage == 'true'
+        if: always() && steps.build.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 12
         shell: pwsh
@@ -213,12 +156,12 @@ jobs:
             2>&1 | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
           exit $LASTEXITCODE
 
-      # Full suite is evidence-only: nightly + manual dispatch. Do not run on
-      # ordinary PRs — Linux unit already covers the package, and the full
-      # Windows wall clock is ~10 minutes.
+      # Full suite is evidence-only and requires an explicit manual opt-in.
+      # Linux unit already covers the package, while the full Windows wall
+      # clock is ~10 minutes.
       - id: storage_full
         name: Capture full storage suite baseline
-        if: always() && steps.build.outcome == 'success' && needs.changes.outputs.windows_storage_full == 'true'
+        if: always() && steps.build.outcome == 'success' && (github.event_name == 'schedule' || inputs.full_storage)
         continue-on-error: true
         timeout-minutes: 25
         shell: pwsh
@@ -326,12 +269,11 @@ jobs:
           |---|---|
           | Install | ${{ steps.install.outcome }} |
           | Build | ${{ steps.build.outcome }} |
-          | Skip inventory | ${{ steps.inventory.outcome }} |
           | CLI / Electron smoke | ${{ steps.smoke.outcome }} |
           | Storage path/lock gates | ${{ steps.storage.outcome }} |
           | Runtime PTY input | ${{ steps.runtime_pty_input.outcome }} |
           | Runtime PowerShell UTF-8 | ${{ steps.runtime_powershell_encoding.outcome }} |
-          | Full storage suite (nightly/manual) | ${{ steps.storage_full.outcome }} |
+          | Full storage suite (nightly or manual opt-in) | ${{ steps.storage_full.outcome }} |
           | Residual processes | ${{ steps.processes.outcome }} |
 
           Download the `windows-baseline` artifact for complete logs.

@@ -5,105 +5,71 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
 jobs:
-  changes:
+  # Planning and every selected Linux surface share one runner, so the core
+  # workflow consumes one automatic job without dropping affected coverage.
+  test:
     runs-on: ubuntu-latest
-    outputs:
-      astryx_surface: ${{ steps.plan.outputs.astryx_surface }}
-      code: ${{ steps.plan.outputs.code }}
-      e2e: ${{ steps.plan.outputs.e2e }}
-      runtime_host: ${{ steps.plan.outputs.runtime_host }}
-      runtime_sandbox: ${{ steps.plan.outputs.runtime_sandbox }}
-      standard_workspaces: ${{ steps.plan.outputs.standard_workspaces }}
-      storage_stress: ${{ steps.plan.outputs.storage_stress }}
-      storybook: ${{ steps.plan.outputs.storybook }}
-      unit: ${{ steps.plan.outputs.unit }}
-      workspaces: ${{ steps.plan.outputs.workspaces }}
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
+
       - id: plan
         name: Select affected test surfaces
         env:
           BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.head.sha }}
         run: |
-          # A merged PR has already been tested by impact. Re-run the same
-          # affected surfaces for the exact main-branch delta instead of
-          # turning every push (including docs-only pushes) into a full suite.
-          # New branches and unavailable history still fail safe to full.
-          if [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
+          # PR checks may predate later main changes, so the single core job also
+          # validates the exact merged delta. Dispatches and unavailable history
+          # fail safe to every surface.
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
             node scripts/ci-test-plan.mjs --full >> "$GITHUB_OUTPUT"
           else
             node scripts/ci-test-plan.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
           fi
 
-  astryx_surface:
-    needs: changes
-    if: needs.changes.outputs.astryx_surface == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-      - name: Astryx surface inventory
-        run: npm run astryx:surface-inventory
+      - name: Test CI planner
+        run: node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs
 
-  typecheck:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true' || steps.plan.outputs.cli_package == 'true'
         with:
           node-version: '24'
           cache: npm
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run format:check
-      - run: npm run build
-      - run: npm run typecheck
-      # Generated-artifact governance. astryx-theme/maka.{css,js} are built
-      # from makaTheme.ts, which is now the renderer's type-scale authority —
-      # editing the scale without regenerating would leave the authority and
-      # the shipped ladder disagreeing, and nothing else would notice.
-      - name: Astryx theme drift
-        run: npm run astryx:theme -- --check
-      # Dead-code / dependency governance. Entry points and reasoned ignores
-      # live in knip.json; both workspaces must stay at zero findings.
-      - name: Knip (apps/desktop)
-        run: npx knip --workspace apps/desktop
-      - name: Knip (packages/ui)
-        run: npx knip --workspace packages/ui
-  test_workspaces:
-    needs: changes
-    if: needs.changes.outputs.standard_workspaces != ''
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+
+      - name: Select the release npm toolchain
+        if: steps.plan.outputs.cli_package == 'true'
+        run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
+
+      - name: Restore Electron artifact cache
+        if: steps.plan.outputs.code == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          node-version: '24'
-          cache: npm
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: electron-${{ runner.os }}-
+
       - name: Install Linux runtime dependencies
-        if: needs.changes.outputs.runtime_sandbox == 'true'
+        if: steps.plan.outputs.runtime_sandbox == 'true'
         run: sudo apt-get update && sudo apt-get install -y ripgrep bubblewrap
+
       # Ubuntu 24.04 hosted runners gate unprivileged user namespaces through
       # AppArmor, which otherwise makes bwrap fail while configuring loopback.
       - name: Enable bubblewrap user namespaces
-        if: needs.changes.outputs.runtime_sandbox == 'true'
+        if: steps.plan.outputs.runtime_sandbox == 'true'
         run: |
           if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -111,133 +77,96 @@ jobs:
           if [[ -e /proc/sys/kernel/unprivileged_userns_clone ]]; then
             sudo sysctl -w kernel.unprivileged_userns_clone=1
           fi
-      - run: npm ci
-      # build:test skips the renderer bundle (vite); test:dist only consumes
-      # tsc outputs (dist/main + dist/renderer side-files), never the vite
-      # bundle. e2e builds its own renderer in a separate job.
-      - run: npm run build:test
+
+      - name: Install dependencies
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true'
+        run: npm ci
+
+      - name: Lint
+        if: steps.plan.outputs.code == 'true'
+        run: npm run lint
+
+      - name: Check formatting
+        if: steps.plan.outputs.code == 'true'
+        run: npm run format:check
+
+      - name: Check Windows test inventory
+        continue-on-error: true
+        run: npm run windows:inventory
+
+      - name: Build
+        if: steps.plan.outputs.code == 'true'
+        run: npm run build
+
+      - name: Typecheck
+        if: steps.plan.outputs.code == 'true'
+        run: npm run typecheck
+
+      - name: Astryx surface inventory
+        if: steps.plan.outputs.astryx_surface == 'true'
+        run: npm run astryx:surface-inventory
+
+      - name: Astryx theme drift
+        if: steps.plan.outputs.code == 'true'
+        run: npm run astryx:theme -- --check
+
+      - name: Knip (apps/desktop)
+        if: steps.plan.outputs.code == 'true'
+        run: npx knip --workspace apps/desktop
+
+      - name: Knip (packages/ui)
+        if: steps.plan.outputs.code == 'true'
+        run: npx knip --workspace packages/ui
+
       - name: Linux sandbox smoke
-        if: needs.changes.outputs.runtime_sandbox == 'true'
+        if: steps.plan.outputs.runtime_sandbox == 'true'
         env:
           MAKA_REQUIRE_LINUX_SANDBOX_SMOKE: '1'
         run: npm exec -w @maka/runtime -- node --test dist/__tests__/linux-sandbox-smoke.test.js
-      # Workspaces consume the dist built above. Selection includes reverse
-      # dependencies, while bounded concurrency avoids both the old serial
-      # critical path and an unbounded process stampede on two-core runners.
+
       - name: Run affected standard workspace tests
-        if: needs.changes.outputs.standard_workspaces != ''
+        if: steps.plan.outputs.standard_workspaces != ''
         env:
-          STORAGE_STRESS: ${{ needs.changes.outputs.storage_stress }}
-          WORKSPACES: ${{ needs.changes.outputs.standard_workspaces }}
+          STORAGE_STRESS: ${{ steps.plan.outputs.storage_stress }}
+          WORKSPACES: ${{ steps.plan.outputs.standard_workspaces }}
         run: |
           if [[ "$STORAGE_STRESS" == "true" ]]; then
             export MAKA_STORAGE_STRESS=1
           fi
           node scripts/run-workspace-tests-parallel.mjs --concurrency=3 --workspaces="$WORKSPACES"
 
-  test_runtime_host:
-    needs: changes
-    if: needs.changes.outputs.runtime_host == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - run: npm run build:test
       - name: Run Runtime Host tests
+        if: steps.plan.outputs.runtime_host == 'true'
         run: npm --workspace @maka/runtime-host run test:dist
 
-  # Preserve one stable required check while letting independent heavy suites
-  # occupy their own runners. The aggregator waits for every selected lane.
-  test:
-    needs: [changes, test_workspaces, test_runtime_host]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require successful test lanes
-        env:
-          CHANGES_RESULT: ${{ needs.changes.result }}
-          RUNTIME_HOST_RESULT: ${{ needs.test_runtime_host.result }}
-          RUNTIME_HOST_SELECTED: ${{ needs.changes.outputs.runtime_host }}
-          STANDARD_WORKSPACES: ${{ needs.changes.outputs.standard_workspaces }}
-          WORKSPACES_RESULT: ${{ needs.test_workspaces.result }}
-        run: |
-          if [[ "$CHANGES_RESULT" != "success" ]]; then
-            echo "changes failed: $CHANGES_RESULT" >&2
-            exit 1
-          fi
-          require_lane() {
-            local name="$1"
-            local selected="$2"
-            local result="$3"
-            local expected="skipped"
-            if [[ "$selected" == "true" ]]; then
-              expected="success"
-            fi
-            if [[ "$result" != "$expected" ]]; then
-              echo "$name expected $expected but was $result" >&2
-              exit 1
-            fi
-          }
-          workspaces_selected="false"
-          if [[ -n "$STANDARD_WORKSPACES" ]]; then
-            workspaces_selected="true"
-          fi
-          require_lane "workspace tests" "$workspaces_selected" "$WORKSPACES_RESULT"
-          require_lane "Runtime Host tests" "$RUNTIME_HOST_SELECTED" "$RUNTIME_HOST_RESULT"
-
-  # One Electron job: install once, run the (now small) e2e suite, then the
-  # CDP alignment audit against the same built renderer. Dual shards plus a
-  # separate audit job each paid full npm ci + cold build after the suite
-  # slash; that was pure wall-clock and runner waste.
-  e2e:
-    needs: changes
-    if: needs.changes.outputs.e2e == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-      - name: Restore Electron artifact cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/electron
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: electron-${{ runner.os }}-
-      - run: npm ci
       - name: Ensure xvfb
+        if: steps.plan.outputs.e2e == 'true'
         run: command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }
+
       - name: Desktop e2e
-        run: xvfb-run -a npm --workspace @maka/desktop run e2e
+        if: steps.plan.outputs.e2e == 'true'
+        run: xvfb-run -a npm exec -w @maka/desktop -- playwright test --config e2e/playwright.config.ts
+
       - name: Alignment audit
+        if: steps.plan.outputs.e2e == 'true'
         run: xvfb-run -a node scripts/audit-alignment.mjs
-  # Storybook build + initial render smoke. Embedded mode disables every play
-  # function, so this lane never duplicates desktop interaction or layout E2E.
-  # It launches Chromium only to catch catalog runtime errors. See FIDELITY.md.
-  storybook:
-    needs: changes
-    if: needs.changes.outputs.storybook == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      # Stories import @maka/core / @maka/ui package exports (dist/). The old
-      # e2e job paid for this via `build:with-deps`; the split job must too.
-      - name: Build workspace packages
-        run: npm --workspace @maka/desktop run build:workspace-deps
-      # The smoke calls `chromium.launch()`; Electron's binary is irrelevant.
+
       - name: Install Playwright Chromium
+        if: steps.plan.outputs.storybook == 'true'
         run: npx playwright install --with-deps chromium
+
       - name: Build Storybook
+        if: steps.plan.outputs.storybook == 'true'
         run: npm --workspace @maka/desktop run build-storybook
+
       - name: Storybook smoke
+        if: steps.plan.outputs.storybook == 'true'
         run: npm --workspace @maka/desktop run smoke:storybook
+
+      - name: Build CLI release candidate
+        if: steps.plan.outputs.cli_package == 'true'
+        run: npm run release:cli:pack
+
+      - name: Validate installed CLI release candidate
+        if: steps.plan.outputs.cli_package == 'true'
+        run: npm run release:cli:smoke
