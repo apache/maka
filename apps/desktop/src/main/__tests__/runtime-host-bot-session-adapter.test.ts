@@ -128,7 +128,16 @@ test('starts collecting before submitting the stable source message for the Host
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(null),
     activeAssistantStreams: [],
-    transcript: Promise.resolve([]),
+    transcript: Promise.resolve([
+      {
+        type: 'assistant',
+        id: 'assistant-1',
+        turnId: 'host-turn-1',
+        ts: 2,
+        text: 'Corrected reply',
+        modelId: 'test-model',
+      },
+    ]),
     events,
     async close() {
       closeCount += 1;
@@ -227,10 +236,25 @@ test('reattaches an exact redelivery to its already-running Host Turn', async ()
   const events = new AsyncFrameQueue();
   const replySnapshots: string[] = [];
   const activeTurn = runningTurn('session-1', 'redelivered-turn');
+  let transcriptReads = 0;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(activeTurn),
     activeAssistantStreams: [],
-    transcript: Promise.resolve([]),
+    async loadTranscript() {
+      transcriptReads += 1;
+      return transcriptReads === 1
+        ? []
+        : [
+            {
+              type: 'assistant' as const,
+              id: 'assistant-1',
+              turnId: 'redelivered-turn',
+              ts: 2,
+              text: 'Recovered reply',
+              modelId: 'test-model',
+            },
+          ];
+    },
     events,
     async close() {
       events.end();
@@ -471,6 +495,62 @@ test('recovers a completed Turn when no assistant delta reaches the subscriber',
   assert.equal(transcriptReads, 1);
 });
 
+test('seeds an adopted assistant stream and ignores thinking without stalling', async () => {
+  const events = new AsyncFrameQueue();
+  let transcriptReads = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(runningTurn('session-1', 'adopted-turn')),
+    activeAssistantStreams: [],
+    async loadTranscript() {
+      transcriptReads += 1;
+      return [
+        {
+          type: 'assistant' as const,
+          id: 'assistant-1',
+          turnId: 'adopted-turn',
+          ts: 2,
+          text: transcriptReads === 1 ? 'Hello' : 'Hello world',
+          modelId: 'test-model',
+        },
+      ];
+    },
+    events,
+    async close() {
+      events.end();
+    },
+  });
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      openSession: async () => handle,
+      submitMessage: async () => {
+        events.push(thinkingDeltaFrame(1, 'session-1', 'adopted-turn'));
+        events.push(deltaFrame(2, 'session-1', 'adopted-turn', 5, ' world'));
+        events.push(
+          projectionFrame(3, {
+            ...runningTurn('session-1', 'adopted-turn'),
+            status: 'completed',
+            terminalEventId: 'terminal-adopted',
+          }),
+        );
+        return { disposition: 'turn_started', turnId: 'adopted-turn' };
+      },
+      queryTurn: async () => runningTurn('session-1', 'adopted-turn'),
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+
+  assert.deepEqual(
+    await adapter.runTurn({
+      sessionId: 'session-1',
+      messageId: 'bot_source_adopted',
+      text: 'resume',
+    }),
+    { kind: 'completed', text: 'Hello world' },
+  );
+  assert.equal(transcriptReads, 2);
+});
+
 function botClient(overrides: Partial<BotClient>): BotClient {
   const unexpected = (): never => {
     throw new Error('Unexpected Runtime Host Bot client call');
@@ -577,6 +657,28 @@ function deltaFrame(
       startOffset,
       text,
       ...(reset ? { reset: true } : {}),
+    },
+  };
+}
+
+function thinkingDeltaFrame(
+  sequence: number,
+  sessionId: string,
+  turnId: string,
+): SubscriptionFrame {
+  return {
+    kind: 'subscription.session_delta',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence,
+    sessionId,
+    delta: {
+      kind: 'thinking',
+      turnId,
+      runId: 'run-1',
+      messageId: 'thinking-1',
+      startOffset: 0,
+      text: 'private reasoning',
     },
   };
 }

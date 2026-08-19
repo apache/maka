@@ -204,8 +204,14 @@ async function collectRuntimeHostBotTurn(
     return projectTerminalBotTurn(initialTurn, await session.loadTranscript(), turnId);
   }
   const assistantText = new Map<string, string>();
-  let latestMessageId: string | undefined;
   let publishedSnapshot: string | undefined;
+  if (initialTurn?.turnId === turnId) {
+    for (const message of await session.loadTranscript()) {
+      if (message.type === 'assistant' && message.turnId === turnId) {
+        assistantText.set(message.id, message.text);
+      }
+    }
+  }
 
   let next = await firstFrame;
   while (!next.done) {
@@ -214,22 +220,22 @@ async function collectRuntimeHostBotTurn(
       throw new Error(`Runtime Host Bot Session subscription closed: ${frame.reason}`);
     }
     if (frame.kind === 'subscription.session_delta') {
-      if (frame.delta.turnId !== turnId || frame.delta.kind !== 'text') continue;
-      const messageId = frame.delta.messageId;
-      latestMessageId = messageId;
-      const folded = foldRuntimeHostAssistantDelta(
-        frame.delta.reset ? '' : (assistantText.get(latestMessageId) ?? ''),
-        frame.delta,
-      );
-      assistantText.set(messageId, folded.text);
-      if (folded.text !== publishedSnapshot) {
-        publishedSnapshot = folded.text;
-        try {
-          onReplySnapshot?.(folded.text);
-        } catch {
-          // Reply streaming is a best-effort projection. A channel-specific
-          // delivery failure must not stop subscription draining or change the
-          // authoritative Runtime Host Turn outcome.
+      if (frame.delta.turnId === turnId && frame.delta.kind === 'text') {
+        const messageId = frame.delta.messageId;
+        const folded = foldRuntimeHostAssistantDelta(
+          frame.delta.reset ? '' : (assistantText.get(messageId) ?? ''),
+          frame.delta,
+        );
+        assistantText.set(messageId, folded.text);
+        if (folded.text !== publishedSnapshot) {
+          publishedSnapshot = folded.text;
+          try {
+            onReplySnapshot?.(folded.text);
+          } catch {
+            // Reply streaming is a best-effort projection. A channel-specific
+            // delivery failure must not stop subscription draining or change the
+            // authoritative Runtime Host Turn outcome.
+          }
         }
       }
     } else if (frame.kind === 'subscription.session_projection') {
@@ -237,9 +243,6 @@ async function collectRuntimeHostBotTurn(
       if (turn?.turnId === turnId) {
         if (turn.status === 'waiting_for_user') return { kind: 'suspended' };
         if (turn.status === 'completed') {
-          if (latestMessageId) {
-            return { kind: 'completed', text: assistantText.get(latestMessageId) ?? '' };
-          }
           return projectTerminalBotTurn(turn, await session.loadTranscript(), turnId);
         }
         if (turn.status === 'failed') return { kind: 'errored', reason: turn.failureClass };

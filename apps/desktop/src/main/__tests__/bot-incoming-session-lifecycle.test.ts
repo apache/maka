@@ -40,7 +40,7 @@ test('routes one external conversation through Host resolution and stable messag
   await service.close();
 });
 
-test('deduplicates one source delivery in-process and retries it with the same Host message id', async () => {
+test('routes every source delivery to Host idempotency with the same stable message id', async () => {
   const firstIds: string[] = [];
   const event = message({ sourceEventId: 'stable-source' });
   const create = (ids: string[]) =>
@@ -57,13 +57,14 @@ test('deduplicates one source delivery in-process and retries it with the same H
   const first = create(firstIds);
   await first.handleBotIncomingMessage(event);
   await first.handleBotIncomingMessage(event);
-  assert.equal(firstIds.length, 1);
+  assert.equal(firstIds.length, 2);
+  assert.equal(firstIds[0], firstIds[1]);
   await first.close();
 
   const successorIds: string[] = [];
   const successor = create(successorIds);
   await successor.handleBotIncomingMessage(event);
-  assert.deepEqual(successorIds, firstIds);
+  assert.deepEqual(successorIds, [firstIds[0]]);
   await successor.close();
 });
 

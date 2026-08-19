@@ -380,6 +380,7 @@ export class HostSessionRetirementCoordinator {
           removeHandles.scheduledTasks.commit();
           archiveHandles?.goal.commit();
           archiveHandles?.scheduledTasks.commit();
+          await this.#retireExternalConversations(plan.archive.sessionIds);
           await this.#graphWake.retireSessions(allSessionIds);
           this.#rememberRetiredWorktrees(committableRemove, removedSessionIds);
           this.#scheduleCleanup(removedSessionIds);

@@ -14,8 +14,6 @@ import type { BotIncomingMessage, BotRegistry, BotReplyStream } from '@maka/runt
 import type { BotSessionAdapter, BotSessionTurnResult } from './bot-session-adapter.js';
 import { isSessionWorkspaceUnavailableError } from './project-context-root.js';
 
-const BOT_RECENT_SOURCE_EVENT_LIMIT = 1_000;
-const BOT_RECENT_SOURCE_EVENT_TTL_MS = 60 * 60 * 1_000;
 const BOT_CONVERSATION_RATE_BURST = 8;
 const BOT_CONVERSATION_RATE_REFILL_MS = 5_000;
 const BOT_CONVERSATION_RATE_BUCKET_TTL_MS = 60 * 60 * 1_000;
@@ -40,7 +38,6 @@ interface BotIncomingMainServiceDeps {
 export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): BotIncomingMainService {
   const newId = deps.newId ?? randomUUID;
   const botConversationQueues = new Map<string, Promise<void>>();
-  const botRecentSourceEventKeys = new Map<string, number>();
   const botConversationRateBuckets = new Map<string, BotConversationRateBucket>();
   const activeTasks = new Set<Promise<void>>();
   let closed = false;
@@ -55,7 +52,6 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   }
 
   async function handleAcceptedBotIncomingMessage(message: BotIncomingMessage): Promise<void> {
-    if (rememberBotSourceEvent(message)) return;
     const text = message.text.trim();
     // PR-BOT-NON-TEXT-MESSAGE-ACK-0: previously a photo / voice / sticker
     // with no caption was silently dropped — the user got zero response.
@@ -98,32 +94,9 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     closed = true;
     closeTask = Promise.allSettled([...activeTasks]).then(() => {
       botConversationQueues.clear();
-      botRecentSourceEventKeys.clear();
       botConversationRateBuckets.clear();
     });
     return closeTask;
-  }
-
-  function rememberBotSourceEvent(message: BotIncomingMessage): boolean {
-    const key = botSourceEventKey(message);
-    if (!key) return false;
-    const now = Date.now();
-    pruneExpiredBotSourceEvents(now);
-    if (botRecentSourceEventKeys.has(key)) return true;
-    botRecentSourceEventKeys.set(key, now);
-    while (botRecentSourceEventKeys.size > BOT_RECENT_SOURCE_EVENT_LIMIT) {
-      const oldest = botRecentSourceEventKeys.keys().next().value;
-      if (!oldest) break;
-      botRecentSourceEventKeys.delete(oldest);
-    }
-    return false;
-  }
-
-  function pruneExpiredBotSourceEvents(now: number): void {
-    for (const [key, seenAt] of botRecentSourceEventKeys) {
-      if (now - seenAt <= BOT_RECENT_SOURCE_EVENT_TTL_MS) break;
-      botRecentSourceEventKeys.delete(key);
-    }
   }
 
   function consumeBotConversationToken(conversationKey: string, now = Date.now()): boolean {

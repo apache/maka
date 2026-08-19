@@ -119,6 +119,9 @@ describe('Host Session retirement coordinator', () => {
           ),
         );
       }
+      for (const sessionId of childSessionIds) {
+        harness.externalConversationBindings.add(sessionId);
+      }
       const target = await harness.store.readHeaderRecordSnapshot(harness.revisionId);
 
       const removed = await harness.coordinator.handlers['session.remove'](
@@ -144,6 +147,10 @@ describe('Host Session retirement coordinator', () => {
       assert.deepEqual(
         new Set(harness.actions.retiredMessages),
         new Set([...harness.familyIds, ...childSessionIds]),
+      );
+      assert.deepEqual(
+        new Set(harness.actions.retiredExternalConversations),
+        new Set(childSessionIds),
       );
       await waitFor(
         () => harness.actions.purgedArtifacts.length === harness.familyIds.length,

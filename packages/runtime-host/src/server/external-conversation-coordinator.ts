@@ -128,7 +128,18 @@ export class HostExternalConversationCoordinator {
 
       const created = await this.#sessions.create({ sessionId, ...input.session });
       if (!created.ok) {
-        if (created.error.code === 'commit_outcome_unknown') this.#requestDrain();
+        if (created.error.code === 'commit_outcome_unknown') {
+          this.#requestDrain();
+        } else {
+          try {
+            await this.#authority.remove(input.conversationId, sessionId);
+          } catch {
+            return failure(
+              'persistence_failed',
+              'Failed Session creation left an external conversation binding',
+            );
+          }
+        }
         return { ok: false, error: created.error };
       }
       return resolved(created.result, 'created');
