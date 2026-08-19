@@ -34,6 +34,7 @@ const TERMINAL_REVEAL_DELAY_MS = 500;
 const TERMINAL_OUTPUT_MAX = 64 * 1024;
 const SETUP_FRAME_PENDING_MAX = 20 * 1024;
 const SETUP_TIMEOUT_MS = 10 * 60_000;
+const PROCESS_STOP_GRACE_MS = 2_000;
 
 export interface DesktopRuntimeHostSshSetupInput {
   readonly destination: string;
@@ -55,6 +56,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   readonly spawnPty?: typeof spawnPty;
   readonly openSshTunnel?: typeof openRuntimeHostSshTunnel;
   readonly revealDelayMs?: number;
+  readonly processStopGraceMs?: number;
 }): {
   openSshTunnel(input: RuntimeHostSshTunnelInput): Promise<RuntimeHostSshTunnel>;
   runSetup(
@@ -264,6 +266,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         sshPort,
         startTerminalProcess,
         setupInput.signal,
+        input.processStopGraceMs,
       );
       const remoteCommand = runtimeHostSetupRemoteCommand(setupPackage, setupInput.principalId);
       let complete: RuntimeHostSetupCompleteFrame | undefined;
@@ -299,29 +302,25 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       ], filter.push);
       setupTerminal = terminal;
       if (complete) completePresentation(terminal);
-      const onAbort = () => process.kill('SIGTERM');
-      setupInput.signal?.addEventListener('abort', onAbort, { once: true });
-      const timeout = setTimeout(() => process.kill('SIGTERM'), SETUP_TIMEOUT_MS);
-      try {
-        const result = await process.exited;
-        filter.finish();
-        setupInput.signal?.throwIfAborted();
-        if (setupFailure) throw setupFailure;
-        if (!complete) {
-          throw new Error(
-            result.code === 0
-              ? 'Remote Maka setup ended without a completion result'
-              : result.code === 2
-                ? 'The released Maka CLI on this channel does not support automated Runtime Host setup'
-              : `Remote Maka setup exited with code ${String(result.code)}`,
-          );
-        }
-        completePresentation(terminal);
-        return complete;
-      } finally {
-        clearTimeout(timeout);
-        setupInput.signal?.removeEventListener('abort', onAbort);
+      const result = await waitForTerminalProcess(process, {
+        signal: setupInput.signal,
+        timeoutMs: SETUP_TIMEOUT_MS,
+        timeoutMessage: 'Remote Maka setup timed out',
+        stopGraceMs: input.processStopGraceMs,
+      });
+      filter.finish();
+      if (setupFailure) throw setupFailure;
+      if (!complete) {
+        throw new Error(
+          result.code === 0
+            ? 'Remote Maka setup ended without a completion result'
+            : result.code === 2
+              ? 'The released Maka CLI on this channel does not support automated Runtime Host setup'
+            : `Remote Maka setup exited with code ${String(result.code)}`,
+        );
       }
+      completePresentation(terminal);
+      return complete;
     },
     close: async () => {
       for (const channel of channels) input.ipcMain.removeHandler(channel);
@@ -331,10 +330,13 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       presentation = undefined;
       terminal.dismissed = true;
       if (terminal.revealTimer !== undefined) clearTimeout(terminal.revealTimer);
-      try {
-        terminal.pty.kill();
-      } catch {}
-      await terminal.exited.catch(() => undefined);
+      await terminateTerminalProcess(
+        {
+          exited: terminal.exited.then(() => ({ code: null, signal: null })),
+          kill: (signal) => terminal.pty.kill(signal),
+        },
+        input.processStopGraceMs,
+      ).catch(() => undefined);
     },
   };
 }
@@ -416,6 +418,7 @@ async function prepareSetupPackage(
     successfulExitCompletes?: boolean,
   ) => { readonly process: RuntimeHostSshProcess; readonly terminal: ActiveTerminal },
   signal: AbortSignal | undefined,
+  stopGraceMs: number | undefined,
 ): Promise<PreparedSetupPackage> {
   if (setupPackage.kind === 'npm') {
     if (!/^maka-agent@[A-Za-z0-9._-]+$/u.test(setupPackage.specifier)) {
@@ -444,21 +447,84 @@ async function prepareSetupPackage(
     archive,
     `${destination}:${remoteArchive}`,
   ], undefined, true);
-  const onAbort = () => process.kill('SIGTERM');
-  signal?.addEventListener('abort', onAbort, { once: true });
-  const timeout = setTimeout(() => process.kill('SIGTERM'), SETUP_TIMEOUT_MS);
+  const result = await waitForTerminalProcess(process, {
+    signal,
+    timeoutMs: SETUP_TIMEOUT_MS,
+    timeoutMessage: 'Uploading the Runtime Host development package timed out',
+    stopGraceMs,
+  });
+  if (result.code !== 0) {
+    throw new Error(
+      `Uploading the Runtime Host development package exited with code ${String(result.code)}`,
+    );
+  }
+  return { specifier: remoteArchive, removeAfterSetup: remoteArchive };
+}
+
+async function waitForTerminalProcess(
+  process: RuntimeHostSshProcess,
+  input: {
+    readonly signal?: AbortSignal;
+    readonly timeoutMs: number;
+    readonly timeoutMessage: string;
+    readonly stopGraceMs?: number;
+  },
+): Promise<Awaited<RuntimeHostSshProcess['exited']>> {
+  let requestStop!: (reason: 'aborted' | 'timeout') => void;
+  let stopReason: 'aborted' | 'timeout' | undefined;
+  const stopRequested = new Promise<'aborted' | 'timeout'>((resolve) => {
+    requestStop = (reason) => {
+      if (stopReason) return;
+      stopReason = reason;
+      resolve(reason);
+    };
+  });
+  const onAbort = () => requestStop('aborted');
+  if (input.signal?.aborted) onAbort();
+  else input.signal?.addEventListener('abort', onAbort, { once: true });
+  const timeout = setTimeout(() => requestStop('timeout'), input.timeoutMs);
   try {
-    const result = await process.exited;
-    signal?.throwIfAborted();
-    if (result.code !== 0) {
-      throw new Error(
-        `Uploading the Runtime Host development package exited with code ${String(result.code)}`,
-      );
-    }
-    return { specifier: remoteArchive, removeAfterSetup: remoteArchive };
+    const result = await Promise.race([
+      process.exited,
+      stopRequested.then(async () => {
+        await terminateTerminalProcess(process, input.stopGraceMs);
+        return process.exited;
+      }),
+    ]);
+    input.signal?.throwIfAborted();
+    if (stopReason === 'timeout') throw new Error(input.timeoutMessage);
+    return result;
   } finally {
     clearTimeout(timeout);
-    signal?.removeEventListener('abort', onAbort);
+    input.signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+async function terminateTerminalProcess(
+  process: Pick<RuntimeHostSshProcess, 'exited' | 'kill'>,
+  graceMs = PROCESS_STOP_GRACE_MS,
+): Promise<void> {
+  process.kill('SIGTERM');
+  if (await settlesWithin(process.exited, graceMs)) return;
+  process.kill('SIGKILL');
+  if (await settlesWithin(process.exited, graceMs)) return;
+  throw new Error('SSH process did not exit after forced termination');
+}
+
+async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(
+        () => true,
+        () => true,
+      ),
+      new Promise<false>((resolve) => {
+        timeout = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 

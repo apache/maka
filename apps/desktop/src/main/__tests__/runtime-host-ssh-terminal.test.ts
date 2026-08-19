@@ -105,6 +105,29 @@ test('keeps setup credentials out of the interactive terminal projection', async
   await harness.terminal.close();
 });
 
+test('force-stops a cancelled setup when SSH ignores graceful termination', async () => {
+  const harness = createHarness('pending');
+  harness.pty.deferKill = true;
+  harness.pty.exitOnForceKill = true;
+  const controller = new AbortController();
+  const setup = harness.terminal.runSetup(
+    {
+      destination: 'operator@example.com',
+      setupPackage: { kind: 'npm', specifier: 'maka-agent@next' },
+      principalId: 'desktop:stable-client',
+      signal: controller.signal,
+    },
+    () => undefined,
+  );
+  await waitFor(() => harness.pty.hasDataListener());
+
+  controller.abort();
+
+  await assert.rejects(setup, /aborted/u);
+  assert.deepEqual(harness.pty.killSignals, ['SIGTERM', 'SIGKILL']);
+  await harness.terminal.close();
+});
+
 test('uploads a development release archive before running the same remote setup', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-runtime-host-development-package-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -184,6 +207,7 @@ function createHarness(mode: 'pending' | 'exit') {
     send: (_channel, event) => events.push(event),
     spawnPty: (() => pty as unknown as IPty) as typeof import('node-pty').spawn,
     revealDelayMs: 0,
+    processStopGraceMs: 1,
     openSshTunnel: async (input, overrides) => {
       const spawnProcess = overrides?.spawnProcess as RuntimeHostSshProcessFactory;
       const process = spawnProcess({ executable: 'ssh', args: [], interaction: input.interaction });
@@ -225,6 +249,8 @@ class FakePty {
   readonly pid = 42;
   readonly exited: Promise<void>;
   deferKill = false;
+  exitOnForceKill = false;
+  readonly killSignals: Array<string | undefined> = [];
   readonly #dataListeners = new Set<(data: string) => void>();
   readonly #exitListeners = new Set<(event: { exitCode: number; signal: number }) => void>();
   #resolveExit!: () => void;
@@ -263,8 +289,9 @@ class FakePty {
 
   write(): void {}
   resize(): void {}
-  kill(): void {
-    if (!this.deferKill) this.exit(0);
+  kill(signal?: string): void {
+    this.killSignals.push(signal);
+    if (!this.deferKill || (this.exitOnForceKill && signal === 'SIGKILL')) this.exit(0);
   }
 }
 
