@@ -332,8 +332,10 @@ type ShellCopy = {
     conditionPlaceholder: string;
     maxIterationsLabel: string;
     maxIterationsDescription: string;
+    maxIterationsInvalid(max: number): string;
     tokenBudgetLabel: string;
     tokenBudgetDescription: string;
+    tokenBudgetInvalid(min: number): string;
     cancel: string;
     submit: string;
     failedFallback: string;
@@ -985,8 +987,10 @@ const SHELL_COPY_BY_LOCALE = {
       conditionPlaceholder: '例如：所有测试通过，且 lint 无告警',
       maxIterationsLabel: '最多轮数',
       maxIterationsDescription: '留空使用默认值。',
+      maxIterationsInvalid: (max) => `请填 1 到 ${max} 之间的整数，或留空。`,
       tokenBudgetLabel: 'Token 预算',
       tokenBudgetDescription: '留空表示不设 token 上限。',
+      tokenBudgetInvalid: (min) => `请填不小于 ${min} 的整数，或留空。`,
       cancel: '取消',
       submit: '开始',
       failedFallback: '无法设定 Goal，请稍后重试。',
@@ -1485,8 +1489,10 @@ const SHELL_COPY_BY_LOCALE = {
       conditionPlaceholder: 'e.g. all tests pass and lint reports no warnings',
       maxIterationsLabel: 'Maximum turns',
       maxIterationsDescription: 'Leave empty to use the default.',
+      maxIterationsInvalid: (max) => `Enter a whole number from 1 to ${max}, or leave it empty.`,
       tokenBudgetLabel: 'Token budget',
       tokenBudgetDescription: 'Leave empty for no token ceiling.',
+      tokenBudgetInvalid: (min) => `Enter a whole number of at least ${min}, or leave it empty.`,
       cancel: 'Cancel',
       submit: 'Start',
       failedFallback: 'The goal could not be set. Try again.',
