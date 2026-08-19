@@ -186,7 +186,6 @@ export class GoalManager {
       maxIterations?: number;
       blockCap?: number;
       tokenBudget?: number;
-      tokensAtStart?: number;
     },
   ): GoalCreateResult {
     // Every caller reaches the Goal through here, so the stored condition is
@@ -200,7 +199,12 @@ export class GoalManager {
       return { kind: 'unfinished', goal: existing };
     }
 
-    const start = opts?.tokensAtStart ?? 0;
+    // The token baseline is not knowable here. `GoalSet` runs inside a Turn
+    // whose own spend predates the Goal, and `goal.arm` runs outside every
+    // Turn, so neither caller can name the count the budget should measure
+    // from. Both start at zero and `settleTurn` writes the real baseline when
+    // the first Turn carrying the Goal settles: the budget bounds what the
+    // Goal goes on to drive, not the Turn it was born beside.
     const goal: GoalState = Object.freeze({
       id: this.deps.generateId(),
       revision: 0,
@@ -213,8 +217,8 @@ export class GoalManager {
       consecutiveNoProgress: 0,
       blockCap: opts?.blockCap ?? DEFAULT_BLOCK_CAP,
       tokenBudget: opts?.tokenBudget,
-      tokensAtStart: start,
-      tokensNow: start,
+      tokensAtStart: 0,
+      tokensNow: 0,
       tokensBaselinePending: true,
     });
     const goalRecord: GoalRecord = {

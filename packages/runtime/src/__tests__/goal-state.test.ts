@@ -91,7 +91,6 @@ describe('GoalManager creation and lifecycle', () => {
       maxIterations: 10,
       blockCap: 3,
       tokenBudget: 5000,
-      tokensAtStart: 100,
     });
 
     assert.equal(goal.revision, 0);
@@ -99,7 +98,7 @@ describe('GoalManager creation and lifecycle', () => {
     assert.equal(goal.maxIterations, 10);
     assert.equal(goal.blockCap, 3);
     assert.equal(goal.tokenBudget, 5000);
-    assert.equal(goal.tokensAtStart, 100);
+    assert.equal(goal.tokensAtStart, 0);
     assert.ok(Object.isFrozen(goal));
 
     const { mgr: defaults } = createManager();
@@ -206,10 +205,31 @@ describe('GoalManager creation and lifecycle', () => {
   });
 });
 
+describe('GoalManager token budget baseline', () => {
+  test('measures the budget from the first carried Turn, whoever set the Goal', () => {
+    const { mgr } = createManager();
+    createGoal(mgr, 'ship it', { tokenBudget: 1_000 });
+
+    // The Session had already spent 40k before anything carried this Goal.
+    // That settlement establishes the baseline instead of being charged to it.
+    const first = settle(mgr, { madeProgress: true, tokensNow: 40_000 });
+    assert.equal(first?.status, 'active');
+    assert.equal(first?.tokensAtStart, 40_000);
+    assert.equal(first?.tokensBaselinePending, false);
+
+    // Everything the Goal drives from there is measured against the budget.
+    const second = settle(mgr, { madeProgress: true, tokensNow: 40_500 });
+    assert.equal(second?.status, 'active', '500 of a 1,000 budget leaves it running');
+
+    const third = settle(mgr, { madeProgress: true, tokensNow: 41_000 });
+    assert.equal(third?.status, 'budget_limited');
+  });
+});
+
 describe('GoalManager atomic turn settlement', () => {
   test('commits token, iteration, progress, reason, revision, and one event atomically', () => {
     const { mgr, events } = createManager();
-    const before = createGoal(mgr, 'x', { tokensAtStart: 0 });
+    const before = createGoal(mgr, 'x');
     const result = settle(mgr, {
       madeProgress: false,
       tokensNow: 50_000,

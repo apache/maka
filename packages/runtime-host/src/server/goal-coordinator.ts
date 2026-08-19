@@ -102,11 +102,11 @@ export class HostGoalCoordinator {
   readonly #executions: Pick<HostedExecutionAuthority, 'reconcile' | 'subscribe'>;
   readonly #authorityBySession = new Map<string, GoalAuthoritySnapshot>();
   /**
-   * Token count per Session as of the last continuation read. It is the
-   * baseline a new Goal starts from, and `#arm` reads the same cache the
-   * GoalSet tool does — a second source would let the two paths disagree about
-   * what a Goal has spent. An empty entry means no evaluation has read this
-   * Session yet, which is what `tokensBaselinePending` on the Goal is for.
+   * Token count per Session as of the last continuation read, which is what a
+   * settling Turn reports so the Goal can measure its budget. It is not a
+   * baseline for a new Goal: only an evaluation writes here, so a Session that
+   * has never run one has no entry, and `tokensBaselinePending` on the Goal is
+   * what carries that until the first Turn carrying it settles.
    */
   readonly #tokenCache = new Map<string, number>();
   readonly #recoveryWaits = new Set<Promise<void>>();
@@ -161,7 +161,6 @@ export class HostGoalCoordinator {
       buildGoalTools({
         goalManager: this.manager,
         goalContinuation: this.continuation,
-        getTokenCount: (sessionId) => tokenCache.get(sessionId) ?? 0,
         isAvailable: () => !this.#draining,
         flush: (sessionId) => this.#flushGoalState(sessionId),
         now,
@@ -361,7 +360,6 @@ export class HostGoalCoordinator {
       const created = this.manager.create(input.sessionId, input.condition, {
         ...(input.maxIterations === null ? {} : { maxIterations: input.maxIterations }),
         ...(input.tokenBudget === null ? {} : { tokenBudget: input.tokenBudget }),
-        tokensAtStart: this.#tokenCache.get(input.sessionId) ?? 0,
       });
       if (created.kind === 'unfinished') {
         return operationConflict(

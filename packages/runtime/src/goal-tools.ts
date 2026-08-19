@@ -126,8 +126,6 @@ export interface GoalToolsDeps {
     GoalContinuationCoordinator,
     'activateGoal' | 'mutateGoal' | 'activationStanding' | 'mutationStanding'
   >;
-  /** Current cumulative token count for a session (baseline for budget). */
-  getTokenCount?: (sessionId: string) => number;
   /**
    * Reject new model-owned mutations while the enclosing authority drains.
    *
@@ -212,13 +210,11 @@ function buildGoalSetTool(deps: GoalToolsDeps): MakaTool<
           'Clear or complete it before setting another goal.'
         );
       }
-      const tokensAtStart = deps.getTokenCount?.(ctx.sessionId) ?? 0;
       const goal = deps.goalContinuation.activateGoal(ctx.sessionId, ctx.turnId, () => {
         return deps.goalManager.create(ctx.sessionId, input.condition, {
           maxIterations: input.max_iterations,
           blockCap: input.block_cap,
           tokenBudget: input.token_budget,
-          tokensAtStart,
         }).goal;
       });
       if (!goal) {
