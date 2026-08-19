@@ -352,6 +352,24 @@ test('one product workflow gates one draft release on every required artifact', 
     assert.equal(checkout.with.ref, '${{ needs.release-identity.outputs.source_commit }}');
   }
 
+  const desktopStepNames = jobs.desktop.steps.map((step) => step.name);
+  const checksumStep = jobs.desktop.steps.find(
+    (step) => step.name === 'Hash the final Desktop installer',
+  );
+  assert.ok(checksumStep);
+  assert.ok(
+    desktopStepNames.indexOf('Hash the final Desktop installer') >
+      desktopStepNames.indexOf('Verify the final DMG'),
+  );
+  assert.ok(
+    desktopStepNames.indexOf('Hash the final Desktop installer') >
+      desktopStepNames.indexOf('Exercise pinned Windows upgrade and uninstall'),
+  );
+  assert.ok(
+    desktopStepNames.indexOf('Hash the final Desktop installer') <
+      desktopStepNames.indexOf('Upload the verified release assets'),
+  );
+
   const commands = Object.values(jobs)
     .flatMap((job) => job.steps ?? [])
     .map((step) => step.run)

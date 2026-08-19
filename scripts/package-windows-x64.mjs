@@ -3,7 +3,6 @@ import { access, copyFile, mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { npmSpawnOptions } from './npm-spawn.mjs';
-import { writeSha256Sidecar } from './release-checksum.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const desktopRoot = join(repoRoot, 'apps', 'desktop');
@@ -96,7 +95,6 @@ export async function packageWindowsX64({
   await assertFile(exePath);
   await assertFile(zipPath);
   await assertFile(updateMetadataPath);
-  await writeSha256Sidecar(exePath);
   // win-unpacked stays: the ZIP is an archive of exactly this directory, so it
   // is what the verifier inspects. Extracting the ZIP would only rebuild a copy
   // of it, and writing tens of thousands of small files on Windows costs more

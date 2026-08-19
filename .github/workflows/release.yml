@@ -213,6 +213,11 @@ jobs:
             "apps/desktop/release/${{ needs.release-identity.outputs.exe }}" \
             apps/desktop/release-autoupdate-next
 
+      - name: Hash the final Desktop installer
+        env:
+          INSTALLER: apps/desktop/release/${{ matrix.platform == 'macos' && needs.release-identity.outputs.dmg || needs.release-identity.outputs.exe }}
+        run: node scripts/release-checksum.mjs "$INSTALLER"
+
       - name: Upload the verified release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
