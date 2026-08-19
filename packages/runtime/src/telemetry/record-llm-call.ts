@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { generalizedErrorMessage } from '@maka/core/redaction';
+import { pricingModelKey } from '@maka/core/usage-stats/pricing';
 import type { LlmCallRecord, PricingConfig } from '@maka/core/usage-stats/types';
 import { computeCost } from './cost.js';
 import type { TelemetryRepoLite } from './types.js';
@@ -44,7 +45,7 @@ export async function recordLlmCallStrict(
         cacheMissInputTokens,
         cacheWriteInputTokens,
       },
-      deps.lookupPricing(`${record.providerId}:${record.modelId}`),
+      deps.lookupPricing(pricingModelKey(record.providerId, record.modelId)),
     ).totalCost;
   const ts = record.startedAt + record.latencyMs;
   const recordId = record.callId

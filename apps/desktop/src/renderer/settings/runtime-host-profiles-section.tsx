@@ -9,6 +9,7 @@ import {
   Switch,
 } from "@astryxdesign/core";
 import type { RuntimeHostRemoteTransport } from "@maka/runtime-host/client";
+import { isCanonicalRuntimeHostWebSocketPath } from "@maka/runtime-host/protocol";
 import {
   Badge,
   Button,
@@ -369,5 +370,5 @@ function validPort(value: string): boolean {
 }
 
 function validWebSocketPath(value: string): boolean {
-  return value.startsWith("/") && !value.includes("?") && !value.includes("#");
+  return isCanonicalRuntimeHostWebSocketPath(value);
 }

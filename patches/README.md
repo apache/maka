@@ -28,7 +28,7 @@ Delete when that guard passes against an unpatched package.
 
 ## `@astryxdesign/core@0.4.0`
 
-Five published component seams drop host-owned state or semantics:
+Six published component seams drop host-owned state or semantics:
 
 - `ChatLayout` needs a conversation identity that resets scroll/unread state
   without remounting its composer slot and discarding the live draft.
@@ -50,6 +50,11 @@ Five published component seams drop host-owned state or semantics:
   `inlineCompletion` / `inlineCompletionLabel` draw the offer inside the editor,
   excluded from `serialize`, so the preview and the insertion are one layout.
   Upstream ask: [facebook/astryx#4822](https://github.com/facebook/astryx/issues/4822).
+- `SideNavItem` needs an interactive `trailingAction` sibling between its
+  navigation control and nested items. `endContent` renders inside the primary
+  control, while a sibling outside `SideNavItem` can only come before the
+  project control or after all of its tasks; neither produces the visual Tab
+  order used by the task rail.
 
 Blank UA-CH `navigator.userAgentData.platform` must also not mean "not Apple".
 Electron builds with a rewritten identity ship `platform: ''`, which made every

@@ -446,6 +446,9 @@ function copyReleaseDocuments() {
   copyFileSync(join(cliSource, 'README.zh-CN.md'), join(stageRoot, 'README.zh-CN.md'));
   copyFileSync(join(repoRoot, 'LICENSE'), join(stageRoot, 'LICENSE'));
   copyFileSync(join(repoRoot, 'NOTICE'), join(stageRoot, 'NOTICE'));
+  // Incubator policy: podling releases carry the incubating disclaimer, kept
+  // next to LICENSE/NOTICE. The npm tarball is a release like the installers.
+  copyFileSync(join(repoRoot, 'DISCLAIMER-WIP'), join(stageRoot, 'DISCLAIMER-WIP'));
   copyFileSync(
     join(cliSource, 'THIRD_PARTY_NOTICES.txt'),
     join(stageRoot, 'THIRD_PARTY_NOTICES.txt'),
@@ -497,6 +500,7 @@ function writeReleaseManifest(cli, publishable) {
       'README.zh-CN.md',
       'LICENSE',
       'NOTICE',
+      'DISCLAIMER-WIP',
       'THIRD_PARTY_NOTICES.txt',
     ],
     dependencies,
@@ -510,6 +514,7 @@ function validateStaging() {
   const required = [
     'dist/cli.js',
     'README.zh-CN.md',
+    'DISCLAIMER-WIP',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'packages/eval/dist/harbor-external-subject.js',
@@ -603,6 +608,7 @@ function validatePackedFiles(files, expectedDependencyManifests) {
   }
   const requiredPacked = [
     'dist/cli.js',
+    'DISCLAIMER-WIP',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'packages/eval/harbor/relay_agent.py',

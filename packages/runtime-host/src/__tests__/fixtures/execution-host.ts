@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { inspect } from 'node:util';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { startExecutionRuntimeHostCandidate } from '../../server/execution-candidate.js';
 import { runRuntimeHostProcessLifecycle } from '../../server/process-lifecycle.js';
@@ -59,7 +60,7 @@ try {
       }),
   });
 } catch (error) {
-  console.error(error);
+  console.error(inspect(error, { depth: null }));
   process.exitCode = 1;
 } finally {
   if (process.connected) process.disconnect?.();

@@ -323,15 +323,6 @@ function ProjectNavRow(props: {
   const hasActions = props.project !== undefined && props.projectActions !== undefined;
   return (
     <div data-project-id={props.groupKey} className="maka-project-row">
-      {props.project && props.projectActions ? (
-        <ProjectItemActions
-          key="actions"
-          project={props.project}
-          actions={props.projectActions}
-          onStartRename={props.onStartRename}
-          position={hasSessions ? 'before-disclosure' : 'trailing'}
-        />
-      ) : null}
       <SideNavItem
         key="navigation"
         label={props.label}
@@ -343,6 +334,16 @@ function ProjectNavRow(props: {
             sessionCount={props.sessions.length}
             reserveAction={hasActions}
           />
+        }
+        trailingAction={
+          props.project && props.projectActions ? (
+            <ProjectItemActions
+              project={props.project}
+              actions={props.projectActions}
+              onStartRename={props.onStartRename}
+              position={hasSessions ? 'before-disclosure' : 'trailing'}
+            />
+          ) : undefined
         }
       >
         {/* sidebar.css preserves one SideNav nesting step for project hierarchy. */}
@@ -527,8 +528,9 @@ function ProjectItemActions(props: {
     })();
   }
 
-  // Projects keep a permanent MoreMenu. It is a sibling of SideNavItem so the
-  // row's collapse button and the menu remain separate interactive controls.
+  // Projects keep a permanent MoreMenu. SideNavItem's trailingAction slot puts
+  // it after the collapse button and before the nested tasks, so visual and
+  // keyboard order agree without nesting either interactive control.
   const menuItems = project.archivedAt !== undefined
     ? [
         {

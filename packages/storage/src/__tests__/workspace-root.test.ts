@@ -66,6 +66,16 @@ describe('Maka workspace root resolver', () => {
       }),
       '/var/config/ada/Maka Dev',
     );
+    for (const XDG_CONFIG_HOME of ['', 'relative/config']) {
+      assert.equal(
+        resolveMakaClientDataRoot({
+          platform: 'linux',
+          homeDir: '/home/ada',
+          env: { XDG_CONFIG_HOME },
+        }),
+        '/home/ada/.config/Maka',
+      );
+    }
     assert.equal(
       resolveMakaClientDataRoot({
         platform: 'win32',

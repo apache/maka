@@ -1000,6 +1000,10 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
   assert.match(subjectService, /cap_drop:\s*\n\s+- NET_RAW/u);
   assert.match(egressCompose, /networks:\s*\n\s+- default/u);
   assert.match(egressCompose, /target: \/usr\/local\/bin\/network-policy/u);
+  const sidecarService = egressCompose
+    .split(/\n(?= {2}\S)/u)
+    .find((block) => block.trimStart().startsWith('harbor-docker-egress-control-sidecar:'))!;
+  assert.match(sidecarService, /maka-eval-egress-ca:\/opt\/maka-egress:ro/u);
   // The subject shares the sidecar's network namespace, so any packet mark it
   // could set is one the subject can set too. No live probe can show this any
   // more — without NET_RAW the subject cannot set a mark at all — so the rule's
@@ -1009,6 +1013,14 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
     'utf8',
   );
   assert.doesNotMatch(networkPolicy, /meta mark \S+ (?:accept|return)/u);
+  assert.match(networkPolicy, /ip daddr 127\.0\.0\.11 reject/u);
+  assert.doesNotMatch(networkPolicy, /127\.0\.0\.11 (?:udp|tcp) dport 53 reject/u);
+  const dockerDnsReject = networkPolicy.indexOf('ip daddr 127.0.0.11 reject');
+  const localAccept = networkPolicy.indexOf('fib daddr type local accept');
+  assert.ok(dockerDnsReject >= 0 && localAccept > dockerDnsReject);
+  assert.match(networkPolicy, /\/opt\/maka-egress\/proxy-ipv4/u);
+  assert.doesNotMatch(networkPolicy, /\bgetent\b/u);
+  assert.match(egressCompose, /proxy-ipv4/u);
   const entrypoint = await readFile(
     new URL('../../harbor/egress-proxy/entrypoint.sh', import.meta.url),
     'utf8',

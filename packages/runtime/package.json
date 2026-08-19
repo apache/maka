@@ -127,6 +127,7 @@
     "@ai-sdk/anthropic": "4.0.39",
     "@ai-sdk/cohere": "4.0.27",
     "@ai-sdk/google": "4.0.44",
+    "@ai-sdk/open-responses": "2.0.28",
     "@ai-sdk/openai": "4.0.42",
     "@ai-sdk/openai-compatible": "3.0.30",
     "@openai/agents-core": "0.14.3",

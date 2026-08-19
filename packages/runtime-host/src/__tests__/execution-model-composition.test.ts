@@ -99,7 +99,7 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:0e3389e330b8b8f0db1c7a8b8e2126325fe4c672d6eff279afcd3f9412e52271';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:ea1f293096e5e209ae49346f46b0e8ff9b54ae17452a5a23149ad7233afaeafc';
+  'sha256:c062194603f93b568da5ca59b865b316156b5f218ba854c291aa9582859b3de4';
 const execFileAsync = promisify(execFile);
 
 test('backend creation aborts a stalled canonical connection read', async () => {
@@ -886,10 +886,11 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
     assert.deepEqual(responsesToolNames(request?.body), [
       'ArchiveRead',
       'Bash',
+      'Edit',
       'Glob',
       'Grep',
       'Read',
-      'apply_patch',
+      'Write',
     ]);
     const bash = (tools as Array<Record<string, unknown>>).find((tool) => tool.name === 'Bash');
     assert.ok(bash);
@@ -1953,6 +1954,83 @@ test('production Host publishes and retires an implementation child patch', asyn
         }
       }
     }
+  }
+});
+
+test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-deepseek-auxiliary-'));
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  try {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'deepseek-auxiliary',
+        name: 'DeepSeek auxiliary',
+        providerType: 'deepseek',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: ['deepseek-v4-flash'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(credential.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, 'deepseek-v4-flash');
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'deepseek-auxiliary',
+      model: 'deepseek-v4-flash',
+      thinkingLevel: 'high',
+      permissionMode: 'ask',
+    });
+    const effects = createHostSessionEffectModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      claudeDeviceId: capability.rootId,
+      usage,
+      requestDrain: () => assert.fail('Auxiliary telemetry must not drain the Host'),
+      newId: () => 'deepseek-title-call',
+    });
+
+    await effects.generateTitle({
+      sessionId: session.id,
+      header: session,
+      sourceText: 'Explain the DeepSeek auxiliary reasoning seam',
+      abortSignal: new AbortController().signal,
+    });
+    const request = provider.requests.at(-1);
+    assert.ok(request);
+    assert.equal(request.url, '/v1/responses');
+    assert.equal(request.authorization, `Bearer ${API_KEY}`);
+    assert.deepEqual(request.body.reasoning, { effort: 'high' });
+  } finally {
+    await owner.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
   }
 });
 
@@ -3180,6 +3258,7 @@ function responsesToolNames(body: Record<string, unknown> | undefined): string[]
 }
 
 function responsesDeveloperPrompt(body: Record<string, unknown> | undefined): string | undefined {
+  if (typeof body?.instructions === 'string') return body.instructions;
   const input = Array.isArray(body?.input) ? body.input : [];
   const developer = input.find(
     (message): message is Record<string, unknown> =>

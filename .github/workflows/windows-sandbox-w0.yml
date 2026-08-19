@@ -53,6 +53,9 @@ jobs:
       - name: Verify AppContainer identity candidate
         shell: pwsh
         run: ./experiments/windows-sandbox/appcontainer-smoke.ps1
+      - name: Verify production-identity readiness probe
+        shell: pwsh
+        run: ./experiments/windows-sandbox/readiness-probe-smoke.ps1
       - name: Verify filesystem-worker stdio relay
         shell: pwsh
         run: ./experiments/windows-sandbox/stdio-relay-smoke.ps1

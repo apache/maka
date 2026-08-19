@@ -341,9 +341,17 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       'session',
     );
 
-    assert.deepEqual(
-      await local.request('access.credential.revoke', { credentialId: issued.credentialId }),
-      { credentialId: issued.credentialId, revoked: true },
+    const replaced = await local.request('access.credential.replace', {
+      principalKind: 'remote_owner',
+      principalId: 'remote-device',
+      operationGrants: issued.operationGrants,
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    const replacementCredential = await consumeAccessCredentialDelivery(
+      root,
+      replaced.deliveryId,
+      replaced.credentialId,
     );
     await remote.closed;
     remote = undefined;
@@ -357,6 +365,22 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
         protocol: PROTOCOL,
       }),
       { kind: 'unavailable', reason: 'authentication_failed' },
+    );
+    const replacementConnection = await connectRemoteRuntimeHost({
+      url,
+      credential: replacementCredential,
+      expectedRootId: capability.rootId,
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      surface: 'tui',
+      protocol: PROTOCOL,
+    });
+    assert.equal(replacementConnection.kind, 'connected');
+    if (replacementConnection.kind === 'connected') {
+      await replacementConnection.connection.close();
+    }
+    assert.deepEqual(
+      await local.request('access.credential.revoke', { credentialId: replaced.credentialId }),
+      { credentialId: replaced.credentialId, revoked: true },
     );
   } finally {
     await Promise.allSettled([remote?.close(), local?.close()]);

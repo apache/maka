@@ -561,6 +561,19 @@
   overflow-wrap: anywhere;
 }
 
+.maka-inspector-pricing-key {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+  color: var(--warning-text);
+}
+
+.maka-inspector-pricing-key code {
+  overflow-wrap: anywhere;
+}
+
 /* A recovery is not trivia about the step, it is the reason the run survived,
    so it carries the exception tint rather than the qualifier grey. */
 .maka-inspector-step-recovered {

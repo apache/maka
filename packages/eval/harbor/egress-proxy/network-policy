@@ -15,8 +15,33 @@ remove_nftables() {
   nft delete table inet "$NFTABLES_RULESET_NAME" 2>/dev/null || true
 }
 
+PROXY_IPV4_PATH=/opt/maka-egress/proxy-ipv4
+
 resolve_proxy_ip() {
-  getent ahostsv4 "$PROXY_HOST" | awk 'NR == 1 { print $1 }'
+  # The proxy publishes this file before it is healthy. Reading it does not
+  # depend on Docker DNS, so deny-all then allow still has an address.
+  if [ ! -s "$PROXY_IPV4_PATH" ]; then
+    return
+  fi
+  ip=$(tr -d ' \t\r\n' < "$PROXY_IPV4_PATH")
+  case "$ip" in
+    "" | *.*.*.*.* | *[!0-9.]*)
+      return
+      ;;
+  esac
+  # Same four-octet program as relay_agent.IPV4_OCTET_AWK.
+  if ! printf '%s\n' "$ip" | awk '
+BEGIN { FS = "." }
+NF != 4 { exit 1 }
+{
+  for (i = 1; i <= 4; i++) {
+    if ($i !~ /^(0|[1-9][0-9]*)$/ || $i + 0 > 255) exit 1
+  }
+}
+'; then
+    return
+  fi
+  printf '%s\n' "$ip"
 }
 
 # The only difference between the two modes this policy installs is whether the
@@ -40,6 +65,10 @@ ${proxy_ip:+    ip daddr $proxy_ip tcp dport $PROXY_PORT return}
   chain egress {
     type filter hook output priority filter; policy accept;
 
+    # Docker DNATs 127.0.0.11:53 onto another local port before this hook.
+    # Matching only dport 53 here misses, and the local exemption below
+    # would then accept the rewritten packet.
+    ip daddr 127.0.0.11 reject
     fib daddr type local accept
 ${proxy_ip:+    ip daddr $proxy_ip tcp dport $PROXY_PORT accept}
     # Rejecting everything else rather than only non-TCP: the nat chain above

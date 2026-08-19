@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import {
   type AccessCredentialIssueInput,
   type AccessCredentialIssueResult,
+  type AccessCredentialReplaceInput,
+  type AccessCredentialReplaceResult,
   type AccessCredentialRevokeInput,
   type AccessCredentialRevokeResult,
 } from '../protocol/index.js';
@@ -38,6 +40,7 @@ const CAPABILITY_PROVIDER_GRANTS = new Set([
 export interface RuntimeHostAccessAuthority {
   authenticate(credential: string): RuntimeHostConnectionAuthority | undefined;
   issue(input: AccessCredentialIssueInput): Promise<AccessCredentialIssueResult>;
+  replace(input: AccessCredentialReplaceInput): Promise<AccessCredentialReplaceResult>;
   revoke(input: AccessCredentialRevokeInput): Promise<AccessCredentialRevokeResult>;
   subscribeRevocations(listener: (credentialId: string) => void): () => void;
 }
@@ -89,6 +92,17 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   }
 
   issue(input: AccessCredentialIssueInput): Promise<AccessCredentialIssueResult> {
+    return this.#issue(input, false);
+  }
+
+  replace(input: AccessCredentialReplaceInput): Promise<AccessCredentialReplaceResult> {
+    return this.#issue(input, true);
+  }
+
+  #issue(
+    input: AccessCredentialIssueInput,
+    replacePrincipal: boolean,
+  ): Promise<AccessCredentialIssueResult> {
     return this.#mutate(async () => {
       const operationGrants = issuedAccessGrants(input.operationGrants);
       assertCredentialAuthority(input, operationGrants);
@@ -113,7 +127,19 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
         canUseHostPaths: input.canUseHostPaths,
         createdAt: new Date().toISOString(),
       };
-      const nextFile = createAccessCredentialFile([...this.#file.credentials, stored]);
+      const replaced = replacePrincipal
+        ? this.#file.credentials.filter(
+            (candidate) =>
+              candidate.status === 'active' &&
+              candidate.principalKind === input.principalKind &&
+              candidate.principalId === input.principalId,
+          )
+        : [];
+      const retained =
+        replaced.length === 0
+          ? this.#file.credentials
+          : this.#file.credentials.filter((candidate) => !replaced.includes(candidate));
+      const nextFile = createAccessCredentialFile([...retained, stored]);
       assertAccessCredentialFileCapacity(nextFile);
       const deliveryId = await createAccessCredentialDelivery(
         this.#controlDirectory,
@@ -125,6 +151,9 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       } catch (error) {
         await discardAccessCredentialDelivery(this.#controlDirectory, deliveryId);
         throw error;
+      }
+      for (const replacedCredential of replaced) {
+        this.#publishRevocation(replacedCredential.credentialId);
       }
       return {
         credentialId,
@@ -153,13 +182,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
         revokedAt: new Date().toISOString(),
       };
       await this.#commit(createAccessCredentialFile(credentials));
-      for (const listener of this.#revocationListeners) {
-        try {
-          listener(input.credentialId);
-        } catch {
-          // Revocation is already durable; an observer cannot roll it back.
-        }
-      }
+      this.#publishRevocation(input.credentialId);
       return { credentialId: input.credentialId, revoked: true };
     });
   }
@@ -181,6 +204,16 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   async #commit(file: AccessCredentialFile): Promise<void> {
     await writeAccessCredentialFile(this.#path, file);
     this.#file = file;
+  }
+
+  #publishRevocation(credentialId: string): void {
+    for (const listener of this.#revocationListeners) {
+      try {
+        listener(credentialId);
+      } catch {
+        // Revocation is already durable; an observer cannot roll it back.
+      }
+    }
   }
 }
 
@@ -222,6 +255,24 @@ export async function issueAccessCredential(
   }
 }
 
+export async function replaceAccessCredential(
+  authority: RuntimeHostAccessAuthority | undefined,
+  input: AccessCredentialReplaceInput,
+): Promise<OperationOutcome<'access.credential.replace'>> {
+  if (!authority) return unavailable('replace');
+  try {
+    return { ok: true, result: await authority.replace(input) };
+  } catch (error) {
+    if (error instanceof RuntimeHostAccessInputError) {
+      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+    }
+    return {
+      ok: false,
+      error: { code: 'persistence_failed', message: 'Access credential could not be replaced' },
+    };
+  }
+}
+
 export async function revokeAccessCredential(
   authority: RuntimeHostAccessAuthority | undefined,
   input: AccessCredentialRevokeInput,
@@ -238,10 +289,14 @@ export async function revokeAccessCredential(
 }
 
 function unavailable(operation: 'issue'): OperationOutcome<'access.credential.issue'>;
+function unavailable(operation: 'replace'): OperationOutcome<'access.credential.replace'>;
 function unavailable(operation: 'revoke'): OperationOutcome<'access.credential.revoke'>;
 function unavailable(
-  _operation: 'issue' | 'revoke',
-): OperationOutcome<'access.credential.issue'> | OperationOutcome<'access.credential.revoke'> {
+  _operation: 'issue' | 'replace' | 'revoke',
+):
+  | OperationOutcome<'access.credential.issue'>
+  | OperationOutcome<'access.credential.replace'>
+  | OperationOutcome<'access.credential.revoke'> {
   return {
     ok: false,
     error: {

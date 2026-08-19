@@ -72,14 +72,3 @@ export function parseCodexV4aPatch(input: string): ApplyPatchOperation[] {
   }
   return operations;
 }
-
-export function serializeCodexV4aOperation(operation: ApplyPatchOperation): string {
-  const header =
-    operation.type === 'create_file'
-      ? `*** Add File: ${operation.path}`
-      : operation.type === 'delete_file'
-        ? `*** Delete File: ${operation.path}`
-        : `*** Update File: ${operation.path}`;
-  const body = operation.type === 'delete_file' ? '' : `\n${operation.diff.replace(/\n$/, '')}`;
-  return `*** Begin Patch\n${header}${body}\n*** End Patch`;
-}

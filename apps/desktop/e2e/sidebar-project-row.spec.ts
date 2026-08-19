@@ -10,7 +10,7 @@ function sessionRow(sidebar: Locator, sessionId: string): Locator {
   return sidebar.locator(`[data-session-id*=${JSON.stringify(sessionId)}]`);
 }
 
-test('project navigation and actions remain adjacent keyboard controls', async ({
+test('project navigation and actions follow their visual keyboard order', async ({
   projectSidebarWindow: page,
 }) => {
   await page.keyboard.press('Escape');
@@ -47,9 +47,9 @@ test('project navigation and actions remain adjacent keyboard controls', async (
   await expect(projectRow.locator('button button')).toHaveCount(0);
   await expect(navigation).toHaveAttribute('aria-expanded', 'true');
 
-  await action.focus();
+  await navigation.focus();
   await page.keyboard.press('Tab');
-  await expect(navigation).toBeFocused();
+  await expect(action).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(firstSessionControl).toBeFocused();
 

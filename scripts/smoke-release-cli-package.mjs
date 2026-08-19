@@ -213,6 +213,9 @@ function validateReleaseArtifact(path) {
 
 function validateInstalledRuntimeFiles(packageRoot) {
   for (const path of [
+    // Incubator policy: the installed package carries the incubating
+    // disclaimer next to LICENSE/NOTICE, like every other Maka release.
+    'DISCLAIMER-WIP',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'node_modules/@maka/eval/dist/index.js',

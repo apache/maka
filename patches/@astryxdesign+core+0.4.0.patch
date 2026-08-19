@@ -692,6 +692,53 @@ index 867ed5a..4b8f835 100644
  }
  Markdown.displayName = 'Markdown';
 \ No newline at end of file
+diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
+index 16107cf..57aeb6c 100644
+--- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
++++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
+@@ -61,6 +61,12 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+      * Right-side content (badges, counts).
+      */
+     endContent?: ReactNode;
++    /**
++     * Interactive trailing control rendered after the navigation control and
++     * before any nested items. Unlike `endContent`, this is a sibling rather
++     * than content inside the navigation control.
++     */
++    trailingAction?: ReactNode;
+     /**
+      * Sub-items for nesting.
+      */
+@@ -107,7 +113,7 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+  * </SideNavItem>
+  * ```
+  */
+-export declare function SideNavItem({ as, label, icon, selectedIcon, isSelected, isDisabled, href, onClick, endContent, children, collapsible: itemCollapsible, size, 'data-testid': testId, ref, xstyle, }: SideNavItemProps): import("react").JSX.Element | null;
++export declare function SideNavItem({ as, label, icon, selectedIcon, isSelected, isDisabled, href, onClick, endContent, trailingAction, children, collapsible: itemCollapsible, size, 'data-testid': testId, ref, xstyle, }: SideNavItemProps): import("react").JSX.Element | null;
+ export declare namespace SideNavItem {
+     var displayName: string;
+ }
+diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
+index a72d264..c65bd32 100644
+--- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
++++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
+@@ -159,6 +159,7 @@ export function SideNavItem({
+   href,
+   onClick,
+   endContent,
++  trailingAction,
+   children,
+   collapsible: itemCollapsible,
+   size = 'md',
+@@ -447,7 +448,7 @@ export function SideNavItem({
+   const item = /*#__PURE__*/_jsxs("div", {
+     ref: itemRef,
+     ...stylex.props(styles.root, xstyle),
+-    children: [itemElement, hasChildren && !isCollapsed && /*#__PURE__*/_jsx("div", {
++    children: [itemElement, trailingAction, hasChildren && !isCollapsed && /*#__PURE__*/_jsx("div", {
+       id: `${id}-children`,
+       role: "group",
+       "aria-labelledby": `${id}-label`,
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js b/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
 index 65f9278..f7515e2 100644
 --- a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
@@ -1012,6 +1059,39 @@ index a6f850b..b6e0f2a 100644
    return rendered;
  }
  
+diff --git a/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx b/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
+index 41ccdb5..90b2406 100644
+--- a/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
++++ b/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
+@@ -292,6 +292,12 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+    * Right-side content (badges, counts).
+    */
+   endContent?: ReactNode;
++  /**
++   * Interactive trailing control rendered after the navigation control and
++   * before any nested items. Unlike `endContent`, this is a sibling rather
++   * than content inside the navigation control.
++   */
++  trailingAction?: ReactNode;
+   /**
+    * Sub-items for nesting.
+    */
+@@ -355,6 +361,7 @@ export function SideNavItem({
+   href,
+   onClick,
+   endContent,
++  trailingAction,
+   children,
+   collapsible: itemCollapsible,
+   size = 'md',
+@@ -681,6 +688,7 @@ export function SideNavItem({
+   const item = (
+     <div ref={itemRef} {...stylex.props(styles.root, xstyle)}>
+       {itemElement}
++      {trailingAction}
+       {hasChildren && !isCollapsed && (
+         <div
+           id={`${id}-children`}
 diff --git a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts b/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
 index 55b441e..7aa4174 100644
 --- a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
