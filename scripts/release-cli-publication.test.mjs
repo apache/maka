@@ -357,6 +357,27 @@ test('signature audit binds provenance to the exact tag, source, workflow, and r
       /provenance does not match/u,
     );
   }
+  const wrongPredicate = provenanceBundle();
+  wrongPredicate.predicateType = 'https://example.invalid/provenance';
+  assert.throws(
+    () =>
+      validateSignatureAudit({
+        releaseDirectory: fixture.releaseDirectory,
+        audit: {
+          invalid: [],
+          missing: [],
+          verified: [
+            {
+              name: 'maka-agent',
+              version: fixture.version,
+              attestations: { provenance: {} },
+              attestationBundles: [wrongPredicate],
+            },
+          ],
+        },
+      }),
+    /provenance does not match/u,
+  );
 });
 
 test('signature audit tree exposes only the top-level registry package', () => {
@@ -494,10 +515,13 @@ function provenanceBundle(mutate = () => {}) {
   };
   mutate(statement);
   return {
-    dsseEnvelope: {
-      payloadType: 'application/vnd.in-toto+json',
-      payload: Buffer.from(JSON.stringify(statement)).toString('base64'),
-      signatures: [{ keyid: '', sig: 'verified-by-npm' }],
+    predicateType: 'https://slsa.dev/provenance/v1',
+    bundle: {
+      dsseEnvelope: {
+        payloadType: 'application/vnd.in-toto+json',
+        payload: Buffer.from(JSON.stringify(statement)).toString('base64'),
+        signatures: [{ keyid: '', sig: 'verified-by-npm' }],
+      },
     },
   };
 }

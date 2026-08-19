@@ -297,8 +297,9 @@ function validateSourceIdentity({ sourceSha, runId, runAttempt, repository, work
   }
 }
 
-function parseProvenanceStatement(bundle) {
-  const envelope = bundle?.dsseEnvelope;
+function parseProvenanceStatement(attestation) {
+  if (attestation?.predicateType !== 'https://slsa.dev/provenance/v1') return null;
+  const envelope = attestation.bundle?.dsseEnvelope;
   if (
     envelope?.payloadType !== 'application/vnd.in-toto+json' ||
     typeof envelope.payload !== 'string'
