@@ -17,7 +17,6 @@ import {
   ICON_SIZE,
   ArrowUp,
   FileText,
-  Bot,
   ListTodo,
   Network,
   Pencil,
@@ -80,8 +79,6 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuDivider,
   DropdownMenuItem,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
 } from '@astryxdesign/core/DropdownMenu';
 import { useIndicator } from '@astryxdesign/core/Indicator';
 import { PermissionModeSelect } from './permission-mode-menu.js';
@@ -1301,22 +1298,20 @@ export const Composer = forwardRef<
     setAttachmentLightbox(null);
   }, [attachmentLightboxOpen, attachmentLightbox]);
   /**
-   * The orchestration options, in the order the ＋ menu lists them. `default`
-   * leads because it is the way out of the other two, and a one-of-N list
-   * without its neutral option cannot express "none of these".
+   * The orchestration modes the ＋ menu offers, each as something to turn on.
+   *
+   * There is no neutral row, because "neither" is not a third thing to pick —
+   * it is what the Session is when nothing here is on, and turning a mode off
+   * is how you get back to it. The field holds one of them at a time, so
+   * turning one on turns the other off; that happens in the open menu, in
+   * front of the user, rather than as a state they discover later.
    */
-  const orchestrationOptions: ReadonlyArray<{
-    id: OrchestrationMode;
+  const orchestrationToggles: ReadonlyArray<{
+    id: Exclude<OrchestrationMode, 'default'>;
     icon: ReactNode;
     label: string;
     onTitle: string;
   }> = [
-    {
-      id: 'default',
-      icon: <Bot size={ICON_SIZE.control} aria-hidden="true" />,
-      label: copy.defaultModeLabel,
-      onTitle: copy.defaultModeLabel,
-    },
     {
       id: 'swarm',
       icon: <Network size={ICON_SIZE.control} aria-hidden="true" />,
@@ -1375,36 +1370,35 @@ export const Composer = forwardRef<
         onDeactivate: () => { void props.onPlanModeChange?.(false); },
       }]
       : []),
-    ...orchestrationOptions
-      .filter((option) => option.id !== 'default' && option.id === orchestrationMode)
-      .map((option) => ({
-        id: option.id,
-        icon: option.icon,
-        label: option.label,
-        tooltip: props.orchestrationModeDisabledReason ?? option.onTitle,
+    ...orchestrationToggles
+      .filter((toggle) => toggle.id === orchestrationMode)
+      .map((toggle) => ({
+        id: toggle.id,
+        icon: toggle.icon,
+        label: toggle.label,
+        tooltip: props.orchestrationModeDisabledReason ?? toggle.onTitle,
         isDisabled: orchestrationModeDisabled,
         onDeactivate: () => { void props.onOrchestrationModeChange?.('default'); },
       })),
   ];
   /**
    * The mark Astryx draws for a chosen option — a check when chosen, nothing
-   * when not — which is what its own `Selector` puts on a selected option.
-   * Both mode rows carry it, so the menu reads as one list even though a
-   * toggle and a one-of-N choice are two different things: the roles say which
-   * is which (`menuitemcheckbox` against `menuitemradio`), the rhythm does not
-   * have to. Each item type draws its own marker instead — a checkbox box, a
-   * radio circle — so the mark is passed as `endContent` and rules scoped to
-   * this panel suppress both. Read through `useIndicator` rather than an icon,
-   * so a theme replacing the `check` indicator reaches these rows too.
+   * when not — which is what its own `Selector` puts on a selected option, and
+   * what a menu of otherwise identical rows needs: no column of empty boxes
+   * ahead of the labels, and the mode icons on the same x as the action rows
+   * above. A checkbox item draws its own box at the row's start, so the mark
+   * is passed as `endContent` and a rule scoped to this panel suppresses the
+   * box. Read through `useIndicator` rather than an icon, so a theme replacing
+   * the `check` indicator reaches these rows too.
    *
-   * Those rules live in the host, with the rest of `.maka-composer-*` — this
+   * That rule lives in the host, with the rest of `.maka-composer-*` — this
    * component ships markup and class names, and every composer rule is the
    * host's (`apps/desktop/src/renderer/styles/composer.css` today). A second
    * host has to bring composer styling with it; that is the existing split,
    * not something this control introduced.
    *
-   * Upstream ask: let a selectable menu item choose its indicator, and this
-   * pair of workarounds goes away.
+   * Upstream ask: let a checkbox item choose its indicator, and this pair of
+   * workarounds goes away.
    */
   const SelectionMark = useIndicator('check');
   /**
@@ -1697,29 +1691,27 @@ export const Composer = forwardRef<
                             }
                           />
                         ) : null}
-                        {props.onOrchestrationModeChange ? (
-                          <DropdownMenuRadioGroup
-                            label={copy.orchestrationModeAriaLabel}
-                            value={orchestrationMode}
-                            onChange={(value) => {
-                              void props.onOrchestrationModeChange?.(value as OrchestrationMode);
-                            }}
-                          >
-                            {orchestrationOptions.map((option) => (
-                              <DropdownMenuRadioItem
-                                key={option.id}
-                                value={option.id}
-                                label={option.label}
-                                icon={option.icon}
-                                isDisabled={orchestrationModeDisabled}
-                                endContent={option.id === orchestrationMode ? (
-                                  <SelectionMark state="checked" size="sm" />
-                                ) : undefined}
-                                aria-description={props.orchestrationModeDisabledReason}
-                              />
-                            ))}
-                          </DropdownMenuRadioGroup>
-                        ) : null}
+                        {props.onOrchestrationModeChange
+                          ? orchestrationToggles.map((toggle) => (
+                            <DropdownMenuCheckboxItem
+                              key={toggle.id}
+                              label={toggle.label}
+                              icon={toggle.icon}
+                              value={orchestrationMode === toggle.id}
+                              isDisabled={orchestrationModeDisabled}
+                              // Turning one on is the whole write: the field
+                              // holds one mode, so naming the one being turned
+                              // on is also what turns the other off.
+                              onChange={(next) => {
+                                void props.onOrchestrationModeChange?.(next ? toggle.id : 'default');
+                              }}
+                              endContent={orchestrationMode === toggle.id ? (
+                                <SelectionMark state="checked" size="sm" />
+                              ) : undefined}
+                              aria-description={props.orchestrationModeDisabledReason}
+                            />
+                          ))
+                          : null}
                       </>
                     ) : null}
                   </DropdownMenu>

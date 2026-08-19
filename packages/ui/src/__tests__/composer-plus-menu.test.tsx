@@ -1,10 +1,11 @@
 /**
- * The ＋ menu's two mode controls and the divider above them.
+ * The ＋ menu's mode rows and the divider above them.
  *
- * Plan and orchestration are separate Session state, so they are separate
- * controls here — a toggle and a one-of-N choice — and a Session can hold
- * both. Every prop that feeds them is optional, so a host can wire the modes
- * alone, and then there is nothing above the divider for it to divide.
+ * Every mode is something to turn on, so every mode is a toggle and there is
+ * no neutral row: Plan is its own Session field, Swarm and Graph share one, so
+ * a Session can hold Plan and one orchestration at once but never both
+ * orchestrations. Every prop that feeds them is optional, so a host can wire
+ * the modes alone, and then there is nothing above the divider to divide.
  */
 
 import assert from 'node:assert/strict';
@@ -58,10 +59,11 @@ test('an action row above the mode controls keeps the divider', () => {
   assert.equal(withAction.includes('astryx-dropdown-menu-divider'), true);
 });
 
-test('Plan is a toggle and orchestration is a one-of-three choice', () => {
+test('every mode is a toggle, and none of them is a neutral option', () => {
   const menu = plusMenu(base);
-  assert.equal(count(menu, 'role="menuitemcheckbox"'), 1, 'Plan is one checkable row');
-  assert.equal(count(menu, 'role="menuitemradio"'), 3, 'default, Swarm and Graph are one group');
+  assert.equal(count(menu, 'role="menuitemcheckbox"'), 3, 'Plan, Swarm and Graph');
+  assert.equal(count(menu, 'aria-checked="true"'), 0, 'nothing on is nothing checked');
+  assert.equal(count(menu, 'role="menuitemradio"'), 0, 'no one-of-N group, so no neutral row');
 });
 
 test('Plan and an orchestration mode are both on at once', () => {
@@ -69,13 +71,8 @@ test('Plan and an orchestration mode are both on at once', () => {
   const menu = markup.split('maka-composer-plus-menu')[1] ?? '';
   assert.equal(
     tagsWith(menu, 'role="menuitemcheckbox"', 'aria-checked="true"').length,
-    1,
-    'Plan is not checked while an orchestration mode is chosen',
-  );
-  assert.equal(
-    tagsWith(menu, 'role="menuitemradio"', 'aria-checked="true"').length,
-    1,
-    'the orchestration choice lost its selection while Plan is on',
+    2,
+    'Plan and Swarm are not both checked',
   );
   // Each one keeps its own readout and its own way out, so neither hides the
   // other: a Plan excursion does not clear the orchestration default.

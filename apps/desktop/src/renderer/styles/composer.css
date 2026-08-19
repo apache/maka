@@ -172,22 +172,17 @@
 /* The ＋ menu's mode rows carry the mark Astryx draws for a chosen option — a
    check when chosen, nothing when not — which is what its own Selector puts on
    a selected option, and what a menu of otherwise identical rows needs: no
-   column of empty circles and boxes ahead of the labels.
+   column of empty boxes ahead of the labels, and the mode icons on the same x
+   as the action rows above. A checkbox item draws its box at the row's start,
+   so composer.tsx passes the check through `endContent` and the box is
+   suppressed here.
 
-   Plan is a toggle and orchestration is a one-of-N choice, so the two rows are
-   honestly different roles (`menuitemcheckbox` against `menuitemradio`) and
-   assistive technology reads them as such. Only the rhythm is shared: each
-   item type draws its own marker at the row's start, so composer.tsx passes
-   the check through `endContent` and both markers are suppressed here.
+   `astryx-checkbox-indicator` is CheckboxIndicator's published theme target
+   (see its themeProps call), not an internal class. Scoped to the ＋ panel
+   alone: nothing outside this menu is touched.
 
-   `astryx-radio-indicator` and `astryx-checkbox-indicator` are the two
-   indicators' published theme targets (see their themeProps calls), not
-   internal classes. Scoped to the ＋ panel alone: the permission menu beside
-   it keeps its radio circles, and nothing outside these two menus is touched.
-
-   Drop these rules and the `endContent` mark together once a selectable menu
-   item can choose its own indicator upstream. */
-.maka-composer-plus-panel [role="menuitemradio"] .astryx-radio-indicator,
+   Drop this rule and the `endContent` mark together once a checkbox item can
+   choose its own indicator upstream. */
 .maka-composer-plus-panel [role="menuitemcheckbox"] .astryx-checkbox-indicator {
   display: none;
 }
