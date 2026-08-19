@@ -2476,7 +2476,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     goal: {
-      description: 'Show the autonomous goal for this session',
+      description: primaryGuidance.commands.goal,
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
