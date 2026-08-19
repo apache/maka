@@ -91,7 +91,8 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 48 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 49 as const;
+// 49: Usage snapshots require explicit revision and durable provider failures may classify as `ProviderPermission`; older peers reject the incompatible shapes so mixed peers must fail the handshake.
 // 48: Session branch creation accepts an explicit Side Conversation intent.
 // Older peers reject the strict input shape or cannot apply its snapshot semantics.
 // 47: Project registration can carry an explicit location preference. Epoch-46
@@ -104,6 +105,12 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 48 as const;
 // last-used timestamp. Older peers reject those strict projection shapes.
 // 43: Session tool-start events correlate hidden shell polls with `shellRunRef`.
 // Older peers reject that added closed-union field.
+=======
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 43 as const;
+// 43: Durable provider failures may classify as `ProviderPermission`; older
+// peers reject that strict error-class value, so mixed versions must fail
+// handshake before the class can surface.
+>>>>>>> 1e6c4a139 (fix(runtime-host): advance provider failure epoch)
 // 42: Turn provider retry progress adds `provider_capacity`. Older peers reject
 // that strict retry-reason enum value, so mixed versions must fail handshake.
 // 41: Context compaction returns a typed terminal outcome on both Turn
@@ -136,8 +143,14 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 48 as const;
 // and tears the connection down, so the pair must be refused up front.
 // 28: Relay model profiles carry the Fast service-tier declaration. Older
 // peers cannot safely preserve that Runtime Policy field.
+// 40: Turn snapshots carry structured provider failure codes and bounded
+// provider messages. Older peers cannot safely preserve those fields.
 // 27: Runtime Policy carries the Host-owned shell preference used by tool,
 // PTY, and prompt composition. Older peers cannot safely preserve that field.
+// 28: Relay model profiles carry the Fast service-tier declaration. Older
+// peers cannot safely preserve that Runtime Policy field.
+// 29: Turn snapshots carry structured provider failure codes and bounded
+// provider messages. Older peers cannot safely preserve those fields.
 // Transcript pages amortize storage and network round trips with a 512 KiB raw
 // payload. Base64 expansion plus the bounded fragment envelope must still fit in
 // one transport message; narrower domains retain their own encoded limits.

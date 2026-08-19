@@ -1170,7 +1170,9 @@ export function renderMakaPiTranscript(
     const fullyOffScreen =
       lines.length < viewportTop &&
       (entryHeight === 0 || lines.length + entryHeight <= viewportTop);
-    lines.push(...renderTranscriptEntryMemoized(entry, safeWidth, fullyOffScreen));
+    lines.push(
+      ...renderTranscriptEntryMemoized(entry, safeWidth, fullyOffScreen, metadata.uiLocale ?? 'en'),
+    );
     previousVisibleEntry = entry;  }
   state.renderGeometry.entryFirstLine = entryFirstLine;
 
