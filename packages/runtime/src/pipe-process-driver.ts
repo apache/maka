@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import type { Readable } from 'node:stream';
+import type { Readable, Writable } from 'node:stream';
 
 import type { ShellSpawnPlan } from './shell-detect.js';
 import {
@@ -42,11 +42,14 @@ export class PipeProcessDriver {
   private readonly child: ChildProcess;
   private readonly stdout: Readable;
   private readonly stderr: Readable;
+  private readonly stdin: Writable | undefined;
   private readonly outputDrain: CapturedOutputDrain<PipeOutputStream>;
   private disposed = false;
   private settled = false;
   private outputDrainResult: CapturedOutputDrainResult<PipeOutputStream> | undefined;
   private rootExit: Omit<PipeProcessExit, 'stdoutTruncated' | 'stderrTruncated'> | undefined;
+  private stdinSettled: boolean;
+  private stdinError: Error | undefined;
 
   constructor(private readonly options: PipeProcessDriverOptions) {
     try {
@@ -69,6 +72,12 @@ export class PipeProcessDriver {
     }
     this.stdout = this.child.stdout;
     this.stderr = this.child.stderr;
+    this.stdin = options.plan.stdin === undefined ? undefined : (this.child.stdin ?? undefined);
+    if (options.plan.stdin !== undefined && !this.stdin) {
+      this.child.kill('SIGKILL');
+      throw new Error('Pipe process did not expose stdin');
+    }
+    this.stdinSettled = this.stdin === undefined;
     this.pid = this.child.pid;
     this.stdout.setEncoding('utf8');
     this.stderr.setEncoding('utf8');
@@ -94,11 +103,9 @@ export class PipeProcessDriver {
 
   writeInputs(): void {
     writeChildFdInputs(this.child, this.options.fdInputs);
-    if (this.options.plan.stdin !== undefined) {
-      if (!this.child.stdin) throw new Error('Pipe process did not expose stdin');
-      this.child.stdin.on('error', () => {});
-      this.child.stdin.end(this.options.plan.stdin);
-    }
+    if (!this.stdin || this.options.plan.stdin === undefined) return;
+    this.stdin.once('error', this.onStdinError);
+    this.stdin.end(this.options.plan.stdin, this.onStdinEnd);
   }
 
   kill(signal: 'SIGTERM' | 'SIGKILL'): boolean {
@@ -114,6 +121,7 @@ export class PipeProcessDriver {
     this.child.off('exit', this.onRootExit);
     this.child.off('close', this.onCloseFallback);
     this.child.off('error', this.onError);
+    this.stdin?.off('error', this.onStdinError);
     this.stdout.destroy();
     this.stderr.destroy();
   }
@@ -142,13 +150,14 @@ export class PipeProcessDriver {
   };
 
   private settleAfterDrain(): void {
-    if (!this.rootExit || !this.outputDrainResult) return;
+    if (!this.rootExit || !this.outputDrainResult || !this.stdinSettled) return;
     this.settle();
   }
 
   private settle(): void {
     if (this.disposed || this.settled || !this.rootExit || !this.outputDrainResult) return;
     this.settled = true;
+    if (this.stdinError) this.options.onFailure(this.stdinError);
     this.options.onExit({
       ...this.rootExit,
       stdoutTruncated: this.outputDrainResult.incomplete.has('stdout'),
@@ -158,6 +167,18 @@ export class PipeProcessDriver {
 
   private readonly onError = (error: Error): void => {
     if (!this.disposed && !this.settled) this.options.onFailure(error);
+  };
+
+  private readonly onStdinError = (error: Error): void => {
+    this.stdinError ??= error;
+    this.stdinSettled = true;
+    this.settleAfterDrain();
+  };
+
+  private readonly onStdinEnd = (error?: Error | null): void => {
+    if (error) this.stdinError ??= error;
+    this.stdinSettled = true;
+    this.settleAfterDrain();
   };
 }
 
