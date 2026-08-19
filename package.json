@@ -58,7 +58,7 @@
     "test:product-release": "node --test scripts/product-release.test.mjs",
     "generate:windows-cargo-notices": "node scripts/generate-windows-cargo-notices.mjs",
     "check:windows-cargo-notices": "node scripts/generate-windows-cargo-notices.mjs --check",
-    "check:release": "npm run check:stale && npm run check:third-party-notices && npm run check:cli-third-party-notices && node --test scripts/product-release.test.mjs scripts/release-cli-file-policy.test.mjs scripts/release-cli-artifact-policy.test.mjs scripts/release-cli-eval-support.test.mjs scripts/release-cli-publication.test.mjs scripts/release-cli-runtime-host-diagnostics.test.mjs scripts/release-cli-workflow-policy.test.mjs scripts/verify-packaged-app.test.mjs scripts/third-party-closure.test.mjs",
+    "check:release": "npm run check:stale && npm run check:third-party-notices && npm run check:cli-third-party-notices && npm run check:product-release-identity && node --test scripts/product-release.test.mjs scripts/release-cli-file-policy.test.mjs scripts/release-cli-artifact-policy.test.mjs scripts/release-cli-eval-support.test.mjs scripts/release-cli-publication.test.mjs scripts/release-cli-runtime-host-diagnostics.test.mjs scripts/release-cli-workflow-policy.test.mjs scripts/verify-packaged-app.test.mjs scripts/third-party-closure.test.mjs",
     "package:macos-arm64": "node scripts/package-macos-arm64.mjs",
     "verify:macos-arm64": "node scripts/verify-macos-arm64-dmg.mjs",
     "package:windows-x64": "node scripts/package-windows-x64.mjs",

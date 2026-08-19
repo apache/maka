@@ -1,9 +1,12 @@
+import { execFile } from 'node:child_process';
 import { appendFile, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { parseProductReleaseVersion } from './release-version.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const execFileAsync = promisify(execFile);
 
 export function releaseToolchainFromManifest(rootManifest) {
   const nodeVersion = rootManifest.releaseToolchain?.node;
@@ -75,13 +78,22 @@ export function assertProductReleaseExpectation(identity, { version, tag, source
   return identity;
 }
 
-export async function readProductReleaseIdentity({ sha = process.env.GITHUB_SHA } = {}) {
+export async function readProductReleaseIdentity({ sha } = {}) {
   const [rootManifest, desktopManifest, cliManifest] = await Promise.all([
     readFile(join(repoRoot, 'package.json'), 'utf8').then(JSON.parse),
     readFile(join(repoRoot, 'apps/desktop/package.json'), 'utf8').then(JSON.parse),
     readFile(join(repoRoot, 'packages/cli/package.json'), 'utf8').then(JSON.parse),
   ]);
-  return resolveProductReleaseIdentity({ rootManifest, desktopManifest, cliManifest, sha });
+  const sourceCommit =
+    sha ??
+    process.env.GITHUB_SHA ??
+    (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot })).stdout.trim();
+  return resolveProductReleaseIdentity({
+    rootManifest,
+    desktopManifest,
+    cliManifest,
+    sha: sourceCommit,
+  });
 }
 
 function githubOutputEntries(identity) {

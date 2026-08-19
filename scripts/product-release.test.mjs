@@ -29,6 +29,7 @@ import { ensureProductTag } from './product-release-tag.mjs';
 import { writeSha256Sidecar } from './release-checksum.mjs';
 
 const execFileAsync = promisify(execFile);
+const repoRoot = join(import.meta.dirname, '..');
 
 const rootManifest = {
   version: '1.2.3',
@@ -54,6 +55,22 @@ test('one root version defines every product artifact from one source commit', (
   assert.equal(identity.exe, 'Maka-1.2.3-win-x64.exe');
   assert.equal(identity.cliArchive, 'Maka-1.2.3-cli-mac-arm64.zip');
   assert.equal(identity.sourceArchive, 'Maka-1.2.3-bundled-git-source.tar.gz');
+});
+
+test('the product identity CLI uses the checked-out commit outside GitHub Actions', async () => {
+  const env = { ...process.env };
+  delete env.GITHUB_SHA;
+  delete env.GITHUB_OUTPUT;
+  const [{ stdout }, { stdout: head }, manifest] = await Promise.all([
+    execFileAsync(process.execPath, [join(repoRoot, 'scripts/product-release-identity.mjs')], {
+      cwd: repoRoot,
+      env,
+    }),
+    execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }),
+    readFile(join(repoRoot, 'package.json'), 'utf8').then(JSON.parse),
+  ]);
+
+  assert.equal(stdout.trim(), `Product release v${manifest.version} from ${head.trim()}`);
 });
 
 test('product and npm release identities reject the same non-canonical versions', () => {
