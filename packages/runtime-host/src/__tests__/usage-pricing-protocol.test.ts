@@ -30,6 +30,7 @@ import {
   type EffectivePricingEntry,
   type LlmUsageLogProjection,
   type ToolUsageLogProjection,
+  type UsageQueryInput,
 } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostUsagePricingCoordinator } from '../server/usage-pricing-coordinator.js';
@@ -372,7 +373,7 @@ describe('Usage/Pricing protocol', () => {
     }
   });
 
-  test('settles a qualified summary when pending repairs outlast one pass', async () => {
+  test('shares one qualified repair pass across concurrent Usage views', async () => {
     const base = await mkdtemp(join(tmpdir(), 'maka-usage-repair-fence-'));
     const capability = await resolveStorageRoot({
       path: join(base, 'interactive-root'),
@@ -398,30 +399,26 @@ describe('Usage/Pricing protocol', () => {
         async () => [],
       );
 
-      const outcome = await coordinator.handlers['usage.query'](
-        { kind: 'summary', query: { range: 'all' } },
-        CONNECTION_CONTEXT,
+      const outcomes = await Promise.all(
+        (
+          [
+            { kind: 'summary', query: { range: 'all' } },
+            { kind: 'buckets', query: { range: 'all' }, groupBy: 'provider' },
+            { kind: 'buckets', query: { range: 'all' }, groupBy: 'model' },
+            { kind: 'logs', source: 'llm', query: { range: 'all' } },
+            { kind: 'logs', source: 'tool', query: { range: 'all' } },
+          ] satisfies UsageQueryInput[]
+        ).map((input) => coordinator.handlers['usage.query'](input, CONNECTION_CONTEXT)),
       );
-      const frame = decodeHostFrame(
-        JSON.parse(
-          encodeProtocolMessage({
-            requestId: 'usage-repair-fence-query',
-            operation: 'usage.query',
-            ...outcome,
-          }).toString('utf8'),
-        ),
-      );
-      if (
-        'kind' in frame ||
-        frame.operation !== 'usage.query' ||
-        !frame.ok ||
-        frame.result.kind !== 'summary'
-      ) {
-        throw new Error('Expected a qualified usage summary');
+      assert.ok(outcomes.every((outcome) => outcome.ok));
+      const results = outcomes.flatMap((outcome) => (outcome.ok ? [outcome.result] : []));
+      assert.equal(results.length, 5);
+      assert.equal(new Set(results.map((result) => result.revision)).size, 1);
+      for (const result of results) {
+        if ('provenance' in result) assert.equal(result.provenance.pendingRepairs, 44);
       }
-      // One bounded pass cleared 16 markers; the rest stay qualified, and the
-      // query returns instead of retrying until failure.
-      assert.equal(frame.result.provenance.pendingRepairs, 44);
+      // One shared bounded pass cleared 16 markers. Five independent passes
+      // would clear most or all of the backlog and return mixed qualifications.
       assert.equal((await stores.modelCalls.pendingReprojections()).length, 44);
     } finally {
       await stores.close().catch(() => undefined);
