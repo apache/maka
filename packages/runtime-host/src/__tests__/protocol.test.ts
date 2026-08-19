@@ -98,6 +98,13 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 25);
   });
 
+  test('publishes a new compatibility epoch for required Usage snapshot revisions', () => {
+    // Current main already uses epoch 27. Usage responses now require revision,
+    // so an epoch-27 peer must be rejected before either exact decoder sees the
+    // other side's incompatible response shape.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 27);
+  });
+
   test('selects the highest mutually supported protocol and rejects a gap', () => {
     assert.equal(negotiateProtocol({ min: 0, max: 0 }, { min: 0, max: 0 }), 0);
     assert.equal(negotiateProtocol({ min: 1, max: 3 }, { min: 2, max: 4 }), 3);
