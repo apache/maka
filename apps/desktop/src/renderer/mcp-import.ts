@@ -9,8 +9,9 @@ export function parseMcpImport(source: string, locale: UiLocale = 'zh'): McpConf
   if (!isRecord(value)) throw new Error(copy.errors.importObject);
 
   const wrapped =
-    Object.hasOwn(value, 'mcpServers') ||
-    (Object.hasOwn(value, 'version') && !isRecord(value.version));
+    (Object.hasOwn(value, 'version') && !isRecord(value.version)) ||
+    (Object.hasOwn(value, 'mcpServers') &&
+      (!isRecord(value.mcpServers) || !isMcpServerConfigShape(value.mcpServers)));
   const sourceVersion = wrapped && Object.hasOwn(value, 'version') ? value.version : 1;
   let mcpServers: Record<string, unknown>;
 
@@ -38,6 +39,10 @@ function hasOwnProtocol(mcpServers: Record<string, unknown>): boolean {
   return Object.values(mcpServers).some(
     (server) => isRecord(server) && Object.hasOwn(server, 'protocol'),
   );
+}
+
+function isMcpServerConfigShape(value: Record<string, unknown>): boolean {
+  return typeof value.command === 'string' || typeof value.url === 'string';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

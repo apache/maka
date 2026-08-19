@@ -16,6 +16,10 @@ test('MCP import migrates version 1 and unwrapped server maps to version 2', () 
     version: MCP_CONFIG_VERSION,
     mcpServers: { version: { command: 'node' } },
   });
+  assert.deepEqual(parseMcpImport('{"mcpServers":{"command":"node"}}'), {
+    version: MCP_CONFIG_VERSION,
+    mcpServers: { mcpServers: { command: 'node' } },
+  });
 });
 
 test('MCP import preserves remote protocol preferences from a version 2 wrapper', () => {
