@@ -26,13 +26,7 @@ export function releaseToolchainFromManifest(rootManifest) {
   };
 }
 
-export function resolveProductReleaseIdentity({
-  rootManifest,
-  desktopManifest,
-  cliManifest,
-  ref,
-  sha,
-}) {
+export function resolveProductReleaseIdentity({ rootManifest, desktopManifest, cliManifest, sha }) {
   const { version } = parseProductReleaseVersion(rootManifest.version);
   for (const [label, manifest] of [
     ['Desktop', desktopManifest],
@@ -46,9 +40,6 @@ export function resolveProductReleaseIdentity({
   }
   if (JSON.stringify(cliManifest.bin) !== JSON.stringify({ maka: './dist/cli.js' })) {
     throw new Error('The only public CLI command must be maka');
-  }
-  if (ref !== 'refs/heads/main') {
-    throw new Error(`Product releases require refs/heads/main, found ${ref ?? 'missing'}`);
   }
   if (typeof sha !== 'string' || !/^[0-9a-f]{40}$/u.test(sha)) {
     throw new Error('Product releases require an exact 40-character source commit SHA');
@@ -84,16 +75,13 @@ export function assertProductReleaseExpectation(identity, { version, tag, source
   return identity;
 }
 
-export async function readProductReleaseIdentity({
-  ref = process.env.GITHUB_REF,
-  sha = process.env.GITHUB_SHA,
-} = {}) {
+export async function readProductReleaseIdentity({ sha = process.env.GITHUB_SHA } = {}) {
   const [rootManifest, desktopManifest, cliManifest] = await Promise.all([
     readFile(join(repoRoot, 'package.json'), 'utf8').then(JSON.parse),
     readFile(join(repoRoot, 'apps/desktop/package.json'), 'utf8').then(JSON.parse),
     readFile(join(repoRoot, 'packages/cli/package.json'), 'utf8').then(JSON.parse),
   ]);
-  return resolveProductReleaseIdentity({ rootManifest, desktopManifest, cliManifest, ref, sha });
+  return resolveProductReleaseIdentity({ rootManifest, desktopManifest, cliManifest, sha });
 }
 
 function githubOutputEntries(identity) {

@@ -26,14 +26,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: v${{ inputs.version }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Reject non-main dispatches
+      - name: Require the exact product tag
         env:
           RELEASE_REF: ${{ github.ref }}
+          PRODUCT_TAG: v${{ inputs.version }}
         run: |
-          if [[ "$RELEASE_REF" != "refs/heads/main" ]]; then
-            echo "CLI releases must be dispatched from main; found $RELEASE_REF" >&2
+          if [[ "$RELEASE_REF" != "refs/tags/$PRODUCT_TAG" ]]; then
+            echo "CLI releases must be dispatched from $PRODUCT_TAG; found $RELEASE_REF" >&2
             exit 1
           fi
 
@@ -45,22 +47,19 @@ jobs:
           PRODUCT_TAG: v${{ inputs.version }}
         run: |
           node scripts/release-version.mjs "$EXPECTED_VERSION"
+          source_commit="$(git rev-parse HEAD)"
+          test "$source_commit" = "$GITHUB_SHA"
           release_tag="$(gh release view "$PRODUCT_TAG" --json tagName --jq .tagName)"
           test "$release_tag" = "$PRODUCT_TAG"
-          git fetch --no-tags origin "refs/tags/$PRODUCT_TAG"
-          source_commit="$(git rev-list -n 1 FETCH_HEAD)"
+          remote_source="$(git ls-remote --tags --refs origin "refs/tags/$PRODUCT_TAG" | awk '{print $1}')"
+          test "$remote_source" = "$source_commit"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$source_commit" origin/main
           echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
           echo "product_tag=$PRODUCT_TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Check out the product release source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ steps.product.outputs.source_commit }}
-          persist-credentials: false
-
       - name: Verify the product release identity
         env:
-          GITHUB_REF: refs/heads/main
           GITHUB_SHA: ${{ steps.product.outputs.source_commit }}
           EXPECTED_PRODUCT_VERSION: ${{ inputs.version }}
           EXPECTED_PRODUCT_TAG: ${{ steps.product.outputs.product_tag }}
@@ -89,6 +88,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.authorize.outputs.source_commit }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -110,8 +110,7 @@ jobs:
           RELEASE_REPOSITORY: ${{ github.repository }}
           RELEASE_RUN_ID: ${{ github.run_id }}
           RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
-          RELEASE_SHA: ${{ needs.authorize.outputs.source_commit }}
-          RELEASE_WORKFLOW_SHA: ${{ github.sha }}
+          RELEASE_SHA: ${{ github.sha }}
           RELEASE_WORKFLOW: .github/workflows/release-cli-stage.yml
         run: |
           node scripts/release-cli-publication.mjs prepare-stage \
@@ -119,7 +118,6 @@ jobs:
             "$EXPECTED_VERSION" \
             "$PRODUCT_TAG" \
             "$RELEASE_SHA" \
-            "$RELEASE_WORKFLOW_SHA" \
             "$RELEASE_RUN_ID" \
             "$RELEASE_RUN_ATTEMPT" \
             "$RELEASE_REPOSITORY" \
@@ -175,6 +173,8 @@ jobs:
           fi
           release_tag="$(gh release view "$PRODUCT_TAG" --json tagName --jq .tagName)"
           test "$release_tag" = "$PRODUCT_TAG"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$PRODUCT_SOURCE_COMMIT" origin/main
 
           npm stage publish "$RELEASE_TARBALL" \
             --tag "$RELEASE_DIST_TAG" \

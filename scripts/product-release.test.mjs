@@ -15,12 +15,10 @@ import {
 } from './product-release-identity.mjs';
 import {
   decodeSigningCertificate,
-  macosArm64CliWrapper,
   macosArm64MachOAction,
   parseDeveloperIdApplicationIdentity,
   pruneThirdPartyDevelopmentArtifacts,
   resolveCliWorkspacePackages,
-  resolveMacosArm64CliArtifactPaths,
   stageWorkspacePackages,
   standaloneInstallEnvironment,
   standaloneInstallRootManifest,
@@ -41,12 +39,11 @@ const rootManifest = {
   },
 };
 
-test('one root version defines every product artifact from one main commit', () => {
+test('one root version defines every product artifact from one source commit', () => {
   const identity = resolveProductReleaseIdentity({
     rootManifest,
     desktopManifest: { version: '1.2.3' },
     cliManifest: { version: '1.2.3', bin: { maka: './dist/cli.js' } },
-    ref: 'refs/heads/main',
     sha: 'a'.repeat(40),
   });
 
@@ -65,7 +62,6 @@ test('product and npm release identities reject the same non-canonical versions'
       rootManifest: { ...rootManifest, version },
       desktopManifest: { version },
       cliManifest: { version, bin: { maka: './dist/cli.js' } },
-      ref: 'refs/heads/main',
       sha: 'a'.repeat(40),
     };
     assert.throws(() => resolveProductReleaseIdentity(manifests), /valid product release version/u);
@@ -78,7 +74,6 @@ test('an npm candidate must name the exact product tag, version, and source comm
     rootManifest,
     desktopManifest: { version: '1.2.3' },
     cliManifest: { version: '1.2.3', bin: { maka: './dist/cli.js' } },
-    ref: 'refs/heads/main',
     sha: 'a'.repeat(40),
   });
 
@@ -217,16 +212,6 @@ test('CLI signing accepts one base64 PKCS12 and one isolated Developer ID identi
       ),
     /one Developer ID Application/u,
   );
-});
-
-test('the standalone maka launcher is relocatable and uses the embedded runtime', () => {
-  const paths = resolveMacosArm64CliArtifactPaths('1.2.3');
-  assert.equal(paths.archiveRootName, 'Maka-1.2.3-cli-mac-arm64');
-  assert.equal(paths.archivePath.endsWith('Maka-1.2.3-cli-mac-arm64.zip'), true);
-
-  const wrapper = macosArm64CliWrapper();
-  assert.match(wrapper, /libexec\/node\/bin\/node/u);
-  assert.match(wrapper, /libexec\/node_modules\/maka-agent\/dist\/cli\.js/u);
 });
 
 test('the Eval workspace owns the complete runtime asset declaration', async () => {

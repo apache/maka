@@ -57,7 +57,6 @@ export function prepareStageRelease({
   expectedVersion,
   productTag,
   sourceSha,
-  workflowSha,
   runId,
   runAttempt,
   repository,
@@ -78,7 +77,6 @@ export function prepareStageRelease({
   }
   validateSourceIdentity({
     sourceSha,
-    workflowSha,
     runId,
     runAttempt,
     repository,
@@ -86,7 +84,7 @@ export function prepareStageRelease({
   });
   const candidate = validateCandidateFiles(releaseDirectory, identity);
   const record = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     packageName: PACKAGE_NAME,
     ...identity,
     productTag,
@@ -97,7 +95,6 @@ export function prepareStageRelease({
       repository,
       workflow: workflowPath,
       commit: sourceSha,
-      workflowCommit: workflowSha,
       runId,
       runAttempt,
     },
@@ -122,13 +119,13 @@ export function validateStageRun({ releaseDirectory, expectedVersion, run }) {
     String(run.run_attempt) !== record.source.runAttempt ||
     run.path !== record.source.workflow ||
     run.event !== 'workflow_dispatch' ||
-    run.head_branch !== 'main' ||
-    run.head_sha !== record.source.workflowCommit ||
+    run.head_branch !== record.productTag ||
+    run.head_sha !== record.source.commit ||
     run.conclusion !== 'success' ||
     run.head_repository?.full_name !== record.source.repository
   ) {
     throw new Error(
-      'Release record does not belong to the exact successful main stage workflow run',
+      'Release record does not belong to the exact successful product-tag stage workflow run',
     );
   }
   return record;
@@ -203,6 +200,10 @@ export function validateSignatureAudit({ releaseDirectory, audit }) {
       `npm signature audit did not include verified provenance for ${record.version}`,
     );
   }
+  const statements = (own.attestationBundles ?? []).map(parseProvenanceStatement);
+  if (!statements.some((statement) => matchesReleaseProvenance(statement, record))) {
+    throw new Error(`npm signature audit provenance does not match ${record.productTag}`);
+  }
   return record;
 }
 
@@ -230,7 +231,7 @@ export function prepareSignatureAuditTree({ releaseDirectory, auditDirectory }) 
 function loadReleaseRecord(releaseDirectory) {
   const record = readJson(join(releaseDirectory, 'release.json'), 'release record');
   exactKeys(record, RELEASE_RECORD_KEYS, 'release record');
-  if (record.schemaVersion !== 2 || record.packageName !== PACKAGE_NAME) {
+  if (record.schemaVersion !== 3 || record.packageName !== PACKAGE_NAME) {
     throw new Error('Unsupported CLI release record');
   }
   const identity = parseCliReleaseVersion(record.version);
@@ -249,12 +250,11 @@ function loadReleaseRecord(releaseDirectory) {
   }
   exactKeys(
     record.source,
-    ['repository', 'workflow', 'commit', 'workflowCommit', 'runId', 'runAttempt'],
+    ['repository', 'workflow', 'commit', 'runId', 'runAttempt'],
     'release source',
   );
   validateSourceIdentity({
     sourceSha: record.source.commit,
-    workflowSha: record.source.workflowCommit,
     runId: record.source.runId,
     runAttempt: record.source.runAttempt,
     repository: record.source.repository,
@@ -287,22 +287,58 @@ function validateCandidateFiles(releaseDirectory, identity) {
   return { tarballPath, sha256 };
 }
 
-function validateSourceIdentity({
-  sourceSha,
-  workflowSha,
-  runId,
-  runAttempt,
-  repository,
-  workflowPath,
-}) {
+function validateSourceIdentity({ sourceSha, runId, runAttempt, repository, workflowPath }) {
   if (!/^[0-9a-f]{40}$/u.test(sourceSha)) throw new Error('Release source SHA is invalid');
-  if (!/^[0-9a-f]{40}$/u.test(workflowSha)) throw new Error('Release workflow SHA is invalid');
   if (!/^[1-9]\d*$/u.test(runId)) throw new Error('Release workflow run ID is invalid');
   if (!/^[1-9]\d*$/u.test(runAttempt)) throw new Error('Release workflow run attempt is invalid');
   if (repository !== REPOSITORY) throw new Error(`Release repository must be ${REPOSITORY}`);
   if (workflowPath !== STAGE_WORKFLOW_PATH) {
     throw new Error(`Release workflow must be ${STAGE_WORKFLOW_PATH}`);
   }
+}
+
+function parseProvenanceStatement(bundle) {
+  const envelope = bundle?.dsseEnvelope;
+  if (
+    envelope?.payloadType !== 'application/vnd.in-toto+json' ||
+    typeof envelope.payload !== 'string'
+  ) {
+    return null;
+  }
+  try {
+    return JSON.parse(Buffer.from(envelope.payload, 'base64').toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function matchesReleaseProvenance(statement, record) {
+  const repository = `https://github.com/${record.source.repository}`;
+  const ref = `refs/tags/${record.productTag}`;
+  const definition = statement?.predicate?.buildDefinition;
+  const workflow = definition?.externalParameters?.workflow;
+  const dependencies = definition?.resolvedDependencies;
+  const invocationId = `${repository}/actions/runs/${record.source.runId}/attempts/${record.source.runAttempt}`;
+  return (
+    statement?._type === 'https://in-toto.io/Statement/v1' &&
+    statement?.predicateType === 'https://slsa.dev/provenance/v1' &&
+    definition?.buildType ===
+      'https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1' &&
+    workflow?.repository === repository &&
+    workflow?.ref === ref &&
+    workflow?.path === record.source.workflow &&
+    Array.isArray(dependencies) &&
+    dependencies.some(
+      (dependency) =>
+        dependency?.uri === `git+${repository}@${ref}` &&
+        dependency?.digest?.gitCommit === record.source.commit,
+    ) &&
+    definition?.internalParameters?.github?.event_name === 'workflow_dispatch' &&
+    statement?.predicate?.runDetails?.builder?.id?.startsWith(
+      'https://github.com/actions/runner/',
+    ) &&
+    statement?.predicate?.runDetails?.metadata?.invocationId === invocationId
+  );
 }
 
 function compareReleaseSemver(left, right) {
@@ -445,13 +481,12 @@ function appendOutputs(path, values) {
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
-  if (command === 'prepare-stage' && args.length === 10) {
+  if (command === 'prepare-stage' && args.length === 9) {
     const [
       releaseDirectory,
       expectedVersion,
       productTag,
       sourceSha,
-      workflowSha,
       runId,
       runAttempt,
       repository,
@@ -464,7 +499,6 @@ async function main() {
       expectedVersion,
       productTag,
       sourceSha,
-      workflowSha,
       runId,
       runAttempt,
       repository,
@@ -477,13 +511,19 @@ async function main() {
     });
     return;
   }
-  if (command === 'validate-stage-run' && args.length === 3) {
-    const [releaseDirectory, runPath, expectedVersion] = args;
-    validateStageRun({
+  if (command === 'validate-stage-run' && (args.length === 3 || args.length === 4)) {
+    const [releaseDirectory, runPath, expectedVersion, output] = args;
+    const record = validateStageRun({
       releaseDirectory: resolve(releaseDirectory),
       expectedVersion,
       run: readJson(resolve(runPath), 'stage workflow run'),
     });
+    if (output) {
+      appendOutputs(output, {
+        product_tag: record.productTag,
+        source_commit: record.source.commit,
+      });
+    }
     return;
   }
   if (command === 'prepare-audit' && args.length === 2) {

@@ -16,7 +16,6 @@ import {
 } from './release-cli-publication.mjs';
 
 const SOURCE_SHA = 'a'.repeat(40);
-const WORKFLOW_SHA = 'b'.repeat(40);
 const WORKFLOW_PATH = '.github/workflows/release-cli-stage.yml';
 const CURRENT_CLI_VERSION = JSON.parse(
   readFileSync(resolve(import.meta.dirname, '../packages/cli/package.json'), 'utf8'),
@@ -27,8 +26,8 @@ const STAGE_RUN = {
   run_attempt: 1,
   path: WORKFLOW_PATH,
   event: 'workflow_dispatch',
-  head_branch: 'main',
-  head_sha: WORKFLOW_SHA,
+  head_branch: PRODUCT_TAG,
+  head_sha: SOURCE_SHA,
   conclusion: 'success',
   head_repository: { full_name: 'maka-agent/maka-agent' },
 };
@@ -94,7 +93,6 @@ test('stage records bind the checked candidate to one source workflow run', () =
     expectedVersion: fixture.version,
     productTag: PRODUCT_TAG,
     sourceSha: SOURCE_SHA,
-    workflowSha: WORKFLOW_SHA,
     runId: '321',
     runAttempt: '1',
     repository: 'maka-agent/maka-agent',
@@ -102,9 +100,10 @@ test('stage records bind the checked candidate to one source workflow run', () =
   });
 
   assert.equal(prepared.record.sha256, fixture.sha256);
+  assert.equal(prepared.record.schemaVersion, 3);
   assert.equal(prepared.record.productTag, PRODUCT_TAG);
   assert.equal(prepared.record.source.commit, SOURCE_SHA);
-  assert.equal(prepared.record.source.workflowCommit, WORKFLOW_SHA);
+  assert.equal(Object.hasOwn(prepared.record.source, 'workflowCommit'), false);
   assert.equal(prepared.record.source.runId, '321');
   assert.equal(prepared.record.source.runAttempt, '1');
   assert.deepEqual(
@@ -123,7 +122,6 @@ test('stage preparation rejects a product tag that does not match the version', 
         expectedVersion: fixture.version,
         productTag: 'v9.9.9',
         sourceSha: SOURCE_SHA,
-        workflowSha: WORKFLOW_SHA,
         runId: '321',
         runAttempt: '1',
         repository: 'maka-agent/maka-agent',
@@ -143,7 +141,6 @@ test('stage preparation rejects confirmation and checksum drift', () => {
         expectedVersion: '0.1.0-beta.2',
         productTag: PRODUCT_TAG,
         sourceSha: SOURCE_SHA,
-        workflowSha: WORKFLOW_SHA,
         runId: '321',
         runAttempt: '1',
         repository: 'maka-agent/maka-agent',
@@ -161,7 +158,6 @@ test('stage preparation rejects confirmation and checksum drift', () => {
         expectedVersion: fixture.version,
         productTag: PRODUCT_TAG,
         sourceSha: SOURCE_SHA,
-        workflowSha: WORKFLOW_SHA,
         runId: '321',
         runAttempt: '1',
         repository: 'maka-agent/maka-agent',
@@ -171,7 +167,7 @@ test('stage preparation rejects confirmation and checksum drift', () => {
   );
 });
 
-test('finalization accepts only the exact successful main stage run', () => {
+test('finalization accepts only the exact successful product-tag stage run', () => {
   const fixture = createPreparedCandidate();
 
   assert.equal(
@@ -186,7 +182,7 @@ test('finalization accepts only the exact successful main stage run', () => {
   for (const drift of [
     { path: '.github/workflows/other.yml' },
     { event: 'pull_request' },
-    { head_branch: 'feature' },
+    { head_branch: 'v0.1.0-beta.2' },
     { conclusion: 'failure' },
     { head_sha: 'c'.repeat(40) },
     { run_attempt: 2 },
@@ -290,6 +286,7 @@ test('signature audit must contain Maka provenance for the finalized version', (
         name: 'maka-agent',
         version: fixture.version,
         attestations: { provenance: { predicateType: 'https://slsa.dev/provenance/v1' } },
+        attestationBundles: [provenanceBundle()],
       },
     ],
   };
@@ -315,6 +312,51 @@ test('signature audit must contain Maka provenance for the finalized version', (
       }),
     /invalid or missing signatures/u,
   );
+});
+
+test('signature audit binds provenance to the exact tag, source, workflow, and run', () => {
+  const fixture = createPreparedCandidate();
+  const audit = (mutate) => ({
+    invalid: [],
+    missing: [],
+    verified: [
+      {
+        name: 'maka-agent',
+        version: fixture.version,
+        attestations: { provenance: { predicateType: 'https://slsa.dev/provenance/v1' } },
+        attestationBundles: [provenanceBundle(mutate)],
+      },
+    ],
+  });
+  for (const mutate of [
+    (statement) => {
+      statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit = 'b'.repeat(40);
+    },
+    (statement) => {
+      statement.predicate.buildDefinition.externalParameters.workflow.ref = 'refs/heads/main';
+    },
+    (statement) => {
+      statement.predicate.buildDefinition.externalParameters.workflow.path =
+        '.github/workflows/other.yml';
+    },
+    (statement) => {
+      statement.predicate.runDetails.metadata.invocationId =
+        'https://github.com/maka-agent/maka-agent/actions/runs/999/attempts/1';
+    },
+    (statement) => {
+      statement.predicate.buildDefinition.externalParameters.workflow.repository =
+        'https://github.com/other/repository';
+    },
+  ]) {
+    assert.throws(
+      () =>
+        validateSignatureAudit({
+          releaseDirectory: fixture.releaseDirectory,
+          audit: audit(mutate),
+        }),
+      /provenance does not match/u,
+    );
+  }
 });
 
 test('signature audit tree exposes only the top-level registry package', () => {
@@ -349,7 +391,6 @@ test('prepare-stage CLI emits only consumed GitHub Actions outputs', () => {
       fixture.version,
       `v${fixture.version}`,
       SOURCE_SHA,
-      WORKFLOW_SHA,
       '321',
       '1',
       'maka-agent/maka-agent',
@@ -370,6 +411,7 @@ test('prepare-stage CLI emits only consumed GitHub Actions outputs', () => {
 test('validate-stage-run CLI accepts the canonical staged release identity', () => {
   const fixture = createPreparedCandidate();
   const runPath = join(fixture.root, 'stage-run.json');
+  const output = join(fixture.root, 'github-output.txt');
   writeFileSync(
     runPath,
     JSON.stringify({
@@ -377,8 +419,8 @@ test('validate-stage-run CLI accepts the canonical staged release identity', () 
       run_attempt: 1,
       path: WORKFLOW_PATH,
       event: 'workflow_dispatch',
-      head_branch: 'main',
-      head_sha: WORKFLOW_SHA,
+      head_branch: PRODUCT_TAG,
+      head_sha: SOURCE_SHA,
       conclusion: 'success',
       head_repository: { full_name: 'maka-agent/maka-agent' },
     }),
@@ -392,11 +434,16 @@ test('validate-stage-run CLI accepts the canonical staged release identity', () 
       fixture.releaseDirectory,
       runPath,
       fixture.version,
+      output,
     ],
     { encoding: 'utf8' },
   );
 
   assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(readFileSync(output, 'utf8').trim().split('\n'), [
+    `product_tag=${PRODUCT_TAG}`,
+    `source_commit=${SOURCE_SHA}`,
+  ]);
 });
 
 function createPreparedCandidate() {
@@ -407,13 +454,52 @@ function createPreparedCandidate() {
     expectedVersion: fixture.version,
     productTag: `v${fixture.version}`,
     sourceSha: SOURCE_SHA,
-    workflowSha: WORKFLOW_SHA,
     runId: '321',
     runAttempt: '1',
     repository: 'maka-agent/maka-agent',
     workflowPath: WORKFLOW_PATH,
   });
   return fixture;
+}
+
+function provenanceBundle(mutate = () => {}) {
+  const statement = {
+    _type: 'https://in-toto.io/Statement/v1',
+    predicateType: 'https://slsa.dev/provenance/v1',
+    predicate: {
+      buildDefinition: {
+        buildType: 'https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1',
+        externalParameters: {
+          workflow: {
+            repository: 'https://github.com/maka-agent/maka-agent',
+            ref: `refs/tags/${PRODUCT_TAG}`,
+            path: WORKFLOW_PATH,
+          },
+        },
+        resolvedDependencies: [
+          {
+            uri: `git+https://github.com/maka-agent/maka-agent@refs/tags/${PRODUCT_TAG}`,
+            digest: { gitCommit: SOURCE_SHA },
+          },
+        ],
+        internalParameters: { github: { event_name: 'workflow_dispatch' } },
+      },
+      runDetails: {
+        builder: { id: 'https://github.com/actions/runner/github-hosted' },
+        metadata: {
+          invocationId: 'https://github.com/maka-agent/maka-agent/actions/runs/321/attempts/1',
+        },
+      },
+    },
+  };
+  mutate(statement);
+  return {
+    dsseEnvelope: {
+      payloadType: 'application/vnd.in-toto+json',
+      payload: Buffer.from(JSON.stringify(statement)).toString('base64'),
+      signatures: [{ keyid: '', sig: 'verified-by-npm' }],
+    },
+  };
 }
 
 function createCandidate(version = '0.1.0-beta.1') {

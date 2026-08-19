@@ -6,7 +6,7 @@ This runbook is the operational authority for publishing the `maka-agent` npm in
 
 ## Release invariants
 
-- Dispatch release workflows only from `main`.
+- Dispatch the product Release and npm Finalize workflows only from `main`. Dispatch npm Stage only from the existing product `v<version>` tag.
 - Publish prereleases under `next` and stable versions under `latest`. `next` must never resolve to
   a version older than `latest`; when no newer prerelease exists, both tags point to the stable
   version.
@@ -20,7 +20,7 @@ The two workflow boundaries are:
 
 1. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) resolves the existing product
    tag and GitHub Release, checks out that exact product commit, builds and validates one immutable
-   tarball, records both product and workflow identity, enters the protected `npm-release`
+   tarball, records that single tag commit and workflow run, enters the protected `npm-release`
    Environment, and submits it to npm staging through OIDC.
 2. [Finalize CLI npm channel](../.github/workflows/release-cli-finalize.yml) accepts only the exact successful Stage run and attempt, then verifies the public registry bytes, signature, provenance, and dist-tag. It creates no tag or GitHub Release.
 
@@ -30,7 +30,7 @@ The two workflow boundaries are:
 
 Create an Environment named `npm-release` with:
 
-- `main` as the only allowed deployment branch;
+- a selected deployment tag rule matching `v*`, with no branch rule;
 - the active CLI release maintainer as a required reviewer;
 - self-review allowed while one person is the sole release maintainer;
 - administrator bypass disabled where repository policy permits it;
@@ -80,8 +80,7 @@ package owner or recovery access as part of that change.
 ## Stage the candidate
 
 1. Open **Actions → Stage CLI npm release → Run workflow**.
-2. Select `main` and enter the exact product version. The workflow resolves `v<version>` and builds
-   its exact commit even if `main` has advanced since the Draft was created.
+2. Select `v<version>` under **Use workflow from** and enter the same exact product version. The workflow requires its GitHub ref, checkout, product tag, Release, source commit, and npm provenance to identify that one tag commit, and requires the commit to remain an ancestor of `main`.
 3. Wait for the reusable package validation jobs to pass. They build one tarball and validate the
    installed CLI on Linux x64, macOS arm64, and Windows x64, plus real Harbor and Pier Docker cells
    on Linux x64.
@@ -109,6 +108,17 @@ Before approval:
 - compare the downloaded staged tarball's SHA-256 with the workflow artifact's `.tgz.sha256`;
 - inspect the file inventory and the packaged `README.md`;
 - confirm the tarball belongs to the recorded Stage run and source commit.
+
+Immediately before approval, recheck the live product authority recorded by the Stage run:
+
+```sh
+git fetch --no-tags origin main:refs/remotes/origin/main "refs/tags/v$version:refs/tags/v$version"
+source_commit="$(git rev-parse "refs/tags/v$version^{commit}")"
+git merge-base --is-ancestor "$source_commit" origin/main
+gh release view "v$version" --json tagName --jq .tagName
+```
+
+The last command must print `v<version>`. Stop if the tag is absent, moved, no longer on `main`, or no matching GitHub Release exists.
 
 Approve only that stage ID. npm requires 2FA and makes the package public as part of approval:
 
@@ -163,8 +173,7 @@ usage, cost, and artifacts.
 
 ### Before npm staging
 
-If validation or Environment approval fails before `npm stage publish`, fix the problem on `main`
-and start a new Stage run. No npm version has been consumed.
+If a transient failure occurs before `npm stage publish`, rerun Stage from the same product tag. If code or workflow changes are required, fix them on `main`, increment the product version, create a new product tag and Draft, and Stage that new version. No npm version has been consumed.
 
 ### Stage workflow failed but npm contains a stage
 
@@ -184,8 +193,7 @@ Never reject a stage based only on version text; bind the action to the inspecte
 
 ### Stage succeeded but review found a problem
 
-Reject the stage, fix the problem on `main`, and stage again. Do not approve a candidate merely to
-clear the staging area.
+Reject the stage, fix the problem on `main`, increment the product version, create a new product tag and Draft, and Stage that new version. Do not approve a candidate merely to clear the staging area.
 
 ### npm approval succeeded but Finalize failed
 

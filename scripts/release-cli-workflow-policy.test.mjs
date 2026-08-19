@@ -42,6 +42,7 @@ test('stage consumes the validated artifact and makes provenance staging the fin
   const submit = namedStep(steps, 'Submit the candidate to npm staging');
   assert.equal(steps.at(-1), submit);
   assert.match(submit, /git ls-remote --tags --refs origin/u);
+  assert.match(submit, /git merge-base --is-ancestor "\$PRODUCT_SOURCE_COMMIT" origin\/main/u);
   assert.match(submit, /gh release view "\$PRODUCT_TAG"/u);
   assert.ok(submit.indexOf('git ls-remote') < submit.indexOf('npm stage publish'));
   assert.ok(submit.indexOf('gh release view') < submit.indexOf('npm stage publish'));
@@ -51,6 +52,10 @@ test('stage consumes the validated artifact and makes provenance staging the fin
 
 test('stage builds the npm candidate from the exact product release commit', () => {
   const workflow = readWorkflow('release-cli-stage.yml');
+  const authorizeSteps = workflowSteps(workflow);
+  const checkout = authorizeSteps.find((step) => step.includes('uses: actions/checkout@'));
+  assert.match(checkout, /ref: v\$\{\{ inputs\.version \}\}/u);
+  assert.match(workflow, /RELEASE_REF.*refs\/tags\/\$PRODUCT_TAG/su);
   assert.match(workflow, /source_commit: \$\{\{ steps\.product\.outputs\.source_commit \}\}/u);
   assert.match(
     workflow,
@@ -62,7 +67,9 @@ test('stage builds the npm candidate from the exact product release commit', () 
   assert.match(workflow, /node scripts\/release-version\.mjs "\$EXPECTED_VERSION"/u);
   assert.doesNotMatch(workflow, /EXPECTED_VERSION.*=~/u);
   assert.match(workflow, /EXPECTED_PRODUCT_SOURCE_COMMIT/u);
-  assert.doesNotMatch(workflow, /RELEASE_SHA: \$\{\{ github\.sha \}\}/u);
+  assert.match(workflow, /RELEASE_SHA: \$\{\{ github\.sha \}\}/u);
+  assert.doesNotMatch(workflow, /RELEASE_WORKFLOW_SHA/u);
+  assert.match(workflow, /git merge-base --is-ancestor "\$source_commit" origin\/main/u);
   const bind = namedStep(workflowSteps(workflow), 'Bind the candidate to this workflow run');
   assert.match(bind, /PRODUCT_TAG: \$\{\{ needs\.authorize\.outputs\.product_tag \}\}/u);
 });
@@ -75,6 +82,7 @@ test('finalize validates one exact stage attempt before running the current veri
   const checkoutIndex = workflow.indexOf('uses: actions/checkout@');
   assert.ok(loadIndex >= 0 && checkoutIndex > loadIndex);
   assert.match(workflow, /actions\/runs\/\$STAGE_RUN_ID\/attempts\/\$STAGE_RUN_ATTEMPT/u);
+  assert.match(workflow, /run\.head_branch !== "v" \+ process\.env\.EXPECTED_VERSION/u);
   for (const field of [
     'run.id',
     'run.run_attempt',
@@ -92,11 +100,26 @@ test('finalize validates one exact stage attempt before running the current veri
   assert.doesNotMatch(checkout, /steps\.stage-run\.outputs\.source_sha/u);
 });
 
+test('finalize revalidates the live product release before trusting public npm bytes', () => {
+  const workflow = readWorkflow('release-cli-finalize.yml');
+  const steps = workflowSteps(workflow);
+  const record = namedStep(steps, 'Verify the stage run and release record');
+  assert.match(record, /id: release/u);
+  assert.match(record, /"\$GITHUB_OUTPUT"/u);
+  const authority = namedStep(steps, 'Revalidate the product release authority');
+  assert.match(authority, /git ls-remote --tags --refs origin/u);
+  assert.match(authority, /git merge-base --is-ancestor "\$PRODUCT_SOURCE_COMMIT" origin\/main/u);
+  assert.match(authority, /gh release view "\$PRODUCT_TAG"/u);
+  assert.ok(
+    workflow.indexOf(authority) < workflow.indexOf('Fetch and verify the public registry bytes'),
+  );
+});
+
 test('finalize preserves verified npm bytes without creating another product release', () => {
   const workflow = readWorkflow('release-cli-finalize.yml');
   assert.match(workflow, /name: Preserve the verified public npm package/u);
   assert.match(workflow, /path: \$\{\{ runner\.temp \}\}\/registry-release/u);
-  assert.doesNotMatch(workflow, /cli-v|gh release|contents: write|validate-github-release/u);
+  assert.doesNotMatch(workflow, /cli-v|contents: write|validate-github-release/u);
 });
 
 test('release workflows select npm from the root packageManager authority', () => {

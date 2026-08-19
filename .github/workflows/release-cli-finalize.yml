@@ -42,6 +42,7 @@ jobs:
       - name: Load the exact stage workflow run
         id: stage-run
         env:
+          EXPECTED_VERSION: ${{ inputs.version }}
           GH_TOKEN: ${{ github.token }}
           STAGE_RUN_ID: ${{ inputs.stage_run_id }}
           STAGE_RUN_ATTEMPT: ${{ inputs.stage_run_attempt }}
@@ -63,12 +64,12 @@ jobs:
               String(run.run_attempt) !== process.env.STAGE_RUN_ATTEMPT ||
               run.path !== ".github/workflows/release-cli-stage.yml" ||
               run.event !== "workflow_dispatch" ||
-              run.head_branch !== "main" ||
+              run.head_branch !== "v" + process.env.EXPECTED_VERSION ||
               !/^[0-9a-f]{40}$/.test(run.head_sha) ||
               run.conclusion !== "success" ||
               run.head_repository?.full_name !== process.env.GITHUB_REPOSITORY
             ) {
-              throw new Error("Stage run is not an exact successful main CLI stage attempt");
+              throw new Error("Stage run is not an exact successful product-tag CLI stage attempt");
             }
           ' "$RUNNER_TEMP/stage-run.json"
 
@@ -76,6 +77,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -96,13 +98,31 @@ jobs:
           run-id: ${{ inputs.stage_run_id }}
 
       - name: Verify the stage run and release record
+        id: release
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
         run: |
           node scripts/release-cli-publication.mjs validate-stage-run \
             packages/cli/release \
             "$RUNNER_TEMP/stage-run.json" \
-            "$EXPECTED_VERSION"
+            "$EXPECTED_VERSION" \
+            "$GITHUB_OUTPUT"
+
+      - name: Revalidate the product release authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCT_SOURCE_COMMIT: ${{ steps.release.outputs.source_commit }}
+          PRODUCT_TAG: ${{ steps.release.outputs.product_tag }}
+        run: |
+          current_source="$(git ls-remote --tags --refs origin "refs/tags/$PRODUCT_TAG" | awk '{print $1}')"
+          if [[ "$current_source" != "$PRODUCT_SOURCE_COMMIT" ]]; then
+            echo "Product tag ${PRODUCT_TAG} no longer points to ${PRODUCT_SOURCE_COMMIT}." >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$PRODUCT_SOURCE_COMMIT" origin/main
+          release_tag="$(gh release view "$PRODUCT_TAG" --json tagName --jq .tagName)"
+          test "$release_tag" = "$PRODUCT_TAG"
 
       - name: Fetch and verify the public registry bytes
         run: |

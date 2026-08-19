@@ -494,7 +494,6 @@ export async function verifyMacosArm64Cli(
     rootManifest,
     desktopManifest,
     cliManifest,
-    ref: 'refs/heads/main',
     sha: sourceCommitResult.stdout.trim(),
   });
   const version = identity.version;

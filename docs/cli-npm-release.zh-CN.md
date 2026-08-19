@@ -6,7 +6,7 @@
 
 ## 发布不变量
 
-- 只从 `main` dispatch 发布 workflow；
+- 产品 Release 和 npm Finalize workflow 只从 `main` dispatch；npm Stage 只从已有的产品 `v<version>` tag dispatch；
 - 预发布版本使用 `next`，稳定版本使用 `latest`；`next` 不得指向比 `latest` 更旧的版本；没有
   更新的预发布版本时，两个 tag 都指向稳定版；
 - 不创建 npm 专属 Git tag 或 GitHub Release；产品 `v<version>` tag 与 GitHub Release 只由 `Release` workflow 管理，并且必须先于 npm staging 存在；
@@ -18,8 +18,7 @@
 两个 workflow 边界分别是：
 
 1. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) 解析已有的产品 tag 与 GitHub
-   Release，checkout 该产品的精确 commit，构建并验证一个 immutable tarball，分别记录产品与
-   workflow identity，进入受保护的 `npm-release` Environment，然后通过 OIDC 提交到 npm staging；
+   Release，checkout 该产品的精确 commit，构建并验证一个 immutable tarball，记录这个唯一的 tag commit 与 workflow run，进入受保护的 `npm-release` Environment，然后通过 OIDC 提交到 npm staging；
 2. [Finalize CLI npm channel](../.github/workflows/release-cli-finalize.yml) 只接受精确的成功 Stage run 和 attempt，并验证公共 registry 字节、signature、provenance 和 dist-tag；它不创建 tag 或 GitHub Release。
 
 ## 一次性控制面配置
@@ -28,7 +27,7 @@
 
 创建名为 `npm-release` 的 Environment，并设置：
 
-- 只允许 `main` 部署；
+- 使用匹配 `v*` 的 selected deployment tag rule，不配置 branch rule；
 - 将当前 CLI 发布维护者设为 required reviewer；
 - 只有一名发布维护者期间允许 self-review；
 - 仓库策略允许时禁用 administrator bypass；
@@ -77,8 +76,7 @@ authentication and disallow tokens**，然后撤销不再使用的 publish token
 ## Stage 候选包
 
 1. 打开 **Actions → Stage CLI npm release → Run workflow**；
-2. 选择 `main`，输入精确产品版本；即使 Draft 创建后 `main` 已前进，workflow 仍会解析
-   `v<version>` 并构建它的精确 commit；
+2. 在 **Use workflow from** 选择 `v<version>`，并输入同一个精确产品版本；workflow 要求其 GitHub ref、checkout、产品 tag、Release、source commit 和 npm provenance 全部指向这一个 tag commit，并要求该 commit 仍是 `main` 的 ancestor；
 3. 等待可复用 package validation jobs 全部通过。它们只构建一个 tarball，并在 Linux x64、
    macOS arm64、Windows x64 上验证安装态 CLI，在 Linux x64 上运行真实 Harbor 和 Pier
    Docker cell；
@@ -105,6 +103,17 @@ npm stage download "$stage_id" --registry https://registry.npmjs.org/
 - 将下载的 staged tarball SHA-256 与 workflow artifact 的 `.tgz.sha256` 比较；
 - 检查文件清单和包内 `README.md`；
 - 确认 tarball 属于所记录的 Stage run 和 source commit。
+
+批准前的最后一步，重新检查 Stage run 记录的 live 产品权威：
+
+```sh
+git fetch --no-tags origin main:refs/remotes/origin/main "refs/tags/v$version:refs/tags/v$version"
+source_commit="$(git rev-parse "refs/tags/v$version^{commit}")"
+git merge-base --is-ancestor "$source_commit" origin/main
+gh release view "v$version" --json tagName --jq .tagName
+```
+
+最后一条命令必须输出 `v<version>`。tag 不存在、已移动、不再位于 `main`，或不存在匹配的 GitHub Release 时都必须停止。
 
 只批准这个 stage ID。npm 会要求 2FA，并在批准时将 package 公开：
 
@@ -157,8 +166,7 @@ host 上完成至少一个真实 experiment cell，检查 score、usage、cost �
 
 ### npm staging 之前失败
 
-如果 validation 或 Environment approval 在 `npm stage publish` 前失败，在 `main` 修复后启动
-新的 Stage run。此时没有消耗 npm 版本。
+如果在 `npm stage publish` 前发生瞬时失败，从同一个产品 tag 重新运行 Stage。如果必须修改代码或 workflow，则在 `main` 修复、递增产品版本、创建新的产品 tag 和 Draft，再 Stage 新版本。此时没有消耗 npm 版本。
 
 ### Stage workflow 失败，但 npm 中存在 stage
 
@@ -177,7 +185,7 @@ npm stage reject "$stage_id" --registry https://registry.npmjs.org/
 
 ### Stage 成功，但人工检查发现问题
 
-拒绝该 stage，在 `main` 修复后重新 Stage。不要为了清空 staging area 而批准有问题的候选。
+拒绝该 stage，在 `main` 修复、递增产品版本、创建新的产品 tag 和 Draft，再 Stage 新版本。不要为了清空 staging area 而批准有问题的候选。
 
 ### npm approval 成功，但 Finalize 失败
 

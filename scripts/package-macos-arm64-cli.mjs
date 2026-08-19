@@ -32,8 +32,6 @@ import {
   resolveWorkspaceReleaseFiles,
 } from './release-cli-file-policy.mjs';
 
-export { releaseToolchainFromManifest } from './product-release-identity.mjs';
-
 const execFileAsync = promisify(execFile);
 const requireFromHere = createRequire(import.meta.url);
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -724,7 +722,6 @@ export async function packageMacosArm64Cli({
     rootManifest,
     desktopManifest,
     cliManifest,
-    ref: 'refs/heads/main',
     sha: sourceCommit,
   });
   const toolchain = releaseToolchainFromManifest(rootManifest);
