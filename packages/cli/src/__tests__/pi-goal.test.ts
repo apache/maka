@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 import { GOAL_STATUSES, type GoalStatus } from '@maka/core/goal';
 import type { GoalProjection } from '@maka/runtime-host/protocol';
 import { formatTokenCount } from '../pi-transcript-format.js';
+import { stripAnsi } from '../tui-ansi.js';
 import {
   formatGoalElapsed,
   goalAttachedNoticeText,
@@ -36,6 +37,10 @@ function goal(overrides: Partial<GoalProjection> = {}): GoalProjection {
 }
 
 describe('pi-goal display helpers', () => {
+  test('strips generic ESC character-set sequences from displayed text', () => {
+    assert.equal(stripAnsi('\x1b(0goal'), 'goal');
+  });
+
   test('every declared goal status has a label and a live/terminal classification', () => {
     // Exhaustiveness guard: a new GoalStatus must make a deliberate choice in
     // both places instead of silently falling through.

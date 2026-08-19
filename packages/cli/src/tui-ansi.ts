@@ -33,7 +33,7 @@ export function disc(tone: DiscTone): string {
 
 export function stripAnsi(text: string): string {
   return text.replace(
-    /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[PX^_][^\x1b]*(?:\x1b\\)|[@-_])/gu,
+    /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[PX^_][^\x1b]*(?:\x1b\\)|[ -/]*[0-~])/gu,
     '',
   );
 }
