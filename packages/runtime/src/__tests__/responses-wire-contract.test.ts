@@ -114,6 +114,13 @@ describe('responses wire contract', () => {
       },
     });
     assert.equal(alibaba.responsesProviderOptionsKey, 'alibaba-token-plan-cn');
+    assert.equal(alibaba.responsesReplayProfile, 'alibaba-token-plan-cn');
+    const accountScopedAlibaba = resolveModelRuntime(
+      { providerType: 'alibaba-token-plan-cn', slug: 'token-plan-account-a' },
+      'qwen3.8-max',
+    );
+    assert.equal(accountScopedAlibaba.responsesProviderOptionsKey, 'alibaba-token-plan-cn');
+    assert.equal(accountScopedAlibaba.responsesReplayProfile, 'token-plan-account-a');
 
     const xai = resolveModelRuntime({ providerType: 'xai' }, 'grok-4.5');
     assert.deepEqual(xai.reasoningReplay, {
@@ -258,6 +265,42 @@ describe('responses wire request body', () => {
     assert.deepEqual(urls, ['https://token-plan.example/compatible-mode/v1/responses']);
     assert.equal(bodies[0]?.store, false);
     assert.deepEqual(bodies[0]?.reasoning, { effort: 'medium' });
+  });
+
+  test('Alibaba compatibility survives header-only request customization', async () => {
+    let body: Record<string, unknown> | undefined;
+    let headers: Headers | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      headers = new Headers(init?.headers);
+      return Response.json({
+        id: 'response-header-customization',
+        object: 'response',
+        created_at: 1,
+        model: 'qwen3.8-max',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const connection = {
+      ...conn('alibaba-token-plan-cn'),
+      baseUrl: 'https://token-plan.example/compatible-mode/v1',
+    };
+    const model = getAIModel({
+      connection,
+      apiKey: 'token-plan-key',
+      modelId: 'qwen3.8-max',
+      requestHeaders: { 'x-token-plan-routing': 'custom' },
+      fetch,
+    });
+
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+    });
+
+    assert.equal(body?.store, false);
+    assert.equal(headers?.get('x-token-plan-routing'), 'custom');
   });
 
   test('Alibaba stateless request carries the reconstructed summary item', async () => {

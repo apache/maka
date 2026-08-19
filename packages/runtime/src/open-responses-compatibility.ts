@@ -7,10 +7,12 @@ export function createOpenResponsesCompatibilityFetch(
   if (!modules || modules.length === 0) return fetchImpl;
   assertUniqueModules(modules);
   return async (input, init) => {
-    const body = parseJsonBody(init?.body);
-    if (!body) return await fetchImpl(input, init);
+    const request = new Request(input, init);
+    const body = await parseJsonBody(request);
     const transformed = applyModules(body, modules);
-    return await fetchImpl(input, { ...init, body: JSON.stringify(transformed) });
+    const headers = new Headers(request.headers);
+    headers.delete('content-length');
+    return await fetchImpl(request.url, requestInit(request, headers, JSON.stringify(transformed)));
   };
 }
 
@@ -38,17 +40,38 @@ function applyModules(
   return body;
 }
 
-function parseJsonBody(value: BodyInit | null | undefined): Record<string, unknown> | undefined {
-  if (typeof value !== 'string') return undefined;
+async function parseJsonBody(request: Request): Promise<Record<string, unknown>> {
+  if (request.method === 'GET' || request.method === 'HEAD' || request.body === null) {
+    throw new Error('Open Responses compatibility requires a JSON object request body');
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(value);
+    parsed = JSON.parse(await request.clone().text());
   } catch {
-    return undefined;
+    throw new Error('Open Responses compatibility requires a JSON object request body');
   }
-  return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-    ? (parsed as Record<string, unknown>)
-    : undefined;
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Open Responses compatibility requires a JSON object request body');
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function requestInit(request: Request, headers: Headers, body: string): RequestInit {
+  return {
+    method: request.method,
+    headers: [...headers.entries()],
+    body,
+    signal: request.signal,
+    cache: request.cache,
+    credentials: request.credentials,
+    integrity: request.integrity,
+    keepalive: request.keepalive,
+    mode: request.mode,
+    redirect: request.redirect,
+    referrer: request.referrer,
+    referrerPolicy: request.referrerPolicy,
+    duplex: 'half',
+  } as RequestInit;
 }
 
 function assertUniqueModules(modules: readonly ProviderResponsesCompatibilityModule[]): void {

@@ -147,11 +147,7 @@ describe('ModelAdapter stream and error normalization', () => {
       providerExecutedTools: false,
       signedThinking: false,
       unsignedThinking: false,
-      responsesReasoning: {
-        kind: 'plaintext-item',
-        carrier: 'content',
-        providerOptionsKey: 'deepseek',
-      },
+      responsesReasoning: 'plaintext-content',
     });
   });
 
@@ -178,51 +174,85 @@ describe('ModelAdapter stream and error normalization', () => {
       responsesReasoning: {
         kind: 'plaintext-item',
         carrier: 'summary',
+        profile: 'alibaba-token-plan-cn',
         providerOptionsKey: 'alibaba-token-plan-cn',
       },
     });
   });
 
-  test('normalizes Open Responses item metadata into bounded durable state', () => {
-    for (const [providerType, modelId, carrier] of [
-      ['deepseek', 'deepseek-v4-flash', 'content'],
-      ['alibaba-token-plan-cn', 'qwen3.8-max', 'summary'],
-    ] as const) {
-      const adapter = new ModelAdapter({
-        connection: { slug: providerType, providerType, defaultModel: modelId },
-        apiKey: 'token',
-        modelId,
-        modelFactory: () => ({}),
-        newId: idGenerator(),
-        now: monotonicClock(),
-      });
-      type Chunk = Parameters<typeof adapter.translateChunk>[0];
-      assert.deepEqual(
-        adapter.translateChunk({
-          type: 'reasoning-end',
-          providerMetadata: {
-            [providerType]: {
-              itemId: `${providerType}-reasoning-item`,
-              reasoningSummary: [{ type: 'summary_text', text: 'summary' }],
-            },
+  test('normalizes Alibaba stream item ids into bounded durable state from item start', () => {
+    const providerType = 'alibaba-token-plan-cn';
+    const adapter = new ModelAdapter({
+      connection: { slug: providerType, providerType, defaultModel: 'qwen3.8-max' },
+      apiKey: 'token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+    const providerOptions = {
+      makaResponses: {
+        version: 1,
+        profile: providerType,
+        itemId: 'alibaba-reasoning-item',
+        carrier: 'summary',
+      },
+    };
+    assert.deepEqual(
+      adapter.translateChunk({ type: 'reasoning-start', id: 'alibaba-reasoning-item' } as Chunk),
+      [{ kind: 'thinking', text: '', providerOptions }],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-delta',
+        id: 'alibaba-reasoning-item',
+        delta: 'summary',
+      } as Chunk),
+      [{ kind: 'thinking', text: 'summary', providerOptions }],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-end',
+        id: 'alibaba-reasoning-item',
+        providerMetadata: {
+          [providerType]: {
+            itemId: 'alibaba-reasoning-item',
+            reasoningSummary: [{ type: 'summary_text', text: 'summary' }],
           },
-        } as Chunk),
-        [
-          {
-            kind: 'thinking',
-            text: '',
-            providerOptions: {
-              makaResponses: {
-                version: 1,
-                itemId: `${providerType}-reasoning-item`,
-                carrier,
-              },
-            },
-          },
-        ],
-        providerType,
-      );
-    }
+        },
+      } as Chunk),
+      [{ kind: 'thinking', text: '', providerOptions }],
+    );
+  });
+
+  test('keeps DeepSeek plaintext replay on the main content-only behavior', () => {
+    const adapter = new ModelAdapter({
+      connection: { slug: 'deepseek', providerType: 'deepseek', defaultModel: 'deepseek-v4-flash' },
+      apiKey: 'token',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-delta',
+        id: 'deepseek-reasoning-item',
+        delta: 'plaintext reasoning',
+      } as Chunk),
+      [{ kind: 'thinking', text: 'plaintext reasoning' }],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-end',
+        id: 'deepseek-reasoning-item',
+        providerMetadata: { deepseek: { itemId: 'deepseek-reasoning-item' } },
+      } as Chunk),
+      [],
+    );
   });
 
   test('translates provider text, reasoning, tool calls, and errors into ModelStreamEvents', () => {

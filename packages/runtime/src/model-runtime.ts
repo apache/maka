@@ -33,6 +33,8 @@ export interface ResolvedModelRuntime {
   reasoningReplay: ReasoningReplayContract;
   /** Provider-options namespace used by @ai-sdk/open-responses. */
   responsesProviderOptionsKey?: string;
+  /** Stable connection identity that issued durable plaintext Responses items. */
+  responsesReplayProfile?: string;
   /** Effective ApplyPatch contract after provider, model, and request wire are resolved. */
   applyPatchProfile: ApplyPatchProfile | null;
 }
@@ -95,7 +97,10 @@ export function resolveModelRuntime(
     wire,
     reasoningReplay: replay,
     ...(replay.kind === 'responses' && replay.contract.adapter === 'open-responses'
-      ? { responsesProviderOptionsKey: responsesProviderOptionsKey(connection, adapter) }
+      ? {
+          responsesProviderOptionsKey: responsesProviderOptionsKey(connection, adapter),
+          responsesReplayProfile: connection.slug ?? connection.providerType,
+        }
       : {}),
     applyPatchProfile: resolveApplyPatchProfile(
       {

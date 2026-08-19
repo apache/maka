@@ -12899,54 +12899,149 @@ describe('AiSdkBackend thinking persistence', () => {
     );
   });
 
-  test('Alibaba Responses rebuilds summary reasoning from durable item state', async () => {
-    const runtimeContext: RuntimeEvent[] = [
-      runtimeEvent({
-        id: 'e1',
-        turnId: 'turn-prev',
-        role: 'model',
-        author: 'agent',
-        content: {
-          kind: 'thinking',
-          text: 'reasoning summary for the previous tool step',
-          providerOptions: {
-            makaResponses: {
-              version: 1,
-              itemId: 'alibaba-reasoning-item',
-              carrier: 'summary',
-            },
+  test('Alibaba Responses keeps multiple streamed reasoning items distinct through replay', async () => {
+    const chunks: LanguageModelV4StreamPart[] = [
+      { type: 'stream-start', warnings: [] },
+      { type: 'reasoning-start', id: 'reasoning-item-1' },
+      { type: 'reasoning-delta', id: 'reasoning-item-1', delta: 'first summary' },
+      {
+        type: 'reasoning-end',
+        id: 'reasoning-item-1',
+        providerMetadata: {
+          'alibaba-token-plan-cn': {
+            itemId: 'reasoning-item-1',
+            reasoningSummary: [{ type: 'summary_text', text: 'first summary' }],
+            reasoningContent: null,
           },
         },
-        refs: { providerEventId: 'm1' },
-      }),
-      runtimeEvent({
-        id: 'e2',
-        turnId: 'turn-prev',
-        role: 'model',
-        author: 'agent',
-        content: {
-          kind: 'function_call',
-          id: 'tool-1',
-          name: 'Read',
-          args: { path: 'package.json' },
+      },
+      { type: 'reasoning-start', id: 'reasoning-item-2' },
+      { type: 'reasoning-delta', id: 'reasoning-item-2', delta: 'second summary' },
+      {
+        type: 'reasoning-end',
+        id: 'reasoning-item-2',
+        providerMetadata: {
+          'alibaba-token-plan-cn': {
+            itemId: 'reasoning-item-2',
+            reasoningSummary: [{ type: 'summary_text', text: 'second summary' }],
+            reasoningContent: null,
+          },
         },
-        refs: { toolCallId: 'tool-1', stepId: 'm1' },
-      }),
-      runtimeEvent({
-        id: 'e3',
-        turnId: 'turn-prev',
-        role: 'tool',
-        author: 'tool',
-        content: {
-          kind: 'function_response',
-          id: 'tool-1',
-          name: 'Read',
-          result: { kind: 'text', text: 'file contents' },
+      },
+      { type: 'text-start', id: 'message-item' },
+      { type: 'text-delta', id: 'message-item', delta: 'answer' },
+      { type: 'text-end', id: 'message-item' },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 3, text: 1, reasoning: 2 },
         },
-        refs: { toolCallId: 'tool-1' },
-      }),
+      },
     ];
+    const firstModel = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
+      },
+    });
+    const tokenPlanConnection = {
+      slug: 'alibaba-token-plan-cn',
+      providerType: 'alibaba-token-plan-cn',
+      defaultModel: 'qwen3.8-max',
+    } as const;
+    const firstBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: tokenPlanConnection,
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => firstModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const firstEvents: SessionEvent[] = [];
+    for await (const event of firstBackend.send({
+      turnId: 'turn-prev',
+      text: 'question',
+      context: [],
+    })) {
+      firstEvents.push(event);
+    }
+    const thinkingCompletes = firstEvents.filter(
+      (event): event is Extract<SessionEvent, { type: 'thinking_complete' }> =>
+        event.type === 'thinking_complete',
+    );
+    assert.deepEqual(
+      thinkingCompletes.map((event) => [
+        event.text,
+        (event.providerOptions?.makaResponses as { itemId?: unknown } | undefined)?.itemId,
+      ]),
+      [
+        ['first summary', 'reasoning-item-1'],
+        ['second summary', 'reasoning-item-2'],
+      ],
+    );
+
+    const ctx = {
+      sessionId: 'session-1',
+      invocationId: 'inv-1',
+      runId: 'run-prev',
+      turnId: 'turn-prev',
+      now: () => 7,
+      newId: idGenerator(),
+    } as unknown as InvocationContext;
+    const memory = createSessionEventMapMemory();
+    const runtimeContext = firstEvents.map((event) =>
+      mapSessionEventToRuntimeEvent(event, ctx, memory),
+    );
     const secondModel = completionModel();
+    const secondBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: tokenPlanConnection,
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => secondModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      secondBackend.send({
+        turnId: 'turn-current',
+        text: 'follow up',
+        context: [],
+        runtimeContext,
+      }),
+    );
+
+    const prompt = compactPrompt(secondModel) as ModelMessage[];
+    const assistant = prompt.find(
+      (message) => message.role === 'assistant' && Array.isArray(message.content),
+    );
+    assert.ok(assistant && Array.isArray(assistant.content));
+    assert.deepEqual(
+      assistant.content
+        .filter((part) => part.type === 'reasoning')
+        .map((part) => [
+          part.text,
+          (part.providerOptions?.['alibaba-token-plan-cn'] as { itemId?: unknown } | undefined)
+            ?.itemId,
+        ]),
+      [
+        ['first summary', 'reasoning-item-1'],
+        ['second summary', 'reasoning-item-2'],
+      ],
+    );
+  });
+
+  test('Alibaba Responses skips legacy reasoning without durable item state', async () => {
+    const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
@@ -12958,42 +13053,66 @@ describe('AiSdkBackend thinking persistence', () => {
       },
       apiKey: 'alibaba-token',
       modelId: 'qwen3.8-max',
-      modelFactory: () => secondModel,
+      modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
       now: monotonicClock(),
     });
-
-    await drain(
-      backend.send({ turnId: 'turn-current', text: 'follow up', context: [], runtimeContext }),
-    );
-
-    const prompt = compactPrompt(secondModel) as ModelMessage[];
-    const assistant = prompt.find(
-      (message) => message.role === 'assistant' && Array.isArray(message.content),
-    );
-    assert.ok(assistant && Array.isArray(assistant.content));
-    assert.deepEqual(
-      assistant.content.filter((part) => part.type === 'reasoning'),
-      [
-        {
-          type: 'reasoning',
-          text: 'reasoning summary for the previous tool step',
+    const runtimeContext: RuntimeEvent[] = [
+      runtimeEvent({
+        id: 'e1',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'summary without a provider item identity',
+        },
+        refs: { providerEventId: 'm1' },
+      }),
+      runtimeEvent({
+        id: 'e2',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'summary issued by a different provider profile',
           providerOptions: {
-            'alibaba-token-plan-cn': {
-              itemId: 'alibaba-reasoning-item',
-              reasoningSummary: [
-                { type: 'summary_text', text: 'reasoning summary for the previous tool step' },
-              ],
-              reasoningContent: null,
+            makaResponses: {
+              version: 1,
+              profile: 'alibaba-token-plan',
+              itemId: 'foreign-reasoning-item',
+              carrier: 'summary',
             },
           },
         },
-      ],
+        refs: { providerEventId: 'm2' },
+      }),
+    ];
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'follow up',
+        context: [],
+        runtimeContext,
+      }),
+    );
+
+    const prompt = compactPrompt(model) as ModelMessage[];
+    assert.equal(
+      prompt.some(
+        (message) =>
+          message.role === 'assistant' &&
+          Array.isArray(message.content) &&
+          message.content.some((part) => part.type === 'reasoning'),
+      ),
+      false,
     );
   });
 
-  test('Alibaba Responses rejects summary replay without durable item state', async () => {
+  test('Alibaba Responses rejects malformed state owned by its profile', async () => {
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
@@ -13018,7 +13137,16 @@ describe('AiSdkBackend thinking persistence', () => {
         author: 'agent',
         content: {
           kind: 'thinking',
-          text: 'summary without a provider item identity',
+          text: 'current-profile reasoning with a widened state',
+          providerOptions: {
+            makaResponses: {
+              version: 1,
+              profile: 'alibaba-token-plan-cn',
+              itemId: 'reasoning-item',
+              carrier: 'summary',
+              raw: 'must not persist',
+            },
+          },
         },
         refs: { providerEventId: 'm1' },
       }),
@@ -13033,7 +13161,7 @@ describe('AiSdkBackend thinking persistence', () => {
           runtimeContext,
         }),
       ),
-      /Summary Responses reasoning is missing durable provider state/,
+      /Malformed durable plaintext Responses reasoning state/,
     );
   });
 

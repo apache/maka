@@ -1,39 +1,77 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  decodePlaintextResponsesReasoningState,
   plaintextResponsesReasoningProviderOptions,
-  readPlaintextResponsesReasoningState,
   replayPlaintextResponsesProviderOptions,
   responsesReasoningItemId,
 } from '../responses-reasoning-state.js';
 
 test('round-trips one bounded versioned plaintext Responses item identity', () => {
-  const options = plaintextResponsesReasoningProviderOptions('reasoning-item-1', 'summary');
+  const options = plaintextResponsesReasoningProviderOptions(
+    'reasoning-item-1',
+    'summary',
+    'alibaba-token-plan-cn',
+  );
   assert.deepEqual(options, {
-    makaResponses: { version: 1, itemId: 'reasoning-item-1', carrier: 'summary' },
+    makaResponses: {
+      version: 1,
+      profile: 'alibaba-token-plan-cn',
+      itemId: 'reasoning-item-1',
+      carrier: 'summary',
+    },
   });
-  assert.deepEqual(readPlaintextResponsesReasoningState(options), {
-    version: 1,
-    itemId: 'reasoning-item-1',
-    carrier: 'summary',
+  assert.deepEqual(decodePlaintextResponsesReasoningState(options), {
+    kind: 'valid',
+    state: {
+      version: 1,
+      profile: 'alibaba-token-plan-cn',
+      itemId: 'reasoning-item-1',
+      carrier: 'summary',
+    },
   });
   assert.equal(responsesReasoningItemId(options), 'reasoning-item-1');
 });
 
 test('rejects malformed, widened, and unsafe plaintext Responses state', () => {
   for (const makaResponses of [
-    { version: 2, itemId: 'item', carrier: 'summary' },
-    { version: 1, itemId: '', carrier: 'summary' },
-    { version: 1, itemId: 'bad\nitem', carrier: 'summary' },
-    { version: 1, itemId: 'item', carrier: 'unknown' },
-    { version: 1, itemId: 'item', carrier: 'summary', raw: 'provider-body' },
+    { version: 2, profile: 'alibaba-token-plan-cn', itemId: 'item', carrier: 'summary' },
+    { version: 1, profile: '', itemId: 'item', carrier: 'summary' },
+    { version: 1, profile: 'bad\nprofile', itemId: 'item', carrier: 'summary' },
+    { version: 1, profile: 'alibaba-token-plan-cn', itemId: '', carrier: 'summary' },
+    { version: 1, profile: 'alibaba-token-plan-cn', itemId: 'bad\nitem', carrier: 'summary' },
+    { version: 1, profile: 'alibaba-token-plan-cn', itemId: 'item', carrier: 'unknown' },
+    {
+      version: 1,
+      profile: 'alibaba-token-plan-cn',
+      itemId: 'item',
+      carrier: 'summary',
+      raw: 'provider-body',
+    },
   ]) {
-    assert.equal(readPlaintextResponsesReasoningState({ makaResponses }), undefined);
+    assert.equal(decodePlaintextResponsesReasoningState({ makaResponses }).kind, 'malformed');
   }
+  assert.deepEqual(decodePlaintextResponsesReasoningState(undefined), { kind: 'missing' });
+  assert.deepEqual(
+    decodePlaintextResponsesReasoningState({
+      makaResponses: {
+        version: 2,
+        profile: 'another-provider',
+        itemId: 'item',
+        carrier: 'summary',
+      },
+    }),
+    { kind: 'malformed', profile: 'another-provider' },
+  );
 });
 
 test('reconstructs provider-native summary and content carriers', () => {
-  const summary = { version: 1, itemId: 'summary-item', carrier: 'summary' } as const;
+  const summary = {
+    version: 1,
+    profile: 'alibaba-token-plan-cn',
+    itemId: 'summary-item',
+    carrier: 'summary',
+  } as const;
   assert.deepEqual(
     replayPlaintextResponsesProviderOptions({
       providerOptionsKey: 'alibaba-token-plan-cn',
@@ -49,7 +87,12 @@ test('reconstructs provider-native summary and content carriers', () => {
     },
   );
 
-  const content = { version: 1, itemId: 'content-item', carrier: 'content' } as const;
+  const content = {
+    version: 1,
+    profile: 'deepseek',
+    itemId: 'content-item',
+    carrier: 'content',
+  } as const;
   assert.deepEqual(
     replayPlaintextResponsesProviderOptions({
       providerOptionsKey: 'deepseek',

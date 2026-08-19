@@ -149,7 +149,7 @@ import {
   type RequestProjectionStage,
 } from './request-projection.js';
 import {
-  readPlaintextResponsesReasoningState,
+  decodePlaintextResponsesReasoningState,
   replayPlaintextResponsesProviderOptions,
   responsesReasoningItemId,
 } from './responses-reasoning-state.js';
@@ -3976,24 +3976,25 @@ export class AiSdkBackend implements AgentBackend {
         typeof replaySupport.responsesReasoning === 'object' &&
         replaySupport.responsesReasoning.kind === 'plaintext-item'
       ) {
-        if (item.text.length === 0) return undefined;
-        const rawState = item.providerOptions?.makaResponses;
-        const state = readPlaintextResponsesReasoningState(item.providerOptions);
-        if (rawState !== undefined && !state) {
+        const decoded = decodePlaintextResponsesReasoningState(item.providerOptions);
+        if (decoded.kind === 'missing') return undefined;
+        if (decoded.kind === 'malformed') {
+          if (
+            decoded.profile !== undefined &&
+            decoded.profile !== replaySupport.responsesReasoning.profile
+          ) {
+            return undefined;
+          }
           throw new Error('Malformed durable plaintext Responses reasoning state');
         }
-        if (!state) {
-          // Legacy DeepSeek events predate the versioned provider state. Its
-          // plaintext-content contract can reconstruct a valid item from the
-          // canonical reasoning text alone; summary carriers cannot.
-          if (replaySupport.responsesReasoning.carrier === 'content') {
-            return { part: { type: 'reasoning' as const, text: item.text } };
-          }
-          throw new Error('Summary Responses reasoning is missing durable provider state');
+        const state = decoded.state;
+        if (state.profile !== replaySupport.responsesReasoning.profile) {
+          return undefined;
         }
         if (state.carrier !== replaySupport.responsesReasoning.carrier) {
           throw new Error('Durable plaintext Responses reasoning carrier does not match provider');
         }
+        if (item.text.length === 0) return undefined;
         return {
           part: {
             type: 'reasoning' as const,
@@ -4005,6 +4006,10 @@ export class AiSdkBackend implements AgentBackend {
             }),
           },
         };
+      }
+      if (replaySupport.responsesReasoning === 'plaintext-content') {
+        if (item.text.length === 0) return undefined;
+        return { part: { type: 'reasoning' as const, text: item.text } };
       }
       if (replaySupport.responsesReasoning === 'encrypted-content') {
         const openai = item.providerOptions?.openai;

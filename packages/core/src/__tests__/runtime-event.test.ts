@@ -51,7 +51,12 @@ test('Stored assistant reasoning parts survive recovery decoding', () => {
     {
       text: 'Alibaba summary',
       providerOptions: {
-        makaResponses: { version: 1, itemId: 'alibaba-item', carrier: 'summary' },
+        makaResponses: {
+          version: 1,
+          profile: 'alibaba-token-plan-cn',
+          itemId: 'alibaba-item',
+          carrier: 'summary',
+        },
       },
     },
   ];

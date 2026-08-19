@@ -199,11 +199,14 @@ export class ModelAdapter {
           ? 'none'
           : this.runtime.reasoningReplay.contract.reasoningReplay === 'encrypted-content'
             ? 'encrypted-content'
-            : {
-                kind: 'plaintext-item',
-                carrier: plaintextCarrier(this.runtime.reasoningReplay.contract.reasoningReplay),
-                providerOptionsKey: requireResponsesProviderOptionsKey(this.runtime),
-              },
+            : this.runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-content'
+              ? 'plaintext-content'
+              : {
+                  kind: 'plaintext-item',
+                  carrier: plaintextCarrier(this.runtime.reasoningReplay.contract.reasoningReplay),
+                  profile: requireResponsesReplayProfile(this.runtime),
+                  providerOptionsKey: requireResponsesProviderOptionsKey(this.runtime),
+                },
     };
   }
 
@@ -662,9 +665,11 @@ export interface ModelAdapterRuntimeEventReplaySupport {
   responsesReasoning:
     | 'none'
     | 'encrypted-content'
+    | 'plaintext-content'
     | {
         kind: 'plaintext-item';
         carrier: PlaintextResponsesReasoningCarrier;
+        profile: string;
         providerOptionsKey: string;
       };
 }
@@ -680,6 +685,13 @@ function requireResponsesProviderOptionsKey(runtime: ResolvedModelRuntime): stri
     throw new Error('Plaintext Responses replay requires a provider-options key');
   }
   return runtime.responsesProviderOptionsKey;
+}
+
+function requireResponsesReplayProfile(runtime: ResolvedModelRuntime): string {
+  if (!runtime.responsesReplayProfile) {
+    throw new Error('Plaintext Responses replay requires a source profile');
+  }
+  return runtime.responsesReplayProfile;
 }
 
 /**
@@ -761,24 +773,42 @@ function openAiResponsesReasoningProviderOptionsFromChunk(
   runtime: ResolvedModelRuntime,
 ): NonNullable<ModelMessage['providerOptions']> | undefined {
   const meta = chunk.providerMetadata;
-  if (!meta || typeof meta !== 'object') return undefined;
   if (
     runtime.reasoningReplay.kind === 'responses' &&
-    runtime.reasoningReplay.contract.reasoningReplay !== 'encrypted-content'
+    runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-summary'
   ) {
     const providerOptionsKey = runtime.responsesProviderOptionsKey;
-    const provider = providerOptionsKey
-      ? (meta as Record<string, unknown>)[providerOptionsKey]
-      : undefined;
-    if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return undefined;
-    const itemId = (provider as { itemId?: unknown }).itemId;
-    return typeof itemId === 'string'
+    const provider =
+      providerOptionsKey && meta && typeof meta === 'object'
+        ? (meta as Record<string, unknown>)[providerOptionsKey]
+        : undefined;
+    const metadataItemId =
+      provider && typeof provider === 'object' && !Array.isArray(provider)
+        ? (provider as { itemId?: unknown }).itemId
+        : undefined;
+    const streamItemId = (chunk as { id?: unknown }).id;
+    if (
+      typeof metadataItemId === 'string' &&
+      typeof streamItemId === 'string' &&
+      metadataItemId !== streamItemId
+    ) {
+      throw new Error('Plaintext Responses reasoning item id changed within one stream item');
+    }
+    const itemId =
+      typeof metadataItemId === 'string'
+        ? metadataItemId
+        : typeof streamItemId === 'string'
+          ? streamItemId
+          : undefined;
+    return itemId
       ? plaintextResponsesReasoningProviderOptions(
           itemId,
           plaintextCarrier(runtime.reasoningReplay.contract.reasoningReplay),
+          requireResponsesReplayProfile(runtime),
         )
       : undefined;
   }
+  if (!meta || typeof meta !== 'object') return undefined;
   const openai = (meta as { openai?: unknown }).openai;
   if (!openai || typeof openai !== 'object' || Array.isArray(openai)) return undefined;
   const { itemId, reasoningEncryptedContent } = openai as {
@@ -807,6 +837,14 @@ function translateChunk(
   runtime?: ResolvedModelRuntime,
 ): ModelStreamEvent[] {
   switch (chunk.type) {
+    case 'reasoning-start': {
+      const responsesProviderOptions = runtime
+        ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
+        : undefined;
+      return responsesProviderOptions
+        ? [{ kind: 'thinking', text: '', providerOptions: responsesProviderOptions }]
+        : [];
+    }
     case 'text-start':
       return [{ kind: 'text-start' }];
     case 'text-delta': {

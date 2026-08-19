@@ -18,6 +18,45 @@ test('forces store false after caller request customization', async () => {
   assert.deepEqual(observed, { model: 'qwen3.8-max', store: false });
 });
 
+test('parses an ArrayBuffer body produced by header-only request customization', async () => {
+  let observed: Record<string, unknown> | undefined;
+  let contentLength: string | null | undefined;
+  const fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    observed = JSON.parse(String(init?.body));
+    contentLength = new Headers(init?.headers).get('content-length');
+    return Response.json({ ok: true });
+  }) as unknown as typeof globalThis.fetch;
+  const compatible = createOpenResponsesCompatibilityFetch(fetch, ['force-store-false']);
+
+  await compatible('https://provider.invalid/responses', {
+    method: 'POST',
+    headers: { 'content-length': '999', 'content-type': 'application/json' },
+    body: new TextEncoder().encode(JSON.stringify({ model: 'qwen3.8-max' })).buffer,
+  });
+
+  assert.deepEqual(observed, { model: 'qwen3.8-max', store: false });
+  assert.equal(contentLength, null);
+});
+
+test('fails closed when a compatibility profile cannot inspect a JSON object', async () => {
+  let calls = 0;
+  const fetch = (async () => {
+    calls += 1;
+    return Response.json({ ok: true });
+  }) as unknown as typeof globalThis.fetch;
+  const compatible = createOpenResponsesCompatibilityFetch(fetch, ['force-store-false']);
+
+  await assert.rejects(
+    () =>
+      compatible('https://provider.invalid/responses', {
+        method: 'POST',
+        body: 'not-json',
+      }),
+    /requires a JSON object request body/,
+  );
+  assert.equal(calls, 0);
+});
+
 test('rejects unsupported forced tool choice before network dispatch', async () => {
   let calls = 0;
   const fetch = (async () => {
@@ -36,6 +75,14 @@ test('rejects unsupported forced tool choice before network dispatch', async () 
       /does not support forced tool_choice/,
     );
   }
+  await assert.rejects(
+    () =>
+      compatible('https://provider.invalid/responses', {
+        method: 'POST',
+        body: new TextEncoder().encode(JSON.stringify({ tool_choice: 'required' })),
+      }),
+    /does not support forced tool_choice/,
+  );
   assert.equal(calls, 0);
 });
 
@@ -48,9 +95,13 @@ test('leaves auto and absent tool choice unchanged', async () => {
   const compatible = createOpenResponsesCompatibilityFetch(fetch, ['reject-forced-tool-choice']);
 
   await compatible('https://provider.invalid/responses', {
+    method: 'POST',
     body: JSON.stringify({ tool_choice: 'auto' }),
   });
-  await compatible('https://provider.invalid/responses', { body: JSON.stringify({ model: 'm' }) });
+  await compatible('https://provider.invalid/responses', {
+    method: 'POST',
+    body: JSON.stringify({ model: 'm' }),
+  });
   assert.deepEqual(bodies, [{ tool_choice: 'auto' }, { model: 'm' }]);
 });
 
