@@ -289,7 +289,13 @@ export function applyShellRunViewUpdateToTranscript(
   const tool = findToolEntry(state, update.sourceToolCallId);
   const wasLive = isLiveShellRunCard(tool);
   const applied = applyShellRunUpdateToTranscript(state, update.sourceToolCallId, update.result);
-  if (tool && wasLive && isSettledShellRunCard(tool) && options?.announceSettle !== false) {
+  if (
+    tool &&
+    tool.userOwned !== true &&
+    wasLive &&
+    isSettledShellRunCard(tool) &&
+    options?.announceSettle !== false
+  ) {
     pushShellRunSettledNotice(state, tool);
   }
   if (
@@ -347,9 +353,18 @@ export function appendUserCommandToTranscript(
 export function replaceTranscriptWithStoredMessages(
   state: MakaPiTranscriptState,
   messages: readonly StoredMessage[],
+  options: { readonly preserveUserCommands?: boolean } = {},
 ): void {
+  const userCommands = options.preserveUserCommands
+    ? state.entries.filter(
+        (entry): entry is MakaPiToolEntry => entry.kind === 'tool' && entry.userOwned === true,
+      )
+    : [];
   const view = materializeSession(messages);
-  state.entries = foldStoredShellRunChildren(view.items.flatMap(chatItemToTranscriptEntries));
+  state.entries = [
+    ...foldStoredShellRunChildren(view.items.flatMap(chatItemToTranscriptEntries)),
+    ...userCommands,
+  ];
   clearPendingInteractions(state);
   state.pendingShellRunPolls.clear();
   state.expandAllTools = false;
@@ -370,6 +385,12 @@ export function replaceTranscriptWithStoredMessages(
   for (const msg of messages) {
     if (msg.type === 'token_usage') accumulateUsage(state.usage, msg);
   }
+}
+
+export function hasRunningUserCommand(state: MakaPiTranscriptState): boolean {
+  return state.entries.some(
+    (entry) => entry.kind === 'tool' && entry.userOwned === true && isLiveShellRunCard(entry),
+  );
 }
 
 /**

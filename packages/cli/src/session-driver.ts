@@ -90,6 +90,8 @@ export interface MakaSessionDriver {
   ): Promise<MakaPreparedSessionTurn>;
   /** Runs one user-owned command. Its input/output never becomes model prompt history. */
   runUserCommand?(command: string): Promise<MakaUserCommand>;
+  /** Stops every live user-owned command started by this driver. */
+  stopUserCommands?(): Promise<void>;
   compactSession(): AsyncIterable<SessionEvent>;
   resumeLatest?(): AsyncIterable<SessionEvent>;
   steer?(text: string): Promise<QueueEnqueueOutcome>;

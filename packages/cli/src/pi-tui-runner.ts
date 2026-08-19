@@ -73,6 +73,7 @@ import {
   applyMakaSessionEventToTranscript,
   applyShellRunUpdateToTranscript,
   createMakaPiTranscriptState,
+  hasRunningUserCommand,
   activeSandboxBoundaryRequest,
   activeUserQuestionRequest,
   completePendingInteraction,
@@ -262,9 +263,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const tui = new TUI(terminal);
   const state = createMakaPiTranscriptState();
   let transcriptMessages: readonly StoredMessage[] = [];
-  const replaceTranscript = (messages: readonly StoredMessage[]): void => {
+  const replaceTranscript = (
+    messages: readonly StoredMessage[],
+    options: { readonly preserveUserCommands?: boolean } = {},
+  ): void => {
     transcriptMessages = messages;
-    replaceTranscriptWithStoredMessages(state, messages);
+    replaceTranscriptWithStoredMessages(state, messages, options);
   };
   let cwd = input.cwd;
   let model = input.model;
@@ -493,7 +497,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     input.driver.subscribeTranscriptReplacements?.((sessionId, turnId, messages, reason) => {
       if (closed || input.driver.getSessionId() !== sessionId) return;
       if (reason === 'reconnect') {
-        replaceTranscript(messages);
+        replaceTranscript(messages, { preserveUserCommands: true });
         shellRunElapsedTicker.sync();
         requestRender();
         return;
@@ -3095,6 +3099,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (turnRunning && matchesKey(data, Key.ctrl('c'))) {
       if (interruptRequested) handleProcessExit(0);
       else requestTurnInterrupt();
+      return { consume: true };
+    }
+    if (
+      !turnRunning &&
+      matchesKey(data, Key.ctrl('c')) &&
+      hasRunningUserCommand(state) &&
+      input.driver.stopUserCommands
+    ) {
+      lastIdleCtrlCAt = 0;
+      void runControl(() => input.driver.stopUserCommands!());
       return { consume: true };
     }
     // Double Escape interrupts the running turn. This must sit below the

@@ -439,6 +439,85 @@ describe('Runtime Host Maka Session driver', () => {
     assert.equal(raced?.output?.mode === 'pipes' && raced.output.stdout, 'done\n');
   });
 
+  test('stops an already-running user command when the driver closes', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({
+        rootTurn: null,
+        session: {
+          sessionId: 'id-1',
+          metadataRevision: 1,
+          status: 'running',
+          createdAt: 1,
+          lastUsedAt: 1,
+          isArchived: false,
+        },
+      }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: sequenceIds('id-1', 'id-2'),
+    });
+    const command = await driver.runUserCommand!('sleep 3600');
+    command.takeRacedUpdate();
+
+    await driver.stop();
+
+    const stop = connection.requests.find(
+      (request) => request.operation === 'runtime.resource.stop',
+    );
+    assert.deepEqual(stop?.input, {
+      sessionId: 'id-1',
+      ref: connection.userCommandResource.ref,
+    });
+  });
+
+  test('stops a user command whose start races driver close', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({
+        rootTurn: null,
+        session: {
+          sessionId: 'id-1',
+          metadataRevision: 1,
+          status: 'running',
+          createdAt: 1,
+          lastUsedAt: 1,
+          isArchived: false,
+        },
+      }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const releaseStart = deferred<void>();
+    connection.onRuntimeResourceStart = () => releaseStart.promise;
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: sequenceIds('id-1', 'id-2'),
+    });
+
+    const starting = driver.runUserCommand!('sleep 3600');
+    await waitFor(() =>
+      connection.requests.some((request) => request.operation === 'runtime.resource.start'),
+    );
+    const stopping = driver.stop();
+    releaseStart.resolve();
+    const command = await starting;
+    command.takeRacedUpdate();
+    await stopping;
+
+    assert.equal(
+      connection.requests.filter((request) => request.operation === 'runtime.resource.stop').length,
+      1,
+    );
+  });
+
   test('drops a per-session Full access elevation when a fresh Session starts (#3020)', async () => {
     // The TUI flow behind /new: session A is elevated to bypass, then the
     // driver is asked to start over. The next prompt lazily creates session B
@@ -1642,6 +1721,17 @@ class FakeConnection {
     if (operation === 'runtime.resource.start') {
       await this.onRuntimeResourceStart?.();
       return { resource: this.userCommandResource } as OperationOutput<K>;
+    }
+    if (operation === 'runtime.resource.stop') {
+      return {
+        resource: {
+          ...this.userCommandResource,
+          status: 'cancelled',
+          updatedAt: 2,
+          completedAt: 2,
+          revision: 2,
+        },
+      } as OperationOutput<K>;
     }
     if (operation === 'runtime.resource.query') {
       if (this.runtimeResourceQuery === undefined) {

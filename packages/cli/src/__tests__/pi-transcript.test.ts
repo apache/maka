@@ -1803,6 +1803,35 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(tool?.toolName, 'User command');
     assert.equal(tool?.status, 'done');
     assert.match(tool?.output ?? '', /\/repo/);
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'notice'),
+      false,
+    );
+  });
+
+  test('preserves local user-command cards only for same-session reconnect replacement', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserCommandToTranscript(state, {
+      commandId: 'user-command-1',
+      command: 'sleep 60',
+      result: shellRun({
+        ref: 'maka://runtime/background-tasks/user-command-1',
+        status: 'running',
+        stdout: '',
+      }) as ShellRunSnapshotResult,
+    });
+
+    replaceTranscriptWithStoredMessages(state, [], { preserveUserCommands: true });
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'tool' && entry.userOwned === true),
+      true,
+    );
+
+    replaceTranscriptWithStoredMessages(state, []);
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'tool' && entry.userOwned === true),
+      false,
+    );
   });
 
   test('notifies a settle exactly once across a folded poll and the live update', () => {

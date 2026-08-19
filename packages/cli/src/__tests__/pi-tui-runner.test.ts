@@ -33,6 +33,7 @@ import type {
   MakaSessionRewindResult,
   MakaSessionSwitchOptions,
   MakaSessionSwitchResult,
+  MakaTranscriptReplacementReason,
   RewindTarget,
   SessionResumeAvailability,
 } from '../session-driver.js';
@@ -242,6 +243,86 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => driver.commands.includes('pwd'));
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
     assert.deepEqual(driver.prompts, []);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('Ctrl-C stops a running user command without exiting the TUI', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RunningUserCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!sleep 3600');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+
+    terminal.input('\x03');
+    await waitFor(() => driver.stopUserCommandCalls === 1);
+    assert.equal(terminal.stopCalls, 0);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('same-session reconnect keeps a user-command card for its terminal update', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RunningUserCommandDriver();
+    let publishShellRun: ((update: ShellRunUpdate) => void) | undefined;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      subscribeShellRunUpdates: (listener) => {
+        publishShellRun = listener;
+        return () => {
+          publishShellRun = undefined;
+        };
+      },
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!printf done');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+
+    driver.publishReconnect();
+    publishShellRun?.({
+      sessionId: 'session-1',
+      ownership: { kind: 'local' },
+      sourceTurnId: 'user-command-1',
+      sourceToolCallId: 'user-command-1',
+      result: {
+        kind: 'shell_run',
+        ref: 'maka://runtime/background-tasks/user-command-1',
+        mode: 'pipes',
+        status: 'completed',
+        cwd: '/repo',
+        cmd: 'printf done',
+        startedAt: 1,
+        updatedAt: 2,
+        completedAt: 2,
+        exitCode: 0,
+        revision: 2,
+        output: pipeOutput('done\n'),
+      },
+    });
+
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('done'));
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /User command/);
 
     exitMaka(terminal);
     await run;
@@ -6870,6 +6951,61 @@ class UserCommandDriver extends SlashCommandDriver {
       },
       takeRacedUpdate: () => undefined,
     };
+  }
+}
+
+class RunningUserCommandDriver extends SlashCommandDriver {
+  readonly commands: string[] = [];
+  stopUserCommandCalls = 0;
+  readonly #transcriptListeners = new Set<
+    (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void
+  >();
+
+  async runUserCommand(command: string) {
+    this.commands.push(command);
+    return {
+      commandId: `user-command-${this.commands.length}`,
+      result: {
+        kind: 'shell_run' as const,
+        ref: `maka://runtime/background-tasks/user-command-${this.commands.length}`,
+        mode: 'pipes' as const,
+        status: 'running' as const,
+        cwd: '/repo',
+        cmd: command,
+        startedAt: 1,
+        updatedAt: 1,
+        revision: 1,
+        output: pipeOutput(''),
+      },
+      takeRacedUpdate: () => undefined,
+    };
+  }
+
+  async stopUserCommands(): Promise<void> {
+    this.stopUserCommandCalls += 1;
+  }
+
+  subscribeTranscriptReplacements(
+    listener: (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void,
+  ): () => void {
+    this.#transcriptListeners.add(listener);
+    return () => this.#transcriptListeners.delete(listener);
+  }
+
+  publishReconnect(): void {
+    for (const listener of this.#transcriptListeners) {
+      listener('session-1', 'turn-1', [], 'reconnect');
+    }
   }
 }
 
