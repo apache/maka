@@ -26,6 +26,13 @@ configure:
 Windows remains unsigned until an Authenticode policy and certificate are added. Release secrets
 must never be exposed to fork or ordinary pull-request jobs.
 
+Before the first product release, configure repository release immutability:
+
+- add a `v*` tag ruleset that blocks updates, force-pushes, and deletions after creation, with bypass limited to the release authority required by `product-release-tag.mjs`;
+- enable immutable releases so assets and the associated tag cannot change after publication.
+
+These controls close the check-to-upload and check-to-stage windows. Keep the Release in Draft while assets and acceptance are incomplete; publishing early must make subsequent mutation fail closed.
+
 ## Create the complete Draft
 
 1. Confirm the intended commit is on `main`, required CI is green, and root `package.json`

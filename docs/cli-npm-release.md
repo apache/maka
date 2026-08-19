@@ -119,7 +119,9 @@ Immediately before approval, recheck the live product authority recorded by the 
 
 ```sh
 git fetch --no-tags origin main:refs/remotes/origin/main "refs/tags/v$version:refs/tags/v$version"
-source_commit="$(git rev-parse "refs/tags/v$version^{commit}")"
+source_commit=replace-with-stage-recorded-commit
+tag_commit="$(git rev-parse "refs/tags/v$version^{commit}")"
+test "$tag_commit" = "$source_commit"
 git merge-base --is-ancestor "$source_commit" origin/main
 gh release view "v$version" --json tagName --jq .tagName
 ```
