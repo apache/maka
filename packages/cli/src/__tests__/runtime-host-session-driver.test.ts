@@ -1781,9 +1781,7 @@ describe('turn consumer lag recovery (#3180)', () => {
     await resynced.promise;
 
     await floodTurnStream(replacement, 1_024, 5, 'subscription-2');
-    replacement.push(
-      projectionFrame(1_025, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'),
-    );
+    replacement.push(projectionFrame(1_025, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'));
     await delay(0);
     assert.ok(
       await drainUntilDone(switched.activeTurn.events),
@@ -1804,9 +1802,7 @@ describe('turn consumer lag recovery (#3180)', () => {
     await floodToolStream(replacement, 1_024, 'subscription-2');
     // The terminal outcome must land even though no delta can be evicted;
     // process the frame before draining so the backlog is still full.
-    replacement.push(
-      projectionFrame(1_025, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'),
-    );
+    replacement.push(projectionFrame(1_025, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'));
     await delay(0);
     assert.ok(
       await drainUntilDone(switched.activeTurn.events),
@@ -1849,9 +1845,7 @@ describe('turn consumer lag recovery (#3180)', () => {
     // must land even though no delta can be evicted; otherwise the live tool
     // card stays running until the durable transcript heals it.
     replacement.push(toolResultFrame(1_025, 'subscription-2'));
-    replacement.push(
-      projectionFrame(1_026, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'),
-    );
+    replacement.push(projectionFrame(1_026, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'));
     await delay(0);
 
     let sawToolResult = false;
@@ -1881,9 +1875,7 @@ describe('turn consumer lag recovery (#3180)', () => {
     // (which would leave the live card stuck at "running" until the durable
     // transcript heals it).
     replacement.push(toolResultFrame(1_025, 'subscription-2'));
-    replacement.push(
-      projectionFrame(1_026, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'),
-    );
+    replacement.push(projectionFrame(1_026, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'));
     await delay(0);
 
     let sawToolResult = false;
