@@ -166,15 +166,23 @@ export function AgentGraphPanel(props: {
   const [selectedGraphId, setSelectedGraphId] = useState<string>();
   const [loading, setLoading] = useState(props.enabled);
   const [error, setError] = useState(false);
-  const [stopPending, setStopPending] = useState(false);
-  const [stopError, setStopError] = useState(false);
+  const [stopState, setStopState] = useState({
+    rootSessionId: props.rootSessionId,
+    requestId: 0,
+    pending: false,
+    error: false,
+  });
   const [collapsed, setCollapsed] = useState(false);
   const [dismissedBySession, setDismissedBySession] = useState<AgentGraphPanelDismissals>({});
   const contentId = useId();
   const refreshRef = useRef<AgentGraphRefreshScheduler>(noopAgentGraphRefreshScheduler);
   const selectedGraphIdRef = useRef<string | undefined>(undefined);
   const followCurrentRef = useRef(true);
+  const stopRequestIdRef = useRef(0);
   const copy = getAgentGraphPanelCopy(props.locale);
+  const stopPending =
+    stopState.rootSessionId === props.rootSessionId && stopState.pending;
+  const stopError = stopState.rootSessionId === props.rootSessionId && stopState.error;
 
   useEffect(() => {
     setSnapshot(undefined);
@@ -184,7 +192,12 @@ export function AgentGraphPanel(props: {
     selectedGraphIdRef.current = undefined;
     followCurrentRef.current = true;
     setError(false);
-    setStopError(false);
+    setStopState({
+      rootSessionId: props.rootSessionId,
+      requestId: ++stopRequestIdRef.current,
+      pending: false,
+      error: false,
+    });
     setCollapsed(false);
     setLoading(props.enabled);
     let cachedDirectory: AgentGraphEpochDirectory | undefined;
@@ -291,14 +304,23 @@ export function AgentGraphPanel(props: {
 
   const stopGraph = async (expectedGraphId: string): Promise<void> => {
     if (stopPending) return;
-    setStopPending(true);
-    setStopError(false);
+    const rootSessionId = props.rootSessionId;
+    const requestId = ++stopRequestIdRef.current;
+    setStopState({ rootSessionId, requestId, pending: true, error: false });
     try {
-      await window.maka.graphs.stop(props.rootSessionId, expectedGraphId);
+      await window.maka.graphs.stop(rootSessionId, expectedGraphId);
     } catch {
-      setStopError(true);
+      setStopState((current) =>
+        current.rootSessionId === rootSessionId && current.requestId === requestId
+          ? { ...current, error: true }
+          : current,
+      );
     } finally {
-      setStopPending(false);
+      setStopState((current) =>
+        current.rootSessionId === rootSessionId && current.requestId === requestId
+          ? { ...current, pending: false }
+          : current,
+      );
     }
   };
   const stopAvailable =

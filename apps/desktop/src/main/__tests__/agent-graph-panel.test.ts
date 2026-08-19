@@ -93,6 +93,7 @@ function installGraphRenderer(
   renderSession(sessionId: string): Promise<void>;
   holdNextEpochList(sessionId: string): DeferredRead;
   holdNextSnapshot(graphId: string): DeferredRead;
+  holdNextStop(sessionId: string): DeferredRead;
   setCurrentWithoutNotification(next: AgentGraphClientSnapshot): void;
   notify(): void;
   epochReadCounts(): { full: number; current: number };
@@ -133,6 +134,7 @@ function installGraphRenderer(
   const listeners = new Set<GraphListener>();
   const epochListGates = new Map<string, DeferredReadGate>();
   const snapshotGates = new Map<string, DeferredReadGate>();
+  const stopGates = new Map<string, DeferredReadGate>();
   const stopCalls: Array<{ sessionId: string; expectedGraphId: string }> = [];
   let fullEpochReads = 0;
   let currentEpochReads = 0;
@@ -195,6 +197,13 @@ function installGraphRenderer(
       },
       stop: async (sessionId: string, expectedGraphId: string) => {
         stopCalls.push({ sessionId, expectedGraphId });
+        const gate = stopGates.get(sessionId);
+        if (gate) {
+          stopGates.delete(sessionId);
+          gate.markStarted();
+          await gate.waitForRelease;
+          throw new Error('deferred stop failure');
+        }
         if (currentGraphIds.get(sessionId) !== expectedGraphId) {
           throw new Error('graph changed before stop');
         }
@@ -250,6 +259,11 @@ function installGraphRenderer(
     holdNextSnapshot(graphId) {
       const gate = deferredReadGate();
       snapshotGates.set(graphId, gate);
+      return gate;
+    },
+    holdNextStop(sessionId) {
+      const gate = deferredReadGate();
+      stopGates.set(sessionId, gate);
       return gate;
     },
     stopCalls,
@@ -413,6 +427,42 @@ describe('AgentGraphPanel dismiss', () => {
       { sessionId: 'session-1', expectedGraphId: 'graph-1' },
     ]);
     assert.match(harness.container.textContent ?? '', /Could not stop the graph/);
+    await act(async () => harness.root.unmount());
+  });
+
+  it('does not leak a deferred stop result across a root session switch', async () => {
+    const sessionA = snapshot({
+      rootSessionId: 'session-a',
+      graphId: 'graph-a',
+      status: 'active',
+    });
+    const sessionB = snapshot({
+      rootSessionId: 'session-b',
+      graphId: 'graph-b',
+      status: 'active',
+    });
+    const harness = installGraphRenderer(sessionA, [sessionB]);
+    await harness.renderSession(sessionA.rootSessionId);
+    const stopA = [...harness.container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Stop graph'),
+    );
+    assert.ok(stopA);
+    const stopRead = harness.holdNextStop(sessionA.rootSessionId);
+    await act(async () => {
+      (stopA as HTMLElement).click();
+      await stopRead.started;
+    });
+
+    await harness.renderSession(sessionB.rootSessionId);
+    assert.match(harness.container.textContent ?? '', /Stop graph/);
+    assert.doesNotMatch(harness.container.textContent ?? '', /Could not stop the graph/);
+
+    await act(async () => {
+      stopRead.release();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent ?? '', /Stop graph/);
+    assert.doesNotMatch(harness.container.textContent ?? '', /Could not stop the graph/);
     await act(async () => harness.root.unmount());
   });
 
