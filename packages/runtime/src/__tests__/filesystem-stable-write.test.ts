@@ -13,6 +13,7 @@ import {
   compareAndDeleteEntry,
   hostVisibilityAfterWrite,
   openStableTarget,
+  restoreTombstoneNoReplace,
   writeThroughHandle,
   type StableWriteFailure,
 } from '../file-stable-write.js';
@@ -163,5 +164,62 @@ describe('compare-and-delete (tombstone verification)', () => {
 
     await assert.rejects(readFile(link, 'utf8'), { code: 'ENOENT' }); // link gone
     assert.equal(await readFile(pointed, 'utf8'), 'keep'); // target untouched
+  });
+
+  // #2600 review P1: after the tombstone captured replacement C, another
+  // process created B at the original path; a rename-based restore would
+  // atomically overwrite and DELETE B — the exact loss class this module
+  // prevents. The no-replace restore must preserve both.
+  test('a no-replace restore preserves a path reoccupied during the capture', async () => {
+    const cwd = await temporaryDirectory('maka-delete-reoccupied-');
+    const target = join(cwd, 'file.txt');
+    const { writeFile: wf } = await import('node:fs/promises');
+    // C sits on the tombstone; B has reoccupied the original path.
+    const tombstone = join(cwd, 'tombstone');
+    await wf(tombstone, 'captured-C', 'utf8');
+    await wf(target, 'newcomer-B', 'utf8');
+
+    await assert.rejects(
+      restoreTombstoneNoReplace(tombstone, target),
+      (error: StableWriteFailure) => error.code === 'outcome_unknown',
+    );
+    // Both survive, byte-for-byte, at their own names.
+    assert.equal(await readFile(target, 'utf8'), 'newcomer-B');
+    assert.equal(await readFile(tombstone, 'utf8'), 'captured-C');
+  });
+
+  test('a no-replace restore moves the captured entry back when the path is free', async () => {
+    const cwd = await temporaryDirectory('maka-delete-restore-');
+    const target = join(cwd, 'file.txt');
+    const { writeFile: wf, readdir } = await import('node:fs/promises');
+    const tombstone = join(cwd, 'tombstone');
+    await wf(tombstone, 'captured', 'utf8');
+
+    await restoreTombstoneNoReplace(tombstone, target);
+
+    assert.equal(await readFile(target, 'utf8'), 'captured');
+    assert.deepEqual(await readdir(cwd), ['file.txt']); // no tombstone left
+  });
+
+  // #2600 review P2: renaming a directory into the tombstone succeeds while
+  // the tombstone unlink cannot (EISDIR/EPERM) — the directory would vanish
+  // from its path and hide under the tombstone name. Reject up front instead.
+  test('rejects a directory before touching it', async () => {
+    const cwd = await temporaryDirectory('maka-delete-directory-');
+    const dir = join(cwd, 'subdir');
+    const { mkdir, readdir } = await import('node:fs/promises');
+    await mkdir(dir);
+    const { stat: st } = await import('node:fs/promises');
+    const meta = await st(dir, { bigint: true });
+
+    await assert.rejects(
+      compareAndDeleteEntry({
+        path: dir,
+        approvedIdentity: { dev: String(meta.dev), ino: String(meta.ino) },
+      }),
+      /directory/i,
+    );
+    // The directory is untouched at its original path — not hidden anywhere.
+    assert.deepEqual(await readdir(cwd), ['subdir']);
   });
 });
