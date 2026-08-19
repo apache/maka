@@ -103,6 +103,8 @@ describe('responses wire contract', () => {
       kind: 'responses',
       contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
     });
+    assert.equal(deepseek.responsesProviderOptionsKey, undefined);
+    assert.equal(deepseek.responsesReplayProfile, undefined);
 
     const alibaba = resolveModelRuntime({ providerType: 'alibaba-token-plan-cn' }, 'qwen3.8-max');
     assert.deepEqual(alibaba.reasoningReplay, {

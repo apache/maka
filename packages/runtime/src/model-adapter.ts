@@ -39,6 +39,7 @@ export type {
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import {
   plaintextResponsesReasoningProviderOptions,
+  safePlaintextResponsesReasoningItemId,
   type PlaintextResponsesReasoningCarrier,
 } from './responses-reasoning-state.js';
 import {
@@ -777,36 +778,41 @@ function openAiResponsesReasoningProviderOptionsFromChunk(
     runtime.reasoningReplay.kind === 'responses' &&
     runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-summary'
   ) {
+    if (chunk.type !== 'reasoning' && chunk.type !== 'reasoning-end') return undefined;
     const providerOptionsKey = runtime.responsesProviderOptionsKey;
     const provider =
       providerOptionsKey && meta && typeof meta === 'object'
         ? (meta as Record<string, unknown>)[providerOptionsKey]
         : undefined;
-    const metadataItemId =
+    const metadataItemIdValue =
       provider && typeof provider === 'object' && !Array.isArray(provider)
         ? (provider as { itemId?: unknown }).itemId
         : undefined;
-    const streamItemId = (chunk as { id?: unknown }).id;
+    const streamItemIdValue = (chunk as { id?: unknown }).id;
     if (
-      typeof metadataItemId === 'string' &&
-      typeof streamItemId === 'string' &&
-      metadataItemId !== streamItemId
+      typeof metadataItemIdValue === 'string' &&
+      typeof streamItemIdValue === 'string' &&
+      metadataItemIdValue !== streamItemIdValue
     ) {
       throw new Error('Plaintext Responses reasoning item id changed within one stream item');
     }
     const itemId =
-      typeof metadataItemId === 'string'
-        ? metadataItemId
-        : typeof streamItemId === 'string'
-          ? streamItemId
-          : undefined;
-    return itemId
-      ? plaintextResponsesReasoningProviderOptions(
-          itemId,
-          plaintextCarrier(runtime.reasoningReplay.contract.reasoningReplay),
-          requireResponsesReplayProfile(runtime),
-        )
-      : undefined;
+      safePlaintextResponsesReasoningItemId(metadataItemIdValue) ??
+      safePlaintextResponsesReasoningItemId(streamItemIdValue);
+    const summaryParts = plaintextSummaryParts(provider);
+    if (!itemId || !summaryParts) {
+      throw new Error('Plaintext Responses reasoning item is missing final summary metadata');
+    }
+    const providerOptions = plaintextResponsesReasoningProviderOptions(
+      itemId,
+      plaintextCarrier(runtime.reasoningReplay.contract.reasoningReplay),
+      requireResponsesReplayProfile(runtime),
+      summaryParts,
+    );
+    if (!providerOptions) {
+      throw new Error('Plaintext Responses reasoning summary exceeds durable state bounds');
+    }
+    return providerOptions;
   }
   if (!meta || typeof meta !== 'object') return undefined;
   const openai = (meta as { openai?: unknown }).openai;
@@ -826,6 +832,53 @@ function openAiResponsesReasoningProviderOptionsFromChunk(
   };
 }
 
+function plaintextSummaryParts(provider: unknown): string[] | undefined {
+  if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return undefined;
+  const summary = (provider as { reasoningSummary?: unknown }).reasoningSummary;
+  if (!Array.isArray(summary)) return undefined;
+  const parts: string[] = [];
+  for (const part of summary) {
+    if (!part || typeof part !== 'object' || Array.isArray(part)) return undefined;
+    const { type, text } = part as { type?: unknown; text?: unknown };
+    if (type !== 'summary_text' || typeof text !== 'string') return undefined;
+    parts.push(text);
+  }
+  return parts;
+}
+
+function plaintextSummaryTextFromChunk(
+  chunk: AiSdkStreamChunk,
+  runtime: ResolvedModelRuntime | undefined,
+): string | undefined {
+  if (
+    runtime?.reasoningReplay.kind !== 'responses' ||
+    runtime.reasoningReplay.contract.reasoningReplay !== 'plaintext-summary' ||
+    (chunk.type !== 'reasoning' && chunk.type !== 'reasoning-end')
+  ) {
+    return undefined;
+  }
+  const providerOptionsKey = runtime.responsesProviderOptionsKey;
+  const meta = chunk.providerMetadata;
+  const provider =
+    providerOptionsKey && meta && typeof meta === 'object'
+      ? (meta as Record<string, unknown>)[providerOptionsKey]
+      : undefined;
+  return plaintextSummaryParts(provider)?.join('');
+}
+
+function plaintextSummaryItemIdFromChunk(
+  chunk: AiSdkStreamChunk,
+  runtime: ResolvedModelRuntime | undefined,
+): string | undefined {
+  if (
+    runtime?.reasoningReplay.kind !== 'responses' ||
+    runtime.reasoningReplay.contract.reasoningReplay !== 'plaintext-summary'
+  ) {
+    return undefined;
+  }
+  return safePlaintextResponsesReasoningItemId((chunk as { id?: unknown }).id);
+}
+
 /**
  * Translate one raw AI SDK stream chunk into zero or more Maka-owned
  * `ModelStreamEvent`s. The sole site that parses SDK chunk names; the backend
@@ -838,12 +891,8 @@ function translateChunk(
 ): ModelStreamEvent[] {
   switch (chunk.type) {
     case 'reasoning-start': {
-      const responsesProviderOptions = runtime
-        ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
-        : undefined;
-      return responsesProviderOptions
-        ? [{ kind: 'thinking', text: '', providerOptions: responsesProviderOptions }]
-        : [];
+      const reasoningItemId = plaintextSummaryItemIdFromChunk(chunk, runtime);
+      return reasoningItemId ? [{ kind: 'thinking', text: '', reasoningItemId }] : [];
     }
     case 'text-start':
       return [{ kind: 'text-start' }];
@@ -874,6 +923,8 @@ function translateChunk(
       const responsesProviderOptions = runtime
         ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
         : undefined;
+      const reasoningItemId = plaintextSummaryItemIdFromChunk(chunk, runtime);
+      const reasoningSummaryText = plaintextSummaryTextFromChunk(chunk, runtime);
       const events: ModelStreamEvent[] = [];
       if (signature) events.push({ kind: 'thinking-signature', signature });
       // The signed reasoning chunk arrives as a standalone delta with empty
@@ -893,6 +944,8 @@ function translateChunk(
                   providerOptionsOrigin: 'maka_transport' as const,
                 }
               : {}),
+          ...(reasoningItemId ? { reasoningItemId } : {}),
+          ...(reasoningSummaryText !== undefined ? { reasoningSummaryText } : {}),
         });
       }
       return events;
@@ -902,10 +955,20 @@ function translateChunk(
       const responsesProviderOptions = runtime
         ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
         : undefined;
+      const reasoningItemId = plaintextSummaryItemIdFromChunk(chunk, runtime);
+      const reasoningSummaryText = plaintextSummaryTextFromChunk(chunk, runtime);
       return [
         ...(signature ? [{ kind: 'thinking-signature' as const, signature }] : []),
         ...(responsesProviderOptions
-          ? [{ kind: 'thinking' as const, text: '', providerOptions: responsesProviderOptions }]
+          ? [
+              {
+                kind: 'thinking' as const,
+                text: '',
+                providerOptions: responsesProviderOptions,
+                ...(reasoningItemId ? { reasoningItemId } : {}),
+                ...(reasoningSummaryText !== undefined ? { reasoningSummaryText } : {}),
+              },
+            ]
           : []),
       ];
     }

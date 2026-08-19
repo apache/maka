@@ -13040,7 +13040,62 @@ describe('AiSdkBackend thinking persistence', () => {
     );
   });
 
+  test('Alibaba Responses fails when streamed reasoning differs from the final summary', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            { type: 'reasoning-start', id: 'reasoning-item' },
+            { type: 'reasoning-delta', id: 'reasoning-item', delta: 'streamed text' },
+            {
+              type: 'reasoning-end',
+              id: 'reasoning-item',
+              providerMetadata: {
+                'alibaba-token-plan-cn': {
+                  itemId: 'reasoning-item',
+                  reasoningSummary: [{ type: 'summary_text', text: 'different final summary' }],
+                  reasoningContent: null,
+                },
+              },
+            },
+          ] as LanguageModelV4StreamPart[],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'alibaba-token-plan-cn',
+        providerType: 'alibaba-token-plan-cn',
+        defaultModel: 'qwen3.8-max',
+      },
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'question', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      true,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
   test('Alibaba Responses skips legacy reasoning without durable item state', async () => {
+    const foreignSummary = 'summary issued by a different provider profile';
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -13077,13 +13132,14 @@ describe('AiSdkBackend thinking persistence', () => {
         author: 'agent',
         content: {
           kind: 'thinking',
-          text: 'summary issued by a different provider profile',
+          text: foreignSummary,
           providerOptions: {
             makaResponses: {
               version: 1,
               profile: 'alibaba-token-plan',
               itemId: 'foreign-reasoning-item',
               carrier: 'summary',
+              summaryPartLengths: [foreignSummary.length],
             },
           },
         },

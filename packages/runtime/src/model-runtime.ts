@@ -31,9 +31,9 @@ export interface ResolvedModelRuntime {
   wire: ModelRuntimeWire;
   /** Durable reasoning replay semantics carried by that wire. */
   reasoningReplay: ReasoningReplayContract;
-  /** Provider-options namespace used by @ai-sdk/open-responses. */
+  /** Provider-options namespace used by durable plaintext-summary replay. */
   responsesProviderOptionsKey?: string;
-  /** Stable connection identity that issued durable plaintext Responses items. */
+  /** Stable connection identity that issued a durable plaintext-summary item. */
   responsesReplayProfile?: string;
   /** Effective ApplyPatch contract after provider, model, and request wire are resolved. */
   applyPatchProfile: ApplyPatchProfile | null;
@@ -96,7 +96,9 @@ export function resolveModelRuntime(
     ...(apiProtocol ? { apiProtocol } : {}),
     wire,
     reasoningReplay: replay,
-    ...(replay.kind === 'responses' && replay.contract.adapter === 'open-responses'
+    ...(replay.kind === 'responses' &&
+    replay.contract.adapter === 'open-responses' &&
+    replay.contract.reasoningReplay === 'plaintext-summary'
       ? {
           responsesProviderOptionsKey: responsesProviderOptionsKey(connection, adapter),
           responsesReplayProfile: connection.slug ?? connection.providerType,

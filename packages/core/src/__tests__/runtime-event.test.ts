@@ -56,6 +56,7 @@ test('Stored assistant reasoning parts survive recovery decoding', () => {
           profile: 'alibaba-token-plan-cn',
           itemId: 'alibaba-item',
           carrier: 'summary',
+          summaryPartLengths: [15],
         },
       },
     },

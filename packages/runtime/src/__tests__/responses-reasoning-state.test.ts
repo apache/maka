@@ -12,6 +12,7 @@ test('round-trips one bounded versioned plaintext Responses item identity', () =
     'reasoning-item-1',
     'summary',
     'alibaba-token-plan-cn',
+    ['reasoning summary'],
   );
   assert.deepEqual(options, {
     makaResponses: {
@@ -19,6 +20,7 @@ test('round-trips one bounded versioned plaintext Responses item identity', () =
       profile: 'alibaba-token-plan-cn',
       itemId: 'reasoning-item-1',
       carrier: 'summary',
+      summaryPartLengths: [17],
     },
   });
   assert.deepEqual(decodePlaintextResponsesReasoningState(options), {
@@ -28,6 +30,7 @@ test('round-trips one bounded versioned plaintext Responses item identity', () =
       profile: 'alibaba-token-plan-cn',
       itemId: 'reasoning-item-1',
       carrier: 'summary',
+      summaryPartLengths: [17],
     },
   });
   assert.equal(responsesReasoningItemId(options), 'reasoning-item-1');
@@ -46,6 +49,7 @@ test('rejects malformed, widened, and unsafe plaintext Responses state', () => {
       profile: 'alibaba-token-plan-cn',
       itemId: 'item',
       carrier: 'summary',
+      summaryPartLengths: [4],
       raw: 'provider-body',
     },
   ]) {
@@ -71,6 +75,7 @@ test('reconstructs provider-native summary and content carriers', () => {
     profile: 'alibaba-token-plan-cn',
     itemId: 'summary-item',
     carrier: 'summary',
+    summaryPartLengths: [10, 7],
   } as const;
   assert.deepEqual(
     replayPlaintextResponsesProviderOptions({
@@ -81,7 +86,10 @@ test('reconstructs provider-native summary and content carriers', () => {
     {
       'alibaba-token-plan-cn': {
         itemId: 'summary-item',
-        reasoningSummary: [{ type: 'summary_text', text: 'reasoning summary' }],
+        reasoningSummary: [
+          { type: 'summary_text', text: 'reasoning ' },
+          { type: 'summary_text', text: 'summary' },
+        ],
         reasoningContent: null,
       },
     },
@@ -106,6 +114,25 @@ test('reconstructs provider-native summary and content carriers', () => {
         reasoningContent: [{ type: 'reasoning_text', text: 'plaintext reasoning' }],
       },
     },
+  );
+});
+
+test('rejects summary boundaries that disagree with canonical text', () => {
+  const state = {
+    version: 1,
+    profile: 'alibaba-token-plan-cn',
+    itemId: 'summary-item',
+    carrier: 'summary',
+    summaryPartLengths: [8],
+  } as const;
+  assert.throws(
+    () =>
+      replayPlaintextResponsesProviderOptions({
+        providerOptionsKey: 'alibaba-token-plan-cn',
+        state: { ...state, summaryPartLengths: [3] },
+        text: 'expected',
+      }),
+    /summary boundaries do not match text/,
   );
 });
 

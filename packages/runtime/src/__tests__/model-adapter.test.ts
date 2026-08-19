@@ -197,11 +197,12 @@ describe('ModelAdapter stream and error normalization', () => {
         profile: providerType,
         itemId: 'alibaba-reasoning-item',
         carrier: 'summary',
+        summaryPartLengths: [7],
       },
     };
     assert.deepEqual(
       adapter.translateChunk({ type: 'reasoning-start', id: 'alibaba-reasoning-item' } as Chunk),
-      [{ kind: 'thinking', text: '', providerOptions }],
+      [{ kind: 'thinking', text: '', reasoningItemId: 'alibaba-reasoning-item' }],
     );
     assert.deepEqual(
       adapter.translateChunk({
@@ -209,7 +210,7 @@ describe('ModelAdapter stream and error normalization', () => {
         id: 'alibaba-reasoning-item',
         delta: 'summary',
       } as Chunk),
-      [{ kind: 'thinking', text: 'summary', providerOptions }],
+      [{ kind: 'thinking', text: 'summary', reasoningItemId: 'alibaba-reasoning-item' }],
     );
     assert.deepEqual(
       adapter.translateChunk({
@@ -222,7 +223,15 @@ describe('ModelAdapter stream and error normalization', () => {
           },
         },
       } as Chunk),
-      [{ kind: 'thinking', text: '', providerOptions }],
+      [
+        {
+          kind: 'thinking',
+          text: '',
+          providerOptions,
+          reasoningItemId: 'alibaba-reasoning-item',
+          reasoningSummaryText: 'summary',
+        },
+      ],
     );
   });
 

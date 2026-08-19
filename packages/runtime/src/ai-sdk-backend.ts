@@ -1448,6 +1448,7 @@ export class AiSdkBackend implements AgentBackend {
     let sawStepThinking = false;
     let stepThinkingProviderOptions: NonNullable<ModelMessage['providerOptions']> | undefined;
     let stepResponsesThinkingParts: AssistantThinkingPart[] = [];
+    let stepResponsesThinkingPartsByItemId = new Map<string, AssistantThinkingPart>();
     let stepSignature: string | undefined;
     const startedAt = this.now();
 
@@ -1543,6 +1544,7 @@ export class AiSdkBackend implements AgentBackend {
       sawStepThinking = false;
       stepThinkingProviderOptions = undefined;
       stepResponsesThinkingParts = [];
+      stepResponsesThinkingPartsByItemId = new Map();
       stepSignature = undefined;
     };
     let tokenUsage: NormalizedAiSdkUsage | undefined;
@@ -2370,11 +2372,10 @@ export class AiSdkBackend implements AgentBackend {
                   }
                   stepThinkingProviderOptions = event.providerOptions;
                 }
-                const itemId = responsesReasoningItemId(event.providerOptions);
+                const itemId =
+                  event.reasoningItemId ?? responsesReasoningItemId(event.providerOptions);
                 if (typeof itemId === 'string' && itemId.length > 0) {
-                  let part = stepResponsesThinkingParts.find(
-                    (candidate) => responsesReasoningItemId(candidate.providerOptions) === itemId,
-                  );
+                  let part = stepResponsesThinkingPartsByItemId.get(itemId);
                   if (!part) {
                     part = {
                       text:
@@ -2384,10 +2385,22 @@ export class AiSdkBackend implements AgentBackend {
                       providerOptions: event.providerOptions,
                     };
                     stepResponsesThinkingParts.push(part);
+                    stepResponsesThinkingPartsByItemId.set(itemId, part);
                   } else {
-                    part.providerOptions = event.providerOptions;
+                    if (event.providerOptions !== undefined) {
+                      part.providerOptions = event.providerOptions;
+                    }
                   }
-                  part.text += event.text;
+                  const nextPartText = part.text + event.text;
+                  if (
+                    event.reasoningSummaryText !== undefined &&
+                    event.reasoningSummaryText !== nextPartText
+                  ) {
+                    throw new Error(
+                      'Streamed plaintext Responses reasoning does not match final provider summary',
+                    );
+                  }
+                  part.text = nextPartText;
                 } else if (stepResponsesThinkingParts.length > 0) {
                   stepResponsesThinkingParts.at(-1)!.text += event.text;
                 }
