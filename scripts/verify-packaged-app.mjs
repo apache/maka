@@ -74,7 +74,7 @@ export async function assertMissing(path) {
   throw new Error(`Forbidden release resource exists: ${path}`);
 }
 
-async function reserveTcpPort() {
+export async function reserveTcpPort() {
   const server = createServer();
   await new Promise((resolvePromise, reject) => {
     server.once('error', reject);
@@ -97,7 +97,7 @@ function delay(milliseconds) {
   });
 }
 
-async function findRendererTarget(port, child) {
+export async function findRendererTarget(port, child) {
   const deadline = Date.now() + 30_000;
   let lastError;
   while (Date.now() < deadline) {
@@ -125,7 +125,17 @@ async function findRendererTarget(port, child) {
   );
 }
 
-async function evaluateRenderer(webSocketDebuggerUrl) {
+/**
+ * Evaluate one expression in a renderer over CDP and return its
+ * `returnByValue` result. `awaitPromise` resolves a returned promise before
+ * reporting, which is how the auto-update harness drives `window.maka.app`
+ * calls; the plain smoke below keeps its original synchronous expression.
+ */
+export async function evaluateInRenderer(
+  webSocketDebuggerUrl,
+  expression,
+  { awaitPromise = false, timeoutMs = 10_000 } = {},
+) {
   if (typeof WebSocket !== 'function') {
     throw new Error('The release verifier requires Node.js WebSocket support.');
   }
@@ -139,13 +149,23 @@ async function evaluateRenderer(webSocketDebuggerUrl) {
     return await new Promise((resolvePromise, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error('CDP renderer evaluation timed out.'));
-      }, 10_000);
+      }, timeoutMs);
       socket.addEventListener('message', (event) => {
         const message = JSON.parse(String(event.data));
         if (message.id !== 1) return;
         clearTimeout(timeout);
         if (message.error) {
           reject(new Error(message.error.message));
+          return;
+        }
+        if (message.result?.exceptionDetails) {
+          reject(
+            new Error(
+              message.result.exceptionDetails.exception?.description ??
+                message.result.exceptionDetails.text ??
+                'Renderer evaluation threw.',
+            ),
+          );
           return;
         }
         resolvePromise(message.result?.result?.value);
@@ -155,14 +175,9 @@ async function evaluateRenderer(webSocketDebuggerUrl) {
           id: 1,
           method: 'Runtime.evaluate',
           params: {
-            expression: `({
-              readyState: document.readyState,
-              hasBridge: Boolean(window.maka),
-              hasRoot: Boolean(document.querySelector('#root')),
-              hasPreloadSkeleton: Boolean(document.querySelector('#root > .maka-preload')),
-              hasAppShell: Boolean(document.querySelector('#root [data-agents-page]'))
-            })`,
+            expression,
             returnByValue: true,
+            awaitPromise,
           },
         }),
       );
@@ -172,7 +187,19 @@ async function evaluateRenderer(webSocketDebuggerUrl) {
   }
 }
 
-function isPackagedRendererUsable(rendererState) {
+export const RENDERER_STATE_EXPRESSION = `({
+  readyState: document.readyState,
+  hasBridge: Boolean(window.maka),
+  hasRoot: Boolean(document.querySelector('#root')),
+  hasPreloadSkeleton: Boolean(document.querySelector('#root > .maka-preload')),
+  hasAppShell: Boolean(document.querySelector('#root [data-agents-page]'))
+})`;
+
+function evaluateRenderer(webSocketDebuggerUrl) {
+  return evaluateInRenderer(webSocketDebuggerUrl, RENDERER_STATE_EXPRESSION);
+}
+
+export function isPackagedRendererUsable(rendererState) {
   return (
     rendererState?.readyState === 'complete' &&
     rendererState.hasBridge === true &&
@@ -182,7 +209,7 @@ function isPackagedRendererUsable(rendererState) {
   );
 }
 
-async function stopChild(child) {
+export async function stopChild(child) {
   if (child.exitCode !== null) return;
   child.kill('SIGTERM');
   const exited = await Promise.race([

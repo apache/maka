@@ -25,7 +25,7 @@ jobs:
             runner: windows-2025
     runs-on: ${{ matrix.runner }}
     environment: release
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         # Windows runners default to pwsh; the release steps are written once,
@@ -152,6 +152,19 @@ jobs:
           npm run verify:windows-installer -- \
             "${{ steps.release.outputs.exe }}" \
             "${{ steps.previous.outputs.exe }}"
+
+      - name: Build the version-bumped autoupdate installer
+        if: matrix.platform == 'windows'
+        run: npm run package:windows-autoupdate-next
+
+      # The fake-versioned artifacts live outside apps/desktop/release, so the
+      # upload globs below can never pick them up.
+      - name: Verify automatic update end to end
+        if: matrix.platform == 'windows'
+        run: |
+          npm run verify:windows-autoupdate -- \
+            "${{ steps.release.outputs.exe }}" \
+            apps/desktop/release-autoupdate-next
 
       - name: Upload the verified release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
