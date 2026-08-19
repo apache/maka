@@ -10,7 +10,7 @@ On a Linux machine with Node.js 22.19 or newer and a working systemd user manage
 can install and verify a persistent Runtime Host in one command:
 
 ```sh
-npx --yes maka-agent@next runtime-host setup \
+npx --yes --package maka-agent@next maka runtime-host setup \
   --principal my-desktop \
   --preset desktop-client \
   --root /srv/maka \
@@ -22,7 +22,7 @@ instead of accumulating credentials. The command installs its exact Maka package
 directory, starts a loopback-only service, verifies the new credential, and then prints the connection
 details once. Use `terminal-client` for TUI or CLI.
 
-Run `npx --yes maka-agent@next runtime-host service uninstall` on the Host to remove the service and
+Run `npx --yes --package maka-agent@next maka runtime-host service uninstall` on the Host to remove the service and
 managed package. The State Root and Project data are retained.
 
 ## Manual Host setup

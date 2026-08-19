@@ -37,8 +37,8 @@ maka --version
 maka --help
 ```
 
-`maka-agent` is an alias for `maka`. For a one-off invocation, use
-`npx --yes maka-agent@next`; the unrelated `maka` package on npm is not this project.
+The public command is `maka`. For a one-off invocation, use
+`npx --yes --package maka-agent@next maka`; the unrelated `maka` package on npm is not this project.
 `runtime-host service install` uses the persistent global installation above; `runtime-host setup`
 creates its own managed copy from the exact package invoked by `npx`.
 
@@ -90,7 +90,7 @@ with `npm install --global maka-agent@latest`.
 To set up a persistent remote Runtime Host from an exact released package on Linux:
 
 ```sh
-npx --yes maka-agent@next runtime-host setup \
+npx --yes --package maka-agent@next maka runtime-host setup \
   --principal my-client \
   --preset terminal-client
 ```
@@ -102,7 +102,7 @@ Rerunning setup replaces that Client credential. The service no longer depends o
 
 ```sh
 # Linux only, when a managed Runtime Host service was installed
-npx --yes maka-agent@next runtime-host service uninstall
+npx --yes --package maka-agent@next maka runtime-host service uninstall
 
 # If Maka was installed globally
 npm uninstall --global maka-agent
