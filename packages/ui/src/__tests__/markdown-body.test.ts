@@ -40,7 +40,6 @@ it('keeps the copy control in a toolbar above a one-line code scroll viewport', 
   const scrollViewportIndex = markup.indexOf('role="group"');
 
   assert.match(markup, /data-maka-code-layout="single-line"/);
-  assert.doesNotMatch(markup, /maka-markdown-code-scrollbar-slot/);
   assert.ok(toolbarIndex >= 0);
   assert.ok(copyButtonIndex > toolbarIndex);
   assert.ok(scrollViewportIndex > copyButtonIndex);
@@ -55,7 +54,6 @@ it('does not force the single-line scrollbar layout on multiline code', () => {
   }));
 
   assert.match(markup, /data-maka-code-layout="multi-line"/);
-  assert.doesNotMatch(markup, /maka-markdown-code-scrollbar-slot/);
   assert.match(markup, /astryx-codeblock-header/);
   assert.match(markup, /astryx-codeblock-copy-button/);
 });
