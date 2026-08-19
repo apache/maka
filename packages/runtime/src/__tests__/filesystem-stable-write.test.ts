@@ -4,12 +4,13 @@
 // these tests prove it by swapping the path between validation and the write
 // and asserting the bytes landed on the original inode, never the replacement.
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 
 import {
+  compareAndDeleteEntry,
   hostVisibilityAfterWrite,
   openStableTarget,
   writeThroughHandle,
@@ -106,5 +107,61 @@ describe('fd-pinned mutation primitive', () => {
       await handle.close();
     }
     assert.equal(await readFile(target, 'utf8'), 'created');
+  });
+});
+
+describe('compare-and-delete (tombstone verification)', () => {
+  // POSIX has no atomic compare-and-unlink, so delete cannot PREVENT a
+  // same-directory swap — but the tombstone rename makes it atomic to CAPTURE
+  // whatever the path names, verify it, and RESTORE a replacement instead of
+  // silently deleting it (#2600 review: "delete can remove replacement").
+  test('removes the approved entry', async () => {
+    const cwd = await temporaryDirectory('maka-delete-plain-');
+    const target = join(cwd, 'file.txt');
+    await writeFile(target, 'bye', 'utf8');
+    const identity = await captureIdentity(target);
+
+    await compareAndDeleteEntry({ path: target, approvedIdentity: identity });
+
+    const { readdir } = await import('node:fs/promises');
+    assert.deepEqual(await readdir(cwd), []); // gone, and no tombstone leaked
+  });
+
+  test('restores a replacement installed after the check instead of deleting it', async () => {
+    const cwd = await temporaryDirectory('maka-delete-swap-');
+    const target = join(cwd, 'file.txt');
+    const replacement = join(cwd, 'replacement.txt');
+    await writeFile(target, 'approved', 'utf8');
+    await writeFile(replacement, 'replacement-body', 'utf8');
+    const identity = await captureIdentity(target);
+
+    // The race: after the check captured the approved identity, an external
+    // process renames a replacement over the path.
+    await rename(replacement, target);
+
+    await assert.rejects(
+      compareAndDeleteEntry({ path: target, approvedIdentity: identity }),
+      (error: StableWriteFailure) => error.code === 'path_changed',
+    );
+    // The replacement was restored, not deleted — content intact at the path.
+    assert.equal(await readFile(target, 'utf8'), 'replacement-body');
+    const { readdir } = await import('node:fs/promises');
+    assert.deepEqual(await readdir(cwd), ['file.txt']); // no tombstone leaked
+  });
+
+  test('deletes a symlink entry by its own identity without following it', async () => {
+    const cwd = await temporaryDirectory('maka-delete-symlink-');
+    const pointed = join(cwd, 'pointed.txt');
+    const link = join(cwd, 'link.txt');
+    await writeFile(pointed, 'keep', 'utf8');
+    await symlink(pointed, link);
+    const { lstat } = await import('node:fs/promises');
+    const meta = await lstat(link, { bigint: true });
+    const identity = { dev: String(meta.dev), ino: String(meta.ino) };
+
+    await compareAndDeleteEntry({ path: link, approvedIdentity: identity });
+
+    await assert.rejects(readFile(link, 'utf8'), { code: 'ENOENT' }); // link gone
+    assert.equal(await readFile(pointed, 'utf8'), 'keep'); // target untouched
   });
 });

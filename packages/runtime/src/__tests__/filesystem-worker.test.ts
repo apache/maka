@@ -128,7 +128,7 @@ describe('filesystem worker operations', () => {
     await writeFile(target, 'const healthSignal = true;', 'utf8');
 
     const response = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         {
           kind: 'grep',
           cwd: root,

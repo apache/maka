@@ -9,6 +9,7 @@ import {
 } from './path-containment.js';
 import { createPatchedFile, updatePatchedFile } from './apply-patch-file.js';
 import {
+  compareAndDeleteEntry,
   hostVisibilityAfterWrite,
   openStableTarget,
   writeThroughHandle,
@@ -93,7 +94,13 @@ export interface WorkspaceWriteFileResult {
 }
 
 export type WorkspaceApplyPatchInput = WorkspaceResolvePathInput &
-  ({ action: 'create' | 'update'; diff: string } | { action: 'delete' });
+  ({ action: 'create' | 'update'; diff: string } | { action: 'delete' }) & {
+    /**
+     * Captured at lock acquisition; carried through to the compare-and-delete
+     * guard for delete (#2600). Optional so external callers are unaffected.
+     */
+    approvedIdentity?: { dev: string; ino: string };
+  };
 
 export interface WorkspaceApplyPatchResult {
   ok: true;
@@ -374,7 +381,13 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
         input.scope,
       );
       if (input.action === 'create') await createPatchedFile(path, input.diff);
-      else await fs.unlink(path);
+      // Compare-and-delete (#2600): a replacement swapped in after the check
+      // is restored and reported, never silently deleted.
+      else
+        await compareAndDeleteEntry({
+          path,
+          approvedIdentity: input.approvedIdentity,
+        });
       return { ok: true, path };
     }
     const path = await resolveExistingPathInScope(input.cwd, input.path, input.label, input.scope);

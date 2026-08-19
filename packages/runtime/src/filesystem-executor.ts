@@ -453,7 +453,11 @@ function createWorkspaceFilesystemExecutor(
           }
           const patched = await workspace.applyPatch(
             operation.action === 'delete'
-              ? { ...common, action: 'delete' }
+              ? {
+                  ...common,
+                  action: 'delete' as const,
+                  ...(expectedIdentity ? { approvedIdentity: expectedIdentity } : {}),
+                }
               : { ...common, action: operation.action, diff: operation.diff },
           );
           return { kind: 'apply_patch', ok: true, path: patched.path };

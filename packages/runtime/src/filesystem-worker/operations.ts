@@ -14,6 +14,7 @@ import {
 import { computeEditedSource } from '../edit-replace.js';
 import { createUnifiedDiff } from '../unified-diff.js';
 import {
+  compareAndDeleteEntry,
   hostVisibilityAfterWrite,
   openStableTarget,
   readModifyWriteThroughHandle,
@@ -202,7 +203,15 @@ export async function executeFilesystemOperation(
           operationBoundary,
         );
         if (operation.action === 'create') await createPatchedFile(path, operation.diff);
-        else await fs.unlink(path);
+        // Compare-and-delete (#2600): rename the entry to a tombstone,
+        // verify the approved identity, then unlink — a replacement swapped
+        // in after the check is restored and reported, never silently
+        // deleted.
+        else
+          await compareAndDeleteEntry({
+            path,
+            approvedIdentity: expectedTarget?.identity,
+          });
         return { kind: 'apply_patch', ok: true, path };
       }
       const path = await resolveExistingAllowed(

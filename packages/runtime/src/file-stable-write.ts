@@ -16,8 +16,10 @@
 // truncate, so a rejected validation leaves the file byte-for-byte intact —
 // unlike a plain 'w' open, which truncates as part of opening.
 
-import { lstat, open, stat, type FileHandle } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { lstat, open, rename, stat, unlink, type FileHandle } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import type { FilesystemTargetIdentity } from './filesystem-authority.js';
 
@@ -181,4 +183,66 @@ export async function hostVisibilityAfterWrite(
     );
   }
   return undefined;
+}
+
+/**
+ * Compare-and-delete for directory entries (#2600). POSIX has no atomic
+ * compare-and-unlink, so a bare `unlink(path)` can remove a replacement
+ * installed between the identity check and the unlink — and report success.
+ * Instead, atomically grab whatever the path currently names by renaming it to
+ * a private tombstone in the same directory, verify the tombstone carries the
+ * approved identity, and only then unlink the tombstone. A mismatch means a
+ * replacement was installed in the window: it is renamed back to the path
+ * (restored, not deleted) and the operation reports `path_changed`.
+ *
+ * rename(2) moves the directory entry itself, so this works for regular files
+ * and symlinks alike, needs no permission on the file (only write+execute on
+ * the parent directory, exactly like unlink), and never follows a symlink.
+ */
+export async function compareAndDeleteEntry(input: {
+  path: string;
+  approvedIdentity: FilesystemTargetIdentity | undefined;
+}): Promise<void> {
+  const tombstone = join(dirname(input.path), `.maka-pending-delete-${randomUUID()}`);
+  // Atomically capture whatever entry the path names right now.
+  await rename(input.path, tombstone);
+  try {
+    if (input.approvedIdentity) {
+      const entry = await lstat(tombstone, { bigint: true }).catch(() => null);
+      const matches =
+        entry !== null &&
+        String(entry.dev) === input.approvedIdentity.dev &&
+        String(entry.ino) === input.approvedIdentity.ino;
+      if (!matches) {
+        // A replacement was installed after the check. Restore it — the path
+        // is free because its entry is sitting on the tombstone — and refuse.
+        let restored = true;
+        try {
+          await rename(tombstone, input.path);
+        } catch {
+          restored = false;
+        }
+        throw pathChanged(
+          restored
+            ? 'The approved filesystem target changed before the delete; the replacement was restored. Re-check the directory before deleting again.'
+            : `The approved filesystem target changed before the delete; the replacement is preserved at ${tombstone}.`,
+        );
+      }
+    }
+    // The tombstone is a private unpredictable name: nothing else contends
+    // with this unlink.
+    try {
+      await unlink(tombstone);
+    } catch {
+      // The approved entry was moved but not removed: the delete's outcome on
+      // disk is genuinely unknown, and the tombstone preserves the content.
+      throw new StableWriteFailure(
+        'outcome_unknown',
+        `The delete may not have completed; the entry is preserved at ${tombstone}.`,
+      );
+    }
+  } finally {
+    // Nothing to clean up: the tombstone is either unlinked or deliberately
+    // preserved (restored to the path, or kept as the reported location).
+  }
 }
