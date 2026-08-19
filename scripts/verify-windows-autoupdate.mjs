@@ -47,13 +47,16 @@ function compareStableVersions(left, right) {
 }
 
 /**
- * Loopback static file server for the update feed. Serves exactly the allowed
- * basenames from `directory`; anything else is 404 and counted, and the
- * verification fails if any unexpected request arrived — a wrong request shape
- * must surface, not be absorbed. Supports single-range GETs because
- * electron-updater uses ranged requests for differential downloads.
+ * Loopback static file server for the update feed. Serves exactly the mapped
+ * basenames; anything else is 404 and counted, and the verification fails if
+ * any unexpected request arrived — a wrong request shape must surface, not be
+ * absorbed. A mapped name whose file is absent 404s without counting: the
+ * updater legitimately probes the *previous* version's blockmap for a
+ * differential download and falls back to the full installer when the feed
+ * does not have it. Supports single-range GETs because differential downloads
+ * use ranged requests.
  */
-async function startFeedServer(directory, allowedNames) {
+async function startFeedServer(files) {
   const requests = [];
   let unexpectedRequests = 0;
   const server = createServer(async (request, response) => {
@@ -62,7 +65,7 @@ async function startFeedServer(directory, allowedNames) {
     const name = basename(pathName);
     const record = { method, path: pathName, status: 0 };
     requests.push(record);
-    if ((method !== 'GET' && method !== 'HEAD') || !allowedNames.has(name)) {
+    if ((method !== 'GET' && method !== 'HEAD') || !files.has(name)) {
       unexpectedRequests += 1;
       record.status = 404;
       response.writeHead(404).end();
@@ -70,9 +73,9 @@ async function startFeedServer(directory, allowedNames) {
     }
     let body;
     try {
-      body = await readFile(join(directory, name));
+      body = await readFile(files.get(name));
     } catch {
-      unexpectedRequests += 1;
+      // Known name, absent file: the expected 404 shape (previous blockmap).
       record.status = 404;
       response.writeHead(404).end();
       return;
@@ -191,9 +194,18 @@ export async function verifyWindowsAutoupdate(
 
   try {
     step('starting the loopback update feed');
+    // The candidate's own blockmap is served too, exactly as a GitHub release
+    // hosts the previous version's assets: the updater requests it to attempt
+    // a differential download. If the file is missing next to the candidate
+    // installer, the mapped-but-absent 404 makes the updater fall back to the
+    // full download — both are valid production shapes.
     feed = await startFeedServer(
-      nextDirectory,
-      new Set(['latest.yml', nextInstallerName, `${nextInstallerName}.blockmap`]),
+      new Map([
+        ['latest.yml', join(nextDirectory, 'latest.yml')],
+        [nextInstallerName, join(nextDirectory, nextInstallerName)],
+        [`${nextInstallerName}.blockmap`, join(nextDirectory, `${nextInstallerName}.blockmap`)],
+        [`${basename(candidateInstaller)}.blockmap`, `${candidateInstaller}.blockmap`],
+      ]),
     );
 
     step(`installing candidate ${candidateVersion} into ${installDirectory}`);
