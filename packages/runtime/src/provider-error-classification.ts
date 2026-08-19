@@ -468,12 +468,10 @@ export function providerFailureResult(error: unknown): ProviderFailureResult {
     ...(providerRequestId !== undefined ? { providerRequestId } : {}),
     retryable: retry.retryable,
     ...(retry.retryAfterMs !== undefined ? { retryAfterMs: retry.retryAfterMs } : {}),
-    ...(summary !== undefined
+    ...(summary?.boundedProviderMessage === true
       ? {
           message: summary.message,
-          ...(summary.boundedProviderMessage === true
-            ? { boundedProviderMessage: true as const }
-            : {}),
+          boundedProviderMessage: true as const,
         }
       : {}),
   };
@@ -850,6 +848,7 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   if (structuredCodes.some((value) => PROVIDER_RATE_LIMIT_CODES.has(value))) return 'RateLimit';
   if (structuredCodes.some((value) => PROVIDER_UNAVAILABLE_CODES.has(value)))
     return 'ProviderUnavailable';
+  if (text.includes('abort')) return 'Abort';
   if (statusCode === '402' || code === '402') return 'ProviderBilling';
   if (statusCode === '429' || code === '429') return 'RateLimit';
   if (statusCode === '401' || code === '401') return 'Auth';

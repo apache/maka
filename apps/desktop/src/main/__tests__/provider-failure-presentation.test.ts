@@ -147,4 +147,24 @@ describe('provider failure presentation', () => {
     );
     assert.equal(commandPaletteConnectionTestFailureMessage(result, 'en'), message);
   });
+
+  test('preserves structured account meaning without provider message text', () => {
+    const result = {
+      ok: false,
+      statusCode: 429,
+      errorClass: 'provider_unavailable' as const,
+      providerFailure: {
+        errorClass: 'UsageLimit' as const,
+        httpStatus: 429,
+        providerCode: 'usage_limit_reached',
+        retryable: false,
+      },
+    };
+
+    assert.equal(
+      connectionTestFailureMessage(result, { auth: 'AUTH', recheck: 'RECHECK' }, 'en'),
+      'Model usage limit reached',
+    );
+    assert.equal(commandPaletteConnectionTestFailureMessage(result, 'en'), 'Model usage limit reached');
+  });
 });
