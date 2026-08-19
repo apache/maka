@@ -137,6 +137,12 @@ export class HostAgentGraphCoordinator {
         ...(input.beforeEpoch === undefined ? {} : { beforeEpoch: input.beforeEpoch }),
         limit: AGENT_GRAPH_EPOCH_PAGE_SIZE,
       });
+      if (input.beforeEpoch !== undefined && input.beforeEpoch > page.currentEpoch) {
+        throw new AgentGraphClientOperationError(
+          'invalid_request',
+          `Agent graph epoch cursor ${input.beforeEpoch} is ahead of current epoch ${page.currentEpoch}`,
+        );
+      }
       return {
         ok: true,
         result: {

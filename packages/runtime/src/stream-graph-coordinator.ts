@@ -294,7 +294,7 @@ export class AgentGraphCoordinator {
   }
 
   async listGraphEpochs(rootSessionId: string): Promise<readonly AgentGraphEpochBinding[]> {
-    requireRootSessionId(rootSessionId);
+    await this.#assertRootGraphReader(rootSessionId);
     const current = await this.currentGraphEpoch(rootSessionId);
     if (!this.#input.epochStore) return [current];
     const epochs = await this.#input.epochStore.listAgentGraphEpochs(rootSessionId);
@@ -305,9 +305,10 @@ export class AgentGraphCoordinator {
     rootSessionId: string,
     options: { readonly beforeEpoch?: number; readonly limit: number },
   ): Promise<AgentGraphEpochPage & { readonly currentEpoch: number }> {
-    requireRootSessionId(rootSessionId);
+    await this.#assertRootGraphReader(rootSessionId);
     if (!this.#input.epochStore) {
       const current = await this.currentGraphEpoch(rootSessionId);
+      assertEpochCursorNotAhead(options.beforeEpoch, current.epoch);
       return {
         epochs:
           options.beforeEpoch === undefined || current.epoch < options.beforeEpoch ? [current] : [],
@@ -323,6 +324,7 @@ export class AgentGraphCoordinator {
       ...options,
     });
     if (page.currentEpoch !== null) {
+      assertEpochCursorNotAhead(options.beforeEpoch, page.currentEpoch);
       return {
         epochs: page.epochs,
         nextBeforeEpoch: page.nextBeforeEpoch,
@@ -331,6 +333,7 @@ export class AgentGraphCoordinator {
     }
     // No durable rows yet: synthesize the legacy virtual epoch identity.
     const current = await this.currentGraphEpoch(rootSessionId);
+    assertEpochCursorNotAhead(options.beforeEpoch, current.epoch);
     return {
       epochs: options.beforeEpoch === undefined ? [current] : [],
       nextBeforeEpoch: null,
@@ -1484,6 +1487,15 @@ export class AgentGraphCoordinator {
     );
     failures.push(
       ...stopped.flatMap((result) => (result.status === 'rejected' ? [result.reason] : [])),
+    );
+  }
+}
+
+function assertEpochCursorNotAhead(beforeEpoch: number | undefined, currentEpoch: number): void {
+  if (beforeEpoch !== undefined && beforeEpoch > currentEpoch) {
+    throw new AgentGraphClientOperationError(
+      'invalid_request',
+      `Agent graph epoch cursor ${beforeEpoch} is ahead of current epoch ${currentEpoch}`,
     );
   }
 }

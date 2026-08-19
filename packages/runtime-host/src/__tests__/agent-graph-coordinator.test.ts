@@ -252,6 +252,13 @@ describe('Host Agent Graph coordinator', () => {
       ],
     );
     assert.equal(second.result.nextBeforeEpoch, null);
+
+    const ahead = await coordinator.handlers['agent.graph.epochs.query'](
+      { rootSessionId: 'root-1', beforeEpoch: 999 },
+      context(),
+    );
+    assert.equal(ahead.ok, false);
+    if (!ahead.ok) assert.equal(ahead.error.code, 'invalid_request');
     coordinator.close();
   });
 

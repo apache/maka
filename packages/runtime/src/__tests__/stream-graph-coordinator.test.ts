@@ -19,6 +19,7 @@ import { type RuntimeEvent } from '@maka/core/runtime-event';
 import {
   createSessionStore,
   createSqliteSessionMetadataStore,
+  isSessionNotFoundError,
   OPERATIONAL_STATE_DATABASE_NAME,
 } from '@maka/storage';
 import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
@@ -328,6 +329,15 @@ describe('host-managed agent graph coordinator', () => {
         coordinator.toolsForSession(childSessions[0]!.id),
         /only to root Sessions/,
       );
+      await assert.rejects(
+        coordinator.listGraphEpochPage(childSessions[0]!.id, { limit: 32 }),
+        (error: unknown) =>
+          error instanceof AgentGraphClientOperationError && error.code === 'operation_conflict',
+      );
+      await assert.rejects(
+        coordinator.listGraphEpochPage(randomUUID(), { limit: 32 }),
+        (error: unknown) => isSessionNotFoundError(error),
+      );
       let childStopEntered = false;
       await assert.rejects(
         coordinator.stopExecution(childSessions[0]!.id, {
@@ -545,11 +555,18 @@ describe('host-managed agent graph coordinator', () => {
   test('reads the epoch page and current marker from one storage observation', async () => {
     const controlStore = createSqliteSessionMetadataStore(':memory:');
     let resolveCalls = 0;
+    let headerReads = 0;
     const coordinator = new AgentGraphCoordinator({
       sessionStore: {
         listForRecovery: async () => [],
-        readHeader: async () => {
-          throw new Error('epoch listing must not read the Session header');
+        readHeader: async (sessionId: string) => {
+          headerReads += 1;
+          return {
+            id: sessionId,
+            status: 'active',
+            isArchived: false,
+            orchestrationMode: 'graph',
+          } as never;
         },
       },
       runStore: { listSessionRuns: async () => [] },
@@ -612,6 +629,12 @@ describe('host-managed agent graph coordinator', () => {
       assert.equal(page.currentEpoch, 3);
       assert.equal(page.epochs[0]?.graphId, 'agent_graph_3');
       assert.equal(resolveCalls, 0);
+      assert.equal(headerReads, 1);
+      await assert.rejects(
+        coordinator.listGraphEpochPage('root-session', { beforeEpoch: 999, limit: 32 }),
+        (error: unknown) =>
+          error instanceof AgentGraphClientOperationError && error.code === 'invalid_request',
+      );
     } finally {
       await coordinator.close();
       controlStore.close();
