@@ -28,6 +28,15 @@ export async function updatePatchedFile(path: string, diff: string): Promise<voi
   if (updated !== content) await fs.writeFile(path, updated, 'utf8');
 }
 
+/**
+ * The update transform for callers that pin the target with a file descriptor
+ * (#2600): apply the diff to content already read through the handle; the
+ * write happens through the caller's descriptor, not a second pathname lookup.
+ */
+export function applyUpdateToContent(content: string, diff: string): string {
+  return patchContent(content, diff);
+}
+
 function patchContent(content: string, diff: string, mode?: 'create'): string {
   try {
     return applyDiff(content, diff, mode);

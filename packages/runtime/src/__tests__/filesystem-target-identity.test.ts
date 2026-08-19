@@ -195,53 +195,61 @@ describe('filesystem worker target identity CAS', () => {
   });
 });
 
-describe('filesystem worker post-write orphan inode check', () => {
-  // Direct unit test for assertPathStillMatchesIdentity — the secondary defence
-  // that fires AFTER the write, when the path may have been swapped mid-write.
-  // The pre-write CAS (tested above) is the primary defence; this covers the
-  // residual window between the write and the check.
+describe('filesystem worker post-write host-visibility check', () => {
+  // Direct unit tests for hostVisibilityAfterWrite — the check that runs AFTER
+  // writing through a pinned descriptor, describing whether the path still
+  // resolves to the inode we wrote. The fd-pinned write itself (tested in
+  // filesystem-stable-write.test.ts) is the primary defence; this describes
+  // host visibility when the path was swapped despite the pinning.
   test('passes when the path still matches the written inode', async () => {
-    const { assertPathStillMatchesIdentity } = await import('../filesystem-worker/operations.js');
+    const { openStableTarget, hostVisibilityAfterWrite } = await import('../file-stable-write.js');
     const cwd = await temporaryDirectory('maka-orphan-same-');
     const target = join(cwd, 'file.txt');
     await writeFile(target, 'content', 'utf8');
     const identity = await captureIdentity(target);
-    // No throw when the inode matches.
-    await assertPathStillMatchesIdentity(target, identity);
+    const handle = await openStableTarget({ path: target, approvedIdentity: identity });
+    try {
+      assert.equal(await hostVisibilityAfterWrite(target, handle), undefined);
+    } finally {
+      await handle.close();
+    }
   });
 
-  test('throws outcome_unknown when the path was replaced after the write', async () => {
-    const { assertPathStillMatchesIdentity } = await import('../filesystem-worker/operations.js');
+  test('reports outcome_unknown when the path was replaced after the write', async () => {
+    const { openStableTarget, hostVisibilityAfterWrite } = await import('../file-stable-write.js');
     const cwd = await temporaryDirectory('maka-orphan-swapped-');
     const target = join(cwd, 'file.txt');
     const replacement = join(cwd, 'replacement.txt');
     await writeFile(target, 'original', 'utf8');
     await writeFile(replacement, 'replacement-body', 'utf8');
-
-    // Capture the identity of what we "wrote to" (the original target).
     const identity = await captureIdentity(target);
-    // Then swap the path to a different inode (simulates a mid-write replacement).
-    await rename(replacement, target);
 
-    // The post-write check sees the path now names a different inode → unknown.
-    await assert.rejects(
-      assertPathStillMatchesIdentity(target, identity),
-      (error: { code?: string }) => error.code === 'outcome_unknown',
-    );
+    const handle = await openStableTarget({ path: target, approvedIdentity: identity });
+    try {
+      // Swap the path to a different inode after the write went to the pin.
+      await rename(replacement, target);
+      const visibility = await hostVisibilityAfterWrite(target, handle);
+      assert.equal(visibility?.code, 'outcome_unknown');
+    } finally {
+      await handle.close();
+    }
   });
 
-  test('throws outcome_unknown when the path disappeared after the write', async () => {
-    const { assertPathStillMatchesIdentity } = await import('../filesystem-worker/operations.js');
+  test('reports outcome_unknown when the path disappeared after the write', async () => {
+    const { openStableTarget, hostVisibilityAfterWrite } = await import('../file-stable-write.js');
     const cwd = await temporaryDirectory('maka-orphan-gone-');
     const target = join(cwd, 'file.txt');
     await writeFile(target, 'content', 'utf8');
     const identity = await captureIdentity(target);
-    // Remove the path entirely (simulates the inode being orphaned and unlinked).
-    await rm(target);
 
-    await assert.rejects(
-      assertPathStillMatchesIdentity(target, identity),
-      (error: { code?: string }) => error.code === 'outcome_unknown',
-    );
+    const handle = await openStableTarget({ path: target, approvedIdentity: identity });
+    try {
+      // Remove the path entirely (the pinned inode is orphaned).
+      await rm(target);
+      const visibility = await hostVisibilityAfterWrite(target, handle);
+      assert.equal(visibility?.code, 'outcome_unknown');
+    } finally {
+      await handle.close();
+    }
   });
 });

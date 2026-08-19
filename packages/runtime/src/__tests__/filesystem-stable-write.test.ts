@@ -1,0 +1,110 @@
+// Deterministic race tests for the fd-pinned mutation primitive (#2600).
+// The pinning is the load-bearing defence: once the approved object is open
+// and validated on the descriptor, a path swap cannot redirect the write —
+// these tests prove it by swapping the path between validation and the write
+// and asserting the bytes landed on the original inode, never the replacement.
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, test } from 'node:test';
+
+import {
+  hostVisibilityAfterWrite,
+  openStableTarget,
+  writeThroughHandle,
+  type StableWriteFailure,
+} from '../file-stable-write.js';
+
+const cleanup: string[] = [];
+afterEach(async () => {
+  await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
+
+async function temporaryDirectory(prefix: string): Promise<string> {
+  const path = await realpath(await mkdtemp(join(tmpdir(), prefix)));
+  cleanup.push(path);
+  return path;
+}
+
+async function captureIdentity(path: string): Promise<{ dev: string; ino: string }> {
+  const { stat } = await import('node:fs/promises');
+  const s = await stat(path, { bigint: true });
+  return { dev: String(s.dev), ino: String(s.ino) };
+}
+
+describe('fd-pinned mutation primitive', () => {
+  test('a write survives a path swap between validation and the write', async () => {
+    const cwd = await temporaryDirectory('maka-pin-swap-');
+    const target = join(cwd, 'file.txt');
+    const replacement = join(cwd, 'replacement.txt');
+    await writeFile(target, 'original', 'utf8');
+    await writeFile(replacement, 'replacement-body', 'utf8');
+    const identity = await captureIdentity(target);
+
+    // The deterministic race: open + validate on the descriptor, THEN swap
+    // the path, THEN write. A path-based write would land on the replacement;
+    // the pinned write cannot.
+    const handle = await openStableTarget({ path: target, approvedIdentity: identity });
+    try {
+      await rename(replacement, target); // the swap happens here
+      await writeThroughHandle(handle, 'pinned-content');
+
+      // The bytes went to the pinned inode: reading back through the same
+      // descriptor shows the new content.
+      assert.equal(await handle.readFile('utf8'), 'pinned-content');
+      // The replacement file (now at the path) is untouched.
+      assert.equal(await readFile(target, 'utf8'), 'replacement-body');
+      // Host visibility honestly reports the orphaned write.
+      const visibility = await hostVisibilityAfterWrite(target, handle);
+      assert.equal(visibility?.code, 'outcome_unknown');
+    } finally {
+      await handle.close();
+    }
+  });
+
+  test('a failed validation leaves the file byte-for-byte intact', async () => {
+    const cwd = await temporaryDirectory('maka-pin-reject-');
+    const target = join(cwd, 'file.txt');
+    const replacement = join(cwd, 'replacement.txt');
+    await writeFile(target, 'original', 'utf8');
+    await writeFile(replacement, 'replacement-body', 'utf8');
+    const identity = await captureIdentity(target);
+
+    // Swap before the open: the descriptor's inode will not match the approved
+    // identity, and — unlike a 'w' open — the rejected 'r+' never truncated it.
+    await rename(replacement, target);
+    await assert.rejects(
+      openStableTarget({ path: target, approvedIdentity: identity }),
+      (error: StableWriteFailure) => error.code === 'path_changed',
+    );
+    assert.equal(await readFile(target, 'utf8'), 'replacement-body');
+  });
+
+  test('an approved-missing target rejects a file that appeared in the gap', async () => {
+    const cwd = await temporaryDirectory('maka-pin-wx-');
+    const target = join(cwd, 'file.txt');
+    // The gap: the target was approved as missing, then something created it.
+    await writeFile(target, 'external-content', 'utf8');
+
+    await assert.rejects(
+      openStableTarget({ path: target, approvedIdentity: undefined }),
+      (error: StableWriteFailure) => error.code === 'path_changed',
+    );
+    // The interloper's content was never truncated.
+    assert.equal(await readFile(target, 'utf8'), 'external-content');
+  });
+
+  test('an approved-missing target is created exclusively', async () => {
+    const cwd = await temporaryDirectory('maka-pin-create-');
+    const target = join(cwd, 'file.txt');
+
+    const handle = await openStableTarget({ path: target, approvedIdentity: undefined });
+    try {
+      await writeThroughHandle(handle, 'created');
+    } finally {
+      await handle.close();
+    }
+    assert.equal(await readFile(target, 'utf8'), 'created');
+  });
+});

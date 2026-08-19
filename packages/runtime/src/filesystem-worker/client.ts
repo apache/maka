@@ -194,7 +194,30 @@ export class FilesystemWorkerClient {
     // passed in as expectedIdentity. Do NOT re-derive it here: re-deriving at
     // this point (after the lock is held) would sample the post-queue inode,
     // making the CAS self-fulfilling and re-opening the queue window.
-    const identity = input.expectedIdentity;
+    //
+    // Missing↔existing transitions while queued are reconciled here, against
+    // the T1 reality the target normaliser just derived:
+    // - T0 existing (identity present) but T1 missing: the target was removed
+    //   while this call waited — typically a cooperative Maka delete that ran
+    //   first under the same write lock. Drop the stale identity and let the
+    //   mutation proceed as a fresh exclusive create ("delete then rewrite"
+    //   stays a clean apply; a rename-swap is NOT this case — it leaves an
+    //   existing inode and is caught by the identity comparison instead).
+    // - T0 missing (no identity) but T1 existing: the target was created while
+    //   this call waited. Writing would clobber content this call never saw,
+    //   so fail with a meaningful path_changed (never invalid_request).
+    const identity =
+      input.expectedIdentity && target.targetType !== 'missing'
+        ? input.expectedIdentity
+        : undefined;
+    if (!identity && target.targetType !== 'missing' && access === 'write') {
+      throw clientError(
+        'path_changed',
+        'validation',
+        requestId,
+        'The target was created while this call waited for the lock; re-read before writing.',
+      );
+    }
     const compiled =
       input.executionBoundary?.kind === 'managed'
         ? {

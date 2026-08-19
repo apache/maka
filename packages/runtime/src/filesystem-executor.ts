@@ -22,12 +22,14 @@ import {
   classifyFailedMutationOutcome,
   type FilesystemTargetIdentity,
 } from './filesystem-authority.js';
+import { StableWriteFailure } from './file-stable-write.js';
+import { applyUpdateToContent } from './apply-patch-file.js';
 import { withFileWriteLock } from './file-write-lock.js';
 import type {
   FilesystemWorkerClient,
   FilesystemWorkerClientOperation,
 } from './filesystem-worker/client.js';
-import type { ImageMimeType } from './image-file.js';
+import { isSupportedImagePath, type ImageMimeType } from './image-file.js';
 import type { FilesystemWorkerResult } from './filesystem-worker/protocol.js';
 import { resolveCanonicalDirectoryEntryTarget } from './path-containment.js';
 import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
@@ -36,6 +38,7 @@ import type {
   WorkspaceEditExecutor,
   WorkspaceApplyPatchExecutor,
   WorkspacePathScope,
+  WorkspaceReadModifyWriteExecutor,
   WorkspaceSearchExecutor,
   WorkspaceWriteExecutor,
 } from './workspace-executor.js';
@@ -96,6 +99,7 @@ export interface FilesystemExecutor {
 export type FilesystemWorkspaceExecutor = WorkspaceWriteExecutor &
   WorkspaceEditExecutor &
   Partial<WorkspaceApplyPatchExecutor> &
+  Partial<WorkspaceReadModifyWriteExecutor> &
   WorkspaceSearchExecutor;
 
 export interface BoundaryFilesystemExecutorInput {
@@ -188,7 +192,17 @@ export function createBoundaryFilesystemExecutor(
     expectedIdentity?: FilesystemTargetIdentity,
   ): Promise<FilesystemResult> {
     const worker = workerFor(call.executionBoundary);
-    if (!worker) return await local.execute(call, pathScopeForBoundary(call.executionBoundary));
+    if (!worker) {
+      // The local backend consumes the same identity authority as the worker
+      // (#2600): the pinned read-modify-write validates the T0 identity on the
+      // descriptor. Remote/isolated workspaces without readModifyWrite stay on
+      // the path-based fallback, documented as unprotected by the authority.
+      return await local.execute(
+        call,
+        pathScopeForBoundary(call.executionBoundary),
+        expectedIdentity,
+      );
+    }
     const result = await worker.execute({
       operation: call.operation,
       // The worker is host-local by definition, so a session opened through a
@@ -249,38 +263,28 @@ export function createBoundaryFilesystemExecutor(
       // with, or the lock-key space and the resolved-path space drift apart.
       const { key, canonicalPath } = await writeLockTarget(call, call.operation.path);
       // Capture the target identity at lock acquisition (T0), BEFORE waiting
-      // for the lock. This is what closes the queue window: if Bash replaces
-      // the path while this call is queued, the worker's CAS sees a mismatch
-      // against this T0 inode and rejects with path_changed. Content operations
-      // follow the final symlink (stat); apply_patch create/delete use 'entry'
+      // for the lock, for BOTH backends — the worker CAS and the local pinned
+      // read-modify-write compare against this inode. Content operations follow
+      // the final symlink (stat); apply_patch create/delete use 'entry'
       // semantics but execute() only handles write/edit/format_json here.
-      const expectedIdentity = workerFor(call.executionBoundary)
-        ? await captureIdentityAtLockAcquisition(canonicalPath, true)
-        : undefined;
+      const expectedIdentity = await captureIdentityAtLockAcquisition(canonicalPath, true);
       try {
         return await withFileWriteLock(key, () => run(call, expectedIdentity));
       } catch (error) {
-        // A mutation that fails after dispatch may already have landed on disk.
-        // Surface that as an unknown outcome so the model re-reads rather than
-        // assuming the call did nothing. Reads and pre-flight failures pass through.
-        if (classifyFailedMutationOutcome(error) === 'unknown') {
-          throw new ToolOutcomeUnknownError(
-            'Filesystem mutation may have been applied before the worker failed.',
-            { cause: error },
-          );
-        }
-        throw error;
+        throw settleMutationFailure(error);
       }
     },
     async applyPatch(call) {
       const { operation, ...common } = call;
       const semantics = operation.type === 'update_file' ? 'target' : 'entry';
       const { key, canonicalPath } = await writeLockTarget(common, operation.path, semantics);
-      // Capture identity at T0 (before the lock wait). update_file follows the
-      // target (stat); create/delete pin the directory entry (lstat).
-      const expectedIdentity = workerFor(common.executionBoundary)
-        ? await captureIdentityAtLockAcquisition(canonicalPath, semantics === 'target')
-        : undefined;
+      // Capture identity at T0 (before the lock wait), for both backends.
+      // update_file follows the target (stat); create/delete pin the directory
+      // entry (lstat).
+      const expectedIdentity = await captureIdentityAtLockAcquisition(
+        canonicalPath,
+        semantics === 'target',
+      );
       try {
         return await withFileWriteLock(key, async () => {
           const backendOperation: FilesystemWorkerClientOperation =
@@ -299,22 +303,40 @@ export function createBoundaryFilesystemExecutor(
           return { status: 'completed' };
         });
       } catch (error) {
-        if (classifyFailedMutationOutcome(error) === 'unknown') {
-          throw new ToolOutcomeUnknownError(
-            'Filesystem mutation may have been applied before the worker failed.',
-            { cause: error },
-          );
-        }
-        throw error;
+        throw settleMutationFailure(error);
       }
     },
   };
+}
+
+/**
+ * Settle a failed mutation into its caller-facing error. A pinned-primitive
+ * failure maps by code: `outcome_unknown` (the write may have partially
+ * applied) becomes ToolOutcomeUnknownError, `path_changed` becomes a plain
+ * error with the primitive's actionable message. Worker failures keep the
+ * post-dispatch classification from the authority contract.
+ */
+function settleMutationFailure(error: unknown): unknown {
+  if (error instanceof StableWriteFailure) {
+    if (error.code === 'outcome_unknown') {
+      return new ToolOutcomeUnknownError(error.message, { cause: error });
+    }
+    return new Error(error.message, { cause: error });
+  }
+  if (classifyFailedMutationOutcome(error) === 'unknown') {
+    return new ToolOutcomeUnknownError(
+      'Filesystem mutation may have been applied before the worker failed.',
+      { cause: error },
+    );
+  }
+  return error;
 }
 
 interface WorkspaceFilesystemBackend {
   execute(
     input: FilesystemBackendExecuteInput,
     scope: WorkspacePathScope,
+    expectedIdentity?: FilesystemTargetIdentity,
   ): Promise<FilesystemResult>;
 }
 
@@ -327,7 +349,7 @@ function createWorkspaceFilesystemExecutor(
   workspace: FilesystemWorkspaceExecutor,
 ): WorkspaceFilesystemBackend {
   return {
-    async execute({ operation, cwd, abortSignal }, scope) {
+    async execute({ operation, cwd, abortSignal }, scope, expectedIdentity) {
       switch (operation.kind) {
         case 'read': {
           const { path } = await workspace.resolveExistingPath({
@@ -354,11 +376,35 @@ function createWorkspaceFilesystemExecutor(
             label: 'Write',
             scope,
           });
-          // Read-before-write: an overwrite's diff is what tells the reader
-          // what was lost. Only a missing file means the whole content is
-          // new — an unreadable or binary existing file leaves the previous
-          // state unknown, and claiming `--- /dev/null` would report the
-          // file as created.
+          if (workspace.readModifyWrite) {
+            // Pinned RMW (#2600): open once, validate the T0 identity on the
+            // descriptor, write through it. previous feeds the diff below.
+            const result = await workspace.readModifyWrite({
+              cwd,
+              path,
+              label: 'Write',
+              scope,
+              approvedIdentity: expectedIdentity,
+              transform: () => operation.content,
+            });
+            const diff =
+              result.previous === 'unknown'
+                ? undefined
+                : createUnifiedDiff(
+                    path,
+                    result.previous === 'new' ? undefined : result.previous,
+                    operation.content,
+                  );
+            return {
+              kind: 'write',
+              ok: true,
+              path,
+              bytes: Buffer.byteLength(operation.content, 'utf8'),
+              ...(diff !== undefined ? { diff } : {}),
+            };
+          }
+          // Fallback (remote/isolated workspace): path-based, unprotected by
+          // the identity authority.
           let previous: 'new' | 'unknown' | string;
           try {
             const read = await workspace.readFile({ cwd, path });
@@ -387,6 +433,24 @@ function createWorkspaceFilesystemExecutor(
         case 'apply_patch': {
           if (!workspace.applyPatch) throw new Error('Workspace does not support ApplyPatch');
           const common = { cwd, path: operation.path, label: 'ApplyPatch', scope };
+          if (operation.action === 'update' && workspace.readModifyWrite) {
+            // update requires an existing target: resolve first (ENOENT guard,
+            // matching the worker's resolveExistingAllowed) so a missing target
+            // is rejected without the exclusive create ever running.
+            const { path } = await workspace.resolveExistingPath({
+              cwd,
+              path: operation.path,
+              label: 'ApplyPatch',
+              scope,
+            });
+            await workspace.readModifyWrite({
+              ...common,
+              path,
+              approvedIdentity: expectedIdentity,
+              transform: (ctx) => applyUpdateToContent(ctx.content ?? '', operation.diff),
+            });
+            return { kind: 'apply_patch', ok: true, path };
+          }
           const patched = await workspace.applyPatch(
             operation.action === 'delete'
               ? { ...common, action: 'delete' }
@@ -401,6 +465,41 @@ function createWorkspaceFilesystemExecutor(
             label: 'Edit',
             scope,
           });
+          if (isSupportedImagePath(path)) throw new Error('Edit does not support image files.');
+          if (workspace.readModifyWrite) {
+            let edited!: ReturnType<typeof computeEditedSource>;
+            const result = await workspace.readModifyWrite({
+              cwd,
+              path,
+              label: 'Edit',
+              scope,
+              approvedIdentity: expectedIdentity,
+              transform: (ctx) => {
+                edited = computeEditedSource(
+                  ctx.content ?? '',
+                  operation.oldString,
+                  operation.newString,
+                  operation.path,
+                );
+                return edited.content;
+              },
+            });
+            const diff = createUnifiedDiff(
+              path,
+              result.previous === 'unknown' || result.previous === 'new' ? '' : result.previous,
+              result.finalContent ?? '',
+            );
+            return {
+              kind: 'edit',
+              ok: true,
+              path,
+              replacements: 1,
+              matchedVia: edited.matchedVia,
+              startLine: edited.startLine,
+              endLine: edited.endLine,
+              ...(diff !== undefined ? { diff } : {}),
+            };
+          }
           const read = await workspace.readFile({ cwd, path });
           if ('bytes' in read) throw new Error('Edit does not support image files.');
           const edited = computeEditedSource(
@@ -429,6 +528,60 @@ function createWorkspaceFilesystemExecutor(
             label: 'FormatJson',
             scope,
           });
+          if (isSupportedImagePath(path)) {
+            throw new Error('FormatJson does not support image files.');
+          }
+          if (workspace.readModifyWrite) {
+            let parseError: string | undefined;
+            let original = '';
+            const result = await workspace.readModifyWrite({
+              cwd,
+              path,
+              label: 'FormatJson',
+              scope,
+              approvedIdentity: expectedIdentity,
+              transform: (ctx) => {
+                original = ctx.content ?? '';
+                try {
+                  const value = operation.sortKeys
+                    ? sortKeysDeep(JSON.parse(original))
+                    : JSON.parse(original);
+                  return JSON.stringify(value, null, 2);
+                } catch (error) {
+                  parseError = error instanceof Error ? error.message : 'parse failed';
+                  return null;
+                }
+              },
+            });
+            const bytesBefore = Buffer.byteLength(original, 'utf8');
+            if (parseError !== undefined || result.finalContent === null) {
+              return {
+                kind: 'format_json',
+                ok: false,
+                valid: false,
+                error: `FormatJson: invalid JSON: ${parseError ?? 'parse failed'}`,
+                path,
+                bytesBefore,
+                byteDelta: 0,
+                changed: false,
+              };
+            }
+            const formatted = result.finalContent;
+            const bytesAfter = Buffer.byteLength(formatted, 'utf8');
+            const diff =
+              formatted === original ? undefined : createUnifiedDiff(path, original, formatted);
+            return {
+              kind: 'format_json',
+              ok: true,
+              valid: true,
+              path,
+              bytesBefore,
+              bytesAfter,
+              byteDelta: bytesAfter - bytesBefore,
+              changed: formatted !== original,
+              ...(diff !== undefined ? { diff } : {}),
+            };
+          }
           const read = await workspace.readFile({ cwd, path });
           if ('bytes' in read) throw new Error('FormatJson does not support image files.');
           const original = read.content;

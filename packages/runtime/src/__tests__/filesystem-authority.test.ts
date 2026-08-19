@@ -273,6 +273,10 @@ describe('file tools follow the execution boundary', () => {
       const secondKeyResolvedPromise = new Promise<void>((resolve) => {
         secondKeyResolved = resolve;
       });
+      const pinnedReadModifyWrite = host.readModifyWrite;
+      if (!pinnedReadModifyWrite) {
+        throw new Error('LocalWorkspaceExecutor must provide readModifyWrite');
+      }
       const tools = toolsFor({
         executor: Object.assign(Object.create(host) as typeof host, {
           writeLockKey: async (input: Parameters<typeof host.writeLockKey>[0]) => {
@@ -291,6 +295,23 @@ describe('file tools follow the execution boundary', () => {
             }
             try {
               return await host.readFile(input);
+            } finally {
+              active -= 1;
+            }
+          },
+          readModifyWrite: async (input: Parameters<typeof pinnedReadModifyWrite>[0]) => {
+            // The pinned read-modify-write is the mutation's read step now
+            // (#2600); the causal barrier lives here for the same reason it
+            // lived on readFile before.
+            active += 1;
+            overlapped ||= active > 1;
+            reads += 1;
+            if (reads === 1) {
+              firstReadStarted();
+              await secondKeyResolvedPromise;
+            }
+            try {
+              return await pinnedReadModifyWrite(input);
             } finally {
               active -= 1;
             }

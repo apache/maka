@@ -6,8 +6,9 @@
 // "the target I approved" and "the outcome on disk" mean.
 //
 // This module is types and pure classification only — no I/O. The fd-pinned
-// read-modify-write that enforces these contracts lands in file-stable-write.ts
-// (later commit); the contract itself is what every backend agrees on.
+// read-modify-write that enforces these contracts lives in file-stable-write.ts
+// and is consumed by both the worker and the local workspace executor; the
+// contract itself is what every backend agrees on.
 
 import { FilesystemWorkerClientError } from './filesystem-worker/client.js';
 
