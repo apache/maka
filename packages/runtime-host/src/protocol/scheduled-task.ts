@@ -24,7 +24,7 @@ import {
   type UpdateScheduledTaskInput,
 } from '@maka/core/scheduled-task';
 import { isThinkingLevel } from '@maka/core/model-thinking';
-import type { BackendKind } from '@maka/core/session';
+import type { PersistedBackendKind } from '@maka/core/session';
 import {
   requireCount,
   requireEncodedByteLimit,
@@ -525,7 +525,7 @@ function decodeExecution(value: unknown): ScheduledTaskExecutionTemplate {
     ],
     ['projectId', 'thinkingLevel'],
   );
-  if (!isBackendKind(execution.backend))
+  if (!isPersistedBackendKind(execution.backend))
     throw invalidProtocolFrame('Invalid ScheduledTask backend');
   if (!isPermissionMode(execution.permissionMode)) {
     throw invalidProtocolFrame('Invalid ScheduledTask permission mode');
@@ -635,6 +635,11 @@ function nullablePositiveCount(value: unknown, label: string): number | null {
   return count;
 }
 
-function isBackendKind(value: unknown): value is BackendKind {
+/**
+ * Decode guard for a durable Automation template. `'fake'` stays accepted:
+ * Automations frozen by builds that shipped FakeBackend must keep decoding
+ * (#3211); activation refuses them with the product's `fake_backend` reason.
+ */
+function isPersistedBackendKind(value: unknown): value is PersistedBackendKind {
   return value === 'ai-sdk' || value === 'fake';
 }

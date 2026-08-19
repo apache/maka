@@ -4,7 +4,7 @@
 
 import type { MessageContent } from './events.js';
 import type {
-  BackendKind,
+  PersistedBackendKind,
   SessionBlockedReason,
   SessionStatus,
   SessionToolProfile,
@@ -35,7 +35,7 @@ export interface CreateSessionInput {
   projectId?: string | null;
   /** If omitted, runtime auto-derives a placeholder; users may rename later. */
   name?: string;
-  backend: BackendKind;
+  backend: PersistedBackendKind;
   llmConnectionSlug: string;
   /** Falls back to the connection's defaultModel if omitted. */
   model?: string;

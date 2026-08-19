@@ -370,11 +370,21 @@ export function providerSupportsModelDiscovery(providerType: ProviderType): bool
   return discovery !== undefined && discovery.kind !== 'fallback';
 }
 
+/**
+ * The backend that runs a connection.
+ *
+ * Throws for an unknown `providerType` (a legacy seed, or a connection
+ * persisted on a branch that registers a provider this build doesn't know).
+ * It used to answer `'fake'` there, which was the last live producer of that
+ * value (#3211); there is no honest backend to name for a provider this build
+ * cannot describe. Callers that need a non-throwing answer are asking whether
+ * the connection is usable, not which backend runs it — use `isRealConnection`
+ * / `isConnectionReady` from `connection-readiness.ts`.
+ */
 export function backendKindOf(c: Pick<LlmConnection, 'providerType'>): BackendKind {
-  // Unknown providerType (legacy seed, or a connection persisted on a branch
-  // that registers a provider this build doesn't know) → treat as non-real,
-  // matching `isFakeBackend` in connection-readiness.ts.
-  return PROVIDER_DEFAULTS[c.providerType]?.backendKind ?? 'fake';
+  const defaults = PROVIDER_DEFAULTS[c.providerType];
+  if (!defaults) throw new Error(`Unknown providerType: ${c.providerType}`);
+  return defaults.backendKind;
 }
 
 export function effectiveBaseUrl(c: Pick<LlmConnection, 'providerType' | 'baseUrl'>): string {

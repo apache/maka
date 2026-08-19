@@ -40,7 +40,7 @@ export function buildChatModelChoices(connections: readonly LlmConnection[]): Ch
   for (const rawConnection of connections) {
     const connection = normalizeOpenAiCodexConnection(rawConnection);
     const provider = PROVIDER_DEFAULTS[connection.providerType];
-    if (!connection.enabled || !provider || provider.backendKind !== 'ai-sdk') {
+    if (!connection.enabled || !provider) {
       continue;
     }
     const enabledModelIds = new Set(connectionEnabledModelIds(connection));

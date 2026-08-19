@@ -999,6 +999,32 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('reads back a legacy fake-backend session instead of migrating or rejecting it', async () => {
+    // #3211: `'fake'` was retired as a live backend but never migrated out of
+    // storage. Narrowing the header validator would make these rows decode as
+    // malformed and rewriting them to `'ai-sdk'` would make an unrunnable task
+    // look runnable, since `llmConnectionSlug` still points at nothing.
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-legacy-fake-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput({ backend: 'fake', llmConnectionSlug: 'fake' }));
+      assert.equal(session.backend, 'fake');
+      assert.equal((await store.readHeaderSnapshot(session.id)).backend, 'fake');
+    } finally {
+      await store.close?.();
+    }
+
+    const reopened = createSessionStore(root);
+    try {
+      const [header] = await reopened.listHeaders();
+      assert.equal(header?.backend, 'fake');
+      assert.equal(header?.llmConnectionSlug, 'fake');
+    } finally {
+      await reopened.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('deletes metadata and messages through the same transaction boundary', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-delete-'));
     const store = createSessionStore(root);

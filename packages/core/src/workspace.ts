@@ -2,7 +2,7 @@
  * Workspace config types.
  */
 
-import type { BackendKind } from './session.js';
+import type { PersistedBackendKind } from './session.js';
 import type { PermissionMode } from './permission.js';
 
 export interface WorkspaceConfig {
@@ -13,7 +13,7 @@ export interface WorkspaceConfig {
   createdAt: number;
   defaults: {
     permissionMode: PermissionMode;
-    backend: BackendKind;
+    backend: PersistedBackendKind;
     llmConnectionSlug?: string;
     model?: string;
   };

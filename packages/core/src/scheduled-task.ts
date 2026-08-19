@@ -11,7 +11,7 @@ import { isOrchestrationMode, type OrchestrationMode } from './orchestration.js'
 import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
 import { isPermissionMode, type PermissionMode } from './permission.js';
 import { isBotDeliveryProvider, type BotProvider } from './bot-chat-settings.js';
-import type { BackendKind } from './session.js';
+import type { PersistedBackendKind } from './session.js';
 
 export const SCHEDULED_TASK_TITLE_MAX_CHARS = 120;
 export const SCHEDULED_TASK_INTENT_MAX_CHARS = 8_000;
@@ -52,7 +52,7 @@ export type ScheduledTaskEffect =
 export interface ScheduledTaskExecutionTemplate {
   readonly cwd: string;
   readonly projectId?: string | null;
-  readonly backend: BackendKind;
+  readonly backend: PersistedBackendKind;
   readonly llmConnectionSlug: string;
   readonly model: string;
   readonly thinkingLevel?: ThinkingLevel;
@@ -489,6 +489,9 @@ function normalizeExecution(
   if (!isObject(value)) return fail('agent_run requires execution template');
   if (typeof value.cwd !== 'string' || !value.cwd.trim()) return fail('execution.cwd is required');
   if (typeof value.backend !== 'string') return fail('execution.backend is required');
+  // `'fake'` stays accepted on decode: Automations frozen by builds that
+  // shipped FakeBackend must keep loading (#3211). Activation refuses them
+  // with the product's `fake_backend` reason.
   if (value.backend !== 'ai-sdk' && value.backend !== 'fake') {
     return fail('execution.backend is invalid');
   }

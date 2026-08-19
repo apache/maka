@@ -13,8 +13,9 @@
  *       UserMessage / AssistantMessage / ToolCallMessage / ToolResultMessage.
  *     Excluded: SystemNoteMessage / TokenUsageMessage / TurnStateMessage /
  *     PermissionDecisionMessage.
- *   - Excludes sessions with `backend === 'fake'` (e2e-fixture fixtures) and
- *     archived sessions (managed in Settings › 活动 › 已归档任务).
+ *   - Excludes sessions with `backend === 'fake'` (retired local simulation,
+ *     plus the e2e fixtures that still seed it) and archived sessions
+ *     (managed in Settings › 活动 › 已归档任务).
  *   - Snippets are redacted via `@maka/core/redaction.redactSecrets()`.
  *   - `ToolResultMessage.content` is JSON-serialized for scan and capped to
  *     the first `TOOL_RESULT_SCAN_CAP_BYTES` bytes (worst-case bound).
@@ -160,8 +161,11 @@ export async function runThreadSearch(
   const maxResults = limitResult.value;
 
   const sessions = collapseSessionRevisions(await deps.listSessions())
-    // Exclude fake-backend sessions — e2e-fixture fixtures and
-    // similar dev-only state should not surface as real chat hits.
+    // Exclude fake-backend sessions. The rail still shows them (marked
+    // stale) because they are task records, but their transcripts are
+    // simulator output — returning fabricated text as a hit on the user's own
+    // history is worse than returning nothing. Retiring the backend (#3211)
+    // did not make that content real, so the filter stays.
     //
     // Archived tasks are excluded for the same reason the command palette
     // skips them: archiving a task says it is out of the working set, and a

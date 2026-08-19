@@ -32,9 +32,9 @@ import type { LlmConnection } from './llm-connections.js';
 
 export interface SessionSendProjectionSession {
   /**
-   * Session backend kind. `string` (not `BackendKind`) so legacy on-disk
-   * values like `'claude'` are surfaced exactly as the JSONL stored them;
-   * only `'fake'` is special-cased, everything else goes through the
+   * Session backend kind. `string` (not `PersistedBackendKind`) so legacy
+   * on-disk values like `'claude'` are surfaced exactly as the JSONL stored
+   * them; only `'fake'` is special-cased, everything else goes through the
    * normal connection readiness gate.
    */
   backend: string;
@@ -80,7 +80,7 @@ export function projectSessionSendOutcome(
   }
 
   for (const slug of new Set([defaultSlug, ...connections.map((connection) => connection.slug)])) {
-    if (!slug || slug === 'fake') continue;
+    if (!slug) continue;
     const connection = connections.find((entry) => entry.slug === slug);
     if (!connection) continue;
     const normalized = normalizeOpenAiCodexConnection(connection);
@@ -106,9 +106,12 @@ function sessionOwnConnectionBlockReason(
   ownConnection: LlmConnection | null,
   hasSecret: (slug: string) => boolean,
 ): ChatConfigurationReason | undefined {
+  // Sessions written by builds that shipped FakeBackend keep `'fake'` on disk
+  // forever (#3211). They are refused here — and at activation — rather than
+  // rewritten, because their `llmConnectionSlug` still points at nothing.
   if (session.backend === 'fake') return 'fake_backend';
   const slug = session.llmConnectionSlug;
-  if (!slug || slug === 'fake') return 'missing_default_connection';
+  if (!slug) return 'missing_default_connection';
   if (!ownConnection) return 'connection_missing';
   const normalized = normalizeOpenAiCodexConnection(ownConnection);
   const verdict = isConnectionReady({
@@ -124,10 +127,7 @@ function ownConnectionBlockReason(
   connections: readonly LlmConnection[],
   hasSecret: (slug: string) => boolean,
 ): ChatConfigurationReason | undefined {
-  const own =
-    session.backend === 'fake'
-      ? null
-      : (connections.find((entry) => entry.slug === session.llmConnectionSlug) ?? null);
+  const own = connections.find((entry) => entry.slug === session.llmConnectionSlug) ?? null;
   return sessionOwnConnectionBlockReason(session, own, hasSecret);
 }
 

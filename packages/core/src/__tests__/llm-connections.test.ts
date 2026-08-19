@@ -17,6 +17,7 @@ import {
   validateConnectionBaseUrl,
   type ProviderType,
 } from '../llm-connections.js';
+import { isRealConnection } from '../connection-readiness.js';
 
 test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs', () => {
   assert.equal(validateConnectionBaseUrl(undefined), null);
@@ -58,7 +59,11 @@ test('base URL normalization preserves clear intent and rejects untrusted runtim
 
 test('unknown provider ids fail closed without breaking persisted connections', () => {
   const unknown = 'branch-only-provider' as ProviderType;
-  assert.equal(backendKindOf({ providerType: unknown }), 'fake');
+  // `backendKindOf` no longer invents a backend for a provider this build
+  // cannot describe (#3211); the readiness projection is the non-throwing
+  // answer to "can this connection be used?".
+  assert.throws(() => backendKindOf({ providerType: unknown }), /Unknown providerType/);
+  assert.equal(isRealConnection({ providerType: unknown }), false);
   assert.equal(
     effectiveBaseUrl({ providerType: unknown, baseUrl: 'https://example.test/v1' }),
     'https://example.test/v1',

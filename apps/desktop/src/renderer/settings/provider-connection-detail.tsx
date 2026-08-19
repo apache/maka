@@ -61,7 +61,7 @@ export function ConnectionDetail(props: ConnectionDetailProps) {
   // Unknown providerType (a connection persisted on a branch that registers a
   // provider this build doesn't know) → render a non-actionable fallback so
   // opening the orphan connection doesn't crash on `.authKind`/`.baseUrl`.
-  // Mirrors `isFakeBackend` in @maka/core/connection-readiness.ts.
+  // Mirrors `isRealConnection` in @maka/core/connection-readiness.ts.
   if (!defaults) return <UnknownConnectionDetail props={props} />;
   return <ConnectionDetailInner {...props} />;
 }
