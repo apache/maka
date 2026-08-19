@@ -153,6 +153,16 @@ async function waitForRecord(
   }
 }
 
+async function waitForPathRemoval(path: string, deadlineMs = 2000): Promise<void> {
+  const startedAt = Date.now();
+  while (existsSync(path)) {
+    if (Date.now() - startedAt >= deadlineMs) {
+      assert.fail(`${path} still exists after ${deadlineMs}ms`);
+    }
+    await delay(10);
+  }
+}
+
 function makeService(
   opts: {
     limits?: Partial<MakaCuLimits>;
@@ -494,7 +504,6 @@ describe('maka-cu supervisor: shutdown', () => {
     void starting.catch(() => {});
     service.dispose();
     await starting.catch(() => {});
-    await delay(150);
-    assert.equal(existsSync(imageDir), false, `${imageDir} must not survive dispose()`);
+    await waitForPathRemoval(imageDir);
   });
 });
