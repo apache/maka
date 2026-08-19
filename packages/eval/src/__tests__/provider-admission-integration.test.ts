@@ -324,11 +324,21 @@ test('a request arriving while the proxy drains is refused, not counted', async 
     `import { readFileSync, writeFileSync } from 'node:fs';
 const [, , baseUrl, outcomePath, childExitedPath] = process.argv;
 const held = fetch(\`\${baseUrl}/responses\`, { method: 'POST', body: '{}' }).catch(() => undefined);
-for (;;) {
+const deadline = Date.now() + 5_000;
+let sawChildExit = false;
+while (Date.now() < deadline) {
   try {
-    if (JSON.parse(readFileSync(childExitedPath, 'utf8')).phase === 'child_exited') break;
+    if (JSON.parse(readFileSync(childExitedPath, 'utf8')).phase === 'child_exited') {
+      sawChildExit = true;
+      break;
+    }
   } catch {}
   await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (!sawChildExit) {
+  await held;
+  writeFileSync(outcomePath, JSON.stringify({ status: -2 }));
+  process.exit(2);
 }
 let status = 0;
 try {
