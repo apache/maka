@@ -112,7 +112,7 @@ test('retires completed released migration metadata during schema convergence', 
         'sha256:released-source',
         10,
         20,
-        JSON.stringify({ session_metadata: 4, session_metadata_labels: 0 }),
+        JSON.stringify(releasedSessionMetadataValidation()),
       );
     legacy
       .prepare(`
@@ -430,6 +430,163 @@ test('preserves a cutover journal naming an unknown store and fails closed', asy
       (preserved.prepare('SELECT store_name FROM cutover_journal').get() as { store_name: string })
         .store_name,
       'future_store',
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a completed row carrying an unfamiliar validation key and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-extra-key-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyCutoverJournal(legacy);
+    // A known store, released shape, well-formed counts — but one key beyond the
+    // set the released writer emitted. No released writer produced this contract,
+    // so the journal must be preserved rather than retired.
+    legacy
+      .prepare(`
+        INSERT INTO cutover_journal(
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at,
+          completed_at,
+          validation_json
+        ) VALUES (?, ?, ?, 'completed', ?, ?, ?)
+      `)
+      .run(
+        'session_metadata',
+        join(root, 'sessions.sqlite'),
+        'sha256:released-source',
+        10,
+        20,
+        JSON.stringify({ ...releasedSessionMetadataValidation(), unexpected_evidence: 0 }),
+      );
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /invalid validation evidence/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      (preserved.prepare('SELECT store_name FROM cutover_journal').get() as { store_name: string })
+        .store_name,
+      'session_metadata',
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a completed row missing a released validation key and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-missing-key-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyCutoverJournal(legacy);
+    const incomplete = releasedSessionMetadataValidation();
+    delete incomplete.sandbox_boundary_log;
+    legacy
+      .prepare(`
+        INSERT INTO cutover_journal(
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at,
+          completed_at,
+          validation_json
+        ) VALUES (?, ?, ?, 'completed', ?, ?, ?)
+      `)
+      .run(
+        'session_metadata',
+        join(root, 'sessions.sqlite'),
+        'sha256:released-source',
+        10,
+        20,
+        JSON.stringify(incomplete),
+      );
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /invalid validation evidence/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      (
+        preserved.prepare('SELECT COUNT(*) AS count FROM cutover_journal').get() as {
+          count: number;
+        }
+      ).count,
+      1,
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a completed row whose completion precedes its start and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-timeorder-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyCutoverJournal(legacy);
+    // Both timestamps are non-negative integers, but completed_at < started_at:
+    // internally inconsistent evidence must fail closed, not be retired.
+    legacy
+      .prepare(`
+        INSERT INTO cutover_journal(
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at,
+          completed_at,
+          validation_json
+        ) VALUES (?, ?, ?, 'completed', ?, ?, ?)
+      `)
+      .run(
+        'session_metadata',
+        join(root, 'sessions.sqlite'),
+        'sha256:released-source',
+        20,
+        10,
+        JSON.stringify(releasedSessionMetadataValidation()),
+      );
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /cutover journal is incomplete or invalid/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      (
+        preserved.prepare('SELECT COUNT(*) AS count FROM cutover_journal').get() as {
+          count: number;
+        }
+      ).count,
+      1,
     );
     preserved.close();
   } finally {
@@ -1215,6 +1372,31 @@ function createLegacyCutoverJournal(database: DatabaseSync): void {
       validation_json TEXT
     )
   `);
+}
+
+// The exact validation-evidence key set the released session_metadata cutover
+// writer emitted (commit 1caea265c^): one row count per copied session-metadata
+// table. Kept as an explicit fixture so a drift from the source contract in
+// operational-state-store.ts turns this suite red rather than silently
+// accepting a narrower shape.
+function releasedSessionMetadataValidation(): Record<string, number> {
+  return {
+    session_metadata: 4,
+    session_metadata_labels: 0,
+    session_metadata_import_sources: 1,
+    session_metadata_tombstones: 0,
+    subagent_spawns: 0,
+    agent_graph_intent_claims: 0,
+    agent_graph_schedule_updates: 0,
+    agent_graph_operator_provisions: 0,
+    agent_graph_client_projections: 0,
+    agent_graph_client_operator_projections: 0,
+    agent_graph_client_terminal_activity: 0,
+    agent_graph_client_applied_records: 0,
+    agent_graph_supervisor_wakes: 0,
+    agent_graph_supervisor_wake_attempts: 0,
+    sandbox_boundary_log: 0,
+  };
 }
 
 function createLegacyImportSourceTables(database: DatabaseSync): void {

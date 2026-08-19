@@ -60,25 +60,62 @@ const REMOVED_OPERATIONAL_SCHEMA_VERSIONS: ReadonlyMap<string, number> = new Map
   ['automation', 2],
 ]);
 /**
- * Store names actually emitted into `cutover_journal` by the released cutover
- * writers (commit 1caea265c^): `session_metadata` from the dedicated session
- * cutover plus every `completeOperationalStoreCutover({ storeName })` caller. A
- * completed row naming anything outside this set is unrecognized evidence, so
- * retirement fails closed rather than dropping it.
+ * Exact validation-evidence contract emitted into `cutover_journal` by the
+ * released cutover writers (commit 1caea265c^, removed in #1994). Each entry
+ * maps a released `store_name` to the precise key set its `importAndValidate`
+ * returned as `validation_json`: `session_metadata` reports one row count per
+ * copied session-metadata table, and every other store reports its own fixed
+ * evidence keys. A completed row whose store name is absent here, or whose
+ * validation keys are not *exactly* this set, is
+ * evidence this build never wrote — retirement fails closed and preserves it
+ * rather than dropping unrecognized migration state.
+ *
+ * The contract is pinned to the final writer generation (1caea265c^); a
+ * workspace whose cutover ran under an earlier writer whose key set differed
+ * fails closed here (preserved, startup still blocked) — non-regressive versus
+ * today and deliberately safer than dropping evidence we do not recognize.
  */
-const RELEASED_CUTOVER_STORE_NAMES: ReadonlySet<string> = new Set([
-  'agent_runs',
-  'artifact_metadata',
-  'automations',
-  'interactions',
-  'message_receipts',
-  'session_metadata',
-  'shell_runs',
-  'usage_pricing',
-  'workflow_deep_research',
-  'workflow_plan',
-  'workflow_plan_reminders',
-  'workflow_task_ledger',
+const RELEASED_CUTOVER_STORE_VALIDATION_KEYS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  [
+    'agent_runs',
+    new Set([
+      'agent_runs',
+      'agent_run_events',
+      'agent_run_projections',
+      'root_turn_admissions',
+      'root_source_message_proofs',
+    ]),
+  ],
+  ['artifact_metadata', new Set(['records'])],
+  ['automations', new Set(['automations'])],
+  ['interactions', new Set(['interaction_requests', 'interaction_outcomes'])],
+  ['message_receipts', new Set(['host_epochs', 'message_receipts'])],
+  [
+    'session_metadata',
+    new Set([
+      'session_metadata',
+      'session_metadata_labels',
+      'session_metadata_import_sources',
+      'session_metadata_tombstones',
+      'subagent_spawns',
+      'agent_graph_intent_claims',
+      'agent_graph_schedule_updates',
+      'agent_graph_operator_provisions',
+      'agent_graph_client_projections',
+      'agent_graph_client_operator_projections',
+      'agent_graph_client_terminal_activity',
+      'agent_graph_client_applied_records',
+      'agent_graph_supervisor_wakes',
+      'agent_graph_supervisor_wake_attempts',
+      'sandbox_boundary_log',
+    ]),
+  ],
+  ['shell_runs', new Set(['shell_runs'])],
+  ['usage_pricing', new Set(['llm', 'tools', 'pricing'])],
+  ['workflow_deep_research', new Set(['sessions', 'events'])],
+  ['workflow_plan', new Set(['sessions', 'events'])],
+  ['workflow_plan_reminders', new Set(['reminders'])],
+  ['workflow_task_ledger', new Set(['sessions', 'events'])],
 ]);
 
 const require = createRequire(import.meta.url);
@@ -468,10 +505,14 @@ function retireCompletedLegacyMigrationMetadata(db: DatabaseSync): void {
 }
 
 function assertCompletedLegacyCutoverJournalRow(row: Record<string, unknown>): void {
+  // A store name absent from the released contract yields `undefined` here,
+  // which fails closed below — an empty or non-string name lands the same way.
+  const expectedValidationKeys =
+    typeof row.store_name === 'string'
+      ? RELEASED_CUTOVER_STORE_VALIDATION_KEYS.get(row.store_name)
+      : undefined;
   if (
-    typeof row.store_name !== 'string' ||
-    row.store_name.length === 0 ||
-    !RELEASED_CUTOVER_STORE_NAMES.has(row.store_name) ||
+    expectedValidationKeys === undefined ||
     typeof row.source_path !== 'string' ||
     row.source_path.length === 0 ||
     typeof row.source_fingerprint !== 'string' ||
@@ -479,6 +520,9 @@ function assertCompletedLegacyCutoverJournalRow(row: Record<string, unknown>): v
     row.state !== 'completed' ||
     !isNonnegativeInteger(row.started_at) ||
     !isNonnegativeInteger(row.completed_at) ||
+    // A completed row whose finish precedes its start is internally
+    // inconsistent evidence, not a row this build ever wrote.
+    row.completed_at < row.started_at ||
     typeof row.validation_json !== 'string'
   ) {
     throw new Error('Legacy operational cutover journal is incomplete or invalid');
@@ -493,11 +537,22 @@ function assertCompletedLegacyCutoverJournalRow(row: Record<string, unknown>): v
     typeof validation !== 'object' ||
     validation === null ||
     Array.isArray(validation) ||
-    Object.keys(validation).length === 0 ||
-    !Object.values(validation).every(isNonnegativeInteger)
+    !Object.values(validation).every(isNonnegativeInteger) ||
+    // The evidence keys must be exactly the set the released writer emitted for
+    // this store: a missing, extra, or renamed key is a contract this build
+    // never produced, so the journal is preserved rather than retired.
+    !hasExactValidationKeys(validation as Record<string, unknown>, expectedValidationKeys)
   ) {
     throw new Error('Legacy operational cutover journal has invalid validation evidence');
   }
+}
+
+function hasExactValidationKeys(
+  validation: Record<string, unknown>,
+  expected: ReadonlySet<string>,
+): boolean {
+  const keys = Object.keys(validation);
+  return keys.length === expected.size && keys.every((key) => expected.has(key));
 }
 
 function assertLegacyImportSourceRow(row: Record<string, unknown>): void {
