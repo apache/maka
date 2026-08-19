@@ -55,6 +55,9 @@ export interface RuntimeHostAccessAuthority {
 
 export async function openRuntimeHostAccessAuthority(
   controlDirectory: string,
+  input: {
+    readonly writeFile?: typeof writeAccessCredentialFile;
+  } = {},
 ): Promise<RuntimeHostAccessAuthority> {
   await purgeAccessCredentialDeliveries(controlDirectory);
   const path = join(controlDirectory, ACCESS_FILE_NAME);
@@ -62,22 +65,30 @@ export async function openRuntimeHostAccessAuthority(
     controlDirectory,
     path,
     await readAccessCredentialFile(path),
+    input.writeFile ?? writeAccessCredentialFile,
   );
 }
 
 class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   readonly #controlDirectory: string;
   readonly #path: string;
+  readonly #writeFile: typeof writeAccessCredentialFile;
   #file: AccessCredentialFile;
   #mutation = Promise.resolve();
   #expiryTimer: NodeJS.Timeout | undefined;
   #closed = false;
   readonly #revocationListeners = new Set<(credentialId: string) => void>();
 
-  constructor(controlDirectory: string, path: string, file: AccessCredentialFile) {
+  constructor(
+    controlDirectory: string,
+    path: string,
+    file: AccessCredentialFile,
+    writeFile: typeof writeAccessCredentialFile,
+  ) {
     this.#controlDirectory = controlDirectory;
     this.#path = path;
     this.#file = file;
+    this.#writeFile = writeFile;
     this.#schedulePendingExpiry();
   }
 
@@ -185,13 +196,13 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
         credential,
       );
       try {
-        await this.#commit(nextFile);
+        await this.#commit(
+          nextFile,
+          replaced.map((credential) => credential.credentialId),
+        );
       } catch (error) {
         await discardAccessCredentialDelivery(this.#controlDirectory, deliveryId);
         throw error;
-      }
-      for (const replacedCredential of replaced) {
-        this.#publishRevocation(replacedCredential.credentialId);
       }
       return {
         credentialId,
@@ -222,8 +233,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
                 ? { ...credential, status: 'revoked' as const, revokedAt: new Date().toISOString() }
                 : credential,
             );
-      await this.#commit(createAccessCredentialFile(credentials));
-      this.#publishRevocation(input.credentialId);
+      await this.#commit(createAccessCredentialFile(credentials), [input.credentialId]);
       return { credentialId: input.credentialId, revoked: true };
     });
   }
@@ -255,8 +265,10 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
             credential === retained ? activatePendingCredential(credential) : credential,
           ),
       );
-      await this.#commit(finalized);
-      for (const credential of revoked) this.#publishRevocation(credential.credentialId);
+      await this.#commit(
+        finalized,
+        revoked.map((credential) => credential.credentialId),
+      );
       return {};
     });
   }
@@ -289,10 +301,21 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     return result;
   }
 
-  async #commit(file: AccessCredentialFile): Promise<void> {
-    await writeAccessCredentialFile(this.#path, file);
+  async #commit(
+    file: AccessCredentialFile,
+    revokedCredentialIds: readonly string[] = [],
+  ): Promise<void> {
+    let outcomeUnknown: RuntimeHostAccessCommitOutcomeUnknownError | undefined;
+    try {
+      await this.#writeFile(this.#path, file);
+    } catch (error) {
+      if (!(error instanceof RuntimeHostAccessCommitOutcomeUnknownError)) throw error;
+      outcomeUnknown = error;
+    }
     this.#file = file;
     this.#schedulePendingExpiry();
+    for (const credentialId of revokedCredentialIds) this.#publishRevocation(credentialId);
+    if (outcomeUnknown) throw outcomeUnknown;
   }
 
   async #expirePending(): Promise<void> {
@@ -308,8 +331,8 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       createAccessCredentialFile(
         this.#file.credentials.filter((credential) => !expired.includes(credential)),
       ),
+      expired.map((credential) => credential.credentialId),
     );
-    for (const credential of expired) this.#publishRevocation(credential.credentialId);
   }
 
   #schedulePendingExpiry(retryMs?: number): void {
@@ -386,10 +409,11 @@ export async function issueAccessCredential(
     if (error instanceof RuntimeHostAccessInputError) {
       return { ok: false, error: { code: 'invalid_request', message: error.message } };
     }
-    return {
-      ok: false,
-      error: { code: 'persistence_failed', message: 'Access credential could not be issued' },
-    };
+    return accessPersistenceFailure(
+      error,
+      'Access credential issuance outcome is unknown',
+      'Access credential could not be issued',
+    );
   }
 }
 
@@ -404,10 +428,11 @@ export async function replaceAccessCredential(
     if (error instanceof RuntimeHostAccessInputError) {
       return { ok: false, error: { code: 'invalid_request', message: error.message } };
     }
-    return {
-      ok: false,
-      error: { code: 'persistence_failed', message: 'Access credential could not be replaced' },
-    };
+    return accessPersistenceFailure(
+      error,
+      'Access credential replacement outcome is unknown',
+      'Access credential could not be replaced',
+    );
   }
 }
 
@@ -422,10 +447,11 @@ export async function prepareAccessCredential(
     if (error instanceof RuntimeHostAccessInputError) {
       return { ok: false, error: { code: 'invalid_request', message: error.message } };
     }
-    return {
-      ok: false,
-      error: { code: 'persistence_failed', message: 'Access credential pairing could not begin' },
-    };
+    return accessPersistenceFailure(
+      error,
+      'Access credential pairing preparation outcome is unknown',
+      'Access credential pairing could not begin',
+    );
   }
 }
 
@@ -436,11 +462,12 @@ export async function revokeAccessCredential(
   if (!authority) return unavailable('revoke');
   try {
     return { ok: true, result: await authority.revoke(input) };
-  } catch {
-    return {
-      ok: false,
-      error: { code: 'persistence_failed', message: 'Access credential could not be revoked' },
-    };
+  } catch (error) {
+    return accessPersistenceFailure(
+      error,
+      'Access credential revocation outcome is unknown',
+      'Access credential could not be revoked',
+    );
   }
 }
 
@@ -461,23 +488,22 @@ export async function finalizeAccessCredential(
     if (error instanceof RuntimeHostAccessInputError) {
       return { ok: false, error: { code: 'invalid_request', message: error.message } };
     }
-    if (error instanceof RuntimeHostAccessCommitOutcomeUnknownError) {
-      return {
-        ok: false,
-        error: {
-          code: 'commit_outcome_unknown',
-          message: 'Access credential pairing finalization outcome is unknown',
-        },
-      };
-    }
-    return {
-      ok: false,
-      error: {
-        code: 'persistence_failed',
-        message: 'Access credential pairing could not be finalized',
-      },
-    };
+    return accessPersistenceFailure(
+      error,
+      'Access credential pairing finalization outcome is unknown',
+      'Access credential pairing could not be finalized',
+    );
   }
+}
+
+function accessPersistenceFailure(error: unknown, unknownMessage: string, failureMessage: string) {
+  return {
+    ok: false as const,
+    error:
+      error instanceof RuntimeHostAccessCommitOutcomeUnknownError
+        ? { code: 'commit_outcome_unknown' as const, message: unknownMessage }
+        : { code: 'persistence_failed' as const, message: failureMessage },
+  };
 }
 
 function unavailable(operation: 'issue'): OperationOutcome<'access.credential.issue'>;

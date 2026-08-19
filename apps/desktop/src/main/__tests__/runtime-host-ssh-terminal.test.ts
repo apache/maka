@@ -59,7 +59,7 @@ test('does not reopen a cancelled SSH prompt for late process output', async () 
   await assert.rejects(opening, /SSH exited/u);
 
   assert.deepEqual(harness.pty.killSignals, ['SIGTERM', 'SIGKILL']);
-  assert.deepEqual(harness.eventKinds(), ['opened', 'data']);
+  assert.deepEqual(harness.eventKinds(), ['opened', 'data', 'dismissed']);
   assert.deepEqual(await harness.getSnapshot(), { kind: 'idle', revision: 3 });
   await harness.terminal.close();
 });
@@ -126,11 +126,14 @@ test('force-stops a cancelled setup when SSH ignores graceful termination', asyn
     () => undefined,
   );
   await waitFor(() => harness.pty.hasDataListener());
+  harness.pty.emitData('Password: ');
 
   controller.abort();
 
   await assert.rejects(setup, /aborted/u);
   assert.deepEqual(harness.pty.killSignals, ['SIGTERM', 'SIGKILL']);
+  assert.deepEqual(harness.eventKinds(), ['opened', 'data', 'dismissed']);
+  assert.deepEqual(await harness.getSnapshot(), { kind: 'idle', revision: 3 });
   await harness.terminal.close();
 });
 
@@ -164,7 +167,10 @@ test('uploads a development release archive before running the same remote setup
   await waitFor(() => launches.length === 1);
   assert.equal(launches[0]?.file, 'scp');
   assert.match(launches[0]?.args.at(-2) ?? '', /maka-agent-development\.tgz$/u);
-  assert.match(launches[0]?.args.at(-1) ?? '', /^operator@example\.com:\/tmp\/maka-runtime-host-setup-.+\.tgz$/u);
+  assert.match(
+    launches[0]?.args.at(-1) ?? '',
+    /^operator@example\.com:\.\/\.maka-runtime-host-setup-.+\.tgz$/u,
+  );
   launches[0]?.pty.exit(0);
 
   await waitFor(() => launches.length === 2);
@@ -175,10 +181,10 @@ test('uploads a development release archive before running the same remote setup
     /npx.*--package.*maka-runtime-host-setup-.+\.tgz.*maka.*runtime-host.*setup/u,
   );
   assert.match(remoteCommand, /--defer-pairing-commit/u);
+  assert.match(remoteCommand, /cd.*\$HOME/u);
   assert.match(remoteCommand, /rm -f/u);
   assert.match(remoteCommand, /exec \/bin\/sh -c/u);
   assert.match(remoteCommand, /maka_setup_exit/u);
-  assert.doesNotMatch(remoteCommand, /\bstatus=/u);
   launches[1]?.pty.exit(255);
   await assert.rejects(setup, /exited with code 255/u);
 

@@ -84,7 +84,7 @@ import type {
   OperationInput,
   OperationOutput,
 } from '@maka/runtime-host/protocol';
-import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
+import type { AgentGraphEpochDirectory, RuntimeHostSetupPhase } from '@maka/runtime-host/client';
 import type {
   RendererRuntimeHostCommandOperation,
   RendererRuntimeHostQueryOperation,
@@ -307,6 +307,7 @@ export type DesktopRuntimeHostSshTerminalEvent =
   | { readonly kind: 'opened'; readonly revision: number; readonly sessionId: string }
   | { readonly kind: 'data'; readonly revision: number; readonly sessionId: string; readonly data: string }
   | { readonly kind: 'connected'; readonly revision: number; readonly sessionId: string }
+  | { readonly kind: 'dismissed'; readonly revision: number; readonly sessionId: string }
   | {
       readonly kind: 'closed';
       readonly revision: number;
@@ -335,11 +336,7 @@ export interface DesktopRuntimeHostOnboardingInput {
 
 export type DesktopRuntimeHostOnboardingPhase =
   | 'connecting_ssh'
-  | 'checking_environment'
-  | 'installing_package'
-  | 'installing_service'
-  | 'pairing_client'
-  | 'verifying_connection'
+  | RuntimeHostSetupPhase
   | 'connecting_host';
 
 export type DesktopRuntimeHostOnboardingSnapshot =

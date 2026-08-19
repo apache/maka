@@ -715,6 +715,12 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
 });
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
+const pendingPairingProfileIds = new Set(
+  runtimeHostStartup.pairingIntents.map((intent) => intent.target.profile.id),
+);
+void runtimeHostProfileService
+  .recoverPendingPairings()
+  .catch((error) => console.error("[runtime-host] pairing recovery failed:", error));
 const unavailableDefault = runtimeHostStartup.unavailable.get(
   runtimeHostStartup.preferences.defaultProfileId,
 );
@@ -738,6 +744,7 @@ if (unavailableDefault) {
 // enabled Host behind it. Other SSH targets fail batch-mode and remain retryable.
 for (const target of runtimeHostStartup.remotes) {
   if (target.profile.kind !== "remote" || !target.credential) continue;
+  if (pendingPairingProfileIds.has(target.profile.id)) continue;
   void runtimeHostManager
     .enable({
       profile: target.profile,

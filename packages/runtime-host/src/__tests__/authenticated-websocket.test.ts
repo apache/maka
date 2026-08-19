@@ -23,6 +23,10 @@ import {
   type RequestFrame,
 } from '../protocol/index.js';
 import { openRuntimeHostAccessAuthority } from '../server/access-authority.js';
+import {
+  RuntimeHostAccessCommitOutcomeUnknownError,
+  writeAccessCredentialFile,
+} from '../server/access-credential-store.js';
 import { startExecutionRuntimeHostService } from '../server/execution-service.js';
 import { authorizeRuntimeHostOperation } from '../server/connection-authority.js';
 
@@ -569,6 +573,62 @@ test('access credentials persist only as hashes and stay revoked after reload', 
       (await openRuntimeHostAccessAuthority(directory)).authenticate(credential),
       undefined,
     );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('keeps published credential state authoritative when directory sync is uncertain', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-unknown-commit-'));
+  let failNextCommit = false;
+  try {
+    const { consumeAccessCredentialDeliveryFromControlDirectory } = await import(
+      '../control/access-credential-delivery.js'
+    );
+    const authority = await openRuntimeHostAccessAuthority(directory, {
+      writeFile: async (path, file) => {
+        await writeAccessCredentialFile(path, file);
+        if (!failNextCommit) return;
+        failNextCommit = false;
+        throw new RuntimeHostAccessCommitOutcomeUnknownError(new Error('directory sync failed'));
+      },
+    });
+    const issued = await authority.issue({
+      principalKind: 'remote_owner',
+      principalId: 'device-1',
+      operationGrants: ['session.catalog.query'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    const credential = await consumeAccessCredentialDeliveryFromControlDirectory(
+      directory,
+      issued.deliveryId,
+      issued.credentialId,
+    );
+    const revoked: string[] = [];
+    authority.subscribeRevocations((credentialId) => revoked.push(credentialId));
+
+    failNextCommit = true;
+    await assert.rejects(
+      authority.revoke({ credentialId: issued.credentialId }),
+      RuntimeHostAccessCommitOutcomeUnknownError,
+    );
+    assert.equal(authority.authenticate(credential), undefined);
+    assert.deepEqual(revoked, [issued.credentialId]);
+
+    await authority.issue({
+      principalKind: 'remote_owner',
+      principalId: 'device-2',
+      operationGrants: ['session.catalog.query'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    assert.equal(authority.authenticate(credential), undefined);
+    assert.equal(
+      (await openRuntimeHostAccessAuthority(directory)).authenticate(credential),
+      undefined,
+    );
+    await authority.close();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

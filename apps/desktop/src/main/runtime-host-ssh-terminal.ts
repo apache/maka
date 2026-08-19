@@ -73,6 +73,21 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   let active: ActiveTerminal | undefined;
   let revision = 0;
   let presentation: Exclude<DesktopRuntimeHostSshTerminalSnapshot, { kind: 'idle' }> | undefined;
+  function dismissPresentation(terminal: ActiveTerminal): void {
+    terminal.dismissed = true;
+    if (terminal.revealTimer !== undefined) {
+      clearTimeout(terminal.revealTimer);
+      terminal.revealTimer = undefined;
+    }
+    if (presentation?.sessionId === terminal.sessionId) presentation = undefined;
+    if (!terminal.revealed) return;
+    revision += 1;
+    input.send('runtime-host-ssh-terminal:event', {
+      kind: 'dismissed',
+      revision,
+      sessionId: terminal.sessionId,
+    });
+  }
   function completePresentation(terminal: ActiveTerminal): void {
     if (active !== terminal || terminal.phase !== 'connecting') return;
     terminal.phase = 'connected';
@@ -236,13 +251,15 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     },
   );
   input.ipcMain.handle(channels[3], async (_event, sessionId: string) => {
-    if (presentation?.sessionId === sessionId) {
-      presentation = undefined;
-      revision += 1;
-    }
     const terminal = findActive(active, sessionId);
-    if (!terminal) return;
-    terminal.dismissed = true;
+    if (!terminal) {
+      if (presentation?.sessionId === sessionId) {
+        presentation = undefined;
+        revision += 1;
+      }
+      return;
+    }
+    dismissPresentation(terminal);
     await terminateActiveTerminal(terminal, input.processStopGraceMs);
   });
 
@@ -271,6 +288,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
           startTerminalProcess,
           cancellation.signal,
           input.processStopGraceMs,
+          dismissPresentation,
         );
         const remoteCommand = runtimeHostSetupRemoteCommand(setupPackage, setupInput.principalId);
         let complete: RuntimeHostSetupCompleteFrame | undefined;
@@ -319,6 +337,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
           timeoutMs: SETUP_TIMEOUT_MS,
           timeoutMessage: 'Remote Maka setup timed out',
           stopGraceMs: input.processStopGraceMs,
+          onAbort: () => dismissPresentation(terminal),
         });
         filter.finish();
         if (setupFailure) throw setupFailure;
@@ -454,6 +473,7 @@ async function prepareSetupPackage(
   ) => { readonly process: RuntimeHostSshProcess; readonly terminal: ActiveTerminal },
   signal: AbortSignal | undefined,
   stopGraceMs: number | undefined,
+  dismissPresentation: (terminal: ActiveTerminal) => void,
 ): Promise<PreparedSetupPackage> {
   if (setupPackage.kind === 'npm') {
     if (!isExactRuntimeHostSetupPackageSpecifier(setupPackage.specifier)) {
@@ -467,7 +487,7 @@ async function prepareSetupPackage(
     throw new Error('Runtime Host development package must be a .tgz file');
   }
   const remoteArchive = remoteDevelopmentArchivePath(principalId);
-  const { process } = startTerminalProcess('scp', [
+  const { process, terminal } = startTerminalProcess('scp', [
     '-o',
     'BatchMode=no',
     '-o',
@@ -487,6 +507,7 @@ async function prepareSetupPackage(
     timeoutMs: SETUP_TIMEOUT_MS,
     timeoutMessage: 'Uploading the Runtime Host development package timed out',
     stopGraceMs,
+    onAbort: () => dismissPresentation(terminal),
   });
   if (result.code !== 0) {
     throw new Error(
@@ -499,7 +520,7 @@ async function prepareSetupPackage(
 function remoteDevelopmentArchivePath(principalId: string): string {
   // Reuse one staging slot because a disconnected Host cannot acknowledge cleanup.
   const owner = createHash('sha256').update(principalId).digest('hex').slice(0, 24);
-  return `/tmp/maka-runtime-host-setup-${owner}.tgz`;
+  return `./.maka-runtime-host-setup-${owner}.tgz`;
 }
 
 async function waitForTerminalProcess(
@@ -509,6 +530,7 @@ async function waitForTerminalProcess(
     readonly timeoutMs: number;
     readonly timeoutMessage: string;
     readonly stopGraceMs?: number;
+    readonly onAbort?: () => void;
   },
 ): Promise<Awaited<RuntimeHostSshProcess['exited']>> {
   let requestStop!: (reason: 'aborted' | 'timeout') => void;
@@ -527,7 +549,8 @@ async function waitForTerminalProcess(
   try {
     const result = await Promise.race([
       process.exited,
-      stopRequested.then(async () => {
+      stopRequested.then(async (reason) => {
+        if (reason === 'aborted') input.onAbort?.();
         await terminateTerminalProcess(process, input.stopGraceMs);
         return process.exited;
       }),
@@ -592,7 +615,7 @@ function runtimeHostSetupRemoteCommand(
     '--json',
   ].map(quotePosix).join(' ');
   const command = setupPackage.removeAfterSetup
-    ? `maka_setup_exit=0; ${setup} || maka_setup_exit=$?; rm -f -- ${quotePosix(setupPackage.removeAfterSetup)}; exit "$maka_setup_exit"`
+    ? `cd "$HOME" || exit 1; maka_setup_exit=0; ${setup} || maka_setup_exit=$?; rm -f -- ${quotePosix(setupPackage.removeAfterSetup)}; exit "$maka_setup_exit"`
     : `exec ${setup}`;
   const loginCommand = `exec /bin/sh -c ${quotePosix(command)}`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(loginCommand)}`;

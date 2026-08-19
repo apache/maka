@@ -624,26 +624,41 @@ export class RuntimeHostKernel {
           return { ok: true, result: { kind: 'prepared', pid: process.pid } };
         },
         'access.credential.issue': async (input) =>
-          issueAccessCredential(this.#options.accessAuthority, input),
+          this.#settleAccessCredentialMutation(
+            issueAccessCredential(this.#options.accessAuthority, input),
+          ),
         'access.credential.replace': async (input) =>
-          replaceAccessCredential(this.#options.accessAuthority, input),
+          this.#settleAccessCredentialMutation(
+            replaceAccessCredential(this.#options.accessAuthority, input),
+          ),
         'access.credential.prepare': async (input) =>
-          prepareAccessCredential(this.#options.accessAuthority, input),
+          this.#settleAccessCredentialMutation(
+            prepareAccessCredential(this.#options.accessAuthority, input),
+          ),
         'access.credential.revoke': async (input) =>
-          revokeAccessCredential(this.#options.accessAuthority, input),
-        'access.credential.finalize': async (_input, context) => {
-          const outcome = await finalizeAccessCredential(
-            this.#options.accessAuthority,
-            context.credentialId,
-          );
-          if (!outcome.ok && outcome.error.code === 'commit_outcome_unknown') {
-            this.#requestDrain();
-          }
-          return outcome;
-        },
+          this.#settleAccessCredentialMutation(
+            revokeAccessCredential(this.#options.accessAuthority, input),
+          ),
+        'access.credential.finalize': async (_input, context) =>
+          this.#settleAccessCredentialMutation(
+            finalizeAccessCredential(this.#options.accessAuthority, context.credentialId),
+          ),
       },
       domainHandlers,
     );
+  }
+
+  async #settleAccessCredentialMutation<
+    T extends {
+      readonly ok: boolean;
+      readonly error?: { readonly code: string };
+    },
+  >(operation: Promise<T>): Promise<T> {
+    const outcome = await operation;
+    if (!outcome.ok && outcome.error?.code === 'commit_outcome_unknown') {
+      this.#requestDrain();
+    }
+    return outcome;
   }
 
   #statusSnapshot(): HostStatusResult {

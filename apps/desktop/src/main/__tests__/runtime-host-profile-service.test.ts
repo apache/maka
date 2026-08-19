@@ -6,6 +6,7 @@ import { afterEach, test } from "node:test";
 import {
   createClientRuntimeHostProfileCatalog,
   LOCAL_RUNTIME_HOST_PROFILE,
+  RuntimeHostPermanentReconnectError,
   RuntimeHostRemoteCompatibilityError,
   type ResolvedRuntimeHostProfile,
 } from "@maka/runtime-host/client";
@@ -263,6 +264,7 @@ test("projects a shared compatibility error through an unavailable enabled remot
         { profile: PROFILE, credential: "office-token" },
         { profile: READY_PROFILE, credential: "backup-token" },
       ],
+      pairingIntents: [],
       unavailable: new Map(),
     },
     states: () => [
@@ -272,6 +274,7 @@ test("projects a shared compatibility error through an unavailable enabled remot
     ],
     enable: async () => undefined,
     disable: async () => undefined,
+    finalizePairing: async () => undefined,
     setDefault: () => undefined,
     catalog,
   });
@@ -375,6 +378,57 @@ test("refreshes the existing profile when managed setup pairs the same Host agai
   assert.deepEqual((await catalog.read()).profiles.map((profile) => profile.id), [PROFILE.id]);
 });
 
+test("finishes a persisted pairing after Desktop restarts before finalization", async () => {
+  const root = await clientRoot();
+  const catalog = await stageInterruptedPairing(root);
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  assert.equal(startup.pairingIntents.length, 1);
+  const finalized: string[] = [];
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async (profileId) => {
+      finalized.push(profileId);
+    },
+  });
+
+  await service.recoverPendingPairings();
+
+  assert.deepEqual(finalized, [PROFILE.id]);
+  assert.equal((await catalog.resolve(PROFILE.id)).credential, "new-token");
+  assert.equal((await resolveDesktopRuntimeHostStartup(root, { catalog })).pairingIntents.length, 0);
+});
+
+test("restores the previous credential when an interrupted pairing can no longer authenticate", async () => {
+  const root = await clientRoot();
+  const catalog = await stageInterruptedPairing(root);
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async (target) => {
+      if (target.credential === "new-token") {
+        throw new RuntimeHostPermanentReconnectError("pairing credential expired");
+      }
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => assert.fail("an expired credential cannot be finalized"),
+  });
+
+  await service.recoverPendingPairings();
+
+  assert.equal((await catalog.resolve(PROFILE.id)).credential, "old-token");
+  assert.equal((await resolveDesktopRuntimeHostStartup(root, { catalog })).pairingIntents.length, 0);
+});
+
 for (const failureAt of ["connection", "finalization"] as const) {
   test(`restores an existing profile when replacement ${failureAt} fails`, async () => {
     const root = await clientRoot();
@@ -468,6 +522,43 @@ async function clientRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "maka-desktop-host-profile-"));
   temporaryDirectories.push(root);
   return root;
+}
+
+async function stageInterruptedPairing(root: string) {
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  await catalog.create(PROFILE, "old-token");
+  await writeFile(
+    join(root, "runtime-host-profile-selection.json"),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      defaultProfileId: "local",
+      enabledRemoteProfileIds: [PROFILE.id],
+    })}\n`,
+  );
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  let finalizationStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    finalizationStarted = resolve;
+  });
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => {
+      finalizationStarted();
+      await new Promise<never>(() => undefined);
+    },
+  });
+  void service.addAndEnableVerified({
+    profile: { ...PROFILE, name: "Updated office" },
+    credential: "new-token",
+  });
+  await started;
+  return catalog;
 }
 
 function connectingLocal(): RuntimeHostDesktopTargetState {

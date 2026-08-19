@@ -25,7 +25,7 @@ export interface RuntimeHostManagedPackageDeployment {
 }
 
 export function isRuntimeHostDevelopmentPackageVersion(value: unknown): value is string {
-  return typeof value === 'string' && /(?:-|\.)dev\.[0-9a-f]{12}$/u.test(value);
+  return typeof value === 'string' && /(?:-|\.)dev-[0-9a-f]{12}$/u.test(value);
 }
 
 export async function prepareRuntimeHostManagedPackageDeployment(

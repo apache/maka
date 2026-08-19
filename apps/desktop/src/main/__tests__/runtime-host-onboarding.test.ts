@@ -7,17 +7,13 @@ import type { DesktopRuntimeHostProfileService } from '../runtime-host-profile-s
 test('persists a verified SSH profile without projecting its credential', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const events: unknown[] = [];
+  let resetAfterCompletion: Promise<unknown> | undefined;
   let saved: DesktopRuntimeHostProfileAddInput | undefined;
-  const profiles: DesktopRuntimeHostProfileService = {
-    getSnapshot: async () => ({ defaultProfileId: 'local', entries: [] }),
-    addAndEnable: async () => assert.fail('manual profile path must not be used'),
+  const profiles: Pick<DesktopRuntimeHostProfileService, 'addAndEnableVerified'> = {
     addAndEnableVerified: async (input) => {
       saved = input;
       return { profileId: input.profile.id };
     },
-    setEnabled: async () => assert.fail('not used'),
-    setDefault: async () => assert.fail('not used'),
-    remove: async () => assert.fail('not used'),
   };
   const onboarding = createDesktopRuntimeHostOnboarding({
     ipcMain: {
@@ -35,7 +31,14 @@ test('persists a verified SSH profile without projecting its credential', async 
         credential: 'secret-access-token',
       };
     },
-    send: (snapshot) => events.push(snapshot),
+    send: (snapshot) => {
+      events.push(snapshot);
+      if (snapshot.kind === 'complete') {
+        resetAfterCompletion = handlers.get('runtime-host-onboarding:reset')?.({}) as
+          | Promise<unknown>
+          | undefined;
+      }
+    },
   });
   const start = handlers.get('runtime-host-onboarding:start');
   assert.ok(start);
@@ -55,8 +58,44 @@ test('persists a verified SSH profile without projecting its credential', async 
   });
   assert.equal(saved?.credential, 'secret-access-token');
   assert.doesNotMatch(JSON.stringify(events), /secret-access-token/u);
+  await resetAfterCompletion;
+  const getSnapshot = handlers.get('runtime-host-onboarding:getSnapshot');
+  assert.ok(getSnapshot);
+  assert.equal((await getSnapshot({}) as { kind?: string }).kind, 'idle');
   await onboarding.close();
   assert.equal(handlers.size, 0);
+});
+
+test('projects invalid setup input as a recoverable failure', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const onboarding = createDesktopRuntimeHostOnboarding({
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    clientInstanceId: 'stable-client',
+    profiles: {
+      addAndEnableVerified: async () => assert.fail('not used'),
+    },
+    setupPackage: { kind: 'npm', specifier: 'maka-agent@0.2.0' },
+    runSetup: async () => assert.fail('invalid input must not start SSH'),
+    send: () => undefined,
+  });
+
+  const result = await handlers.get('runtime-host-onboarding:start')?.({}, {
+    destination: '',
+  });
+  assert.deepEqual(result, {
+    kind: 'failed',
+    message: 'Remote Runtime Host setup input is invalid',
+    revision: 1,
+  });
+  await handlers.get('runtime-host-onboarding:reset')?.({});
+  assert.deepEqual(await handlers.get('runtime-host-onboarding:getSnapshot')?.({}), {
+    kind: 'idle',
+    revision: 2,
+  });
+  await onboarding.close();
 });
 
 test('finishes Host pairing after the cancellable SSH phase has completed', async () => {
@@ -79,16 +118,11 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
   }>((resolve) => {
     finishSetup = resolve;
   });
-  const profiles: DesktopRuntimeHostProfileService = {
-    getSnapshot: async () => ({ defaultProfileId: 'local', entries: [] }),
-    addAndEnable: async () => assert.fail('manual profile path must not be used'),
+  const profiles: Pick<DesktopRuntimeHostProfileService, 'addAndEnableVerified'> = {
     addAndEnableVerified: async () => {
       pairingStarted = true;
       return pairing;
     },
-    setEnabled: async () => assert.fail('not used'),
-    setDefault: async () => assert.fail('not used'),
-    remove: async () => assert.fail('not used'),
   };
   const onboarding = createDesktopRuntimeHostOnboarding({
     ipcMain: {

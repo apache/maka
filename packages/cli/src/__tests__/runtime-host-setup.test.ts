@@ -175,8 +175,8 @@ test('managed setup frames reject malformed machine output', () => {
 test('managed setup replaces one exact development package with another', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-development-'));
   t.after(() => rm(base, { recursive: true, force: true }));
-  const previousVersion = '0.2.0-dev.111111111111';
-  const nextVersion = '0.2.0-dev.222222222222';
+  const previousVersion = '0.2.0-dev-111111111111';
+  const nextVersion = '0.2.0-dev-222222222222';
   const previousPackage = await createReleasePackage(base, previousVersion);
   const nextPackage = await createReleasePackage(base, nextVersion);
   const clientDataRoot = join(base, 'config', 'Maka');
@@ -238,7 +238,7 @@ test('managed setup replaces one exact development package with another', async 
   );
 
   assert.equal(exitCode, 0);
-  assert.match(installedCliPath ?? '', /0\.2\.0-dev\.222222222222/u);
+  assert.match(installedCliPath ?? '', /0\.2\.0-dev-222222222222/u);
   assert.deepEqual(await readdir(join(previousDeployment.root, 'versions')), [nextVersion]);
 });
 

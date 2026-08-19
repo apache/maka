@@ -14,6 +14,7 @@ export {
   createFileRuntimeHostProfileCatalog,
   createRuntimeHostProfileCredentialStore,
   connectRemoteRuntimeHostProfile,
+  decodeRemoteRuntimeHostProfile,
   remoteRuntimeHostUnavailableError,
   sameResolvedRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,

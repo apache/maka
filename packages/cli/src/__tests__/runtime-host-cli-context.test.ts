@@ -505,5 +505,6 @@ function singleRemoteProfileCatalog(profile: RemoteRuntimeHostProfile): RuntimeH
     save: async () => assert.fail('unexpected write'),
     remove: async () => assert.fail('unexpected write'),
     removeIfCurrent: async () => assert.fail('unexpected write'),
+    rebindIfCurrent: async () => assert.fail('unexpected write'),
   };
 }

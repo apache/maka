@@ -556,7 +556,7 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
   }
 }
 
-function decodeRemoteRuntimeHostProfile(value: unknown): RemoteRuntimeHostProfile {
+export function decodeRemoteRuntimeHostProfile(value: unknown): RemoteRuntimeHostProfile {
   const record = requireExactRecord(value, 'Remote Runtime Host profile', [
     'id',
     'name',

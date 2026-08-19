@@ -5,6 +5,8 @@ import {
   createClientRuntimeHostProfileCatalog,
   LOCAL_RUNTIME_HOST_PROFILE,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
+  RuntimeHostOperationError,
+  RuntimeHostPermanentReconnectError,
   sameResolvedRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
   type ResolvedRuntimeHostProfile,
@@ -18,6 +20,13 @@ import type {
   DesktopRuntimeHostProfileSnapshot,
 } from "../preload/bridge-contract.js";
 import type { RuntimeHostDesktopTargetState } from "./runtime-host-desktop-manager.js";
+import {
+  createDesktopRuntimeHostPairingIntent,
+  pairingIntentMatchesTarget,
+  readDesktopRuntimeHostPairingIntents,
+  writeDesktopRuntimeHostPairingIntents,
+  type DesktopRuntimeHostPairingIntent,
+} from "./runtime-host-pairing-journal.js";
 
 const PREFERENCES_SCHEMA_VERSION = 2;
 const PREFERENCES_FILE = "runtime-host-profile-selection.json";
@@ -32,6 +41,8 @@ export interface DesktopRuntimeHostPreferences {
 export interface DesktopRuntimeHostStartup {
   readonly preferences: DesktopRuntimeHostPreferences;
   readonly preferencesReadFailure?: Error;
+  readonly pairingIntents: readonly DesktopRuntimeHostPairingIntent[];
+  readonly pairingReadFailure?: Error;
   readonly remotes: readonly ResolvedRuntimeHostProfile[];
   readonly unavailable: ReadonlyMap<string, Error>;
 }
@@ -44,6 +55,7 @@ export interface DesktopRuntimeHostProfileService {
   addAndEnableVerified(
     input: DesktopRuntimeHostProfileAddInput & { readonly credential: string },
   ): Promise<{ readonly profileId: string }>;
+  recoverPendingPairings(): Promise<void>;
   setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
   setDefault(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
   remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
@@ -70,6 +82,14 @@ export async function resolveDesktopRuntimeHostStartup(
     );
     preferences = defaultPreferences();
   }
+  let pairingIntents: readonly DesktopRuntimeHostPairingIntent[] = [];
+  let pairingReadFailure: Error | undefined;
+  try {
+    pairingIntents = await readDesktopRuntimeHostPairingIntents(clientDataRoot);
+  } catch (error) {
+    pairingReadFailure = asError(error);
+    console.error("[runtime-host] pairing recovery journal could not be read:", pairingReadFailure);
+  }
   const catalog = overrides.catalog ?? createClientRuntimeHostProfileCatalog(clientDataRoot);
   let document: Awaited<ReturnType<RuntimeHostProfileCatalog["read"]>>;
   try {
@@ -90,6 +110,8 @@ export async function resolveDesktopRuntimeHostStartup(
     return {
       preferences,
       ...(preferencesReadFailure ? { preferencesReadFailure } : {}),
+      pairingIntents,
+      ...(pairingReadFailure ? { pairingReadFailure } : {}),
       remotes: [],
       unavailable,
     };
@@ -121,6 +143,17 @@ export async function resolveDesktopRuntimeHostStartup(
   }
   const remotes: ResolvedRuntimeHostProfile[] = [];
   const unavailable = new Map<string, Error>();
+  if (pairingReadFailure) {
+    for (const profileId of enabledIds) unavailable.set(profileId, pairingReadFailure);
+    return {
+      preferences,
+      ...(preferencesReadFailure ? { preferencesReadFailure } : {}),
+      pairingIntents,
+      pairingReadFailure,
+      remotes,
+      unavailable,
+    };
+  }
   for (const profileId of enabledIds) {
     try {
       remotes.push(await catalog.resolve(profileId));
@@ -131,6 +164,7 @@ export async function resolveDesktopRuntimeHostStartup(
   return {
     preferences,
     ...(preferencesReadFailure ? { preferencesReadFailure } : {}),
+    pairingIntents,
     remotes,
     unavailable,
   };
@@ -151,6 +185,7 @@ export function createDesktopRuntimeHostProfileService(input: {
   const profilePath = join(input.clientDataRoot, PROFILE_FILE);
   let preferences = input.startup.preferences;
   const unavailable = new Map(input.startup.unavailable);
+  let pairingIntents = [...input.startup.pairingIntents];
   let mutationTail = Promise.resolve();
 
   const mutate = <T>(operation: () => Promise<T>): Promise<T> => {
@@ -172,8 +207,39 @@ export function createDesktopRuntimeHostProfileService(input: {
           { cause: input.startup.preferencesReadFailure },
         );
       }
+      if (input.startup.pairingReadFailure) {
+        throw new Error(
+          "Runtime Host pairing recovery state could not be read; restart Maka before changing profiles",
+          { cause: input.startup.pairingReadFailure },
+        );
+      }
       return operation();
     });
+
+  const persistPairingIntents = async (
+    next: readonly DesktopRuntimeHostPairingIntent[],
+  ): Promise<void> => {
+    await writeDesktopRuntimeHostPairingIntents(input.clientDataRoot, next);
+    pairingIntents = [...next];
+  };
+
+  const forgetPairingIntent = async (
+    intent: DesktopRuntimeHostPairingIntent,
+  ): Promise<void> => {
+    if (!pairingIntents.includes(intent)) return;
+    await persistPairingIntents(pairingIntents.filter((candidate) => candidate !== intent));
+  };
+
+  const beginPairingIntent = async (intent: DesktopRuntimeHostPairingIntent): Promise<void> => {
+    if (
+      pairingIntents.some(
+        (candidate) => candidate.target.profile.id === intent.target.profile.id,
+      )
+    ) {
+      throw new Error("This Runtime Host has an unfinished pairing recovery");
+    }
+    await persistPairingIntents([...pairingIntents, intent]);
+  };
 
   const snapshot = async (): Promise<DesktopRuntimeHostProfileSnapshot> => {
     const document = await catalog.read();
@@ -211,7 +277,151 @@ export function createDesktopRuntimeHostProfileService(input: {
     preferences = next;
   };
 
+  const forgetPairingIntentBestEffort = async (
+    intent: DesktopRuntimeHostPairingIntent,
+  ): Promise<void> => {
+    await forgetPairingIntent(intent).catch((error) =>
+      console.error("[runtime-host] completed pairing recovery could not be cleared:", error),
+    );
+  };
+
+  const finishPairingIntent = async (
+    intent: DesktopRuntimeHostPairingIntent,
+  ): Promise<void> => {
+    const target = await catalog.resolve(intent.target.profile.id);
+    if (!pairingIntentMatchesTarget(intent.target, target)) {
+      throw new Error("Runtime Host profile changed before pairing could resume");
+    }
+    assertRootIsNotEnabled(target, preferences, await catalog.read(), input.states());
+    if (!preferences.enabledRemoteProfileIds.includes(target.profile.id)) {
+      const next = withEnabled(preferences, target.profile.id, true);
+      await persistIfCurrentTarget(catalog, profilePath, preferencesPath, target, next);
+      preferences = next;
+    }
+    await input.enable(target);
+    const current = await catalog.resolve(target.profile.id).catch(() => undefined);
+    if (!current || !sameResolvedRuntimeHostProfileTarget(current, target)) {
+      await input.disable(target.profile.id);
+      throw new Error("Runtime Host profile changed while pairing was connecting");
+    }
+    await input.finalizePairing(target.profile.id);
+    unavailable.delete(target.profile.id);
+    await forgetPairingIntentBestEffort(intent);
+  };
+
+  const rollbackPairingIntent = async (
+    intent: DesktopRuntimeHostPairingIntent,
+    failure: unknown,
+  ): Promise<void> => {
+    const current = await catalog.resolve(intent.target.profile.id).catch(() => undefined);
+    if (!current || !pairingIntentMatchesTarget(intent.target, current)) {
+      await forgetPairingIntentBestEffort(intent);
+      return;
+    }
+    const rollbackFailures: unknown[] = [];
+    await input.disable(current.profile.id).catch((error) => rollbackFailures.push(error));
+    if (intent.previous) {
+      const restored = await catalog
+        .rebindIfCurrent(current, intent.previous.profile, intent.previous.credential)
+        .catch((error) => {
+          rollbackFailures.push(error);
+          return undefined;
+        });
+      if (restored && !restored.rebound) {
+        rollbackFailures.push(new Error("Runtime Host profile changed during pairing rollback"));
+      }
+      if (restored?.rebound) {
+        const previousTarget = await catalog.resolve(intent.previous.profile.id).catch((error) => {
+          rollbackFailures.push(error);
+          return undefined;
+        });
+        if (previousTarget) {
+          const next = withEnabled(preferences, previousTarget.profile.id, intent.wasEnabled);
+          await persistIfCurrentTarget(
+            catalog,
+            profilePath,
+            preferencesPath,
+            previousTarget,
+            next,
+          ).then(
+            () => {
+              preferences = next;
+            },
+            (error) => rollbackFailures.push(error),
+          );
+          if (intent.wasEnabled) {
+            await input.enable(previousTarget).catch((error) => rollbackFailures.push(error));
+          }
+        }
+      }
+    } else {
+      const next = withEnabled(preferences, current.profile.id, false);
+      await persistIfCurrentTarget(catalog, profilePath, preferencesPath, current, next).then(
+        () => {
+          preferences = next;
+        },
+        (error) => rollbackFailures.push(error),
+      );
+      await catalog.removeIfCurrent(current).then(
+        (result) => {
+          if (!result.removed) {
+            rollbackFailures.push(
+              new Error("Runtime Host profile changed during pairing rollback"),
+            );
+          }
+        },
+        (error) => rollbackFailures.push(error),
+      );
+    }
+    if (rollbackFailures.length > 0) {
+      throw new AggregateError(
+        [failure, ...rollbackFailures],
+        "Runtime Host pairing failed and its previous profile could not be restored",
+      );
+    }
+    unavailable.delete(current.profile.id);
+    await forgetPairingIntentBestEffort(intent);
+  };
+
+  const recoverPairingIntent = async (
+    intent: DesktopRuntimeHostPairingIntent,
+  ): Promise<Error | undefined> => {
+    const current = await catalog.resolve(intent.target.profile.id).catch(() => undefined);
+    if (!current || !pairingIntentMatchesTarget(intent.target, current)) {
+      await forgetPairingIntentBestEffort(intent);
+      return undefined;
+    }
+    try {
+      await finishPairingIntent(intent);
+      return undefined;
+    } catch (error) {
+      const failure = asError(error);
+      const stateFailure = input.states().find(
+        (state) =>
+          state.target.profile.id === intent.target.profile.id &&
+          state.readiness === "unavailable",
+      );
+      if (
+        failure instanceof RuntimeHostPermanentReconnectError ||
+        stateFailure?.readiness === "unavailable" &&
+          stateFailure.error instanceof RuntimeHostPermanentReconnectError ||
+        failure instanceof RuntimeHostOperationError &&
+          failure.operation === "access.credential.finalize" &&
+          failure.code === "invalid_request"
+      ) {
+        await rollbackPairingIntent(intent, failure);
+        return undefined;
+      }
+      unavailable.set(intent.target.profile.id, failure);
+      return failure;
+    }
+  };
+
   const enable = async (profileId: string): Promise<Error | undefined> => {
+    const pairingIntent = pairingIntents.find(
+      (intent) => intent.target.profile.id === profileId,
+    );
+    if (pairingIntent) return recoverPairingIntent(pairingIntent);
     const target = await catalog.resolve(profileId);
     assertRootIsNotEnabled(target, preferences, await catalog.read(), input.states());
     const next = withEnabled(preferences, profileId, true);
@@ -264,133 +474,41 @@ export function createDesktopRuntimeHostProfileService(input: {
         const existing = currentDocument.profiles.find(
           (profile) => profile.rootId === value.profile.rootId,
         );
-        if (existing) {
-          const previousTarget = await catalog.resolve(existing.id);
-          if (previousTarget.profile.kind !== "remote" || !previousTarget.credential) {
-            throw new Error("The existing Runtime Host profile has no access credential");
-          }
-          const wasEnabled = preferences.enabledRemoteProfileIds.includes(existing.id);
-          const previousPreferences = preferences;
-          const profile = { ...value.profile, id: existing.id };
-          const rebound = await catalog.rebindIfCurrent(
-            previousTarget,
-            profile,
-            value.credential,
-          );
-          if (!rebound.rebound) {
-            throw new Error("Runtime Host profile changed before it could be updated");
-          }
-          const target = await catalog.resolve(profile.id);
-          try {
-            await input.enable(target);
-            const current = await catalog.resolve(profile.id);
-            if (!sameResolvedRuntimeHostProfileTarget(current, target)) {
-              throw new Error("Runtime Host profile changed while it was connecting");
-            }
-            if (!preferences.enabledRemoteProfileIds.includes(profile.id)) {
-              const next = withEnabled(preferences, profile.id, true);
-              try {
-                await persistIfCurrentTarget(
-                  catalog,
-                  profilePath,
-                  preferencesPath,
-                  target,
-                  next,
-                );
-              } catch (error) {
-                await input.disable(profile.id).catch(() => undefined);
-                throw error;
-              }
-              preferences = next;
-            }
-            await input.finalizePairing(profile.id);
-            unavailable.delete(profile.id);
-            return { profileId: profile.id };
-          } catch (error) {
-            const rollbackFailures: unknown[] = [];
-            await input.disable(profile.id).catch((failure) => rollbackFailures.push(failure));
-            const restored = await catalog
-              .rebindIfCurrent(target, existing, previousTarget.credential)
-              .catch((failure) => {
-                rollbackFailures.push(failure);
-                return undefined;
-              });
-            if (restored && !restored.rebound) {
-              rollbackFailures.push(new Error("Runtime Host profile changed during rollback"));
-            }
-            if (restored?.rebound && wasEnabled) {
-              await input.enable(previousTarget).catch((failure) => rollbackFailures.push(failure));
-            }
-            if (preferences !== previousPreferences) {
-              await persistIfCurrentTarget(
-                catalog,
-                profilePath,
-                preferencesPath,
-                previousTarget,
-                previousPreferences,
-              ).then(
-                () => {
-                  preferences = previousPreferences;
-                },
-                (failure) => rollbackFailures.push(failure),
-              );
-            }
-            unavailable.set(profile.id, asError(error));
-            if (rollbackFailures.length > 0) {
-              throw new AggregateError(
-                [error, ...rollbackFailures],
-                "Runtime Host setup failed and its previous profile could not be restored",
-              );
-            }
-            throw error;
-          }
-        }
-
-        const document = await catalog.create(value.profile, value.credential);
-        const previousPreferences = preferences;
-        const profile = document.profiles.find((candidate) => candidate.id === value.profile.id);
-        if (!profile) throw new Error("Runtime Host profile creation did not persist");
+        const previousTarget = existing ? await catalog.resolve(existing.id) : undefined;
+        const profile = existing ? { ...value.profile, id: existing.id } : value.profile;
         const target = { profile, credential: value.credential } as const;
+        const intent = createDesktopRuntimeHostPairingIntent({
+          target,
+          ...(previousTarget ? { previous: previousTarget } : {}),
+          wasEnabled:
+            previousTarget !== undefined &&
+            preferences.enabledRemoteProfileIds.includes(previousTarget.profile.id),
+        });
+        await beginPairingIntent(intent);
         try {
-          assertRootIsNotEnabled(target, preferences, document, input.states());
-          await input.enable(target);
-          const current = await catalog.resolve(profile.id);
-          if (!sameResolvedRuntimeHostProfileTarget(current, target)) {
-            throw new Error("Runtime Host profile changed while it was connecting");
+          if (previousTarget) {
+            const rebound = await catalog.rebindIfCurrent(
+              previousTarget,
+              profile,
+              value.credential,
+            );
+            if (!rebound.rebound) {
+              throw new Error("Runtime Host profile changed before it could be updated");
+            }
+          } else {
+            await catalog.create(profile, value.credential);
           }
-          const next = withEnabled(preferences, profile.id, true);
-          await persistIfCurrentTarget(catalog, profilePath, preferencesPath, target, next);
-          preferences = next;
-          await input.finalizePairing(profile.id);
-          unavailable.delete(profile.id);
+          await finishPairingIntent(intent);
           return { profileId: profile.id };
         } catch (failure) {
-          const rollbackFailures: unknown[] = [];
-          await input.disable(profile.id).catch((error) => rollbackFailures.push(error));
-          if (preferences !== previousPreferences) {
-            await persistIfCurrentTarget(
-              catalog,
-              profilePath,
-              preferencesPath,
-              target,
-              previousPreferences,
-            ).then(
-              () => {
-                preferences = previousPreferences;
-              },
-              (error) => rollbackFailures.push(error),
-            );
-          }
-          await catalog.removeIfCurrent(target).catch((error) => rollbackFailures.push(error));
-          unavailable.delete(profile.id);
-          if (rollbackFailures.length > 0) {
-            throw new AggregateError(
-              [failure, ...rollbackFailures],
-              "Runtime Host setup failed and its incomplete profile could not be removed",
-            );
-          }
+          await rollbackPairingIntent(intent, failure);
           throw failure;
         }
+      });
+    },
+    recoverPendingPairings() {
+      return mutateProfiles(async () => {
+        for (const intent of [...pairingIntents]) await recoverPairingIntent(intent);
       });
     },
     setEnabled(profileId, isEnabled) {

@@ -530,7 +530,7 @@ function developmentPackageVersion(baseVersion, manifest) {
   digest.update('package.json\0');
   digest.update(JSON.stringify(manifestIdentity));
   digest.update('\0');
-  return `${baseVersion}${baseVersion.includes('-') ? '.' : '-'}dev.${digest.digest('hex').slice(0, 12)}`;
+  return `${baseVersion}${baseVersion.includes('-') ? '.' : '-'}dev-${digest.digest('hex').slice(0, 12)}`;
 }
 
 function validateStaging() {

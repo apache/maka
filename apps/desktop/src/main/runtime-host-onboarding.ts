@@ -20,7 +20,7 @@ type OnboardingState = DesktopRuntimeHostOnboardingSnapshot extends infer Snapsh
 export function createDesktopRuntimeHostOnboarding(input: {
   readonly ipcMain: Pick<IpcMain, 'handle' | 'removeHandler'>;
   readonly clientInstanceId: string;
-  readonly profiles: DesktopRuntimeHostProfileService;
+  readonly profiles: Pick<DesktopRuntimeHostProfileService, 'addAndEnableVerified'>;
   readonly runSetup: (
     input: DesktopRuntimeHostSshSetupInput,
     onProgress: (frame: { readonly phase: RuntimeHostSetupPhase }) => void,
@@ -53,8 +53,16 @@ export function createDesktopRuntimeHostOnboarding(input: {
   };
 
   const start = (value: unknown): Promise<DesktopRuntimeHostOnboardingSnapshot> => {
-    if (active) throw new Error('A remote Runtime Host setup is already in progress');
-    const request = requireOnboardingInput(value);
+    if (active) return active.task;
+    let request: DesktopRuntimeHostOnboardingInput;
+    try {
+      request = requireOnboardingInput(value);
+    } catch (error) {
+      return Promise.resolve(publish({
+        kind: 'failed',
+        message: error instanceof Error ? error.message : String(error),
+      }));
+    }
     const abort = new AbortController();
     publish({ kind: 'running', phase: 'connecting_ssh' });
     const task = Promise.resolve().then(() => run(request, abort.signal)).finally(() => {
@@ -145,8 +153,9 @@ export function createDesktopRuntimeHostOnboarding(input: {
     await current.task;
     return true;
   });
-  input.ipcMain.handle(channels[3], () => {
-    if (active) throw new Error('Remote Runtime Host setup is still running');
+  input.ipcMain.handle(channels[3], async () => {
+    if (snapshot.kind === 'running') return;
+    await active?.task;
     publish({ kind: 'idle' });
   });
 
