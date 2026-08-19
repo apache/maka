@@ -1036,7 +1036,7 @@ function buildSessionHeader(
     ...(input.revisionIndex !== undefined ? { revisionIndex: input.revisionIndex } : {}),
     ...(input.revisionState ? { revisionState: input.revisionState } : {}),
     hasUnread: false,
-    backend: input.backend,
+    backend: 'ai-sdk',
     llmConnectionSlug: input.llmConnectionSlug,
     connectionLocked: false,
     model: input.model ?? 'default',

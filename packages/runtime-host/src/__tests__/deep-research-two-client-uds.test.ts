@@ -36,7 +36,6 @@ test('two Clients and a restarted production Host share one Deep Research projec
     const deepResearch = await openInteractiveDeepResearchStoreForWrite(owner.lease);
     const session = await setupStores.sessionStore.create({
       cwd: root,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'explore',

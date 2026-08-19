@@ -449,7 +449,6 @@ export async function runMakaActivationCli(
       session = await context.runtime.createSession({
         cwd: roots.workspaceRoot,
         name: `Cloud activation ${request.activationId}`.slice(0, 80),
-        backend: 'ai-sdk',
         llmConnectionSlug: context.target.connection.slug,
         model: context.target.model,
         permissionMode: options.permissionMode ?? 'explore',

@@ -1237,7 +1237,6 @@ function sessionInput(
 ): CreateSessionInput {
   return {
     cwd: '/workspace',
-    backend: 'fake',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',

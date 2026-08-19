@@ -135,7 +135,6 @@ async function seedParentRemovalSessions(userDataDir: string): Promise<void> {
   try {
     const parent = await store.create({
       cwd: path.join(userDataDir, 'project'),
-      backend: 'fake',
       llmConnectionSlug: 'e2e',
       model: 'claude-sonnet-4-5-20250929',
       permissionMode: 'ask',
@@ -144,7 +143,6 @@ async function seedParentRemovalSessions(userDataDir: string): Promise<void> {
     });
     await store.createSubagent({
       cwd: path.join(userDataDir, 'project'),
-      backend: 'fake',
       llmConnectionSlug: 'e2e',
       model: 'claude-sonnet-4-5-20250929',
       permissionMode: 'execute',

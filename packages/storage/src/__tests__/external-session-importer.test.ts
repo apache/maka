@@ -150,7 +150,6 @@ describe('ExternalSessionImporter', () => {
 
 function target(overrides: Partial<ExternalSessionImportTarget> = {}): ExternalSessionImportTarget {
   return {
-    backend: 'fake',
     llmConnectionSlug: 'fake',
     model: 'maka-model',
     permissionMode: 'ask',

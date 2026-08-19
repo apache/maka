@@ -96,9 +96,6 @@ export function registerRuntimeHostSessionCatalogIpc(
     pendingCleanup.add(sessionId);
   });
   ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
-    if (input?.backend !== undefined && input.backend !== 'ai-sdk') {
-      throw new Error('Unsupported Runtime Host Session backend');
-    }
     const request = resolveCreateSessionRequest(input);
     const workspace = await deps.resolveCreateProject({
       ...(input?.cwd === undefined ? {} : { cwd: input.cwd }),

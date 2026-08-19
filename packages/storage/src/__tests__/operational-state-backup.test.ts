@@ -36,7 +36,6 @@ test('backs up and restores runtime.sqlite plus artifact bytes', async () => {
     const session = await sessions.create({
       projectId: project.id,
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',

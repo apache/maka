@@ -240,7 +240,6 @@ test('imports through the generic importer and treats repeats as independent cop
     fixture.creates.map(({ input, messages, externalOrigin }) => ({
       cwd: input.cwd,
       name: input.name,
-      backend: input.backend,
       messageTypes: messages.map(({ type }) => type),
       externalOrigin,
     })),
@@ -248,14 +247,12 @@ test('imports through the generic importer and treats repeats as independent cop
       {
         cwd: '/external',
         name: 'Source 0',
-        backend: 'ai-sdk',
         messageTypes: ['user'],
         externalOrigin: { adapterId: 'codex', sourceSessionId: 'source-0' },
       },
       {
         cwd: '/external',
         name: 'Source 0',
-        backend: 'ai-sdk',
         messageTypes: ['user'],
         externalOrigin: { adapterId: 'codex', sourceSessionId: 'source-0' },
       },
@@ -567,7 +564,6 @@ function coordinatorFixture(
       defaultCreate(
         {
           cwd: '/external',
-          backend: 'ai-sdk',
           llmConnectionSlug: 'default',
           model: 'gpt-5',
           permissionMode: 'ask',

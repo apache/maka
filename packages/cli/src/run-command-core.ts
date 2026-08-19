@@ -314,7 +314,6 @@ export async function runMakaTextCliCore(
         : await context.runtime.createSession({
             cwd: selection.cwd,
             name: makaRunSessionName(prompt),
-            backend: 'ai-sdk',
             llmConnectionSlug: context.target.connection.slug,
             model: context.target.model,
             permissionMode: parsed.options.yolo ? 'bypass' : 'ask',

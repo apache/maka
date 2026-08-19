@@ -584,7 +584,6 @@ async function seedSource(
     const source = await execution.sessionStore.create({
       cwd: root,
       name: 'Source Session',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -592,7 +591,6 @@ async function seedSource(
     const busy = await execution.sessionStore.create({
       cwd: root,
       name: 'Busy Session',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -600,7 +598,6 @@ async function seedSource(
     const linkedChildSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Linked Child Source Session',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -608,7 +605,6 @@ async function seedSource(
     const metadataLinkedSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Metadata-linked Source Session',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -616,7 +612,6 @@ async function seedSource(
     const archivedOwnedSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Archived-owned Source Session',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -624,7 +619,6 @@ async function seedSource(
     const continuationSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Continuation Source Session',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -894,7 +888,6 @@ async function seedSource(
       {
         cwd: root,
         name: 'Graph Worker',
-        backend: 'ai-sdk',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -1132,7 +1125,6 @@ async function seedSource(
     const ordinaryLinkedChild = await execution.sessionStore.createSubagent({
       cwd: root,
       name: 'Metadata-linked Child Session',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',

@@ -27,7 +27,6 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
     const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -225,7 +224,6 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -308,7 +306,6 @@ test('restart settles the durable current Goal execution through Hosted Executio
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -425,7 +422,6 @@ test('restart replaces a stale current execution with the current durable Goal i
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',

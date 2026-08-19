@@ -1059,7 +1059,6 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await execution.sessionStore.create({
       cwd: root,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'hosted-real-provider',
       model: MODEL_ID,
       permissionMode: 'ask',
@@ -1375,7 +1374,6 @@ test('production Host executes and durably supervises an Agent Graph over a real
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await execution.sessionStore.create({
       cwd: project,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'hosted-graph-provider',
       model: MODEL_ID,
       permissionMode: 'bypass',
@@ -1576,7 +1574,6 @@ test('production Host executes a durable runnable child with an exact tool ceili
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const parent = await execution.sessionStore.create({
       cwd: project,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'hosted-child-provider',
       model: MODEL_ID,
       permissionMode: 'bypass',
@@ -1774,7 +1771,6 @@ test('production Host publishes and retires an implementation child patch', asyn
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const parent = await execution.sessionStore.create({
       cwd: project,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'hosted-child-provider',
       model: MODEL_ID,
       permissionMode: 'bypass',
@@ -2018,7 +2014,6 @@ test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async
     await publishConnectionModel(policy, connection.connectionId, 'deepseek-v4-flash');
     const session = await execution.sessionStore.create({
       cwd: capability.canonicalPath,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'deepseek-auxiliary',
       model: 'deepseek-v4-flash',
       thinkingLevel: 'high',
@@ -2097,7 +2092,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
     const session = await execution.sessionStore.create({
       cwd: capability.canonicalPath,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'goal-evaluator-provider',
       model: MODEL_ID,
       permissionMode: 'ask',

@@ -521,7 +521,6 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
   const session = await stores.sessionStore.create({
     cwd: capability.canonicalPath,
-    backend: 'fake',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',
@@ -599,7 +598,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     onSandboxBoundarySettled: async () => {},
   });
   const backends = new BackendRegistry();
-  backends.register('fake', (context) => new FakeBackend(context));
+  backends.register('ai-sdk', (context) => new FakeBackend(context));
   const authority: RuntimeHostedRootAuthority = {
     bindRun: (identity) => messages.bindRun(identity),
     executeRoot: (input) =>

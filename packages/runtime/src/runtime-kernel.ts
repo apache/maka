@@ -692,8 +692,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
         store: this.deps.store,
         runStore: this.deps.runStore,
         runtimeEventStore: this.deps.runtimeEventStore,
-        ...(runtimeToolBoundaryProtocol(this.deps, header)
-          ? { toolBoundaryProtocol: runtimeToolBoundaryProtocol(this.deps, header) }
+        ...(this.deps.toolBoundaryProtocol
+          ? { toolBoundaryProtocol: this.deps.toolBoundaryProtocol }
           : {}),
         repairRunRuntimeLedger: this.deps.repairRunRuntimeLedger,
         newId: this.deps.newId,
@@ -835,7 +835,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       );
     }
 
-    const continuationToolBoundaryProtocol = runtimeToolBoundaryProtocol(this.deps, header);
+    const continuationToolBoundaryProtocol = this.deps.toolBoundaryProtocol;
     const run = new AgentRun({
       sessionId: continuation.sessionId,
       header,
@@ -1003,8 +1003,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
       store: this.deps.store,
       runStore: this.deps.runStore,
       runtimeEventStore: this.deps.runtimeEventStore,
-      ...(runtimeToolBoundaryProtocol(this.deps, header)
-        ? { toolBoundaryProtocol: runtimeToolBoundaryProtocol(this.deps, header) }
+      ...(this.deps.toolBoundaryProtocol
+        ? { toolBoundaryProtocol: this.deps.toolBoundaryProtocol }
         : {}),
       repairRunRuntimeLedger: this.deps.repairRunRuntimeLedger,
       newId: this.deps.newId,
@@ -1182,8 +1182,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
       store: this.deps.store,
       runStore: this.deps.runStore,
       runtimeEventStore: this.deps.runtimeEventStore,
-      ...(runtimeToolBoundaryProtocol(this.deps, childHeader)
-        ? { toolBoundaryProtocol: runtimeToolBoundaryProtocol(this.deps, childHeader) }
+      ...(this.deps.toolBoundaryProtocol
+        ? { toolBoundaryProtocol: this.deps.toolBoundaryProtocol }
         : {}),
       repairRunRuntimeLedger: this.deps.repairRunRuntimeLedger,
       newId: this.deps.newId,
@@ -1329,7 +1329,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       );
     }
     await this.deps.continuationFailpoint?.('after_continuation_claim_committed');
-    const continuationToolBoundaryProtocol = runtimeToolBoundaryProtocol(this.deps, childHeader);
+    const continuationToolBoundaryProtocol = this.deps.toolBoundaryProtocol;
     const durableAdmission: {
       claimedRunHeader: AgentRunHeader;
       commitContinuationStart: (
@@ -3750,13 +3750,6 @@ class RuntimeRunOwnerScope {
 
 function childActiveKey(sessionId: string, turnId: string): string {
   return `${sessionId}:${turnId}`;
-}
-
-function runtimeToolBoundaryProtocol(
-  deps: Pick<RuntimeKernelDeps, 'toolBoundaryProtocol'>,
-  header: Pick<SessionHeader, 'backend'>,
-): ToolBoundaryProtocol | undefined {
-  return header.backend === 'ai-sdk' ? deps.toolBoundaryProtocol : undefined;
 }
 
 function effectiveOrchestrationForRun(

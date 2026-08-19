@@ -714,7 +714,6 @@ async function seedAuthority(
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const unread = await execution.sessionStore.create({
       cwd: root,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -751,7 +750,6 @@ async function seedAuthority(
         'visible',
         ...Array.from({ length: 700 }, (_, index) => `label-${index}`),
       ],
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -759,7 +757,6 @@ async function seedAuthority(
     const oversized = await execution.sessionStore.create({
       cwd: root,
       projectId: 'p'.repeat(257),
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -767,7 +764,6 @@ async function seedAuthority(
     const retirement = await execution.sessionStore.create({
       cwd: root,
       name: 'Retirement sidecars',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -775,7 +771,6 @@ async function seedAuthority(
     const recovery = await execution.sessionStore.create({
       cwd: root,
       name: 'Retirement recovery',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',

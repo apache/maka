@@ -25,7 +25,7 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     const updateHeader = store.updateHeader;
     const backends = new BackendRegistry();
     const backend = new BlockingBackend(SESSION_ID, {});
-    backends.register('fake', () => backend);
+    backends.register('ai-sdk', () => backend);
     const startupFailure = new Error('mark running rejected after reservation');
     let stoppedFailure: Promise<unknown> | undefined;
     let kernel!: RuntimeKernel;
@@ -63,7 +63,7 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     const store = memoryStore();
     const backends = new BackendRegistry();
     const backend = new BlockingBackend(SESSION_ID, {});
-    backends.register('fake', () => backend);
+    backends.register('ai-sdk', () => backend);
     const closeFailure = new Error('bind-race close rejected');
     const closeStarted = deferred<void>();
     const releaseClose = deferred<void>();
@@ -261,7 +261,7 @@ describe('RuntimeKernel Interaction close cleanup', () => {
       releaseSendOnStop: false,
       releaseSendOnDispose: false,
     });
-    backends.register('fake', () => backend);
+    backends.register('ai-sdk', () => backend);
     const secondReserved = deferred<void>();
     const releaseSecond = deferred<void>();
     let reservations = 0;
@@ -311,7 +311,7 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     const store = memoryStore();
     const backends = new BackendRegistry();
     const built: BlockingBackend[] = [];
-    backends.register('fake', () => {
+    backends.register('ai-sdk', () => {
       const backend = new BlockingBackend(
         SESSION_ID,
         built.length === 0
@@ -380,7 +380,7 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     const built: BlockingBackend[] = [];
     const stopFailure = new Error('backend stop failed');
     const disposeFailure = new Error('backend disposal failed');
-    backends.register('fake', () => {
+    backends.register('ai-sdk', () => {
       const backend = new BlockingBackend(SESSION_ID, {
         stopFailure,
         disposeFailure,
@@ -447,7 +447,7 @@ function runtimeFixture(options: RuntimeFixtureOptions = {}): {
   const store = memoryStore();
   const backends = new BackendRegistry();
   const backend = new BlockingBackend(SESSION_ID, options);
-  backends.register('fake', () => backend);
+  backends.register('ai-sdk', () => backend);
   const closeFailure = new Error('durable close rejected');
   let markCloseStarted!: () => void;
   const closeStarted = new Promise<void>((resolve) => {
@@ -510,7 +510,7 @@ function runtimeFixture(options: RuntimeFixtureOptions = {}): {
 }
 
 class BlockingBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly stopCalls: Array<{
     reason: 'user_stop' | 'redirect';
     mode: BackendStopMode | undefined;
@@ -610,7 +610,7 @@ function memoryStore(): SessionStore {
     status: 'active',
     statusUpdatedAt: 1,
     hasUnread: false,
-    backend: 'fake',
+    backend: 'ai-sdk',
     llmConnectionSlug: 'test',
     connectionLocked: true,
     model: 'test',

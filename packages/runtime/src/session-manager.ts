@@ -2550,7 +2550,6 @@ export class SessionManager {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
         name: resolvedPreset?.name ?? definition.name,
-        backend: parentHeader.backend,
         llmConnectionSlug: resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
         model: resolvedPreset?.model ?? parentHeader.model,
         ...(resolvedPreset
@@ -3089,7 +3088,6 @@ export class SessionManager {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
         name: input.name ?? input.resolvedPreset?.name ?? definition.name,
-        backend: parentHeader.backend,
         llmConnectionSlug: input.resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
         model: input.resolvedPreset?.model ?? parentHeader.model,
         ...(input.resolvedPreset
@@ -4953,7 +4951,6 @@ export class SessionManager {
       {
         cwd: header.cwd,
         ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-        backend: header.backend,
         llmConnectionSlug: header.llmConnectionSlug,
         model: header.model,
         thinkingLevel: header.thinkingLevel,
@@ -5016,7 +5013,6 @@ export class SessionManager {
       {
         cwd: header.cwd,
         ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-        backend: header.backend,
         llmConnectionSlug: header.llmConnectionSlug,
         model: header.model,
         thinkingLevel: header.thinkingLevel,

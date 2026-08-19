@@ -1079,7 +1079,6 @@ describe('SQLite SessionStore', () => {
 function makeInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionInput {
   return {
     cwd: '/tmp/cwd',
-    backend: 'ai-sdk',
     llmConnectionSlug: 'test-connection',
     model: 'test-model',
     permissionMode: 'ask',

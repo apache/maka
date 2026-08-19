@@ -105,7 +105,6 @@ test('production composition shares one gate across mutation and backend activat
     const setupStores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await setupStores.sessionStore.create({
       cwd: root,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -209,7 +208,6 @@ test('production mutation releases the gate before active-turn backend disposal 
     const setupStores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await setupStores.sessionStore.create({
       cwd: root,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -310,7 +308,6 @@ test('production policy mutation drains and poisons activation when cached backe
     const setupStores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await setupStores.sessionStore.create({
       cwd: root,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
