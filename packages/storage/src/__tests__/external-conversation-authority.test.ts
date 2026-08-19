@@ -75,18 +75,27 @@ describe('interactive external-conversation authority', () => {
     });
   });
 
-  test('bounds release receipts and purges bindings by Session', async () => {
+  test('keeps in-horizon receipts and refuses capacity before deleting a newer binding', async () => {
     await withInteractiveRoot(async ({ root, capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       if (!owner) return;
       const writer = await openInteractiveExternalConversationAuthorityForWrite(owner.lease);
       try {
-        for (let index = 0; index <= EXTERNAL_CONVERSATION_RELEASE_RECEIPT_LIMIT; index += 1) {
+        for (let index = 0; index < EXTERNAL_CONVERSATION_RELEASE_RECEIPT_LIMIT; index += 1) {
           await writer.resolve('feishu:chat-1', `session-${index}`);
           await writer.release('feishu:chat-1', `release-${index}`);
         }
         await writer.resolve('feishu:chat-1', 'session-final');
+        assert.deepEqual(await writer.release('feishu:chat-1', 'release-0'), {
+          hadBinding: true,
+        });
+        assert.equal((await writer.lookup('feishu:chat-1'))?.sessionId, 'session-final');
+        await assert.rejects(
+          () => writer.release('feishu:chat-1', 'release-over-capacity'),
+          /receipt capacity is full/,
+        );
+        assert.equal((await writer.lookup('feishu:chat-1'))?.sessionId, 'session-final');
         assert.equal(await writer.purgeSession('session-final'), 1);
         const database = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
         try {
@@ -146,10 +155,10 @@ describe('interactive external-conversation authority', () => {
                 'sha256:' || printf('%064x', value),
                 'seed',
                 0,
-                value
+                ?
               FROM sequence
             `)
-            .run(EXTERNAL_CONVERSATION_RELEASE_RECEIPT_TOTAL_LIMIT - 1);
+            .run(EXTERNAL_CONVERSATION_RELEASE_RECEIPT_TOTAL_LIMIT - 2, Date.now());
         } finally {
           database.close();
         }
