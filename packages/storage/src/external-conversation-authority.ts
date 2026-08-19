@@ -14,6 +14,7 @@ export const EXTERNAL_CONVERSATION_BINDING_LIMIT = 500;
 export const EXTERNAL_CONVERSATION_RELEASE_RECEIPT_LIMIT = 64;
 export const EXTERNAL_CONVERSATION_RELEASE_RECEIPT_TOTAL_LIMIT =
   EXTERNAL_CONVERSATION_BINDING_LIMIT * EXTERNAL_CONVERSATION_RELEASE_RECEIPT_LIMIT;
+export const EXTERNAL_CONVERSATION_RELEASE_RETRY_HORIZON_MS = 7 * 24 * 60 * 60 * 1_000;
 
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const writerBrand: unique symbol = Symbol('InteractiveExternalConversationAuthorityWriter');
@@ -208,6 +209,16 @@ class SqliteExternalConversationAuthority implements ExternalConversationAuthori
     const conversationDigest = digestConversationId(conversationId);
     assertSafeId(operationId, 'External-conversation release operation id');
     return this.#lease.transaction('write', () => {
+      const now = Date.now();
+      // Exact reset deduplication is guaranteed for this explicit platform
+      // retry horizon. Prune only expired receipts; reaching either bound
+      // rejects a new reset before it can delete a binding.
+      this.#lease.database
+        .prepare(`
+          DELETE FROM external_conversation_release_receipts
+          WHERE committed_at < ?
+        `)
+        .run(Math.max(0, now - EXTERNAL_CONVERSATION_RELEASE_RETRY_HORIZON_MS));
       const receipt = this.#lease.database
         .prepare(`
           SELECT had_binding AS hadBinding
@@ -216,6 +227,31 @@ class SqliteExternalConversationAuthority implements ExternalConversationAuthori
         `)
         .get(conversationDigest, operationId) as { hadBinding?: unknown } | undefined;
       if (receipt) return Object.freeze({ hadBinding: decodeBoolean(receipt.hadBinding) });
+
+      const conversationReceiptCount = this.#lease.database
+        .prepare(`
+          SELECT COUNT(*) AS count
+          FROM external_conversation_release_receipts
+          WHERE conversation_digest = ?
+        `)
+        .get(conversationDigest) as { count?: unknown };
+      const totalReceiptCount = this.#lease.database
+        .prepare('SELECT COUNT(*) AS count FROM external_conversation_release_receipts')
+        .get() as { count?: unknown };
+      const perConversation = decodeCount(
+        conversationReceiptCount.count,
+        'external-conversation release receipt count',
+      );
+      const total = decodeCount(
+        totalReceiptCount.count,
+        'external-conversation release receipt total count',
+      );
+      if (
+        perConversation >= EXTERNAL_CONVERSATION_RELEASE_RECEIPT_LIMIT ||
+        total >= EXTERNAL_CONVERSATION_RELEASE_RECEIPT_TOTAL_LIMIT
+      ) {
+        throw new Error('External-conversation release receipt capacity is full');
+      }
 
       const removed = this.#lease.database
         .prepare('DELETE FROM external_conversation_bindings WHERE conversation_digest = ?')
@@ -230,44 +266,7 @@ class SqliteExternalConversationAuthority implements ExternalConversationAuthori
             conversation_digest, operation_id, had_binding, committed_at
           ) VALUES (?, ?, ?, ?)
         `)
-        .run(conversationDigest, operationId, hadBinding ? 1 : 0, Date.now());
-      this.#lease.database
-        .prepare(`
-          DELETE FROM external_conversation_release_receipts
-          WHERE conversation_digest = ?
-            AND operation_id NOT IN (
-              SELECT operation_id
-              FROM external_conversation_release_receipts
-              WHERE conversation_digest = ?
-              ORDER BY committed_at DESC, operation_id DESC
-              LIMIT ?
-            )
-        `)
-        .run(conversationDigest, conversationDigest, EXTERNAL_CONVERSATION_RELEASE_RECEIPT_LIMIT);
-      const receiptCount = this.#lease.database
-        .prepare('SELECT COUNT(*) AS count FROM external_conversation_release_receipts')
-        .get() as { count?: unknown };
-      if (
-        typeof receiptCount.count !== 'number' ||
-        !Number.isSafeInteger(receiptCount.count) ||
-        receiptCount.count < 0
-      ) {
-        throw new Error('Invalid external-conversation release receipt count');
-      }
-      const excess = receiptCount.count - EXTERNAL_CONVERSATION_RELEASE_RECEIPT_TOTAL_LIMIT;
-      if (excess > 0) {
-        this.#lease.database
-          .prepare(`
-            DELETE FROM external_conversation_release_receipts
-            WHERE rowid IN (
-              SELECT rowid
-              FROM external_conversation_release_receipts
-              ORDER BY committed_at ASC, conversation_digest ASC, operation_id ASC
-              LIMIT ?
-            )
-          `)
-          .run(excess);
-      }
+        .run(conversationDigest, operationId, hadBinding ? 1 : 0, now);
       return Object.freeze({ hadBinding });
     });
   }
@@ -340,6 +339,13 @@ class SqliteExternalConversationAuthority implements ExternalConversationAuthori
     }
     return Object.freeze({ sessionId: row.sessionId, updatedAt: row.updatedAt });
   }
+}
+
+function decodeCount(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`Invalid ${label}`);
+  }
+  return value;
 }
 
 function digestConversationId(conversationId: string): string {
