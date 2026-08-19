@@ -12928,6 +12928,18 @@ describe('AiSdkBackend thinking persistence', () => {
           },
         },
       },
+      { type: 'reasoning-start', id: 'reasoning-item-empty' },
+      {
+        type: 'reasoning-end',
+        id: 'reasoning-item-empty',
+        providerMetadata: {
+          'alibaba-token-plan-cn': {
+            itemId: 'reasoning-item-empty',
+            reasoningSummary: [],
+            reasoningContent: null,
+          },
+        },
+      },
       { type: 'text-start', id: 'message-item' },
       { type: 'text-delta', id: 'message-item', delta: 'answer' },
       { type: 'text-end', id: 'message-item' },
@@ -12982,6 +12994,7 @@ describe('AiSdkBackend thinking persistence', () => {
       [
         ['first summary', 'reasoning-item-1'],
         ['second summary', 'reasoning-item-2'],
+        ['', 'reasoning-item-empty'],
       ],
     );
 
@@ -13036,11 +13049,13 @@ describe('AiSdkBackend thinking persistence', () => {
       [
         ['first summary', 'reasoning-item-1'],
         ['second summary', 'reasoning-item-2'],
+        ['', 'reasoning-item-empty'],
       ],
     );
   });
 
   test('Alibaba Responses fails when streamed reasoning differs from the final summary', async () => {
+    const appended: AssistantMessage[] = [];
     const model = new MockLanguageModelV4({
       doStream: {
         stream: simulateReadableStream({
@@ -13068,7 +13083,9 @@ describe('AiSdkBackend thinking persistence', () => {
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
-      appendMessage: async () => {},
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') appended.push(message);
+      },
       connection: {
         slug: 'alibaba-token-plan-cn',
         providerType: 'alibaba-token-plan-cn',
@@ -13092,6 +13109,45 @@ describe('AiSdkBackend thinking persistence', () => {
       true,
     );
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    assert.equal(JSON.stringify(appended).includes('makaResponses'), false);
+
+    const ctx = {
+      sessionId: 'session-1',
+      invocationId: 'inv-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      now: () => 7,
+      newId: idGenerator(),
+    } as unknown as InvocationContext;
+    const memory = createSessionEventMapMemory();
+    const runtimeContext = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
+    const recoveryModel = completionModel();
+    const recoveryBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'alibaba-token-plan-cn',
+        providerType: 'alibaba-token-plan-cn',
+        defaultModel: 'qwen3.8-max',
+      },
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => recoveryModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      recoveryBackend.send({
+        turnId: 'turn-2',
+        text: 'recover',
+        context: [],
+        runtimeContext,
+      }),
+    );
+    assert.ok(compactPrompt(recoveryModel));
   });
 
   test('Alibaba Responses skips legacy reasoning without durable item state', async () => {

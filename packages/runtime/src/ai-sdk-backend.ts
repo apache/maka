@@ -2382,14 +2382,9 @@ export class AiSdkBackend implements AgentBackend {
                         stepResponsesThinkingParts.length === 0 && event.text.length === 0
                           ? stepThinking
                           : '',
-                      providerOptions: event.providerOptions,
                     };
                     stepResponsesThinkingParts.push(part);
                     stepResponsesThinkingPartsByItemId.set(itemId, part);
-                  } else {
-                    if (event.providerOptions !== undefined) {
-                      part.providerOptions = event.providerOptions;
-                    }
                   }
                   const nextPartText = part.text + event.text;
                   if (
@@ -2401,6 +2396,9 @@ export class AiSdkBackend implements AgentBackend {
                     );
                   }
                   part.text = nextPartText;
+                  if (event.providerOptions !== undefined) {
+                    part.providerOptions = event.providerOptions;
+                  }
                 } else if (stepResponsesThinkingParts.length > 0) {
                   stepResponsesThinkingParts.at(-1)!.text += event.text;
                 }
@@ -4007,7 +4005,6 @@ export class AiSdkBackend implements AgentBackend {
         if (state.carrier !== replaySupport.responsesReasoning.carrier) {
           throw new Error('Durable plaintext Responses reasoning carrier does not match provider');
         }
-        if (item.text.length === 0) return undefined;
         return {
           part: {
             type: 'reasoning' as const,

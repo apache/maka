@@ -233,6 +233,14 @@ describe('ModelAdapter stream and error normalization', () => {
         },
       ],
     );
+    assert.throws(
+      () =>
+        adapter.translateChunk({
+          type: 'reasoning-end',
+          id: 'missing-final-summary',
+        } as Chunk),
+      /missing final summary metadata/,
+    );
   });
 
   test('keeps DeepSeek plaintext replay on the main content-only behavior', () => {
