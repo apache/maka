@@ -18,7 +18,7 @@
 
 import { GatewayBridgeBase } from './gateway-bridge-base.js';
 import { proxiedFetch } from './proxied-fetch.js';
-import type { BotSendOptions, SendCapable } from './types.js';
+import { normalizeBotSourceEventId, type BotSendOptions, type SendCapable } from './types.js';
 import type { WsCloseDecision } from './ws-bridge-base.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
@@ -176,16 +176,18 @@ export function discordMessageToEvent(
   receivedAt: number;
 } | null {
   if (!d?.author || d.author.bot === true) return null;
+  const sourceEventId = normalizeBotSourceEventId(d.id);
+  if (!sourceEventId) return null;
   const userId = String(d.author.id);
   return {
     platform: 'discord',
     userId,
     userName: d.author.global_name ?? d.author.username ?? userId,
     conversationId: String(d.channel_id),
-    sourceEventId: String(d.id ?? ''),
+    sourceEventId,
     replyTarget: {
       chatId: String(d.channel_id),
-      replyToMessageId: String(d.id ?? ''),
+      replyToMessageId: sourceEventId,
     },
     // Discord guilds are "groups" semantically — DMs are channels
     // without a guild_id. The bot platform's conversation-key

@@ -2,7 +2,12 @@ import { WSClient, type TextMessage, type WsFrame } from '@wecom/aibot-node-sdk'
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
-import type { BotSendOptions, BotStatus, SendCapable } from './types.js';
+import {
+  normalizeBotSourceEventId,
+  type BotSendOptions,
+  type BotStatus,
+  type SendCapable,
+} from './types.js';
 
 const AUTH_TIMEOUT_MS = 15_000;
 
@@ -34,13 +39,15 @@ export function wecomTextFrameToEvent(
   const isGroup = body.chattype === 'group';
   const chatId = isGroup ? body.chatid : userId;
   if (typeof chatId !== 'string' || !chatId) return null;
+  const sourceEventId = normalizeBotSourceEventId(body.msgid);
+  if (!sourceEventId) return null;
   return {
     platform: 'wecom' as const,
     userId,
     userName: userId,
     conversationId: chatId,
-    sourceEventId: body.msgid,
-    replyTarget: { chatId, replyToMessageId: body.msgid },
+    sourceEventId,
+    replyTarget: { chatId, replyToMessageId: sourceEventId },
     isGroup,
     text: body.text.content,
     receivedAt,

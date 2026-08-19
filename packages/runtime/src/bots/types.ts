@@ -24,6 +24,17 @@ export interface BotStatus {
 
 export type BotIncomingMessage = BotMessageEvent;
 
+/** Normalize only real platform message identities; never mint placeholders. */
+export function normalizeBotSourceEventId(value: unknown): string | undefined {
+  const id =
+    typeof value === 'string'
+      ? value
+      : typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+        ? String(value)
+        : undefined;
+  return id && id.trim() === id ? id : undefined;
+}
+
 export interface BotBridge {
   readonly platform: BotPlatform;
   start(): Promise<void>;

@@ -18,7 +18,7 @@
 
 import { GatewayBridgeBase } from './gateway-bridge-base.js';
 import { proxiedFetch } from './proxied-fetch.js';
-import type { BotSendOptions, SendCapable } from './types.js';
+import { normalizeBotSourceEventId, type BotSendOptions, type SendCapable } from './types.js';
 import type { WsCloseDecision } from './ws-bridge-base.js';
 
 const QQ_API = 'https://api.sgroup.qq.com';
@@ -144,14 +144,16 @@ export function qqChannelMessageToEvent(
   receivedAt: number;
 } | null {
   if (!d?.author || d.author.bot === true) return null;
+  const sourceEventId = normalizeBotSourceEventId(d.id);
+  if (!sourceEventId) return null;
   const userId = String(d.author.id);
   return {
     platform: 'qq',
     userId,
     userName: d.author.username ?? userId,
     conversationId: `channel:${d.channel_id}`,
-    sourceEventId: String(d.id),
-    replyTarget: { chatId: `channel:${d.channel_id}`, replyToMessageId: String(d.id) },
+    sourceEventId,
+    replyTarget: { chatId: `channel:${d.channel_id}`, replyToMessageId: sourceEventId },
     isGroup: true,
     text: typeof d.content === 'string' ? d.content : '',
     receivedAt,
@@ -173,6 +175,8 @@ export function qqGroupMessageToEvent(
   receivedAt: number;
 } | null {
   if (!d?.group_openid) return null;
+  const sourceEventId = normalizeBotSourceEventId(d.id);
+  if (!sourceEventId) return null;
   const userId = d.author?.member_openid ?? d.author?.user_openid ?? d.author?.id ?? '';
   if (!userId) return null;
   return {
@@ -180,8 +184,8 @@ export function qqGroupMessageToEvent(
     userId: String(userId),
     userName: String(userId),
     conversationId: `group:${d.group_openid}`,
-    sourceEventId: String(d.id),
-    replyTarget: { chatId: `group:${d.group_openid}`, replyToMessageId: String(d.id) },
+    sourceEventId,
+    replyTarget: { chatId: `group:${d.group_openid}`, replyToMessageId: sourceEventId },
     isGroup: true,
     text: typeof d.content === 'string' ? d.content : '',
     receivedAt,
@@ -204,13 +208,15 @@ export function qqC2CMessageToEvent(
 } | null {
   const userId = d.author?.user_openid ?? d.author?.id ?? '';
   if (!userId) return null;
+  const sourceEventId = normalizeBotSourceEventId(d.id);
+  if (!sourceEventId) return null;
   return {
     platform: 'qq',
     userId: String(userId),
     userName: String(userId),
     conversationId: `c2c:${userId}`,
-    sourceEventId: String(d.id),
-    replyTarget: { chatId: `c2c:${userId}`, replyToMessageId: String(d.id) },
+    sourceEventId,
+    replyTarget: { chatId: `c2c:${userId}`, replyToMessageId: sourceEventId },
     isGroup: false,
     text: typeof d.content === 'string' ? d.content : '',
     receivedAt,

@@ -172,6 +172,10 @@ describe('discordMessageToEvent', () => {
       null,
     );
     assert.equal(discordMessageToEvent({ id: 'msg-4', channel_id: 'chan-4' }, 1), null);
+    assert.equal(
+      discordMessageToEvent({ channel_id: 'chan-4', author: { id: 'user-4' } } as never, 1),
+      null,
+    );
   });
 });
 

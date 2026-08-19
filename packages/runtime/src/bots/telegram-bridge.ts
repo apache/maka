@@ -10,13 +10,15 @@ import type { BotAttachmentKind } from '@maka/core/bot-events';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
-import type {
-  BotPlatform,
-  BotReplyStream,
-  BotReplyStreamOptions,
-  BotSendOptions,
-  BotStatus,
-  SendCapable,
+import {
+  normalizeBotSourceEventId,
+  type BotIncomingMessage,
+  type BotPlatform,
+  type BotReplyStream,
+  type BotReplyStreamOptions,
+  type BotSendOptions,
+  type BotStatus,
+  type SendCapable,
 } from './types.js';
 import { proxiedFetch } from './proxied-fetch.js';
 
@@ -254,7 +256,34 @@ export const __TEST__ = {
   classifyTelegramSendResponse,
   createTelegramReplyStream,
   telegramDraftId,
+  telegramMessageToEvent,
 };
+
+function telegramMessageToEvent(
+  message: any,
+  receivedAt: number,
+  allowedUserIds: readonly string[] | undefined,
+): BotIncomingMessage | null {
+  if (!message?.from) return null;
+  const userId = String(message.from.id);
+  if (!isAllowedUser(allowedUserIds, userId)) return null;
+  const chatId = normalizeBotSourceEventId(message.chat?.id);
+  const sourceEventId = normalizeBotSourceEventId(message.message_id);
+  if (!chatId || !sourceEventId) return null;
+  const attachmentKind = telegramAttachmentKind(message);
+  return {
+    platform: 'telegram',
+    userId,
+    userName: message.from.username ?? message.from.first_name ?? userId,
+    conversationId: chatId,
+    sourceEventId,
+    replyTarget: { chatId, replyToMessageId: sourceEventId },
+    isGroup: message.chat?.type === 'group' || message.chat?.type === 'supergroup',
+    text: message.text ?? message.caption ?? '',
+    receivedAt,
+    ...(attachmentKind ? { attachmentKind } : {}),
+  };
+}
 
 export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
   private abortController: AbortController | null = null;
@@ -448,32 +477,14 @@ export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
   }
 
   private handleTelegramMessage(message: any): void {
-    if (!message?.from) return;
-    const userId = String(message.from.id);
-    // PR-BOT-USER-ALLOWLIST-0: drop unauthorized senders silently when an
-    // allowlist is configured. No bounce reply — that would let scanners
-    // enumerate the policy by toggling IDs. Status fields are NOT updated
-    // for dropped messages so the bridge's `lastEventAt` continues to
-    // reflect authentic activity from authorized users only.
-    if (!isAllowedUser(this.settings.allowedUserIds, userId)) return;
-    this.lastEventAt = Date.now();
+    const receivedAt = Date.now();
+    const event = telegramMessageToEvent(message, receivedAt, this.settings.allowedUserIds);
+    // Invalid and unauthorized payloads are dropped without advancing status.
+    if (!event) return;
+    this.lastEventAt = receivedAt;
     this.readiness = 'operational';
     this.reason = undefined;
-    const attachmentKind = telegramAttachmentKind(message);
-    const chatId = String(message.chat?.id ?? '');
-    const sourceEventId = String(message.message_id ?? '');
-    this.emitIncomingMessage({
-      platform: 'telegram',
-      userId,
-      userName: message.from.username ?? message.from.first_name ?? userId,
-      conversationId: chatId,
-      sourceEventId,
-      replyTarget: { chatId, replyToMessageId: sourceEventId },
-      isGroup: message.chat?.type === 'group' || message.chat?.type === 'supergroup',
-      text: message.text ?? message.caption ?? '',
-      receivedAt: this.lastEventAt,
-      ...(attachmentKind ? { attachmentKind } : {}),
-    });
+    this.emitIncomingMessage(event);
     this.emitStatusChange();
   }
 

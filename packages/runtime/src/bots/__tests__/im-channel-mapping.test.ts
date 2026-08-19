@@ -101,6 +101,27 @@ describe('IM channel event mapping', () => {
     assert.equal(wecomTextFrameToEvent(frame, 789, ['allowed_user']), null);
   });
 
+  it('drops channel payloads without a stable platform message id', () => {
+    const feishu = {
+      messageId: '',
+      chatId: 'oc_1',
+      chatType: 'group',
+      senderId: 'ou_1',
+      content: 'hello',
+    } as NormalizedMessage;
+    assert.equal(feishuMessageToEvent(feishu, 456), null);
+
+    const wecom = {
+      body: {
+        msgtype: 'text',
+        chattype: 'single',
+        from: { userid: 'user_1' },
+        text: { content: 'question' },
+      },
+    } as WsFrame<TextMessage>;
+    assert.equal(wecomTextFrameToEvent(wecom, 789), null);
+  });
+
   it('force-closes a Feishu raw socket even when the channel handshake never completed', async () => {
     const calls: string[] = [];
     await closeLarkChannel({
