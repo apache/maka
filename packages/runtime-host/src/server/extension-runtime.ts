@@ -52,9 +52,8 @@ import {
   type ExtensionTimerContribution,
   type ExtensionTimerContributionInspection,
 } from '@maka/runtime/extension-timer-contributions';
-export interface HostTrustedToolExtensionRevisionInput {
+export interface HostTrustedToolExtensionInput {
   readonly extensionId: string;
-  readonly revision: string;
   readonly dependencies?: readonly { readonly extensionId: string }[];
   readonly tools: readonly MakaTool[];
   readonly healthCheck?: () => void | Promise<void>;
@@ -62,12 +61,11 @@ export interface HostTrustedToolExtensionRevisionInput {
 
 export interface HostPreparedPluginPackageInput {
   readonly extensionId: string;
-  readonly revision: string;
   readonly toolNames: readonly string[];
   readonly dependencies?: readonly { readonly extensionId: string }[];
-  /** Optional client contribution carried by the exact same immutable package Revision. */
+  /** Optional client contributions owned by the same Extension Entry. */
   readonly ui?: readonly ExtensionUiContribution[];
-  /** Plugin-defined Event and Listener identities carried by the same immutable Revision. */
+  /** Plugin-defined Event and Listener identities owned by the same Extension Entry. */
   readonly eventContributionIds?: readonly string[];
   readonly serviceContributionIds?: readonly string[];
   readonly timerContributionIds?: readonly string[];
@@ -82,21 +80,16 @@ export interface HostPreparedPluginPackageInput {
   }>;
 }
 
-export type HostToolExtensionRevisionInput =
-  | HostTrustedToolExtensionRevisionInput
-  | HostPreparedPluginPackageInput;
+export type HostToolExtensionInput = HostTrustedToolExtensionInput | HostPreparedPluginPackageInput;
 
-export interface HostUiExtensionRevisionInput {
+export interface HostUiExtensionInput {
   readonly extensionId: string;
-  readonly revision: string;
   readonly dependencies?: readonly { readonly extensionId: string }[];
   readonly ui: readonly ExtensionUiContribution[];
   readonly healthCheck?: () => void | Promise<void>;
 }
 
-export type HostExtensionRevisionInput =
-  | HostToolExtensionRevisionInput
-  | HostUiExtensionRevisionInput;
+export type HostExtensionInput = HostToolExtensionInput | HostUiExtensionInput;
 
 export interface HostExtensionToolResolver {
   resolveTools(
@@ -173,7 +166,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     this.#composition = new MakaCompositionLoader({ root });
   }
 
-  installTrustedToolRevision(input: HostTrustedToolExtensionRevisionInput): Promise<void> {
+  installTrustedTool(input: HostTrustedToolExtensionInput): Promise<void> {
     this.#assertMutable();
     const tools = Object.freeze(input.tools.map((tool) => Object.freeze({ ...tool })));
     return this.#composition.install(
@@ -187,30 +180,33 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     );
   }
 
-  installToolRevision(input: HostToolExtensionRevisionInput): Promise<void> {
-    if ('tools' in input) return this.installTrustedToolRevision(input);
+  installTool(input: HostToolExtensionInput): Promise<void> {
+    if ('tools' in input) return this.installTrustedTool(input);
     this.#assertMutable();
     return this.#composition.install(
       this.#package(input, async (ctx) => {
         const activation = this.#activationContext(ctx);
         const loaded = await input.load(activation);
         await loaded.healthCheck?.();
-        for (const tool of loaded.tools) ctx.tools.register(tool);
+        const isDesktopUiScope = activation.scopeId === 'desktop-ui';
         for (const contribution of input.ui ?? []) ctx.ui.register(contribution);
-        for (const definition of loaded.events ?? []) ctx.hooks.define(definition);
-        for (const listener of loaded.listeners ?? []) ctx.hooks.on(listener);
-        for (const service of loaded.services ?? [])
-          contributeExtensionService(activation, this.#services, service);
-        if ((loaded.timers?.length ?? 0) > 0 && !this.timerAuthority)
-          throw new Error('Extension Timer authority is unavailable');
-        for (const timer of loaded.timers ?? [])
-          await contributeExtensionTimer(activation, this.timerAuthority!, timer);
+        if (!isDesktopUiScope) {
+          for (const tool of loaded.tools) ctx.tools.register(tool);
+          for (const definition of loaded.events ?? []) ctx.hooks.define(definition);
+          for (const listener of loaded.listeners ?? []) ctx.hooks.on(listener);
+          for (const service of loaded.services ?? [])
+            contributeExtensionService(activation, this.#services, service);
+          if ((loaded.timers?.length ?? 0) > 0 && !this.timerAuthority)
+            throw new Error('Extension Timer authority is unavailable');
+          for (const timer of loaded.timers ?? [])
+            await contributeExtensionTimer(activation, this.timerAuthority!, timer);
+        }
         if (loaded.dispose) ownPluginEffect(ctx, 'package.dispose', loaded.dispose);
       }),
     );
   }
 
-  installUiRevision(input: HostUiExtensionRevisionInput): Promise<void> {
+  installUi(input: HostUiExtensionInput): Promise<void> {
     this.#assertMutable();
     return this.#composition.install(
       this.#package(input, async (ctx) => {
@@ -220,10 +216,8 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     );
   }
 
-  installRevision(input: HostExtensionRevisionInput): Promise<void> {
-    return 'load' in input || 'tools' in input
-      ? this.installToolRevision(input)
-      : this.installUiRevision(input);
+  installExtension(input: HostExtensionInput): Promise<void> {
+    return 'load' in input || 'tools' in input ? this.installTool(input) : this.installUi(input);
   }
 
   async disposeScope(scopeId: string): Promise<void> {
@@ -253,9 +247,9 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     return changed;
   }
 
-  uninstall(extensionId: string, revision: string): Promise<void> {
+  uninstall(extensionId: string): Promise<void> {
     this.#assertMutable();
-    return this.#composition.uninstall(extensionId, revision);
+    return this.#composition.uninstall(extensionId);
   }
 
   inspect(entryId: string): MakaPluginMountInspection {
@@ -280,7 +274,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
 
   inspectUi(scopeId: string): readonly ExtensionUiContributionInspection[] {
     const committed = this.inspectScope(scopeId).flatMap((entry) =>
-      entry.current ? [{ entryId: entry.entryId, revision: entry.current.revision }] : [],
+      entry.current ? [{ entryId: entry.entryId, generation: entry.current.generation }] : [],
     );
     return this.#ui.inspect(this.#rootId(scopeId), committed);
   }
@@ -288,11 +282,11 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
   reportUiReadiness(
     scopeId: string,
     entryId: string,
-    revision: string,
+    generation: number,
     status: import('@maka/runtime/extension-ui-contributions').ExtensionUiReadiness,
     diagnostic?: string,
   ): void {
-    this.#ui.setReadinessForRoot(this.#rootId(scopeId), entryId, revision, status, diagnostic);
+    this.#ui.setReadinessForRoot(this.#rootId(scopeId), entryId, generation, status, diagnostic);
   }
 
   inspectUiReadiness(scopeId?: string) {
@@ -465,13 +459,10 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     return dispatched.value;
   }
 
-  installedRevisions(): readonly {
-    readonly extensionId: string;
-    readonly revision: string;
-  }[] {
+  installedExtensions(): readonly { readonly extensionId: string }[] {
     return this.#composition
       .installedPackages()
-      .map(({ packageId: extensionId, revision }) => Object.freeze({ extensionId, revision }));
+      .map(({ packageId: extensionId }) => Object.freeze({ extensionId }));
   }
 
   composition(scopeId: string): MakaRuntimeCompositionSnapshot {
@@ -533,7 +524,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
 
   #resolvedScopeState(scopeId: string): {
     scopeIds: readonly string[];
-    committed: readonly { readonly entryId: string; readonly revision: string }[];
+    committed: readonly { readonly entryId: string; readonly generation: number }[];
   } {
     const scopeIds =
       scopeId === PROFILE_EXTENSION_SCOPE
@@ -541,7 +532,7 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
         : [this.#rootId(PROFILE_EXTENSION_SCOPE), this.#rootId(scopeId)];
     const committed = scopeIds.flatMap((resolvedScopeId) =>
       this.inspectScope(resolvedScopeId).flatMap((entry) =>
-        entry.current ? [{ entryId: entry.entryId, revision: entry.current.revision }] : [],
+        entry.current ? [{ entryId: entry.entryId, generation: entry.current.generation }] : [],
       ),
     );
     return { scopeIds, committed };
@@ -550,7 +541,6 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
   #package(
     input: {
       readonly extensionId: string;
-      readonly revision: string;
       readonly dependencies?: readonly { readonly extensionId: string }[];
     },
     apply: (ctx: Context) => void | Promise<void>,
@@ -565,7 +555,6 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     });
     return Object.freeze({
       packageId: input.extensionId,
-      revision: input.revision,
       host,
     });
   }
@@ -582,10 +571,6 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
         this.inspectScope(this.#scopeId(identity.scopeId)).some(
           ({ packageId: activePackage, current }) => activePackage === packageId && current,
         ) as T,
-      dependencyRevision: (packageId: string) =>
-        this.inspectScope(this.#scopeId(identity.scopeId)).find(
-          ({ packageId: activePackage }) => activePackage === packageId,
-        )?.current?.revision ?? '',
     });
   }
 
@@ -610,11 +595,10 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
       entryId: entry.id,
       rootId: this.#scopeId(entry.rootId),
       packageId: entry.packageId!,
-      revision: entry.revision!,
       enabled: entry.status !== 'disabled' && entry.status !== 'disposed',
       status: entry.status,
       ...(active && entry.generation !== undefined
-        ? { current: Object.freeze({ revision: entry.revision!, generation: entry.generation }) }
+        ? { current: Object.freeze({ generation: entry.generation }) }
         : {}),
       waitingFor: entry.waitingFor,
       pendingCleanupEffects: 0,
@@ -626,12 +610,11 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
     const entries = this.inspectScope(scopeId)
       .flatMap((entry) => {
         if (!entry.current) return [];
-        const pkg = this.#composition.package(entry.packageId, entry.current.revision);
+        const pkg = this.#composition.package(entry.packageId);
         return [
           Object.freeze({
             entryId: entry.entryId,
             packageId: entry.packageId,
-            revision: entry.current.revision,
             generation: entry.current.generation,
             contributions: Object.freeze([...(pkg.contributions ?? [])]),
           }),
@@ -678,9 +661,9 @@ export class HostExtensionRuntime implements HostExtensionToolResolver {
       }
     }
     if (errors.length === 0) {
-      for (const { extensionId, revision } of [...this.installedRevisions()].reverse()) {
+      for (const { extensionId } of [...this.installedExtensions()].reverse()) {
         try {
-          await this.#composition.uninstall(extensionId, revision);
+          await this.#composition.uninstall(extensionId);
         } catch (error) {
           errors.push(error);
         }

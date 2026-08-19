@@ -18,7 +18,6 @@ test('user import previews, confirms, installs, and enables one trusted UI and E
       JSON.stringify({
         schemaVersion: 1,
         id: 'dev.maka.user.ui',
-        version: '1',
         runtime: {
           entry: 'dist/index.mjs',
           tools: [],
@@ -57,9 +56,9 @@ test('user import previews, confirms, installs, and enables one trusted UI and E
       request: async (operation: string, input: unknown) => {
         requests.push({ operation, input });
         if (operation === 'extension.package.install') {
-          return { extensionId: 'dev.maka.user.ui', revision: 'sha256-demo', toolNames: [], uiContributionIds: ['root'], eventContributionIds: ['event:dev.maka.user.ui.changed', 'listener:dev.maka.user.ui.changed:changed'] };
+          return { extensionId: 'dev.maka.user.ui', toolNames: [], uiContributionIds: ['root'], eventContributionIds: ['event:dev.maka.user.ui.changed', 'listener:dev.maka.user.ui.changed:changed'] };
         }
-        if (operation === 'extension.composition.query') return { revisions: [], entries: [] };
+        if (operation === 'extension.composition.query') return { extensions: [], entries: [] };
         if (operation === 'extension.composition.mutate') return { entry: null };
         throw new Error(`unexpected ${operation}`);
       },
@@ -78,7 +77,7 @@ test('user import previews, confirms, installs, and enables one trusted UI and E
     });
     const handler = handlers.get('ui-extensions:importLocal');
     assert.ok(handler);
-    assert.deepEqual(await handler({} as never), { ok: true, extensionId: 'dev.maka.user.ui', revision: 'sha256-demo' });
+    assert.deepEqual(await handler({} as never), { ok: true, extensionId: 'dev.maka.user.ui' });
     assert.equal(requests[0]?.operation, 'extension.package.install');
     const mutations = requests.filter(({ operation }) => operation === 'extension.composition.mutate');
     assert.equal(mutations.length, 2);
@@ -89,7 +88,6 @@ test('user import previews, confirms, installs, and enables one trusted UI and E
         entryId: mutations[0] && (mutations[0].input as { entryId: string }).entryId,
         scopeId: 'desktop-ui',
         extensionId: 'dev.maka.user.ui',
-        revision: 'sha256-demo',
       },
     });
     assert.equal((mutations[1]?.input as { scopeId?: string } | undefined)?.scopeId, 'profile');

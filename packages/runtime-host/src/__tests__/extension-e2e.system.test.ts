@@ -23,7 +23,7 @@ import {
 } from '../client/index.js';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
 import type { RuntimeHostKernel } from '../server/host-kernel.js';
-import type { StaticTrustedToolExtensionRevision } from '../server/extension-loader.js';
+import type { StaticTrustedToolExtension } from '../server/extension-loader.js';
 import { startExecutionRuntimeHostService } from '../server/execution-service.js';
 import { waitForTerminalTurn } from './fixtures/execution-host-suite.js';
 
@@ -34,253 +34,6 @@ const PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
-
-test('trusted Tool Extension works through UDS, provider execution, rollback, and Host restarts', {
-  timeout: 120_000,
-}, async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-extension-e2e-'));
-  const root = join(base, 'interactive');
-  const invocationLog = join(base, 'extension-invocations.jsonl');
-  const provider = await startProvider();
-  const revisions = [
-    extensionRevision('1', 21, invocationLog),
-    extensionRevision('2', 27, invocationLog),
-    extensionRevision('3', 99, invocationLog, async () => {
-      throw new Error('weather revision 3 failed its real health check');
-    }),
-  ] satisfies readonly StaticTrustedToolExtensionRevision[];
-  let host: RuntimeHostKernel | undefined;
-  let client: RuntimeHostConnection | undefined;
-  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-  const statePath = join(
-    resolveRootControlNamespace(),
-    capability.rootId,
-    'plugin-composition-v1.json',
-  );
-
-  try {
-    await seedProvider(root, provider.baseUrl);
-    ({ host, client } = await startHost(root, revisions));
-
-    assert.deepEqual(await client.request('extension.composition.query', {}), {
-      revisions: [
-        {
-          extensionId: 'weather',
-          revision: '1',
-          toolNames: ['Weather'],
-          uiContributionIds: [],
-          eventContributionIds: [],
-        },
-        {
-          extensionId: 'weather',
-          revision: '2',
-          toolNames: ['Weather'],
-          uiContributionIds: [],
-          eventContributionIds: [],
-        },
-        {
-          extensionId: 'weather',
-          revision: '3',
-          toolNames: ['Weather'],
-          uiContributionIds: [],
-          eventContributionIds: [],
-        },
-      ],
-      entries: [],
-    });
-    await createSession(client, 'extension-session-a', root);
-    await createSession(client, 'extension-session-b', root);
-
-    const enabled = await client.request('extension.composition.mutate', {
-      kind: 'enable',
-      entryId: 'weather-entry',
-      scopeId: 'extension-session-a',
-      extensionId: 'weather',
-      revision: '1',
-    });
-    assert.deepEqual(enabled.entry, {
-      entryId: 'weather-entry',
-      scopeId: 'extension-session-a',
-      extensionId: 'weather',
-      revision: '1',
-      enabled: true,
-      status: 'active',
-      error: null,
-    });
-    assert.equal((await stat(statePath)).mode & 0o777, 0o600);
-
-    const first = await runTurn(client, provider, 'extension-session-a', 'call weather v1');
-    assert.deepEqual(first.tools.includes('Weather'), true);
-    assert.match(first.toolResult ?? '', /"revision":"1"/u);
-    assert.match(first.toolResult ?? '', /"temperature":21/u);
-    assert.deepEqual(await invocationRevisions(invocationLog), ['1']);
-
-    const isolated = await runTurn(
-      client,
-      provider,
-      'extension-session-b',
-      'scope isolation must hide weather',
-    );
-    assert.equal(isolated.tools.includes('Weather'), false);
-    assert.equal(isolated.toolResult, undefined);
-    assert.deepEqual(await invocationRevisions(invocationLog), ['1']);
-
-    await assert.rejects(
-      client.request('extension.composition.mutate', {
-        kind: 'enable',
-        entryId: 'duplicate-weather-entry',
-        scopeId: 'extension-session-a',
-        extensionId: 'weather',
-        revision: '1',
-      }),
-      operationError('operation_conflict'),
-    );
-
-    const upgraded = await client.request('extension.composition.mutate', {
-      kind: 'update',
-      entryId: 'weather-entry',
-      revision: '2',
-    });
-    const second = await runTurn(client, provider, 'extension-session-a', 'call weather v2');
-    assert.match(second.toolResult ?? '', /"revision":"2"/u);
-    assert.match(second.toolResult ?? '', /"temperature":27/u);
-    assert.deepEqual(await invocationRevisions(invocationLog), ['1', '2']);
-
-    await assert.rejects(
-      client.request('extension.composition.mutate', {
-        kind: 'update',
-        entryId: 'weather-entry',
-        revision: '3',
-      }),
-      operationError('operation_conflict', /failed its real health check/u),
-    );
-    const failed = await client.request('extension.composition.query', {});
-    assert.deepEqual(failed.entries[0], {
-      entryId: 'weather-entry',
-      scopeId: 'extension-session-a',
-      extensionId: 'weather',
-      revision: '3',
-      enabled: true,
-      status: 'failed',
-      error:
-        'Unable to activate entry weather-entry: weather revision 3 failed its real health check',
-    });
-    const afterFailure = await runTurn(
-      client,
-      provider,
-      'extension-session-a',
-      'failed upgrade must preserve the current Fiber',
-    );
-    assert.match(afterFailure.toolResult ?? '', /"revision":"2"/u);
-    assert.deepEqual(await invocationRevisions(invocationLog), ['1', '2', '2']);
-
-    await client.close();
-    client = undefined;
-    await host.close();
-    host = undefined;
-    ({ host, client } = await startHost(root, revisions));
-
-    const recovered = await client.request('extension.composition.query', {});
-    assert.equal(recovered.entries[0]?.revision, '3');
-    assert.equal(recovered.entries[0]?.status, 'failed');
-    const afterRestart = await runTurn(
-      client,
-      provider,
-      'extension-session-a',
-      'failed persisted entry must remain unavailable after restart',
-    );
-    assert.equal(afterRestart.tools.includes('Weather'), false);
-    assert.equal(afterRestart.toolResult, undefined);
-    assert.deepEqual(await invocationRevisions(invocationLog), ['1', '2', '2']);
-
-    const disabled = await client.request('extension.composition.mutate', {
-      kind: 'disable',
-      entryId: 'weather-entry',
-    });
-    assert.equal(disabled.entry?.status, 'disabled');
-    const afterDisable = await runTurn(
-      client,
-      provider,
-      'extension-session-a',
-      'disabled extension must disappear',
-    );
-    assert.equal(afterDisable.tools.includes('Weather'), false);
-    assert.equal(afterDisable.toolResult, undefined);
-
-    await client.close();
-    client = undefined;
-    await host.close();
-    host = undefined;
-    ({ host, client } = await startHost(root, revisions));
-    const disabledAfterRestart = await client.request('extension.composition.query', {});
-    assert.equal(disabledAfterRestart.entries[0]?.status, 'disabled');
-    const stillDisabled = await runTurn(
-      client,
-      provider,
-      'extension-session-a',
-      'disabled state must survive restart',
-    );
-    assert.equal(stillDisabled.tools.includes('Weather'), false);
-
-    await client.request('extension.composition.mutate', {
-      kind: 'enable',
-      entryId: 'weather-entry',
-      scopeId: 'extension-session-a',
-      extensionId: 'weather',
-      revision: '1',
-    });
-    const reenabled = await runTurn(
-      client,
-      provider,
-      'extension-session-a',
-      're-enabled extension must return',
-    );
-    assert.match(reenabled.toolResult ?? '', /"revision":"1"/u);
-    assert.deepEqual(await invocationRevisions(invocationLog), ['1', '2', '2', '1']);
-
-    assert.deepEqual(
-      await client.request('extension.composition.mutate', {
-        kind: 'remove',
-        entryId: 'weather-entry',
-      }),
-      { entry: null },
-    );
-    const afterRemove = await runTurn(
-      client,
-      provider,
-      'extension-session-a',
-      'removed extension must disappear',
-    );
-    assert.equal(afterRemove.tools.includes('Weather'), false);
-    const emptyComposition = JSON.parse(await readFile(statePath, 'utf8')) as {
-      roots: { sessions: Record<string, unknown[]> };
-    };
-    assert.deepEqual(emptyComposition.roots.sessions['extension-session-a'], []);
-
-    await client.close();
-    client = undefined;
-    await host.close();
-    host = undefined;
-    ({ host, client } = await startHost(root, revisions));
-    assert.deepEqual((await client.request('extension.composition.query', {})).entries, []);
-    const removedAfterRestart = await runTurn(
-      client,
-      provider,
-      'extension-session-a',
-      'removed state must survive restart',
-    );
-    assert.equal(removedAfterRestart.tools.includes('Weather'), false);
-  } finally {
-    await client?.close().catch(() => undefined);
-    await host?.close().catch(() => undefined);
-    await provider.close();
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
-      recursive: true,
-      force: true,
-    });
-    await rm(base, { recursive: true, force: true });
-  }
-});
 
 test('installed Tool package works through real UDS, provider execution, sandbox, restart, and uninstall', {
   timeout: 120_000,
@@ -301,7 +54,6 @@ test('installed Tool package works through real UDS, provider execution, sandbox
     const installed = await client.request('extension.package.install', { sourcePath: source });
     assert.equal(installed.extensionId, 'package-weather');
     assert.deepEqual(installed.toolNames, ['Weather']);
-    assert.match(installed.revision, /^sha256-[a-f0-9]{64}$/u);
 
     await createSession(client, 'package-extension-session', root);
     const enabled = await client.request('extension.composition.mutate', {
@@ -309,7 +61,6 @@ test('installed Tool package works through real UDS, provider execution, sandbox
       entryId: 'package-weather-entry',
       scopeId: 'package-extension-session',
       extensionId: installed.extensionId,
-      revision: installed.revision,
     });
     assert.equal(enabled.entry?.status, 'active');
     const first = await runTurn(
@@ -330,7 +81,7 @@ test('installed Tool package works through real UDS, provider execution, sandbox
     ({ host, client } = await startHost(root, []));
     const recovered = await client.request('extension.composition.query', {});
     assert.equal(recovered.entries[0]?.status, 'active');
-    assert.equal(recovered.revisions[0]?.revision, installed.revision);
+    assert.equal(recovered.extensions[0]?.extensionId, installed.extensionId);
     const afterRestart = await runTurn(
       client,
       provider,
@@ -346,10 +97,9 @@ test('installed Tool package works through real UDS, provider execution, sandbox
     });
     await client.request('extension.package.uninstall', {
       extensionId: installed.extensionId,
-      revision: installed.revision,
     });
     assert.deepEqual(await client.request('extension.composition.query', {}), {
-      revisions: [],
+      extensions: [],
       entries: [],
     });
     const removed = await runTurn(
@@ -401,7 +151,6 @@ test('installed package runs real Tool execution through trusted around middlewa
       entryId: 'around-package-entry',
       scopeId: 'profile',
       extensionId: installed.extensionId,
-      revision: installed.revision,
     });
     assert.equal(enabled.entry?.status, 'active');
     const configured = await client.request('extension.configuration.mutate', {
@@ -487,6 +236,90 @@ test('installed package runs real Tool execution through trusted around middlewa
   }
 });
 
+test('file review package links Tool, UI, Hook, Service, Event, and Timer through real provider execution', {
+  timeout: 120_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-file-review-e2e-'));
+  const root = join(base, 'interactive');
+  const source = join(base, 'file-review-package');
+  const provider = await startProvider('ReviewDocument', { path: 'incoming/release-notes.md' });
+  let host: RuntimeHostKernel | undefined;
+  let client: RuntimeHostConnection | undefined;
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+
+  try {
+    await mkdir(join(root, 'incoming'), { recursive: true });
+    await writeFile(
+      join(root, 'incoming', 'release-notes.md'),
+      '# Release notes\n\nOwner: platform\n\nTODO: add rollback instructions.\n',
+    );
+    await createFileReviewPackage(source);
+    await seedProvider(root, provider.baseUrl);
+    ({ host, client } = await startHost(root, []));
+    const installed = await client.request('extension.package.install', { sourcePath: source });
+    assert.equal(installed.extensionId, 'file-review-package');
+    assert.deepEqual(installed.toolNames, ['ReviewDocument']);
+    assert.ok(installed.uiContributionIds.some((id) => id.includes('review-console')));
+    assert.ok(installed.eventContributionIds.some((id) => id.includes('review.completed')));
+    assert.ok(installed.serviceContributionIds?.some((id) => id.includes('policy')));
+    assert.ok(installed.timerContributionIds?.some((id) => id.includes('refresh')));
+
+    await createSession(client, 'file-review-session', root);
+    const enabled = await client.request('extension.composition.mutate', {
+      kind: 'enable',
+      entryId: 'file-review-entry',
+      scopeId: 'profile',
+      extensionId: installed.extensionId,
+    });
+    assert.equal(enabled.entry?.status, 'active');
+
+    const result = await runTurn(
+      client,
+      provider,
+      'file-review-session',
+      'review the fixture document without editing it',
+    );
+    assert.match(result.toolResult ?? '', /"status":"needs_changes"/u);
+    assert.match(result.toolResult ?? '', /"violations":1/u);
+    assert.deepEqual(JSON.parse(await readFile(join(root, 'review-event.json'), 'utf8')), {
+      path: 'incoming/release-notes.md',
+      status: 'needs_changes',
+      violations: 1,
+    });
+    assert.deepEqual(JSON.parse(await readFile(join(root, 'review-service.json'), 'utf8')), {
+      path: 'incoming/release-notes.md',
+      violations: 1,
+    });
+    assert.deepEqual(
+      (await readFile(join(root, 'review-hook.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line)),
+      [
+        { phase: 'before', toolName: 'ReviewDocument' },
+        { phase: 'after', toolName: 'ReviewDocument' },
+      ],
+    );
+    await waitForFile(join(root, 'review-refresh.json'));
+    assert.deepEqual(JSON.parse(await readFile(join(root, 'review-refresh.json'), 'utf8')), {
+      kind: 'refresh',
+    });
+    assert.match(
+      await readFile(join(root, 'incoming', 'release-notes.md'), 'utf8'),
+      /TODO: add rollback instructions/u,
+    );
+  } finally {
+    await client?.close().catch(() => undefined);
+    await host?.close().catch(() => undefined);
+    await provider.close();
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 async function createWeatherPackage(source: string): Promise<void> {
   await mkdir(join(source, 'dist'), { recursive: true });
   await writeFile(
@@ -495,7 +328,6 @@ async function createWeatherPackage(source: string): Promise<void> {
       {
         schemaVersion: 1,
         id: 'package-weather',
-        version: '1.0.0',
         runtime: {
           entry: 'dist/index.mjs',
           tools: [
@@ -546,7 +378,6 @@ async function createAroundPackage(source: string): Promise<void> {
       {
         schemaVersion: 1,
         id: 'around-package',
-        version: '1.0.0',
         configuration: {
           properties: {
             region: { type: 'string', default: 'default-region', secret: false },
@@ -697,6 +528,143 @@ export default {
   );
 }
 
+async function createFileReviewPackage(source: string): Promise<void> {
+  await mkdir(join(source, 'dist'), { recursive: true });
+  await mkdir(join(source, 'documents'), { recursive: true });
+  await writeFile(
+    join(source, 'documents', 'review-console.html'),
+    '<!doctype html><title>File Review Console</title><main>WAITING</main>',
+  );
+  await writeFile(
+    join(source, 'maka.extension.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      id: 'file-review-package',
+      ui: {
+        contributions: [
+          {
+            id: 'review-console',
+            surface: 'app.slot',
+            slot: 'conversation.header',
+            priority: 20,
+            document: 'documents/review-console.html',
+          },
+        ],
+        permissions: { network: false },
+      },
+      runtime: {
+        entry: 'dist/index.mjs',
+        tools: [
+          {
+            name: 'ReviewDocument',
+            description: 'Review a fixture document without editing it.',
+            handler: 'ReviewDocument',
+            inputSchema: {
+              type: 'object',
+              properties: { path: { type: 'string' } },
+              required: ['path'],
+              additionalProperties: false,
+            },
+            recoveryMode: 'never_auto_retry',
+          },
+        ],
+        events: [
+          {
+            name: 'file-review-package.review.completed',
+            description: 'A document review completed.',
+            payloadSchema: {
+              type: 'object',
+              properties: {
+                path: { type: 'string' },
+                status: { type: 'string' },
+                violations: { type: 'number' },
+              },
+              required: ['path', 'status', 'violations'],
+              additionalProperties: false,
+            },
+          },
+        ],
+        listeners: [
+          { id: 'around-review-tool', event: 'maka.tools.execute', handler: 'aroundReviewTool' },
+          {
+            id: 'record-review',
+            event: 'file-review-package.review.completed',
+            handler: 'recordReview',
+          },
+        ],
+        services: [
+          {
+            name: 'file-review-package.policy',
+            version: '1.0.0',
+            description: 'Evaluates document policy violations.',
+            methods: [
+              {
+                name: 'evaluate',
+                description: 'Evaluate a fixture document.',
+                handler: 'evaluate',
+                inputSchema: {
+                  type: 'object',
+                  properties: { path: { type: 'string' }, content: { type: 'string' } },
+                  required: ['path', 'content'],
+                  additionalProperties: false,
+                },
+                outputSchema: {
+                  type: 'object',
+                  properties: { status: { type: 'string' }, violations: { type: 'number' } },
+                  required: ['status', 'violations'],
+                  additionalProperties: false,
+                },
+              },
+            ],
+          },
+        ],
+        timers: [
+          {
+            id: 'refresh',
+            handler: 'refresh',
+            intervalMs: 1_000,
+            initialDelayMs: 100,
+            timeoutMs: 1_000,
+            payload: { kind: 'refresh' },
+          },
+        ],
+        permissions: { workspace: 'write', network: false },
+      },
+    }),
+  );
+  await writeFile(
+    join(source, 'dist', 'index.mjs'),
+    `import { appendFile, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+const writeJson = (context, name, value) =>
+  writeFile(join(context.cwd, name), JSON.stringify(value), 'utf8');
+export default {
+  ReviewDocument: async ({ path }, context) => {
+    const content = await readFile(join(context.cwd, path), 'utf8');
+    const policy = await context.callService('file-review-package.policy', 'evaluate', { path, content });
+    const result = { path, ...policy };
+    await context.emitEvent('file-review-package.review.completed', result);
+    return result;
+  },
+  aroundReviewTool: async (payload, context, next) => {
+    if (payload.toolName !== 'ReviewDocument') return next(payload);
+    await appendFile(join(context.cwd, 'review-hook.jsonl'), JSON.stringify({ phase: 'before', toolName: payload.toolName }) + '\\n');
+    const result = await next(payload);
+    await appendFile(join(context.cwd, 'review-hook.jsonl'), JSON.stringify({ phase: 'after', toolName: payload.toolName }) + '\\n');
+    return result;
+  },
+  evaluate: async ({ path, content }, context) => {
+    const violations = content.includes('TODO:') ? 1 : 0;
+    await writeJson(context, 'review-service.json', { path, violations });
+    return { status: violations > 0 ? 'needs_changes' : 'approved', violations };
+  },
+  recordReview: async (payload, context) => writeJson(context, 'review-event.json', payload),
+  refresh: async (payload, context) => writeJson(context, 'review-refresh.json', payload),
+};
+`,
+  );
+}
+
 async function waitForFile(path: string, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -708,39 +676,6 @@ async function waitForFile(path: string, timeoutMs = 5_000): Promise<void> {
     }
   }
   throw new Error(`Timed out waiting for ${path}`);
-}
-
-function extensionRevision(
-  revision: string,
-  temperature: number,
-  invocationLog: string,
-  healthCheck?: () => void | Promise<void>,
-): StaticTrustedToolExtensionRevision {
-  const tool: MakaTool = {
-    name: 'Weather',
-    description: `Read deterministic weather from trusted revision ${revision}.`,
-    parameters: z.object({ city: z.string().min(1) }),
-    impl: async ({ city }: { city: string }, context) => {
-      await appendFile(
-        invocationLog,
-        `${JSON.stringify({
-          revision,
-          city,
-          sessionId: context.sessionId,
-          turnId: context.turnId,
-          toolCallId: context.toolCallId,
-        })}\n`,
-        'utf8',
-      );
-      return { source: 'trusted-extension', revision, city, temperature };
-    },
-  };
-  return {
-    extensionId: 'weather',
-    revision,
-    tools: [tool],
-    ...(healthCheck ? { healthCheck } : {}),
-  };
 }
 
 async function seedProvider(root: string, baseUrl: string): Promise<void> {
@@ -806,7 +741,7 @@ async function publishConnectionModel(
 
 async function startHost(
   root: string,
-  trustedToolExtensions: readonly StaticTrustedToolExtensionRevision[],
+  trustedToolExtensions: readonly StaticTrustedToolExtension[],
 ): Promise<{ host: RuntimeHostKernel; client: RuntimeHostConnection }> {
   const host = await startExecutionRuntimeHostService({
     rootPath: root,
@@ -867,15 +802,6 @@ async function runTurn(
   return { tools: toolNames(first?.body), toolResult };
 }
 
-async function invocationRevisions(path: string): Promise<string[]> {
-  const content = await readFile(path, 'utf8');
-  return content
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => (JSON.parse(line) as { revision: string }).revision);
-}
-
 function operationError(code: string, message?: RegExp): (error: unknown) => boolean {
   return (error: unknown) =>
     error instanceof RuntimeHostOperationError &&
@@ -887,7 +813,10 @@ interface ProviderRequest {
   readonly body: Record<string, unknown>;
 }
 
-async function startProvider(): Promise<{
+async function startProvider(
+  toolName = 'Weather',
+  toolArgs: Record<string, unknown> = { city: 'Hangzhou' },
+): Promise<{
   readonly baseUrl: string;
   readonly requests: ProviderRequest[];
   close(): Promise<void>;
@@ -909,12 +838,12 @@ async function startProvider(): Promise<{
         respondText(response, `Observed trusted Tool result: ${result}`);
         return;
       }
-      if (toolNames(body).includes('Weather')) {
+      if (toolNames(body).includes(toolName)) {
         callSequence += 1;
-        respondToolCall(response, callSequence, 'Weather', { city: 'Hangzhou' });
+        respondToolCall(response, callSequence, toolName, toolArgs);
         return;
       }
-      respondText(response, 'Weather is not available in this Session scope.');
+      respondText(response, `${toolName} is not available in this Session scope.`);
     })().catch((error) => response.destroy(error as Error));
   });
   await new Promise<void>((resolve, reject) => {

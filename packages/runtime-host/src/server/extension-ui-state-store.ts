@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-const STATE_FILE_NAME = 'extension-ui-state-v1.json';
+const STATE_FILE_NAME = 'extension-ui-state-v2.json';
 const MAX_STATE_BYTES = 1024 * 1024;
 const MAX_VALUE_BYTES = 64 * 1024;
 const MAX_KEYS = 256;
@@ -33,11 +33,11 @@ export class HostExtensionUiStateStore {
 
   async get(
     scopeId: string,
-    extensionId: string,
+    entryId: string,
     key: string,
   ): Promise<{ found: boolean; value: ExtensionUiStateValue | null }> {
     await this.#load();
-    const state = this.#memory.get(ownerKey(scopeId, extensionId));
+    const state = this.#memory.get(ownerKey(scopeId, entryId));
     return state?.has(key)
       ? { found: true, value: cloneValue(state.get(key)!) }
       : { found: false, value: null };
@@ -45,17 +45,17 @@ export class HostExtensionUiStateStore {
 
   async set(
     scopeId: string,
-    extensionId: string,
+    entryId: string,
     key: string,
     value: ExtensionUiStateValue,
   ): Promise<void> {
     validateKey(key);
     validateValue(value);
     await this.#mutate(async () => {
-      let state = this.#memory.get(ownerKey(scopeId, extensionId));
+      let state = this.#memory.get(ownerKey(scopeId, entryId));
       if (!state) {
         state = new Map();
-        this.#memory.set(ownerKey(scopeId, extensionId), state);
+        this.#memory.set(ownerKey(scopeId, entryId), state);
       }
       if (!state.has(key) && state.size >= MAX_KEYS)
         throw new Error('UI Extension state key limit exceeded');
@@ -63,11 +63,11 @@ export class HostExtensionUiStateStore {
     });
   }
 
-  async delete(scopeId: string, extensionId: string, key: string): Promise<boolean> {
+  async delete(scopeId: string, entryId: string, key: string): Promise<boolean> {
     validateKey(key);
     let deleted = false;
     await this.#mutate(async () => {
-      const owner = ownerKey(scopeId, extensionId);
+      const owner = ownerKey(scopeId, entryId);
       const state = this.#memory.get(owner);
       deleted = state?.delete(key) ?? false;
       if (state?.size === 0) this.#memory.delete(owner);
@@ -75,9 +75,9 @@ export class HostExtensionUiStateStore {
     return deleted;
   }
 
-  async clear(scopeId: string, extensionId: string): Promise<void> {
+  async clear(scopeId: string, entryId: string): Promise<void> {
     await this.#mutate(async () => {
-      this.#memory.delete(ownerKey(scopeId, extensionId));
+      this.#memory.delete(ownerKey(scopeId, entryId));
     });
   }
 
@@ -152,8 +152,8 @@ export class HostExtensionUiStateStore {
   }
 }
 
-function ownerKey(scopeId: string, extensionId: string): string {
-  return `${scopeId}\u0000${extensionId}`;
+function ownerKey(scopeId: string, entryId: string): string {
+  return `${scopeId}\u0000${entryId}`;
 }
 
 function validateKey(key: string): void {

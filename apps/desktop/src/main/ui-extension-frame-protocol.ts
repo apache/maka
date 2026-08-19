@@ -9,7 +9,7 @@ const EXPECTED_QUERY_KEYS = Object.freeze([
   'contributionId',
   'entryId',
   'extensionId',
-  'revision',
+  'generation',
   'scopeId',
   'token',
 ]);
@@ -38,7 +38,7 @@ export function createUiExtensionFrameRequestHandler(
         (item) =>
           item.entryId === identity.entryId &&
           item.extensionId === identity.extensionId &&
-          item.revision === identity.revision &&
+          item.generation === identity.generation &&
           item.id === identity.contributionId,
       );
       if (!contribution) return response('UI Extension contribution not active', 404);
@@ -67,7 +67,7 @@ function decodeFrameIdentity(urlValue: string): {
   readonly scopeId: 'desktop-ui';
   readonly entryId: string;
   readonly extensionId: string;
-  readonly revision: string;
+  readonly generation: number;
   readonly contributionId: string;
   readonly token: string;
 } | null {
@@ -81,21 +81,22 @@ function decodeFrameIdentity(urlValue: string): {
   const scopeId = url.searchParams.get('scopeId');
   const entryId = url.searchParams.get('entryId');
   const extensionId = url.searchParams.get('extensionId');
-  const revision = url.searchParams.get('revision');
+  const generation = Number(url.searchParams.get('generation'));
   const contributionId = url.searchParams.get('contributionId');
   const token = url.searchParams.get('token');
   if (
     scopeId !== 'desktop-ui' ||
     !entryId ||
     !extensionId ||
-    !revision ||
+    !Number.isSafeInteger(generation) ||
+    generation <= 0 ||
     !contributionId ||
     !token ||
     !TOKEN_PATTERN.test(token)
   ) {
     return null;
   }
-  return { scopeId, entryId, extensionId, revision, contributionId, token };
+  return { scopeId, entryId, extensionId, generation, contributionId, token };
 }
 
 function response(body: string, status: number): Response {

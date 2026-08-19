@@ -26,7 +26,7 @@ export interface ExtensionTimerContributionInspection {
   readonly entryId: string;
   readonly scopeId: string;
   readonly extensionId: string;
-  readonly revision: string;
+  readonly generation: number;
   readonly id: string;
   readonly intervalMs: number;
   readonly nextRunAt: number;

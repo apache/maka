@@ -1,68 +1,61 @@
-# Extension Lifecycle Kernel (Phase 1)
+# Extension composition lifecycle
 
-This module implements the product-independent lifecycle and revision semantics from issue #2973. It deliberately does not register Tools, UI, hooks, or execute dynamic scripts.
+Maka's Extension lifecycle is a two-tree design derived from DSH/Cordis. There
+is no persistent Revision, Binding, candidate record, or last-good object.
 
-## Authority and objects
+## The two trees
 
-- An **Extension** is a stable identity.
-- A **Revision** is immutable after `install`. Installing a revision never executes extension code.
-- A **Binding** selects one exact revision for one scope. Only one binding for an extension may exist in a scope.
-- A **Candidate** owns everything allocated by `prepare`, `healthCheck`, and `activate` until it either becomes current or is rolled back.
-- A **Current Activation** owns its exposed dependency value and every registered effect.
-- A **Composition Snapshot** is an immutable, deterministic view of the active revisions and contribution descriptors in a scope.
+The **Composition Entry Tree** is the only durable control state. Each Entry
+contains identity, optional package identity, enabled state, configuration,
+dependency injection, isolation/interception declarations, children, and the
+latest diagnostic. An Entry without a package is a structural group and does
+not require a no-op Fiber.
 
-## Lifecycle
+The **Context/Fiber Tree** is a process-local projection. Executable Entries
+create Contexts and Fibers below `profile`, `desktop-ui`, or `session:<id>`.
+A Fiber owns its provided services, injected dependencies, children, and every
+registered Tool, UI, Event, Listener, Service, and Timer effect.
 
-```text
-install revision (no effects)
-  -> enable binding
-  -> wait for same-scope dependencies
-  -> prepare candidate
-  -> health check
-  -> activate
-  -> commit current
-  -> stop / remove binding / uninstall revision
-```
+Entry parentage determines runtime ownership, but the trees are intentionally
+not isomorphic: structural Entries can be skipped, and Host/UI projections can
+use separate runtime Contexts when their authorities differ.
 
-Updates use current/candidate semantics:
+## Mutation and replacement
 
-```text
-current remains active
-  -> prepare + health-check candidate
-  -> stop active dependents
-  -> activate candidate
-  -> commit candidate as current
-  -> dispose old current
-  -> reactivate dependents against the new dependency value
-```
+Entry mutations are serialized and persisted atomically. The loader stages the
+affected subtree in fresh Contexts, validates and activates it, then switches
+the live projection. A failed candidate is disposed without replacing the
+current Fiber. Successful replacement disposes the previous Fiber only after
+the new projection is active. Unrelated Fibers retain identity and effects.
 
-If preparation, health checking, or activation fails, the candidate is disposed in reverse effect-registration order and current remains committed. If candidate activation had already stopped dependents, they are reconciled back against the old current.
+Reloading package bytes is a runtime projection change, not a new durable
+package version. Only Entries using that package are reconciled. Multi-operation
+edits restore and reproject the prior Entry snapshot when a later operation
+fails.
 
-## Invariants
+## Dependencies and scope
 
-- All mutations are serialized by the kernel.
-- Dependencies resolve only inside the binding's scope.
-- Missing dependencies produce `waiting`; activating the provider reconciles waiting consumers.
-- Stopping a provider stops transitive dependents before the provider.
-- Dependency cycles fail without executing extension code.
-- Effects are disposed in reverse registration order; failed disposers remain inspectable and retryable.
-- A revision cannot be uninstalled while any binding, current activation, or candidate references it.
-- Previously returned composition snapshots never mutate.
+Package dependencies resolve through Fiber Contexts. `inject`, `isolate`, and
+`intercept` shape child Contexts rather than parallel maps. Missing required
+providers prevent activation. Profile contributions can be inherited by
+Session roots; Desktop UI uses a separate root because its authority and cleanup
+boundary differ.
 
-## Adapter boundary
+## Recovery and inspection
 
-Future contribution adapters register their reversible work through `ExtensionActivationContext.ownEffect`. A Tool adapter, for example, will own the Tool registry entry's disposer. The kernel does not bypass Maka's existing Runtime, permission, sandbox, or Run-composition authorities; those integrations belong to later phases.
+Startup reads the persisted Entry Tree, installs referenced package bytes, and
+reconstructs the runtime projection. Fiber state is never restored from disk.
+Failed Entries retain a bounded diagnostic while unrelated Entries recover.
 
-## System verification
+Inspection reports both layers separately. Consumers must not treat Fiber
+generations as durable identities.
 
-`extension-lifecycle-kernel.system.test.ts` treats the exported kernel as the test boundary. It does not replace lifecycle methods or assert mock call counts. The scenarios exercise:
+## Required invariants
 
-- a real TCP server and persistent client through health check, dependency injection, provider stop, automatic consumer restart, scope disposal, and port release;
-- real `EventEmitter` listeners and timers to detect resource leaks across stop, restart, and binding removal;
-- a diamond dependency graph moving from one provider revision to another, including transitive stop and reactivation order;
-- candidate, dependent, binding-removal, and scope-disposal cleanup failures with retained ownership and retry;
-- invalid definitions, candidates, effect registration, dependency reads, binding conflicts, and missing objects through public error codes;
-- deterministic revision/composition ordering and stable composition digests across generation changes;
-- 2,000 seeded public lifecycle operations across four scopes, three dependent extensions, and two revisions while continuously checking public-state/composition agreement and exact live-resource counts.
-
-The focused fault-matrix tests remain alongside these system scenarios. Coverage is collected from the compiled JavaScript with Node's test runner so the result measures the implementation that actually executes.
+- The Entry Tree is the only durable composition authority.
+- Structural Entries may exist without Fibers.
+- Every live contribution is owned by exactly one Fiber lifecycle.
+- Failed replacement preserves the current active Fiber.
+- Disable/remove releases all effects and descendants.
+- Restart reconstructs Fibers from Entries and package bytes.
+- Session and Desktop UI scopes cannot leak into one another.

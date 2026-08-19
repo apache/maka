@@ -413,9 +413,8 @@ test('production Session create and archive dispatch profile Extension lifecycle
       acquireResidency: () => ({ release() {} }),
     };
     try {
-      await composition.extensions.installToolRevision({
+      await composition.extensions.installTool({
         extensionId: 'lifecycle-observer',
-        revision: '1',
         toolNames: [],
         eventContributionIds: ['session-created', 'session-disposed'],
         load: async () => ({
@@ -455,7 +454,6 @@ test('production Session create and archive dispatch profile Extension lifecycle
             entry: {
               id: 'lifecycle-observer-binding',
               packageId: 'lifecycle-observer',
-              revision: '1',
             },
           },
         ],

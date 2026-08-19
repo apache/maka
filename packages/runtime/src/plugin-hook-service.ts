@@ -39,21 +39,21 @@ export class PluginHookService extends Service {
 
   inspectEvents(
     rootIds: readonly string[],
-    committed?: readonly { readonly entryId: string; readonly revision: string }[],
+    committed?: readonly { readonly entryId: string; readonly generation: number }[],
   ): readonly ExtensionEventDefinitionInspection[] {
     return this.registry.inspectEvents(rootIds, committed);
   }
 
   inspectListeners(
     rootIds: readonly string[],
-    committed?: readonly { readonly entryId: string; readonly revision: string }[],
+    committed?: readonly { readonly entryId: string; readonly generation: number }[],
   ): readonly ExtensionEventListenerInspection[] {
     return this.registry.inspectListeners(rootIds, committed);
   }
 
   parsePayload(
     rootIds: readonly string[],
-    committed: readonly { readonly entryId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly generation: number }[],
     event: string,
     payload: unknown,
   ): unknown {
@@ -62,7 +62,7 @@ export class PluginHookService extends Service {
 
   resolveDefinition(
     rootIds: readonly string[],
-    committed: readonly { readonly entryId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly generation: number }[],
     event: string,
   ): ExtensionEventDefinitionInspection {
     return this.registry.resolveDefinition(rootIds, committed, event);
@@ -70,7 +70,7 @@ export class PluginHookService extends Service {
 
   parseResult(
     rootIds: readonly string[],
-    committed: readonly { readonly entryId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly generation: number }[],
     event: string,
     result: unknown,
   ): unknown {

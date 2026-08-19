@@ -11,7 +11,6 @@ import {
   MakaPluginRuntimeError,
   MakaPluginTransactionBuffer,
   type MakaPluginTransaction,
-  pluginPackageKey,
   validateCompositionEntry,
   validatePluginPackage,
   validatePluginRootId,
@@ -49,7 +48,8 @@ export class MakaCompositionLoader {
   readonly #entries = new Map<string, LiveEntry>();
   readonly #isolationLabels = new Map<string, symbol>();
   readonly #transaction?: (context: Context) => MakaPluginTransaction | undefined;
-  #generation = 0;
+  #compositionGeneration = 0;
+  #fiberGeneration = 0;
   #mutation: Promise<void> = Promise.resolve();
 
   constructor(options: MakaCompositionLoaderOptions = {}) {
@@ -60,36 +60,37 @@ export class MakaCompositionLoader {
   install(pkg: MakaPluginPackage): Promise<void> {
     return this.#mutate(async () => {
       validatePluginPackage(pkg);
-      const key = pluginPackageKey(pkg.packageId, pkg.revision);
-      if (this.#packages.has(key)) {
-        throw new MakaPluginRuntimeError(
-          'package_exists',
-          `Plugin package already exists: ${pkg.packageId}@${pkg.revision}`,
-        );
+      const previous = this.#packages.get(pkg.packageId);
+      this.#packages.set(pkg.packageId, freezePackage(pkg));
+      if (!previous) return;
+      try {
+        // A package reload is a runtime projection change, not a persistent
+        // version change. Replace only the affected Entry subtrees so unrelated
+        // Fibers retain their identity and effects.
+        await this.#reloadPackage(pkg.packageId);
+      } catch (error) {
+        this.#packages.set(pkg.packageId, previous);
+        throw error;
       }
-      this.#packages.set(key, freezePackage(pkg));
     });
   }
 
-  uninstall(packageId: string, revision: string): Promise<void> {
+  uninstall(packageId: string): Promise<void> {
     return this.#mutate(async () => {
-      const key = pluginPackageKey(packageId, revision);
-      if (!this.#packages.has(key)) {
+      if (!this.#packages.has(packageId)) {
         throw new MakaPluginRuntimeError(
           'package_not_found',
-          `Plugin package is not installed: ${packageId}@${revision}`,
+          `Plugin package is not installed: ${packageId}`,
         );
       }
-      const user = [...this.#entries.values()].find(
-        (entry) => entry.spec.packageId === packageId && entry.spec.revision === revision,
-      );
+      const user = [...this.#entries.values()].find((entry) => entry.spec.packageId === packageId);
       if (user) {
         throw new MakaPluginRuntimeError(
           'package_in_use',
           `Plugin package is used by entry ${user.spec.id}`,
         );
       }
-      this.#packages.delete(key);
+      this.#packages.delete(packageId);
     });
   }
 
@@ -133,10 +134,13 @@ export class MakaCompositionLoader {
 
   apply(input: MakaCompositionApplyInput): Promise<readonly MakaCompositionEntryInspection[]> {
     return this.#mutate(async () => {
-      if (input.baseGeneration !== undefined && input.baseGeneration !== this.#generation)
+      if (
+        input.baseGeneration !== undefined &&
+        input.baseGeneration !== this.#compositionGeneration
+      )
         throw new MakaPluginRuntimeError(
           'invalid_entry',
-          `Composition generation changed from ${input.baseGeneration} to ${this.#generation}`,
+          `Composition generation changed from ${input.baseGeneration} to ${this.#compositionGeneration}`,
         );
       const before = this.snapshot();
       const inspections: MakaCompositionEntryInspection[] = [];
@@ -184,12 +188,9 @@ export class MakaCompositionLoader {
         if (appliedOperations > 0) await this.#replaceSnapshot(before);
         throw error;
       }
+      if (input.operations.length > 0) this.#compositionGeneration += 1;
       return Object.freeze(inspections);
     });
-  }
-
-  replaceRevision(entryId: string, revision: string): Promise<MakaCompositionEntryInspection> {
-    return this.update(entryId, { revision });
   }
 
   replaceSubtree(
@@ -234,24 +235,20 @@ export class MakaCompositionLoader {
     return this.#inspect(this.#requireEntry(entryId));
   }
 
-  installedPackages(): readonly { readonly packageId: string; readonly revision: string }[] {
+  installedPackages(): readonly { readonly packageId: string }[] {
     return Object.freeze(
       [...this.#packages.values()]
-        .map(({ packageId, revision }) => Object.freeze({ packageId, revision }))
-        .sort(
-          (left, right) =>
-            left.packageId.localeCompare(right.packageId) ||
-            left.revision.localeCompare(right.revision),
-        ),
+        .map(({ packageId }) => Object.freeze({ packageId }))
+        .sort((left, right) => left.packageId.localeCompare(right.packageId)),
     );
   }
 
-  package(packageId: string, revision: string): MakaPluginPackage {
-    const pkg = this.#packages.get(pluginPackageKey(packageId, revision));
+  package(packageId: string): MakaPluginPackage {
+    const pkg = this.#packages.get(packageId);
     if (!pkg) {
       throw new MakaPluginRuntimeError(
         'package_not_found',
-        `Plugin package is not installed: ${packageId}@${revision}`,
+        `Plugin package is not installed: ${packageId}`,
       );
     }
     return pkg;
@@ -277,7 +274,7 @@ export class MakaCompositionLoader {
     }
     return Object.freeze({
       schemaVersion: 1,
-      generation: this.#generation,
+      generation: this.#compositionGeneration,
       roots: Object.freeze({
         profile: encode('profile'),
         desktopUi: encode('desktop-ui'),
@@ -325,7 +322,9 @@ export class MakaCompositionLoader {
         for (const entry of root.entries) await this.#commitSubtree(entry);
     } catch (error) {
       await Promise.allSettled(
-        [...stagedRoots.values()].map((root) => root.context.fiber.dispose()),
+        [...stagedRoots.values()].flatMap((root) =>
+          [...root.entries].reverse().map((entry) => this.#dispose(entry)),
+        ),
       );
       throw error;
     }
@@ -336,8 +335,10 @@ export class MakaCompositionLoader {
       this.#roots.set(rootId, root);
       for (const entry of root.entries) this.#index(entry);
     }
-    this.#generation = Math.max(this.#generation, snapshot.generation);
-    await Promise.allSettled(previous.map((root) => root.context.fiber.dispose()));
+    this.#compositionGeneration = Math.max(this.#compositionGeneration, snapshot.generation);
+    await Promise.allSettled(
+      previous.flatMap((root) => [...root.entries].reverse().map((entry) => this.#dispose(entry))),
+    );
   }
 
   async close(): Promise<void> {
@@ -345,7 +346,9 @@ export class MakaCompositionLoader {
       const roots = [...this.#roots.values()];
       this.#roots.clear();
       this.#entries.clear();
-      await Promise.allSettled(roots.map((root) => root.context.fiber.dispose()));
+      await Promise.allSettled(
+        roots.flatMap((root) => [...root.entries].reverse().map((entry) => this.#dispose(entry))),
+      );
       await this.root.fiber.dispose();
     });
   }
@@ -370,6 +373,40 @@ export class MakaCompositionLoader {
     this.#index(candidate);
     await this.#dispose(current);
     return this.#inspect(candidate);
+  }
+
+  async #reloadPackage(packageId: string): Promise<void> {
+    const affected = [...this.#entries.values()].filter(
+      (entry) =>
+        entry.spec.packageId === packageId &&
+        !ancestors(entry).some((ancestor) => ancestor.spec.packageId === packageId),
+    );
+    if (!affected.length) return;
+    const candidates: { readonly current: LiveEntry; readonly replacement: LiveEntry }[] = [];
+    try {
+      for (const current of affected) {
+        const replacement = await this.#stage(
+          serialize(current),
+          current.rootId,
+          current.parent,
+          current.parent?.context ?? this.#root(current.rootId).context,
+          false,
+        );
+        candidates.push({ current, replacement });
+      }
+      for (const { replacement } of candidates) await this.#commitSubtree(replacement);
+    } catch (error) {
+      await Promise.allSettled(candidates.map(({ replacement }) => this.#dispose(replacement)));
+      throw error;
+    }
+    for (const { current, replacement } of candidates) {
+      const siblings = current.parent?.children ?? this.#root(current.rootId).entries;
+      const index = siblings.indexOf(current);
+      this.#unindex(current);
+      siblings[index] = replacement;
+      this.#index(replacement);
+    }
+    await Promise.allSettled(candidates.map(({ current }) => this.#dispose(current)));
   }
 
   async #rebind(entry: LiveEntry): Promise<void> {
@@ -405,24 +442,23 @@ export class MakaCompositionLoader {
       context = context.intercept(service, config);
     const live: LiveEntry = { spec: freezeEntry(spec), rootId, parent, context, children: [] };
     const disabled = ancestorDisabled || spec.disabled === true;
-    if (!disabled && spec.packageId && spec.revision) {
-      const pkg = this.#packages.get(pluginPackageKey(spec.packageId, spec.revision));
+    if (!disabled && spec.packageId) {
+      const pkg = this.#packages.get(spec.packageId);
       if (!pkg)
         throw new MakaPluginRuntimeError(
           'package_not_found',
-          `Plugin package is not installed: ${spec.packageId}@${spec.revision}`,
+          `Plugin package is not installed: ${spec.packageId}`,
         );
       if (!pkg.host)
         throw new MakaPluginRuntimeError(
           'invalid_package',
-          `Plugin package has no Host plugin: ${spec.packageId}@${spec.revision}`,
+          `Plugin package has no Host plugin: ${spec.packageId}`,
         );
-      const generation = ++this.#generation;
+      const generation = ++this.#fiberGeneration;
       const metadata: MakaPluginMetadata = Object.freeze({
         rootId,
         entryId: spec.id,
         packageId: spec.packageId,
-        revision: spec.revision,
         generation,
       });
       context = context.extend({ maka: metadata });
@@ -446,8 +482,13 @@ export class MakaCompositionLoader {
         );
       }
     }
-    for (const child of spec.children ?? [])
-      live.children.push(await this.#stage(child, rootId, live, live.context, disabled));
+    try {
+      for (const child of spec.children ?? [])
+        live.children.push(await this.#stage(child, rootId, live, live.context, disabled));
+    } catch (error) {
+      await this.#dispose(live);
+      throw error;
+    }
     return live;
   }
 
@@ -515,14 +556,12 @@ export class MakaCompositionLoader {
     validateCompositionEntry(next);
     const structural =
       next.packageId !== current.spec.packageId ||
-      next.revision !== current.spec.revision ||
       JSON.stringify(next.inject ?? null) !== JSON.stringify(current.spec.inject ?? null) ||
       JSON.stringify(next.isolate ?? null) !== JSON.stringify(current.spec.isolate ?? null) ||
       JSON.stringify(next.intercept ?? null) !== JSON.stringify(current.spec.intercept ?? null);
     if (!structural && current.fiber && next.disabled !== true && current.spec.disabled !== true) {
       await current.fiber.update(next.config);
       current.spec = next;
-      current.generation = ++this.#generation;
       current.diagnostic = undefined;
       return current;
     }
@@ -605,7 +644,6 @@ export class MakaCompositionLoader {
       rootId: entry.rootId,
       ...(entry.parent ? { parentId: entry.parent.spec.id } : {}),
       ...(entry.spec.packageId ? { packageId: entry.spec.packageId } : {}),
-      ...(entry.spec.revision ? { revision: entry.spec.revision } : {}),
       ...(entry.spec.config === undefined ? {} : { config: structuredClone(entry.spec.config) }),
       disabled: isDisabled(entry),
       status:
@@ -646,12 +684,23 @@ function entryPlugin(plugin: Plugin, inject: MakaCompositionEntry['inject']): Pl
   return {
     name: (plugin as Plugin.Base).name ?? 'maka-entry',
     ...(combined ? { inject: combined } : {}),
-    async apply(ctx: Context, config: unknown) {
-      const child = ctx.plugin(plugin, config as never);
-      await child.await();
-      return () => child.dispose();
+    ...((plugin as Plugin.Base).Config ? { Config: (plugin as Plugin.Base).Config } : {}),
+    apply(ctx: Context, config: unknown) {
+      if (typeof plugin !== 'function') return plugin.apply(ctx, config as never);
+      if (isConstructor(plugin)) return Reflect.construct(plugin, [ctx, config]);
+      return (plugin as Plugin.Function)(ctx, config as never);
     },
   };
+}
+
+function isConstructor(value: Function): boolean {
+  return /^class\s/u.test(Function.prototype.toString.call(value));
+}
+
+function ancestors(entry: LiveEntry): LiveEntry[] {
+  const result: LiveEntry[] = [];
+  for (let current = entry.parent; current; current = current.parent) result.push(current);
+  return result;
 }
 
 function mergeInject(

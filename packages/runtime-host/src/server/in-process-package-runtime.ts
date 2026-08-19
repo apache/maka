@@ -76,7 +76,7 @@ export class InProcessPackageActivation {
   #handlersTask: Promise<Readonly<Record<string, PackageHandler>>> | undefined;
 
   constructor(
-    readonly packageRevision: InstalledToolPackage,
+    readonly installedPackage: InstalledToolPackage,
     readonly configuration: Readonly<Record<string, ExtensionConfigurationScalar>> = Object.freeze(
       {},
     ),
@@ -86,7 +86,7 @@ export class InProcessPackageActivation {
 
   tools(): readonly MakaTool[] {
     return Object.freeze(
-      this.packageRevision.manifest.tools.map((declaration) => {
+      this.installedPackage.manifest.tools.map((declaration) => {
         let parameters: unknown;
         try {
           parameters = z.fromJSONSchema(declaration.inputSchema);
@@ -102,9 +102,9 @@ export class InProcessPackageActivation {
           description: declaration.description,
           parameters,
           ...(declaration.displayName ? { displayName: declaration.displayName } : {}),
-          categoryHint: effectiveCategory(this.packageRevision.manifest, declaration.category),
+          categoryHint: effectiveCategory(this.installedPackage.manifest, declaration.category),
           recoveryMode: declaration.recoveryMode ?? 'never_auto_retry',
-          executionFacts: executionFacts(this.packageRevision.manifest),
+          executionFacts: executionFacts(this.installedPackage.manifest),
           permissionArgs: (args: unknown) => args,
           impl: (args: unknown, context: MakaToolContext) =>
             this.invoke(declaration.handler, args, context),
@@ -171,7 +171,7 @@ export class InProcessPackageActivation {
         if (!this.callService) throw new Error('Extension Service calls are unavailable');
         return this.callService(service, method, input, {
           ...context,
-          callerExtensionId: this.packageRevision.extensionId,
+          callerExtensionId: this.installedPackage.extensionId,
         });
       },
     });
@@ -190,7 +190,7 @@ export class InProcessPackageActivation {
 
   #handlers(): Promise<Readonly<Record<string, PackageHandler>>> {
     this.#assertActive();
-    this.#handlersTask ??= loadHandlers(this.packageRevision.entry);
+    this.#handlersTask ??= loadHandlers(this.installedPackage.entry);
     return this.#handlersTask;
   }
 

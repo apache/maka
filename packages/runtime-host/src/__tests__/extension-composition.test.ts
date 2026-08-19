@@ -30,7 +30,6 @@ test('production composition exposes trusted Extension control and restores it a
   const trustedToolExtensions = [
     {
       extensionId: 'weather',
-      revision: '1',
       tools: [
         {
           name: 'Weather',
@@ -53,7 +52,6 @@ test('production composition exposes trusted Extension control and restores it a
         entryId: 'weather-entry',
         scopeId: 'session-1',
         extensionId: 'weather',
-        revision: '1',
       },
       connection,
     );

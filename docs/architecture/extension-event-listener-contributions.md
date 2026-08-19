@@ -1,28 +1,25 @@
-# Extension Events, Middleware, Services, and Timers
+# Extension Event, Listener, Hook, Service, and Timer contributions
 
-These contributions live in the `runtime` section of `maka.extension.json` and
-execute in the Runtime Host process. See
-`extension-package-platform.md` for the trust model and package format.
+These contributions are effects of the executable Entry's Fiber and are never
+persisted as independent activations.
 
-Custom Events declare a namespaced JSON-schema contract and one dispatch mode:
-`emit`, `parallel`, `serial`, `bail`, `transform`, `observe`, `gate`, or
-`around`. Listeners are ordered by priority, Extension id, Revision, and id.
-Payload validation happens before delivery. Listener failures are contained by
-the dispatch report where the selected mode permits it.
+Events declare payload schemas and dispatch modes: `emit`, `parallel`,
+`serial`, `bail`, `transform`, `observe`, `gate`, and `around`. Listeners
+are deterministically ordered; recursion depth and timeouts are bounded.
 
-Around middleware receives `(value, context, next)`. It can wrap, transform, or
-short-circuit downstream execution; `next()` can be called at most once. Core
-around seams include `maka.tools.execute` and `maka.llm.stream`, whose values
-remain live and may contain functions, `AbortSignal`, streams, or async
-iterables. Other core seams are declared in `extension-core-events.ts`.
+A Hook is a Listener attached to a core Event such as `maka.tools.execute` or
+`maka.llm.stream`. Around handlers receive `(value, context, next)`;
+`next()` is single-use.
 
-Services validate method input and output schemas. A plugin may call its own
-Service or a provider declared in `dependencies`; recursive calls and nested
-Event emissions are bounded. Timers retain Host-owned persistent schedules,
-advance the next deadline before invocation, collapse missed intervals, and do
-not create Agent Turns.
+Services expose schema-validated methods. Calls resolve through Context and
+declared package dependencies. Cross-package calls without a declared provider
+are rejected.
 
-An Event does not wake an Agent or replace the durable `RuntimeEvent` ledger.
-`ScheduledTask` remains the authority for scheduled conversational work. There
-is no separate Extension Hook manifest or registry; interception is expressed
-as a listener on a core Event.
+Timers have Host-owned durable scheduling metadata, but their callbacks remain
+Fiber-owned effects. Disable/remove stops the active timer, while restart
+reattaches the schedule to the reconstructed Fiber. A Timer may call a Service
+or emit an Event, but is not itself an Event.
+
+Replacement stages the whole contribution set. Failure publishes none of the
+candidate effects and preserves the old Fiber; success switches the set and
+then disposes the old effects.

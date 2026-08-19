@@ -266,9 +266,8 @@ test('production backend snapshots Host Extension Tools per send and records the
   const snapshots: ReturnType<typeof decodeRunCompositionSnapshot>[] = [];
   let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
   try {
-    await extensions.installTrustedToolRevision({
+    await extensions.installTrustedTool({
       extensionId: 'weather',
-      revision: '1',
       tools: [
         {
           name: 'Weather',
@@ -283,7 +282,7 @@ test('production backend snapshots Host Extension Tools per send and records the
         {
           type: 'insert',
           rootId: 'session:backend-creation-session',
-          entry: { id: 'weather-binding', packageId: 'weather', revision: '1' },
+          entry: { id: 'weather-binding', packageId: 'weather' },
         },
       ],
     });
@@ -1643,7 +1642,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
   }
 });
 
-test('production Host lets a child install and test a Tool before the parent accepts it', async () => {
+test('production Host lets a child define an Extension before the parent activates it', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-tool-author-'));
   const root = join(base, 'interactive');
   const project = join(base, 'project');
@@ -1722,29 +1721,31 @@ test('production Host lets a child install and test a Tool before the parent acc
         composition,
         parent.id,
         'hosted-tool-author-parent-turn',
-        'Delegate Tool creation, then independently accept and invoke the installed candidate.',
+        'Delegate Extension creation, then independently activate and invoke the installed Tool.',
         context,
       ),
       context,
     );
-    assert.equal(terminal.status, 'completed');
+    assert.equal(
+      terminal.status,
+      'completed',
+      JSON.stringify(providerRequestTrace(provider.requests), null, 2),
+    );
 
     const requests = provider.requests.filter((request) => request.body.stream === true);
-    assert.equal(requests.length, 10, JSON.stringify(providerRequestTrace(requests)));
+    assert.equal(requests.length, 9, JSON.stringify(providerRequestTrace(requests)));
     const childToolNames = [
       'ArchiveRead',
       'Glob',
       'Grep',
       'Read',
-      'define_tool',
-      'inspect_tools',
-      'test_tool',
+      'define_package',
+      'inspect_package',
     ];
-    for (const request of requests.slice(2, 6)) {
+    for (const request of requests.slice(2, 5)) {
       assert.deepEqual(toolNames(request.body), childToolNames);
     }
-    assert.equal(childToolNames.includes('manage_tool'), false);
-    assert.equal(childToolNames.includes('invoke_tool'), false);
+    assert.equal(childToolNames.includes('manage_package'), false);
     assert.equal(childToolNames.includes('Write'), false);
     assert.equal(childToolNames.includes('Bash'), false);
 
@@ -1765,13 +1766,7 @@ test('production Host lets a child install and test a Tool before the parent acc
     assert.ok(
       childEvents.some(
         (event) =>
-          event.content?.kind === 'function_response' && event.content.name === 'define_tool',
-      ),
-    );
-    assert.ok(
-      childEvents.some(
-        (event) =>
-          event.content?.kind === 'function_response' && event.content.name === 'test_tool',
+          event.content?.kind === 'function_response' && event.content.name === 'define_package',
       ),
     );
 
@@ -3361,7 +3356,7 @@ type ProviderFlow =
       readonly toolName: string;
     }
   | { readonly kind: 'child_agent' }
-  | { kind: 'tool_author_child_agent'; revision?: string }
+  | { kind: 'tool_author_child_agent' }
   | {
       readonly kind: 'implementation_child_agent';
       ptyReadCount: number;
@@ -3508,76 +3503,61 @@ async function handleProviderRequest(
       'Glob',
       'Grep',
       'Read',
-      'define_tool',
-      'inspect_tools',
-      'test_tool',
+      'define_package',
+      'inspect_package',
     ]);
-    respondProviderToolCall(response, streamRequestIndex, 'inspect_tools', {});
+    respondProviderToolCall(response, streamRequestIndex, 'inspect_package', {});
     return;
   }
   if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 4) {
-    respondProviderToolCall(response, streamRequestIndex, 'define_tool', {
+    respondProviderToolCall(response, streamRequestIndex, 'define_package', {
       id: 'child-calculator',
-      version: '1.0.0',
-      source:
-        "export default { Add: ({ left, right }) => ({ sum: left + right, author: 'child' }) };",
-      tools: [
-        {
-          name: 'Add',
-          description: 'Add two numbers using the child-authored candidate.',
-          handler: 'Add',
-          inputSchema: {
-            type: 'object',
-            properties: { left: { type: 'number' }, right: { type: 'number' } },
-            required: ['left', 'right'],
-            additionalProperties: false,
+      runtime: {
+        source:
+          "export default { Add: ({ left, right }) => ({ sum: left + right, author: 'child' }) };",
+        tools: [
+          {
+            name: 'Add',
+            description: 'Add two numbers using the child-authored Extension.',
+            handler: 'Add',
+            inputSchema: {
+              type: 'object',
+              properties: { left: { type: 'number' }, right: { type: 'number' } },
+              required: ['left', 'right'],
+              additionalProperties: false,
+            },
+            category: 'read',
+            recoveryMode: 'replay_safe',
           },
-          category: 'read',
-          recoveryMode: 'replay_safe',
-        },
-      ],
-      permissions: { workspace: 'none', network: false },
+        ],
+        permissions: { workspace: 'none', network: false },
+      },
     });
     return;
   }
   if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 5) {
     const installed = requireLatestToolResult(body);
-    assert.equal(typeof installed.revision, 'string');
-    flow.revision = installed.revision as string;
-    respondProviderToolCall(response, streamRequestIndex, 'test_tool', {
-      extensionId: 'child-calculator',
-      revision: flow.revision,
-      toolName: 'Add',
-      args: { left: 20, right: 22 },
-    });
+    assert.equal(installed.extensionId, 'child-calculator');
+    respondProviderText(response, 'Defined child-calculator for parent activation.');
     return;
   }
   if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 6) {
-    assert.deepEqual(requireLatestToolResult(body), { sum: 42, author: 'child' });
-    respondProviderText(
-      response,
-      `Installed and tested child-calculator revision ${flow.revision}.`,
-    );
-    return;
-  }
-  if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 7) {
-    assert.ok(flow.revision);
     assert.ok(toolNames(body).includes('manage_package'));
     respondProviderToolCall(response, streamRequestIndex, 'manage_package', {
       action: 'activate',
       extensionId: 'child-calculator',
-      revision: flow.revision,
     });
     return;
   }
-  if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 8) {
+  if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 7) {
+    assert.ok(toolNames(body).includes('invoke_tool'));
     respondProviderToolCall(response, streamRequestIndex, 'invoke_tool', {
       toolName: 'Add',
       args: { left: 19, right: 23 },
     });
     return;
   }
-  if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 9) {
+  if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 8) {
     assert.deepEqual(requireLatestToolResult(body), { sum: 42, author: 'child' });
     respondProviderToolCall(response, streamRequestIndex, 'manage_package', {
       action: 'stop',
@@ -3585,7 +3565,7 @@ async function handleProviderRequest(
     });
     return;
   }
-  if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 10) {
+  if (flow.kind === 'tool_author_child_agent' && streamRequestIndex === 9) {
     respondProviderText(response, TOOL_AUTHOR_PARENT_RESULT_TEXT);
     return;
   }

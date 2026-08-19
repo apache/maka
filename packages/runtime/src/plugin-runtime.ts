@@ -6,7 +6,6 @@ export type MakaPluginRootId = 'profile' | 'desktop-ui' | `session:${string}`;
 
 export interface MakaPluginPackage {
   readonly packageId: string;
-  readonly revision: string;
   readonly host?: Plugin;
   readonly client?: Plugin;
   readonly contributions?: readonly MakaPluginContribution[];
@@ -20,7 +19,6 @@ export interface MakaPluginContribution {
 export interface MakaCompositionEntry {
   readonly id: string;
   readonly packageId?: string;
-  readonly revision?: string;
   readonly config?: unknown;
   readonly disabled?: boolean;
   readonly inject?: readonly string[] | Readonly<Record<string, unknown>>;
@@ -79,7 +77,6 @@ export interface MakaCompositionEntryInspection {
   readonly rootId: MakaPluginRootId;
   readonly parentId?: string;
   readonly packageId?: string;
-  readonly revision?: string;
   readonly config?: unknown;
   readonly disabled: boolean;
   readonly status: MakaCompositionEntryStatus;
@@ -94,7 +91,6 @@ export interface MakaPluginMountInput {
   readonly entryId: string;
   readonly rootId: string;
   readonly packageId: string;
-  readonly revision: string;
   readonly config?: unknown;
 }
 
@@ -102,10 +98,9 @@ export interface MakaPluginMountInspection {
   readonly entryId: string;
   readonly rootId: string;
   readonly packageId: string;
-  readonly revision: string;
   readonly enabled: boolean;
   readonly status: MakaCompositionEntryStatus;
-  readonly current?: { readonly revision: string; readonly generation: number };
+  readonly current?: { readonly generation: number };
   readonly waitingFor: readonly string[];
   readonly pendingCleanupEffects: number;
   readonly diagnostic?: { readonly message: string };
@@ -114,7 +109,6 @@ export interface MakaPluginMountInspection {
 export interface MakaRuntimeCompositionEntry {
   readonly entryId: string;
   readonly packageId: string;
-  readonly revision: string;
   readonly generation: number;
   readonly contributions: readonly MakaPluginContribution[];
 }
@@ -130,7 +124,6 @@ export interface MakaPluginMetadata {
   readonly rootId: MakaPluginRootId;
   readonly entryId: string;
   readonly packageId: string;
-  readonly revision: string;
   readonly generation: number;
 }
 
@@ -138,7 +131,7 @@ export interface MakaContributionIdentity {
   readonly entryId: string;
   readonly scopeId: string;
   readonly extensionId: string;
-  readonly revision: string;
+  readonly generation: number;
 }
 
 export interface MakaContributionContext extends MakaContributionIdentity {
@@ -146,7 +139,6 @@ export interface MakaContributionContext extends MakaContributionIdentity {
   readonly runtimeContext: Context;
   ownEffect(label: string, dispose: () => void | Promise<void>): void;
   dependency<T = unknown>(packageId: string): T;
-  dependencyRevision(packageId: string): string;
 }
 
 export interface MakaPluginTransaction {
@@ -185,34 +177,18 @@ export class MakaPluginRuntimeError extends Error {
 
 export function validatePluginPackage(pkg: MakaPluginPackage): void {
   validatePluginId(pkg.packageId, 'packageId');
-  if (typeof pkg.revision !== 'string' || !pkg.revision || /[\r\n\0]/u.test(pkg.revision)) {
-    throw new MakaPluginRuntimeError('invalid_package', 'Plugin revision is invalid');
-  }
   if (!pkg.host && !pkg.client) {
     throw new MakaPluginRuntimeError(
       'invalid_package',
-      `Plugin package ${pkg.packageId}@${pkg.revision} has no host or client plugin`,
+      `Plugin package ${pkg.packageId} has no host or client plugin`,
     );
   }
 }
 
 export function validateCompositionEntry(entry: MakaCompositionEntry): void {
   validatePluginId(entry.id, 'entry id');
-  const group = entry.packageId === undefined && entry.revision === undefined;
-  if ((entry.packageId === undefined) !== (entry.revision === undefined)) {
-    throw new MakaPluginRuntimeError(
-      'invalid_entry',
-      `Composition entry ${entry.id} must declare both packageId and revision`,
-    );
-  }
-  if (!group) {
+  if (entry.packageId !== undefined) {
     validatePluginId(entry.packageId!, 'packageId');
-    if (!entry.revision || /[\r\n\0]/u.test(entry.revision)) {
-      throw new MakaPluginRuntimeError(
-        'invalid_entry',
-        `Entry ${entry.id} has an invalid revision`,
-      );
-    }
   }
   for (const key of Object.keys(entry.isolate ?? {})) validateServiceName(key);
   for (const key of Object.keys(entry.intercept ?? {})) validateServiceName(key);
@@ -244,10 +220,6 @@ export function validatePluginRootId(rootId: string): asserts rootId is MakaPlug
   }
 }
 
-export function pluginPackageKey(packageId: string, revision: string): string {
-  return `${packageId}\0${revision}`;
-}
-
 export function pluginIdentity(ctx: Context): MakaContributionIdentity {
   const metadata = ctx.maka;
   if (!metadata) {
@@ -260,7 +232,7 @@ export function pluginIdentity(ctx: Context): MakaContributionIdentity {
     entryId: metadata.entryId,
     scopeId: metadata.rootId,
     extensionId: metadata.packageId,
-    revision: metadata.revision,
+    generation: metadata.generation,
   });
 }
 

@@ -44,14 +44,14 @@ export interface ExtensionEventDefinitionInspection extends Omit<ExtensionEventD
   readonly entryId: string;
   readonly scopeId: string;
   readonly extensionId: string;
-  readonly revision: string;
+  readonly generation: number;
 }
 
 export interface ExtensionEventListenerInspection extends ExtensionEventListenerContribution {
   readonly entryId: string;
   readonly scopeId: string;
   readonly extensionId: string;
-  readonly revision: string;
+  readonly generation: number;
 }
 
 interface RegisteredEvent extends ExtensionEventDefinitionInspection {
@@ -107,14 +107,14 @@ export class ExtensionEventContributionRegistry {
     if (conflict) {
       throw new ExtensionEventContributionError(
         'event_conflict',
-        `Event "${definition.name}" is already provided by ${conflict.extensionId}@${conflict.revision}`,
+        `Event "${definition.name}" is already provided by entry ${conflict.entryId}`,
       );
     }
     const entry: RegisteredEvent = Object.freeze({
       entryId: context.entryId,
       scopeId: context.scopeId,
       extensionId: context.extensionId,
-      revision: context.revision,
+      generation: context.generation,
       name: definition.name,
       description: definition.description,
       mode: definition.mode ?? 'emit',
@@ -145,14 +145,14 @@ export class ExtensionEventContributionRegistry {
     if (conflict) {
       throw new ExtensionEventContributionError(
         'event_conflict',
-        `Listener "${listener.id}" for ${listener.event} is already owned by ${conflict.extensionId}@${conflict.revision}`,
+        `Listener "${listener.id}" for ${listener.event} is already owned by entry ${conflict.entryId}`,
       );
     }
     const entry: RegisteredListener = Object.freeze({
       entryId: context.entryId,
       scopeId: context.scopeId,
       extensionId: context.extensionId,
-      revision: context.revision,
+      generation: context.generation,
       ...listener,
       token: Symbol(listener.id),
     });
@@ -162,13 +162,13 @@ export class ExtensionEventContributionRegistry {
 
   inspectEvents(
     scopeIds: readonly string[],
-    committed?: readonly { readonly entryId: string; readonly revision: string }[],
+    committed?: readonly { readonly entryId: string; readonly generation: number }[],
   ): readonly ExtensionEventDefinitionInspection[] {
-    const revisions = committedRevisions(committed);
+    const generations = committedGenerations(committed);
     const resolved = new Map<string, RegisteredEvent>();
     for (const scopeId of scopeIds) {
       for (const entry of this.#events.get(scopeId) ?? []) {
-        if (revisions && revisions.get(entry.entryId) !== entry.revision) continue;
+        if (generations && generations.get(entry.entryId) !== entry.generation) continue;
         resolved.set(entry.name, entry);
       }
     }
@@ -183,13 +183,13 @@ export class ExtensionEventContributionRegistry {
 
   inspectListeners(
     scopeIds: readonly string[],
-    committed?: readonly { readonly entryId: string; readonly revision: string }[],
+    committed?: readonly { readonly entryId: string; readonly generation: number }[],
   ): readonly ExtensionEventListenerInspection[] {
-    const revisions = committedRevisions(committed);
+    const generations = committedGenerations(committed);
     const resolved = new Map<string, RegisteredListener>();
     for (const scopeId of scopeIds) {
       for (const entry of this.#listeners.get(scopeId) ?? []) {
-        if (revisions && revisions.get(entry.entryId) !== entry.revision) continue;
+        if (generations && generations.get(entry.entryId) !== entry.generation) continue;
         resolved.set(`${entry.event}\0${entry.extensionId}\0${entry.id}`, entry);
       }
     }
@@ -202,7 +202,7 @@ export class ExtensionEventContributionRegistry {
 
   parsePayload(
     scopeIds: readonly string[],
-    committed: readonly { readonly entryId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly generation: number }[],
     event: string,
     payload: unknown,
   ): unknown {
@@ -222,11 +222,11 @@ export class ExtensionEventContributionRegistry {
         `Event payload exceeds its size limit: ${event}`,
       );
     }
-    const revisions = committedRevisions(committed)!;
+    const generations = committedGenerations(committed)!;
     let definition: RegisteredEvent | undefined;
     for (const scopeId of scopeIds) {
       const candidate = (this.#events.get(scopeId) ?? []).find(
-        (entry) => entry.name === event && revisions.get(entry.entryId) === entry.revision,
+        (entry) => entry.name === event && generations.get(entry.entryId) === entry.generation,
       );
       if (candidate) definition = candidate;
     }
@@ -248,7 +248,7 @@ export class ExtensionEventContributionRegistry {
 
   resolveDefinition(
     scopeIds: readonly string[],
-    committed: readonly { readonly entryId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly generation: number }[],
     event: string,
   ): ExtensionEventDefinitionInspection {
     const definition = this.#definition(scopeIds, committed, event);
@@ -258,7 +258,7 @@ export class ExtensionEventContributionRegistry {
 
   parseResult(
     scopeIds: readonly string[],
-    committed: readonly { readonly entryId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly generation: number }[],
     event: string,
     value: unknown,
   ): unknown {
@@ -295,14 +295,14 @@ export class ExtensionEventContributionRegistry {
 
   #definition(
     scopeIds: readonly string[],
-    committed: readonly { readonly entryId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly generation: number }[],
     event: string,
   ): RegisteredEvent {
-    const revisions = committedRevisions(committed)!;
+    const generations = committedGenerations(committed)!;
     let definition: RegisteredEvent | undefined;
     for (const scopeId of scopeIds) {
       const candidate = (this.#events.get(scopeId) ?? []).find(
-        (entry) => entry.name === event && revisions.get(entry.entryId) === entry.revision,
+        (entry) => entry.name === event && generations.get(entry.entryId) === entry.generation,
       );
       if (candidate) definition = candidate;
     }
@@ -427,11 +427,11 @@ function removeRegistered<T extends { readonly token: symbol }>(
   else registry.delete(scopeId);
 }
 
-function committedRevisions(
-  committed?: readonly { readonly entryId: string; readonly revision: string }[],
-): Map<string, string> | undefined {
+function committedGenerations(
+  committed?: readonly { readonly entryId: string; readonly generation: number }[],
+): Map<string, number> | undefined {
   return committed
-    ? new Map(committed.map(({ entryId, revision }) => [entryId, revision]))
+    ? new Map(committed.map(({ entryId, generation }) => [entryId, generation]))
     : undefined;
 }
 
@@ -443,7 +443,7 @@ function compareListener(
     left.event.localeCompare(right.event) ||
     right.priority - left.priority ||
     left.extensionId.localeCompare(right.extensionId) ||
-    left.revision.localeCompare(right.revision) ||
+    left.generation - right.generation ||
     left.id.localeCompare(right.id)
   );
 }

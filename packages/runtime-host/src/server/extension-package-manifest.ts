@@ -10,7 +10,6 @@ export type ExtensionConfigurationScalar = string | number | boolean;
 
 export interface ExtensionPackageDependency {
   readonly id: string;
-  readonly version: string;
 }
 
 export interface ExtensionConfigurationProperty {
@@ -30,7 +29,6 @@ export interface ExtensionConfigurationSchema {
 export interface ExtensionPackageManifest {
   readonly schemaVersion: 1;
   readonly id: string;
-  readonly version: string;
   readonly displayName: string;
   readonly description: string;
   readonly dependencies: readonly ExtensionPackageDependency[];
@@ -71,12 +69,11 @@ export function decodeExtensionPackageManifest(value: unknown): ExtensionPackage
   const source = record(value, 'Extension manifest');
   exactOptional(
     source,
-    ['schemaVersion', 'id', 'version'],
+    ['schemaVersion', 'id'],
     ['displayName', 'description', 'dependencies', 'configuration', 'runtime', 'ui'],
   );
   if (source.schemaVersion !== 1) throw invalid('Extension manifest schemaVersion must be 1');
   const id = extensionId(source.id);
-  const version = text(source.version, 'version', 128);
   const displayName =
     source.displayName === undefined ? id : text(source.displayName, 'displayName', 128);
   const description =
@@ -86,7 +83,6 @@ export function decodeExtensionPackageManifest(value: unknown): ExtensionPackage
   return Object.freeze({
     schemaVersion: 1,
     id,
-    version,
     displayName,
     description,
     dependencies,
@@ -127,33 +123,6 @@ export function validateExtensionConfiguration(
   return Object.freeze(result);
 }
 
-export function extensionVersionSatisfies(version: string, range: string): boolean {
-  if (range === '*' || range === 'latest') return true;
-  if (!range.startsWith('^') && !range.startsWith('~')) return version === range;
-  const expected = semanticVersion(range.slice(1));
-  const actual = semanticVersion(version);
-  if (!expected || !actual) return false;
-  if (range.startsWith('^')) {
-    if (expected[0] > 0) {
-      return actual[0] === expected[0] && compareSemantic(actual, expected) >= 0;
-    }
-    if (expected[1] > 0) {
-      return actual[0] === 0 && actual[1] === expected[1] && compareSemantic(actual, expected) >= 0;
-    }
-    return compareSemantic(actual, expected) === 0;
-  }
-  return actual[0] === expected[0] && actual[1] === expected[1] && actual[2] >= expected[2];
-}
-
-export function compareExtensionVersions(left: string, right: string): number {
-  const leftSemantic = semanticVersion(left);
-  const rightSemantic = semanticVersion(right);
-  if (leftSemantic && rightSemantic) return compareSemantic(leftSemantic, rightSemantic);
-  if (leftSemantic) return 1;
-  if (rightSemantic) return -1;
-  return left.localeCompare(right);
-}
-
 function decodeDependencies(value: unknown): readonly ExtensionPackageDependency[] {
   if (value === undefined) return Object.freeze([]);
   if (!Array.isArray(value) || value.length > 64)
@@ -161,11 +130,11 @@ function decodeDependencies(value: unknown): readonly ExtensionPackageDependency
   const ids = new Set<string>();
   const dependencies = value.map((item, index) => {
     const dependency = record(item, `dependencies[${index}]`);
-    exactOptional(dependency, ['id', 'version'], []);
+    exactOptional(dependency, ['id'], []);
     const id = extensionId(dependency.id);
     if (ids.has(id)) throw invalid(`Extension dependency repeats: ${id}`);
     ids.add(id);
-    return Object.freeze({ id, version: text(dependency.version, 'dependency version', 128) });
+    return Object.freeze({ id });
   });
   return Object.freeze(dependencies.sort((left, right) => left.id.localeCompare(right.id)));
 }
@@ -235,16 +204,6 @@ function decodeConfigurationSchema(value: unknown): ExtensionConfigurationSchema
     properties: Object.freeze(properties),
     required: Object.freeze(required as string[]),
   });
-}
-
-function semanticVersion(value: string): readonly [number, number, number] | undefined {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/u.exec(value);
-  if (!match) return undefined;
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
-}
-
-function compareSemantic(left: readonly number[], right: readonly number[]): number {
-  return left[0]! - right[0]! || left[1]! - right[1]! || left[2]! - right[2]!;
 }
 
 function exactOptional(

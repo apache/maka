@@ -26,7 +26,7 @@ export class PluginHookActivation {
   readonly #ownsRuntime: boolean;
 
   constructor(
-    readonly packageRevision: InstalledEventPackage,
+    readonly installedPackage: InstalledEventPackage,
     readonly configuration: Readonly<Record<string, string | number | boolean>> = Object.freeze({}),
     emitEvent?: PackageEventEmitter,
     callService?: PackageServiceCaller,
@@ -35,7 +35,7 @@ export class PluginHookActivation {
     this.#runtime =
       runtime ??
       new InProcessPackageActivation(
-        asToolPackage(packageRevision),
+        asToolPackage(installedPackage),
         configuration,
         emitEvent,
         callService,
@@ -45,13 +45,13 @@ export class PluginHookActivation {
 
   events(): readonly ExtensionEventDefinition[] {
     return Object.freeze(
-      this.packageRevision.manifest.events.map((event) => Object.freeze({ ...event })),
+      this.installedPackage.manifest.events.map((event) => Object.freeze({ ...event })),
     );
   }
 
   listeners(): readonly ExtensionEventListenerContribution[] {
     return Object.freeze(
-      this.packageRevision.manifest.listeners.map((declaration) =>
+      this.installedPackage.manifest.listeners.map((declaration) =>
         Object.freeze({
           ...declaration,
           invoke: (
@@ -66,7 +66,7 @@ export class PluginHookActivation {
 
   services(): readonly ExtensionServiceContribution[] {
     return Object.freeze(
-      this.packageRevision.manifest.services.map((service) =>
+      this.installedPackage.manifest.services.map((service) =>
         Object.freeze({
           ...service,
           invoke: (method: string, input: unknown, context: ExtensionServiceInvocationContext) => {
@@ -82,7 +82,7 @@ export class PluginHookActivation {
 
   timers(): readonly ExtensionTimerContribution[] {
     return Object.freeze(
-      this.packageRevision.manifest.timers.map((timer) =>
+      this.installedPackage.manifest.timers.map((timer) =>
         Object.freeze({
           ...timer,
           configuration: this.configuration,
@@ -95,17 +95,17 @@ export class PluginHookActivation {
 
   async healthCheck(): Promise<void> {
     if (
-      this.packageRevision.manifest.listeners.length === 0 &&
-      this.packageRevision.manifest.services.length === 0 &&
-      this.packageRevision.manifest.timers.length === 0
+      this.installedPackage.manifest.listeners.length === 0 &&
+      this.installedPackage.manifest.services.length === 0 &&
+      this.installedPackage.manifest.timers.length === 0
     )
       return;
     await this.#runtime.healthCheck([
-      ...this.packageRevision.manifest.listeners.map(({ handler }) => handler),
-      ...this.packageRevision.manifest.services.flatMap(({ methods }) =>
+      ...this.installedPackage.manifest.listeners.map(({ handler }) => handler),
+      ...this.installedPackage.manifest.services.flatMap(({ methods }) =>
         methods.map(({ handler }) => handler),
       ),
-      ...this.packageRevision.manifest.timers.map(({ handler }) => handler),
+      ...this.installedPackage.manifest.timers.map(({ handler }) => handler),
     ]);
   }
 
@@ -176,7 +176,6 @@ function asToolPackage(installed: InstalledEventPackage): InstalledToolPackage {
   const manifest: ToolPackageManifest = Object.freeze({
     schemaVersion: 1,
     id: installed.extensionId,
-    version: installed.manifest.version,
     entry: installed.manifest.entry,
     tools: Object.freeze([
       ...installed.manifest.listeners.map((listener) =>
@@ -213,7 +212,6 @@ function asToolPackage(installed: InstalledEventPackage): InstalledToolPackage {
   });
   return Object.freeze({
     extensionId: installed.extensionId,
-    revision: installed.revision,
     root: installed.root,
     entry: installed.entry,
     manifest,

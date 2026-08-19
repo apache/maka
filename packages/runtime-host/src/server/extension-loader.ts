@@ -2,14 +2,14 @@ import { isCanonicalExtensionId } from '@maka/runtime/plugin-runtime';
 import type {
   ExtensionConfigurationScalar,
   ExtensionPackageContractProjection,
-  TrustedExtensionRevisionProjection,
+  TrustedExtensionProjection,
 } from '../protocol/index.js';
 import type {
-  HostExtensionRevisionInput,
+  HostExtensionInput,
   HostPreparedPluginPackageInput,
-  HostToolExtensionRevisionInput,
-  HostTrustedToolExtensionRevisionInput,
-  HostUiExtensionRevisionInput,
+  HostToolExtensionInput,
+  HostTrustedToolExtensionInput,
+  HostUiExtensionInput,
 } from './extension-runtime.js';
 import type { ExtensionEventInvocationContext } from '@maka/runtime/extension-event-contributions';
 import type { ExtensionServiceInvocationContext } from '@maka/runtime/extension-service-contributions';
@@ -32,7 +32,7 @@ import {
   PluginPackageStoreError,
 } from './plugin-package-store.js';
 
-export type StaticTrustedToolExtensionRevision = HostTrustedToolExtensionRevisionInput;
+export type StaticTrustedToolExtension = HostTrustedToolExtensionInput;
 
 export class HostExtensionLoaderError extends Error {
   readonly name = 'HostExtensionLoaderError';
@@ -47,12 +47,12 @@ export class HostExtensionLoaderError extends Error {
 }
 
 export interface HostTrustedToolExtensionLoader {
-  list(): Promise<readonly TrustedExtensionRevisionProjection[]>;
-  load(extensionId: string, revision: string): Promise<HostExtensionRevisionInput>;
-  installPackage?(sourcePath: string): Promise<TrustedExtensionRevisionProjection>;
-  uninstallPackage?(extensionId: string, revision: string): Promise<void>;
+  list(): Promise<readonly TrustedExtensionProjection[]>;
+  load(extensionId: string): Promise<HostExtensionInput>;
+  installPackage?(sourcePath: string): Promise<TrustedExtensionProjection>;
+  uninstallPackage?(extensionId: string): Promise<void>;
   contracts?(): Promise<readonly ExtensionPackageContractProjection[]>;
-  exportPackage?(extensionId: string, revision: string, targetPath: string): Promise<void>;
+  exportPackage?(extensionId: string, targetPath: string): Promise<void>;
   setConfigurationResolver?(
     resolver: (entryId: string) => Readonly<Record<string, ExtensionConfigurationScalar>>,
   ): void;
@@ -73,26 +73,29 @@ export interface HostTrustedToolExtensionLoader {
       context: ExtensionServiceInvocationContext,
     ) => Promise<unknown>,
   ): void;
+  setUiStatePublisher?(
+    publisher: (extensionId: string, key: string, value: unknown) => Promise<void>,
+  ): void;
 }
 
 /**
- * Loader for Tool revisions explicitly registered by the trusted Host composition.
+ * Loader for Tools explicitly registered by the trusted Host composition.
  *
  * It never resolves a path or executes workspace code. Installed trusted
  * packages use the same lifecycle registry but a dynamic in-process loader.
  */
 export class StaticTrustedToolExtensionLoader implements HostTrustedToolExtensionLoader {
-  readonly #definitions = new Map<string, HostTrustedToolExtensionRevisionInput>();
-  readonly #catalog: readonly TrustedExtensionRevisionProjection[];
+  readonly #definitions = new Map<string, HostTrustedToolExtensionInput>();
+  readonly #catalog: readonly TrustedExtensionProjection[];
 
-  constructor(definitions: readonly StaticTrustedToolExtensionRevision[] = []) {
+  constructor(definitions: readonly StaticTrustedToolExtension[] = []) {
     for (const definition of definitions) {
       assertDefinition(definition);
-      const key = revisionKey(definition.extensionId, definition.revision);
+      const key = definition.extensionId;
       if (this.#definitions.has(key)) {
         throw new HostExtensionLoaderError(
           'invalid_definition',
-          `Trusted Extension revision is registered more than once: ${key}`,
+          `Trusted Extension is registered more than once: ${key}`,
         );
       }
       this.#definitions.set(key, freezeDefinition(definition));
@@ -102,33 +105,25 @@ export class StaticTrustedToolExtensionLoader implements HostTrustedToolExtensio
         .map((definition) =>
           Object.freeze({
             extensionId: definition.extensionId,
-            revision: definition.revision,
             toolNames: Object.freeze(definition.tools.map(({ name }) => name).sort(compareString)),
             uiContributionIds: Object.freeze([]),
             eventContributionIds: Object.freeze([]),
           }),
         )
-        .sort(
-          (left, right) =>
-            compareString(left.extensionId, right.extensionId) ||
-            compareString(left.revision, right.revision),
-        ),
+        .sort((left, right) => compareString(left.extensionId, right.extensionId)),
     );
   }
 
-  async list(): Promise<readonly TrustedExtensionRevisionProjection[]> {
+  async list(): Promise<readonly TrustedExtensionProjection[]> {
     return this.#catalog;
   }
 
-  async load(
-    extensionId: string,
-    revision: string,
-  ): Promise<HostTrustedToolExtensionRevisionInput> {
-    const definition = this.#definitions.get(revisionKey(extensionId, revision));
+  async load(extensionId: string): Promise<HostTrustedToolExtensionInput> {
+    const definition = this.#definitions.get(extensionId);
     if (!definition) {
       throw new HostExtensionLoaderError(
         'not_found',
-        `Trusted Extension revision is not available: ${extensionId}@${revision}`,
+        `Trusted Extension is not available: ${extensionId}`,
       );
     }
     return definition;
@@ -140,14 +135,10 @@ export class StaticTrustedToolExtensionLoader implements HostTrustedToolExtensio
         .map((definition) =>
           Object.freeze({
             extensionId: definition.extensionId,
-            revision: definition.revision,
-            version: definition.revision,
             displayName: definition.extensionId,
             description: '',
             dependencies: Object.freeze(
-              (definition.dependencies ?? []).map(({ extensionId: id }) =>
-                Object.freeze({ id, version: '*' }),
-              ),
+              (definition.dependencies ?? []).map(({ extensionId: id }) => Object.freeze({ id })),
             ),
             configuration: Object.freeze({
               properties: Object.freeze({}),
@@ -165,11 +156,7 @@ export class StaticTrustedToolExtensionLoader implements HostTrustedToolExtensio
             ),
           }),
         )
-        .sort(
-          (left, right) =>
-            compareString(left.extensionId, right.extensionId) ||
-            compareString(left.revision, right.revision),
-        ),
+        .sort((left, right) => compareString(left.extensionId, right.extensionId)),
     );
   }
 }
@@ -195,6 +182,8 @@ export class InstalledPluginPackageLoader implements HostTrustedToolExtensionLoa
   ) => Promise<unknown> = async () => {
     throw new Error('Extension Service calls are unavailable');
   };
+  #publishUiState: (extensionId: string, key: string, value: unknown) => Promise<void> = async () =>
+    undefined;
 
   constructor(
     private readonly statics: StaticTrustedToolExtensionLoader,
@@ -230,34 +219,40 @@ export class InstalledPluginPackageLoader implements HostTrustedToolExtensionLoa
     this.#callService = caller;
   }
 
-  async list(): Promise<readonly TrustedExtensionRevisionProjection[]> {
+  setUiStatePublisher(
+    publisher: (extensionId: string, key: string, value: unknown) => Promise<void>,
+  ): void {
+    this.#publishUiState = publisher;
+  }
+
+  async list(): Promise<readonly TrustedExtensionProjection[]> {
     const combined = [...(await this.statics.list())];
     for (const installed of await this.packages.list()) {
       combined.push(projectPluginPackage(installed));
     }
     const keys = new Set<string>();
     for (const item of combined) {
-      const key = revisionKey(item.extensionId, item.revision);
+      const key = item.extensionId;
       if (keys.has(key)) {
         throw new HostExtensionLoaderError(
           'invalid_definition',
-          `Plugin revision exists in both static and installed catalogs: ${item.extensionId}@${item.revision}`,
+          `Plugin exists in both static and installed catalogs: ${item.extensionId}`,
         );
       }
       keys.add(key);
     }
-    return Object.freeze(combined.sort(compareRevision));
+    return Object.freeze(combined.sort(compareExtension));
   }
 
-  async load(extensionId: string, revision: string): Promise<HostExtensionRevisionInput> {
+  async load(extensionId: string): Promise<HostExtensionInput> {
     try {
-      return await this.statics.load(extensionId, revision);
+      return await this.statics.load(extensionId);
     } catch (error) {
       if (!(error instanceof HostExtensionLoaderError) || error.code !== 'not_found') throw error;
     }
-    const installed = await this.#load(extensionId, revision);
+    const installed = await this.#load(extensionId);
     const { tool, ui, event } = packageViews(installed);
-    return combinedPackageRevisionInput({
+    return combinedPackageInput({
       tool,
       ui: ui
         ? {
@@ -272,10 +267,11 @@ export class InstalledPluginPackageLoader implements HostTrustedToolExtensionLoa
       configurationFor: this.#configurationFor,
       emitEvent: (...args) => this.#emitEvent(...args),
       callService: (...args) => this.#callService(...args),
+      publishUiState: (...args) => this.#publishUiState(...args),
     });
   }
 
-  async installPackage(sourcePath: string): Promise<TrustedExtensionRevisionProjection> {
+  async installPackage(sourcePath: string): Promise<TrustedExtensionProjection> {
     const materialized = await materializeExtensionPackage(
       sourcePath,
       dirname(this.packages.root),
@@ -283,23 +279,15 @@ export class InstalledPluginPackageLoader implements HostTrustedToolExtensionLoa
       throw translatePackageError(error);
     });
     try {
-      const before = new Set(
-        (await this.packages.list()).map((item) => revisionKey(item.extensionId, item.revision)),
-      );
       const installed = await this.packages.install(materialized.root);
       const staticConflict = (await this.statics.list()).some(
-        (item) =>
-          item.extensionId === installed.extensionId && item.revision === installed.revision,
+        (item) => item.extensionId === installed.extensionId,
       );
       if (staticConflict) {
-        if (!before.has(revisionKey(installed.extensionId, installed.revision))) {
-          await this.packages
-            .uninstall(installed.extensionId, installed.revision)
-            .catch(() => undefined);
-        }
+        await this.packages.uninstall(installed.extensionId).catch(() => undefined);
         throw new HostExtensionLoaderError(
           'invalid_definition',
-          `Installed package conflicts with a static revision: ${installed.extensionId}@${installed.revision}`,
+          `Installed package conflicts with a static Extension: ${installed.extensionId}`,
         );
       }
       return projectPluginPackage(installed);
@@ -317,41 +305,37 @@ export class InstalledPluginPackageLoader implements HostTrustedToolExtensionLoa
       contracts.push(projectContract(tool, ui, event, installed.manifest));
     }
     return Object.freeze(
-      contracts.sort(
-        (left, right) =>
-          compareString(left.extensionId, right.extensionId) ||
-          compareString(left.revision, right.revision),
-      ),
+      contracts.sort((left, right) => compareString(left.extensionId, right.extensionId)),
     );
   }
 
-  async exportPackage(extensionId: string, revision: string, targetPath: string): Promise<void> {
-    const installed = await this.#load(extensionId, revision);
+  async exportPackage(extensionId: string, targetPath: string): Promise<void> {
+    const installed = await this.#load(extensionId);
     await exportExtensionBundle(installed.root, targetPath).catch((error) => {
       throw translatePackageError(error);
     });
   }
 
-  async uninstallPackage(extensionId: string, revision: string): Promise<void> {
-    const staticRevision = (await this.statics.list()).some(
-      (item) => item.extensionId === extensionId && item.revision === revision,
+  async uninstallPackage(extensionId: string): Promise<void> {
+    const staticExtension = (await this.statics.list()).some(
+      (item) => item.extensionId === extensionId,
     );
-    if (staticRevision) {
+    if (staticExtension) {
       throw new HostExtensionLoaderError(
         'invalid_definition',
-        `Static Tool Extension revisions cannot be uninstalled: ${extensionId}@${revision}`,
+        `Static Tool Extensions cannot be uninstalled: ${extensionId}`,
       );
     }
     try {
-      await this.packages.uninstall(extensionId, revision);
+      await this.packages.uninstall(extensionId);
     } catch (error) {
       throw translatePackageError(error);
     }
   }
 
-  async #load(extensionId: string, revision: string): Promise<InstalledPluginPackage> {
+  async #load(extensionId: string): Promise<InstalledPluginPackage> {
     try {
-      return await this.packages.load(extensionId, revision);
+      return await this.packages.load(extensionId);
     } catch (error) {
       throw translatePackageError(error);
     }
@@ -368,7 +352,6 @@ function packageViews(installed: InstalledPluginPackage): {
       ? {
           tool: Object.freeze({
             extensionId: installed.extensionId,
-            revision: installed.revision,
             root: installed.root,
             entry: join(installed.root, ...installed.toolManifest.entry.split('/')),
             manifest: installed.toolManifest,
@@ -379,7 +362,6 @@ function packageViews(installed: InstalledPluginPackage): {
       ? {
           ui: Object.freeze({
             extensionId: installed.extensionId,
-            revision: installed.revision,
             root: installed.root,
             manifest: installed.uiManifest,
           }),
@@ -389,7 +371,6 @@ function packageViews(installed: InstalledPluginPackage): {
       ? {
           event: Object.freeze({
             extensionId: installed.extensionId,
-            revision: installed.revision,
             root: installed.root,
             entry: join(installed.root, ...installed.eventManifest.entry.split('/')),
             manifest: installed.eventManifest,
@@ -399,39 +380,35 @@ function packageViews(installed: InstalledPluginPackage): {
   });
 }
 
-function projectPluginPackage(
-  installed: InstalledPluginPackage,
-): TrustedExtensionRevisionProjection {
+function projectPluginPackage(installed: InstalledPluginPackage): TrustedExtensionProjection {
   const { tool, ui, event } = packageViews(installed);
   const projections = [
     tool ? projectPackage(tool) : undefined,
     ui ? projectUiPackage(ui) : undefined,
     event ? projectEventPackage(event) : undefined,
-  ].filter((item): item is TrustedExtensionRevisionProjection => Boolean(item));
+  ].filter((item): item is TrustedExtensionProjection => Boolean(item));
   return projections.reduce(mergeProjection);
 }
 
-function projectPackage(installed: InstalledToolPackage): TrustedExtensionRevisionProjection {
+function projectPackage(installed: InstalledToolPackage): TrustedExtensionProjection {
   return Object.freeze({
     extensionId: installed.extensionId,
-    revision: installed.revision,
     toolNames: Object.freeze(installed.manifest.tools.map(({ name }) => name).sort(compareString)),
     uiContributionIds: Object.freeze([]),
     eventContributionIds: Object.freeze([]),
   });
 }
 
-async function uiPackageRevisionInput(
+async function uiPackageInput(
   store: {
     readDocument(installed: InstalledUiPackage, path: string): Promise<string>;
   },
   installed: InstalledUiPackage,
   metadata?: ExtensionPackageManifest,
-): Promise<HostUiExtensionRevisionInput> {
+): Promise<HostUiExtensionInput> {
   const service = new UiPackageService();
   return Object.freeze({
     extensionId: installed.extensionId,
-    revision: installed.revision,
     ...(metadata?.dependencies.length
       ? {
           dependencies: Object.freeze(
@@ -464,20 +441,18 @@ async function uiPackageRevisionInput(
   });
 }
 
-function projectUiPackage(installed: InstalledUiPackage): TrustedExtensionRevisionProjection {
+function projectUiPackage(installed: InstalledUiPackage): TrustedExtensionProjection {
   return Object.freeze({
     extensionId: installed.extensionId,
-    revision: installed.revision,
     toolNames: Object.freeze([]),
     uiContributionIds: Object.freeze(installed.manifest.ui.map(({ id }) => id).sort(compareString)),
     eventContributionIds: Object.freeze([]),
   });
 }
 
-function projectEventPackage(installed: InstalledEventPackage): TrustedExtensionRevisionProjection {
+function projectEventPackage(installed: InstalledEventPackage): TrustedExtensionProjection {
   return Object.freeze({
     extensionId: installed.extensionId,
-    revision: installed.revision,
     toolNames: Object.freeze([]),
     uiContributionIds: Object.freeze([]),
     eventContributionIds: Object.freeze(
@@ -503,7 +478,7 @@ function projectEventPackage(installed: InstalledEventPackage): TrustedExtension
   });
 }
 
-async function combinedPackageRevisionInput(input: {
+async function combinedPackageInput(input: {
   readonly tool?: InstalledToolPackage;
   readonly ui?: {
     readonly installed: InstalledUiPackage;
@@ -529,16 +504,16 @@ async function combinedPackageRevisionInput(input: {
     payload: unknown,
     context: ExtensionServiceInvocationContext,
   ) => Promise<unknown>;
+  readonly publishUiState: (extensionId: string, key: string, value: unknown) => Promise<void>;
 }): Promise<HostPreparedPluginPackageInput> {
   const installed = input.tool ?? input.ui?.installed ?? input.event;
   if (!installed) throw new HostExtensionLoaderError('not_found', 'Extension package is missing');
   const uiInput = input.ui
-    ? await uiPackageRevisionInput(input.ui.store, input.ui.installed, input.metadata)
+    ? await uiPackageInput(input.ui.store, input.ui.installed, input.metadata)
     : undefined;
   const configurationFor = input.configurationFor;
   return Object.freeze({
     extensionId: installed.extensionId,
-    revision: installed.revision,
     ...(input.metadata?.dependencies.length
       ? {
           dependencies: Object.freeze(
@@ -627,7 +602,21 @@ async function combinedPackageRevisionInput(input: {
           )
         : undefined;
       return {
-        tools: toolActivation?.tools() ?? Object.freeze([]),
+        tools: Object.freeze(
+          (toolActivation?.tools() ?? []).map((tool) => {
+            const stateKey = input.tool?.manifest.tools.find(({ name }) => name === tool.name)
+              ?.visualization?.stateKey;
+            if (!stateKey) return tool;
+            return Object.freeze({
+              ...tool,
+              impl: async (...args: Parameters<typeof tool.impl>) => {
+                const result = await tool.impl(...args);
+                await input.publishUiState(installed.extensionId, stateKey, result);
+                return result;
+              },
+            });
+          }),
+        ),
         ...(eventActivation
           ? {
               events: eventActivation.events(),
@@ -655,12 +644,11 @@ async function combinedPackageRevisionInput(input: {
 }
 
 function mergeProjection(
-  left: TrustedExtensionRevisionProjection,
-  right: TrustedExtensionRevisionProjection,
-): TrustedExtensionRevisionProjection {
+  left: TrustedExtensionProjection,
+  right: TrustedExtensionProjection,
+): TrustedExtensionProjection {
   return Object.freeze({
     extensionId: left.extensionId,
-    revision: left.revision,
     toolNames: Object.freeze(
       [...new Set([...left.toolNames, ...right.toolNames])].sort(compareString),
     ),
@@ -707,15 +695,11 @@ function projectContract(
 ): ExtensionPackageContractProjection {
   const installed = tool ?? ui ?? event;
   if (!installed) throw new HostExtensionLoaderError('not_found', 'Extension package is missing');
-  const version =
-    metadata?.version ?? tool?.manifest.version ?? ui?.manifest.version ?? event!.manifest.version;
   return Object.freeze({
     extensionId: installed.extensionId,
-    revision: installed.revision,
-    version,
     displayName: metadata?.displayName ?? installed.extensionId,
     description: metadata?.description ?? '',
-    dependencies: Object.freeze(metadata?.dependencies ?? []),
+    dependencies: Object.freeze(metadata?.dependencies.map(({ id }) => ({ id })) ?? []),
     configuration:
       metadata?.configuration ??
       Object.freeze({ properties: Object.freeze({}), required: Object.freeze([]) }),
@@ -791,7 +775,7 @@ function translatePackageError(error: unknown): HostExtensionLoaderError {
   });
 }
 
-function assertDefinition(definition: HostTrustedToolExtensionRevisionInput): void {
+function assertDefinition(definition: HostTrustedToolExtensionInput): void {
   if (!definition || typeof definition !== 'object') {
     throw new HostExtensionLoaderError('invalid_definition', 'Trusted Extension is required');
   }
@@ -799,17 +783,6 @@ function assertDefinition(definition: HostTrustedToolExtensionRevisionInput): vo
     throw new HostExtensionLoaderError(
       'invalid_definition',
       'Trusted Extension extensionId is invalid',
-    );
-  }
-  if (
-    typeof definition.revision !== 'string' ||
-    definition.revision.length === 0 ||
-    Buffer.byteLength(definition.revision, 'utf8') > 128 ||
-    /[\r\n]/u.test(definition.revision)
-  ) {
-    throw new HostExtensionLoaderError(
-      'invalid_definition',
-      'Trusted Extension revision is invalid',
     );
   }
   if (!Array.isArray(definition.tools) || definition.tools.length === 0) {
@@ -845,11 +818,10 @@ function assertDefinition(definition: HostTrustedToolExtensionRevisionInput): vo
 }
 
 function freezeDefinition(
-  definition: HostTrustedToolExtensionRevisionInput,
-): HostTrustedToolExtensionRevisionInput {
+  definition: HostTrustedToolExtensionInput,
+): HostTrustedToolExtensionInput {
   return Object.freeze({
     extensionId: definition.extensionId,
-    revision: definition.revision,
     tools: Object.freeze(definition.tools.map((tool) => Object.freeze({ ...tool }))),
     ...(definition.dependencies
       ? {
@@ -862,18 +834,11 @@ function freezeDefinition(
   });
 }
 
-function revisionKey(extensionId: string, revision: string): string {
-  return `${extensionId}\u0000${revision}`;
-}
-
-function compareRevision(
-  left: TrustedExtensionRevisionProjection,
-  right: TrustedExtensionRevisionProjection,
+function compareExtension(
+  left: TrustedExtensionProjection,
+  right: TrustedExtensionProjection,
 ): number {
-  return (
-    compareString(left.extensionId, right.extensionId) ||
-    compareString(left.revision, right.revision)
-  );
+  return compareString(left.extensionId, right.extensionId);
 }
 
 function compareString(left: string, right: string): number {

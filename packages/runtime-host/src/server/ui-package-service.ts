@@ -4,14 +4,14 @@ import { InProcessPackageActivation } from './in-process-package-runtime.js';
 import type { InstalledToolPackage, ToolPackageManifest } from './plugin-runtime-manifest.js';
 import type { InstalledUiPackage } from './plugin-ui-manifest.js';
 
-/** Executes a trusted UI revision's package-private Host methods in process. */
+/** Executes a trusted UI package's private Host methods in process. */
 export class UiPackageService {
   async healthCheck(installed: InstalledUiPackage): Promise<void> {
     if (!installed.manifest.host) return;
-    const packageRevision = asRuntimePackage(installed);
-    const activation = new InProcessPackageActivation(packageRevision);
+    const runtimePackage = asRuntimePackage(installed);
+    const activation = new InProcessPackageActivation(runtimePackage);
     try {
-      await activation.healthCheck(packageRevision.manifest.tools.map(({ handler }) => handler));
+      await activation.healthCheck(runtimePackage.manifest.tools.map(({ handler }) => handler));
     } finally {
       await activation.dispose();
     }
@@ -28,7 +28,7 @@ export class UiPackageService {
     const activation = new InProcessPackageActivation(asRuntimePackage(installed));
     const context: MakaToolContext = {
       sessionId: `ui:${installed.extensionId}`,
-      turnId: installed.revision,
+      turnId: `ui-host:${methodName}`,
       cwd: installed.root,
       toolCallId: `ui-host:${methodName}`,
       abortSignal: signal,
@@ -48,7 +48,6 @@ function asRuntimePackage(installed: InstalledUiPackage): InstalledToolPackage {
   const manifest: ToolPackageManifest = {
     schemaVersion: 1,
     id: installed.extensionId,
-    version: installed.manifest.version,
     entry: host.entry,
     tools: Object.freeze(
       host.methods.map(({ name, handler }) =>
@@ -69,7 +68,6 @@ function asRuntimePackage(installed: InstalledUiPackage): InstalledToolPackage {
   };
   return Object.freeze({
     extensionId: installed.extensionId,
-    revision: installed.revision,
     root: installed.root,
     entry: join(installed.root, ...host.entry.split('/')),
     manifest: Object.freeze(manifest),

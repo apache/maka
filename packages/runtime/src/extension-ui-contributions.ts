@@ -27,7 +27,7 @@ export interface ExtensionUiContributionInspection {
   readonly scopeId: string;
   readonly entryId: string;
   readonly extensionId: string;
-  readonly revision: string;
+  readonly generation: number;
   readonly id: string;
   readonly surface: ExtensionUiSurface;
   readonly slot?: string;
@@ -45,7 +45,7 @@ export type ExtensionUiReadiness = 'pending' | 'ready' | 'failed';
 
 export interface ExtensionUiReadinessInspection {
   readonly entryId: string;
-  readonly revision: string;
+  readonly generation: number;
   readonly status: ExtensionUiReadiness;
   readonly diagnostic?: string;
 }
@@ -70,7 +70,7 @@ interface RegisteredUi extends ExtensionUiContributionInspection {
  *
  * Entries are retained by activation token rather than overwritten. That is
  * important during current/candidate updates: readers select only the exact
- * revisions committed by the lifecycle kernel, so an activating candidate is
+ * Fiber generations committed by the lifecycle kernel, so an activating candidate is
  * never exposed before the Entry commit and the current UI never blinks out.
  */
 export class ExtensionUiContributionRegistry {
@@ -80,7 +80,7 @@ export class ExtensionUiContributionRegistry {
   setReadiness(
     scopeId: string,
     entryId: string,
-    revision: string,
+    generation: number,
     status: ExtensionUiReadiness,
     diagnostic?: string,
   ): void {
@@ -89,7 +89,7 @@ export class ExtensionUiContributionRegistry {
       `${scopeId}\u0000${entryId}`,
       Object.freeze({
         entryId,
-        revision,
+        generation,
         status,
         ...(diagnostic ? { diagnostic } : {}),
       }),
@@ -105,7 +105,7 @@ export class ExtensionUiContributionRegistry {
   }
 
   register(
-    context: Pick<MakaContributionContext, 'entryId' | 'scopeId' | 'extensionId' | 'revision'>,
+    context: Pick<MakaContributionContext, 'entryId' | 'scopeId' | 'extensionId' | 'generation'>,
     contribution: ExtensionUiContribution,
   ): () => void {
     validateContext(context);
@@ -119,7 +119,7 @@ export class ExtensionUiContributionRegistry {
     if (conflict) {
       throw new ExtensionUiContributionError(
         'ui_id_conflict',
-        `UI contribution "${contribution.id}" is already owned by ${conflict.extensionId}@${conflict.revision}`,
+        `UI contribution "${contribution.id}" is already owned by entry ${conflict.entryId}`,
       );
     }
     const entry: RegisteredUi = Object.freeze({
@@ -129,7 +129,7 @@ export class ExtensionUiContributionRegistry {
       entryId: context.entryId,
       scopeId: context.scopeId,
       extensionId: context.extensionId,
-      revision: context.revision,
+      generation: context.generation,
       ...contribution,
       slots: Object.freeze([...(contribution.slots ?? [])]),
       hostState: contribution.hostState === true,
@@ -155,13 +155,13 @@ export class ExtensionUiContributionRegistry {
 
   inspect(
     scopeId: string,
-    committed: readonly { readonly entryId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly generation: number }[],
   ): readonly ExtensionUiContributionInspection[] {
     validateIdentity('scopeId', scopeId);
-    const revisions = new Map(committed.map(({ entryId, revision }) => [entryId, revision]));
+    const generations = new Map(committed.map(({ entryId, generation }) => [entryId, generation]));
     return Object.freeze(
       (this.#byScope.get(scopeId) ?? [])
-        .filter((entry) => revisions.get(entry.entryId) === entry.revision)
+        .filter((entry) => generations.get(entry.entryId) === entry.generation)
         .map(({ token: _token, ...entry }) => Object.freeze(entry))
         .sort(compareUi),
     );
@@ -256,13 +256,13 @@ export function validateExtensionUiContribution(contribution: ExtensionUiContrib
 }
 
 function validateContext(
-  context: Pick<MakaContributionContext, 'entryId' | 'scopeId' | 'extensionId' | 'revision'>,
+  context: Pick<MakaContributionContext, 'entryId' | 'scopeId' | 'extensionId' | 'generation'>,
 ): void {
   validateIdentity('entryId', context.entryId);
   validateIdentity('scopeId', context.scopeId);
   validateIdentity('extensionId', context.extensionId);
-  if (!context.revision || typeof context.revision !== 'string') {
-    throw new ExtensionUiContributionError('invalid_ui', 'Revision is required');
+  if (!Number.isSafeInteger(context.generation) || context.generation <= 0) {
+    throw new ExtensionUiContributionError('invalid_ui', 'Fiber generation is required');
   }
 }
 

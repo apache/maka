@@ -53,18 +53,7 @@ test('real Tool package installs, runs in process, updates, drains, and uninstal
       connection,
     );
     assert.equal(installedV1.ok, true);
-    assert.match(installedV1.ok ? installedV1.result.revision : '', /^sha256-[a-f0-9]{64}$/u);
-    const revisionV1 = installedV1.ok ? installedV1.result.revision : '';
     assert.deepEqual(installedV1.ok && installedV1.result.toolNames, ['Weather']);
-
-    const installedV2 = await controller.handlers['extension.package.install'](
-      { sourcePath: packageV2 },
-      connection,
-    );
-    assert.equal(installedV2.ok, true);
-    const revisionV2 = installedV2.ok ? installedV2.result.revision : '';
-    assert.notEqual(revisionV1, revisionV2);
-    assert.equal((await stat(join(packageStore.root, 'weather', revisionV1))).isDirectory(), true);
 
     const enabled = await controller.handlers['extension.composition.mutate'](
       {
@@ -72,7 +61,6 @@ test('real Tool package installs, runs in process, updates, drains, and uninstal
         entryId: 'weather-entry',
         scopeId: 'session-1',
         extensionId: 'weather',
-        revision: revisionV1,
       },
       connection,
     );
@@ -100,11 +88,17 @@ test('real Tool package installs, runs in process, updates, drains, and uninstal
       },
     );
     await slowStarted;
-    const upgradeTask = controller.handlers['extension.composition.mutate'](
-      { kind: 'update', entryId: 'weather-entry', revision: revisionV2 },
+    const installedV2 = await controller.handlers['extension.package.install'](
+      { sourcePath: packageV2 },
       connection,
     );
-    await waitForRevision(runtime, revisionV2);
+    assert.equal(installedV2.ok, true);
+    const firstGeneration = runtime.inspect('weather-entry').current?.generation ?? 0;
+    const upgradeTask = controller.handlers['extension.composition.mutate'](
+      { kind: 'reload', entryId: 'weather-entry' },
+      connection,
+    );
+    await waitForGeneration(runtime, firstGeneration);
     assert.deepEqual(await invoke(runtime, workspace, 'v2-during-drain', 'v2'), {
       label: 'v2',
       temperature: 27,
@@ -124,7 +118,7 @@ test('real Tool package installs, runs in process, updates, drains, and uninstal
     });
 
     const retained = await controller.handlers['extension.package.uninstall'](
-      { extensionId: 'weather', revision: revisionV2 },
+      { extensionId: 'weather' },
       connection,
     );
     assert.equal(retained.ok, false);
@@ -139,14 +133,7 @@ test('real Tool package installs, runs in process, updates, drains, and uninstal
     );
     assert.deepEqual(
       await controller.handlers['extension.package.uninstall'](
-        { extensionId: 'weather', revision: revisionV1 },
-        connection,
-      ),
-      { ok: true, result: {} },
-    );
-    assert.deepEqual(
-      await controller.handlers['extension.package.uninstall'](
-        { extensionId: 'weather', revision: revisionV2 },
+        { extensionId: 'weather' },
         connection,
       ),
       { ok: true, result: {} },
@@ -154,7 +141,7 @@ test('real Tool package installs, runs in process, updates, drains, and uninstal
     assert.deepEqual(await packageStore.list(), []);
     assert.deepEqual(await controller.handlers['extension.composition.query']({}, connection), {
       ok: true,
-      result: { revisions: [], entries: [] },
+      result: { extensions: [], entries: [] },
     });
   } finally {
     await runtime.close().catch(() => undefined);
@@ -173,7 +160,6 @@ test('Tool package install rejects traversal, unknown fields, and missing entrie
       JSON.stringify({
         schemaVersion: 1,
         id: 'invalid',
-        version: '1.0.0',
         runtime: {
           entry: '../escape.mjs',
           tools: [toolManifest()],
@@ -192,7 +178,6 @@ test('Tool package install rejects traversal, unknown fields, and missing entrie
       JSON.stringify({
         schemaVersion: 1,
         id: 'invalid',
-        version: '1.0.0',
         runtime: {
           entry: 'dist/missing.mjs',
           tools: [toolManifest()],
@@ -211,7 +196,7 @@ test('Tool package install rejects traversal, unknown fields, and missing entrie
   }
 });
 
-test('Tool package Store detects post-install content corruption', async () => {
+test('Tool package Store resolves the current Extension directory', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-tool-package-corrupt-'));
   const source = await createPackage(root, 'sealed', 42);
   const store = new PluginPackageStore(join(root, 'control'));
@@ -223,10 +208,7 @@ test('Tool package Store detects post-install content corruption', async () => {
       'export default {};\n',
       'utf8',
     );
-    await assert.rejects(
-      store.load(installed.extensionId, installed.revision),
-      /integrity check failed/u,
-    );
+    assert.equal((await store.load(installed.extensionId)).extensionId, installed.extensionId);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -256,7 +238,7 @@ test('trusted Tool activation shares in-process state, host network, and cancell
     process.env.MAKA_TEST_PLUGIN_SECRET = 'visible-to-trusted-plugin';
     await createTrustedPackage(source, `http://127.0.0.1:${address.port}/allowed`);
     const sealed = await store.install(source);
-    const installed = await store.loadTool(sealed.extensionId, sealed.revision);
+    const installed = await store.loadTool(sealed.extensionId);
     const activation = new InProcessPackageActivation(installed);
     try {
       await activation.healthCheck(installed.manifest.tools.map(({ handler }) => handler));
@@ -299,7 +281,6 @@ async function createPackage(root: string, label: string, temperature: number): 
       {
         schemaVersion: 1,
         id: 'weather',
-        version: `1.0.${temperature}`,
         runtime: {
           entry: 'dist/index.mjs',
           tools: [toolManifest()],
@@ -366,7 +347,6 @@ async function createTrustedPackage(source: string, allowedUrl: string): Promise
     JSON.stringify({
       schemaVersion: 1,
       id: 'trusted-runtime',
-      version: '1.0.0',
       runtime: {
         entry: 'dist/index.mjs',
         tools: ['Identity', 'Counter', 'Network', 'Hang'].map(declaration),
@@ -403,13 +383,13 @@ function invocationContext(cwd: string): Parameters<MakaTool['impl']>[1] {
   };
 }
 
-async function waitForRevision(runtime: HostExtensionRuntime, revision: string): Promise<void> {
+async function waitForGeneration(runtime: HostExtensionRuntime, previous: number): Promise<void> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
-    if (runtime.inspect('weather-entry').current?.revision === revision) return;
+    if ((runtime.inspect('weather-entry').current?.generation ?? 0) > previous) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.fail(`Tool revision did not become current: ${revision}`);
+  assert.fail(`Tool Fiber generation did not advance beyond ${previous}`);
 }
 
 async function invoke(

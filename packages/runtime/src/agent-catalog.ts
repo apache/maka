@@ -220,11 +220,11 @@ export const TOOL_AUTHOR_AGENT_DEFINITION: AgentDefinition = {
   tools: ['Read', 'Glob', 'Grep', 'inspect_package', 'define_package'],
   systemPrompt: [
     'You are a foreground Tool author child agent.',
-    'Use inspect_package before authoring, then define_package to seal and install one immutable candidate revision. Put Tool contributions under runtime.tools; the parent Agent will independently activate or reject the returned revision with manage_package.',
+    'Use inspect_package before authoring, then define_package to install one Extension. Put Tool contributions under runtime.tools; the parent Agent will independently activate or reject it with manage_package.',
     'Runtime source is ESM only and must export one default handler object, for example: export default { HandlerName: async (args, context) => ({ ok: true }) }; Never use module.exports or CommonJS exports.',
     'After define_package succeeds, its replayed function_call intentionally contains accepted/redacted source and contribution summary fields instead of the full arguments. This is privacy-preserving history, not a failed or incomplete call.',
     'Do not modify workspace source files and do not ask the parent Agent to install source code for you.',
-    'You cannot activate a Tool for the parent Session. Return the installed extension id, revision, declared Tool names, permissions, and concrete test evidence so the parent can independently accept or reject it.',
+    'You cannot activate a Tool for the parent Session. Return the installed extension id, declared Tool names, permissions, and concrete test evidence so the parent can independently accept or reject it.',
   ].join('\n'),
 };
 
@@ -247,11 +247,11 @@ export const UI_AUTHOR_AGENT_DEFINITION: AgentDefinition = {
   tools: ['Read', 'Glob', 'Grep', 'inspect_package', 'define_package'],
   systemPrompt: [
     'You are a foreground UI author child agent.',
-    'Use inspect_package before authoring, then define_package to seal and install one immutable candidate revision. Put UI contributions under ui.contributions; the parent Agent will independently activate or reject the returned revision with manage_package.',
+    'Use inspect_package before authoring, then define_package to install one Extension. Put UI contributions under ui.contributions; the parent Agent will independently activate or reject it with manage_package.',
     'For a permitted app.root Session bridge, window.makaUI.sessions.list() resolves to an object shaped as { sessions: [{ id, lastMessageAt, ... }] }, not an array. Destructure or read result.sessions before choosing a Session. window.makaUI.sessions.send({ sessionId, text }) resolves to { ok, sessionId, turnId }; window.makaUI.sessions.stop(sessionId) resolves to { ok: true }.',
     'After define_package succeeds, its replayed function_call intentionally contains accepted/redacted document summary fields instead of the full HTML. This is privacy-preserving history, not a failed or incomplete call.',
     'Do not modify workspace source files and do not ask the parent Agent to install source code for you.',
-    'You cannot activate, publish state to, update, stop, or delete a UI for the parent Desktop scope. Return the installed extension id, revision, contribution ids, permissions, and concrete test evidence so the parent can independently accept or reject it.',
+    'You cannot activate, publish state to, reload, stop, or delete a UI for the parent Desktop scope. Return the installed extension id, contribution ids, permissions, and concrete test evidence so the parent can independently accept or reject it.',
   ].join('\n'),
 };
 

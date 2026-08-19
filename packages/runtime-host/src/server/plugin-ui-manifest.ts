@@ -1,19 +1,9 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { constants, type Dirent } from 'node:fs';
-import { mkdir, open, readdir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
-import { dirname, isAbsolute, join, posix, resolve } from 'node:path';
+import { posix } from 'node:path';
 import { isCanonicalExtensionId } from '@maka/runtime/plugin-runtime';
 import {
-  EXTENSION_UI_DOCUMENT_MAX_BYTES,
   EXTENSION_UI_SURFACES,
   type ExtensionUiSurface,
 } from '@maka/runtime/extension-ui-contributions';
-
-const MANIFEST_FILE = 'maka.extension.json';
-const MAX_FILES = 64;
-const MAX_FILE_BYTES = EXTENSION_UI_DOCUMENT_MAX_BYTES;
-const MAX_PACKAGE_BYTES = 2 * 1024 * 1024;
-const REVISION_PATTERN = /^sha256-[a-f0-9]{64}$/u;
 
 export interface UiPackageManifestContribution {
   readonly id: string;
@@ -37,7 +27,6 @@ export interface UiPackageManifestHost {
 export interface UiPackageManifest {
   readonly schemaVersion: 1;
   readonly id: string;
-  readonly version: string;
   readonly ui: readonly UiPackageManifestContribution[];
   readonly host?: UiPackageManifestHost;
   readonly permissions: {
@@ -49,7 +38,6 @@ export interface UiPackageManifest {
 
 export interface InstalledUiPackage {
   readonly extensionId: string;
-  readonly revision: string;
   readonly root: string;
   readonly manifest: UiPackageManifest;
 }
@@ -65,17 +53,11 @@ export class PluginUiManifestError extends Error {
   }
 }
 
-interface PackageFile {
-  readonly path: string;
-  readonly content: Buffer;
-}
-
-/** Content-addressed, root-private storage for client-only UI packages. */
+/** Decode client contributions from the unified Extension manifest. */
 export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
   const root = exactRecord(value, [
     'schemaVersion',
     'id',
-    'version',
     ...(value && typeof value === 'object' && Object.hasOwn(value, 'displayName')
       ? ['displayName']
       : []),
@@ -101,7 +83,6 @@ export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
   );
   if (root.schemaVersion !== 1) throw invalidPackage('Extension schemaVersion must be 1');
   const id = requireId(root.id);
-  const version = boundedString(root.version, 'version', 128);
   if (
     !Array.isArray(record.contributions) ||
     record.contributions.length === 0 ||
@@ -183,7 +164,6 @@ export function decodeUiPackageManifest(value: unknown): UiPackageManifest {
   return Object.freeze({
     schemaVersion: 1,
     id,
-    version,
     ui: Object.freeze(ui),
     ...(host ? { host } : {}),
     permissions: Object.freeze({
@@ -219,141 +199,6 @@ function decodeHost(value: unknown): UiPackageManifestHost {
   return Object.freeze({ entry, methods: Object.freeze(methods) });
 }
 
-function validateHostFiles(manifest: UiPackageManifest, files: readonly PackageFile[]): void {
-  if (!manifest.host) return;
-  if (!files.some(({ path }) => path === manifest.host!.entry)) {
-    throw invalidPackage(`UI Host entry does not exist: ${manifest.host.entry}`);
-  }
-}
-
-async function readSourcePackage(sourcePath: string): Promise<readonly PackageFile[]> {
-  if (typeof sourcePath !== 'string' || !isAbsolute(sourcePath)) {
-    throw invalidPackage('UI package sourcePath must be absolute');
-  }
-  let root: string;
-  try {
-    root = await realpath(resolve(sourcePath));
-    if (!(await stat(root)).isDirectory())
-      throw invalidPackage('UI package source is not a directory');
-  } catch (error) {
-    if (error instanceof PluginUiManifestError) throw error;
-    throw invalidPackage('UI package source directory is unavailable', error);
-  }
-  const paths: string[] = [];
-  await collectFiles(root, '', paths);
-  if (paths.length === 0 || paths.length > MAX_FILES)
-    throw invalidPackage('UI package file count is invalid');
-  let total = 0;
-  const files: PackageFile[] = [];
-  for (const path of paths.sort(compareString)) {
-    let handle: Awaited<ReturnType<typeof open>> | undefined;
-    try {
-      handle = await open(
-        join(root, ...path.split('/')),
-        constants.O_RDONLY | constants.O_NOFOLLOW,
-      );
-      const metadata = await handle.stat();
-      if (!metadata.isFile() || metadata.size > MAX_FILE_BYTES)
-        throw invalidPackage(`UI package file is invalid: ${path}`);
-      const content = await handle.readFile();
-      total += content.byteLength;
-      if (total > MAX_PACKAGE_BYTES) throw invalidPackage('UI package exceeds its size limit');
-      files.push(Object.freeze({ path, content }));
-    } finally {
-      await handle?.close().catch(() => undefined);
-    }
-  }
-  return Object.freeze(files);
-}
-
-async function collectFiles(root: string, directory: string, paths: string[]): Promise<void> {
-  const entries = await readdir(directory ? join(root, ...directory.split('/')) : root, {
-    withFileTypes: true,
-  });
-  for (const entry of entries.sort(compareDirent)) {
-    if (entry.name === '.git') continue;
-    const path = directory ? `${directory}/${entry.name}` : entry.name;
-    packagePath(path, 'file path');
-    if (entry.isSymbolicLink())
-      throw invalidPackage(`UI package may not contain symlinks: ${path}`);
-    if (entry.isDirectory()) await collectFiles(root, path, paths);
-    else if (entry.isFile()) paths.push(path);
-    else throw invalidPackage(`UI package contains unsupported entry: ${path}`);
-    if (paths.length > MAX_FILES) throw invalidPackage('UI package contains too many files');
-  }
-}
-
-async function writeStoredFile(root: string, file: PackageFile): Promise<void> {
-  const target = join(root, ...file.path.split('/'));
-  await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-  const handle = await open(target, 'wx', 0o600);
-  try {
-    await handle.writeFile(file.content);
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-}
-
-async function syncTree(root: string, files: readonly PackageFile[]): Promise<void> {
-  const directories = new Set<string>([root]);
-  for (const file of files) {
-    let directory = dirname(join(root, ...file.path.split('/')));
-    while (directory.startsWith(root)) {
-      directories.add(directory);
-      if (directory === root) break;
-      directory = dirname(directory);
-    }
-  }
-  for (const directory of [...directories].sort((left, right) => right.length - left.length)) {
-    await syncDirectory(directory);
-  }
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-}
-
-function validateHtml(content: Buffer, path: string): void {
-  if (content.byteLength === 0 || content.byteLength > EXTENSION_UI_DOCUMENT_MAX_BYTES) {
-    throw invalidPackage(`UI document is empty or too large: ${path}`);
-  }
-  let text: string;
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(content);
-  } catch (error) {
-    throw invalidPackage(`UI document is not valid UTF-8 text: ${path}`, error);
-  }
-  if (/\0/u.test(text)) {
-    throw invalidPackage(`UI document is not valid UTF-8 text: ${path}`);
-  }
-}
-
-function packageRevision(files: readonly PackageFile[]): string {
-  const hash = createHash('sha256');
-  for (const file of files) {
-    const path = Buffer.from(file.path, 'utf8');
-    const length = Buffer.allocUnsafe(8);
-    length.writeBigUInt64BE(BigInt(path.byteLength));
-    hash.update(length).update(path);
-    length.writeBigUInt64BE(BigInt(file.content.byteLength));
-    hash.update(length).update(file.content);
-  }
-  return `sha256-${hash.digest('hex')}`;
-}
-
-/** Read compatibility for UI revisions sealed before Tool/UI shared one package hash. */
-function legacyPackageRevision(files: readonly PackageFile[]): string {
-  const hash = createHash('sha256');
-  for (const file of files) hash.update(file.path).update('\0').update(file.content).update('\0');
-  return `sha256-${hash.digest('hex')}`;
-}
-
 function packagePath(value: unknown, label: string): string {
   const path = boundedString(value, label, 512);
   if (
@@ -371,10 +216,6 @@ function requireId(value: unknown): string {
   const id = boundedString(value, 'id', 128);
   if (!isCanonicalExtensionId(id)) throw invalidPackage('UI package id is invalid');
   return id;
-}
-
-function requireRevision(value: string): void {
-  if (!REVISION_PATTERN.test(value)) throw invalidPackage('UI package revision is invalid');
 }
 
 function boundedString(value: unknown, label: string, maxBytes: number): string {
@@ -401,25 +242,10 @@ function exactRecord(value: unknown, keys: readonly string[]): Record<string, un
   return record;
 }
 
-function parseJson(content: Buffer): unknown {
-  try {
-    return JSON.parse(content.toString('utf8'));
-  } catch (error) {
-    throw invalidPackage('UI package manifest is not valid JSON', error);
-  }
-}
-
 function invalidPackage(message: string, cause?: unknown): PluginUiManifestError {
   return new PluginUiManifestError('invalid_package', message, { cause });
 }
 
-function persistenceFailure(message: string, cause?: unknown): PluginUiManifestError {
-  return new PluginUiManifestError('persistence_failed', message, { cause });
-}
-
-function compareDirent(left: Dirent, right: Dirent): number {
-  return compareString(left.name, right.name);
-}
 function compareString(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }

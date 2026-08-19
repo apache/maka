@@ -20,14 +20,12 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
       entryId: 'weather-entry',
       scopeId: 'session:1',
       extensionId: 'dev.maka.weather',
-      revision: '2',
     }),
     {
       kind: 'enable',
       entryId: 'weather-entry',
       scopeId: 'session:1',
       extensionId: 'dev.maka.weather',
-      revision: '2',
     },
   );
   assert.deepEqual(
@@ -35,11 +33,9 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
       packages: [
         {
           extensionId: 'dev.maka.weather',
-          revision: 'sha256-demo',
-          version: '1.2.0',
           displayName: 'Weather',
           description: '',
-          dependencies: [{ id: 'dev.maka.http', version: '^1.0.0' }],
+          dependencies: [{ id: 'dev.maka.http' }],
           configuration: {
             properties: {
               apiKey: { type: 'string', secret: true },
@@ -71,8 +67,6 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
       packages: [
         {
           extensionId: 'dev.maka.policy',
-          revision: 'sha256-demo',
-          version: '1.0.0',
           displayName: 'Policy',
           description: '',
           dependencies: [],
@@ -88,8 +82,6 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
       packages: [
         {
           extensionId: 'dev.maka.events',
-          revision: 'sha256-demo',
-          version: '1.0.0',
           displayName: 'Events',
           description: '',
           dependencies: [],
@@ -116,12 +108,10 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
   assert.deepEqual(
     decodeExtensionPackageExportInput({
       extensionId: 'dev.maka.weather',
-      revision: 'sha256-demo',
       targetPath: '/tmp/weather.maka-extension',
     }),
     {
       extensionId: 'dev.maka.weather',
-      revision: 'sha256-demo',
       targetPath: '/tmp/weather.maka-extension',
     },
   );
@@ -130,7 +120,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
       scopeId: 'desktop-ui',
       entryId: 'ui-entry',
       extensionId: 'dev.maka.appearance',
-      revision: '2',
+      generation: 2,
       method: 'lookup',
       args: { query: 'Maka' },
     }),
@@ -138,7 +128,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
       scopeId: 'desktop-ui',
       entryId: 'ui-entry',
       extensionId: 'dev.maka.appearance',
-      revision: '2',
+      generation: 2,
       method: 'lookup',
       args: { query: 'Maka' },
     },
@@ -151,7 +141,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
         {
           entryId: 'ui-entry',
           extensionId: 'dev.maka.appearance',
-          revision: '2',
+          generation: 2,
           id: 'root',
           surface: 'app.root',
           priority: 100,
@@ -163,7 +153,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
         {
           entryId: 'legacy-overlay-entry',
           extensionId: 'dev.maka.legacy-overlay',
-          revision: '1',
+          generation: 1,
           id: 'legacy-overlay',
           surface: 'app.overlay',
           priority: 10,
@@ -180,7 +170,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
         {
           entryId: 'ui-entry',
           extensionId: 'dev.maka.appearance',
-          revision: '2',
+          generation: 2,
           id: 'root',
           surface: 'app.root',
           priority: 100,
@@ -192,7 +182,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
         {
           entryId: 'legacy-overlay-entry',
           extensionId: 'dev.maka.legacy-overlay',
-          revision: '1',
+          generation: 1,
           id: 'legacy-overlay',
           surface: 'app.overlay',
           priority: 10,
@@ -205,10 +195,9 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
   );
   assert.deepEqual(
     decodeExtensionCompositionQueryResult({
-      revisions: [
+      extensions: [
         {
           extensionId: 'dev.maka.weather',
-          revision: '2',
           toolNames: ['Weather'],
           uiContributionIds: [],
           eventContributionIds: [],
@@ -219,7 +208,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
           entryId: 'weather-entry',
           scopeId: 'session:1',
           extensionId: 'dev.maka.weather',
-          revision: '2',
+          generation: 2,
           enabled: true,
           status: 'active',
           error: null,
@@ -227,10 +216,9 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
       ],
     }),
     {
-      revisions: [
+      extensions: [
         {
           extensionId: 'dev.maka.weather',
-          revision: '2',
           toolNames: ['Weather'],
           uiContributionIds: [],
           eventContributionIds: [],
@@ -241,7 +229,7 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
           entryId: 'weather-entry',
           scopeId: 'session:1',
           extensionId: 'dev.maka.weather',
-          revision: '2',
+          generation: 2,
           enabled: true,
           status: 'active',
           error: null,
@@ -257,7 +245,6 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
         entryId: 'weather-entry',
         scopeId: 'session-1',
         extensionId: 'weather',
-        revision: '2',
         modulePath: '/tmp/untrusted.mjs',
       }),
     /Unknown extension enable input field/,
@@ -265,11 +252,11 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
   assert.throws(
     () =>
       decodeExtensionCompositionMutateInput({
-        kind: 'update',
+        kind: 'reload',
         entryId: 'weather-entry',
-        revision: 'bad\nrevision',
+        extra: true,
       }),
-    /Invalid extension revision/,
+    /Unknown extension reload input field/,
   );
   assert.deepEqual(decodeToolPackageInstallInput({ sourcePath: '/tmp/weather-tool' }), {
     sourcePath: '/tmp/weather-tool',
@@ -277,9 +264,8 @@ test('Extension control protocol strictly decodes catalog and lifecycle mutation
   assert.deepEqual(
     decodeToolPackageUninstallInput({
       extensionId: 'weather',
-      revision: `sha256-${'a'.repeat(64)}`,
     }),
-    { extensionId: 'weather', revision: `sha256-${'a'.repeat(64)}` },
+    { extensionId: 'weather' },
   );
   assert.throws(
     () => decodeToolPackageInstallInput({ sourcePath: '/tmp/weather-tool', source: 'inline' }),

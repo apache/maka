@@ -30,6 +30,46 @@ const RECOVERY_MODES = [
 ] as const;
 const SURFACES = ['app.root', 'app.overlay', 'app.slot'] as const;
 const jsonSchema = z.record(z.string(), z.unknown());
+const extensionName = z
+  .string()
+  .regex(/^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)+$/u)
+  .max(192);
+const invokeToolInput = z.object({
+  toolName: z.string().min(1).max(128),
+  args: z.unknown(),
+});
+const emitEventInput = z.object({ event: extensionName, payload: z.unknown() });
+const callServiceInput = z.object({
+  service: extensionName,
+  method: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/u),
+  input: z.unknown(),
+});
+const uiStateValueSchema: z.ZodType<
+  null | boolean | number | string | readonly unknown[] | Readonly<Record<string, unknown>>
+> = z.lazy(() =>
+  z.union([
+    z.null(),
+    z.boolean(),
+    z.number().finite(),
+    z.string(),
+    z.array(uiStateValueSchema),
+    z.record(z.string(), uiStateValueSchema),
+  ]),
+);
+const publishUiStateInput = z.object({
+  extensionId: z.string().min(1).max(128),
+  key: z.string().min(1).max(128),
+  value: uiStateValueSchema,
+});
+const PACKAGE_TOOL_NAMES = new Set([
+  'inspect_package',
+  'define_package',
+  'manage_package',
+  'invoke_tool',
+  'emit_event',
+  'call_service',
+  'publish_ui_state',
+]);
 
 const configurationProperty = z
   .object({
@@ -160,11 +200,10 @@ const eventListenerDeclaration = z.object({
 const definePackageInput = z
   .object({
     id: z.string().min(1).max(128),
-    version: z.string().min(1).max(128),
     displayName: z.string().min(1).max(128).optional(),
     description: z.string().max(4096).optional(),
     dependencies: z
-      .array(z.object({ id: z.string().min(1).max(128), version: z.string().min(1).max(128) }))
+      .array(z.object({ id: z.string().min(1).max(128) }))
       .max(64)
       .optional(),
     configuration: z
@@ -241,23 +280,12 @@ const definePackageInput = z
     }
   });
 
-const managePackageInput = z
-  .object({
-    action: z.enum(['activate', 'update', 'stop', 'delete']),
-    extensionId: z.string().min(1).max(128),
-    revision: z.string().min(1).max(128).optional(),
-  })
-  .superRefine((input, context) => {
-    if (input.action !== 'stop' && input.revision === undefined) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['revision'],
-        message: `revision is required for ${input.action}`,
-      });
-    }
-  });
+const managePackageInput = z.object({
+  action: z.enum(['activate', 'reload', 'stop', 'delete']),
+  extensionId: z.string().min(1).max(128),
+});
 
-/** Agent-facing authoring surface for one immutable, multi-contribution Extension Revision. */
+/** Agent-facing authoring surface for one multi-contribution Extension. */
 export class HostExtensionPackageManagementTools {
   readonly #draftRoot: string;
   readonly #connection: ConnectionContext = {
@@ -276,18 +304,26 @@ export class HostExtensionPackageManagementTools {
   }
 
   tools(): readonly MakaTool[] {
-    return Object.freeze([this.#inspect(), this.#define(), this.#manage()]);
+    return Object.freeze([
+      this.#inspect(),
+      this.#define(),
+      this.#manage(),
+      this.#invokeTool(),
+      this.#emitEvent(),
+      this.#callService(),
+      this.#publishUiState(),
+    ]);
   }
 
   authorTools(): readonly MakaTool[] {
-    return Object.freeze(this.tools().filter(({ name }) => name !== 'manage_package'));
+    return Object.freeze([this.#inspect(), this.#define()]);
   }
 
   #inspect(): MakaTool {
     return Object.freeze({
       name: 'inspect_package',
       description:
-        'Inspect the unified immutable Extension package catalog and contracts before defining a package. One Revision may contain Tool, UI, Event, Listener, Service, and Timer contributions together. Configuration properties with secret=true are declared in the contract but their configured values are redacted from query results.',
+        'Inspect the unified Extension catalog and contracts before defining a package. One Extension may contain Tool, UI, Event, Listener, Service, and Timer contributions together. Configuration properties with secret=true are declared in the contract but their configured values are redacted from query results.',
       parameters: z.object({}),
       categoryHint: 'read',
       recoveryMode: 'replay_safe',
@@ -306,13 +342,12 @@ export class HostExtensionPackageManagementTools {
     return Object.freeze({
       name: 'define_package',
       description:
-        'Validate, seal, and install one immutable Extension Revision containing any combination of Tool, UI, Event, Listener, typed Service, and durable host-owned Timer contributions. Trusted executable contributions run in the Runtime Host process and have the same authority as local application or Bash code. All contributions share the same id, version, metadata, dependencies, configuration contract, and content Revision.',
+        'Validate and install one Extension containing any combination of Tool, UI, Event, Listener, typed Service, and durable host-owned Timer contributions. Trusted executable contributions run in the Runtime Host process and have the same authority as local application or Bash code. All contributions share the same identity, metadata, dependencies, and configuration contract.',
       parameters: definePackageInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
       permissionArgs: (input: z.infer<typeof definePackageInput>) => ({
         id: input.id,
-        version: input.version,
         contributionKinds: [...(input.runtime ? ['runtime'] : []), ...(input.ui ? ['ui'] : [])],
         ...(input.runtime
           ? {
@@ -377,7 +412,7 @@ export class HostExtensionPackageManagementTools {
     return Object.freeze({
       name: 'manage_package',
       description:
-        'Activate, update, stop, or delete one trusted Extension package. Tool, Event, Listener, Service, and Timer contributions bind once to the current Session; UI contributions bind once to the Desktop UI scope. Activation executes package code in the Runtime Host process with application-level authority. Multi-scope activation and update roll back to the prior entries if either scope fails, so a combined package never remains half-switched.',
+        'Activate, reload, stop, or delete one trusted Extension package. Tool, Event, Listener, Service, and Timer contributions bind once to the current Session; UI contributions bind once to the Desktop UI scope. Activation executes package code in the Runtime Host process with application-level authority. Multi-scope activation and reload roll back to the prior Entry Tree if either scope fails.',
       parameters: managePackageInput,
       categoryHint: 'file_write',
       recoveryMode: 'idempotent',
@@ -386,14 +421,13 @@ export class HostExtensionPackageManagementTools {
         const slots = packageEntrySlots(context.sessionId, input.extensionId);
         if (input.action === 'stop') {
           await this.#stopEntries(slots);
-          return { extensionId: input.extensionId, revision: null, entries: [] };
+          return { extensionId: input.extensionId, entries: [] };
         }
-        const revision = requireRevision(input);
         if (input.action === 'delete') {
           await this.#stopEntries(slots);
           return unwrap(
             await this.controller.handlers['extension.package.uninstall'](
-              { extensionId: input.extensionId, revision },
+              { extensionId: input.extensionId },
               this.#connection,
             ),
           );
@@ -401,11 +435,9 @@ export class HostExtensionPackageManagementTools {
         const catalog = unwrap(
           await this.controller.handlers['extension.composition.query']({}, this.#connection),
         );
-        const candidate = catalog.revisions.find(
-          (item) => item.extensionId === input.extensionId && item.revision === revision,
-        );
+        const candidate = catalog.extensions.find((item) => item.extensionId === input.extensionId);
         if (!candidate) {
-          throw new Error(`Extension Revision is not installed: ${input.extensionId}@${revision}`);
+          throw new Error(`Extension is not installed: ${input.extensionId}`);
         }
         const desired = [
           {
@@ -431,10 +463,10 @@ export class HostExtensionPackageManagementTools {
               continue;
             }
             if (current) {
-              if (current.revision !== revision || current.status !== 'active') {
+              if (input.action === 'reload' || current.status !== 'active') {
                 unwrap(
                   await this.controller.handlers['extension.composition.mutate'](
-                    { kind: 'update', entryId: slot.entryId, revision },
+                    { kind: 'reload', entryId: slot.entryId },
                     this.#connection,
                   ),
                 );
@@ -447,7 +479,6 @@ export class HostExtensionPackageManagementTools {
                     entryId: slot.entryId,
                     scopeId: slot.scopeId,
                     extensionId: input.extensionId,
-                    revision,
                   },
                   this.#connection,
                 ),
@@ -463,11 +494,91 @@ export class HostExtensionPackageManagementTools {
         );
         return {
           extensionId: input.extensionId,
-          revision,
           entries: updated.entries.filter(({ entryId }) =>
             desired.some((slot) => slot.entryId === entryId),
           ),
         };
+      },
+    });
+  }
+
+  #invokeTool(): MakaTool {
+    return Object.freeze({
+      name: 'invoke_tool',
+      description:
+        'Immediately invoke an active Extension Tool by name, including after package activation in the same model turn before native Tool schemas refresh.',
+      parameters: invokeToolInput,
+      categoryHint: 'shell_unsafe',
+      recoveryMode: 'never_auto_retry',
+      permissionArgs: (input: z.infer<typeof invokeToolInput>) => input,
+      executionFacts: managementExecutionFacts(),
+      impl: async (input: z.infer<typeof invokeToolInput>, context: MakaToolContext) => {
+        if (PACKAGE_TOOL_NAMES.has(input.toolName)) {
+          throw new Error(
+            `Extension Package Tools cannot be invoked recursively: ${input.toolName}`,
+          );
+        }
+        const tool = this.controller.resolveTool(context.sessionId, input.toolName);
+        if (!tool) throw new Error(`Active Extension Tool was not found: ${input.toolName}`);
+        await validateArgs(tool, input.args);
+        return await tool.impl(input.args, context);
+      },
+    });
+  }
+
+  #emitEvent(): MakaTool {
+    return Object.freeze({
+      name: 'emit_event',
+      description:
+        'Dispatch one active typed Extension Event in the current session without creating an Agent Turn.',
+      parameters: emitEventInput,
+      categoryHint: 'shell_unsafe',
+      recoveryMode: 'never_auto_retry',
+      permissionArgs: (input: z.infer<typeof emitEventInput>) => input,
+      executionFacts: managementExecutionFacts(),
+      impl: (input: z.infer<typeof emitEventInput>, context: MakaToolContext) =>
+        this.controller.emitEvent(context.sessionId, input.event, input.payload, context),
+    });
+  }
+
+  #callService(): MakaTool {
+    return Object.freeze({
+      name: 'call_service',
+      description:
+        'Call one active typed trusted Extension Service method. Input and output are JSON-schema validated.',
+      parameters: callServiceInput,
+      categoryHint: 'shell_unsafe',
+      recoveryMode: 'never_auto_retry',
+      permissionArgs: (input: z.infer<typeof callServiceInput>) => input,
+      executionFacts: managementExecutionFacts(),
+      impl: (input: z.infer<typeof callServiceInput>, context: MakaToolContext) =>
+        this.controller.callService(
+          context.sessionId,
+          input.service,
+          input.method,
+          input.input,
+          context,
+        ),
+    });
+  }
+
+  #publishUiState(): MakaTool {
+    return Object.freeze({
+      name: 'publish_ui_state',
+      description:
+        'Publish structured business state to every active Desktop UI Entry for one Extension that allows Host state.',
+      parameters: publishUiStateInput,
+      categoryHint: 'client_capability',
+      recoveryMode: 'idempotent',
+      permissionArgs: (input: z.infer<typeof publishUiStateInput>) => ({
+        extensionId: input.extensionId,
+        key: input.key,
+        valueRedacted: true,
+        valueSha256: digest(JSON.stringify(input.value) ?? 'null'),
+      }),
+      impl: async (input: z.infer<typeof publishUiStateInput>) => {
+        await this.controller.publishUiState(input.extensionId, input.key, input.value);
+        return { extensionId: input.extensionId, key: input.key, published: true };
       },
     });
   }
@@ -503,7 +614,7 @@ export class HostExtensionPackageManagementTools {
         readonly entryId: string;
         readonly scopeId: string;
         readonly extensionId: string;
-        readonly revision: string;
+        readonly generation: number;
       }
     >,
     extensionId: string,
@@ -518,10 +629,10 @@ export class HostExtensionPackageManagementTools {
       try {
         if (!before && now) {
           await this.#removeEntry(slot.entryId);
-        } else if (before && now && now.revision !== before.revision) {
+        } else if (before && now && now.generation !== before.generation) {
           unwrap(
             await this.controller.handlers['extension.composition.mutate'](
-              { kind: 'update', entryId: slot.entryId, revision: before.revision },
+              { kind: 'reload', entryId: slot.entryId },
               this.#connection,
             ),
           );
@@ -533,7 +644,6 @@ export class HostExtensionPackageManagementTools {
                 entryId: before.entryId,
                 scopeId: before.scopeId,
                 extensionId,
-                revision: before.revision,
               },
               this.#connection,
             ),
@@ -578,7 +688,6 @@ export class HostExtensionPackageManagementTools {
     await writeJson(draft, 'maka.extension.json', {
       schemaVersion: 1,
       id: input.id,
-      version: input.version,
       ...(input.displayName ? { displayName: input.displayName } : {}),
       ...(input.description !== undefined ? { description: input.description } : {}),
       ...(input.dependencies ? { dependencies: input.dependencies } : {}),
@@ -638,11 +747,6 @@ function digest(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function requireRevision(input: z.infer<typeof managePackageInput>): string {
-  if (!input.revision) throw new Error(`revision is required for ${input.action}`);
-  return input.revision;
-}
-
 function packageEntrySlots(sessionId: string, extensionId: string) {
   const digestFor = (scope: string) =>
     createHash('sha256').update(scope).update('\0').update(extensionId).digest('hex').slice(0, 32);
@@ -663,4 +767,27 @@ function unwrap<K extends OperationKey>(
 ): Extract<OperationOutcome<K>, { ok: true }>['result'] {
   if (outcome.ok) return outcome.result;
   throw new Error(`${outcome.error.code}: ${outcome.error.message}`);
+}
+
+async function validateArgs(tool: MakaTool, args: unknown): Promise<void> {
+  const schema = tool.parameters as {
+    safeParseAsync?: (value: unknown) => Promise<{ success: boolean; error?: unknown }>;
+    safeParse?: (value: unknown) => { success: boolean; error?: unknown };
+  };
+  const result = schema.safeParseAsync
+    ? await schema.safeParseAsync(args)
+    : schema.safeParse?.(args);
+  if (result && !result.success) {
+    throw new Error(`Tool arguments failed validation: ${String(result.error)}`);
+  }
+}
+
+function managementExecutionFacts(): NonNullable<MakaTool['executionFacts']> {
+  return Object.freeze({
+    isolation: 'none',
+    writesAffectHost: true,
+    writeBack: 'direct',
+    network: 'host',
+    secrets: 'host_env',
+  });
 }

@@ -14,8 +14,17 @@ import { HostExtensionPackageManagementTools } from '../server/extension-package
 import { HostExtensionRuntime } from '../server/extension-runtime.js';
 import { HostPluginCompositionStore } from '../server/plugin-composition-store.js';
 import { PluginPackageStore } from '../server/plugin-package-store.js';
+import type { ConnectionContext } from '../server/operation-dispatcher.js';
 
-test('define_package installs Tool, UI, Event, dependencies, and secret configuration as one Revision', async () => {
+const connection: ConnectionContext = {
+  hostEpoch: 'extension-package-management-test',
+  connectionId: 'local-owner',
+  surface: 'desktop',
+  principal: 'local_os_user',
+  acquireResidency: () => ({ release: () => undefined }),
+};
+
+test('define_package installs Tool, UI, Event, dependencies, and secret configuration as one Extension', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-define-package-'));
   const control = join(root, 'control');
   const runtime = new HostExtensionRuntime();
@@ -34,9 +43,24 @@ test('define_package installs Tool, UI, Event, dependencies, and secret configur
   );
   try {
     const management = new HostExtensionPackageManagementTools(control, controller);
+    assert.deepEqual(
+      management.authorTools().map(({ name }) => name),
+      ['inspect_package', 'define_package'],
+    );
+    assert.deepEqual(
+      management.tools().map(({ name }) => name),
+      [
+        'inspect_package',
+        'define_package',
+        'manage_package',
+        'invoke_tool',
+        'emit_event',
+        'call_service',
+        'publish_ui_state',
+      ],
+    );
     await call(management.tools(), 'define_package', {
       id: 'dev.maka.base',
-      version: '1.1.0',
       runtime: {
         source: 'export default { ping: async () => ({ pong: true }) };\n',
         tools: [
@@ -52,10 +76,9 @@ test('define_package installs Tool, UI, Event, dependencies, and secret configur
     });
     const result = (await call(management.tools(), 'define_package', {
       id: 'dev.maka.codebase-studio',
-      version: '1.0.0',
       displayName: 'Codebase Studio',
       description: 'Unified authoring acceptance fixture.',
-      dependencies: [{ id: 'dev.maka.base', version: '^1.0.0' }],
+      dependencies: [{ id: 'dev.maka.base' }],
       configuration: {
         properties: {
           policy: { type: 'string', default: 'strict' },
@@ -65,7 +88,7 @@ test('define_package installs Tool, UI, Event, dependencies, and secret configur
       },
       runtime: {
         source:
-          'export default { scan: async () => ({ issues: 1 }), observe: async () => undefined, aroundTool: async (input, _context, next) => next(input) };\n',
+          'export default { scan: async () => ({ issues: 1 }), observe: async () => undefined, sum: async ({ left, right }) => ({ total: left + right }), aroundTool: async (input, _context, next) => next(input) };\n',
         tools: [
           {
             name: 'codebase_scan',
@@ -100,6 +123,31 @@ test('define_package installs Tool, UI, Event, dependencies, and secret configur
             handler: 'observe',
           },
         ],
+        services: [
+          {
+            name: 'dev.maka.codebase-studio.math',
+            version: '1',
+            methods: [
+              {
+                name: 'sum',
+                description: 'Add two numbers.',
+                handler: 'sum',
+                inputSchema: {
+                  type: 'object',
+                  properties: { left: { type: 'number' }, right: { type: 'number' } },
+                  required: ['left', 'right'],
+                  additionalProperties: false,
+                },
+                outputSchema: {
+                  type: 'object',
+                  properties: { total: { type: 'number' } },
+                  required: ['total'],
+                  additionalProperties: false,
+                },
+              },
+            ],
+          },
+        ],
         permissions: { workspace: 'read', network: false },
       },
       ui: {
@@ -116,10 +164,10 @@ test('define_package installs Tool, UI, Event, dependencies, and secret configur
       },
     })) as {
       extensionId: string;
-      revision: string;
       toolNames: string[];
       uiContributionIds: string[];
       eventContributionIds: string[];
+      serviceContributionIds?: string[];
     };
 
     assert.equal(result.extensionId, 'dev.maka.codebase-studio');
@@ -130,21 +178,24 @@ test('define_package installs Tool, UI, Event, dependencies, and secret configur
       'listener:dev.maka.codebase-studio.scan.completed:observe-scan',
       'listener:maka.tools.execute:safe-write',
     ]);
-    const revisions = await Promise.all([toolStore.list(), uiStore.list(), eventStore.list()]);
+    assert.deepEqual(result.serviceContributionIds, ['dev.maka.codebase-studio.math']);
+    const installedPackages = await Promise.all([
+      toolStore.list(),
+      uiStore.list(),
+      eventStore.list(),
+    ]);
     assert.deepEqual(
-      revisions.map(
-        (installed) =>
-          installed.find(({ extensionId }) => extensionId === result.extensionId)?.revision,
+      installedPackages.map((installed) =>
+        installed.some(({ extensionId }) => extensionId === result.extensionId),
       ),
-      [result.revision, result.revision, result.revision],
+      [true, true, true],
     );
 
     const inspected = (await call(management.tools(), 'inspect_package', {})) as {
       contracts: {
         packages: Array<{
           extensionId: string;
-          revision: string;
-          dependencies: Array<{ id: string; version: string }>;
+          dependencies: Array<{ id: string }>;
           configuration: {
             properties: Record<string, { secret: boolean; default?: unknown }>;
             required: string[];
@@ -157,8 +208,7 @@ test('define_package installs Tool, UI, Event, dependencies, and secret configur
       ({ extensionId }) => extensionId === result.extensionId,
     );
     assert.ok(contract);
-    assert.equal(contract.revision, result.revision);
-    assert.deepEqual(contract.dependencies, [{ id: 'dev.maka.base', version: '^1.0.0' }]);
+    assert.deepEqual(contract.dependencies, [{ id: 'dev.maka.base' }]);
     assert.deepEqual(contract.configuration.properties, {
       apiToken: { type: 'string', secret: true },
       policy: { type: 'string', default: 'strict', secret: false },
@@ -172,20 +222,17 @@ test('define_package installs Tool, UI, Event, dependencies, and secret configur
         { kind: 'event', id: 'dev.maka.codebase-studio.scan.completed' },
         { kind: 'listener', id: 'observe-scan' },
         { kind: 'listener', id: 'safe-write' },
+        { kind: 'service', id: 'dev.maka.codebase-studio.math' },
       ],
     );
 
     const activated = (await call(management.tools(), 'manage_package', {
       action: 'activate',
       extensionId: result.extensionId,
-      revision: result.revision,
-    })) as { entries: Array<{ scopeId: string; revision: string }> };
+    })) as { entries: Array<{ entryId: string; scopeId: string; generation: number }> };
     assert.deepEqual(
-      activated.entries.map(({ scopeId, revision }) => ({ scopeId, revision })),
-      [
-        { scopeId: 'session-package-test', revision: result.revision },
-        { scopeId: 'desktop-ui', revision: result.revision },
-      ],
+      activated.entries.map(({ scopeId }) => scopeId),
+      ['session-package-test', 'desktop-ui'],
     );
     assert.ok(
       runtime
@@ -199,6 +246,64 @@ test('define_package installs Tool, UI, Event, dependencies, and secret configur
     );
     assert.ok(
       runtime.inspectUi('desktop-ui').some(({ extensionId }) => extensionId === result.extensionId),
+    );
+    assert.deepEqual(
+      await call(management.tools(), 'invoke_tool', { toolName: 'codebase_scan', args: {} }),
+      { issues: 1 },
+    );
+    assert.deepEqual(
+      await call(management.tools(), 'call_service', {
+        service: 'dev.maka.codebase-studio.math',
+        method: 'sum',
+        input: { left: 20, right: 22 },
+      }),
+      { total: 42 },
+    );
+    const emitted = (await call(management.tools(), 'emit_event', {
+      event: 'dev.maka.codebase-studio.scan.completed',
+      payload: { issues: 1 },
+    })) as { listenerCount: number; delivered: number };
+    assert.equal(emitted.listenerCount, 1);
+    assert.equal(emitted.delivered, 1);
+    assert.deepEqual(
+      await call(management.tools(), 'publish_ui_state', {
+        extensionId: result.extensionId,
+        key: 'manual.result',
+        value: { accepted: true },
+      }),
+      {
+        extensionId: result.extensionId,
+        key: 'manual.result',
+        published: true,
+      },
+    );
+    const desktopEntry = activated.entries.find(({ scopeId }) => scopeId === 'desktop-ui');
+    assert.ok(desktopEntry);
+    assert.deepEqual(
+      await controller.handlers['extension.ui.state.query'](
+        {
+          scopeId: 'desktop-ui',
+          entryId: desktopEntry.entryId,
+          extensionId: result.extensionId,
+          generation: desktopEntry.generation,
+          key: 'scan.result',
+        },
+        connection,
+      ),
+      { ok: true, result: { found: true, value: { issues: 1 } } },
+    );
+    assert.deepEqual(
+      await controller.handlers['extension.ui.state.query'](
+        {
+          scopeId: 'desktop-ui',
+          entryId: desktopEntry.entryId,
+          extensionId: result.extensionId,
+          generation: desktopEntry.generation,
+          key: 'manual.result',
+        },
+        connection,
+      ),
+      { ok: true, result: { found: true, value: { accepted: true } } },
     );
     await call(management.tools(), 'manage_package', {
       action: 'stop',
@@ -226,7 +331,7 @@ test('define_package installs Tool, UI, Event, dependencies, and secret configur
   }
 });
 
-test('define_package rejects secret defaults before writing a Revision', async () => {
+test('define_package rejects secret defaults before writing an Extension', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-define-package-secret-'));
   const runtime = new HostExtensionRuntime();
   const toolStore = new PluginPackageStore(root);
@@ -249,7 +354,6 @@ test('define_package rejects secret defaults before writing a Revision', async (
       () =>
         (define.parameters as z.ZodType).parse({
           id: 'dev.maka.invalid-secret',
-          version: '1.0.0',
           configuration: {
             properties: {
               apiToken: { type: 'string', secret: true, default: 'must-not-leak' },

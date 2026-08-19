@@ -512,8 +512,8 @@ const makaBridge = {
     configure(entryId: string, configuration: Record<string, string | number | boolean>) {
       return invokeActiveRuntimeHost('ui-extensions:configure', entryId, configuration);
     },
-    export(extensionId: string, revision: string) {
-      return invokeActiveRuntimeHost('ui-extensions:export', extensionId, revision);
+    export(extensionId: string) {
+      return invokeActiveRuntimeHost('ui-extensions:export', extensionId);
     },
     remove(extensionId: string) {
       return invokeActiveRuntimeHost('ui-extensions:remove', extensionId);

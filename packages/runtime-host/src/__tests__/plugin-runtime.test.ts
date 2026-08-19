@@ -6,9 +6,8 @@ import { HostExtensionRuntime } from '../server/extension-runtime.js';
 test('one Cordis package owns Tool, UI, and Hook contributions together', async () => {
   const runtime = new HostExtensionRuntime();
   const observed: unknown[] = [];
-  await runtime.installToolRevision({
+  await runtime.installTool({
     extensionId: 'fixture.combined',
-    revision: 'r1',
     toolNames: ['fixture_combined'],
     ui: [
       {
@@ -68,7 +67,7 @@ test('one Cordis package owns Tool, UI, and Hook contributions together', async 
       {
         type: 'insert',
         rootId: 'session:session-one',
-        entry: { id: 'combined-entry', packageId: 'fixture.combined', revision: 'r1' },
+        entry: { id: 'combined-entry', packageId: 'fixture.combined' },
       },
     ],
   });
@@ -98,11 +97,10 @@ test('one Cordis package owns Tool, UI, and Hook contributions together', async 
   await runtime.close();
 });
 
-test('failed package revision replacement leaves the current Fiber visible', async () => {
+test('failed package reload leaves the current Fiber visible', async () => {
   const runtime = new HostExtensionRuntime();
-  await runtime.installTrustedToolRevision({
+  await runtime.installTrustedTool({
     extensionId: 'fixture.atomic',
-    revision: 'r1',
     tools: [
       {
         name: 'fixture_atomic',
@@ -112,32 +110,28 @@ test('failed package revision replacement leaves the current Fiber visible', asy
       },
     ],
   });
-  await runtime.installTrustedToolRevision({
-    extensionId: 'fixture.atomic',
-    revision: 'r2',
-    tools: [],
-    healthCheck: () => {
-      throw new Error('candidate rejected');
-    },
-  });
   await runtime.applyComposition({
     operations: [
       {
         type: 'insert',
         rootId: 'profile',
-        entry: { id: 'atomic-entry', packageId: 'fixture.atomic', revision: 'r1' },
+        entry: { id: 'atomic-entry', packageId: 'fixture.atomic' },
       },
     ],
   });
   await assert.rejects(
     () =>
-      runtime.applyComposition({
-        operations: [{ type: 'update', entryId: 'atomic-entry', patch: { revision: 'r2' } }],
+      runtime.installTrustedTool({
+        extensionId: 'fixture.atomic',
+        tools: [],
+        healthCheck: () => {
+          throw new Error('candidate rejected');
+        },
       }),
     /candidate rejected/u,
   );
-  assert.equal(runtime.inspect('atomic-entry').current?.revision, 'r1');
-  assert.equal(runtime.inspectTools('profile')[0]?.revision, 'r1');
+  assert.equal(runtime.inspect('atomic-entry').current?.generation, 1);
+  assert.equal(runtime.inspectTools('profile')[0]?.generation, 1);
   await runtime.close();
 });
 

@@ -44,7 +44,7 @@ export function UiExtensionSlotProvider({
  * Stable composition seat owned by the official Maka snapshot.
  *
  * Each child remains a separate opaque-origin frame and therefore keeps its
- * own Revision identity, permissions, Host bridge, state, and rollback
+ * own Fiber generation, permissions, Host bridge, state, and disposal
  * boundary. Adding or replacing one child never remounts the root snapshot.
  */
 export function UiExtensionSlot({
@@ -66,7 +66,7 @@ export function UiExtensionSlot({
     >
       {contributions.map((item) => (
         <SandboxedUiFrame
-          key={`${item.extensionId}:${item.revision}:${item.id}`}
+          key={`${item.extensionId}:${item.generation}:${item.id}`}
           contribution={item}
           layer="slot"
           onSafeMode={context.onSafeMode}
@@ -80,7 +80,7 @@ export function UiExtensionSlot({
 
 /**
  * The fixed Desktop shell is intentionally tiny. The shipped Maka product UI
- * is the trusted fallback snapshot; installed client-only revisions enter the
+ * is the trusted fallback snapshot; installed client contributions enter the
  * same root/overlay selection path and may replace the entire product surface.
  */
 export function UiExtensionHost({
@@ -175,7 +175,7 @@ export function UiExtensionHost({
           <div
             className="maka-ui-official-snapshot"
             data-extension-id={selectedRoot.extensionId}
-            data-extension-revision={selectedRoot.revision}
+            data-extension-build={selectedRoot.buildId}
           >
             {officialSnapshot()}
           </div>
@@ -199,7 +199,7 @@ type UiSnapshotCandidate =
   | {
       readonly kind: 'official';
       readonly extensionId: 'dev.maka.desktop';
-      readonly revision: 'desktop-build';
+      readonly buildId: 'desktop-build';
       readonly id: 'official-root';
       readonly priority: -10_000;
       readonly node: ReactNode;
@@ -207,7 +207,7 @@ type UiSnapshotCandidate =
   | {
       readonly kind: 'sandboxed';
       readonly extensionId: string;
-      readonly revision: string;
+      readonly generation: number;
       readonly id: string;
       readonly priority: number;
       readonly contribution: ExtensionUiContributionProjection;
@@ -220,7 +220,7 @@ export function selectUiSnapshots(
   const official: UiSnapshotCandidate = Object.freeze({
     kind: 'official',
     extensionId: 'dev.maka.desktop',
-    revision: 'desktop-build',
+    buildId: 'desktop-build',
     id: 'official-root',
     priority: -10_000,
     node: officialNode,
@@ -238,7 +238,7 @@ export function selectUiSnapshots(
       ? Object.freeze({
           kind: 'sandboxed' as const,
           extensionId: dynamicRoot.extensionId,
-          revision: dynamicRoot.revision,
+          generation: dynamicRoot.generation,
           id: dynamicRoot.id,
           priority: dynamicRoot.priority,
           contribution: dynamicRoot,
@@ -266,7 +266,7 @@ function SandboxedUiFrame({
   const [slotRects, setSlotRects] = useState<ReadonlyMap<string, UiSlotRect>>(new Map());
   const token = useMemo(
     () => crypto.randomUUID(),
-    [contribution.entryId, contribution.revision, contribution.id],
+    [contribution.entryId, contribution.generation, contribution.id],
   );
   useLayoutEffect(() => {
     const receive = (event: MessageEvent) => {
@@ -290,7 +290,7 @@ function SandboxedUiFrame({
         scopeId: DESKTOP_UI_SCOPE,
         entryId: contribution.entryId,
         extensionId: contribution.extensionId,
-        revision: contribution.revision,
+        generation: contribution.generation,
       };
       const operation = isSessionBridgeRequest(request)
         ? runSessionBridgeRequest(contribution, request)
@@ -330,7 +330,7 @@ function SandboxedUiFrame({
         className={`maka-ui-extension-frame maka-ui-extension-frame--${layer}`}
         title={`${contribution.extensionId}: ${contribution.id}`}
         data-extension-id={contribution.extensionId}
-        data-extension-revision={contribution.revision}
+        data-extension-generation={contribution.generation}
         data-contribution-id={contribution.id}
         sandbox="allow-scripts allow-modals"
         referrerPolicy="no-referrer"
@@ -338,7 +338,7 @@ function SandboxedUiFrame({
           scopeId: DESKTOP_UI_SCOPE,
           entryId: contribution.entryId,
           extensionId: contribution.extensionId,
-          revision: contribution.revision,
+          generation: contribution.generation,
           contributionId: contribution.id,
           token,
         })}
@@ -434,7 +434,7 @@ function slotChildren(
 }
 
 function contributionKey(contribution: ExtensionUiContributionProjection): string {
-  return `${contribution.entryId}:${contribution.revision}:${contribution.id}`;
+  return `${contribution.entryId}:${contribution.generation}:${contribution.id}`;
 }
 
 function postBridgeReady(frame: HTMLIFrameElement | null, token: string): void {
@@ -511,7 +511,7 @@ async function runSessionBridgeRequest(
   request: Extract<UiBridgeRequest, { kind: `session_${string}` }>,
 ): Promise<unknown> {
   if (contribution.surface !== 'app.root' || contribution.sessionAccess !== true) {
-    throw new Error('This UI Revision has no Session capability');
+    throw new Error('This UI Extension has no Session capability');
   }
   if (request.kind === 'session_list') {
     const sessions = await window.maka.sessions.list();

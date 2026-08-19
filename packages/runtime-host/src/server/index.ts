@@ -33,10 +33,10 @@ export {
   HostExtensionRuntime,
   type HostExtensionToolResolver,
   type HostPreparedPluginPackageInput,
-  type HostToolExtensionRevisionInput,
-  type HostTrustedToolExtensionRevisionInput,
-  type HostUiExtensionRevisionInput,
-  type HostExtensionRevisionInput,
+  type HostToolExtensionInput,
+  type HostTrustedToolExtensionInput,
+  type HostUiExtensionInput,
+  type HostExtensionInput,
   type HostExtensionEventDispatchResult,
 } from './extension-runtime.js';
 export {
@@ -44,7 +44,7 @@ export {
   InstalledPluginPackageLoader,
   StaticTrustedToolExtensionLoader,
   type HostTrustedToolExtensionLoader,
-  type StaticTrustedToolExtensionRevision,
+  type StaticTrustedToolExtension,
 } from './extension-loader.js';
 export {
   PluginPackageStore,
@@ -54,11 +54,9 @@ export {
 export { PluginHookActivation } from './plugin-hook-activation.js';
 export { HostExtensionPackageManagementTools } from './extension-package-management-tools.js';
 export {
-  compareExtensionVersions,
   decodeExtensionPackageManifest,
   loadExtensionPackageManifest,
   validateExtensionConfiguration,
-  extensionVersionSatisfies,
   type ExtensionPackageManifest,
   type ExtensionPackageDependency,
   type ExtensionConfigurationSchema,

@@ -31,29 +31,29 @@ export class PluginUiService extends Service {
 
   inspect(
     rootId: string,
-    committed: readonly { readonly entryId: string; readonly revision: string }[],
+    committed: readonly { readonly entryId: string; readonly generation: number }[],
   ): readonly ExtensionUiContributionInspection[] {
     return this.registry.inspect(rootId, committed);
   }
 
   setReadiness(
     entryId: string,
-    revision: string,
+    generation: number,
     status: ExtensionUiReadiness,
     diagnostic?: string,
   ): void {
     const identity = pluginIdentity(this.ctx);
-    this.registry.setReadiness(identity.scopeId, entryId, revision, status, diagnostic);
+    this.registry.setReadiness(identity.scopeId, entryId, generation, status, diagnostic);
   }
 
   setReadinessForRoot(
     rootId: string,
     entryId: string,
-    revision: string,
+    generation: number,
     status: ExtensionUiReadiness,
     diagnostic?: string,
   ): void {
-    this.registry.setReadiness(rootId, entryId, revision, status, diagnostic);
+    this.registry.setReadiness(rootId, entryId, generation, status, diagnostic);
   }
 
   inspectReadiness(rootId?: string): readonly ExtensionUiReadinessInspection[] {

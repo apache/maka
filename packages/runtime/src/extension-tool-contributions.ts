@@ -29,7 +29,7 @@ export interface ExtensionToolContributionInspection {
   readonly scopeId: string;
   readonly entryId: string;
   readonly extensionId: string;
-  readonly revision: string;
+  readonly generation: number;
   readonly toolName: string;
 }
 
@@ -62,7 +62,7 @@ export class ExtensionToolContributionRegistry {
   constructor(private readonly options: ExtensionToolContributionRegistryOptions = {}) {}
 
   register(
-    context: Pick<MakaContributionContext, 'entryId' | 'scopeId' | 'extensionId' | 'revision'>,
+    context: Pick<MakaContributionContext, 'entryId' | 'scopeId' | 'extensionId' | 'generation'>,
     tool: MakaTool,
   ): () => void {
     validateContext(context);
@@ -95,7 +95,7 @@ export class ExtensionToolContributionRegistry {
     ) {
       throw new ExtensionToolContributionError(
         'tool_name_conflict',
-        `Tool name "${tool.name}" is already contributed by ${existing.extensionId}@${existing.revision}`,
+        `Tool name "${tool.name}" is already contributed by entry ${existing.entryId}`,
       );
     }
     const token = Symbol(tool.name);
@@ -141,7 +141,7 @@ export class ExtensionToolContributionRegistry {
       scopeId: context.scopeId,
       entryId: context.entryId,
       extensionId: context.extensionId,
-      revision: context.revision,
+      generation: context.generation,
       toolName: tool.name,
       tool: guardedTool,
       token,
@@ -204,7 +204,7 @@ export class ExtensionToolContributionRegistry {
           scopeId: entry.scopeId,
           entryId: entry.entryId,
           extensionId: entry.extensionId,
-          revision: entry.revision,
+          generation: entry.generation,
           toolName: entry.toolName,
         }),
       ),
@@ -234,13 +234,13 @@ export function contributeExtensionTool(
 }
 
 function validateContext(
-  context: Pick<MakaContributionContext, 'entryId' | 'scopeId' | 'extensionId' | 'revision'>,
+  context: Pick<MakaContributionContext, 'entryId' | 'scopeId' | 'extensionId' | 'generation'>,
 ): void {
   validateIdentity('entryId', context.entryId);
   validateIdentity('scopeId', context.scopeId);
   validateIdentity('extensionId', context.extensionId);
-  if (!context.revision || typeof context.revision !== 'string') {
-    throw new ExtensionToolContributionError('invalid_tool', 'Revision is required');
+  if (!Number.isSafeInteger(context.generation) || context.generation <= 0) {
+    throw new ExtensionToolContributionError('invalid_tool', 'Fiber generation is required');
   }
 }
 

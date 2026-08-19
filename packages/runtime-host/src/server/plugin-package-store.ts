@@ -17,7 +17,6 @@ import {
   type PackageFile,
   type ToolPackageManifest,
   decodeToolPackageManifest,
-  packageRevision,
   readSourcePackage,
   syncDirectory,
   syncTree,
@@ -29,13 +28,11 @@ import {
   decodeUiPackageManifest,
 } from './plugin-ui-manifest.js';
 
-const STORE_DIRECTORY = 'plugin-packages-v1';
+const STORE_DIRECTORY = 'plugin-packages-v2';
 const MANIFEST_FILE = 'maka.extension.json';
-const REVISION_PATTERN = /^sha256-[a-f0-9]{64}$/u;
 
 export interface InstalledPluginPackage {
   readonly extensionId: string;
-  readonly revision: string;
   readonly root: string;
   readonly manifest: ExtensionPackageManifest;
   readonly toolManifest?: ToolPackageManifest;
@@ -55,7 +52,7 @@ export class PluginPackageStoreError extends Error {
   }
 }
 
-/** One content-addressed store for complete Tool/UI/Hook plugin revisions. */
+/** One trusted package directory per Extension identity. */
 export class PluginPackageStore {
   readonly root: string;
 
@@ -66,34 +63,26 @@ export class PluginPackageStore {
   async install(sourcePath: string): Promise<InstalledPluginPackage> {
     const files = await readFiles(sourcePath);
     const decoded = await decodePackage(sourcePath, files);
-    const revision = packageRevision(files);
-    const extensionRoot = join(this.root, decoded.manifest.id);
-    const target = join(extensionRoot, revision);
-    try {
-      return await this.load(decoded.manifest.id, revision);
-    } catch (error) {
-      if (!(error instanceof PluginPackageStoreError) || error.code !== 'not_found') throw error;
-    }
+    const target = join(this.root, decoded.manifest.id);
     const staging = join(this.root, `.staging-${randomUUID()}`);
+    const previous = join(this.root, `.previous-${randomUUID()}`);
     let committed = false;
     try {
       await mkdir(this.root, { recursive: true, mode: 0o700 });
       await mkdir(staging, { mode: 0o700 });
       for (const file of files) await writeStoredFile(staging, file);
       await syncTree(staging, files);
-      await mkdir(extensionRoot, { recursive: true, mode: 0o700 });
+      await rename(target, previous).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
       await rename(staging, target);
       committed = true;
-      await syncDirectory(extensionRoot);
-      return freezeInstalled(target, revision, decoded);
+      await syncDirectory(this.root);
+      await rm(previous, { recursive: true, force: true });
+      return freezeInstalled(target, decoded);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-        return await this.load(decoded.manifest.id, revision);
-      }
-      throw persistence(
-        `Unable to install Plugin package ${decoded.manifest.id}@${revision}`,
-        error,
-      );
+      if (!committed) await rename(previous, target).catch(() => undefined);
+      throw persistence(`Unable to install Plugin package ${decoded.manifest.id}`, error);
     } finally {
       if (!committed) await rm(staging, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -110,19 +99,14 @@ export class PluginPackageStore {
     const installed: InstalledPluginPackage[] = [];
     for (const item of packages.sort(compareDirent)) {
       if (!item.isDirectory() || !isCanonicalExtensionId(item.name)) continue;
-      const revisions = await readdir(join(this.root, item.name), { withFileTypes: true });
-      for (const revision of revisions.sort(compareDirent)) {
-        if (revision.isDirectory() && REVISION_PATTERN.test(revision.name)) {
-          installed.push(await this.load(item.name, revision.name));
-        }
-      }
+      installed.push(await this.load(item.name));
     }
     return Object.freeze(installed);
   }
 
-  async load(extensionId: string, revision: string): Promise<InstalledPluginPackage> {
-    requireIdentity(extensionId, revision);
-    const root = join(this.root, extensionId, revision);
+  async load(extensionId: string): Promise<InstalledPluginPackage> {
+    requireIdentity(extensionId);
+    const root = join(this.root, extensionId);
     try {
       if (!(await stat(root)).isDirectory()) {
         throw invalid('Installed Plugin package is not a directory');
@@ -131,52 +115,46 @@ export class PluginPackageStore {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         throw new PluginPackageStoreError(
           'not_found',
-          `Plugin package revision is not installed: ${extensionId}@${revision}`,
+          `Plugin package is not installed: ${extensionId}`,
         );
       }
       if (error instanceof PluginPackageStoreError) throw error;
-      throw persistence(`Unable to read Plugin package ${extensionId}@${revision}`, error);
+      throw persistence(`Unable to read Plugin package ${extensionId}`, error);
     }
     const files = await readFiles(root);
     const decoded = await decodePackage(root, files);
-    if (decoded.manifest.id !== extensionId || packageRevision(files) !== revision) {
-      throw invalid(`Installed Plugin package integrity check failed: ${extensionId}@${revision}`);
+    if (decoded.manifest.id !== extensionId) {
+      throw invalid(`Installed Plugin package identity check failed: ${extensionId}`);
     }
-    return freezeInstalled(root, revision, decoded);
+    return freezeInstalled(root, decoded);
   }
 
-  async loadTool(extensionId: string, revision: string): Promise<InstalledToolPackage> {
-    const installed = await this.load(extensionId, revision);
-    if (!installed.toolManifest)
-      throw invalid(`Plugin revision has no Tool contributions: ${extensionId}@${revision}`);
+  async loadTool(extensionId: string): Promise<InstalledToolPackage> {
+    const installed = await this.load(extensionId);
+    if (!installed.toolManifest) throw invalid(`Plugin has no Tool contributions: ${extensionId}`);
     return Object.freeze({
       extensionId,
-      revision,
       root: installed.root,
       entry: join(installed.root, ...installed.toolManifest.entry.split('/')),
       manifest: installed.toolManifest,
     });
   }
 
-  async loadUi(extensionId: string, revision: string): Promise<InstalledUiPackage> {
-    const installed = await this.load(extensionId, revision);
-    if (!installed.uiManifest)
-      throw invalid(`Plugin revision has no UI contributions: ${extensionId}@${revision}`);
+  async loadUi(extensionId: string): Promise<InstalledUiPackage> {
+    const installed = await this.load(extensionId);
+    if (!installed.uiManifest) throw invalid(`Plugin has no UI contributions: ${extensionId}`);
     return Object.freeze({
       extensionId,
-      revision,
       root: installed.root,
       manifest: installed.uiManifest,
     });
   }
 
-  async loadEvent(extensionId: string, revision: string): Promise<InstalledEventPackage> {
-    const installed = await this.load(extensionId, revision);
-    if (!installed.eventManifest)
-      throw invalid(`Plugin revision has no Hook contributions: ${extensionId}@${revision}`);
+  async loadEvent(extensionId: string): Promise<InstalledEventPackage> {
+    const installed = await this.load(extensionId);
+    if (!installed.eventManifest) throw invalid(`Plugin has no Hook contributions: ${extensionId}`);
     return Object.freeze({
       extensionId,
-      revision,
       root: installed.root,
       entry: join(installed.root, ...installed.eventManifest.entry.split('/')),
       manifest: installed.eventManifest,
@@ -202,19 +180,15 @@ export class PluginPackageStore {
     return await this.readText(installed, relativePath);
   }
 
-  async uninstall(extensionId: string, revision: string): Promise<void> {
-    await this.load(extensionId, revision);
-    const target = join(this.root, extensionId, revision);
+  async uninstall(extensionId: string): Promise<void> {
+    await this.load(extensionId);
+    const target = join(this.root, extensionId);
     try {
       await rm(target, { recursive: true, force: false });
-      const parent = dirname(target);
-      if ((await readdir(parent)).length === 0) {
-        await rm(parent, { recursive: true, force: false });
-      }
       await syncDirectory(this.root).catch(() => undefined);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw persistence(`Unable to uninstall Plugin package ${extensionId}@${revision}`, error);
+        throw persistence(`Unable to uninstall Plugin package ${extensionId}`, error);
       }
     }
   }
@@ -295,16 +269,12 @@ async function readFiles(root: string): Promise<readonly PackageFile[]> {
   }
 }
 
-function freezeInstalled(
-  root: string,
-  revision: string,
-  decoded: DecodedPackage,
-): InstalledPluginPackage {
-  return Object.freeze({ extensionId: decoded.manifest.id, revision, root, ...decoded });
+function freezeInstalled(root: string, decoded: DecodedPackage): InstalledPluginPackage {
+  return Object.freeze({ extensionId: decoded.manifest.id, root, ...decoded });
 }
 
-function requireIdentity(extensionId: string, revision: string): void {
-  if (!isCanonicalExtensionId(extensionId) || !REVISION_PATTERN.test(revision)) {
+function requireIdentity(extensionId: string): void {
+  if (!isCanonicalExtensionId(extensionId)) {
     throw invalid('Plugin package identity is invalid');
   }
 }

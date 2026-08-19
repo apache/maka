@@ -117,7 +117,7 @@ import { HostExtensionTimerScheduler } from './extension-timer-scheduler.js';
 import {
   InstalledPluginPackageLoader,
   StaticTrustedToolExtensionLoader,
-  type StaticTrustedToolExtensionRevision,
+  type StaticTrustedToolExtension,
 } from './extension-loader.js';
 import { HostExtensionRuntime, PROFILE_EXTENSION_SCOPE } from './extension-runtime.js';
 import { HostPluginCompositionStore } from './plugin-composition-store.js';
@@ -196,7 +196,7 @@ export interface CreateExecutionRuntimeHostCompositionOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
-  readonly trustedToolExtensions?: readonly StaticTrustedToolExtensionRevision[];
+  readonly trustedToolExtensions?: readonly StaticTrustedToolExtension[];
 }
 
 export interface ExecutionRuntimeHostCompositionDependencies {
@@ -262,9 +262,7 @@ export async function createExecutionRuntimeHostComposition(
     context.owner.controlDirectory,
     extensionController,
   );
-  extensions.registerHostTools([
-    ...extensionPackageManagement.tools(),
-  ]);
+  extensions.registerHostTools([...extensionPackageManagement.tools()]);
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let taskLedgerStore:
     | Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>
@@ -457,10 +455,7 @@ export async function createExecutionRuntimeHostComposition(
     const childAgentTools = createHostChildAgentToolComposition({
       taskLedger,
       builtinTools,
-      hostTools: [
-        ...hostTools,
-        ...extensionPackageManagement.authorTools(),
-      ],
+      hostTools: [...hostTools, ...extensionPackageManagement.authorTools()],
       worktreePatchWriteBackAvailable: true,
     });
     const openedGraphControlStore = createAgentGraphControlStore(

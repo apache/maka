@@ -1,7 +1,3 @@
-import { randomUUID } from 'node:crypto';
-import type { Dirent } from 'node:fs';
-import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
 import { isCanonicalExtensionId } from '@maka/runtime/plugin-runtime';
 import {
   type ExtensionEventDispatchMode,
@@ -15,22 +11,12 @@ import {
 import { validateExtensionTimerContribution } from '@maka/runtime/extension-timer-contributions';
 import {
   boundedString,
-  compareDirent,
   compareString,
   exactRecord,
   optionalExactRecord,
   packagePath,
-  packageRevision,
-  parseJson,
-  readSourcePackage,
-  syncDirectory,
-  syncTree,
-  writeStoredFile,
 } from './plugin-runtime-manifest.js';
 
-export const EVENT_PACKAGE_MANIFEST_FILE = 'maka.extension.json';
-const MAX_MANIFEST_BYTES = 512 * 1024;
-const REVISION_PATTERN = /^sha256-[a-f0-9]{64}$/u;
 const ID_PATTERN = /^[A-Za-z][A-Za-z0-9._-]{0,127}$/u;
 
 export interface EventPackageManifestEvent {
@@ -68,7 +54,6 @@ export interface EventPackageManifestTimer {
 export interface EventPackageManifest {
   readonly schemaVersion: 1;
   readonly id: string;
-  readonly version: string;
   readonly entry: string;
   readonly events: readonly EventPackageManifestEvent[];
   readonly listeners: readonly EventPackageManifestListener[];
@@ -82,7 +67,6 @@ export interface EventPackageManifest {
 
 export interface InstalledEventPackage {
   readonly extensionId: string;
-  readonly revision: string;
   readonly root: string;
   readonly entry: string;
   readonly manifest: EventPackageManifest;
@@ -104,7 +88,6 @@ export function decodeEventPackageManifest(value: unknown): EventPackageManifest
   const root = optionalExactRecord(value, [
     'schemaVersion',
     'id',
-    'version',
     'displayName',
     'description',
     'dependencies',
@@ -124,7 +107,6 @@ export function decodeEventPackageManifest(value: unknown): EventPackageManifest
   const record = {
     schemaVersion: root.schemaVersion,
     id: root.id,
-    version: root.version,
     entry: runtime.entry,
     events: runtime.events ?? [],
     listeners: runtime.listeners ?? [],
@@ -135,7 +117,6 @@ export function decodeEventPackageManifest(value: unknown): EventPackageManifest
   if (record.schemaVersion !== 1) throw invalidPackage('Event package schemaVersion must be 1');
   const id = boundedString(record.id, 'Event id', 128);
   if (!isCanonicalExtensionId(id)) throw invalidPackage('Event package id is invalid');
-  const version = boundedString(record.version, 'Event version', 128);
   const entry = packagePath(record.entry, 'Event entry');
   if (!entry.endsWith('.mjs')) throw invalidPackage('Event package entry must be an .mjs file');
   if (!Array.isArray(record.events) || record.events.length > 64) {
@@ -172,10 +153,9 @@ export function decodeEventPackageManifest(value: unknown): EventPackageManifest
       'resultSchema',
     ]);
     const name = boundedString(event.name, `Event events[${index}].name`, 192);
-    const description = boundedString(
+    const description = optionalDescription(
       event.description,
       `Event events[${index}].description`,
-      4096,
     );
     const payloadSchema = requireJsonSchema(event.payloadSchema, name);
     const mode = (event.mode ?? 'emit') as ExtensionEventDispatchMode;
@@ -258,10 +238,10 @@ export function decodeEventPackageManifest(value: unknown): EventPackageManifest
     const service = optionalExactRecord(value, ['name', 'version', 'description', 'methods']);
     const name = boundedString(service.name, `Event services[${index}].name`, 192);
     const version = boundedString(service.version, `Event services[${index}].version`, 128);
-    const description =
-      service.description === undefined
-        ? ''
-        : boundedString(service.description, `Event services[${index}].description`, 4096);
+    const description = optionalDescription(
+      service.description,
+      `Event services[${index}].description`,
+    );
     if (
       !Array.isArray(service.methods) ||
       service.methods.length === 0 ||
@@ -291,10 +271,7 @@ export function decodeEventPackageManifest(value: unknown): EventPackageManifest
         methodNames.add(methodName);
         return Object.freeze({
           name: methodName,
-          description:
-            method.description === undefined
-              ? ''
-              : boundedString(method.description, `Service method description`, 4096),
+          description: optionalDescription(method.description, `Service method description`),
           handler: boundedString(method.handler, `Service method handler`, 128),
           inputSchema: requireJsonSchema(method.inputSchema, `${name}.${methodName}.input`),
           outputSchema: requireJsonSchema(method.outputSchema, `${name}.${methodName}.output`),
@@ -357,7 +334,6 @@ export function decodeEventPackageManifest(value: unknown): EventPackageManifest
   return Object.freeze({
     schemaVersion: 1,
     id,
-    version,
     entry,
     events: Object.freeze(events.sort((left, right) => compareString(left.name, right.name))),
     listeners: Object.freeze(
@@ -389,42 +365,11 @@ function requireJsonSchema(value: unknown, name: string): Readonly<Record<string
   return Object.freeze(structuredClone(value as Record<string, unknown>));
 }
 
-function decodeStoredManifest(encoded: Buffer): EventPackageManifest {
-  try {
-    return decodeEventPackageManifest(parseJson(encoded));
-  } catch (error) {
-    if (error instanceof PluginHookManifestError) throw error;
-    throw invalidPackage(
-      error instanceof Error ? error.message : 'Event package manifest is invalid',
-      error,
-    );
-  }
-}
-
-function freezeInstalled(
-  root: string,
-  revision: string,
-  manifest: EventPackageManifest,
-): InstalledEventPackage {
-  return Object.freeze({
-    extensionId: manifest.id,
-    revision,
-    root,
-    entry: join(root, ...manifest.entry.split('/')),
-    manifest,
-  });
-}
-
-function requireIdentity(extensionId: string, revision: string): void {
-  if (!isCanonicalExtensionId(extensionId)) throw invalidPackage('Event package id is invalid');
-  if (!REVISION_PATTERN.test(revision)) throw invalidPackage('Event package revision is invalid');
+function optionalDescription(value: unknown, label: string): string {
+  if (value === undefined || value === '') return '';
+  return boundedString(value, label, 4096);
 }
 
 function invalidPackage(message: string, cause?: unknown): PluginHookManifestError {
   return new PluginHookManifestError('invalid_package', message, { cause });
-}
-
-function persistenceFailure(message: string, cause?: unknown): PluginHookManifestError {
-  const detail = cause instanceof Error && cause.message ? `: ${cause.message}` : '';
-  return new PluginHookManifestError('persistence_failed', `${message}${detail}`, { cause });
 }

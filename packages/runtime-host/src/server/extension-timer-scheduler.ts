@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-const STATE_FILE = 'extension-timers-v1.json';
+const STATE_FILE = 'extension-timers-v2.json';
 const MAX_STATE_BYTES = 2 * 1024 * 1024;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
@@ -16,7 +16,7 @@ interface TimerState {
   readonly entryId: string;
   readonly scopeId: string;
   readonly extensionId: string;
-  readonly revision: string;
+  readonly generation: number;
   readonly id: string;
   readonly intervalMs: number;
   nextRunAt: number;
@@ -67,7 +67,7 @@ export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
     const reusable =
       persisted?.scopeId === context.scopeId &&
       persisted.extensionId === context.extensionId &&
-      persisted.revision === context.revision &&
+      persisted.generation === context.generation &&
       persisted.intervalMs === contribution.intervalMs;
     const state: TimerState = reusable
       ? persisted
@@ -75,7 +75,7 @@ export class HostExtensionTimerScheduler implements ExtensionTimerAuthority {
           entryId: context.entryId,
           scopeId: context.scopeId,
           extensionId: context.extensionId,
-          revision: context.revision,
+          generation: context.generation,
           id: contribution.id,
           intervalMs: contribution.intervalMs,
           nextRunAt: Date.now() + contribution.initialDelayMs,
@@ -278,9 +278,11 @@ function validState(value: unknown): value is TimerState {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const state = value as Record<string, unknown>;
   return (
-    ['entryId', 'scopeId', 'extensionId', 'revision', 'id'].every(
+    ['entryId', 'scopeId', 'extensionId', 'id'].every(
       (key) => typeof state[key] === 'string' && (state[key] as string).length > 0,
     ) &&
+    Number.isSafeInteger(state.generation) &&
+    (state.generation as number) > 0 &&
     Number.isSafeInteger(state.intervalMs) &&
     Number.isSafeInteger(state.nextRunAt)
   );

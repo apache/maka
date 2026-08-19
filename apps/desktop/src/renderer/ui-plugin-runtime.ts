@@ -64,8 +64,8 @@ export class UiPluginRuntime {
     }
     for (const [entryId, items] of grouped) {
       const signature = JSON.stringify(
-        items.map(({ revision, id, documentSha256, priority, surface, slot }) => ({
-          revision,
+        items.map(({ generation, id, documentSha256, priority, surface, slot }) => ({
+          generation,
           id,
           documentSha256,
           priority,

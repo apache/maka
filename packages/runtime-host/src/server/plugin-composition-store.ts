@@ -4,13 +4,12 @@ import { dirname, join } from 'node:path';
 import { isCanonicalExtensionId, isCanonicalExtensionScopeId } from '@maka/runtime/plugin-runtime';
 import type { ExtensionConfigurationScalar } from './extension-package-manifest.js';
 
-const FILE_NAME = 'plugin-composition-v1.json';
+const FILE_NAME = 'plugin-composition-v2.json';
 const MAX_BYTES = 2 * 1024 * 1024;
 
 export interface PersistedPluginEntry {
   readonly id: string;
   readonly packageId?: string;
-  readonly revision?: string;
   readonly disabled: boolean;
   readonly config: Readonly<Record<string, ExtensionConfigurationScalar>>;
   readonly inject?: readonly string[] | Readonly<Record<string, unknown>>;
@@ -147,16 +146,12 @@ function decodeEntry(value: unknown, label: string): PersistedPluginEntry {
   exactOptional(
     entry,
     ['id', 'disabled', 'config'],
-    ['packageId', 'revision', 'inject', 'isolate', 'intercept', 'children', 'error'],
+    ['packageId', 'inject', 'isolate', 'intercept', 'children', 'error'],
   );
   if (!isCanonicalExtensionScopeId(entry.id)) throw invalid(`${label}.id is invalid`);
-  const group = entry.packageId === undefined && entry.revision === undefined;
-  if ((entry.packageId === undefined) !== (entry.revision === undefined)) {
-    throw invalid(`${label} package identity is incomplete`);
-  }
+  const group = entry.packageId === undefined;
   if (!group && !isCanonicalExtensionId(entry.packageId))
     throw invalid(`${label}.packageId is invalid`);
-  const revision = group ? undefined : text(entry.revision, `${label}.revision`, 128);
   if (typeof entry.disabled !== 'boolean') throw invalid(`${label}.disabled is invalid`);
   const config = scalarRecord(entry.config, `${label}.config`);
   const error =
@@ -172,7 +167,7 @@ function decodeEntry(value: unknown, label: string): PersistedPluginEntry {
     entry.children === undefined ? undefined : decodeEntries(entry.children, `${label}.children`);
   return Object.freeze({
     id: entry.id as string,
-    ...(group ? {} : { packageId: entry.packageId as string, revision }),
+    ...(group ? {} : { packageId: entry.packageId as string }),
     disabled: entry.disabled,
     config,
     ...(inject === undefined ? {} : { inject }),

@@ -9,10 +9,9 @@ import {
 import { invalidProtocolFrame } from './errors.js';
 import { defineHostPathOperation, defineOperation } from './operation-spec.js';
 
-export const EXTENSION_COMPOSITION_MAX_REVISIONS = 256;
+export const EXTENSION_COMPOSITION_MAX_EXTENSIONS = 256;
 export const EXTENSION_COMPOSITION_MAX_ENTRIES = 256;
 export const EXTENSION_COMPOSITION_RESULT_MAX_BYTES = 96 * 1024;
-export const EXTENSION_REVISION_MAX_BYTES = 128;
 export const EXTENSION_ERROR_MAX_BYTES = 4 * 1024;
 export const EXTENSION_UI_OFFICIAL_SLOTS = Object.freeze([
   'sidebar.footer',
@@ -39,9 +38,8 @@ const MUTATION_ERRORS = [
   'internal_failure',
 ] as const;
 
-export interface TrustedExtensionRevisionProjection {
+export interface TrustedExtensionProjection {
   readonly extensionId: string;
-  readonly revision: string;
   readonly toolNames: readonly string[];
   readonly uiContributionIds: readonly string[];
   readonly eventContributionIds: readonly string[];
@@ -55,7 +53,7 @@ export interface ExtensionCompositionEntryProjection {
   readonly entryId: string;
   readonly scopeId: string;
   readonly extensionId: string;
-  readonly revision: string;
+  readonly generation: number;
   readonly enabled: boolean;
   readonly status: ExtensionCompositionEntryStatus;
   readonly error: string | null;
@@ -64,7 +62,7 @@ export interface ExtensionCompositionEntryProjection {
 export interface ExtensionCompositionQueryInput {}
 
 export interface ExtensionCompositionQueryResult {
-  readonly revisions: readonly TrustedExtensionRevisionProjection[];
+  readonly extensions: readonly TrustedExtensionProjection[];
   readonly entries: readonly ExtensionCompositionEntryProjection[];
 }
 
@@ -72,7 +70,6 @@ export type ExtensionConfigurationScalar = string | number | boolean;
 
 export interface ExtensionContractDependency {
   readonly id: string;
-  readonly version: string;
 }
 
 export interface ExtensionContractConfigurationProperty {
@@ -106,8 +103,6 @@ export interface ExtensionContractContribution {
 
 export interface ExtensionPackageContractProjection {
   readonly extensionId: string;
-  readonly revision: string;
-  readonly version: string;
   readonly displayName: string;
   readonly description: string;
   readonly dependencies: readonly ExtensionContractDependency[];
@@ -145,7 +140,7 @@ export interface ExtensionUiSnapshotInput {
 export interface ExtensionUiContributionProjection {
   readonly entryId: string;
   readonly extensionId: string;
-  readonly revision: string;
+  readonly generation: number;
   readonly id: string;
   readonly surface: 'app.root' | 'app.overlay' | 'app.slot';
   readonly slot?: string;
@@ -177,7 +172,7 @@ export interface ExtensionUiStateQueryInput {
   readonly scopeId: string;
   readonly entryId: string;
   readonly extensionId: string;
-  readonly revision: string;
+  readonly generation: number;
   readonly key: string;
 }
 
@@ -197,7 +192,7 @@ export interface ExtensionUiRpcInvokeInput {
   readonly scopeId: string;
   readonly entryId: string;
   readonly extensionId: string;
-  readonly revision: string;
+  readonly generation: number;
   readonly method: string;
   readonly args: ExtensionUiStateValue;
 }
@@ -212,10 +207,9 @@ export type ExtensionCompositionMutateInput =
       readonly entryId: string;
       readonly scopeId: string;
       readonly extensionId: string;
-      readonly revision: string;
     }
   | { readonly kind: 'disable'; readonly entryId: string }
-  | { readonly kind: 'update'; readonly entryId: string; readonly revision: string }
+  | { readonly kind: 'reload'; readonly entryId: string }
   | { readonly kind: 'remove'; readonly entryId: string };
 
 export interface ExtensionCompositionMutateResult {
@@ -226,18 +220,16 @@ export interface ToolPackageInstallInput {
   readonly sourcePath: string;
 }
 
-export type ToolPackageInstallResult = TrustedExtensionRevisionProjection;
+export type ToolPackageInstallResult = TrustedExtensionProjection;
 
 export interface ToolPackageUninstallInput {
   readonly extensionId: string;
-  readonly revision: string;
 }
 
 export interface ToolPackageUninstallResult {}
 
 export interface ExtensionPackageExportInput {
   readonly extensionId: string;
-  readonly revision: string;
   readonly targetPath: string;
 }
 
@@ -396,7 +388,7 @@ export function decodeExtensionContractQueryResult(value: unknown): ExtensionCon
   const result = requireExactRecord(value, 'extension contract query result', ['packages']);
   if (
     !Array.isArray(result.packages) ||
-    result.packages.length > EXTENSION_COMPOSITION_MAX_REVISIONS
+    result.packages.length > EXTENSION_COMPOSITION_MAX_EXTENSIONS
   ) {
     throw invalidProtocolFrame('Invalid extension contract packages');
   }
@@ -462,7 +454,7 @@ export function decodeExtensionUiStateQueryInput(value: unknown): ExtensionUiSta
     'scopeId',
     'entryId',
     'extensionId',
-    'revision',
+    'generation',
     'key',
   ]);
   return decodeUiStateIdentity(input);
@@ -485,7 +477,7 @@ export function decodeExtensionUiStateMutateInput(value: unknown): ExtensionUiSt
       'scopeId',
       'entryId',
       'extensionId',
-      'revision',
+      'generation',
       'key',
       'kind',
       'value',
@@ -503,7 +495,7 @@ export function decodeExtensionUiStateMutateInput(value: unknown): ExtensionUiSt
       'scopeId',
       'entryId',
       'extensionId',
-      'revision',
+      'generation',
       'key',
       'kind',
     ]);
@@ -522,7 +514,7 @@ export function decodeExtensionUiRpcInvokeInput(value: unknown): ExtensionUiRpcI
     'scopeId',
     'entryId',
     'extensionId',
-    'revision',
+    'generation',
     'method',
     'args',
   ]);
@@ -530,7 +522,7 @@ export function decodeExtensionUiRpcInvokeInput(value: unknown): ExtensionUiRpcI
     scopeId: decodeExtensionScopeId(input.scopeId, 'extension UI scopeId'),
     entryId: requireEntityId(input.entryId, 'extension entryId'),
     extensionId: decodeExtensionId(input.extensionId),
-    revision: decodeRevision(input.revision),
+    generation: decodeGeneration(input.generation),
     method: requireUtf8String(input.method, 'extension UI RPC method', 128),
     args: decodeUiStateValue(input.args),
   };
@@ -549,19 +541,19 @@ export function decodeExtensionCompositionQueryResult(
   value: unknown,
 ): ExtensionCompositionQueryResult {
   const result = requireExactRecord(value, 'extension composition query result', [
-    'revisions',
+    'extensions',
     'entries',
   ]);
   if (
-    !Array.isArray(result.revisions) ||
-    result.revisions.length > EXTENSION_COMPOSITION_MAX_REVISIONS ||
+    !Array.isArray(result.extensions) ||
+    result.extensions.length > EXTENSION_COMPOSITION_MAX_EXTENSIONS ||
     !Array.isArray(result.entries) ||
     result.entries.length > EXTENSION_COMPOSITION_MAX_ENTRIES
   ) {
     throw invalidProtocolFrame('Invalid extension composition result');
   }
   const decoded = {
-    revisions: result.revisions.map(decodeRevisionProjection),
+    extensions: result.extensions.map(decodeExtensionProjection),
     entries: result.entries.map(decodeEntryProjection),
   };
   requireEncodedByteLimit(
@@ -583,14 +575,12 @@ export function decodeExtensionCompositionMutateInput(
         'entryId',
         'scopeId',
         'extensionId',
-        'revision',
       ]);
       return {
         kind: 'enable',
         entryId: requireEntityId(input.entryId, 'extension entryId'),
         scopeId: decodeExtensionScopeId(input.scopeId, 'extension scopeId'),
         extensionId: decodeExtensionId(input.extensionId),
-        revision: decodeRevision(input.revision),
       };
     }
     case 'disable':
@@ -604,16 +594,11 @@ export function decodeExtensionCompositionMutateInput(
         entryId: requireEntityId(input.entryId, 'extension entryId'),
       };
     }
-    case 'update': {
-      const input = requireExactRecord(record, 'extension update input', [
-        'kind',
-        'entryId',
-        'revision',
-      ]);
+    case 'reload': {
+      const input = requireExactRecord(record, 'extension reload input', ['kind', 'entryId']);
       return {
-        kind: 'update',
+        kind: 'reload',
         entryId: requireEntityId(input.entryId, 'extension entryId'),
-        revision: decodeRevision(input.revision),
       };
     }
     default:
@@ -636,17 +621,13 @@ export function decodeToolPackageInstallInput(value: unknown): ToolPackageInstal
 }
 
 export function decodeToolPackageInstallResult(value: unknown): ToolPackageInstallResult {
-  return decodeRevisionProjection(value);
+  return decodeExtensionProjection(value);
 }
 
 export function decodeToolPackageUninstallInput(value: unknown): ToolPackageUninstallInput {
-  const input = requireExactRecord(value, 'Tool package uninstall input', [
-    'extensionId',
-    'revision',
-  ]);
+  const input = requireExactRecord(value, 'Tool package uninstall input', ['extensionId']);
   return {
     extensionId: decodeExtensionId(input.extensionId),
-    revision: decodeRevision(input.revision),
   };
 }
 
@@ -658,12 +639,10 @@ export function decodeToolPackageUninstallResult(value: unknown): ToolPackageUni
 export function decodeExtensionPackageExportInput(value: unknown): ExtensionPackageExportInput {
   const input = requireExactRecord(value, 'Extension package export input', [
     'extensionId',
-    'revision',
     'targetPath',
   ]);
   return {
     extensionId: decodeExtensionId(input.extensionId),
-    revision: decodeRevision(input.revision),
     targetPath: requireUtf8String(input.targetPath, 'Extension package targetPath', 16 * 1024),
   };
 }
@@ -675,25 +654,24 @@ export function decodeExtensionPackageExportResult(value: unknown): ExtensionPac
   };
 }
 
-function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProjection {
-  const source = requireRecord(value, 'trusted extension revision');
-  const revision = requireExactRecord(value, 'trusted extension revision', [
+function decodeExtensionProjection(value: unknown): TrustedExtensionProjection {
+  const source = requireRecord(value, 'trusted extension');
+  const extension = requireExactRecord(value, 'trusted extension', [
     'extensionId',
-    'revision',
     'toolNames',
     'uiContributionIds',
     ...(Object.hasOwn(source, 'eventContributionIds') ? ['eventContributionIds'] : []),
     ...(Object.hasOwn(source, 'serviceContributionIds') ? ['serviceContributionIds'] : []),
     ...(Object.hasOwn(source, 'timerContributionIds') ? ['timerContributionIds'] : []),
   ]);
-  const eventContributionIds = revision.eventContributionIds ?? [];
-  const serviceContributionIds = revision.serviceContributionIds ?? [];
-  const timerContributionIds = revision.timerContributionIds ?? [];
+  const eventContributionIds = extension.eventContributionIds ?? [];
+  const serviceContributionIds = extension.serviceContributionIds ?? [];
+  const timerContributionIds = extension.timerContributionIds ?? [];
   if (
-    !Array.isArray(revision.toolNames) ||
-    revision.toolNames.length > 128 ||
-    !Array.isArray(revision.uiContributionIds) ||
-    revision.uiContributionIds.length > 64 ||
+    !Array.isArray(extension.toolNames) ||
+    extension.toolNames.length > 128 ||
+    !Array.isArray(extension.uiContributionIds) ||
+    extension.uiContributionIds.length > 64 ||
     !Array.isArray(eventContributionIds) ||
     eventContributionIds.length > 128 ||
     !Array.isArray(serviceContributionIds) ||
@@ -704,12 +682,11 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
     throw invalidProtocolFrame('Invalid trusted extension contribution names');
   }
   return {
-    extensionId: decodeExtensionId(revision.extensionId),
-    revision: decodeRevision(revision.revision),
-    toolNames: revision.toolNames.map((name) =>
+    extensionId: decodeExtensionId(extension.extensionId),
+    toolNames: extension.toolNames.map((name) =>
       requireUtf8String(name, 'extension tool name', 128),
     ),
-    uiContributionIds: revision.uiContributionIds.map((id) =>
+    uiContributionIds: extension.uiContributionIds.map((id) =>
       requireUtf8String(id, 'extension UI contribution id', 128),
     ),
     eventContributionIds: eventContributionIds.map((id) =>
@@ -735,8 +712,6 @@ function decodeRevisionProjection(value: unknown): TrustedExtensionRevisionProje
 function decodePackageContract(value: unknown): ExtensionPackageContractProjection {
   const contract = requireExactRecord(value, 'Extension package contract', [
     'extensionId',
-    'revision',
-    'version',
     'displayName',
     'description',
     'dependencies',
@@ -828,8 +803,6 @@ function decodePackageContract(value: unknown): ExtensionPackageContractProjecti
   );
   return {
     extensionId: decodeExtensionId(contract.extensionId),
-    revision: decodeRevision(contract.revision),
-    version: requireUtf8String(contract.version, 'Extension package version', 128),
     displayName: requireUtf8String(contract.displayName, 'Extension package displayName', 128),
     description:
       typeof contract.description === 'string' &&
@@ -839,11 +812,8 @@ function decodePackageContract(value: unknown): ExtensionPackageContractProjecti
             throw invalidProtocolFrame('Invalid Extension package description');
           })(),
     dependencies: contract.dependencies.map((value) => {
-      const dependency = requireExactRecord(value, 'Extension dependency', ['id', 'version']);
-      return {
-        id: decodeExtensionId(dependency.id),
-        version: requireUtf8String(dependency.version, 'Extension dependency version', 128),
-      };
+      const dependency = requireExactRecord(value, 'Extension dependency', ['id']);
+      return { id: decodeExtensionId(dependency.id) };
     }),
     configuration: { properties: decodedProperties, required },
     contributions: contract.contributions.map(decodeContractContribution),
@@ -981,7 +951,7 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
   const fields = [
     'entryId',
     'extensionId',
-    'revision',
+    'generation',
     'id',
     'surface',
     'priority',
@@ -1037,7 +1007,7 @@ function decodeUiContributionProjection(value: unknown): ExtensionUiContribution
   return {
     entryId: requireEntityId(item.entryId, 'extension entryId'),
     extensionId: decodeExtensionId(item.extensionId),
-    revision: decodeRevision(item.revision),
+    generation: decodeGeneration(item.generation),
     id: requireUtf8String(item.id, 'extension UI contribution id', 128),
     surface: item.surface,
     ...(item.slot === undefined ? {} : { slot: item.slot as string }),
@@ -1072,7 +1042,7 @@ function decodeUiStateIdentity(input: Record<string, unknown>): ExtensionUiState
     scopeId: decodeExtensionScopeId(input.scopeId, 'extension UI scopeId'),
     entryId: requireEntityId(input.entryId, 'extension entryId'),
     extensionId: decodeExtensionId(input.extensionId),
-    revision: decodeRevision(input.revision),
+    generation: decodeGeneration(input.generation),
     key: requireUtf8String(input.key, 'extension UI state key', 128),
   };
 }
@@ -1101,7 +1071,7 @@ function decodeEntryProjection(value: unknown): ExtensionCompositionEntryProject
     'entryId',
     'scopeId',
     'extensionId',
-    'revision',
+    'generation',
     'enabled',
     'status',
     'error',
@@ -1110,7 +1080,7 @@ function decodeEntryProjection(value: unknown): ExtensionCompositionEntryProject
     entryId: requireEntityId(entry.entryId, 'extension entryId'),
     scopeId: decodeExtensionScopeId(entry.scopeId, 'extension scopeId'),
     extensionId: decodeExtensionId(entry.extensionId),
-    revision: decodeRevision(entry.revision),
+    generation: decodeGeneration(entry.generation),
     enabled: decodeBoolean(entry.enabled, 'extension enabled'),
     status: decodeEntryStatus(entry.status),
     error:
@@ -1120,10 +1090,10 @@ function decodeEntryProjection(value: unknown): ExtensionCompositionEntryProject
   };
 }
 
-function decodeRevision(value: unknown): string {
-  const revision = requireUtf8String(value, 'extension revision', EXTENSION_REVISION_MAX_BYTES);
-  if (/[\r\n]/u.test(revision)) throw invalidProtocolFrame('Invalid extension revision');
-  return revision;
+function decodeGeneration(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0)
+    throw invalidProtocolFrame('Invalid extension Fiber generation');
+  return value as number;
 }
 
 function decodeExtensionId(value: unknown): string {

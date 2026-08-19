@@ -21,13 +21,8 @@ const connection: ConnectionContext = {
 
 test('Extension composition enables, upgrades, rejects failed replacement, and restarts', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-extension-control-'));
-  const loader = new StaticTrustedToolExtensionLoader([
-    revision('1'),
-    revision('2'),
-    revision('3', async () => {
-      throw new Error('weather v3 is unhealthy');
-    }),
-  ]);
+  let current = revision('1');
+  const loader = mutableLoader(() => current);
   const store = new HostPluginCompositionStore(root);
   let runtime = new HostExtensionRuntime();
   let controller = new HostExtensionController(runtime, loader, store, () =>
@@ -38,11 +33,10 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
     await controller.recover();
     const initial = await controller.handlers['extension.composition.query']({}, connection);
     assert.equal(initial.ok, true);
-    assert.deepEqual(initial.ok && initial.result.revisions.map(({ revision: item }) => item), [
-      '1',
-      '2',
-      '3',
-    ]);
+    assert.deepEqual(
+      initial.ok && initial.result.extensions.map(({ extensionId }) => extensionId),
+      ['weather'],
+    );
 
     const enabled = await controller.handlers['extension.composition.mutate'](
       {
@@ -50,7 +44,6 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
         entryId: 'weather-entry',
         scopeId: 'session-1',
         extensionId: 'weather',
-        revision: '1',
       },
       connection,
     );
@@ -59,23 +52,27 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
       entryId: 'weather-entry',
       scopeId: 'session-1',
       extensionId: 'weather',
-      revision: '1',
+      generation: 1,
       enabled: true,
       status: 'active',
       error: null,
     });
     assert.equal(await invoke(runtime, 'session-1'), '1');
 
+    current = revision('2');
     const upgraded = await controller.handlers['extension.composition.mutate'](
-      { kind: 'update', entryId: 'weather-entry', revision: '2' },
+      { kind: 'reload', entryId: 'weather-entry' },
       connection,
     );
     assert.equal(upgraded.ok, true);
     assert.equal(await invoke(runtime, 'session-1'), '2');
-    assert.deepEqual(runtime.installedRevisions(), [{ extensionId: 'weather', revision: '2' }]);
+    assert.deepEqual(runtime.installedExtensions(), [{ extensionId: 'weather' }]);
 
+    current = revision('3', async () => {
+      throw new Error('weather v3 is unhealthy');
+    });
     const failed = await controller.handlers['extension.composition.mutate'](
-      { kind: 'update', entryId: 'weather-entry', revision: '3' },
+      { kind: 'reload', entryId: 'weather-entry' },
       connection,
     );
     assert.deepEqual(failed.ok, false);
@@ -89,10 +86,10 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
       entryId: 'weather-entry',
       scopeId: 'session-1',
       extensionId: 'weather',
-      revision: '3',
+      generation: 2,
       enabled: true,
-      status: 'failed',
-      error: 'Unable to activate entry weather-entry: weather v3 is unhealthy',
+      status: 'active',
+      error: null,
     });
 
     await runtime.close();
@@ -104,7 +101,6 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
     assert.deepEqual(runtime.resolveTools('session-1', []), []);
     const recovered = await controller.handlers['extension.composition.query']({}, connection);
     assert.equal(recovered.ok, true);
-    assert.equal(recovered.ok && recovered.result.entries[0]?.revision, '3');
     assert.equal(recovered.ok && recovered.result.entries[0]?.status, 'failed');
 
     const disabled = await controller.handlers['extension.composition.mutate'](
@@ -122,20 +118,19 @@ test('Extension composition enables, upgrades, rejects failed replacement, and r
     );
     await controller.recover();
     assert.deepEqual(runtime.resolveTools('session-1', []), []);
-    assert.deepEqual(runtime.installedRevisions(), []);
+    assert.deepEqual(runtime.installedExtensions(), []);
 
     const persisted = JSON.parse(await readFile(store.path, 'utf8')) as {
-      roots: { sessions: Record<string, Array<{ disabled: boolean; revision: string }>> };
+      roots: { sessions: Record<string, Array<{ disabled: boolean }>> };
     };
     assert.equal(persisted.roots.sessions['session-1']?.[0]?.disabled, true);
-    assert.equal(persisted.roots.sessions['session-1']?.[0]?.revision, '3');
 
     const removed = await controller.handlers['extension.composition.mutate'](
       { kind: 'remove', entryId: 'weather-entry' },
       connection,
     );
     assert.deepEqual(removed, { ok: true, result: { entry: null } });
-    assert.deepEqual(runtime.installedRevisions(), []);
+    assert.deepEqual(runtime.installedExtensions(), []);
     const empty = JSON.parse(await readFile(store.path, 'utf8')) as {
       roots: { sessions: Record<string, unknown[]> };
     };
@@ -191,7 +186,6 @@ test('Composition Snapshot restores and preserves nested groups', async () => {
               {
                 id: 'weather-entry',
                 packageId: 'weather',
-                revision: '1',
                 disabled: false,
                 config: {},
                 error: null,
@@ -205,7 +199,7 @@ test('Composition Snapshot restores and preserves nested groups', async () => {
   const runtime = new HostExtensionRuntime();
   const controller = new HostExtensionController(
     runtime,
-    new StaticTrustedToolExtensionLoader([revision('1'), revision('2')]),
+    new StaticTrustedToolExtensionLoader([revision('1')]),
     store,
     () => assert.fail('tree recovery must not drain the Host'),
   );
@@ -216,16 +210,80 @@ test('Composition Snapshot restores and preserves nested groups', async () => {
       [['workspace-group', 'weather-entry']],
     );
     assert.equal(await invoke(runtime, 'session-1'), '1');
-    const updated = await controller.handlers['extension.composition.mutate'](
-      { kind: 'update', entryId: 'weather-entry', revision: '2' },
-      connection,
-    );
-    assert.equal(updated.ok, true);
-    assert.equal(await invoke(runtime, 'session-1'), '2');
     const persisted = await store.read();
     assert.equal(persisted?.roots.sessions['session-1']?.[0]?.children?.[0]?.id, 'weather-entry');
-    assert.equal(persisted?.roots.sessions['session-1']?.[0]?.children?.[0]?.revision, '2');
     assert.deepEqual(persisted?.roots.sessions['session-1']?.[0]?.intercept, { locale: 'zh-CN' });
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Composition allows repeated instances of one Extension in a scope', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-extension-repeated-'));
+  const store = new HostPluginCompositionStore(root);
+  const runtime = new HostExtensionRuntime();
+  const loader = {
+    list: async () => [
+      {
+        extensionId: 'repeated-extension',
+        toolNames: ['per-entry'],
+        uiContributionIds: [],
+        eventContributionIds: [],
+        serviceContributionIds: [],
+        timerContributionIds: [],
+      },
+    ],
+    load: async () => ({
+      extensionId: 'repeated-extension',
+      toolNames: ['per-entry'],
+      load: async (context: { readonly entryId: string }) => ({
+        tools: [
+          {
+            name: `Tool_${context.entryId}`,
+            description: 'Entry-owned Tool',
+            parameters: z.object({}),
+            impl: async () => context.entryId,
+          },
+        ],
+      }),
+    }),
+    contracts: async () => [
+      {
+        extensionId: 'repeated-extension',
+        displayName: 'Repeated Extension',
+        description: '',
+        dependencies: [],
+        configuration: { properties: {}, required: [] },
+        contributions: [],
+      },
+    ],
+  };
+  const controller = new HostExtensionController(runtime, loader, store, () =>
+    assert.fail('repeated Extension entries must not drain the Host'),
+  );
+  try {
+    await controller.recover();
+    for (const entryId of ['empty-first', 'empty-second']) {
+      const enabled = await controller.handlers['extension.composition.mutate'](
+        {
+          kind: 'enable',
+          entryId,
+          scopeId: 'session-1',
+          extensionId: 'repeated-extension',
+        },
+        connection,
+      );
+      assert.equal(enabled.ok, true);
+    }
+    const queried = await controller.handlers['extension.composition.query']({}, connection);
+    assert.equal(queried.ok, true);
+    assert.deepEqual(queried.ok && queried.result.entries.map(({ entryId }) => entryId), [
+      'empty-first',
+      'empty-second',
+    ]);
+    assert.equal(runtime.inspect('empty-first').status, 'active');
+    assert.equal(runtime.inspect('empty-second').status, 'active');
   } finally {
     await runtime.close();
     await rm(root, { recursive: true, force: true });
@@ -237,13 +295,11 @@ function revision(
   healthCheck?: () => void | Promise<void>,
 ): {
   extensionId: string;
-  revision: string;
   tools: readonly MakaTool[];
   healthCheck?: () => void | Promise<void>;
 } {
   return {
     extensionId: 'weather',
-    revision: value,
     tools: [
       {
         name: 'Weather',
@@ -253,6 +309,30 @@ function revision(
       },
     ],
     ...(healthCheck ? { healthCheck } : {}),
+  };
+}
+
+function mutableLoader(current: () => ReturnType<typeof revision>) {
+  return {
+    list: async () => [
+      {
+        extensionId: 'weather',
+        toolNames: ['Weather'],
+        uiContributionIds: [],
+        eventContributionIds: [],
+      },
+    ],
+    load: async () => current(),
+    contracts: async () => [
+      {
+        extensionId: 'weather',
+        displayName: 'weather',
+        description: '',
+        dependencies: [],
+        configuration: { properties: {}, required: [] },
+        contributions: [],
+      },
+    ],
   };
 }
 

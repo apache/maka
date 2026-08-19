@@ -62,8 +62,8 @@ export function UiExtensionsPage({ hubHeader }: { hubHeader: ModuleHubHeader }) 
             {latest.map((entry) => (
               <ListItem
                 key={entry.extensionId}
-                label={`${entry.displayName} · ${entry.version}`}
-                description={`${entry.toolNames.length} Tools · ${entry.uiContributionIds.length} UI · ${entry.eventContributionIds.length} Events/Listeners · ${entry.serviceContributionIds.length} Services · ${entry.timerContributionIds.length} Timers · ${entry.dependencies.length} 依赖 · ${entry.revision.slice(0, 20)}…${entry.error ? ` · ${entry.error}` : ''}`}
+                label={entry.displayName}
+                description={`${entry.toolNames.length} Tools · ${entry.uiContributionIds.length} UI · ${entry.eventContributionIds.length} Events/Listeners · ${entry.serviceContributionIds.length} Services · ${entry.timerContributionIds.length} Timers · ${entry.dependencies.length} 依赖${entry.error ? ` · ${entry.error}` : ''}`}
                 startContent={<StatusDot variant={dotForStatus(entry.status === 'active' ? 'success' : entry.status === 'failed' ? 'error' : 'neutral')} label={entry.status} />}
                 endContent={<div className="maka-module-main-actions">
                   <Switch
@@ -107,7 +107,7 @@ export function UiExtensionsPage({ hubHeader }: { hubHeader: ModuleHubHeader }) 
                     label="导出"
                     isDisabled={busy !== null}
                     onClick={() => void act(`export:${entry.extensionId}`, () =>
-                      window.maka.uiExtensions.export(entry.extensionId, entry.revision),
+                      window.maka.uiExtensions.export(entry.extensionId),
                     )}
                   />
                   <Button variant="ghost" label="删除" icon={<Trash2 size={ICON_SIZE.chrome} aria-hidden="true" />} isDisabled={busy !== null} onClick={() => void act(`remove:${entry.extensionId}`, () => window.maka.uiExtensions.remove(entry.extensionId))} />

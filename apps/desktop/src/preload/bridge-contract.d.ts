@@ -307,9 +307,7 @@ export interface PetPackChangedEvent {
 
 export interface UiExtensionEntry {
   readonly extensionId: string;
-  readonly revision: string;
   readonly displayName: string;
-  readonly version: string;
   readonly description: string;
   readonly contributionIds: readonly string[];
   readonly toolNames: readonly string[];
@@ -317,7 +315,7 @@ export interface UiExtensionEntry {
   readonly eventContributionIds: readonly string[];
   readonly serviceContributionIds: readonly string[];
   readonly timerContributionIds: readonly string[];
-  readonly dependencies: readonly { readonly id: string; readonly version: string }[];
+  readonly dependencies: readonly { readonly id: string }[];
   readonly configuration: {
     readonly properties: Readonly<Record<string, {
       readonly type: 'string' | 'number' | 'boolean';
@@ -355,11 +353,11 @@ export interface MakaBridge {
 
   uiExtensions: {
     list(): Promise<readonly UiExtensionEntry[]>;
-    importLocal(): Promise<{ ok: true; extensionId: string; revision: string } | { ok: false; reason: 'cancelled' }>;
+    importLocal(): Promise<{ ok: true; extensionId: string } | { ok: false; reason: 'cancelled' }>;
     setEnabled(extensionId: string, enabled: boolean): Promise<{ ok: true }>;
     getConfiguration(entryId: string): Promise<{ configuration: Record<string, string | number | boolean> }>;
     configure(entryId: string, configuration: Record<string, string | number | boolean>): Promise<{ ok: true; configuration: Record<string, string | number | boolean> }>;
-    export(extensionId: string, revision: string): Promise<{ ok: true; path: string } | { ok: false; reason: 'cancelled' }>;
+    export(extensionId: string): Promise<{ ok: true; path: string } | { ok: false; reason: 'cancelled' }>;
     remove(extensionId: string): Promise<{ ok: true }>;
   };
 

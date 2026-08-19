@@ -60,14 +60,14 @@ describe('Desktop UI extension shell', () => {
       }, []);
       return createElement('main', { 'data-official-root': true });
     }
-    const render = async (revision: string) => {
+    const render = async (generation: number) => {
       await act(async () => {
         root.render(
           createElement(
             UiExtensionSlotProvider,
             {
               contributions: [
-                { ...item('status', 'app.slot', 10, 'conversation.header'), revision },
+                { ...item('status', 'app.slot', 10, 'conversation.header'), generation },
               ],
               onSafeMode: () => undefined,
             },
@@ -79,8 +79,8 @@ describe('Desktop UI extension shell', () => {
       });
     };
 
-    await render('1');
-    await render('2');
+    await render(1);
+    await render(2);
     assert.equal(mounts, 1);
     assert.equal(unmounts, 0);
     assert.equal(container.querySelectorAll('iframe').length, 1);
@@ -132,7 +132,7 @@ describe('Desktop UI extension shell', () => {
       scopeId: 'desktop-ui',
       entryId: contribution.entryId,
       extensionId: contribution.extensionId,
-      revision: contribution.revision,
+      generation: contribution.generation,
       contributionId: contribution.id,
       token,
     });
@@ -163,7 +163,7 @@ describe('Desktop UI extension shell', () => {
       scopeId: 'desktop-ui',
       entryId: contribution.entryId,
       extensionId: contribution.extensionId,
-      revision: contribution.revision,
+      generation: contribution.generation,
       contributionId: contribution.id,
       token,
     })));
@@ -182,7 +182,7 @@ function item(
   return {
     entryId: `entry-${id}`,
     extensionId: 'demo',
-    revision: '1',
+    generation: 1,
     id,
     surface,
     ...(slot ? { slot } : {}),

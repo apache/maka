@@ -36,7 +36,7 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
       : await input.mainWindowController.showMessageBox({
           type: 'warning',
           title: `Import ${manifest.id}`,
-          message: `Install Extension “${manifest.id}” ${manifest.version}?`,
+          message: `Install Extension “${manifest.id}”?`,
           detail: [
             `${manifest.uiCount} UI contribution${manifest.uiCount === 1 ? '' : 's'}`,
             `${manifest.toolCount} Tool contribution${manifest.toolCount === 1 ? '' : 's'}`,
@@ -70,17 +70,16 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
       await input.client.request(
         'extension.composition.mutate',
         current
-          ? { kind: 'update', entryId: current.entryId, revision: installed.revision }
+          ? { kind: 'reload', entryId: current.entryId }
           : {
               kind: 'enable',
               entryId: userEntryId(installed.extensionId, scopeId),
               scopeId,
               extensionId: installed.extensionId,
-              revision: installed.revision,
             },
       );
     }
-    return { ok: true as const, extensionId: installed.extensionId, revision: installed.revision };
+    return { ok: true as const, extensionId: installed.extensionId };
   });
 
   input.ipcMain.handle('ui-extensions:setEnabled', async (_event, extensionId: string, enabled: boolean) => {
@@ -89,7 +88,7 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
     if (entries.length === 0) throw new Error('Extension entry is not installed');
     for (const entry of entries) {
       await input.client.request('extension.composition.mutate', enabled
-        ? { kind: 'enable', entryId: entry.entryId, scopeId: entry.scopeId, extensionId: entry.extensionId, revision: entry.revision }
+        ? { kind: 'enable', entryId: entry.entryId, scopeId: entry.scopeId, extensionId: entry.extensionId }
         : { kind: 'disable', entryId: entry.entryId });
     }
     return { ok: true as const };
@@ -100,9 +99,8 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
     for (const entry of catalog.entries.filter((item) => item.extensionId === extensionId)) {
       await input.client.request('extension.composition.mutate', { kind: 'remove', entryId: entry.entryId });
     }
-    for (const revision of catalog.revisions.filter((item) => item.extensionId === extensionId)) {
-      await input.client.request('extension.package.uninstall', { extensionId, revision: revision.revision });
-    }
+    if (catalog.extensions.some((item) => item.extensionId === extensionId))
+      await input.client.request('extension.package.uninstall', { extensionId });
     return { ok: true as const };
   });
 
@@ -115,15 +113,15 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
     input.client.request('extension.configuration.query', { entryId }),
   );
 
-  input.ipcMain.handle('ui-extensions:export', async (_event, extensionId: string, revision: string) => {
+  input.ipcMain.handle('ui-extensions:export', async (_event, extensionId: string) => {
     if (!input.allowLocalPaths) throw new Error('Extension export is unavailable for a remote Runtime Host');
     const selected = await input.mainWindowController.showSaveDialog({
       title: `Export ${extensionId}`,
-      defaultPath: `${extensionId}-${revision.slice(0, 12)}.maka-extension`,
+      defaultPath: `${extensionId}.maka-extension`,
       filters: [{ name: 'Maka Extension', extensions: ['maka-extension'] }],
     });
     if (selected.canceled || !selected.filePath) return { ok: false as const, reason: 'cancelled' as const };
-    await input.client.request('extension.package.export', { extensionId, revision, targetPath: selected.filePath });
+    await input.client.request('extension.package.export', { extensionId, targetPath: selected.filePath });
     return { ok: true as const, path: selected.filePath };
   });
 }
@@ -131,33 +129,30 @@ export function registerRuntimeHostUiExtensionsIpc(input: {
 async function listUiExtensions(client: DesktopRuntimeHostClient) {
   const catalog = await client.request('extension.composition.query', {});
   const contracts = await client.request('extension.contract.query', {}).catch(() => ({ packages: [] }));
-  return catalog.revisions
-    .map((revision) => {
-      const entries = catalog.entries.filter((item) => item.extensionId === revision.extensionId);
-      const entry = entries.find((item) => item.revision === revision.revision) ?? entries[0];
-      const contract = contracts.packages.find((item) => item.extensionId === revision.extensionId && item.revision === revision.revision);
+  return catalog.extensions
+    .map((extension) => {
+      const entries = catalog.entries.filter((item) => item.extensionId === extension.extensionId);
+      const contract = contracts.packages.find((item) => item.extensionId === extension.extensionId);
       return {
-        extensionId: revision.extensionId,
-        revision: revision.revision,
-        displayName: contract?.displayName ?? revision.extensionId,
-        version: contract?.version ?? revision.revision,
+        extensionId: extension.extensionId,
+        displayName: contract?.displayName ?? extension.extensionId,
         description: contract?.description ?? '',
         contributionIds: [
-          ...revision.toolNames,
-          ...revision.uiContributionIds,
-          ...revision.eventContributionIds,
-          ...(revision.serviceContributionIds ?? []),
-          ...(revision.timerContributionIds ?? []),
+          ...extension.toolNames,
+          ...extension.uiContributionIds,
+          ...extension.eventContributionIds,
+          ...(extension.serviceContributionIds ?? []),
+          ...(extension.timerContributionIds ?? []),
         ],
-        toolNames: revision.toolNames,
-        uiContributionIds: revision.uiContributionIds,
-        eventContributionIds: revision.eventContributionIds,
-        serviceContributionIds: revision.serviceContributionIds ?? [],
-        timerContributionIds: revision.timerContributionIds ?? [],
+        toolNames: extension.toolNames,
+        uiContributionIds: extension.uiContributionIds,
+        eventContributionIds: extension.eventContributionIds,
+        serviceContributionIds: extension.serviceContributionIds ?? [],
+        timerContributionIds: extension.timerContributionIds ?? [],
         dependencies: contract?.dependencies ?? [],
         configuration: contract?.configuration ?? { properties: {}, required: [] },
         entries,
-        active: entries.some((item) => item.status === 'active' && item.revision === revision.revision),
+        active: entries.some((item) => item.status === 'active'),
         enabled: entries.some((item) => item.enabled),
         status: entries.some((item) => item.status === 'failed') ? 'failed' : entries.some((item) => item.status === 'active') ? 'active' : entries.some((item) => item.status === 'waiting') ? 'waiting' : 'disabled',
         error: entries.find((item) => item.error)?.error ?? null,
@@ -165,7 +160,7 @@ async function listUiExtensions(client: DesktopRuntimeHostClient) {
     });
 }
 
-async function previewPackage(sourcePath: string): Promise<{ id: string; version: string; uiCount: number; toolCount: number; eventCount: number; serviceCount: number; timerCount: number; hostMethods: string[]; permissions: { network: boolean; hostState: boolean; sessionAccess: boolean; workspace: string } }> {
+async function previewPackage(sourcePath: string): Promise<{ id: string; uiCount: number; toolCount: number; eventCount: number; serviceCount: number; timerCount: number; hostMethods: string[]; permissions: { network: boolean; hostState: boolean; sessionAccess: boolean; workspace: string } }> {
   if (!(await stat(sourcePath)).isDirectory()) return previewBundle(sourcePath);
   const encoded = await readFile(join(sourcePath, 'maka.extension.json'), 'utf8');
   return previewManifest(JSON.parse(encoded) as Record<string, unknown>);
@@ -193,7 +188,7 @@ async function previewBundle(sourcePath: string): ReturnType<typeof previewPacka
 }
 
 function previewManifest(value: Record<string, unknown>): Awaited<ReturnType<typeof previewPackage>> {
-  if (typeof value.id !== 'string' || typeof value.version !== 'string') {
+  if (typeof value.id !== 'string') {
     throw new Error('Extension manifest is invalid');
   }
   const runtime = value.runtime as Record<string, unknown> | undefined;
@@ -224,7 +219,6 @@ function previewManifest(value: Record<string, unknown>): Awaited<ReturnType<typ
   }
   return {
     id: value.id,
-    version: value.version,
     uiCount: ui.length,
     toolCount: tools.length,
     eventCount: eventDefinitions.length + listeners.length,

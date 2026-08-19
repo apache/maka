@@ -1,6 +1,6 @@
 import { constants, type Dirent } from 'node:fs';
 import { mkdir, open, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, posix, resolve } from 'node:path';
 import type { ToolCategory } from '@maka/core/permission';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
@@ -11,7 +11,6 @@ const MAX_FILES = 128;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_PACKAGE_BYTES = 8 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 256 * 1024;
-const REVISION_PATTERN = /^sha256-[a-f0-9]{64}$/u;
 const TOOL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/u;
 const CATEGORIES = new Set<ToolCategory>([
   'read',
@@ -51,7 +50,6 @@ export interface ToolPackageManifestTool {
 export interface ToolPackageManifest {
   readonly schemaVersion: 1;
   readonly id: string;
-  readonly version: string;
   readonly entry: string;
   readonly tools: readonly ToolPackageManifestTool[];
   readonly permissions: {
@@ -62,7 +60,6 @@ export interface ToolPackageManifest {
 
 export interface InstalledToolPackage {
   readonly extensionId: string;
-  readonly revision: string;
   readonly root: string;
   readonly entry: string;
   readonly manifest: ToolPackageManifest;
@@ -85,12 +82,11 @@ export interface PackageFile {
   readonly content: Buffer;
 }
 
-/** Root-private, content-addressed storage for prebuilt JavaScript Tool packages. */
+/** Decode the runtime contribution view of one Extension package. */
 export function decodeToolPackageManifest(value: unknown): ToolPackageManifest {
   const root = optionalExactRecord(value, [
     'schemaVersion',
     'id',
-    'version',
     'displayName',
     'description',
     'dependencies',
@@ -110,14 +106,12 @@ export function decodeToolPackageManifest(value: unknown): ToolPackageManifest {
   const record = {
     schemaVersion: root.schemaVersion,
     id: root.id,
-    version: root.version,
     entry: runtime.entry,
     tools: runtime.tools,
     permissions: runtime.permissions,
   };
   if (record.schemaVersion !== 1) throw invalidPackage('Tool package schemaVersion must be 1');
   const id = requireId(record.id);
-  const version = boundedString(record.version, 'version', 128);
   const entry = packagePath(record.entry, 'entry');
   if (!entry.endsWith('.mjs')) throw invalidPackage('Tool package entry must be an .mjs file');
   if (!Array.isArray(record.tools) || record.tools.length === 0 || record.tools.length > 64) {
@@ -181,7 +175,6 @@ export function decodeToolPackageManifest(value: unknown): ToolPackageManifest {
   return Object.freeze({
     schemaVersion: 1,
     id,
-    version,
     entry,
     tools: Object.freeze(tools),
     permissions: Object.freeze({ workspace, network: permissions.network }),
@@ -283,19 +276,6 @@ export async function syncDirectory(path: string): Promise<void> {
   }
 }
 
-export function packageRevision(files: readonly PackageFile[]): string {
-  const hash = createHash('sha256');
-  for (const file of files) {
-    const path = Buffer.from(file.path, 'utf8');
-    const length = Buffer.allocUnsafe(8);
-    length.writeBigUInt64BE(BigInt(path.byteLength));
-    hash.update(length).update(path);
-    length.writeBigUInt64BE(BigInt(file.content.byteLength));
-    hash.update(length).update(file.content);
-  }
-  return `sha256-${hash.digest('hex')}`;
-}
-
 export function packagePath(value: unknown, label: string): string {
   const path = boundedString(value, label, 512);
   if (
@@ -319,10 +299,6 @@ function requireId(value: unknown): string {
 
 function validId(value: string): boolean {
   return isCanonicalExtensionId(value);
-}
-
-function requireRevision(value: string): void {
-  if (!REVISION_PATTERN.test(value)) throw invalidPackage('Tool package revision is invalid');
 }
 
 export function boundedString(value: unknown, label: string, maxBytes: number): string {

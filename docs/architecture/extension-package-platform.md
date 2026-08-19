@@ -1,131 +1,52 @@
-# Trusted In-Process Extension Platform
+# Trusted in-process Extension platform
 
-Maka has one Extension product, one immutable content Revision, one lifecycle,
-and one package manifest: `maka.extension.json`. A Revision may contribute
-Tools, UI, Events, Listeners, Services, and durable Host-owned Timers. The old
-per-contribution manifests and remote Worker protocol do not exist.
+Maka has one Extension package format and one composition lifecycle. A
+`maka.extension.json` package may contribute Tools, UI, Events, Listeners,
+Services, and Host-owned Timers.
 
-## Trust model
+## Trust and identity
 
-Enabling executable Extension code is equivalent to running a local
-application or Bash command. It may read credentials, access files and the
-network, modify Maka behavior, block the event loop, or terminate the Runtime
-Host. Manifest permissions, schema validation, and the read-only context API
-are approval, audit, and accidental-misuse guardrails; they are not a security
-boundary against malicious code.
+Executable Extension code is trusted in-process code. Manifest permissions and
+schemas are guardrails, not a sandbox. UI documents separately run in
+opaque-origin iframes with a narrow Host bridge.
 
-Installation only validates, seals, and stores bytes. Desktop import shows the
-trust warning before install and enable. Activation imports the ESM entry in the
-Runtime Host process. One activation owns one module instance, and its Tool,
-Listener, Service, and Timer handlers share live module state.
+The manifest `id` identifies installed package bytes. A manifest `version` is
+display/package metadata, not a persistent lifecycle Revision. Installing bytes
+does not activate them: the Composition Entry Tree decides where and whether a
+package runs, and multiple Entries may reference one package with different
+scope or configuration.
 
-## Manifest
+## Composition and ownership
 
-`maka.extension.json` contains product metadata plus optional `runtime` and
-`ui` sections:
+The Entry Tree is projected into the Context/Fiber Tree. Structural Entries can
+remain Entry-only. Executable Fibers own all contribution registrations, so
+enable, disable, move, reconfigure, reload, and remove share one cleanup
+boundary. Host runtime and Desktop UI may use separate Contexts when their
+authorities differ; they are not forced into an artificial shared Fiber.
 
-```json
-{
-  "schemaVersion": 1,
-  "id": "dev.example.notes",
-  "version": "1.0.0",
-  "dependencies": [],
-  "configuration": { "properties": {}, "required": [] },
-  "runtime": {
-    "entry": "dist/runtime.mjs",
-    "tools": [],
-    "events": [],
-    "listeners": [],
-    "services": [],
-    "timers": [],
-    "permissions": { "workspace": "write", "network": true }
-  },
-  "ui": {
-    "contributions": [],
-    "permissions": {
-      "network": false,
-      "hostState": false,
-      "sessionAccess": false
-    }
-  }
-}
-```
+`define_package` and `manage_package` are the canonical agent-facing controls.
+Product UI uses the same Runtime Host composition operations. There is no
+secondary Revision/Binding controller or per-contribution activation map.
 
-The Runtime entry exports one default handler object. It is loaded once per
-activation. Objects are passed directly: functions, `AbortSignal`, async
-iterables, and streams no longer cross a JSON or RPC boundary.
+## Contribution roles
 
-## Composition
+- A Tool is a model-callable operation.
+- An Event is a typed dispatch contract.
+- A Listener handles an Event; core Event listeners implement Hooks.
+- A Service exposes typed methods through Context dependency rules.
+- A Timer is a durable Host scheduler whose callback belongs to the Fiber.
+- A UI contribution is a sandboxed document projected into an allowed surface.
 
-### Canonical management surface
+The runtime entry exports one handler object per activation. Tool, Listener,
+Service, and Timer handlers share module state and receive configuration,
+cancellation, Event emission, and Service-call capabilities.
 
-`define_package` and `manage_package` are the canonical control surface for a
-multi-contribution Extension Revision. One immutable package may contain
-Tools, UI, Events, Listeners, Services, and Timers, so activation, update,
-stop, and delete share one composition transaction and rollback boundary.
-The older `*_tool`, `*_ui`, and `*_event` management tools remain compatibility
-adapters for existing callers; they must not create a second package or
-activation authority.
+## Replacement and restart
 
-Events, Hooks, and Timers are related but not interchangeable:
+Reload and reconfiguration stage fresh Fibers. Health checking and activation
+complete before the live switch. Failure closes the candidate and preserves the
+active Fiber; success switches and then retires the old Fiber.
 
-- An Event is a typed fact or request with a payload and dispatch mode.
-- A Hook is an Event listener, usually attached to a core Maka Event such as
-  `maka.tools.execute` or `maka.llm.stream`; it observes or transforms a
-  lifecycle operation.
-- A Timer is a Host-owned scheduler that invokes a callback on a schedule. The
-  callback may emit an Event, but the schedule itself is neither an Event nor a
-  Hook.
-
-All three are contributions of the same package and share lifecycle ownership;
-only their execution authorities differ.
-
-### Context runtime
-
-The live Runtime is organized as an owned Context tree rather than one flat
-collection of contribution registries. The Runtime Host owns the root;
-`profile` and `desktop-ui` are root scopes, Session scopes inherit from the
-Profile scope, and every active package Revision is represented by a plugin
-Context below its scope.
-
-Each plugin Context is the single owner of its child Contexts, published
-capabilities, and runtime effects. Tool, UI, Event, Listener, Service, and
-Timer adapters register their cleanup with that Context. Closing a Context
-first closes its children and then releases effects in reverse order. Runtime
-inspection exposes this same tree, including status, capabilities, effects,
-and children, so lifecycle ownership is observable rather than implicit.
-
-The durable Revision/Binding controller remains outside the Context runtime.
-It decides what should run and preserves immutable revisions, last-good state,
-rollback, and restart recovery. The Context runtime decides how the selected
-Revisions compose in the live process. Candidate updates receive a fresh
-preparing Context; only a healthy activation becomes active, while failed
-candidates close without disturbing the current Context.
-
-The dispatch kernel supports `emit`, `parallel`, `serial`, `bail`, `transform`,
-`observe`, `gate`, and `around`. Around listeners receive `(value, context,
-next)`, may wrap downstream execution before and after, transform its value, or
-short-circuit it. `next()` is single-use.
-
-`maka.tools.execute` wraps the real Tool implementation. `maka.llm.stream`
-wraps the live model stream, so a listener can transform streaming events with
-native async-iterable backpressure and cancellation. Other Agent, Session, and
-Subagent seams use the same Event registry. There is no second Extension Hook
-registry; external command `PreToolUse` hooks remain a separate user/project
-automation adapter.
-
-## Lifecycle and persistence
-
-Revisions remain content-addressed and immutable. Bindings retain activation,
-update, last-good rollback, dependency ordering, recovery, and per-scope
-configuration. Runtime contributions bind to the Session/Profile scope; UI
-contributions bind to `desktop-ui`. A combined transition rolls back if either
-scope fails.
-
-Timer schedules remain Host-owned and durable. Timer handlers run through the
-same live activation as every other Runtime contribution. Stop/update removes
-the registry generation; Turns that already captured a snapshot retain their
-generation lease until they finish.
-
-This design deliberately provides no crash containment or hard timeout for
-trusted Extension code. Cancellation is cooperative through `AbortSignal`.
+Restart reads package bytes and the Entry Tree and reconstructs all Fibers.
+Timer scheduling metadata and UI state have dedicated Host stores, but neither
+is a composition authority.

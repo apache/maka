@@ -8,7 +8,7 @@ import {
   createExecutionRuntimeHostCompositionSource,
   type ExecutionRuntimeHostCompositionDependencies,
 } from './execution-composition-factory.js';
-import type { StaticTrustedToolExtensionRevision } from './extension-loader.js';
+import type { StaticTrustedToolExtension } from './extension-loader.js';
 
 export type ExecutionRuntimeHostCandidateResult = InteractiveRuntimeHostCandidateResult;
 
@@ -17,7 +17,7 @@ export interface ExecutionRuntimeHostCandidateOptions
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   /** Packaged resource root containing bundled-git.json and the Git toolchain. */
   readonly bundledGitResourcesRoot?: string;
-  readonly trustedToolExtensions?: readonly StaticTrustedToolExtensionRevision[];
+  readonly trustedToolExtensions?: readonly StaticTrustedToolExtension[];
 }
 
 export type ExecutionRuntimeHostCandidateDependencies = ExecutionRuntimeHostCompositionDependencies;

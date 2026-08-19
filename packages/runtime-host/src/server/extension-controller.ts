@@ -4,6 +4,7 @@ import type {
   MakaPluginMountInspection,
   MakaPluginRootId,
 } from '@maka/runtime/plugin-runtime';
+import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { createHash } from 'node:crypto';
 import {
   type ExtensionCompositionEntryProjection,
@@ -46,11 +47,7 @@ import {
 import { HostExtensionUiStateStore } from './extension-ui-state-store.js';
 import { UiPackageService } from './ui-package-service.js';
 import type { PluginPackageStore } from './plugin-package-store.js';
-import {
-  compareExtensionVersions,
-  extensionVersionSatisfies,
-  validateExtensionConfiguration,
-} from './extension-package-manifest.js';
+import { validateExtensionConfiguration } from './extension-package-manifest.js';
 
 type MutationFailureCode =
   | 'host_draining'
@@ -63,7 +60,6 @@ interface CompositionEntryState {
   readonly entryId: string;
   readonly scopeId: string;
   readonly extensionId: string;
-  readonly revision: string;
   readonly enabled: boolean;
   readonly error: string | null;
   readonly config: Readonly<Record<string, string | number | boolean>>;
@@ -114,6 +110,59 @@ export class HostExtensionController {
     this.loader.setServiceCaller?.((scopeId, service, method, input, context) =>
       this.runtime.callService(scopeId, service, method, input, context),
     );
+    this.loader.setUiStatePublisher?.((extensionId, key, value) =>
+      this.#publishToolVisualization(extensionId, key, value),
+    );
+  }
+
+  resolveTool(scopeId: string, name: string): MakaTool | undefined {
+    return this.runtime.resolveTools(scopeId, []).find((tool) => tool.name === name);
+  }
+
+  emitEvent(scopeId: string, event: string, payload: unknown, context: MakaToolContext) {
+    return this.runtime.emitEvent(scopeId, event, payload, invocationContext(context));
+  }
+
+  callService(
+    scopeId: string,
+    service: string,
+    method: string,
+    input: unknown,
+    context: MakaToolContext,
+  ) {
+    return this.runtime.callService(scopeId, service, method, input, {
+      ...invocationContext(context),
+      callerExtensionId: 'maka.host',
+    });
+  }
+
+  async publishUiState(extensionId: string, key: string, value: unknown): Promise<void> {
+    const matches = this.runtime
+      .inspectUi('desktop-ui')
+      .filter((item) => item.extensionId === extensionId);
+    if (matches.length === 0) {
+      throw new Error(`Active Desktop UI Extension was not found: ${extensionId}`);
+    }
+    if (!matches.some((item) => item.hostState)) {
+      throw new Error(`Active Desktop UI Extension does not allow Host state: ${extensionId}`);
+    }
+    await this.#publishToolVisualization(extensionId, key, value);
+  }
+
+  async #publishToolVisualization(extensionId: string, key: string, value: unknown): Promise<void> {
+    const admitted = this.runtime
+      .inspectUi('desktop-ui')
+      .filter((item) => item.extensionId === extensionId && item.hostState);
+    await Promise.all(
+      admitted.map((item) =>
+        this.uiState.set(
+          'desktop-ui',
+          item.entryId,
+          key,
+          value as Parameters<HostExtensionUiStateStore['set']>[3],
+        ),
+      ),
+    );
   }
 
   /** Recovery is fail-open for the Host and fail-closed for Extension mutations. */
@@ -125,8 +174,8 @@ export class HostExtensionController {
         this.#persistedComposition = composition;
         this.#compositionGeneration = composition.generation;
         for (const [, entry] of persistedEntries(composition)) {
-          if (!entry.packageId || !entry.revision || entry.disabled) continue;
-          await this.#ensureInstalled(entry.packageId, entry.revision);
+          if (!entry.packageId || entry.disabled) continue;
+          await this.#ensureInstalled(entry.packageId);
         }
         const hasPersistedFailures = [...persistedEntries(composition)].some(
           ([, entry]) => entry.error,
@@ -143,7 +192,6 @@ export class HostExtensionController {
       await this.#recoverEnabledEntries();
       await this.#refreshRuntimeState();
       await this.#pruneOrphanDependencyEntries();
-      await this.#garbageCollectRevisions();
       await this.#persist();
     } catch (error) {
       this.#persistenceFailure = asPersistenceFailure(error);
@@ -161,7 +209,7 @@ export class HostExtensionController {
       return queryFailure('persistence_failed', 'Extension state is unavailable');
     }
     const result: ExtensionCompositionQueryResult = {
-      revisions: await this.loader.list(),
+      extensions: await this.loader.list(),
       entries: this.#entryProjections(),
     };
     return { ok: true, result };
@@ -194,7 +242,7 @@ export class HostExtensionController {
       return { ok: false, error: { code: 'not_found', message: 'Extension entry not found' } };
     }
     try {
-      const contract = await this.#requireContract(entry.extensionId, entry.revision);
+      const contract = await this.#requireContract(entry.extensionId);
       const configuration = validateExtensionConfiguration(
         contract.configuration,
         this.#configurationForEntry(input.entryId),
@@ -227,7 +275,7 @@ export class HostExtensionController {
       }
       let configuration: Readonly<Record<string, string | number | boolean>>;
       try {
-        const contract = await this.#requireContract(entry.extensionId, entry.revision);
+        const contract = await this.#requireContract(entry.extensionId);
         configuration = validateExtensionConfiguration(contract.configuration, input.configuration);
       } catch (error) {
         return {
@@ -252,7 +300,7 @@ export class HostExtensionController {
           await this.#refreshRuntimeState();
           await this.#persist();
         }
-        const contract = await this.#requireContract(entry.extensionId, entry.revision);
+        const contract = await this.#requireContract(entry.extensionId);
         const result: ExtensionConfigurationMutateResult = {
           configuration: redactSecretConfiguration(contract, configuration),
         };
@@ -281,7 +329,7 @@ export class HostExtensionController {
         Object.freeze({
           entryId: item.entryId,
           extensionId: item.extensionId,
-          revision: item.revision,
+          generation: item.generation,
           id: item.id,
           surface: item.surface,
           ...(item.slot ? { slot: item.slot } : {}),
@@ -312,7 +360,7 @@ export class HostExtensionController {
     try {
       const result: ExtensionUiStateQueryResult = await this.uiState.get(
         input.scopeId,
-        input.extensionId,
+        input.entryId,
         input.key,
       );
       return { ok: true, result };
@@ -333,9 +381,9 @@ export class HostExtensionController {
         const changed =
           input.kind === 'set'
             ? await this.uiState
-                .set(input.scopeId, input.extensionId, input.key, input.value)
+                .set(input.scopeId, input.entryId, input.key, input.value)
                 .then(() => true)
-            : await this.uiState.delete(input.scopeId, input.extensionId, input.key);
+            : await this.uiState.delete(input.scopeId, input.entryId, input.key);
         const result: ExtensionUiStateMutateResult = { changed };
         return { ok: true, result };
       } catch (error) {
@@ -353,7 +401,7 @@ export class HostExtensionController {
     const denied = this.#authorizeUiRpc(input);
     if (denied) return uiRpcFailure(denied.code, denied.message);
     try {
-      const installed = await this.uiPackages.loadUi(input.extensionId, input.revision);
+      const installed = await this.uiPackages.loadUi(input.extensionId);
       const result: ExtensionUiRpcInvokeResult = {
         value: (await new UiPackageService().invoke(
           installed,
@@ -378,7 +426,7 @@ export class HostExtensionController {
       !entry.enabled ||
       entry.scopeId !== input.scopeId ||
       entry.extensionId !== input.extensionId ||
-      current?.revision !== input.revision
+      current?.generation !== input.generation
     ) {
       return {
         code: 'invalid_request',
@@ -391,7 +439,7 @@ export class HostExtensionController {
         (item) =>
           item.entryId === input.entryId &&
           item.extensionId === input.extensionId &&
-          item.revision === input.revision &&
+          item.generation === input.generation &&
           item.hostState,
       );
     return admitted
@@ -409,7 +457,7 @@ export class HostExtensionController {
       !entry.enabled ||
       entry.scopeId !== input.scopeId ||
       entry.extensionId !== input.extensionId ||
-      current?.revision !== input.revision
+      current?.generation !== input.generation
     ) {
       return {
         code: 'invalid_request',
@@ -422,14 +470,14 @@ export class HostExtensionController {
         (item) =>
           item.entryId === input.entryId &&
           item.extensionId === input.extensionId &&
-          item.revision === input.revision &&
+          item.generation === input.generation &&
           item.hostMethods.includes(input.method),
       );
     return admitted
       ? undefined
       : {
           code: 'invalid_request',
-          message: 'UI Host method is not declared by the active revision',
+          message: 'UI Host method is not declared by the active Fiber',
         };
   }
 
@@ -472,27 +520,21 @@ export class HostExtensionController {
         );
       }
       const referenced = [...this.#entries.values()].find(
-        (entry) =>
-          entry.extensionId === input.extensionId &&
-          uniqueRevisions(entry).includes(input.revision),
+        (entry) => entry.extensionId === input.extensionId,
       );
       if (referenced) {
         return packageFailure(
           'operation_conflict',
-          `Tool package revision is retained by entry ${referenced.entryId}`,
+          `Tool package is retained by entry ${referenced.entryId}`,
         );
       }
       try {
         if (
-          this.runtime
-            .installedRevisions()
-            .some(
-              (item) => item.extensionId === input.extensionId && item.revision === input.revision,
-            )
+          this.runtime.installedExtensions().some((item) => item.extensionId === input.extensionId)
         ) {
-          await this.runtime.uninstall(input.extensionId, input.revision);
+          await this.runtime.uninstall(input.extensionId);
         }
-        await this.loader.uninstallPackage(input.extensionId, input.revision);
+        await this.loader.uninstallPackage(input.extensionId);
         return { ok: true, result: {} };
       } catch (error) {
         return packageLoaderFailure(error, 'uninstall');
@@ -520,7 +562,7 @@ export class HostExtensionController {
         };
       }
       try {
-        await this.loader.exportPackage(input.extensionId, input.revision, input.targetPath);
+        await this.loader.exportPackage(input.extensionId, input.targetPath);
         const result: ExtensionPackageExportResult = { targetPath: input.targetPath };
         return { ok: true, result };
       } catch (error) {
@@ -545,8 +587,8 @@ export class HostExtensionController {
           return this.#enable(input);
         case 'disable':
           return this.#disable(input.entryId);
-        case 'update':
-          return this.#update(input.entryId, input.revision);
+        case 'reload':
+          return this.#reload(input.entryId);
         case 'remove':
           return this.#remove(input.entryId);
       }
@@ -556,7 +598,7 @@ export class HostExtensionController {
   async #enable(
     input: Extract<ExtensionCompositionMutateInput, { kind: 'enable' }>,
   ): Promise<OperationOutcome<'extension.composition.mutate'>> {
-    const available = await this.#requireAvailable(input.extensionId, input.revision);
+    const available = await this.#requireAvailable(input.extensionId);
     if (available) return available;
     const current = this.#entries.get(input.entryId);
     if (
@@ -568,23 +610,11 @@ export class HostExtensionController {
         `Entry ${input.entryId} cannot change scope or Extension identity`,
       );
     }
-    const scopeOwner = [...this.#entries.values()].find(
-      (entry) =>
-        entry.entryId !== input.entryId &&
-        entry.scopeId === input.scopeId &&
-        entry.extensionId === input.extensionId,
-    );
-    if (scopeOwner) {
-      return mutationFailure(
-        'operation_conflict',
-        `Scope ${input.scopeId} already binds ${input.extensionId} as ${scopeOwner.entryId}`,
-      );
-    }
     const compositionSnapshot = this.#persistedComposition;
     let dependencyEntries: readonly string[];
     let configuration: Readonly<Record<string, string | number | boolean>>;
     try {
-      const contract = await this.#requireContract(input.extensionId, input.revision);
+      const contract = await this.#requireContract(input.extensionId);
       dependencyEntries = await this.#stageDependencies(input.scopeId, contract, new Set());
       configuration = validateExtensionConfiguration(contract.configuration, current?.config);
     } catch (error) {
@@ -597,7 +627,6 @@ export class HostExtensionController {
         entryId: input.entryId,
         scopeId: input.scopeId,
         extensionId: input.extensionId,
-        revision: input.revision,
         enabled: true,
         error: null,
         config: configuration,
@@ -612,21 +641,21 @@ export class HostExtensionController {
     return this.#convergeMutation(input.entryId);
   }
 
-  async #update(
-    entryId: string,
-    revision: string,
-  ): Promise<OperationOutcome<'extension.composition.mutate'>> {
+  async #reload(entryId: string): Promise<OperationOutcome<'extension.composition.mutate'>> {
     const entry = this.#entries.get(entryId);
     if (!entry) return mutationFailure('not_found', `Extension entry not found: ${entryId}`);
-    const available = await this.#requireAvailable(entry.extensionId, revision);
+    const available = await this.#requireAvailable(entry.extensionId);
     if (available) return available;
     const compositionSnapshot = this.#persistedComposition;
     let dependencyEntries: readonly string[];
     let configuration: Readonly<Record<string, string | number | boolean>>;
     try {
-      const contract = await this.#requireContract(entry.extensionId, revision);
+      const contract = await this.#requireContract(entry.extensionId);
       dependencyEntries = await this.#stageDependencies(entry.scopeId, contract, new Set());
       configuration = validateExtensionConfiguration(contract.configuration, entry.config);
+      // Like DSH's loader, reload the plugin definition and let the Fiber
+      // replacement transaction keep the old Fiber alive on activation failure.
+      await this.runtime.installExtension(await this.loader.load(entry.extensionId));
     } catch (error) {
       this.#persistedComposition = compositionSnapshot;
       return mutationFailure('operation_conflict', boundedErrorMessage(error));
@@ -635,7 +664,6 @@ export class HostExtensionController {
       entryId,
       entryState({
         ...entry,
-        revision,
         enabled: true,
         error: null,
         config: configuration,
@@ -709,9 +737,8 @@ export class HostExtensionController {
           operations: [{ type: 'remove', entryId: entryId }],
         });
       }
-      await this.uiState.clear(entry.scopeId, entry.extensionId);
+      await this.uiState.clear(entry.scopeId, entry.entryId);
       await this.#pruneOrphanDependencyEntries();
-      await this.#garbageCollectRevisions();
       const persisted = await this.#commitDesiredState();
       return persisted ?? mutationSuccess(null);
     } catch (error) {
@@ -726,7 +753,6 @@ export class HostExtensionController {
       await this.#convergeEntry(entryId);
       await this.#refreshRuntimeState();
       await this.#pruneOrphanDependencyEntries();
-      await this.#garbageCollectRevisions();
       const persisted = await this.#commitDesiredState();
       return persisted ?? mutationSuccess(this.#projection(entryId));
     } catch (error) {
@@ -751,15 +777,13 @@ export class HostExtensionController {
       .filter((entry) => entry.enabled && !entry.error)
       .sort(compareEntry);
     for (const entry of enabled) {
-      for (const revision of uniqueRevisions(entry)) {
-        try {
-          await this.#ensureInstalled(entry.extensionId, revision);
-        } catch (error) {
-          this.#entries.set(
-            entry.entryId,
-            entryState({ ...entry, error: boundedErrorMessage(error) }),
-          );
-        }
+      try {
+        await this.#ensureInstalled(entry.extensionId);
+      } catch (error) {
+        this.#entries.set(
+          entry.entryId,
+          entryState({ ...entry, error: boundedErrorMessage(error) }),
+        );
       }
     }
     for (const original of enabled) {
@@ -779,7 +803,7 @@ export class HostExtensionController {
   async #convergeEntry(entryId: string): Promise<void> {
     const entry = this.#entries.get(entryId);
     if (!entry || !entry.enabled) return;
-    await this.#ensureInstalled(entry.extensionId, entry.revision);
+    await this.#ensureInstalled(entry.extensionId);
     const inspection = this.#tryInspect(entryId);
     const rootId: MakaPluginRootId =
       entry.scopeId === 'profile'
@@ -795,7 +819,6 @@ export class HostExtensionController {
               entryId: entry.entryId,
               patch: {
                 packageId: entry.extensionId,
-                revision: entry.revision,
                 disabled: false,
                 config: this.#configurationForEntry(entry.entryId),
               },
@@ -808,7 +831,6 @@ export class HostExtensionController {
               entry: {
                 id: entry.entryId,
                 packageId: entry.extensionId,
-                revision: entry.revision,
                 config: this.#configurationForEntry(entry.entryId),
               },
             },
@@ -816,15 +838,11 @@ export class HostExtensionController {
     });
   }
 
-  async #ensureInstalled(extensionId: string, revision: string): Promise<void> {
-    if (
-      this.runtime
-        .installedRevisions()
-        .some((item) => item.extensionId === extensionId && item.revision === revision)
-    ) {
+  async #ensureInstalled(extensionId: string): Promise<void> {
+    if (this.runtime.installedExtensions().some((item) => item.extensionId === extensionId)) {
       return;
     }
-    await this.runtime.installRevision(await this.loader.load(extensionId, revision));
+    await this.runtime.installExtension(await this.loader.load(extensionId));
   }
 
   async #recoverCompositionEntries(composition: PersistedPluginComposition): Promise<void> {
@@ -868,25 +886,6 @@ export class HostExtensionController {
       await this.#recoverCompositionEntry(rootId, child, entry.id);
   }
 
-  async #garbageCollectRevisions(): Promise<void> {
-    const retained = new Set(
-      [...this.#entries.values()].flatMap((entry) =>
-        [entry.revision, this.#tryInspect(entry.entryId)?.current?.revision]
-          .filter((revision): revision is string => typeof revision === 'string')
-          .map((revision) => revisionKey(entry.extensionId, revision)),
-      ),
-    );
-    for (const installed of [...this.runtime.installedRevisions()].reverse()) {
-      if (retained.has(revisionKey(installed.extensionId, installed.revision))) continue;
-      try {
-        await this.runtime.uninstall(installed.extensionId, installed.revision);
-      } catch {
-        // A stale in-memory revision is inert. Keep control-plane convergence
-        // successful and let the Host close boundary retry complete cleanup.
-      }
-    }
-  }
-
   async #refreshRuntimeState(): Promise<void> {
     for (const entry of [...this.#entries.values()]) {
       const inspection = this.#tryInspect(entry.entryId);
@@ -926,10 +925,9 @@ export class HostExtensionController {
 
   async #requireAvailable(
     extensionId: string,
-    revision: string,
   ): Promise<OperationOutcome<'extension.composition.mutate'> | undefined> {
     try {
-      await this.loader.load(extensionId, revision);
+      await this.loader.load(extensionId);
       return undefined;
     } catch (error) {
       if (error instanceof HostExtensionLoaderError && error.code === 'not_found') {
@@ -939,16 +937,11 @@ export class HostExtensionController {
     }
   }
 
-  async #requireContract(
-    extensionId: string,
-    revision: string,
-  ): Promise<ExtensionPackageContractProjection> {
+  async #requireContract(extensionId: string): Promise<ExtensionPackageContractProjection> {
     const contracts = this.loader.contracts ? await this.loader.contracts() : [];
-    const contract = contracts.find(
-      (candidate) => candidate.extensionId === extensionId && candidate.revision === revision,
-    );
+    const contract = contracts.find((candidate) => candidate.extensionId === extensionId);
     if (!contract) {
-      throw new Error(`Extension contract is unavailable: ${extensionId}@${revision}`);
+      throw new Error(`Extension contract is unavailable: ${extensionId}`);
     }
     return contract;
   }
@@ -966,43 +959,16 @@ export class HostExtensionController {
     try {
       const contracts = this.loader.contracts ? await this.loader.contracts() : [];
       for (const dependency of contract.dependencies) {
-        const candidates = contracts
-          .filter(
-            (candidate) =>
-              candidate.extensionId === dependency.id &&
-              extensionVersionSatisfies(candidate.version, dependency.version),
-          )
-          .sort((left, right) => compareExtensionVersions(left.version, right.version));
-        const selected = candidates.at(-1);
+        const selected = contracts.find((candidate) => candidate.extensionId === dependency.id);
         if (!selected) {
-          throw new Error(
-            `Required dependency is not installed: ${dependency.id}@${dependency.version}`,
-          );
+          throw new Error(`Required dependency is not installed: ${dependency.id}`);
         }
         const existing = [...this.#entries.values()].find(
           (entry) => entry.scopeId === scopeId && entry.extensionId === dependency.id,
         );
         const entryId = existing?.entryId ?? dependencyEntryId(scopeId, dependency.id);
         if (existing) {
-          const existingContract = contracts.find(
-            (candidate) =>
-              candidate.extensionId === existing.extensionId &&
-              candidate.revision === existing.revision,
-          );
-          if (
-            !existingContract ||
-            !extensionVersionSatisfies(existingContract.version, dependency.version)
-          ) {
-            this.#entries.set(
-              entryId,
-              entryState({
-                ...existing,
-                revision: selected.revision,
-                enabled: true,
-                error: null,
-              }),
-            );
-          } else if (!existing.enabled) {
+          if (!existing.enabled) {
             this.#entries.set(entryId, entryState({ ...existing, enabled: true, error: null }));
           }
         } else {
@@ -1012,7 +978,6 @@ export class HostExtensionController {
               entryId,
               scopeId,
               extensionId: selected.extensionId,
-              revision: selected.revision,
               enabled: true,
               error: null,
               config: validateExtensionConfiguration(selected.configuration, undefined),
@@ -1042,10 +1007,7 @@ export class HostExtensionController {
     return [...this.#entries.values()].find((entry) => {
       if (!entry.enabled || entry.entryId === target.entryId) return false;
       if (entry.scopeId !== target.scopeId) return false;
-      const contract = contracts.find(
-        (candidate) =>
-          candidate.extensionId === entry.extensionId && candidate.revision === entry.revision,
-      );
+      const contract = contracts.find((candidate) => candidate.extensionId === entry.extensionId);
       return contract?.dependencies.some((dependency) => dependency.id === target.extensionId);
     });
   }
@@ -1056,10 +1018,7 @@ export class HostExtensionController {
     const visit = (entry: CompositionEntryState, visiting: Set<string>): void => {
       if (visiting.has(entry.entryId)) return;
       visiting.add(entry.entryId);
-      const contract = contracts.find(
-        (candidate) =>
-          candidate.extensionId === entry.extensionId && candidate.revision === entry.revision,
-      );
+      const contract = contracts.find((candidate) => candidate.extensionId === entry.extensionId);
       for (const dependency of contract?.dependencies ?? []) {
         const dependencyEntry = [...this.#entries.values()].find(
           (candidate) =>
@@ -1118,7 +1077,7 @@ export class HostExtensionController {
 
   #entryProjections(): readonly ExtensionCompositionEntryProjection[] {
     const entryIds = persistedEntries(this.#persistedComposition)
-      .filter(([, entry]) => entry.packageId && entry.revision)
+      .filter(([, entry]) => entry.packageId)
       .map(([, entry]) => entry.id);
     return entryIds.sort(compareString).map((entryId) => this.#projection(entryId));
   }
@@ -1131,7 +1090,7 @@ export class HostExtensionController {
       entryId: entry.entryId,
       scopeId: entry.scopeId,
       extensionId: entry.extensionId,
-      revision: entry.revision,
+      generation: inspection?.current?.generation ?? 1,
       enabled: entry.enabled,
       status: projectStatus(entry, inspection),
       error: entry.error,
@@ -1146,6 +1105,19 @@ export class HostExtensionController {
     );
     return result;
   }
+}
+
+function invocationContext(context: MakaToolContext) {
+  return {
+    sessionId: context.sessionId,
+    ...(context.runId ? { runId: context.runId } : {}),
+    turnId: context.turnId,
+    cwd: context.cwd,
+    permissionMode: context.permissionMode ?? 'default',
+    origin: 'provider' as const,
+    configuration: Object.freeze({}),
+    signal: context.abortSignal,
+  };
 }
 
 class CompositionEntryIndex {
@@ -1187,7 +1159,7 @@ function projectStatus(
 ): ExtensionCompositionEntryProjection['status'] {
   if (!entry.enabled) return 'disabled';
   if (entry.error || inspection?.status === 'failed') return 'failed';
-  if (inspection?.current?.revision === entry.revision) return 'active';
+  if (inspection?.current) return 'active';
   return 'waiting';
 }
 
@@ -1199,12 +1171,11 @@ function compositionEntryState(
   scopeId: string,
   entry: PersistedPluginEntry,
 ): CompositionEntryState | undefined {
-  if (!entry.packageId || !entry.revision) return undefined;
+  if (!entry.packageId) return undefined;
   return entryState({
     entryId: entry.id,
     scopeId,
     extensionId: entry.packageId,
-    revision: entry.revision,
     enabled: !entry.disabled,
     error: entry.error ?? null,
     config: entry.config,
@@ -1215,15 +1186,10 @@ function persistedEntryState(state: CompositionEntryState): PersistedPluginEntry
   return Object.freeze({
     id: state.entryId,
     packageId: state.extensionId,
-    revision: state.revision,
     disabled: !state.enabled,
     config: state.config,
     error: state.error,
   });
-}
-
-function uniqueRevisions(entry: CompositionEntryState): readonly string[] {
-  return [entry.revision];
 }
 
 function boundedErrorMessage(error: unknown): string {
@@ -1508,9 +1474,7 @@ function runtimeSnapshot(composition: PersistedPluginComposition): MakaCompositi
 function persistedRuntimeEntry(entry: PersistedPluginEntry): MakaCompositionEntry {
   return Object.freeze({
     id: entry.id,
-    ...(entry.packageId && entry.revision
-      ? { packageId: entry.packageId, revision: entry.revision }
-      : {}),
+    ...(entry.packageId ? { packageId: entry.packageId } : {}),
     config: entry.config,
     disabled: entry.disabled,
     ...(entry.inject === undefined ? {} : { inject: entry.inject }),
@@ -1524,10 +1488,6 @@ function persistedRuntimeEntry(entry: PersistedPluginEntry): MakaCompositionEntr
 
 function compareString(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function revisionKey(extensionId: string, revision: string): string {
-  return `${extensionId}\u0000${revision}`;
 }
 
 function dependencyEntryId(scopeId: string, extensionId: string): string {

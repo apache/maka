@@ -11,10 +11,7 @@ import {
 } from '../server/extension-loader.js';
 import { HostExtensionRuntime, PROFILE_EXTENSION_SCOPE } from '../server/extension-runtime.js';
 import { HostPluginCompositionStore } from '../server/plugin-composition-store.js';
-import {
-  compareExtensionVersions,
-  extensionVersionSatisfies,
-} from '../server/extension-package-manifest.js';
+import {} from '../server/extension-package-manifest.js';
 import { PluginPackageStore } from '../server/plugin-package-store.js';
 
 test('unified Extension package resolves dependencies, configures workers, survives restart, and round-trips a Bundle', async () => {
@@ -27,7 +24,6 @@ test('unified Extension package resolves dependencies, configures workers, survi
   try {
     await writeToolPackage(dependencySource, {
       id: 'dev.maka.platform.dependency',
-      version: '1.2.0',
       toolName: 'dependency_ping',
       handler: 'ping',
       source: 'export default { ping: () => ({ pong: true }) };\n',
@@ -35,14 +31,13 @@ test('unified Extension package resolves dependencies, configures workers, survi
     });
     await writeToolPackage(applicationSource, {
       id: 'dev.maka.platform.application',
-      version: '2.0.0',
       toolName: 'configured_echo',
       handler: 'echo',
       source: 'export default { echo: (_args, context) => context.configuration };\n',
       metadata: {
         displayName: 'Configured Application',
         description: 'Exercises the unified package contract.',
-        dependencies: [{ id: 'dev.maka.platform.dependency', version: '^1.0.0' }],
+        dependencies: [{ id: 'dev.maka.platform.dependency' }],
         configuration: {
           properties: {
             endpoint: { type: 'string', default: 'https://default.invalid' },
@@ -63,7 +58,6 @@ test('unified Extension package resolves dependencies, configures workers, survi
         entryId: 'application-profile',
         scopeId: PROFILE_EXTENSION_SCOPE,
         extensionId: application.extensionId,
-        revision: application.revision,
       },
       connection,
     );
@@ -106,9 +100,7 @@ test('unified Extension package resolves dependencies, configures workers, survi
         )
       : undefined;
     assert.equal(contract?.displayName, 'Configured Application');
-    assert.deepEqual(contract?.dependencies, [
-      { id: 'dev.maka.platform.dependency', version: '^1.0.0' },
-    ]);
+    assert.deepEqual(contract?.dependencies, [{ id: 'dev.maka.platform.dependency' }]);
     assert.deepEqual(
       contract?.contributions.map(({ kind, id }) => ({ kind, id })),
       [{ kind: 'tool', id: 'configured_echo' }],
@@ -146,7 +138,6 @@ test('unified Extension package resolves dependencies, configures workers, survi
     const exported = await fixture.controller.handlers['extension.package.export'](
       {
         extensionId: application.extensionId,
-        revision: application.revision,
         targetPath: bundle,
       },
       connection,
@@ -186,7 +177,7 @@ test('unified Extension package resolves dependencies, configures workers, survi
     try {
       const roundTripped = await imported.loader.installPackage(bundle);
       assert.equal(roundTripped.extensionId, application.extensionId);
-      assert.equal(roundTripped.revision, application.revision);
+      assert.equal(roundTripped.extensionId, application.extensionId);
       const importedContracts = await imported.loader.contracts();
       assert.equal(importedContracts[0]?.displayName, 'Configured Application');
     } finally {
@@ -233,7 +224,6 @@ async function writeToolPackage(
   root: string,
   input: {
     id: string;
-    version: string;
     toolName: string;
     handler: string;
     source: string;
@@ -246,7 +236,6 @@ async function writeToolPackage(
     JSON.stringify({
       schemaVersion: 1,
       id: input.id,
-      version: input.version,
       ...input.metadata,
       runtime: {
         entry: 'dist/index.mjs',
@@ -277,15 +266,6 @@ const connection = {
   acquireResidency: () => ({ release: () => undefined }),
 };
 
-test('Extension dependency ranges follow SemVer-compatible zero-major and numeric ordering', () => {
-  assert.equal(extensionVersionSatisfies('1.9.0', '^1.2.0'), true);
-  assert.equal(extensionVersionSatisfies('2.0.0', '^1.2.0'), false);
-  assert.equal(extensionVersionSatisfies('0.3.9', '^0.3.1'), true);
-  assert.equal(extensionVersionSatisfies('0.4.0', '^0.3.1'), false);
-  assert.equal(extensionVersionSatisfies('0.0.4', '^0.0.3'), false);
-  assert.ok(compareExtensionVersions('1.10.0', '1.9.0') > 0);
-});
-
 test('combined package installation rolls back a newly installed Tool when UI persistence fails', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-extension-atomic-install-'));
   const source = join(root, 'source');
@@ -293,7 +273,6 @@ test('combined package installation rolls back a newly installed Tool when UI pe
   try {
     await writeToolPackage(source, {
       id: 'dev.maka.platform.combined',
-      version: '1.0.0',
       toolName: 'combined_ping',
       handler: 'ping',
       source: 'export default { ping: () => ({ pong: true }) };\n',
