@@ -65,6 +65,7 @@ export interface TurnMessageSubmitInput {
   readonly content: MessageContent;
   readonly placement: MessagePlacement;
   readonly busyBehavior?: 'queue' | 'reject';
+  readonly admissionMode?: 'allow' | 'replay_only';
 }
 
 export type TurnMessageSubmitResult =
@@ -165,7 +166,7 @@ function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
     value,
     'turn.message.submit input',
     ['originHostEpoch', 'sessionId', 'messageId', 'content', 'placement'],
-    ['busyBehavior'],
+    ['busyBehavior', 'admissionMode'],
   );
   if (
     record.busyBehavior !== undefined &&
@@ -174,6 +175,13 @@ function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
   ) {
     throw invalidProtocolFrame('Invalid turn.message.submit busy behavior');
   }
+  if (
+    record.admissionMode !== undefined &&
+    record.admissionMode !== 'allow' &&
+    record.admissionMode !== 'replay_only'
+  ) {
+    throw invalidProtocolFrame('Invalid turn.message.submit admission mode');
+  }
   return {
     originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
@@ -181,6 +189,7 @@ function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
     content: decodeMessageContent(record.content),
     placement: requireMessagePlacement(record.placement),
     ...(record.busyBehavior === undefined ? {} : { busyBehavior: record.busyBehavior }),
+    ...(record.admissionMode === undefined ? {} : { admissionMode: record.admissionMode }),
   };
 }
 

@@ -531,6 +531,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         return failure('host_draining', 'Runtime Host message authority has failed');
       }
       if (durableProof) return durableProof;
+      if (input.admissionMode === 'replay_only') {
+        return failure('outcome_unknown', 'Message has no durable admission proof');
+      }
       if (!isCurrentEpoch) {
         return failure(
           'outcome_unknown',

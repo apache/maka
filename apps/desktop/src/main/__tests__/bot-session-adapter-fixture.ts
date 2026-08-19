@@ -10,7 +10,8 @@ export function createTestBotSessionAdapter(
     async releaseConversation() {
       return false;
     },
-    async runTurn() {
+    async runTurn(input) {
+      if (input.admissionMode === 'replay_only') return { kind: 'admission_required' };
       return { kind: 'completed', text: 'ok' };
     },
     ...overrides,

@@ -159,6 +159,7 @@ test('starts collecting before submitting the stable source message for the Host
           content: { text: 'hello' },
           placement: 'next_turn',
           busyBehavior: 'reject',
+          admissionMode: 'allow',
         });
         events.push(projectionFrame(1, runningTurn('session-1', 'host-turn-1')));
         events.push(deltaFrame(2, 'session-1', 'host-turn-1', 0, 'Hello'));
@@ -229,6 +230,44 @@ test('reports a concurrent Turn without leaking the Bot message into the queue',
       text: 'do not queue me',
     }),
     { kind: 'errored', reason: 'Session is already running a Turn' },
+  );
+});
+
+test('projects a missing replay proof without admitting a new Turn', async () => {
+  const events = new AsyncFrameQueue();
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(null),
+    activeAssistantStreams: [],
+    transcript: Promise.resolve([]),
+    events,
+    async close() {
+      events.end();
+    },
+  });
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      openSession: async () => handle,
+      submitMessage: async (input) => {
+        assert.equal(input.admissionMode, 'replay_only');
+        throw new RuntimeHostOperationError(
+          'turn.message.submit',
+          'outcome_unknown',
+          'Message has no durable admission proof',
+        );
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+
+  assert.deepEqual(
+    await adapter.runTurn({
+      sessionId: 'session-1',
+      messageId: 'bot_source_new',
+      text: 'new work',
+      admissionMode: 'replay_only',
+    }),
+    { kind: 'admission_required' },
   );
 });
 

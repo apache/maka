@@ -222,14 +222,6 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       return;
     }
     try {
-      if (!consumeBotConversationToken(conversationKey)) {
-        await sendTransientBotNotice(
-          message,
-          'Maka 收到的机器人消息过于频繁，请稍后再试。',
-          SYSTEM_NOTICE_TTL_MS,
-        );
-        return;
-      }
       const sessionId = await resolveBotConversationSession(
         conversationKey,
         message,
@@ -241,55 +233,81 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       const replyOptions = message.replyTarget.replyToMessageId
         ? { replyToMessageId: message.replyTarget.replyToMessageId }
         : undefined;
-      replyStream = deps.botRegistry.startReplyStream?.(
-        message.platform,
-        message.replyTarget.chatId,
-        { ...(replyOptions ?? {}), isGroup: message.isGroup, streamId: messageId },
-      ) ?? null;
-      const turn = deps.sessions.runTurn({
+      const turnInput = {
         sessionId,
         messageId,
         text: formatBotMessageForSession({ ...message, text }),
-        onReplySnapshot: (snapshot) => replyStream?.update(snapshot),
+      } as const;
+      const replay = await deps.sessions.runTurn({
+        ...turnInput,
+        admissionMode: 'replay_only',
       });
-      // PR-BOT-TYPING-INDICATOR-0 (external bot research): keep "Maka 正在
-      // 输入…" visible in the Telegram client while the agent generates
-      // its reply. Telegram auto-clears the indicator after ~5 seconds,
-      // so we refresh every 4 seconds. The loop is best-effort: every
-      // failure is swallowed so a typing-endpoint outage cannot block
-      // or corrupt the actual reply path.
-      const typingAbort = new AbortController();
-      const typingLoop = (async () => {
-        // Fire-and-forget first beat so the indicator shows immediately,
-        // not 4 seconds in.
-        await deps.botRegistry
-          .sendTypingIndicator(message.platform, message.replyTarget.chatId)
-          .catch(() => false);
-        while (!typingAbort.signal.aborted) {
-          await new Promise<void>((resolve) => {
-            const onAbort = (): void => {
-              clearTimeout(timer);
-              resolve();
-            };
-            const timer = setTimeout(() => {
-              typingAbort.signal.removeEventListener('abort', onAbort);
-              resolve();
-            }, 4000);
-            typingAbort.signal.addEventListener('abort', onAbort, { once: true });
-          });
-          if (typingAbort.signal.aborted) break;
+      let turnResult: Exclude<BotSessionTurnResult, { readonly kind: 'admission_required' }>;
+      if (replay.kind === 'admission_required') {
+        if (!consumeBotConversationToken(conversationKey)) {
+          await sendTransientBotNotice(
+            message,
+            'Maka 收到的机器人消息过于频繁，请稍后再试。',
+            SYSTEM_NOTICE_TTL_MS,
+          );
+          return;
+        }
+        replyStream =
+          deps.botRegistry.startReplyStream?.(
+            message.platform,
+            message.replyTarget.chatId,
+            { ...(replyOptions ?? {}), isGroup: message.isGroup, streamId: messageId },
+          ) ?? null;
+        const turn = deps.sessions.runTurn({
+          ...turnInput,
+          admissionMode: 'allow',
+          onReplySnapshot: (snapshot) => replyStream?.update(snapshot),
+        });
+        // PR-BOT-TYPING-INDICATOR-0 (external bot research): keep "Maka 正在
+        // 输入…" visible in the Telegram client while the agent generates
+        // its reply. Telegram auto-clears the indicator after ~5 seconds,
+        // so we refresh every 4 seconds. The loop is best-effort: every
+        // failure is swallowed so a typing-endpoint outage cannot block
+        // or corrupt the actual reply path.
+        const typingAbort = new AbortController();
+        const typingLoop = (async () => {
+          // Fire-and-forget first beat so the indicator shows immediately,
+          // not 4 seconds in.
           await deps.botRegistry
             .sendTypingIndicator(message.platform, message.replyTarget.chatId)
             .catch(() => false);
+          while (!typingAbort.signal.aborted) {
+            await new Promise<void>((resolve) => {
+              const onAbort = (): void => {
+                clearTimeout(timer);
+                resolve();
+              };
+              const timer = setTimeout(() => {
+                typingAbort.signal.removeEventListener('abort', onAbort);
+                resolve();
+              }, 4000);
+              typingAbort.signal.addEventListener('abort', onAbort, { once: true });
+            });
+            if (typingAbort.signal.aborted) break;
+            await deps.botRegistry
+              .sendTypingIndicator(message.platform, message.replyTarget.chatId)
+              .catch(() => false);
+          }
+        })();
+        try {
+          const admitted = await turn;
+          if (admitted.kind === 'admission_required') {
+            throw new Error('Runtime Host requested admission after admission was allowed');
+          }
+          turnResult = admitted;
+        } finally {
+          typingAbort.abort();
+          await typingLoop.catch(() => {});
         }
-      })();
-      let reply: string;
-      try {
-        reply = botReply(await turn);
-      } finally {
-        typingAbort.abort();
-        await typingLoop.catch(() => {});
+      } else {
+        turnResult = replay;
       }
+      const reply = botReply(turnResult);
       if (closed) {
         await replyStream?.abort();
         return;
@@ -370,7 +388,9 @@ function botSourceOperationId(message: BotIncomingMessage, newId: () => string):
   return `bot_${createHash('sha256').update(sourceEventKey, 'utf8').digest('hex')}`;
 }
 
-function botReply(result: BotSessionTurnResult): string {
+function botReply(
+  result: Exclude<BotSessionTurnResult, { readonly kind: 'admission_required' }>,
+): string {
   if (result.kind === 'suspended') {
     return '这条请求需要在 Maka 桌面端审批后才能继续。';
   }

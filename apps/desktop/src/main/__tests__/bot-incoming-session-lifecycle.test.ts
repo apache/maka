@@ -14,6 +14,7 @@ test('routes one external conversation through Host resolution and stable messag
       return { kind: 'ready', sessionId: 'session-1' };
     },
     async runTurn(input) {
+      if (input.admissionMode === 'replay_only') return { kind: 'admission_required' };
       turns.push(input);
       return { kind: 'completed', text: 'reply' };
     },
@@ -66,6 +67,47 @@ test('routes every source delivery to Host idempotency with the same stable mess
   await successor.handleBotIncomingMessage(event);
   assert.deepEqual(successorIds, [firstIds[0]]);
   await successor.close();
+});
+
+test('service recreation replays more than the transient burst before admitting new work', async () => {
+  const admissions: Array<{ messageId: string; admissionMode: string }> = [];
+  const sent: string[] = [];
+  let replayProbeCount = 0;
+  const service = createBotIncomingMainService({
+    sessions: createTestBotSessionAdapter({
+      async runTurn(input) {
+        admissions.push({
+          messageId: input.messageId,
+          admissionMode: input.admissionMode ?? 'allow',
+        });
+        if (input.admissionMode === 'replay_only') {
+          const index = replayProbeCount++;
+          return index < 9
+            ? { kind: 'completed', text: `reply-${index}` }
+            : { kind: 'admission_required' };
+        }
+        return { kind: 'completed', text: 'new-reply' };
+      },
+    }),
+    botRegistry: registry(sent),
+  });
+
+  for (let index = 0; index < 9; index++) {
+    await service.handleBotIncomingMessage(
+      message({ sourceEventId: `retry-${index}`, text: `retry-${index}` }),
+    );
+  }
+  await service.handleBotIncomingMessage(
+    message({ sourceEventId: 'new-source', text: 'new', conversationId: 'new-chat' }),
+  );
+
+  assert.equal(admissions.filter((entry) => entry.admissionMode === 'replay_only').length, 10);
+  assert.equal(admissions.filter((entry) => entry.admissionMode === 'allow').length, 1);
+  assert.deepEqual(sent, [
+    ...Array.from({ length: 9 }, (_, index) => `reply-${index}`),
+    'new-reply',
+  ]);
+  await service.close();
 });
 
 test('releases a direct-message binding through a source-correlated reset operation', async () => {

@@ -97,7 +97,7 @@ export function createRuntimeHostBotSessionAdapter(
       return outcome.hadBinding;
     },
 
-    async runTurn({ sessionId, messageId, text, onReplySnapshot }) {
+    async runTurn({ sessionId, messageId, text, admissionMode = 'allow', onReplySnapshot }) {
       let session;
       try {
         session = await deps.client.openSession(sessionId);
@@ -122,6 +122,7 @@ export function createRuntimeHostBotSessionAdapter(
             content: { text },
             placement: 'next_turn',
             busyBehavior: 'reject',
+            admissionMode,
           });
         } catch (error) {
           turnId.reject(error);
@@ -133,6 +134,14 @@ export function createRuntimeHostBotSessionAdapter(
             error.code === 'session_busy'
           ) {
             return { kind: 'errored' as const, reason: 'Session is already running a Turn' };
+          }
+          if (
+            admissionMode === 'replay_only' &&
+            error instanceof RuntimeHostOperationError &&
+            error.operation === 'turn.message.submit' &&
+            error.code === 'outcome_unknown'
+          ) {
+            return { kind: 'admission_required' as const };
           }
           throwUnavailable(error, sessionId);
           throw error;
