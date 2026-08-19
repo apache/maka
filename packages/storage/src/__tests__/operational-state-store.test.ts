@@ -270,7 +270,7 @@ test('preserves a cutover journal with an unfamiliar column shape and fails clos
       (error: unknown) =>
         error instanceof Error &&
         (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
-        /unfamiliar schema/u.test(error.message),
+        /unfamiliar released shape/u.test(error.message),
     );
     const preserved = new DatabaseSync(databasePath, { readOnly: true });
     assert.equal(
@@ -280,6 +280,156 @@ test('preserves a cutover journal with an unfamiliar column shape and fails clos
         }
       ).count,
       1,
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a cutover journal with an altered constraint and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-constraint-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    // Released columns/types verbatim, but a loosened CHECK bound. A column-only
+    // gate would accept and DROP this; the full-signature gate must not.
+    legacy.exec(`
+      CREATE TABLE cutover_journal (
+        store_name TEXT PRIMARY KEY,
+        source_path TEXT NOT NULL,
+        source_fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('started', 'completed')),
+        started_at INTEGER NOT NULL CHECK (started_at >= -1),
+        completed_at INTEGER,
+        validation_json TEXT
+      )
+    `);
+    legacy
+      .prepare(`
+        INSERT INTO cutover_journal(
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at,
+          completed_at,
+          validation_json
+        ) VALUES (?, ?, ?, 'completed', ?, ?, ?)
+      `)
+      .run(
+        'session_metadata',
+        join(root, 'sessions.sqlite'),
+        'sha256:released-source',
+        10,
+        20,
+        JSON.stringify({ session_metadata: 4 }),
+      );
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /unfamiliar released shape/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      (
+        preserved.prepare('SELECT COUNT(*) AS count FROM cutover_journal').get() as {
+          count: number;
+        }
+      ).count,
+      1,
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a cutover journal carrying an extra trigger and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-trigger-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyCutoverJournal(legacy);
+    // An extra schema object grafted onto the released table: retirement must
+    // refuse to DROP a table whose full object set it cannot recognize.
+    legacy.exec(`
+      CREATE TRIGGER cutover_journal_guard
+      AFTER INSERT ON cutover_journal
+      BEGIN
+        DELETE FROM cutover_journal WHERE store_name = NEW.store_name;
+      END;
+    `);
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /carries an unexpected object/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.ok(
+      preserved
+        .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'cutover_journal'")
+        .get(),
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a cutover journal naming an unknown store and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-unknown-store-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyCutoverJournal(legacy);
+    // Released shape and internally well-formed, but names a store no released
+    // writer ever emitted — unrecognized evidence must fail closed, not drop.
+    legacy
+      .prepare(`
+        INSERT INTO cutover_journal(
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at,
+          completed_at,
+          validation_json
+        ) VALUES (?, ?, ?, 'completed', ?, ?, ?)
+      `)
+      .run(
+        'future_store',
+        join(root, 'future.sqlite'),
+        'sha256:released-source',
+        10,
+        20,
+        JSON.stringify({ future_store: 1 }),
+      );
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /cutover journal is incomplete or invalid/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      (preserved.prepare('SELECT store_name FROM cutover_journal').get() as { store_name: string })
+        .store_name,
+      'future_store',
     );
     preserved.close();
   } finally {

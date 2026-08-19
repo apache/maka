@@ -34,6 +34,7 @@ import {
 } from './sqlite-legacy-scheduling.js';
 import {
   assertCurrentOperationalTargetSchema,
+  assertReleasedLegacyRetirementShape,
   ensureOperationalSchemaRegistry,
   isCurrentOperationalTargetSchema,
 } from './operational-target-schema.js';
@@ -58,26 +59,27 @@ const OPERATIONAL_SCHEMA_VERSIONS: ReadonlyMap<string, number> = new Map([
 const REMOVED_OPERATIONAL_SCHEMA_VERSIONS: ReadonlyMap<string, number> = new Map([
   ['automation', 2],
 ]);
-const LEGACY_CUTOVER_JOURNAL_COLUMNS = [
-  { name: 'store_name', type: 'TEXT', notNull: 0, primaryKey: 1 },
-  { name: 'source_path', type: 'TEXT', notNull: 1, primaryKey: 0 },
-  { name: 'source_fingerprint', type: 'TEXT', notNull: 1, primaryKey: 0 },
-  { name: 'state', type: 'TEXT', notNull: 1, primaryKey: 0 },
-  { name: 'started_at', type: 'INTEGER', notNull: 1, primaryKey: 0 },
-  { name: 'completed_at', type: 'INTEGER', notNull: 0, primaryKey: 0 },
-  { name: 'validation_json', type: 'TEXT', notNull: 0, primaryKey: 0 },
-] as const;
-const LEGACY_RUNTIME_IMPORT_SOURCE_COLUMNS = [
-  { name: 'source_path', type: 'TEXT', notNull: 0, primaryKey: 1 },
-  { name: 'fingerprint', type: 'TEXT', notNull: 1, primaryKey: 0 },
-  { name: 'imported_at', type: 'INTEGER', notNull: 1, primaryKey: 0 },
-] as const;
-const LEGACY_SESSION_IMPORT_SOURCE_COLUMNS = [
-  { name: 'source_path', type: 'TEXT', notNull: 0, primaryKey: 1 },
-  { name: 'fingerprint', type: 'TEXT', notNull: 1, primaryKey: 0 },
-  { name: 'session_id', type: 'TEXT', notNull: 1, primaryKey: 0 },
-  { name: 'imported_at', type: 'INTEGER', notNull: 1, primaryKey: 0 },
-] as const;
+/**
+ * Store names actually emitted into `cutover_journal` by the released cutover
+ * writers (commit 1caea265c^): `session_metadata` from the dedicated session
+ * cutover plus every `completeOperationalStoreCutover({ storeName })` caller. A
+ * completed row naming anything outside this set is unrecognized evidence, so
+ * retirement fails closed rather than dropping it.
+ */
+const RELEASED_CUTOVER_STORE_NAMES: ReadonlySet<string> = new Set([
+  'agent_runs',
+  'artifact_metadata',
+  'automations',
+  'interactions',
+  'message_receipts',
+  'session_metadata',
+  'shell_runs',
+  'usage_pricing',
+  'workflow_deep_research',
+  'workflow_plan',
+  'workflow_plan_reminders',
+  'workflow_task_ledger',
+]);
 
 const require = createRequire(import.meta.url);
 const owners = new Map<string, OperationalStateDatabaseOwner>();
@@ -399,16 +401,16 @@ export function migrateOperationalStateDatabaseInternal(db: DatabaseSync, now: (
 
 /**
  * Retire import and cutover evidence written before SQLite became the sole
- * operational authority. Only tables whose column shape (name/type/notNull/pk)
- * matches the released layout and whose rows are internally valid and completed
- * may be removed; any interrupted, malformed, or column-shape-mismatched state
- * stays fail-closed and the surrounding migration transaction rolls back
- * unchanged. Column-shape validation does not inspect CHECK/FK constraints or
- * indexes; row-level validation below is the authoritative content gate.
+ * operational authority. A table is only removed when its full released schema
+ * signature is recognized (columns *and* CHECK/FK constraints, with no extra
+ * index/trigger — see {@link assertReleasedLegacyRetirementShape}), it names only
+ * a released store contract, and every row is internally valid and completed. Any
+ * interrupted, malformed, unrecognized-shape, or unknown-store state stays
+ * fail-closed and the surrounding migration transaction rolls back unchanged.
  */
 function retireCompletedLegacyMigrationMetadata(db: DatabaseSync): void {
   if (hasTable(db, 'cutover_journal')) {
-    assertReleasedLegacyTableShape(db, 'cutover_journal', LEGACY_CUTOVER_JOURNAL_COLUMNS);
+    assertReleasedLegacyRetirementShape(db, 'cutover_journal');
     const rows = db
       .prepare(`
         SELECT
@@ -426,11 +428,7 @@ function retireCompletedLegacyMigrationMetadata(db: DatabaseSync): void {
     for (const row of rows) assertCompletedLegacyCutoverJournalRow(row);
   }
   if (hasTable(db, 'runtime_import_sources')) {
-    assertReleasedLegacyTableShape(
-      db,
-      'runtime_import_sources',
-      LEGACY_RUNTIME_IMPORT_SOURCE_COLUMNS,
-    );
+    assertReleasedLegacyRetirementShape(db, 'runtime_import_sources');
     const rows = db
       .prepare(`
         SELECT source_path, fingerprint, imported_at
@@ -441,11 +439,7 @@ function retireCompletedLegacyMigrationMetadata(db: DatabaseSync): void {
     for (const row of rows) assertLegacyImportSourceRow(row);
   }
   if (hasTable(db, 'session_metadata_import_sources')) {
-    assertReleasedLegacyTableShape(
-      db,
-      'session_metadata_import_sources',
-      LEGACY_SESSION_IMPORT_SOURCE_COLUMNS,
-    );
+    assertReleasedLegacyRetirementShape(db, 'session_metadata_import_sources');
     const rows = db
       .prepare(`
         SELECT source_path, fingerprint, session_id, imported_at
@@ -473,42 +467,11 @@ function retireCompletedLegacyMigrationMetadata(db: DatabaseSync): void {
   `);
 }
 
-function assertReleasedLegacyTableShape(
-  db: DatabaseSync,
-  table: string,
-  expectedColumns: ReadonlyArray<{
-    readonly name: string;
-    readonly type: string;
-    readonly notNull: number;
-    readonly primaryKey: number;
-  }>,
-): void {
-  const columns = db
-    .prepare(`
-      SELECT name, type, "notnull" AS not_null, pk
-      FROM pragma_table_info(?)
-      ORDER BY cid
-    `)
-    .all(table) as Array<{ name?: unknown; type?: unknown; not_null?: unknown; pk?: unknown }>;
-  const releasedShape = columns.every((column, index) => {
-    const expected = expectedColumns[index];
-    return (
-      expected !== undefined &&
-      column.name === expected.name &&
-      column.type === expected.type &&
-      column.not_null === expected.notNull &&
-      column.pk === expected.primaryKey
-    );
-  });
-  if (columns.length !== expectedColumns.length || !releasedShape) {
-    throw new Error(`Legacy operational metadata table ${table} has an unfamiliar schema`);
-  }
-}
-
 function assertCompletedLegacyCutoverJournalRow(row: Record<string, unknown>): void {
   if (
     typeof row.store_name !== 'string' ||
     row.store_name.length === 0 ||
+    !RELEASED_CUTOVER_STORE_NAMES.has(row.store_name) ||
     typeof row.source_path !== 'string' ||
     row.source_path.length === 0 ||
     typeof row.source_fingerprint !== 'string' ||
