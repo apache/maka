@@ -342,7 +342,15 @@ export class AgentGraphCoordinator {
   }
 
   async listGraphIds(rootSessionId: string): Promise<readonly string[]> {
-    return (await this.listGraphEpochs(rootSessionId)).map(({ graphId }) => graphId);
+    requireRootSessionId(rootSessionId);
+    // Retirement calls this after the Session header has been tombstoned. Keep
+    // that internal cleanup path on the epoch authority while client-facing
+    // epoch queries continue to validate a live root Session above.
+    if (!this.#input.epochStore) return [agentGraphIdForRootSession(rootSessionId)];
+    const epochs = await this.#input.epochStore.listAgentGraphEpochs(rootSessionId);
+    return epochs.length > 0
+      ? epochs.map(({ graphId }) => graphId)
+      : [agentGraphIdForRootSession(rootSessionId)];
   }
 
   async hasLiveSessionState(rootSessionId: string): Promise<boolean> {

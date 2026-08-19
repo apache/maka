@@ -641,6 +641,70 @@ describe('host-managed agent graph coordinator', () => {
     }
   });
 
+  test('lists graph ids for tombstone cleanup without reading the Session header', async () => {
+    const controlStore = createSqliteSessionMetadataStore(':memory:');
+    const epochs = [
+      {
+        schemaVersion: 1 as const,
+        rootSessionId: 'removed-root',
+        epoch: 2,
+        graphId: 'agent_graph_2',
+        createdAt: 2,
+      },
+      {
+        schemaVersion: 1 as const,
+        rootSessionId: 'removed-root',
+        epoch: 1,
+        graphId: 'agent_graph_1',
+        createdAt: 1,
+      },
+    ];
+    const coordinator = new AgentGraphCoordinator({
+      sessionStore: {
+        listForRecovery: async () => [],
+        readHeader: async () => {
+          throw new Error('removed Session header must not be read during cleanup');
+        },
+      },
+      runStore: { listSessionRuns: async () => [] },
+      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      controlStore,
+      epochStore: {
+        resolveCurrentAgentGraphEpoch: async () => epochs[0]!,
+        advanceAgentGraphEpoch: async () => {
+          throw new Error('unexpected epoch advance');
+        },
+        listAgentGraphEpochs: async () => epochs,
+        readAgentGraphEpochByGraphId: async () => undefined,
+        listAgentGraphEpochPage: async () => ({
+          epochs,
+          nextBeforeEpoch: null,
+          currentEpoch: 2,
+        }),
+      },
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('unexpected operator provision');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('unexpected operator dispatch');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+      onError: () => {},
+    });
+    try {
+      assert.deepEqual(await coordinator.listGraphIds('removed-root'), [
+        'agent_graph_2',
+        'agent_graph_1',
+      ]);
+    } finally {
+      await coordinator.close();
+      controlStore.close();
+    }
+  });
+
   test('advances only a finished and quiescent graph to a deterministic next epoch', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-graph-epoch-cutover-'));
     const controlStore = createSqliteSessionMetadataStore(
