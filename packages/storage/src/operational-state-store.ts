@@ -520,9 +520,6 @@ function assertCompletedLegacyCutoverJournalRow(row: Record<string, unknown>): v
     row.state !== 'completed' ||
     !isNonnegativeInteger(row.started_at) ||
     !isNonnegativeInteger(row.completed_at) ||
-    // A completed row whose finish precedes its start is internally
-    // inconsistent evidence, not a row this build ever wrote.
-    row.completed_at < row.started_at ||
     typeof row.validation_json !== 'string'
   ) {
     throw new Error('Legacy operational cutover journal is incomplete or invalid');

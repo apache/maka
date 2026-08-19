@@ -541,59 +541,6 @@ test('preserves a completed row missing a released validation key and fails clos
   }
 });
 
-test('preserves a completed row whose completion precedes its start and fails closed', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-timeorder-'));
-  const databasePath = join(root, 'runtime.sqlite');
-  try {
-    acquireOperationalStateDatabase(root).close();
-    const legacy = new DatabaseSync(databasePath);
-    createLegacyCutoverJournal(legacy);
-    // Both timestamps are non-negative integers, but completed_at < started_at:
-    // internally inconsistent evidence must fail closed, not be retired.
-    legacy
-      .prepare(`
-        INSERT INTO cutover_journal(
-          store_name,
-          source_path,
-          source_fingerprint,
-          state,
-          started_at,
-          completed_at,
-          validation_json
-        ) VALUES (?, ?, ?, 'completed', ?, ?, ?)
-      `)
-      .run(
-        'session_metadata',
-        join(root, 'sessions.sqlite'),
-        'sha256:released-source',
-        20,
-        10,
-        JSON.stringify(releasedSessionMetadataValidation()),
-      );
-    legacy.close();
-
-    assert.throws(
-      () => acquireOperationalStateDatabase(root),
-      (error: unknown) =>
-        error instanceof Error &&
-        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
-        /cutover journal is incomplete or invalid/u.test(error.message),
-    );
-    const preserved = new DatabaseSync(databasePath, { readOnly: true });
-    assert.equal(
-      (
-        preserved.prepare('SELECT COUNT(*) AS count FROM cutover_journal').get() as {
-          count: number;
-        }
-      ).count,
-      1,
-    );
-    preserved.close();
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test('preserves a malformed released import source and fails closed', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-import-malformed-'));
   const databasePath = join(root, 'runtime.sqlite');
