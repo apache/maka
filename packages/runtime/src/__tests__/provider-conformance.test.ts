@@ -635,6 +635,7 @@ describe('models.dev provider conformance', () => {
     assert.equal(result.statusCode, 401);
     assert.equal(result.errorClass, 'auth');
     assert.equal(result.errorMessage, undefined);
+    assert.equal(result.providerFailure?.message, undefined);
     assert.equal(result.providerFailure?.boundedProviderMessage, undefined);
   });
 

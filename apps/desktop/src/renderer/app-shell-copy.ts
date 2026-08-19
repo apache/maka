@@ -3,6 +3,7 @@ import type { TextFileImportPreflightFailureReason } from '@maka/core/text-file-
 import type { UiLocale } from '@maka/core/ui-locale';
 import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
 import { getShellCopy } from './locales/shell-copy.js';
+import { describeProviderAccountFailure } from './session-error-presentation.js';
 
 const SESSION_READ_MESSAGES_ERROR_MARKER = 'MAKA_SESSION_READ_MESSAGES_ERROR:';
 
@@ -48,6 +49,8 @@ export function commandPaletteConnectionTestFailureMessage(result: ConnectionTes
 }
 
 function commandPaletteConnectionTestFailureFallback(result: ConnectionTestResult, locale: UiLocale): string {
+  const accountFailure = describeProviderAccountFailure(result.providerFailure?.errorClass, locale);
+  if (accountFailure) return accountFailure;
   const copy = getShellCopy(locale).commandActions.connectionFailures;
   switch (result.providerFailure?.errorClass) {
     case 'Auth':

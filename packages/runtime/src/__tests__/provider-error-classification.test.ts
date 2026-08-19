@@ -452,6 +452,11 @@ describe('Provider error classification', () => {
     assert.equal(classifyError(planUsageLimit), 'UsageLimit');
     assert.deepEqual(providerRetryMetadata(planUsageLimit), { retryable: false });
 
+    const abortedUsageLimit = providerError(429, 'The request was aborted at the account limit', {
+      type: 'usage_limit_reached',
+    });
+    assert.equal(classifyError(abortedUsageLimit), 'UsageLimit');
+
     const permission = providerError(403, 'This key cannot access the requested model', {
       type: 'permission_denied',
     });
@@ -535,7 +540,6 @@ describe('Provider error classification', () => {
       errorClass: 'RequestRejected',
       httpStatus: 403,
       retryable: false,
-      message: 'Provider request failed (status=403)',
     });
   });
 

@@ -13,6 +13,7 @@ import {
 import { type UiLocale } from '@maka/core/ui-locale';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
 import { cleanErrorMessage } from '../model-connection-errors.js';
+import { describeProviderAccountFailure } from '../session-error-presentation.js';
 import type { DesktopConnectionSnapshot } from '../../shared/desktop-connection-snapshot.js';
 
 export interface ConnectionsBridge {
@@ -72,6 +73,8 @@ export function connectionTestFailureFallback(
   copy: ConnectionTestTroubleshootingCopy,
   locale: UiLocale = 'zh',
 ): string {
+  const accountFailure = describeProviderAccountFailure(result.providerFailure?.errorClass, locale);
+  if (accountFailure) return accountFailure;
   const shared = getProviderSettingsCopy(locale).shared;
   switch (result.providerFailure?.errorClass) {
     case 'Auth':

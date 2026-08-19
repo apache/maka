@@ -367,7 +367,6 @@ describe('connection effect network transport', () => {
           errorClass: 'Auth',
           httpStatus: 401,
           retryable: false,
-          message: 'Provider request failed (status=401)',
         },
       });
       assert.equal(outcome.modelId, undefined);
