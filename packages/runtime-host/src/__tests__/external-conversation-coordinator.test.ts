@@ -126,6 +126,25 @@ describe('HostExternalConversationCoordinator', () => {
     assert.deepEqual(sessions.createdIds, ['session-1']);
   });
 
+  test('retires claims after definitive Session creation failures', async () => {
+    const authority = new MemoryAuthority();
+    const sessions = new MemorySessions();
+    sessions.create = async () => ({
+      ok: false as const,
+      error: { code: 'invalid_request' as const, message: 'invalid defaults' },
+    });
+    const host = coordinator(authority, sessions, ['session-1', 'session-2']);
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const outcome = await host.reconcile({
+        ...resolveInput(),
+        conversationId: `telegram:chat-${attempt}`,
+      });
+      assert.equal(outcome.ok, false);
+    }
+    assert.deepEqual([...authority.bindings], []);
+  });
+
   test('releases through an exact operation receipt', async () => {
     const authority = new MemoryAuthority();
     const sessions = new MemorySessions();
@@ -217,7 +236,12 @@ class MemorySessions {
       : { kind: 'absent' as const };
   }
 
-  async create(input: SessionCreateInput) {
+  async create(
+    input: SessionCreateInput,
+  ): Promise<
+    | { ok: true; result: SessionCatalogProjection }
+    | { ok: false; error: { code: 'invalid_request'; message: string } }
+  > {
     const existing = this.records.get(input.sessionId);
     if (existing) return { ok: true as const, result: existing };
     const created = session(input.sessionId, false);
