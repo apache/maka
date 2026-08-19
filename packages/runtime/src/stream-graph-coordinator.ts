@@ -113,6 +113,7 @@ export interface AgentGraphCoordinatorInput {
 }
 
 export interface AgentGraphExecutionStopInput {
+  expectedGraphId?: string;
   stopSupervisor(): Promise<void>;
   withSupervisorWakesSuppressed(operation: () => Promise<void>): Promise<void>;
 }
@@ -560,8 +561,14 @@ export class AgentGraphCoordinator {
   /** Stop the validated root supervisor and its graph under one wake fence. */
   async stopExecution(rootSessionId: string, input: AgentGraphExecutionStopInput): Promise<void> {
     await this.#assertRootSupervisor(rootSessionId);
-    const driver = await this.#driver(rootSessionId);
     await input.withSupervisorWakesSuppressed(async () => {
+      const driver = await this.#driver(rootSessionId);
+      if (input.expectedGraphId !== undefined && driver.graphId !== input.expectedGraphId) {
+        throw new AgentGraphClientOperationError(
+          'operation_conflict',
+          `Agent graph ${input.expectedGraphId} is no longer current`,
+        );
+      }
       const failures: unknown[] = [];
       try {
         await input.stopSupervisor();

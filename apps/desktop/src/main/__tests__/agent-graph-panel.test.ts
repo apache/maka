@@ -93,7 +93,9 @@ function installGraphRenderer(
   renderSession(sessionId: string): Promise<void>;
   holdNextEpochList(sessionId: string): DeferredRead;
   holdNextSnapshot(graphId: string): DeferredRead;
-  stopCalls: string[];
+  setCurrentWithoutNotification(next: AgentGraphClientSnapshot): void;
+  epochReadCounts(): { full: number; current: number };
+  stopCalls: Array<{ sessionId: string; expectedGraphId: string }>;
 } {
   const { document, window } = parseHTML('<div id="root"></div>');
   const matchMedia = (media: string) => ({
@@ -130,29 +132,42 @@ function installGraphRenderer(
   const listeners = new Set<GraphListener>();
   const epochListGates = new Map<string, DeferredReadGate>();
   const snapshotGates = new Map<string, DeferredReadGate>();
-  const stopCalls: string[] = [];
+  const stopCalls: Array<{ sessionId: string; expectedGraphId: string }> = [];
+  let fullEpochReads = 0;
+  let currentEpochReads = 0;
+  const epochDirectory = (sessionId: string) => {
+    const currentGraphId = currentGraphIds.get(sessionId);
+    const entries = [...snapshots.values()]
+      .filter((entry) => entry.rootSessionId === sessionId)
+      .sort(
+        (left, right) =>
+          Number(right.graphId === currentGraphId) - Number(left.graphId === currentGraphId),
+      );
+    return {
+      epochs: entries.map((entry, index) => ({
+        epoch: entries.length - index,
+        graphId: entry.graphId,
+        createdAt: index + 1,
+        current: currentGraphIds.get(sessionId) === entry.graphId,
+      })),
+      truncated: false,
+    };
+  };
   (window as unknown as { maka: unknown }).maka = {
     graphs: {
       listEpochs: async (sessionId: string) => {
+        fullEpochReads += 1;
         const gate = epochListGates.get(sessionId);
         if (gate) {
           epochListGates.delete(sessionId);
           gate.markStarted();
           await gate.waitForRelease;
         }
-        const currentGraphId = currentGraphIds.get(sessionId);
-        const entries = [...snapshots.values()]
-          .filter((entry) => entry.rootSessionId === sessionId)
-          .sort((left, right) => Number(right.graphId === currentGraphId) - Number(left.graphId === currentGraphId));
-        return {
-          epochs: entries.map((entry, index) => ({
-            epoch: entries.length - index,
-            graphId: entry.graphId,
-            createdAt: index + 1,
-            current: currentGraphIds.get(sessionId) === entry.graphId,
-          })),
-          truncated: false,
-        };
+        return epochDirectory(sessionId);
+      },
+      listCurrentEpochs: async (sessionId: string) => {
+        currentEpochReads += 1;
+        return epochDirectory(sessionId);
       },
       getSnapshot: async (sessionId: string, options?: { graphId?: string }) => {
         const graphId = options?.graphId ?? currentGraphIds.get(sessionId);
@@ -177,8 +192,11 @@ function installGraphRenderer(
           listeners.delete(listener);
         };
       },
-      stop: async (sessionId: string) => {
-        stopCalls.push(sessionId);
+      stop: async (sessionId: string, expectedGraphId: string) => {
+        stopCalls.push({ sessionId, expectedGraphId });
+        if (currentGraphIds.get(sessionId) !== expectedGraphId) {
+          throw new Error('graph changed before stop');
+        }
       },
     },
   };
@@ -199,6 +217,13 @@ function installGraphRenderer(
     },
     evict(graphId) {
       snapshots.delete(graphId);
+    },
+    setCurrentWithoutNotification(next) {
+      snapshots.set(next.graphId, next);
+      currentGraphIds.set(next.rootSessionId, next.graphId);
+    },
+    epochReadCounts() {
+      return { full: fullEpochReads, current: currentEpochReads };
     },
     async renderSession(sessionId) {
       await act(async () => {
@@ -277,6 +302,51 @@ describe('AgentGraphPanel dismiss', () => {
     await act(async () => harness.root.unmount());
   });
 
+  it('does not let a disposed session read overwrite the live session selection refs', async () => {
+    const sessionA = snapshot({ graphId: 'graph-a', status: 'active' });
+    const sessionBCurrent = snapshot({
+      graphId: 'graph-b2',
+      status: 'active',
+      rootSessionId: 'session-2',
+    });
+    const sessionBHistory = snapshot({
+      graphId: 'graph-b1',
+      status: 'completed',
+      rootSessionId: 'session-2',
+    });
+    const harness = installGraphRenderer(sessionA, [sessionBCurrent, sessionBHistory]);
+    const readA = harness.holdNextEpochList('session-1');
+    await harness.renderSession('session-1');
+    await readA.started;
+
+    await harness.renderSession('session-2');
+    const selector = harness.container.querySelector('[role="combobox"]');
+    assert.ok(selector);
+    await act(async () => {
+      (selector as HTMLElement).click();
+      await Promise.resolve();
+    });
+    const historyOption = [...document.querySelectorAll('[role="option"]')].find((option) =>
+      option.textContent?.includes('History'),
+    );
+    assert.ok(historyOption);
+    await act(async () => {
+      (historyOption as HTMLElement).click();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      readA.release();
+      await Promise.resolve();
+    });
+    await harness.setSnapshot({ ...sessionBCurrent, status: 'waiting' });
+    assert.match(
+      harness.container.querySelector('[role="combobox"]')?.textContent ?? '',
+      /#1 · History \(read-only\)/,
+    );
+    await act(async () => harness.root.unmount());
+  });
+
   it('switches to a historical epoch without exposing current-graph controls', async () => {
     const current = snapshot({ graphId: 'graph-2', status: 'active' });
     const previous = snapshot({ graphId: 'graph-1', status: 'completed' });
@@ -318,6 +388,41 @@ describe('AgentGraphPanel dismiss', () => {
       historyRead.release();
       await Promise.resolve();
     });
+    await act(async () => harness.root.unmount());
+  });
+
+  it('binds stop to the graph identity rendered before a silent rollover', async () => {
+    const current = snapshot({ graphId: 'graph-1', status: 'active' });
+    const harness = await renderPanel(current);
+    const stop = [...harness.container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Stop graph'),
+    );
+    assert.ok(stop);
+
+    harness.setCurrentWithoutNotification(snapshot({ graphId: 'graph-2', status: 'active' }));
+    await act(async () => {
+      (stop as HTMLElement).click();
+      await Promise.resolve();
+    });
+
+    assert.deepEqual(harness.stopCalls, [
+      { sessionId: 'session-1', expectedGraphId: 'graph-1' },
+    ]);
+    assert.match(harness.container.textContent ?? '', /Could not stop the graph/);
+    await act(async () => harness.root.unmount());
+  });
+
+  it('reuses cached history during activity and reloads it only after epoch rollover', async () => {
+    const graph1 = snapshot({ graphId: 'graph-1', status: 'active' });
+    const harness = await renderPanel(graph1);
+    assert.deepEqual(harness.epochReadCounts(), { full: 1, current: 0 });
+
+    await harness.setSnapshot({ ...graph1, status: 'waiting', scheduleRevision: 2 });
+    await harness.setSnapshot({ ...graph1, status: 'active', scheduleRevision: 3 });
+    assert.deepEqual(harness.epochReadCounts(), { full: 1, current: 2 });
+
+    await harness.setSnapshot(snapshot({ graphId: 'graph-2', status: 'active' }));
+    assert.deepEqual(harness.epochReadCounts(), { full: 2, current: 3 });
     await act(async () => harness.root.unmount());
   });
 

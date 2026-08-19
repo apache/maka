@@ -26,6 +26,7 @@ describe('Host Agent Graph coordinator', () => {
     const snapshot = graphSnapshot();
     const inspection = operatorInspection(snapshot);
     let stoppedRoot: string | undefined;
+    let stoppedGraph: string | undefined;
     let listener: AgentGraphClientChangedListener | undefined;
     let unsubscribed = false;
     const invalidations: unknown[] = [];
@@ -58,8 +59,9 @@ describe('Host Agent Graph coordinator', () => {
     const coordinator = new HostAgentGraphCoordinator({
       authority,
       continuity: { enqueueAgentGraphChanged: (event) => invalidations.push(event) },
-      stopExecution: async (rootSessionId) => {
+      stopExecution: async (rootSessionId, expectedGraphId) => {
         stoppedRoot = rootSessionId;
+        stoppedGraph = expectedGraphId;
       },
     });
 
@@ -96,7 +98,7 @@ describe('Host Agent Graph coordinator', () => {
     assert.equal(inspected.result.operator.operatorId, 'operator-1');
 
     const stopped = await coordinator.handlers['agent.graph.stop'](
-      { rootSessionId: 'root-1' },
+      { rootSessionId: 'root-1', expectedGraphId: snapshot.graphId },
       context(),
     );
     assert.deepEqual(stopped, {
@@ -104,6 +106,7 @@ describe('Host Agent Graph coordinator', () => {
       result: { rootSessionId: 'root-1', graphId: snapshot.graphId },
     });
     assert.equal(stoppedRoot, 'root-1');
+    assert.equal(stoppedGraph, snapshot.graphId);
 
     await listener?.({
       schemaVersion: 1,
@@ -167,7 +170,7 @@ describe('Host Agent Graph coordinator', () => {
     if (!childQuery.ok) assert.equal(childQuery.error.code, 'operation_conflict');
 
     const archivedStop = await child.handlers['agent.graph.stop'](
-      { rootSessionId: 'root-1' },
+      { rootSessionId: 'root-1', expectedGraphId: agentGraphIdForRootSession('root-1') },
       context(),
     );
     assert.equal(archivedStop.ok, false);

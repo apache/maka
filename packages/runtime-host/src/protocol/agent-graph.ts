@@ -335,6 +335,7 @@ export interface AgentGraphOperatorQueryInput {
 
 export interface AgentGraphStopInput {
   readonly rootSessionId: string;
+  readonly expectedGraphId?: string;
 }
 
 export interface AgentGraphStopResult {
@@ -418,7 +419,12 @@ export const AGENT_GRAPH_OPERATION_SPECS = {
     errors: STOP_ERRORS,
     decodeInput: decodeAgentGraphStopInput,
     decodeOutput: decodeAgentGraphStopResult,
-    assertOutputForInput: (input, output) => assertRootIdentity(input.rootSessionId, output),
+    assertOutputForInput: (input, output) => {
+      assertRootIdentity(input.rootSessionId, output);
+      if (input.expectedGraphId !== undefined && output.graphId !== input.expectedGraphId) {
+        throw invalidProtocolFrame('Agent graph stop changed request graph identity');
+      }
+    },
   }),
 } as const;
 
@@ -531,8 +537,18 @@ function decodeOptionalEpochCursor(value: unknown): number | null {
 }
 
 export function decodeAgentGraphStopInput(value: unknown): AgentGraphStopInput {
-  const record = requireExactRecord(value, 'agent.graph.stop input', ['rootSessionId']);
-  return { rootSessionId: requireEntityId(record.rootSessionId, 'rootSessionId') };
+  const record = requireShapedRecord(
+    value,
+    'agent.graph.stop input',
+    ['rootSessionId'],
+    ['expectedGraphId'],
+  );
+  return {
+    rootSessionId: requireEntityId(record.rootSessionId, 'rootSessionId'),
+    ...(record.expectedGraphId === undefined
+      ? {}
+      : { expectedGraphId: requireOpaqueIdentity(record.expectedGraphId, 'expectedGraphId') }),
+  };
 }
 
 export function decodeAgentGraphStopResult(value: unknown): AgentGraphStopResult {

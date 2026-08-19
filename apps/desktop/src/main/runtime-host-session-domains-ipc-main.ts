@@ -33,6 +33,7 @@ type RuntimeHostSessionDomainClient = RuntimeHostShellRunsClient &
   | 'getPlanState'
   | 'listRuntimeResources'
   | 'listAgentGraphEpochs'
+  | 'listCurrentAgentGraphEpochs'
   | 'listTasks'
   | 'queryAgentGraph'
   | 'queryAgentGraphOperator'
@@ -199,6 +200,16 @@ export function registerRuntimeHostSessionDomainsIpc(
   );
   handleReconnectableRead(
     ipcMain,
+    'graphs:listCurrentEpochs',
+    async (_event, rootSessionId: unknown): Promise<AgentGraphEpochDirectory> => {
+      const page = await deps.client.listCurrentAgentGraphEpochs(
+        requiredId(rootSessionId, 'root Session'),
+      );
+      return { epochs: page.epochs, truncated: page.nextBeforeEpoch !== null };
+    },
+  );
+  handleReconnectableRead(
+    ipcMain,
     'graphs:inspectOperator',
     async (
       _event,
@@ -216,11 +227,15 @@ export function registerRuntimeHostSessionDomainsIpc(
         }),
       ),
   );
-  ipcMain.handle('graphs:stop', async (_event, rootSessionId: unknown) => {
+  ipcMain.handle(
+    'graphs:stop',
+    async (_event, rootSessionId: unknown, expectedGraphId: unknown) => {
     await deps.client.stopAgentGraph({
       rootSessionId: requiredId(rootSessionId, 'root Session'),
+      expectedGraphId: requiredId(expectedGraphId, 'Agent graph'),
     });
-  });
+    },
+  );
 
   const sessionDomainChanged = (change: SessionDomainChange): void => {
     switch (change.domain) {

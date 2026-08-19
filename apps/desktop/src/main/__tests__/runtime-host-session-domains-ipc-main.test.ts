@@ -93,6 +93,14 @@ test('adapts bounded Agent Graph epoch reads without changing graph identity', a
         truncated: false,
       };
     },
+    listCurrentAgentGraphEpochs: async (rootSessionId) => {
+      calls.push({ current: rootSessionId });
+      return {
+        rootSessionId,
+        epochs: [{ epoch: 2, graphId: 'graph-2', createdAt: 2, current: true }],
+        nextBeforeEpoch: 2,
+      };
+    },
     queryAgentGraph: async (input) => {
       calls.push(input);
       return graphSnapshot(input.rootSessionId, input.graphId ?? 'graph-current');
@@ -105,6 +113,10 @@ test('adapts bounded Agent Graph epoch reads without changing graph identity', a
     epochs: [{ epoch: 2, graphId: 'graph-2', createdAt: 2, current: true }],
     truncated: false,
   });
+  assert.deepEqual(await ipc.invoke('graphs:listCurrentEpochs', 'session-1'), {
+    epochs: [{ epoch: 2, graphId: 'graph-2', createdAt: 2, current: true }],
+    truncated: true,
+  });
   assert.equal(
     (await ipc.invoke('graphs:getSnapshot', 'session-1', { graphId: 'graph-2' }) as {
       graphId: string;
@@ -113,6 +125,7 @@ test('adapts bounded Agent Graph epoch reads without changing graph identity', a
   );
   assert.deepEqual(calls, [
     'session-1',
+    { current: 'session-1' },
     { rootSessionId: 'session-1', graphId: 'graph-2' },
   ]);
 });

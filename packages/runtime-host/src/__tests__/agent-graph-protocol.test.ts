@@ -59,9 +59,13 @@ describe('Agent Graph Client protocol', () => {
       }),
       { rootSessionId: 'root-1', graphId: 'agent_graph_1', operatorId: 'operator:1' },
     );
-    assert.deepEqual(decodeAgentGraphStopInput({ rootSessionId: 'root-1' }), {
-      rootSessionId: 'root-1',
-    });
+    assert.deepEqual(
+      decodeAgentGraphStopInput({
+        rootSessionId: 'root-1',
+        expectedGraphId: 'agent_graph_1',
+      }),
+      { rootSessionId: 'root-1', expectedGraphId: 'agent_graph_1' },
+    );
     assert.deepEqual(
       decodeAgentGraphStopResult({ rootSessionId: 'root-1', graphId: 'agent_graph_1' }),
       { rootSessionId: 'root-1', graphId: 'agent_graph_1' },

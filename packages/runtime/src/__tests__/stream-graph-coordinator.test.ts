@@ -537,6 +537,7 @@ describe('host-managed agent graph coordinator', () => {
       let childStopEntered = false;
       await assert.rejects(
         coordinator.stopExecution(childSessions[0]!.id, {
+          expectedGraphId: graphId,
           stopSupervisor: async () => {
             childStopEntered = true;
           },
@@ -653,9 +654,24 @@ describe('host-managed agent graph coordinator', () => {
       );
       await gate.started;
       try {
+        let mismatchedStopEntered = false;
+        await assert.rejects(
+          recovered.stopExecution(rootSession.id, {
+            expectedGraphId: 'agent_graph_stale',
+            stopSupervisor: async () => {
+              mismatchedStopEntered = true;
+            },
+            withSupervisorWakesSuppressed: (operation) => operation(),
+          }),
+          (error: unknown) =>
+            error instanceof AgentGraphClientOperationError && error.code === 'operation_conflict',
+        );
+        assert.equal(mismatchedStopEntered, false);
+
         const supervisorStopFailure = new Error('supervisor stop failed');
         await assert.rejects(
           recovered.stopExecution(rootSession.id, {
+            expectedGraphId: graphId,
             stopSupervisor: async () => {
               throw supervisorStopFailure;
             },

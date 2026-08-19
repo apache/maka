@@ -4,6 +4,7 @@ import type {
   AgentGraphClientOperator,
   AgentGraphClientSnapshot,
 } from '@maka/runtime/stream-graph-read-model';
+import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import type { AgentGraphEpochSummary } from '@maka/runtime-host/protocol';
 import { IconButton, Selector, type SelectorOptionType } from '@maka/ui';
 import { ICON_SIZE, ChevronDown, X } from '@maka/ui/icons';
@@ -186,11 +187,22 @@ export function AgentGraphPanel(props: {
     setStopError(false);
     setCollapsed(false);
     setLoading(props.enabled);
+    let cachedDirectory: AgentGraphEpochDirectory | undefined;
 
     const scheduler = createAgentGraphRefreshScheduler(async (fence) => {
       setLoading(true);
       try {
-        const directory = await window.maka.graphs.listEpochs(props.rootSessionId);
+        let directory: AgentGraphEpochDirectory;
+        if (!cachedDirectory) {
+          directory = await window.maka.graphs.listEpochs(props.rootSessionId);
+        } else {
+          const currentPage = await window.maka.graphs.listCurrentEpochs(props.rootSessionId);
+          directory = sameEpochPage(cachedDirectory, currentPage)
+            ? cachedDirectory
+            : await window.maka.graphs.listEpochs(props.rootSessionId);
+        }
+        if (!scheduler.isCurrent(fence)) return;
+        cachedDirectory = directory;
         const nextEpochs = directory.epochs;
         const current = nextEpochs.find((entry) => entry.current) ?? nextEpochs[0];
         const selected = followCurrentRef.current
@@ -277,12 +289,12 @@ export function AgentGraphPanel(props: {
     return null;
   }
 
-  const stopGraph = async (): Promise<void> => {
+  const stopGraph = async (expectedGraphId: string): Promise<void> => {
     if (stopPending) return;
     setStopPending(true);
     setStopError(false);
     try {
-      await window.maka.graphs.stop(props.rootSessionId);
+      await window.maka.graphs.stop(props.rootSessionId, expectedGraphId);
     } catch {
       setStopError(true);
     } finally {
@@ -353,7 +365,9 @@ export function AgentGraphPanel(props: {
               size="sm"
               label={stopPending ? copy.stopping : copy.stop}
               isDisabled={stopPending}
-              onClick={() => void stopGraph()}
+              onClick={() => {
+                if (snapshot) void stopGraph(snapshot.graphId);
+              }}
             />
           ) : null}
           {dismissAvailable && snapshot ? (
@@ -464,6 +478,21 @@ export function AgentGraphPanel(props: {
       ) : null}
     </section>
   );
+}
+
+function sameEpochPage(
+  cached: AgentGraphEpochDirectory,
+  currentPage: AgentGraphEpochDirectory,
+): boolean {
+  if (!currentPage.truncated && currentPage.epochs.length !== cached.epochs.length) return false;
+  return currentPage.epochs.every((entry, index) => {
+    const previous = cached.epochs[index];
+    return (
+      previous?.epoch === entry.epoch &&
+      previous.graphId === entry.graphId &&
+      previous.current === entry.current
+    );
+  });
 }
 
 function firstWait(operator: AgentGraphClientOperator) {

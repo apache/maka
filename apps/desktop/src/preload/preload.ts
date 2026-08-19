@@ -1209,6 +1209,12 @@ const makaBridge = {
         'graphs:listEpochs', session.scope, session.sessionId,
       ) as Promise<AgentGraphEpochDirectory>;
     },
+    async listCurrentEpochs(rootSessionId: string): Promise<AgentGraphEpochDirectory> {
+      const session = await runtimeHostSessionRef(rootSessionId);
+      return ipcRenderer.invoke(
+        'graphs:listCurrentEpochs', session.scope, session.sessionId,
+      ) as Promise<AgentGraphEpochDirectory>;
+    },
     async getSnapshot(
       rootSessionId: string,
       options?: AgentGraphClientSnapshotOptions & { graphId?: string },
@@ -1234,8 +1240,8 @@ const makaBridge = {
       ) as AgentGraphOperatorInspection;
       return projectProtocolSessionIds(session.scope.hostId, inspection);
     },
-    stop(rootSessionId: string): Promise<void> {
-      return invokeSessionRuntimeHost('graphs:stop', rootSessionId);
+    stop(rootSessionId: string, expectedGraphId: string): Promise<void> {
+      return invokeSessionRuntimeHost('graphs:stop', rootSessionId, expectedGraphId);
     },
     subscribe(
       rootSessionId: string,

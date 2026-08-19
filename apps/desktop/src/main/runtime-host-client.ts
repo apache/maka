@@ -1273,6 +1273,10 @@ export class DesktopRuntimeHostClient {
     return readRuntimeHostAgentGraphEpochs(this.connection, rootSessionId);
   }
 
+  listCurrentAgentGraphEpochs(rootSessionId: string) {
+    return this.request("agent.graph.epochs.query", { rootSessionId });
+  }
+
   queryAgentGraphOperator(
     input: OperationInput<"agent.graph.operator.query">,
   ): Promise<OperationOutput<"agent.graph.operator.query">> {

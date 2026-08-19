@@ -997,8 +997,9 @@ export async function createExecutionRuntimeHostComposition(
     graphClient = new HostAgentGraphCoordinator({
       authority: graphCoordinator,
       continuity: continuityCoordinator,
-      stopExecution: (rootSessionId) =>
+      stopExecution: (rootSessionId, expectedGraphId) =>
         requireGraphCoordinator(graphCoordinator).stopExecution(rootSessionId, {
+          expectedGraphId,
           stopSupervisor: () =>
             requireRootCoordinator(rootCoordinator).stopAgentGraphSupervisor(rootSessionId, {
               source: 'stop_button',

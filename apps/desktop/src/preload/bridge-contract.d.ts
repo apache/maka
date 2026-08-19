@@ -499,6 +499,7 @@ export interface MakaBridge {
   };
   graphs: {
     listEpochs(rootSessionId: string): Promise<AgentGraphEpochDirectory>;
+    listCurrentEpochs(rootSessionId: string): Promise<AgentGraphEpochDirectory>;
     getSnapshot(
       rootSessionId: string,
       options?: AgentGraphClientSnapshotOptions & { graphId?: string },
@@ -508,7 +509,7 @@ export interface MakaBridge {
       operatorId: string,
       graphId?: string,
     ): Promise<AgentGraphOperatorInspection>;
-    stop(rootSessionId: string): Promise<void>;
+    stop(rootSessionId: string, expectedGraphId: string): Promise<void>;
     subscribe(
       rootSessionId: string,
       handler: () => void,
