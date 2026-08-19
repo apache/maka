@@ -75,8 +75,14 @@ authentication and disallow tokens**，然后撤销不再使用的 publish token
 
 ## Stage 候选包
 
-1. 打开 **Actions → Stage CLI npm release → Run workflow**；
-2. 在 **Use workflow from** 选择 `v<version>`，并输入同一个精确产品版本；workflow 要求其 GitHub ref、checkout、产品 tag、Release、source commit 和 npm provenance 全部指向这一个 tag commit，并要求该 commit 仍是 `main` 的 ancestor；
+1. 使用精确产品 tag 作为 GitHub ref dispatch workflow：
+
+   ```sh
+   version=0.1.0-beta.1
+   gh workflow run release-cli-stage.yml --ref "v$version" -f version="$version"
+   ```
+
+2. 确认新建的 run 使用 `v<version>`。workflow 要求其 GitHub ref、checkout、产品 tag、Release、source commit 和 npm provenance 全部指向这一个 tag commit，并要求该 commit 仍是 `main` 的 ancestor；
 3. 等待可复用 package validation jobs 全部通过。它们只构建一个 tarball，并在 Linux x64、
    macOS arm64、Windows x64 上验证安装态 CLI，在 Linux x64 上运行真实 Harbor 和 Pier
    Docker cell；

@@ -79,8 +79,14 @@ package owner or recovery access as part of that change.
 
 ## Stage the candidate
 
-1. Open **Actions → Stage CLI npm release → Run workflow**.
-2. Select `v<version>` under **Use workflow from** and enter the same exact product version. The workflow requires its GitHub ref, checkout, product tag, Release, source commit, and npm provenance to identify that one tag commit, and requires the commit to remain an ancestor of `main`.
+1. Dispatch the workflow with the exact product tag as its GitHub ref:
+
+   ```sh
+   version=0.1.0-beta.1
+   gh workflow run release-cli-stage.yml --ref "v$version" -f version="$version"
+   ```
+
+2. Confirm the created run uses `v<version>`. The workflow requires its GitHub ref, checkout, product tag, Release, source commit, and npm provenance to identify that one tag commit, and requires the commit to remain an ancestor of `main`.
 3. Wait for the reusable package validation jobs to pass. They build one tarball and validate the
    installed CLI on Linux x64, macOS arm64, and Windows x64, plus real Harbor and Pier Docker cells
    on Linux x64.
