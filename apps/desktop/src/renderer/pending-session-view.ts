@@ -1,25 +1,27 @@
 import type { PermissionMode } from '@maka/core/permission';
 import type { SessionSummary } from '@maka/core/session';
-import type { NewChatModel } from './shell-chat-model-selection';
 
 export interface PendingSessionViewInput {
   sessionId: string;
   name: string;
   permissionMode: PermissionMode;
-  /** Connection + model the next new task would start on, when one is offered. */
-  newChatModel: NewChatModel | undefined;
-  defaultConnectionSlug: string | null;
 }
 
 /**
  * The `SessionSummary` the chat view shows between "a session id became active"
  * and "its real summary arrived".
  *
- * The composer reads the connection and model straight off this object — the
- * model switcher's current value, the quote companion's target — so the
- * placeholder carries what the next new task would use. It used to claim
- * `backend: 'fake'` / `model: 'fake-model'`: a retired backend (#3211) and a
- * model no session ever had, which the switcher then failed to match.
+ * The connection and model read empty because they are genuinely unknown: this
+ * fallback covers every active id without a loaded summary, not just a freshly
+ * created task, so the session behind it may be an existing one bound to any
+ * model. An empty pair matches no offered choice, which is how the model
+ * switcher's current-value and no-op comparisons read "not yet known" — naming
+ * a plausible model instead would let a switch onto that model be silently
+ * dropped as a no-op against a session that was never on it.
+ *
+ * It used to say `backend: 'fake'` / `model: 'fake-model'`, borrowing a retired
+ * backend (#3211) to mean "not loaded". The unknown-ness is the same; the
+ * borrowed name is gone.
  */
 export function pendingSessionView(input: PendingSessionViewInput): SessionSummary {
   return {
@@ -31,9 +33,9 @@ export function pendingSessionView(input: PendingSessionViewInput): SessionSumma
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
-    llmConnectionSlug: input.newChatModel?.llmConnectionSlug ?? input.defaultConnectionSlug ?? '',
+    llmConnectionSlug: '',
     connectionLocked: false,
-    model: input.newChatModel?.model ?? '',
+    model: '',
     permissionMode: input.permissionMode,
   };
 }

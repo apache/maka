@@ -2,45 +2,44 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { pendingSessionView } from '../../renderer/pending-session-view.js';
 
-test('the pending chat view starts on the model the next new task would use', () => {
+test('the pending chat view names no connection or model it cannot know', () => {
   const view = pendingSessionView({
     sessionId: 'session-1',
     name: '新任务',
     permissionMode: 'ask',
-    newChatModel: { llmConnectionSlug: 'anthropic', model: 'claude-sonnet-4-5-20250929' },
-    defaultConnectionSlug: 'openai',
   });
 
   // #3211: the placeholder used to claim `backend: 'fake'` / `model:
-  // 'fake-model'`, so the model switcher matched no choice and the quote
-  // companion targeted a model that never existed.
+  // 'fake-model'`, borrowing a retired backend to mean "not loaded".
   assert.equal(view.backend, 'ai-sdk');
-  assert.equal(view.llmConnectionSlug, 'anthropic');
-  assert.equal(view.model, 'claude-sonnet-4-5-20250929');
   assert.equal(view.id, 'session-1');
   assert.equal(view.permissionMode, 'ask');
   assert.equal(view.connectionLocked, false);
+
+  // The empty pair is load-bearing: this fallback covers any active id whose
+  // summary has not arrived, so naming a plausible connection/model would let
+  // the model switcher drop a real switch onto that model as a no-op against a
+  // session that was never on it.
+  assert.equal(view.llmConnectionSlug, '');
+  assert.equal(view.model, '');
 });
 
-test('the pending chat view falls back to the default connection, then to no model', () => {
-  const withDefault = pendingSessionView({
+test('the pending chat view matches no offered model choice', () => {
+  const view = pendingSessionView({
     sessionId: 'session-2',
     name: '新任务',
     permissionMode: 'execute',
-    newChatModel: undefined,
-    defaultConnectionSlug: 'openai',
   });
-  assert.equal(withDefault.llmConnectionSlug, 'openai');
-  assert.equal(withDefault.model, '');
+  const offered = [
+    { connectionSlug: 'anthropic', model: 'claude-sonnet-4-5-20250929' },
+    { connectionSlug: 'openai', model: 'gpt-5' },
+  ];
 
-  const withNothing = pendingSessionView({
-    sessionId: 'session-3',
-    name: '新任务',
-    permissionMode: 'ask',
-    newChatModel: undefined,
-    defaultConnectionSlug: null,
-  });
-  assert.equal(withNothing.backend, 'ai-sdk');
-  assert.equal(withNothing.llmConnectionSlug, '');
-  assert.equal(withNothing.model, '');
+  assert.equal(
+    offered.some(
+      (choice) =>
+        choice.connectionSlug === view.llmConnectionSlug && choice.model === view.model,
+    ),
+    false,
+  );
 });
