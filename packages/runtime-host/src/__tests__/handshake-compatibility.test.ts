@@ -145,6 +145,43 @@ test('rejects an epoch-39 Host before any domain command', async () => {
   assert.equal(admittedRequest, undefined);
 });
 
+test('rejects the previous compatibility epoch before any domain command', async () => {
+  let admittedRequest: RequestFrame | undefined;
+  await withForgedHandshakePeer(
+    async (transport, hostEpoch, rootId) => {
+      const hello = decodeClientFrame(await transport.read(2_000));
+      assert.ok('kind' in hello && hello.kind === 'hello');
+      await writeProtocolFrame(transport, {
+        kind: 'accepted',
+        rootId,
+        hostEpoch,
+        connectionId: 'forged-epoch-connection',
+        selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+      });
+      try {
+        const next = decodeClientFrame(await transport.read(1_000));
+        if (!('kind' in next)) admittedRequest = next;
+      } catch (error) {
+        assert.ok(
+          error instanceof RuntimeHostTransportError &&
+            (error.code === 'closed' || error.code === 'read_eof'),
+        );
+      }
+    },
+    async (result) => {
+      assert.equal(result.kind, 'unavailable');
+      if (result.kind === 'unavailable') {
+        assert.equal(result.reason, 'handshake_failed');
+      }
+    },
+  );
+  assert.equal(admittedRequest, undefined);
+});
+
 test('records a registration root mismatch before connecting the endpoint', async () => {
   await withForgedHandshakePeer(
     async () => {
