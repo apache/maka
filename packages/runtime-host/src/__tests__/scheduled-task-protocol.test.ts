@@ -12,6 +12,7 @@ import {
   authorizeRuntimeHostOperation,
   createRuntimeHostConnectionAuthority,
 } from '../server/connection-authority.js';
+import { decodeScheduledTask, decodeScheduledTaskMutateInput } from '../protocol/scheduled-task.js';
 
 describe('ScheduledTask protocol', () => {
   test('requires Host-path authority only when a mutation submits a Host path', () => {
@@ -31,6 +32,39 @@ describe('ScheduledTask protocol', () => {
       for (const frame of [createMutationFrame(projectId), updateMutationFrame(projectId)]) {
         assert.equal(authorizeRuntimeHostOperation(authority, frame), false);
       }
+    }
+  });
+
+  test('a retired backend decodes on the way out but not on the way in', () => {
+    // #3211: the same execution decoder serves both directions, and they carry
+    // different backend invariants. A stored Automation frozen by a build that
+    // shipped FakeBackend must stay readable; a live create/update may not
+    // introduce the retired value.
+    const retired = (effect: ScheduledTaskEffect): ScheduledTaskEffect =>
+      effect.kind === 'agent_run'
+        ? { ...effect, execution: { ...effect.execution, backend: 'fake' } }
+        : effect;
+
+    const stored = { ...scheduledTask('task-1'), effect: retired(agentRunEffect('project-1')) };
+    assert.equal(decodeScheduledTask(stored).effect.kind, 'agent_run');
+
+    for (const input of [
+      {
+        kind: 'create' as const,
+        input: {
+          title: 'Inspect workspace',
+          intentBody: 'Summarize the workspace.',
+          schedule: { kind: 'once' as const, runAt: 1 },
+          effect: retired(agentRunEffect('project-1')),
+        },
+      },
+      {
+        kind: 'update' as const,
+        taskId: 'task-1',
+        patch: { effect: retired(agentRunEffect('project-1')) },
+      },
+    ]) {
+      assert.throws(() => decodeScheduledTaskMutateInput(input), /Invalid ScheduledTask backend/);
     }
   });
 

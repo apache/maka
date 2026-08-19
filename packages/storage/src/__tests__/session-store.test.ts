@@ -1004,14 +1004,36 @@ describe('SQLite SessionStore', () => {
     // storage. Narrowing the header validator would make these rows decode as
     // malformed and rewriting them to `'ai-sdk'` would make an unrunnable task
     // look runnable, since `llmConnectionSlug` still points at nothing.
+    //
+    // The legacy row is seeded under the writer, not through `create`: `'fake'`
+    // is a value only an older build could write, so a test that asks today's
+    // creation path for one would be asserting a write that must not exist.
     const root = await mkdtemp(join(tmpdir(), 'maka-session-legacy-fake-'));
     const store = createSessionStore(root);
+    let sessionId: string;
     try {
-      const session = await store.create(makeInput({ backend: 'fake', llmConnectionSlug: 'fake' }));
-      assert.equal(session.backend, 'fake');
-      assert.equal((await store.readHeaderSnapshot(session.id)).backend, 'fake');
+      sessionId = (await store.create(makeInput())).id;
     } finally {
       await store.close?.();
+    }
+
+    const legacy = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      const row = legacy
+        .prepare(`SELECT payload_json FROM session_metadata WHERE session_id = ?`)
+        .get(sessionId) as { payload_json: string };
+      const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+      payload.backend = 'fake';
+      payload.llmConnectionSlug = 'fake';
+      legacy
+        .prepare(
+          `UPDATE session_metadata
+             SET payload_json = ?, backend = ?, llm_connection_slug = ?
+           WHERE session_id = ?`,
+        )
+        .run(JSON.stringify(payload), 'fake', 'fake', sessionId);
+    } finally {
+      legacy.close();
     }
 
     const reopened = createSessionStore(root);
@@ -1019,6 +1041,7 @@ describe('SQLite SessionStore', () => {
       const [header] = await reopened.listHeaders();
       assert.equal(header?.backend, 'fake');
       assert.equal(header?.llmConnectionSlug, 'fake');
+      assert.equal((await reopened.readHeaderSnapshot(sessionId)).backend, 'fake');
     } finally {
       await reopened.close?.();
       await rm(root, { recursive: true, force: true });
@@ -1056,9 +1079,9 @@ describe('SQLite SessionStore', () => {
 function makeInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionInput {
   return {
     cwd: '/tmp/cwd',
-    backend: 'fake',
-    llmConnectionSlug: 'fake',
-    model: 'fake-model',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'test-connection',
+    model: 'test-model',
     permissionMode: 'ask',
     name: 'Session',
     labels: [],

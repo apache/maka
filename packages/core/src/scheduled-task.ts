@@ -489,10 +489,11 @@ function normalizeExecution(
   if (!isObject(value)) return fail('agent_run requires execution template');
   if (typeof value.cwd !== 'string' || !value.cwd.trim()) return fail('execution.cwd is required');
   if (typeof value.backend !== 'string') return fail('execution.backend is required');
-  // `'fake'` stays accepted on decode: Automations frozen by builds that
-  // shipped FakeBackend must keep loading (#3211). Activation refuses them
-  // with the product's `fake_backend` reason.
-  if (value.backend !== 'ai-sdk' && value.backend !== 'fake') {
+  // Create/update input, not a decoder: stored Automations are read back with
+  // `JSON.parse` in scheduled-task-store.ts and never pass through here. So the
+  // retired `'fake'` is refused (#3211) — accepting it would let a brand new
+  // Automation be written that can only fail later at activation.
+  if (value.backend !== 'ai-sdk') {
     return fail('execution.backend is invalid');
   }
   if (typeof value.llmConnectionSlug !== 'string' || !value.llmConnectionSlug.trim()) {
