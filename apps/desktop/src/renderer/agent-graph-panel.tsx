@@ -190,7 +190,7 @@ export function AgentGraphPanel(props: {
     let cachedDirectory: AgentGraphEpochDirectory | undefined;
 
     const scheduler = createAgentGraphRefreshScheduler(async (fence) => {
-      setLoading(true);
+      if (!cachedDirectory) setLoading(true);
       try {
         let directory: AgentGraphEpochDirectory;
         if (!cachedDirectory) {

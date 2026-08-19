@@ -94,6 +94,7 @@ function installGraphRenderer(
   holdNextEpochList(sessionId: string): DeferredRead;
   holdNextSnapshot(graphId: string): DeferredRead;
   setCurrentWithoutNotification(next: AgentGraphClientSnapshot): void;
+  notify(): void;
   epochReadCounts(): { full: number; current: number };
   stopCalls: Array<{ sessionId: string; expectedGraphId: string }>;
 } {
@@ -147,7 +148,7 @@ function installGraphRenderer(
       epochs: entries.map((entry, index) => ({
         epoch: entries.length - index,
         graphId: entry.graphId,
-        createdAt: index + 1,
+        createdAt: entries.length - index,
         current: currentGraphIds.get(sessionId) === entry.graphId,
       })),
       truncated: false,
@@ -221,6 +222,9 @@ function installGraphRenderer(
     setCurrentWithoutNotification(next) {
       snapshots.set(next.graphId, next);
       currentGraphIds.set(next.rootSessionId, next.graphId);
+    },
+    notify() {
+      for (const listener of [...listeners]) listener();
     },
     epochReadCounts() {
       return { full: fullEpochReads, current: currentEpochReads };
@@ -423,6 +427,23 @@ describe('AgentGraphPanel dismiss', () => {
 
     await harness.setSnapshot(snapshot({ graphId: 'graph-2', status: 'active' }));
     assert.deepEqual(harness.epochReadCounts(), { full: 2, current: 3 });
+    await act(async () => harness.root.unmount());
+  });
+
+  it('keeps current controls mounted during a background refresh', async () => {
+    const graph = snapshot({ graphId: 'graph-1', status: 'active' });
+    const harness = await renderPanel(graph);
+    const read = harness.holdNextSnapshot(graph.graphId);
+
+    harness.setCurrentWithoutNotification({ ...graph, scheduleRevision: 2 });
+    harness.notify();
+    await read.started;
+    assert.match(harness.container.textContent ?? '', /Stop graph/);
+
+    await act(async () => {
+      read.release();
+      await Promise.resolve();
+    });
     await act(async () => harness.root.unmount());
   });
 

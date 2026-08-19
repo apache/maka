@@ -2302,6 +2302,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         if (!epoch) return;
         void runControl(async () => {
           const graph = await input.agentGraphHistory!.getSnapshot(rootSessionId, epoch.graphId);
+          if (closed) return;
           state.entries.push({
             kind: 'notice',
             level: 'info',

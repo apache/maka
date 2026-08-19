@@ -2546,6 +2546,55 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('does not render a historical Agent Graph snapshot after shutdown', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const snapshotStarted = deferred<void>();
+    const releaseSnapshot = deferred<void>();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+      agentGraphHistory: {
+        listEpochs: async () => ({
+          epochs: [
+            { epoch: 2, graphId: 'graph-2', createdAt: 2, current: true },
+            { epoch: 1, graphId: 'graph-1', createdAt: 1, current: false },
+          ],
+          truncated: false,
+        }),
+        getSnapshot: async (_rootSessionId, graphId) => {
+          snapshotStarted.resolve();
+          await releaseSnapshot.promise;
+          return historicalGraphSnapshot(graphId);
+        },
+      },
+    });
+
+    terminal.input('/graph history');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Agent Graph History'),
+    );
+    terminal.input('\x1b[B');
+    terminal.input('\r');
+    await snapshotStarted.promise;
+
+    exitMaka(terminal);
+    await run;
+    releaseSnapshot.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.doesNotMatch(
+      plainTerminalOutput(terminal.output()),
+      /Agent Graph run #1 · History \(read-only\)/,
+    );
+  });
+
   test('rejects unsupported /thinking levels with usage instead of sending an update', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();

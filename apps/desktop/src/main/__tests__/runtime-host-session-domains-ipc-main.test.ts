@@ -728,6 +728,7 @@ function domainClient(overrides: Partial<DomainClient>): DomainClient {
     getPlanState: unavailable,
     listRuntimeResources: unavailable,
     listAgentGraphEpochs: unavailable,
+    listCurrentAgentGraphEpochs: unavailable,
     listTasks: unavailable,
     queryAgentGraph: unavailable,
     queryAgentGraphOperator: unavailable,
