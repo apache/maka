@@ -72,11 +72,15 @@ async function startFeedServer(files) {
   }
   const server = createServer((request, response) => {
     const method = request.method ?? 'GET';
-    // The raw request target is matched, before any decoding and including
-    // any query: `/%6catest.yml` or `/latest.yml?cache=1` must count as
-    // unexpected, or "exact root-level paths" would be an overclaim.
-    const pathName = request.url ?? '/';
-    const record = { method, path: pathName, status: 0 };
+    // The raw path segment is matched without decoding, so `/%6catest.yml`
+    // cannot alias `/latest.yml`. The query is allowed and recorded, not
+    // matched: electron-updater cache-busts its channel request with
+    // `?noCache=<id>`, so rejecting queries rejects the updater's own
+    // documented request shape (the first live run proved exactly that).
+    const target = request.url ?? '/';
+    const queryIndex = target.indexOf('?');
+    const pathName = queryIndex === -1 ? target : target.slice(0, queryIndex);
+    const record = { method, path: pathName, target, status: 0 };
     requests.push(record);
     const known = [...files.keys()].some((name) => `/${name}` === pathName);
     if ((method !== 'GET' && method !== 'HEAD') || !known) {
