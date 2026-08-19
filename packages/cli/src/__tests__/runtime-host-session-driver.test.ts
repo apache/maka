@@ -1669,11 +1669,12 @@ describe('turn consumer lag recovery (#3180)', () => {
     subscription: InstanceType<typeof FakeSubscription>,
     count: number,
     startOffset: number,
+    subscriptionId = 'subscription-1',
   ): Promise<void> {
     let offset = startOffset;
     for (let index = 0; index < count; index += 1) {
       const text = `x${String(index).padStart(4, '0')}`;
-      subscription.push(deltaFrame(index + 1, 'turn-1', offset, text));
+      subscription.push(deltaFrame(index + 1, 'turn-1', offset, text, subscriptionId));
       offset += text.length;
       if (index % 64 === 63) await delay(0);
     }
@@ -1779,7 +1780,10 @@ describe('turn consumer lag recovery (#3180)', () => {
     await waitForSubscriptions(connection, 2);
     await resynced.promise;
 
-    replacement.push(projectionFrame(1, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'));
+    await floodTurnStream(replacement, 1_024, 5, 'subscription-2');
+    replacement.push(
+      projectionFrame(1_025, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'),
+    );
     await delay(0);
     assert.ok(
       await drainUntilDone(switched.activeTurn.events),
@@ -1797,9 +1801,12 @@ describe('turn consumer lag recovery (#3180)', () => {
     await waitForSubscriptions(connection, 2);
     await resynced.promise;
 
+    await floodToolStream(replacement, 1_024, 'subscription-2');
     // The terminal outcome must land even though no delta can be evicted;
     // process the frame before draining so the backlog is still full.
-    replacement.push(projectionFrame(1, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'));
+    replacement.push(
+      projectionFrame(1_025, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'),
+    );
     await delay(0);
     assert.ok(
       await drainUntilDone(switched.activeTurn.events),
@@ -1837,11 +1844,14 @@ describe('turn consumer lag recovery (#3180)', () => {
     await waitForSubscriptions(connection, 2);
     await resynced.promise;
 
+    await floodToolStream(replacement, 1_024, 'subscription-2');
     // The tool result is the authoritative terminal outcome for its tool and
     // must land even though no delta can be evicted; otherwise the live tool
     // card stays running until the durable transcript heals it.
-    replacement.push(toolResultFrame(1, 'subscription-2'));
-    replacement.push(projectionFrame(2, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'));
+    replacement.push(toolResultFrame(1_025, 'subscription-2'));
+    replacement.push(
+      projectionFrame(1_026, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'),
+    );
     await delay(0);
 
     let sawToolResult = false;
@@ -1865,12 +1875,15 @@ describe('turn consumer lag recovery (#3180)', () => {
     await waitForSubscriptions(connection, 2);
     await resynced.promise;
 
+    await floodToolOutput(replacement, 1_024, 'subscription-2');
     // The canonical resync compacts the unseen tool deltas, so the tool
     // result lands instead of being dropped behind a full non-delta backlog
     // (which would leave the live card stuck at "running" until the durable
     // transcript heals it).
-    replacement.push(toolResultFrame(1, 'subscription-2'));
-    replacement.push(projectionFrame(2, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'));
+    replacement.push(toolResultFrame(1_025, 'subscription-2'));
+    replacement.push(
+      projectionFrame(1_026, completedTurn('turn-1', 'run-1'), 2, 'subscription-2'),
+    );
     await delay(0);
 
     let sawToolResult = false;
