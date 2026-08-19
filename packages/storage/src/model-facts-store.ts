@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   decodeModelFactsDocument,
   MODEL_FACTS_MAX_OVERRIDES,
@@ -7,7 +8,11 @@ import {
   type ModelFactsDocument,
 } from '@maka/core/model-facts';
 import { RuntimePolicyStoreError } from './runtime-policy/errors.js';
-import { readBoundedJsonDocument, writeJsonDocument } from './runtime-policy/document-io.js';
+import {
+  readBoundedDocumentBytes,
+  serializeJsonDocument,
+  writeJsonDocument,
+} from './runtime-policy/document-io.js';
 
 export const MODEL_FACTS_DOCUMENT_MAX_BYTES = 256 * 1024;
 const FILE = 'model-facts.json';
@@ -15,6 +20,7 @@ const FILE = 'model-facts.json';
 export interface ModelFactsReadResult {
   readonly document: ModelFactsDocument;
   readonly diagnostic?: 'malformed' | 'oversized' | 'io_failed';
+  readonly fingerprint: string;
 }
 
 export class ModelFactsDocumentOwner {
@@ -23,21 +29,27 @@ export class ModelFactsDocumentOwner {
   }
 
   async readWithDiagnostics(root: string): Promise<ModelFactsReadResult> {
-    let value: unknown | undefined;
+    let bytes: Buffer | undefined;
     try {
-      value = await readBoundedJsonDocument(root, FILE, MODEL_FACTS_DOCUMENT_MAX_BYTES);
+      bytes = await readBoundedDocumentBytes(root, FILE, MODEL_FACTS_DOCUMENT_MAX_BYTES);
     } catch (error) {
       if (error instanceof RuntimePolicyStoreError && error.code === 'invalid_document') {
-        const diagnostic = error.message.includes('exceeds') ? 'oversized' : 'malformed';
-        return { document: emptyDocument(), diagnostic };
+        return {
+          document: emptyDocument(),
+          diagnostic: error.message.includes('exceeds') ? 'oversized' : 'malformed',
+          fingerprint: `invalid:${error.message}`,
+        };
       }
       throw error;
     }
-    if (value === undefined) return { document: emptyDocument() };
+    if (bytes === undefined) return { document: emptyDocument(), fingerprint: 'missing' };
+    const fingerprint = fingerprintBytes(bytes);
+    let value: unknown;
     try {
-      return { document: decodeModelFactsDocument(value) };
+      value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
+      return { document: decodeModelFactsDocument(value), fingerprint };
     } catch {
-      return { document: emptyDocument(), diagnostic: 'malformed' };
+      return { document: emptyDocument(), diagnostic: 'malformed', fingerprint };
     }
   }
 
@@ -64,7 +76,14 @@ export class ModelFactsDocumentOwner {
       };
       // Reuse the canonical decoder for key grammar and exact bounded shape.
       validated = decodeModelFactsDocument(document);
+      if (serializeJsonDocument(validated).length > MODEL_FACTS_DOCUMENT_MAX_BYTES) {
+        throw new RuntimePolicyStoreError(
+          'invalid_policy_input',
+          `model-facts.json exceeds its ${MODEL_FACTS_DOCUMENT_MAX_BYTES} byte limit`,
+        );
+      }
     } catch (error) {
+      if (error instanceof RuntimePolicyStoreError) throw error;
       throw new RuntimePolicyStoreError(
         'invalid_policy_input',
         error instanceof Error ? error.message : 'Invalid model fact overrides',
@@ -78,8 +97,16 @@ export class ModelFactsDocumentOwner {
     await writeJsonDocument(root, FILE, document, MODEL_FACTS_DOCUMENT_MAX_BYTES);
     return document;
   }
+
+  fingerprint(document: ModelFactsDocument): string {
+    return fingerprintBytes(serializeJsonDocument(document));
+  }
 }
 
 function emptyDocument(): ModelFactsDocument {
   return { schemaVersion: MODEL_FACTS_SCHEMA_VERSION, overrides: {} };
+}
+
+function fingerprintBytes(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }

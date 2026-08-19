@@ -515,8 +515,8 @@ function decodeModelModalities(value: unknown): NonNullable<ConnectionModel['mod
   if (!Array.isArray(item.input) || !Array.isArray(item.output)) {
     throw domainError('connection model modalities must contain input and output arrays');
   }
-  const input = item.input.map((entry) => decodeModelInputModality(entry));
-  const output = item.output.map((entry) => decodeModelOutputModality(entry));
+  const input = Array.from(item.input, (entry) => decodeModelInputModality(entry));
+  const output = Array.from(item.output, (entry) => decodeModelOutputModality(entry));
   return { input, output };
 }
 

@@ -400,6 +400,23 @@ test('normalizes extended model facts used by the runtime host catalog', () => {
   });
 });
 
+test('rejects sparse model modality arrays', () => {
+  assert.throws(
+    () =>
+      normalizeConnectionModelDiscoveryResult({
+        models: [
+          {
+            id: 'custom-model',
+            modalities: { input: Array(1), output: ['text'] },
+          },
+        ],
+        source: 'fetched',
+        fetchedAt: 42,
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
+});
+
 test('credential domain validation requires material but leaves capacity to callers', () => {
   const input = normalizeSetCredentialInput({
     locator: {

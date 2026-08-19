@@ -65,6 +65,26 @@ export async function readBoundedJsonDocument(
   file: string,
   maxBytes: number,
 ): Promise<unknown | undefined> {
+  const bytes = await readBoundedDocumentBytes(root, file, maxBytes);
+  if (bytes === undefined) return undefined;
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch (error) {
+    throw invalidDocument(`${file} is not valid UTF-8`, error);
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (error) {
+    throw invalidDocument(`${file} is not valid JSON`, error);
+  }
+}
+
+export async function readBoundedDocumentBytes(
+  root: string,
+  file: string,
+  maxBytes: number,
+): Promise<Buffer | undefined> {
   const path = join(root, file);
   const flags =
     process.platform === 'win32'
@@ -81,7 +101,7 @@ export async function readBoundedJsonDocument(
     throw ioFailed(`${file} could not be opened`, error);
   }
 
-  let result: unknown | undefined;
+  let result: Buffer | undefined;
   let failure: unknown;
   try {
     const metadata = await handle.stat();
@@ -102,17 +122,7 @@ export async function readBoundedJsonDocument(
     }
     if (total > maxBytes) throw invalidDocument(`${file} exceeds its ${maxBytes} byte limit`);
 
-    let text: string;
-    try {
-      text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, total));
-    } catch (error) {
-      throw invalidDocument(`${file} is not valid UTF-8`, error);
-    }
-    try {
-      result = JSON.parse(text) as unknown;
-    } catch (error) {
-      throw invalidDocument(`${file} is not valid JSON`, error);
-    }
+    result = Buffer.concat(chunks, total);
   } catch (error) {
     failure = error;
   } finally {
@@ -135,6 +145,7 @@ export async function writeJsonDocument(
   file: string,
   value: unknown,
   maxBytes: number,
+  synchronizeDirectory: (root: string) => Promise<void> = syncDirectory,
 ): Promise<void> {
   const bytes = serializeJsonDocument(value);
   if (bytes.length > maxBytes) throw invalidDocument(`${file} exceeds its ${maxBytes} byte limit`);
@@ -154,7 +165,7 @@ export async function writeJsonDocument(
     handle = undefined;
     await rename(temporaryPath, path);
     published = true;
-    await syncDirectory(root);
+    await synchronizeDirectory(root);
   } catch (error) {
     failure = error;
   } finally {
