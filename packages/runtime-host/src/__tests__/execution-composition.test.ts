@@ -187,6 +187,9 @@ test('production startup migrates a real v27 database before recovery', async ()
       database.exec(`
         DROP TABLE external_conversation_release_receipts;
         DROP TABLE external_conversation_bindings;
+        DROP INDEX session_metadata_by_external_origin;
+        ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
+        ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
         UPDATE session_metadata_schema
         SET version = 27
         WHERE scope = 'session_metadata';
@@ -203,7 +206,7 @@ test('production startup migrates a real v27 database before recovery', async ()
         const version = migrated
           .prepare(`SELECT version FROM session_metadata_schema WHERE scope = 'session_metadata'`)
           .get() as { version: number };
-        assert.equal(version.version, 28);
+        assert.equal(version.version, 29);
         const tables = migrated
           .prepare(
             `SELECT name FROM sqlite_schema
