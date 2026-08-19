@@ -43,6 +43,19 @@ export interface GoalState {
   readonly pausedAt?: number;
 }
 
+/**
+ * Whether any Turn has ever carried this Goal to a settlement.
+ *
+ * `iterations` is only ever raised by a Turn that settled while bound to the
+ * Goal, so it doubles as the record of that having happened — a Goal at zero
+ * exists but has never driven, or been driven by, a Turn. Recovery reads this
+ * rather than `status`, because `active` alone cannot tell a Goal waiting for
+ * its first Turn from one waiting between continuations.
+ */
+export function hasCarriedTurn(goal: Pick<GoalState, 'iterations'>): boolean {
+  return goal.iterations > 0;
+}
+
 export interface GoalCheckpoint {
   readonly goalId: string;
   readonly revision: number;

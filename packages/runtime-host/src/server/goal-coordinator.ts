@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  hasCarriedTurn,
   sameGoalControlLease,
   type GoalAuthorityRecord,
   type GoalControlLease as DurableGoalControlLease,
@@ -193,12 +194,24 @@ export class HostGoalCoordinator {
     this.#prepared = true;
   }
 
+  /**
+   * Resume the Goal loop where the last Host epoch left it.
+   *
+   * A durable Goal with no execution of its own is either between
+   * continuations or has never run at all, and `status` cannot tell those
+   * apart: `goal.arm` persists an `active` Goal that takes hold on the user's
+   * next Turn, and arming alone starts nothing. Recovery therefore asks
+   * whether a Turn has ever carried the Goal, and leaves the ones that have
+   * not for `beginObservedTurn` to bind exactly as it would have before the
+   * restart. An execution that was in flight is its own proof of carrying, so
+   * that branch keeps recovering unconditionally.
+   */
   async recover(): Promise<void> {
     if (!this.#prepared) throw new Error('Goal recovery was not prepared');
     for (const snapshot of this.#authorityBySession.values()) {
       if (snapshot.record.currentExecution) {
         await this.#recoverCurrentExecution(snapshot.record.currentExecution);
-      } else {
+      } else if (hasCarriedTurn(snapshot.record.goal)) {
         this.continuation.recoverActiveGoal(snapshot.record.goal.sessionId);
       }
     }
