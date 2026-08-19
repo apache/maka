@@ -62,7 +62,8 @@ test('the bot typing loop owns only its active abort listener', async (t) => {
       },
     } as unknown as BotRegistry,
     sessions: createTestBotSessionAdapter({
-      async runTurn() {
+      async runTurn(input) {
+        if (input.admissionMode === 'replay_only') return { kind: 'admission_required' };
         await turnReleased;
         return { kind: 'completed', text: 'Bot reply' };
       },
@@ -143,6 +144,7 @@ test('streams reply snapshots and persists the final reply through one channel s
     } as unknown as BotRegistry,
     sessions: createTestBotSessionAdapter({
       async runTurn(input) {
+        if (input.admissionMode === 'replay_only') return { kind: 'admission_required' };
         input.onReplySnapshot?.('Hello');
         input.onReplySnapshot?.('Hello world');
         return { kind: 'completed', text: 'Hello world' };

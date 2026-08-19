@@ -31,7 +31,8 @@ export type BotSessionResolution =
 export type BotSessionTurnResult =
   | { readonly kind: 'completed'; readonly text: string }
   | { readonly kind: 'suspended' }
-  | { readonly kind: 'errored'; readonly reason: string };
+  | { readonly kind: 'errored'; readonly reason: string }
+  | { readonly kind: 'admission_required' };
 
 export interface BotSessionAdapter {
   resolveSession(input: BotSessionResolveInput): Promise<BotSessionResolution>;
@@ -43,6 +44,7 @@ export interface BotSessionAdapter {
     readonly sessionId: string;
     readonly messageId: string;
     readonly text: string;
+    readonly admissionMode?: 'allow' | 'replay_only';
     /**
      * Best-effort projection of the latest assistant text for this Turn.
      *
