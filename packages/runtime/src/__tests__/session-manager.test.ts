@@ -10317,6 +10317,47 @@ describe('SessionManager permission mode updates', () => {
     expect(capabilities[1]?.allowMidTurnHistoryCompaction).toBe(false);
   });
 
+  test('resolves the child execution toolset at activation time', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const contexts: BackendFactoryContext[] = [];
+    backends.register('fake', (ctx) => {
+      contexts.push(ctx);
+      return new TestBackend(ctx);
+    });
+    let resolutions = 0;
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      resolveChildTools: async () => {
+        resolutions += 1;
+        return ['Read', 'Glob', 'Grep'].map((name) => ({
+          ...testTool(name),
+          description: `${name} turn-scoped toolset ${resolutions}`,
+        }));
+      },
+      newId: nextId(),
+      now: nextNow(6_851),
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+    await drain(manager.sendMessage(session.id, { turnId: 'parent-turn', text: 'parent context' }));
+    const [parentRun] = await runStore.listSessionRuns(session.id);
+    if (!parentRun) throw new Error('parent run was not recorded');
+
+    await manager.spawnChildAgent(session.id, {
+      turnId: 'child-turn',
+      parentRunId: parentRun.runId,
+      spec: { id: LOCAL_READ_AGENT_ID, name: 'Reader', systemPrompt: 'read only' },
+      prompt: 'inspect',
+    });
+
+    assert.equal(resolutions, 1);
+    assert.match(contexts[1]?.tools?.[0]?.description ?? '', /turn-scoped toolset/);
+  });
+
   test('spawnChildAgent returns the terminal RuntimeEvent status when the child header commit fails', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore({ failUpdateRunStatusOnce: 'completed' });

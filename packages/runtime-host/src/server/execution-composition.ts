@@ -984,7 +984,6 @@ export async function createExecutionRuntimeHostComposition(
       canonicalPermissionOutcomes,
       shellRuns,
       planStore: openedPlanStore,
-      childTools: childAgentTools.childTools,
       resolveChildTools,
       worktreeChildExecutor,
       listArtifactsForTurn: (sessionId, turnId) =>

@@ -60,6 +60,7 @@ import {
 import type { TurnSnapshot, UsageQueryResult } from '../protocol/index.js';
 import type { ClientCapabilityHostFrame } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
+import { createHostChildAgentToolComposition } from '../server/child-agent-composition.js';
 import {
   createHostDailyReviewModel,
   createHostGoalEvaluator,
@@ -2777,6 +2778,66 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
     workspaceRoot: '/workspace',
   });
   assert.ok(prompt.sourceRevisions.length > 0);
+});
+
+test('child execution Bash carries the configured shell guidance and spawn plan', async () => {
+  const calls: unknown[] = [];
+  const shell = {
+    plan: {
+      kind: 'git-bash' as const,
+      displayName: 'Git Bash',
+      exe: 'C:\\Program Files\\Git\\bin\\bash.exe',
+    },
+  };
+  const composition = createHostChildAgentToolComposition({
+    taskLedger: {} as TaskLedgerStore,
+    builtinTools: {
+      shell,
+      shellRuns: {
+        async runForegroundBash(input) {
+          calls.push(input);
+          return {
+            kind: 'terminal' as const,
+            cwd: input.cwd,
+            cmd: input.command,
+            status: 'completed' as const,
+            exitCode: 0,
+            output: {
+              mode: 'pipes' as const,
+              stdout: '',
+              stderr: '',
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              redacted: false,
+            },
+          };
+        },
+        async runBackgroundBash() {
+          throw new Error('background execution was not requested');
+        },
+      },
+    },
+    worktreePatchWriteBackAvailable: true,
+  });
+  const bash = composition.childTools.find((tool) => tool.name === 'Bash') as
+    | MakaTool<{ command: string }, unknown>
+    | undefined;
+  assert.ok(bash);
+  assert.match(bash.description, /Git Bash/);
+  assert.match(bash.description, /POSIX shell syntax/);
+
+  await bash.impl(
+    { command: 'printf child-shell' },
+    {
+      sessionId: 'child-session',
+      turnId: 'child-turn',
+      cwd: '/workspace',
+      toolCallId: 'child-bash',
+      abortSignal: new AbortController().signal,
+      emitOutput: () => {},
+    },
+  );
+  assert.deepEqual((calls[0] as { shell?: unknown }).shell, shell.plan);
 });
 
 test('a bound tool ceiling excludes dynamic Client Capability tools', () => {

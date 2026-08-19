@@ -283,6 +283,7 @@ export interface RuntimeKernelDeps {
   newId: () => string;
   now: () => number;
   childTools?: readonly MakaTool[];
+  resolveChildTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
   runtimeSource?: InvocationSource;
   runtimeInvocationObserver?: (result: InvocationResult) => void | Promise<void>;
   repairRunRuntimeLedger?: (sessionId: string, runId: string) => Promise<boolean>;
@@ -1149,7 +1150,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     await this.enterExecutionClaim(execution);
     const parentHeader = await this.deps.store.readHeader(sessionId);
     const definition = requireBuiltinAgentDefinition(input.spec.id);
-    const availableChildTools = this.deps.childTools ?? [];
+    const availableChildTools = await this.childToolsForSession(sessionId);
     assertAgentDefinitionRunnable({
       definition,
       tools: availableChildTools,
@@ -1251,7 +1252,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           tools: linkedSnapshot.toolNames,
         }
       : requireBuiltinAgentDefinition(input.spec.id);
-    const availableChildTools = this.deps.childTools ?? [];
+    const availableChildTools = await this.childToolsForSession(sessionId);
     if (!linkedSnapshot) {
       assertAgentDefinitionRunnable({
         definition: requireBuiltinAgentDefinition(input.spec.id),
@@ -2819,7 +2820,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const entry = await this.shareBackendActivation(`parent:${sessionId}`, async () => {
       const current = this.active.get(sessionId);
       if (current) return current;
-      const subagent = this.resolveSubagentActivation(header);
+      const subagent = await this.resolveSubagentActivation(header);
       const backend = await this.deps.backends.build(header.backend, {
         sessionId,
         workspaceRoot: header.workspaceRoot,
@@ -2869,9 +2870,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
   }
 
-  private resolveSubagentActivation(
+  private async resolveSubagentActivation(
     header: SessionHeader,
-  ): { systemPrompt: string; tools: MakaTool[] } | undefined {
+  ): Promise<{ systemPrompt: string; tools: MakaTool[] } | undefined> {
     const snapshot = header.subagentRuntime;
     if (!snapshot) {
       if (header.subagentParent) {
@@ -2887,12 +2888,18 @@ export class RuntimeKernel implements RuntimeKernelLike {
       permissionMode: header.permissionMode,
       tools: snapshot.toolNames,
     };
-    const availableTools = this.deps.childTools ?? [];
+    const availableTools = await this.childToolsForSession(header.id);
     const tools = buildToolsForAgentDefinition(availableTools, snapshotDefinition);
     if (tools.length !== snapshot.toolNames.length) {
       throw new Error('Subagent runtime tool snapshot is unavailable');
     }
     return { systemPrompt: snapshot.systemPrompt, tools };
+  }
+
+  private async childToolsForSession(sessionId: string): Promise<readonly MakaTool[]> {
+    return this.deps.resolveChildTools
+      ? await this.deps.resolveChildTools(sessionId)
+      : (this.deps.childTools ?? []);
   }
 
   private async ensureChildActive(
