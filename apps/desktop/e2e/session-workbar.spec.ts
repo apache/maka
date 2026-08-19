@@ -68,6 +68,8 @@ test('narrow right workbar keeps launcher shortcuts and side-chat send button in
   await setRightWorkbarWidth(page, 320);
 
   const composerCard = companion.locator('.maka-composer-astryx');
+  // Keep ChatComposer's inner elevation visible.
+  await expect(composerCard).toHaveCSS('overflow', 'visible');
   // Match the long model-label pressure from the reported side-chat screenshot
   // without coupling the fixture's globally useful default model to this test.
   await companion.locator('.maka-composer-model-chip-text').evaluate((element) => {
