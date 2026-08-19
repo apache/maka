@@ -266,7 +266,7 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('!');
     await waitFor(() =>
       plainTerminalOutput(terminal.screenOutput()).includes(
-        'shell 命令（仅你可见）· Ctrl+O 展开输出',
+        '输入 shell 命令 · 仅你可见 · Ctrl+O 展开输出',
       ),
     );
     assert.deepEqual(driver.commands, []);
@@ -276,7 +276,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(
       () =>
         !plainTerminalOutput(terminal.screenOutput()).includes(
-          'shell 命令（仅你可见）· Ctrl+O 展开输出',
+          '输入 shell 命令 · 仅你可见 · Ctrl+O 展开输出',
         ),
     );
 
