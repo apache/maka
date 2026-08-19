@@ -125,6 +125,7 @@ import { useShellAppearance } from './use-shell-appearance';
 import { useShellSearch } from './use-shell-search';
 import { useSessionGoal } from './use-session-goal';
 import { deriveStaleSessionIds } from './stale-sessions';
+import { pendingSessionView } from './pending-session-view';
 import { deriveProjectGroups, deriveWorktreeSessionIds } from './session-project-grouping';
 import { deriveSessionRail } from './session-rail';
 import { useAppShellTurnPresentation } from './app-shell-turn-view-model';
@@ -1270,26 +1271,18 @@ function AppShellContent({
     };
   }, [railParentSession]);
 
+  // Transient placeholder while the real SessionSummary loads, so the composer
+  // does not flash a value the session never had.
   const activeSessionForView: SessionSummary | undefined =
     activeSession ??
     (activeId
-      ? {
-    id: activeId,
+      ? pendingSessionView({
+          sessionId: activeId,
           name: shellCopy.newConversation,
-    isFlagged: false,
-    isArchived: false,
-    labels: [],
-    hasUnread: false,
-    status: 'active',
-    backend: 'fake',
-    llmConnectionSlug: 'default',
-    connectionLocked: false,
-    model: 'fake-model',
-    // Transient placeholder while the real SessionSummary loads --
-    // matches the configured default so the composer doesn't flash a
-    // hardcoded value before the real session data settles.
-    permissionMode: defaultPermissionMode,
-        }
+          permissionMode: defaultPermissionMode,
+          newChatModel,
+          defaultConnectionSlug: defaultConnection,
+        })
       : undefined);
   const {
     boundary: activeExecutionBoundary,
