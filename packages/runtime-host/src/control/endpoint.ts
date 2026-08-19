@@ -15,7 +15,9 @@ const WINDOWS_PIPE_PATH_ENV = 'MAKA_RUNTIME_HOST_PIPE_PATH';
 // willing to wait, not how long the work should take. Windows PowerShell 5.1
 // cold start plus .NET type loading is seconds on a loaded CI runner, and a
 // 10s budget killed a healthy run (#3225); keep the ceiling well clear of a
-// slow start so it only fires on a genuinely stuck process.
+// slow start so it only fires on a genuinely stuck process. Endpoint readiness
+// waits on this, so raising it means checking that the waiters still outlast
+// it: scripts/windows-runtime-host-local-ipc-trust.ps1 and client/wait-for-ready.ts.
 const WINDOWS_PIPE_ACL_TIMEOUT_MS = 30_000;
 const WINDOWS_PIPE_ACL_DIAGNOSTIC_LIMIT = 1_000;
 const WINDOWS_PIPE_ACL_SCRIPT = String.raw`
