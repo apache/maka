@@ -757,6 +757,22 @@ function AppShellContent({
   // Active autonomous goal for the current session drives the header
   // kill-switch pill (visible indicator + one-click clear).
   const activeGoal = useSessionGoal(activeId);
+  const pendingGoalControlSessionIdsRef = useRef(new Set<string>());
+  const runGoalControl = useCallback(
+    (
+      sessionId: string,
+      operation: () => Promise<unknown>,
+      reportFailure: (error: unknown) => void,
+    ): void => {
+      const pending = pendingGoalControlSessionIdsRef.current;
+      if (pending.has(sessionId)) return;
+      pending.add(sessionId);
+      void operation()
+        .catch(reportFailure)
+        .finally(() => pending.delete(sessionId));
+    },
+    [],
+  );
   // Set of session ids whose backend / connection is no longer usable —
   // drives the sidebar "已过期" pill (PR108g, paired with the PR108e chat
   // header banner). Derivation is pure (see `stale-sessions.ts`) so the
@@ -3291,56 +3307,17 @@ function AppShellContent({
                 onOpenMemorySettings={() => openSettingsSection('memory')}
                     goalIndicator={
                   activeGoal
-                    ? {
-                        condition: activeGoal.condition,
-                        status: activeGoal.status,
-                        iterations: activeGoal.iterations,
-                        maxIterations: activeGoal.maxIterations,
-                        setAt: activeGoal.setAt,
-                        ...(activeGoal.pausedAt !== undefined
-                          ? { pausedAt: activeGoal.pausedAt }
-                          : {}),
-                        tokensSpent: activeGoal.tokensNow,
-                        ...(activeGoal.tokenBudget !== undefined
-                          ? { tokenBudget: activeGoal.tokenBudget }
-                          : {}),
-                        ...(activeGoal.status === 'active' || activeGoal.status === 'waiting'
-                          ? {
-                              onPause: () => {
-                                void window.maka.goal
-                                  .pause(activeGoal.sessionId)
-                                  .catch((error) => {
-                                    toastApi.error(
-                                      shellCopy.goalPauseFailedTitle,
-                                      localizedShellErrorMessage(
-                                        error,
-                                        shellCopy.goalPauseFailedFallback,
-                                        uiLocale,
-                                      ),
-                                    );
-                                  });
-                              },
-                            }
-                          : {}),
-                        ...(activeGoal.status === 'paused'
-                          ? {
-                              onResume: () => {
-                                void window.maka.goal
-                                  .resume(activeGoal.sessionId)
-                                  .catch((error) => {
-                                    toastApi.error(
-                                      shellCopy.goalResumeFailedTitle,
-                                      localizedShellErrorMessage(
-                                        error,
-                                        shellCopy.goalResumeFailedFallback,
-                                        uiLocale,
-                                      ),
-                                    );
-                                  });
-                              },
-                            }
-                          : {}),
-                        onClear: () => {
+                    ? (() => {
+                        const common = {
+                          condition: activeGoal.condition,
+                          iterations: activeGoal.iterations,
+                          maxIterations: activeGoal.maxIterations,
+                          setAt: activeGoal.setAt,
+                          tokensSpent: activeGoal.tokensNow,
+                          ...(activeGoal.tokenBudget !== undefined
+                            ? { tokenBudget: activeGoal.tokenBudget }
+                            : {}),
+                          onClear: () => {
                           void window.maka.goal.clear(activeGoal.sessionId).catch((error) => {
                             toastApi.error(
                               shellCopy.goalClearFailedTitle,
@@ -3351,8 +3328,52 @@ function AppShellContent({
                               ),
                             );
                           });
-                        },
-                      }
+                          },
+                        };
+                        if (activeGoal.status === 'paused') {
+                          return {
+                            ...common,
+                            status: 'paused' as const,
+                            pausedAt: activeGoal.pausedAt,
+                            onResume: () => {
+                              runGoalControl(
+                                activeGoal.sessionId,
+                                () => window.maka.goal.resume(activeGoal.sessionId),
+                                (error) => {
+                                  toastApi.error(
+                                    shellCopy.goalResumeFailedTitle,
+                                    localizedShellErrorMessage(
+                                      error,
+                                      shellCopy.goalResumeFailedFallback,
+                                      uiLocale,
+                                    ),
+                                  );
+                                },
+                              );
+                            },
+                          };
+                        }
+                        return {
+                          ...common,
+                          status: activeGoal.status,
+                          onPause: () => {
+                            runGoalControl(
+                              activeGoal.sessionId,
+                              () => window.maka.goal.pause(activeGoal.sessionId),
+                              (error) => {
+                                toastApi.error(
+                                  shellCopy.goalPauseFailedTitle,
+                                  localizedShellErrorMessage(
+                                    error,
+                                    shellCopy.goalPauseFailedFallback,
+                                    uiLocale,
+                                  ),
+                                );
+                              },
+                            );
+                          },
+                        };
+                      })()
                     : undefined
                 }
                 messageLoadError={activeId ? messageLoadErrorBySession[activeId] : undefined}

@@ -14,13 +14,19 @@
 import { useEffect, useState } from 'react';
 import type { GoalState, GoalStatus } from '@maka/runtime/goal-state';
 
-type LiveGoalStatus = Extract<GoalStatus, 'active' | 'waiting' | 'paused'>;
-type LiveGoalState = GoalState & { readonly status: LiveGoalStatus };
+type LiveGoalStatus = Extract<GoalStatus, 'active' | 'waiting'>;
+type LiveGoalState =
+  | (GoalState & { readonly status: LiveGoalStatus })
+  | (GoalState & { readonly status: 'paused'; readonly pausedAt: number });
 
 const LIVE_GOAL_STATUSES: ReadonlySet<GoalStatus> = new Set(['active', 'waiting', 'paused']);
 
 function isLiveGoal(goal: GoalState): goal is LiveGoalState {
-  return LIVE_GOAL_STATUSES.has(goal.status);
+  return (
+    LIVE_GOAL_STATUSES.has(goal.status) &&
+    (goal.status !== 'paused' ||
+      (typeof goal.pausedAt === 'number' && Number.isFinite(goal.pausedAt)))
+  );
 }
 
 export function useSessionGoal(sessionId: string | undefined): LiveGoalState | null {
@@ -32,15 +38,17 @@ export function useSessionGoal(sessionId: string | undefined): LiveGoalState | n
       return;
     }
     let cancelled = false;
+    let refreshSequence = 0;
     const refresh = (): void => {
+      const sequence = ++refreshSequence;
       void window.maka.goal
         .get(sessionId)
         .then((g) => {
-          if (cancelled) return;
+          if (cancelled || sequence !== refreshSequence) return;
           setGoal(g && isLiveGoal(g) ? g : null);
         })
         .catch(() => {
-          if (!cancelled) setGoal(null);
+          if (!cancelled && sequence === refreshSequence) setGoal(null);
         });
     };
     refresh();
@@ -53,6 +61,7 @@ export function useSessionGoal(sessionId: string | undefined): LiveGoalState | n
     });
     return () => {
       cancelled = true;
+      refreshSequence += 1;
       unsubscribe();
     };
   }, [sessionId]);

@@ -31,24 +31,34 @@ export interface SessionContextRevision {
   nextSessionId?: string;
 }
 
-export interface SessionContextGoal {
+interface SessionContextGoalBase {
   condition: string;
-  status: 'active' | 'waiting' | 'paused';
   iterations: number;
   maxIterations: number;
   /** Epoch ms when the goal was armed; the chip derives wall-clock elapsed. */
   setAt: number;
-  /** Epoch ms when the goal was paused; freezes the chip clock while paused. */
-  pausedAt?: number;
   tokensSpent?: number;
   /** When present (a budget exists), the chip shows spent / budget. */
   tokenBudget?: number;
-  /** Present when the goal can be paused (active/waiting). */
-  onPause?(): void;
-  /** Present when the goal is paused and can be resumed. */
-  onResume?(): void;
   onClear(): void;
 }
+
+export type SessionContextGoal =
+  | (SessionContextGoalBase & {
+      status: 'active' | 'waiting';
+      pausedAt?: never;
+      /** Present when the goal can be paused (active/waiting). */
+      onPause?(): void;
+      onResume?: never;
+    })
+  | (SessionContextGoalBase & {
+      status: 'paused';
+      /** Epoch ms when the goal was paused; freezes the chip clock while paused. */
+      pausedAt: number;
+      onPause?: never;
+      /** Present when the goal is paused and can be resumed. */
+      onResume?(): void;
+    });
 
 interface ContextItem {
   key: string;
@@ -87,10 +97,9 @@ export function SessionContextLayer(props: {
     // attention tone.
     const paused = goal.status === 'paused';
     const waiting = goal.status === 'waiting';
-    const elapsedMs =
-      paused && goal.pausedAt !== undefined
-        ? Math.max(0, goal.pausedAt - goal.setAt)
-        : Math.max(0, Date.now() - goal.setAt);
+    const elapsedMs = paused
+      ? Math.max(0, goal.pausedAt - goal.setAt)
+      : Math.max(0, Date.now() - goal.setAt);
     const goalText = [
       copy.goalProgress(goal.iterations, goal.maxIterations),
       copy.goalElapsed(elapsedMs),
