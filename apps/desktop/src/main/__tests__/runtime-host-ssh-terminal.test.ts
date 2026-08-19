@@ -155,14 +155,12 @@ test('uploads a development release archive before running the same remote setup
   });
   t.after(() => terminal.close());
 
-  const setup = terminal.runSetup(
-    {
-      destination: 'operator@example.com',
-      setupPackage: { kind: 'development_archive', path: archive },
-      principalId: 'desktop:stable-client',
-    },
-    () => undefined,
-  );
+  const setupInput = {
+    destination: 'operator@example.com',
+    setupPackage: { kind: 'development_archive', path: archive } as const,
+    principalId: 'desktop:stable-client',
+  };
+  const setup = terminal.runSetup(setupInput, () => undefined);
   await waitFor(() => launches.length === 1);
   assert.equal(launches[0]?.file, 'scp');
   assert.match(launches[0]?.args.at(-2) ?? '', /maka-agent-development\.tgz$/u);
@@ -179,7 +177,16 @@ test('uploads a development release archive before running the same remote setup
   assert.match(remoteCommand, /--defer-pairing-commit/u);
   assert.match(remoteCommand, /rm -f/u);
   assert.doesNotMatch(remoteCommand, /status=0; 'exec'/u);
-  launches[1]?.pty.emitData(
+  launches[1]?.pty.exit(255);
+  await assert.rejects(setup, /exited with code 255/u);
+
+  const retry = terminal.runSetup(setupInput, () => undefined);
+  await waitFor(() => launches.length === 3);
+  assert.equal(launches[2]?.file, 'scp');
+  assert.equal(launches[2]?.args.at(-1), launches[0]?.args.at(-1));
+  launches[2]?.pty.exit(0);
+  await waitFor(() => launches.length === 4);
+  launches[3]?.pty.emitData(
     encodeRuntimeHostSetupFrame({
       schemaVersion: 1,
       sequence: 0,
@@ -191,9 +198,9 @@ test('uploads a development release archive before running the same remote setup
       credential: 'secret-access-token',
     }),
   );
-  launches[1]?.pty.exit(0);
+  launches[3]?.pty.exit(0);
 
-  assert.equal((await setup).rootId, 'a'.repeat(64));
+  assert.equal((await retry).rootId, 'a'.repeat(64));
   await terminal.close();
 });
 

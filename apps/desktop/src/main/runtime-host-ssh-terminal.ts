@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import type { IpcMain } from 'electron';
 import type { IPty } from 'node-pty';
@@ -263,6 +263,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
           setupInput.setupPackage,
           destination,
           sshPort,
+          setupInput.principalId,
           startTerminalProcess,
           cancellation.signal,
           input.processStopGraceMs,
@@ -440,6 +441,7 @@ async function prepareSetupPackage(
   setupPackage: DesktopRuntimeHostSetupPackage,
   destination: string,
   sshPort: number | undefined,
+  principalId: string,
   startTerminalProcess: (
     executable: 'ssh' | 'scp',
     args: readonly string[],
@@ -460,7 +462,7 @@ async function prepareSetupPackage(
   if (!(await stat(archive)).isFile() || !archive.endsWith('.tgz')) {
     throw new Error('Runtime Host development package must be a .tgz file');
   }
-  const remoteArchive = `/tmp/maka-runtime-host-setup-${randomUUID()}.tgz`;
+  const remoteArchive = remoteDevelopmentArchivePath(principalId);
   const { process } = startTerminalProcess('scp', [
     '-o',
     'BatchMode=no',
@@ -488,6 +490,12 @@ async function prepareSetupPackage(
     );
   }
   return { specifier: remoteArchive, removeAfterSetup: remoteArchive };
+}
+
+function remoteDevelopmentArchivePath(principalId: string): string {
+  // Reuse one staging slot because a disconnected Host cannot acknowledge cleanup.
+  const owner = createHash('sha256').update(principalId).digest('hex').slice(0, 24);
+  return `/tmp/maka-runtime-host-setup-${owner}.tgz`;
 }
 
 async function waitForTerminalProcess(
