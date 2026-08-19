@@ -168,6 +168,7 @@ export function AgentGraphPanel(props: {
   const [error, setError] = useState(false);
   const [stopState, setStopState] = useState({
     rootSessionId: props.rootSessionId,
+    graphId: undefined as string | undefined,
     requestId: 0,
     pending: false,
     error: false,
@@ -180,9 +181,10 @@ export function AgentGraphPanel(props: {
   const followCurrentRef = useRef(true);
   const stopRequestIdRef = useRef(0);
   const copy = getAgentGraphPanelCopy(props.locale);
-  const stopPending =
-    stopState.rootSessionId === props.rootSessionId && stopState.pending;
-  const stopError = stopState.rootSessionId === props.rootSessionId && stopState.error;
+  const stopFeedbackMatchesSelection =
+    stopState.rootSessionId === props.rootSessionId && stopState.graphId === selectedGraphId;
+  const stopPending = stopFeedbackMatchesSelection && stopState.pending;
+  const stopError = stopFeedbackMatchesSelection && stopState.error;
 
   useEffect(() => {
     setSnapshot(undefined);
@@ -194,6 +196,7 @@ export function AgentGraphPanel(props: {
     setError(false);
     setStopState({
       rootSessionId: props.rootSessionId,
+      graphId: undefined,
       requestId: ++stopRequestIdRef.current,
       pending: false,
       error: false,
@@ -306,7 +309,7 @@ export function AgentGraphPanel(props: {
     if (stopPending) return;
     const rootSessionId = props.rootSessionId;
     const requestId = ++stopRequestIdRef.current;
-    setStopState({ rootSessionId, requestId, pending: true, error: false });
+    setStopState({ rootSessionId, graphId: expectedGraphId, requestId, pending: true, error: false });
     try {
       await window.maka.graphs.stop(rootSessionId, expectedGraphId);
     } catch {

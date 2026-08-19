@@ -1002,6 +1002,7 @@ export async function createExecutionRuntimeHostComposition(
           expectedGraphId,
           stopSupervisor: () =>
             requireRootCoordinator(rootCoordinator).stopAgentGraphSupervisor(rootSessionId, {
+              expectedGraphId,
               source: 'stop_button',
             }),
           withSupervisorWakesSuppressed: (operation) =>

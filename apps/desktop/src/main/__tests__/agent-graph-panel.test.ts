@@ -466,6 +466,73 @@ describe('AgentGraphPanel dismiss', () => {
     await act(async () => harness.root.unmount());
   });
 
+  it('does not leak a deferred stop result across an epoch rollover', async () => {
+    const graphA = snapshot({ graphId: 'graph-a', status: 'active' });
+    const harness = await renderPanel(graphA);
+    const stopA = [...harness.container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Stop graph'),
+    );
+    assert.ok(stopA);
+    const stopRead = harness.holdNextStop(graphA.rootSessionId);
+    await act(async () => {
+      (stopA as HTMLElement).click();
+      await stopRead.started;
+    });
+
+    await harness.setSnapshot(snapshot({ graphId: 'graph-b', status: 'active' }));
+    assert.match(harness.container.textContent ?? '', /Stop graph/);
+    assert.doesNotMatch(harness.container.textContent ?? '', /Stopping/);
+    assert.doesNotMatch(harness.container.textContent ?? '', /Could not stop the graph/);
+
+    await act(async () => {
+      stopRead.release();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent ?? '', /Stop graph/);
+    assert.doesNotMatch(harness.container.textContent ?? '', /Could not stop the graph/);
+    await act(async () => harness.root.unmount());
+  });
+
+  it('does not leak a deferred current stop result into graph history', async () => {
+    const current = snapshot({ graphId: 'graph-2', status: 'active' });
+    const history = snapshot({ graphId: 'graph-1', status: 'completed' });
+    const harness = installGraphRenderer(current, [history]);
+    await harness.renderSession(current.rootSessionId);
+    const stop = [...harness.container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Stop graph'),
+    );
+    assert.ok(stop);
+    const stopRead = harness.holdNextStop(current.rootSessionId);
+    await act(async () => {
+      (stop as HTMLElement).click();
+      await stopRead.started;
+    });
+
+    const selector = harness.container.querySelector('[role="combobox"]');
+    assert.ok(selector);
+    await act(async () => {
+      (selector as HTMLElement).click();
+      await Promise.resolve();
+    });
+    const historyOption = [...document.querySelectorAll('[role="option"]')].find((option) =>
+      option.textContent?.includes('History'),
+    );
+    assert.ok(historyOption);
+    await act(async () => {
+      (historyOption as HTMLElement).click();
+      await Promise.resolve();
+    });
+    assert.doesNotMatch(harness.container.textContent ?? '', /Stopping/);
+    assert.doesNotMatch(harness.container.textContent ?? '', /Could not stop the graph/);
+
+    await act(async () => {
+      stopRead.release();
+      await Promise.resolve();
+    });
+    assert.doesNotMatch(harness.container.textContent ?? '', /Could not stop the graph/);
+    await act(async () => harness.root.unmount());
+  });
+
   it('reuses cached history during activity and reloads it only after epoch rollover', async () => {
     const graph1 = snapshot({ graphId: 'graph-1', status: 'active' });
     const harness = await renderPanel(graph1);
