@@ -469,15 +469,40 @@ jobs:
           fi
           gh release edit "$TAG" --title "Maka ${VERSION}" --notes "$notes"
           asset_names="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          declare -A expected_assets=()
+          declare -A existing_assets=()
+          mapfile -t local_assets < <(find release-assets -maxdepth 1 -type f -printf '%f\n' | sort)
+          for asset in "${local_assets[@]}"; do
+            expected_assets["$asset"]=1
+          done
+          existing_dir="$RUNNER_TEMP/existing-release-assets"
+          mkdir -p "$existing_dir"
           if [[ -n "$asset_names" ]]; then
             while IFS= read -r asset; do
-              gh release delete-asset "$TAG" "$asset" --yes
+              if [[ -z "${expected_assets[$asset]+present}" ]]; then
+                echo "Draft ${TAG} contains unexpected asset ${asset}; inspect and remove it manually before retrying." >&2
+                exit 1
+              fi
+              gh release download "$TAG" --pattern "$asset" --dir "$existing_dir"
+              if ! cmp -s "release-assets/$asset" "$existing_dir/$asset"; then
+                echo "Draft ${TAG} asset ${asset} differs from the verified artifact." >&2
+                exit 1
+              fi
+              existing_assets["$asset"]=1
             done <<< "$asset_names"
           fi
+          missing_assets=()
+          for asset in "${local_assets[@]}"; do
+            if [[ -z "${existing_assets[$asset]+present}" ]]; then
+              missing_assets+=("release-assets/$asset")
+            fi
+          done
           if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != "true" ]]; then
-            echo "Release ${TAG} was published while assets were replaced." >&2
+            echo "Release ${TAG} was published while assets were checked." >&2
             exit 1
           fi
-          gh release upload "$TAG" release-assets/*
+          if (( ${#missing_assets[@]} > 0 )); then
+            gh release upload "$TAG" "${missing_assets[@]}"
+          fi
 
           echo "Draft release ${TAG} created from ${SOURCE_COMMIT}." >> "$GITHUB_STEP_SUMMARY"

@@ -52,8 +52,10 @@ must never be exposed to fork or ordinary pull-request jobs.
 If the publish job created the product tag or Draft but failed before every asset was uploaded, rerun
 `Release` from `main` with `source_commit` set to the exact commit already named by the tag. This
 input is recovery-only: the workflow requires it to remain an ancestor of `main`, rejects a tag that
-points elsewhere, refuses to replace a published Release, and replaces the Draft's asset set with the
-newly verified artifacts. If only the tag exists, the retry creates the missing Draft.
+points elsewhere, and refuses to replace a published Release. Existing Draft assets must exactly
+match the newly verified bytes; the retry keeps matching assets and uploads only missing ones. If an
+asset conflicts or is unexpected, inspect and remove it manually while the Release is still a Draft,
+then rerun. If only the tag exists, the retry creates the missing Draft.
 
 ## Acceptance on another Apple Silicon Mac
 

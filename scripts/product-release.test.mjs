@@ -370,13 +370,18 @@ test('one product workflow gates one draft release on every required artifact', 
   assert.doesNotMatch(commands, /requires an existing Draft release/u);
   assert.match(commands, /--json isDraft/u);
   assert.match(commands, /gh release create[\s\S]*--verify-tag/u);
-  assert.match(commands, /gh release delete-asset/u);
-  assert.match(commands, /gh release upload/u);
-  assert.doesNotMatch(commands, /gh release upload[\s\S]*--clobber/u);
-  const listAssets = commands.indexOf('asset_names="$(gh release view');
-  const deleteAssets = commands.indexOf('gh release delete-asset');
-  const uploadAssets = commands.indexOf('gh release upload');
-  assert.ok(listAssets >= 0 && listAssets < deleteAssets && deleteAssets < uploadAssets);
+  const publishRelease = jobs.publish.steps.find(
+    (step) => step.name === 'Create or update the draft GitHub Release',
+  ).run;
+  assert.doesNotMatch(publishRelease, /gh release delete-asset/u);
+  assert.match(publishRelease, /gh release download/u);
+  assert.match(publishRelease, /cmp -s/u);
+  assert.match(publishRelease, /gh release upload/u);
+  assert.doesNotMatch(publishRelease, /--clobber/u);
+  const listAssets = publishRelease.indexOf('asset_names="$(gh release view');
+  const compareAssets = publishRelease.indexOf('cmp -s');
+  const uploadAssets = publishRelease.indexOf('gh release upload');
+  assert.ok(listAssets >= 0 && listAssets < compareAssets && compareAssets < uploadAssets);
   assert.doesNotMatch(commands, /gh release create[\s\S]*--target/u);
   assert.doesNotMatch(commands, /cli-v|npm (?:stage )?publish/u);
   await assert.rejects(
