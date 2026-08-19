@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, type ExecFileException } from 'node:child_process';
 import { chmod, lstat, mkdtemp, readdir, rm, rmdir, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,16 @@ const PORTABLE_UNIX_SOCKET_PATH_LIMIT = 100;
 const ENDPOINT_SOCKET_NAME = 'h.sock';
 const MKDTEMP_SUFFIX_LENGTH = 6;
 const WINDOWS_PIPE_PATH_ENV = 'MAKA_RUNTIME_HOST_PIPE_PATH';
+// This ACL is the whole trust boundary of the Local IPC endpoint: every
+// accepted connection is granted Local Owner authority without a further
+// per-connection check, so the call has to succeed and a timeout has to
+// refuse the endpoint. That makes the budget a question of how long we are
+// willing to wait, not how long the work should take. Windows PowerShell 5.1
+// cold start plus .NET type loading is seconds on a loaded CI runner, and a
+// 10s budget killed a healthy run (#3225); keep the ceiling well clear of a
+// slow start so it only fires on a genuinely stuck process.
+const WINDOWS_PIPE_ACL_TIMEOUT_MS = 30_000;
+const WINDOWS_PIPE_ACL_DIAGNOSTIC_LIMIT = 1_000;
 const WINDOWS_PIPE_ACL_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -120,23 +130,67 @@ function secureWindowsNamedPipe(path: string): Promise<void> {
       ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_PIPE_ACL_SCRIPT],
       {
         env: { ...process.env, [WINDOWS_PIPE_PATH_ENV]: path },
-        timeout: 10_000,
+        timeout: WINDOWS_PIPE_ACL_TIMEOUT_MS,
         windowsHide: true,
       },
-      (error) => {
+      (error, stdout, stderr) => {
         if (!error) {
           resolve();
           return;
         }
-        reject(
-          new RuntimeHostEndpointError(
-            'insecure_endpoint_directory',
-            'Runtime Host could not restrict its Windows Local IPC endpoint to the current user',
-          ),
-        );
+        reject(windowsPipeAclFailure(path, error, stdout, stderr));
       },
     );
   });
+}
+
+// Every failure here refuses the endpoint, but the causes call for different
+// responses: a PowerShell diagnostic points at an ACL failure that may leave
+// the pipe world-accessible, while a timeout kill means the restriction was
+// never confirmed either way. Carry the cause into the message so a CI log
+// can be read without rerunning the job (#3225).
+export function windowsPipeAclFailure(
+  path: string,
+  error: ExecFileException,
+  stdout: string,
+  stderr: string,
+): RuntimeHostEndpointError {
+  const diagnostic = powershellDiagnostic(stdout, stderr);
+  if (error.killed === true) {
+    return new RuntimeHostEndpointError(
+      'insecure_endpoint_directory',
+      `Runtime Host could not confirm its Windows Local IPC endpoint restriction within ${WINDOWS_PIPE_ACL_TIMEOUT_MS}ms and refused the endpoint: ${path} (powershell killed with ${error.signal ?? 'no signal'})${diagnostic}`,
+    );
+  }
+  return new RuntimeHostEndpointError(
+    'insecure_endpoint_directory',
+    `Runtime Host could not restrict its Windows Local IPC endpoint to the current user: ${path} (${describeExecFileFailure(error)})${diagnostic}`,
+  );
+}
+
+function describeExecFileFailure(error: ExecFileException): string {
+  if (typeof error.code === 'number') return `powershell exited with ${error.code}`;
+  if (typeof error.code === 'string') return `powershell failed to run: ${error.code}`;
+  if (error.signal) return `powershell killed with ${error.signal}`;
+  return `powershell failed: ${clip(error.message)}`;
+}
+
+// PowerShell reports the failing statement on stderr; stdout only carries
+// content when the script writes before failing. Both are output of a script
+// whose only input is the pipe path this process just created, so neither
+// widens what the message already exposes.
+function powershellDiagnostic(stdout: string, stderr: string): string {
+  const output = clip(stderr.trim() || stdout.trim());
+  return output ? `: ${output}` : '';
+}
+
+// Collapse to a single grep-friendly line and cap it: a PowerShell error
+// record spans several lines, and Node's exec message repeats the whole
+// command, ACL script included.
+function clip(value: string): string {
+  const collapsed = value.replace(/\s+/g, ' ').trim();
+  if (collapsed.length <= WINDOWS_PIPE_ACL_DIAGNOSTIC_LIMIT) return collapsed;
+  return `${collapsed.slice(0, WINDOWS_PIPE_ACL_DIAGNOSTIC_LIMIT)} [truncated]`;
 }
 
 // Honor TMPDIR via os.tmpdir(), but never at the cost of a socket path over
