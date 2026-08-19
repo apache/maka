@@ -7,6 +7,7 @@ import {
   prepareRuntimeHostEndpoint,
   RuntimeHostEndpointError,
   windowsPipeAclFailure,
+  windowsPipeAclFailureDiagnostic,
 } from '../control/endpoint.js';
 import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 
@@ -20,6 +21,37 @@ function execFileException(overrides: Partial<ExecFileException>): ExecFileExcep
     ...overrides,
   });
 }
+
+test('bounds Windows pipe ACL helper diagnostics without serializing the command', () => {
+  const error = Object.assign(new Error('helper failed'), {
+    code: 1,
+    signal: 'SIGTERM',
+    killed: true,
+    cmd: 'private PowerShell command',
+  });
+  const diagnostic = windowsPipeAclFailureDiagnostic(error, `ACL failure ${'x'.repeat(8_192)}`);
+  const parsed = JSON.parse(diagnostic);
+
+  assert.deepEqual(
+    {
+      schemaVersion: parsed.schemaVersion,
+      helper: parsed.helper,
+      exitCode: parsed.exitCode,
+      signal: parsed.signal,
+      killed: parsed.killed,
+    },
+    {
+      schemaVersion: 1,
+      helper: 'windows_pipe_acl',
+      exitCode: 1,
+      signal: 'SIGTERM',
+      killed: true,
+    },
+  );
+  assert.equal(typeof parsed.stderr, 'string');
+  assert.ok(Buffer.byteLength(parsed.stderr, 'utf8') <= 4 * 1024);
+  assert.equal(diagnostic.includes('private PowerShell command'), false);
+});
 
 function rootTag(): string {
   return Buffer.from(ROOT_ID, 'hex').toString('base64url');

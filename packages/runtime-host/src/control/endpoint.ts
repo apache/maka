@@ -2,6 +2,7 @@ import { execFile, type ExecFileException } from 'node:child_process';
 import { chmod, lstat, mkdtemp, readdir, rm, rmdir, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
 
 const FALLBACK_ENDPOINT_ROOT = '/tmp';
 const PORTABLE_UNIX_SOCKET_PATH_LIMIT = 100;
@@ -20,18 +21,43 @@ const WINDOWS_PIPE_PATH_ENV = 'MAKA_RUNTIME_HOST_PIPE_PATH';
 // it: scripts/windows-runtime-host-local-ipc-trust.ps1 and client/wait-for-ready.ts.
 const WINDOWS_PIPE_ACL_TIMEOUT_MS = 30_000;
 const WINDOWS_PIPE_ACL_DIAGNOSTIC_LIMIT = 1_000;
+const WINDOWS_PIPE_ACL_STDERR_MAX_BYTES = 4 * 1024;
 const WINDOWS_PIPE_ACL_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
-$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-$security = [System.Security.AccessControl.FileSecurity]::new()
-$security.SetAccessRuleProtection($true, $false)
-$rights = [System.Security.AccessControl.FileSystemRights]::FullControl
-$allow = [System.Security.AccessControl.AccessControlType]::Allow
-$security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($identity.User, $rights, $allow))
-$system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
-$security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($system, $rights, $allow))
-$pipe = Get-Item -LiteralPath $env:${WINDOWS_PIPE_PATH_ENV}
-$pipe.SetAccessControl($security)
+$stage = 'identity'
+$currentSid = $null
+try {
+  $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+  $currentSid = $identity.User.Value
+  $stage = 'security_descriptor'
+  $security = [System.Security.AccessControl.FileSecurity]::new()
+  $security.SetAccessRuleProtection($true, $false)
+  $rights = [System.Security.AccessControl.FileSystemRights]::FullControl
+  $allow = [System.Security.AccessControl.AccessControlType]::Allow
+  $security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($identity.User, $rights, $allow))
+  $system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+  $security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($system, $rights, $allow))
+  $stage = 'pipe_lookup'
+  $pipe = Get-Item -LiteralPath $env:${WINDOWS_PIPE_PATH_ENV}
+  $stage = 'acl_apply'
+  $pipe.SetAccessControl($security)
+} catch {
+  $exception = $_.Exception
+  $nativeErrorCode = $null
+  if ($null -ne $exception.PSObject.Properties['NativeErrorCode']) {
+    $nativeErrorCode = $exception.NativeErrorCode
+  }
+  [Console]::Error.WriteLine((@{
+    schemaVersion = 1
+    stage = $stage
+    currentSid = $currentSid
+    exceptionType = $exception.GetType().FullName
+    hresult = $exception.HResult
+    nativeErrorCode = $nativeErrorCode
+    message = $exception.Message
+  } | ConvertTo-Json -Compress))
+  exit 1
+}
 `;
 
 export interface RuntimeHostEndpointInput {
@@ -49,10 +75,33 @@ export class RuntimeHostEndpointError extends Error {
   constructor(
     readonly code: 'insecure_endpoint_directory' | 'endpoint_path_too_long',
     message: string,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = 'RuntimeHostEndpointError';
   }
+}
+
+export function windowsPipeAclFailureDiagnostic(error: unknown, stderr: string): string {
+  const details: Record<string, unknown> = {
+    schemaVersion: 1,
+    helper: 'windows_pipe_acl',
+  };
+  if (typeof error === 'object' && error !== null) {
+    const candidate = error as { code?: unknown; signal?: unknown; killed?: unknown };
+    if (typeof candidate.code === 'number' || typeof candidate.code === 'string') {
+      details.exitCode = candidate.code;
+    }
+    if (typeof candidate.signal === 'string') details.signal = candidate.signal;
+    if (typeof candidate.killed === 'boolean') details.killed = candidate.killed;
+  }
+  const boundedStderr = truncateUtf8(
+    stderr.trim(),
+    WINDOWS_PIPE_ACL_STDERR_MAX_BYTES,
+    '\n<stderr truncated>',
+  );
+  if (boundedStderr) details.stderr = boundedStderr;
+  return JSON.stringify(details);
 }
 
 export async function prepareRuntimeHostEndpoint(
@@ -132,6 +181,7 @@ function secureWindowsNamedPipe(path: string): Promise<void> {
       ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_PIPE_ACL_SCRIPT],
       {
         env: { ...process.env, [WINDOWS_PIPE_PATH_ENV]: path },
+        encoding: 'utf8',
         timeout: WINDOWS_PIPE_ACL_TIMEOUT_MS,
         windowsHide: true,
       },
@@ -158,15 +208,18 @@ export function windowsPipeAclFailure(
   stderr: string,
 ): RuntimeHostEndpointError {
   const diagnostic = powershellDiagnostic(stdout, stderr);
+  const options = { cause: new Error(windowsPipeAclFailureDiagnostic(error, stderr)) };
   if (error.killed === true) {
     return new RuntimeHostEndpointError(
       'insecure_endpoint_directory',
       `Runtime Host could not confirm its Windows Local IPC endpoint restriction within ${WINDOWS_PIPE_ACL_TIMEOUT_MS}ms and refused the endpoint: ${path} (powershell killed with ${error.signal ?? 'no signal'})${diagnostic}`,
+      options,
     );
   }
   return new RuntimeHostEndpointError(
     'insecure_endpoint_directory',
     `Runtime Host could not restrict its Windows Local IPC endpoint to the current user: ${path} (${describeExecFileFailure(error)})${diagnostic}`,
+    options,
   );
 }
 
