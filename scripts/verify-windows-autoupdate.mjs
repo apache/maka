@@ -48,34 +48,43 @@ function compareStableVersions(left, right) {
 
 /**
  * Loopback static file server for the update feed. Serves exactly the mapped
- * basenames; anything else is 404 and counted, and the verification fails if
- * any unexpected request arrived — a wrong request shape must surface, not be
- * absorbed. A mapped name whose file is absent 404s without counting: the
- * updater legitimately probes the *previous* version's blockmap for a
- * differential download and falls back to the full installer when the feed
- * does not have it. Supports single-range GETs because differential downloads
- * use ranged requests.
+ * root-level paths (`/latest.yml`, `/<installer>`, …) — the *full* request
+ * path is matched, so a nested `/x/latest.yml` counts as unexpected; a wrong
+ * updater request shape must surface, not be absorbed. A mapped path whose
+ * file is absent 404s without counting: the updater legitimately probes the
+ * *previous* version's blockmap for a differential download and falls back to
+ * the full installer when the feed does not have it. Bodies are read once at
+ * startup — electron-updater issues many ranged requests against the
+ * multi-hundred-megabyte installer, and re-reading it per request could push
+ * the download stage past its deadline. Supports single-range GETs because
+ * differential downloads use ranged requests.
  */
 async function startFeedServer(files) {
   const requests = [];
   let unexpectedRequests = 0;
-  const server = createServer(async (request, response) => {
+  const bodies = new Map();
+  for (const [name, filePath] of files) {
+    try {
+      bodies.set(`/${name}`, await readFile(filePath));
+    } catch {
+      // Mapped but absent (the previous blockmap): served as an expected 404.
+    }
+  }
+  const server = createServer((request, response) => {
     const method = request.method ?? 'GET';
     const pathName = decodeURIComponent(new URL(request.url ?? '/', 'http://127.0.0.1').pathname);
-    const name = basename(pathName);
     const record = { method, path: pathName, status: 0 };
     requests.push(record);
-    if ((method !== 'GET' && method !== 'HEAD') || !files.has(name)) {
+    const known = [...files.keys()].some((name) => `/${name}` === pathName);
+    if ((method !== 'GET' && method !== 'HEAD') || !known) {
       unexpectedRequests += 1;
       record.status = 404;
       response.writeHead(404).end();
       return;
     }
-    let body;
-    try {
-      body = await readFile(files.get(name));
-    } catch {
-      // Known name, absent file: the expected 404 shape (previous blockmap).
+    const body = bodies.get(pathName);
+    if (body === undefined) {
+      // Known path, absent file: the expected 404 shape (previous blockmap).
       record.status = 404;
       response.writeHead(404).end();
       return;
@@ -303,11 +312,12 @@ export async function verifyWindowsAutoupdate(
     }
 
     step('asserting the download really came from the loopback feed');
+    // Exact root-level paths, matching the server's own allowlist shape.
     const served = (name) =>
       feed.requests.some(
         (request) =>
           request.method === 'GET' &&
-          basename(request.path) === name &&
+          request.path === `/${name}` &&
           (request.status === 200 || request.status === 206),
       );
     if (!served('latest.yml')) {
@@ -320,6 +330,24 @@ export async function verifyWindowsAutoupdate(
         `The app never downloaded the installer from the loopback feed: ${JSON.stringify(feed.requests)}`,
       );
     }
+    // The differential probe is a deterministic part of the flow: the updater
+    // asks for the running version's blockmap before deciding between a
+    // differential and a full download. Both outcomes are valid production
+    // shapes; the probe itself must have happened, and which path was taken is
+    // logged as evidence.
+    const oldBlockmapProbe = feed.requests.find(
+      (request) => request.path === `/${basename(candidateInstaller)}.blockmap`,
+    );
+    if (!oldBlockmapProbe) {
+      throw new Error(
+        `The updater never probed the previous blockmap for a differential download: ${JSON.stringify(feed.requests)}`,
+      );
+    }
+    step(
+      oldBlockmapProbe.status === 200
+        ? 'differential download path exercised (previous blockmap served)'
+        : 'full-download fallback exercised (previous blockmap absent)',
+    );
     if (feed.unexpectedCount() > 0) {
       throw new Error(`The app requested unexpected feed paths: ${JSON.stringify(feed.requests)}`);
     }
@@ -392,6 +420,11 @@ export async function verifyWindowsAutoupdate(
     await verifyPackagedWindowsApp(installDirectory, {
       workingDirectory: join(temporaryDirectory, 'smoke'),
       expectedVersion: nextVersion,
+      // The upgraded install is a current build (only its version is bumped),
+      // so it gets the full sandbox and disclaimer verification a released
+      // baseline would be exempt from.
+      requireWindowsSandbox: true,
+      requireDisclaimer: true,
       smokeRenderer: async (executable, { workingDirectory }) => {
         const smokePort = await reserveTcpPort();
         const smokeHome = join(workingDirectory, 'home');

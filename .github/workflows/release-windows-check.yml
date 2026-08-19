@@ -23,8 +23,10 @@ on:
       - 'scripts/verify-windows-installer-lifecycle.mjs'
       - 'scripts/verify-windows-autoupdate.mjs'
       - 'scripts/package-windows-autoupdate-next.mjs'
-      # The packaged updater's feed behavior is only observable on this path.
+      # The packaged updater's feed behavior — and the boot wiring that hands
+      # MAKA_UPDATE_TEST_FEED to it — is only observable on this path.
       - 'apps/desktop/src/main/app-update-service.ts'
+      - 'apps/desktop/src/main/runtime-host-boot.ts'
       - 'scripts/prepare-windows-upgrade-baseline.mjs'
       - 'scripts/windows-upgrade-baseline.json'
       - 'scripts/verify-packaged-app.mjs'

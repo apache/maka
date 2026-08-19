@@ -28,8 +28,9 @@ the candidate, fully smokes the candidate, waits for installed processes to exit
 uninstaller. A second gate proves the automatic, running-app upgrade path: the installed candidate,
 running, discovers a newer build through its packaged electron-updater against a loopback test feed,
 downloads it in the background, hands off to the NSIS installer, relaunches as the new version, and
-passes the full packaged smoke — with the feed requests, every updater state, and the final version
-asserted individually. What is still not proven: update signature verification (no Authenticode
+passes the full packaged smoke — with the feed requests (including the differential-download probe),
+the `downloaded` state and its exact version pair, and the final installed version asserted
+individually; transient states such as `checking` and `downloading` are not individually asserted. What is still not proven: update signature verification (no Authenticode
 certificate yet — the feed configuration for the production GitHub channel is pinned by unit tests
 and exercised routinely on real releases instead), persisted business-data migration, and rollback
 after a mid-install failure.
@@ -59,7 +60,8 @@ workspace data first; the preview does not yet claim installer rollback or migra
 发布门禁会安装固定的 v0.1.9、执行完整 smoke、在同一目录升级候选版本、再次完整 smoke、等待安装目录内
 进程退出，并运行真实卸载器。另一个门禁证明**运行中的自动更新路径**：已安装且正在运行的候选版本通过打包的
 electron-updater 从 loopback 测试 feed 发现新版本、后台下载、交接给 NSIS 安装器、以新版本自动重启并通过
-完整打包 smoke——feed 请求、每个 updater 状态与最终版本均逐项断言。仍未证明的是：更新签名校验（尚无
+完整打包 smoke——feed 请求（含差量下载探测）、`downloaded` 状态及其精确版本对、最终安装版本均逐项断言；
+`checking`/`downloading` 等瞬态不逐项断言。仍未证明的是：更新签名校验（尚无
 Authenticode 证书；生产 GitHub 通道的 feed 配置由单测钉死，并在每次真实 release 中例行使用）、业务数据
 迁移，以及安装中途失败后的 rollback。
 
