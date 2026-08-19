@@ -2703,6 +2703,7 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
     resolveExecutionConnection: async () => readyExecutionConnection(),
     readPricing: async () => ({ revision: 0, overrides: [] }),
   });
+  let shellPolicyResolutions = 0;
   const factory = createInteractiveRunComposerFactory({
     skills: {
       readCanonicalModelInventory: async () => ({
@@ -2727,11 +2728,13 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
     } as unknown as HostClientCapabilityCoordinator,
     resolveTavilyWebSearchReadiness: async () => false,
     builtinTools: {},
-    resolveTurnShellPlan: (settings) =>
-      resolveTurnShellPlan(settings, {
+    resolveTurnShellPlan: (settings) => {
+      shellPolicyResolutions += 1;
+      return resolveTurnShellPlan(settings, {
         platform: 'win32',
         fileExists: () => false,
-      }),
+      });
+    },
   });
   const connection = readyExecutionConnection()
     .connection as unknown as import('@maka/core/llm-connections').RuntimeExecutionConnection;
@@ -2778,6 +2781,48 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
     workspaceRoot: '/workspace',
   });
   assert.ok(prompt.sourceRevisions.length > 0);
+
+  const capturedChildShell = {
+    plan: {
+      kind: 'git-bash' as const,
+      displayName: 'captured child shell',
+      exe: 'C:\\captured\\bash.exe',
+    },
+  };
+  const capturedChildTools = createHostChildAgentToolComposition({
+    taskLedger: {} as TaskLedgerStore,
+    builtinTools: { shell: capturedChildShell },
+    hostTools: [],
+    worktreePatchWriteBackAvailable: true,
+  }).childTools;
+  const childComposer = await factory({
+    backendContext: {
+      ...fixture.context,
+      tools: capturedChildTools,
+      turnShellPlan: capturedChildShell,
+    },
+    connection,
+    modelId: MODEL_ID,
+    runtimePolicy: { revision: 1, policy },
+    contextWindow: null,
+  });
+  assert.equal(
+    shellPolicyResolutions,
+    1,
+    'a child activation must not re-read shell policy after Runtime captured its plan',
+  );
+  const capturedBash = childComposer.tools.find((tool) => tool.name === 'Bash');
+  assert.match(capturedBash?.description ?? '', /captured child shell/);
+  assert.doesNotMatch(capturedBash?.description ?? '', /unavailable this turn/);
+  assert.match(
+    await childComposer.turnTailPrompt({
+      sessionId: 'session',
+      turnId: 'turn-child',
+      cwd: '/workspace',
+      workspaceRoot: '/workspace',
+    }),
+    /captured child shell/,
+  );
 });
 
 test('child execution Bash carries the configured shell guidance and spawn plan', async () => {

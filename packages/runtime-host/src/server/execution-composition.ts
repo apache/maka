@@ -902,7 +902,7 @@ export async function createExecutionRuntimeHostComposition(
       requestDrain: context.requestDrain,
     });
     sessionEffects = sessionEffectCoordinator;
-    const resolveChildTools = async (sessionId: string): Promise<readonly MakaTool[]> => {
+    const resolveChildTools = async (sessionId: string) => {
       const header = await stores.sessionStore.readHeader(sessionId);
       const shell = resolveTurnShellPlan(
         (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.shell,
@@ -919,7 +919,7 @@ export async function createExecutionRuntimeHostComposition(
         hostTools: [],
         childTools,
       });
-      return surface.childTools ?? [];
+      return { tools: surface.childTools ?? [], shell };
     };
     const subagentCatalog = createConfiguredSubagentCatalog({
       getPresets: async () =>

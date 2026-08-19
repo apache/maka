@@ -9959,8 +9959,9 @@ describe('SessionManager permission mode updates', () => {
     const runStore = new MemoryAgentRunStore();
     const backends = new BackendRegistry();
     const sendInputs: BackendSendInput[] = [];
+    const contexts: BackendFactoryContext[] = [];
     let childAttempt = 0;
-    backends.register('fake', (ctx) => ({
+    const createBackend = (ctx: BackendFactoryContext) => ({
       kind: 'fake' as const,
       sessionId: ctx.sessionId,
       async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
@@ -10004,13 +10005,47 @@ describe('SessionManager permission mode updates', () => {
       async stop(): Promise<void> {},
       async respondToSandboxBoundary(): Promise<void> {},
       async dispose(): Promise<void> {},
-    }));
+    });
+    backends.register('fake', (ctx) => {
+      contexts.push(ctx);
+      return createBackend(ctx);
+    });
+    const retryResolutionStarted = makeGate();
+    const releaseRetryResolution = makeGate();
+    const policyGate = makeTestRuntimePolicyGate();
+    let activationDepth = 0;
+    let holdRetryActivation = false;
+    let shellRevision = 'A';
     const manager = new SessionManager({
       store,
       runStore,
       runtimeEventStore: runStore,
       backends,
-      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      resolveChildTools: async () => {
+        const capturedRevision = shellRevision;
+        if (holdRetryActivation && activationDepth > 0) {
+          retryResolutionStarted.release();
+          await releaseRetryResolution.promise;
+        }
+        return {
+          tools: ['Read', 'Glob', 'Grep'].map((name) => ({
+            ...testTool(name),
+            description: `${name} retry shell ${capturedRevision}`,
+          })),
+          shell: {
+            plan: { kind: 'posix', displayName: `retry shell ${capturedRevision}` },
+          },
+        };
+      },
+      runBackendActivation: (operation) =>
+        policyGate.runBackendActivation(async () => {
+          activationDepth += 1;
+          try {
+            return await operation();
+          } finally {
+            activationDepth -= 1;
+          }
+        }),
       inspectContinuationSafety: async () => ({
         workspaceIdentity: '/tmp/cwd',
         backgroundOperationsSettled: true,
@@ -10087,13 +10122,27 @@ describe('SessionManager permission mode updates', () => {
     expect(sendInputs).toHaveLength(2);
     expect(abortedRetryReady).toBe(0);
 
-    const retried = await manager.retryChildAgent(session.id, {
+    holdRetryActivation = true;
+    const retriedPromise = manager.retryChildAgent(session.id, {
       parentRunId: parentRun.runId,
       sourceRunId: second.runId,
     });
+    await retryResolutionStarted.promise;
+    let mutationApplied = false;
+    const mutation = policyGate.runMutation(async () => {
+      shellRevision = 'B';
+      mutationApplied = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mutationApplied).toBe(false);
+    releaseRetryResolution.release();
+    const retried = await retriedPromise;
+    await mutation;
 
     expect(retried.status).toBe('completed');
     expect(retried.retriedFromRunId).toBe(second.runId);
+    expect(contexts.at(-1)?.turnShellPlan?.plan.displayName).toBe('retry shell A');
+    expect(contexts.at(-1)?.tools?.[0]?.description).toMatch(/retry shell A/);
     expect(sendInputs.map((input) => input.text)).toEqual([
       'inspect auth',
       'retry with additional guidance',
@@ -10334,10 +10383,12 @@ describe('SessionManager permission mode updates', () => {
       backends,
       resolveChildTools: async () => {
         resolutions += 1;
-        return ['Read', 'Glob', 'Grep'].map((name) => ({
-          ...testTool(name),
-          description: `${name} turn-scoped toolset ${resolutions}`,
-        }));
+        return {
+          tools: ['Read', 'Glob', 'Grep'].map((name) => ({
+            ...testTool(name),
+            description: `${name} turn-scoped toolset ${resolutions}`,
+          })),
+        };
       },
       newId: nextId(),
       now: nextNow(6_851),
@@ -10356,6 +10407,71 @@ describe('SessionManager permission mode updates', () => {
 
     assert.equal(resolutions, 1);
     assert.match(contexts[1]?.tools?.[0]?.description ?? '', /turn-scoped toolset/);
+  });
+
+  test('captures child tools and shell plan inside one backend activation snapshot', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const contexts: BackendFactoryContext[] = [];
+    backends.register('fake', (ctx) => {
+      contexts.push(ctx);
+      return new TestBackend(ctx);
+    });
+    const resolutionStarted = makeGate();
+    const releaseResolution = makeGate();
+    const { runBackendActivation, runMutation } = makeTestRuntimePolicyGate();
+    let shellRevision = 'A';
+    let mutationApplied = false;
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      resolveChildTools: async () => {
+        const capturedRevision = shellRevision;
+        resolutionStarted.release();
+        await releaseResolution.promise;
+        return {
+          tools: ['Read', 'Glob', 'Grep'].map((name) => ({
+            ...testTool(name),
+            description: `${name} shell snapshot ${capturedRevision}`,
+          })),
+          shell: {
+            plan: { kind: 'posix', displayName: `shell ${capturedRevision}` },
+          },
+        };
+      },
+      runBackendActivation,
+      newId: nextId(),
+      now: nextNow(6_852),
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+    await drain(manager.sendMessage(session.id, { turnId: 'parent-turn', text: 'parent context' }));
+    const [parentRun] = await runStore.listSessionRuns(session.id);
+    if (!parentRun) throw new Error('parent run was not recorded');
+
+    const childTurn = manager.spawnChildAgent(session.id, {
+      turnId: 'child-turn',
+      parentRunId: parentRun.runId,
+      spec: { id: LOCAL_READ_AGENT_ID, name: 'Reader', systemPrompt: 'read only' },
+      prompt: 'inspect',
+    });
+    await resolutionStarted.promise;
+    const mutation = runMutation(async () => {
+      shellRevision = 'B';
+      mutationApplied = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mutationApplied).toBe(false);
+
+    releaseResolution.release();
+    await childTurn;
+    await mutation;
+
+    expect(contexts[1]?.turnShellPlan?.plan.displayName).toBe('shell A');
+    expect(contexts[1]?.tools?.[0]?.description).toMatch(/shell snapshot A/);
+    expect(shellRevision).toBe('B');
   });
 
   test('spawnChildAgent returns the terminal RuntimeEvent status when the child header commit fails', async () => {

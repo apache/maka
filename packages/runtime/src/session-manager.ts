@@ -149,6 +149,7 @@ import {
 
 import type { AgentBackend, BackendStopMode } from '@maka/core/backend-types';
 import type { MakaTool } from './tool-runtime.js';
+import type { TurnShellPlan } from './shell-detect.js';
 import type { RunTraceRecorder } from './run-trace.js';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type {
@@ -735,6 +736,8 @@ export interface BackendFactoryContext {
    * silently strip the decoder for placeholders that child will still receive.
    */
   tools?: readonly MakaTool[];
+  /** Turn-scoped shell plan captured with a bound child tool ceiling. */
+  turnShellPlan?: TurnShellPlan;
   recordRunTrace?: RunTraceRecorder;
   /** Durable AgentRun metadata row written after the private capture artifact. */
   recordProviderRequestCapture?: (capture: ProviderRequestCaptureLedgerRecord) => Promise<void>;
@@ -813,7 +816,7 @@ interface SessionManagerBaseDeps {
   newId: () => string;
   now: () => number;
   childTools?: readonly MakaTool[];
-  resolveChildTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
+  resolveChildTools?: (sessionId: string) => Promise<ResolvedChildToolActivation>;
   /** Host-owned user catalog. Runtime receives ids from models, never raw model targets. */
   subagentCatalog?: {
     list(): Promise<SubagentPresetListItem[]>;
@@ -853,6 +856,11 @@ interface SessionManagerBaseDeps {
     sourceText: string;
   }) => Promise<string | undefined>;
   onSessionTitleChanged?: (sessionId: string) => void;
+}
+
+export interface ResolvedChildToolActivation {
+  readonly tools: readonly MakaTool[];
+  readonly shell?: TurnShellPlan;
 }
 
 type SessionManagerInteractionDeps =
@@ -4401,9 +4409,8 @@ export class SessionManager {
   }
 
   private async childToolsForSession(sessionId: string): Promise<readonly MakaTool[]> {
-    return this.deps.resolveChildTools
-      ? await this.deps.resolveChildTools(sessionId)
-      : (this.deps.childTools ?? []);
+    if (!this.deps.resolveChildTools) return this.deps.childTools ?? [];
+    return (await this.deps.resolveChildTools(sessionId)).tools;
   }
 
   async readChildAgentOutput(

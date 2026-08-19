@@ -404,7 +404,9 @@ export function createInteractiveRunComposerFactory(
     // Turn admission: resolve the Host-owned plan once per backend. The
     // captured setupError keeps a moved/uninstalled Git Bash scoped to the
     // Bash/PTY boundary instead of failing text-only turns here.
-    const shell = (input.resolveTurnShellPlan ?? resolveTurnShellPlan)(runtimePolicy.policy.shell);
+    const shell =
+      (backendContext.tools ? backendContext.turnShellPlan : undefined) ??
+      (input.resolveTurnShellPlan ?? resolveTurnShellPlan)(runtimePolicy.policy.shell);
     const clientCapabilities = backendContext.tools
       ? undefined
       : input.clientCapabilities.snapshotForSession(backendContext.sessionId);
