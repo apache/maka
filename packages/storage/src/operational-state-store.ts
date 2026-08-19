@@ -399,9 +399,12 @@ export function migrateOperationalStateDatabaseInternal(db: DatabaseSync, now: (
 
 /**
  * Retire import and cutover evidence written before SQLite became the sole
- * operational authority. Only exact released tables with internally valid,
- * completed rows may be removed; interrupted or unfamiliar state stays
- * fail-closed and the surrounding migration transaction rolls back unchanged.
+ * operational authority. Only tables whose column shape (name/type/notNull/pk)
+ * matches the released layout and whose rows are internally valid and completed
+ * may be removed; any interrupted, malformed, or column-shape-mismatched state
+ * stays fail-closed and the surrounding migration transaction rolls back
+ * unchanged. Column-shape validation does not inspect CHECK/FK constraints or
+ * indexes; row-level validation below is the authoritative content gate.
  */
 function retireCompletedLegacyMigrationMetadata(db: DatabaseSync): void {
   if (hasTable(db, 'cutover_journal')) {
@@ -527,6 +530,7 @@ function assertCompletedLegacyCutoverJournalRow(row: Record<string, unknown>): v
     typeof validation !== 'object' ||
     validation === null ||
     Array.isArray(validation) ||
+    Object.keys(validation).length === 0 ||
     !Object.values(validation).every(isNonnegativeInteger)
   ) {
     throw new Error('Legacy operational cutover journal has invalid validation evidence');

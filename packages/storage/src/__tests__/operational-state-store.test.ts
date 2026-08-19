@@ -149,6 +149,33 @@ test('retires completed released migration metadata during schema convergence', 
         .get(),
       undefined,
     );
+    // Retirement must not touch legitimate data or half-apply schema convergence.
+    assert.equal(
+      (
+        migrated.database
+          .prepare("SELECT COUNT(*) AS count FROM session_metadata WHERE session_id = 'session-1'")
+          .get() as { count: number }
+      ).count,
+      1,
+    );
+    assert.equal(
+      (
+        migrated.database
+          .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'runtime'")
+          .get() as { version?: number } | undefined
+      )?.version,
+      SQLITE_RUNTIME_SCHEMA_VERSION,
+    );
+    assert.equal(
+      (
+        migrated.database
+          .prepare(
+            "SELECT version FROM operational_schema_migrations WHERE scope = 'session_metadata'",
+          )
+          .get() as { version?: number } | undefined
+      )?.version,
+      SQLITE_SESSION_METADATA_SCHEMA_VERSION,
+    );
     migrated.close();
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -191,6 +218,149 @@ test('preserves an interrupted released cutover journal and fails closed', async
         >),
       },
       { store_name: 'session_metadata', state: 'started' },
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a cutover journal with an unfamiliar column shape and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-shape-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      CREATE TABLE cutover_journal (
+        store_name TEXT PRIMARY KEY,
+        source_path TEXT NOT NULL,
+        source_fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('started', 'completed')),
+        started_at INTEGER NOT NULL CHECK (started_at >= 0),
+        completed_at INTEGER,
+        validation_json TEXT,
+        unexpected_column TEXT
+      )
+    `);
+    legacy
+      .prepare(`
+        INSERT INTO cutover_journal(
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at,
+          completed_at,
+          validation_json
+        ) VALUES (?, ?, ?, 'completed', ?, ?, ?)
+      `)
+      .run(
+        'session_metadata',
+        join(root, 'sessions.sqlite'),
+        'sha256:released-source',
+        10,
+        20,
+        JSON.stringify({ session_metadata: 4 }),
+      );
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /unfamiliar schema/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      (
+        preserved.prepare('SELECT COUNT(*) AS count FROM cutover_journal').get() as {
+          count: number;
+        }
+      ).count,
+      1,
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a malformed released import source and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-import-malformed-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyImportSourceTables(legacy);
+    legacy
+      .prepare(`
+        INSERT INTO runtime_import_sources(source_path, fingerprint, imported_at)
+        VALUES (?, ?, ?)
+      `)
+      .run(join(root, 'runtime-events.jsonl'), '', 20);
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /import source is incomplete or invalid/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      (
+        preserved.prepare('SELECT COUNT(*) AS count FROM runtime_import_sources').get() as {
+          count: number;
+        }
+      ).count,
+      1,
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves a session import source with a missing session and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-import-missing-session-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyImportSourceTables(legacy);
+    // node:sqlite enforces foreign keys by default; disable them only to plant
+    // the orphaned import row this defensive branch must reject.
+    legacy.exec('PRAGMA foreign_keys = OFF');
+    legacy
+      .prepare(`
+        INSERT INTO session_metadata_import_sources(
+          source_path,
+          fingerprint,
+          session_id,
+          imported_at
+        ) VALUES (?, ?, ?, ?)
+      `)
+      .run(join(root, 'sessions.json'), 'sha256:released-session', 'missing-session', 20);
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /session import source is incomplete or invalid/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.equal(
+      (
+        preserved
+          .prepare('SELECT COUNT(*) AS count FROM session_metadata_import_sources')
+          .get() as { count: number }
+      ).count,
+      1,
     );
     preserved.close();
   } finally {
