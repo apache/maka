@@ -1370,7 +1370,8 @@ async function closeRuntimeHostDesktop(): Promise<void> {
   permissionOverlay.dismiss();
   const results = await Promise.allSettled([
     runtimeHostManager?.close(),
-    runtimeHostOnboarding.close().then(() => runtimeHostSshTerminal.close()),
+    runtimeHostOnboarding.close(),
+    runtimeHostSshTerminal.close(),
     botRegistry.stopAll(),
     mcpManager.close(),
     mainWindowController.disposeBrowserViews(),
