@@ -375,56 +375,63 @@ test("refreshes the existing profile when managed setup pairs the same Host agai
   assert.deepEqual((await catalog.read()).profiles.map((profile) => profile.id), [PROFILE.id]);
 });
 
-test("restores an existing profile when its replacement cannot connect", async () => {
-  const root = await clientRoot();
-  const catalog = createClientRuntimeHostProfileCatalog(root);
-  await catalog.create(PROFILE, "old-token");
-  await writeFile(
-    join(root, "runtime-host-profile-selection.json"),
-    `${JSON.stringify({
-      schemaVersion: 2,
-      defaultProfileId: "local",
-      enabledRemoteProfileIds: [PROFILE.id],
-    })}\n`,
-  );
-  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
-  const enabled: ResolvedRuntimeHostProfile[] = [];
-  const service = createDesktopRuntimeHostProfileService({
-    clientDataRoot: root,
-    startup,
-    catalog,
-    states: () => [connectingLocal()],
-    enable: async (target) => {
-      enabled.push(target);
-      if (target.credential === "new-token") throw new Error("replacement unavailable");
-    },
-    disable: async () => undefined,
-    setDefault: () => undefined,
-    finalizePairing: async () => assert.fail("an unconnected credential cannot be finalized"),
-  });
+for (const failureAt of ["connection", "finalization"] as const) {
+  test(`restores an existing profile when replacement ${failureAt} fails`, async () => {
+    const root = await clientRoot();
+    const catalog = createClientRuntimeHostProfileCatalog(root);
+    await catalog.create(PROFILE, "old-token");
+    await writeFile(
+      join(root, "runtime-host-profile-selection.json"),
+      `${JSON.stringify({
+        schemaVersion: 2,
+        defaultProfileId: "local",
+        enabledRemoteProfileIds: [PROFILE.id],
+      })}\n`,
+    );
+    const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+    const enabled: ResolvedRuntimeHostProfile[] = [];
+    const service = createDesktopRuntimeHostProfileService({
+      clientDataRoot: root,
+      startup,
+      catalog,
+      states: () => [connectingLocal()],
+      enable: async (target) => {
+        enabled.push(target);
+        if (failureAt === "connection" && target.credential === "new-token") {
+          throw new Error("replacement connection failed");
+        }
+      },
+      disable: async () => undefined,
+      setDefault: () => undefined,
+      finalizePairing: async () => {
+        if (failureAt === "finalization") throw new Error("replacement finalization failed");
+        assert.fail("an unconnected credential cannot be finalized");
+      },
+    });
 
-  await assert.rejects(
-    () =>
-      service.addAndEnableVerified({
-        profile: {
-          ...PROFILE,
-          id: "replacement",
-          transport: { kind: "tls", url: "wss://new-runtime.example.com" },
-        },
-        credential: "new-token",
-      }),
-    /replacement unavailable/,
-  );
+    await assert.rejects(
+      () =>
+        service.addAndEnableVerified({
+          profile: {
+            ...PROFILE,
+            id: "replacement",
+            transport: { kind: "tls", url: "wss://new-runtime.example.com" },
+          },
+          credential: "new-token",
+        }),
+      new RegExp(`${failureAt} failed`, "u"),
+    );
 
-  assert.deepEqual(await catalog.resolve(PROFILE.id), {
-    profile: {
-      ...PROFILE,
-      transport: { kind: "tls", url: "wss://runtime.example.com/" },
-    },
-    credential: "old-token",
+    assert.deepEqual(await catalog.resolve(PROFILE.id), {
+      profile: {
+        ...PROFILE,
+        transport: { kind: "tls", url: "wss://runtime.example.com/" },
+      },
+      credential: "old-token",
+    });
+    assert.equal(enabled.at(-1)?.credential, "old-token");
   });
-  assert.equal(enabled.at(-1)?.credential, "old-token");
-});
+}
 
 test("keeps enablement, default selection, and removal as separate states", async () => {
   const root = await clientRoot();

@@ -15,6 +15,7 @@ const ACCESS_ERRORS = [
   'persistence_failed',
   'internal_failure',
 ] as const;
+const FINALIZE_ERRORS = [...ACCESS_ERRORS, 'commit_outcome_unknown'] as const;
 
 export interface AccessCredentialIssueInput {
   readonly principalKind: AccessCredentialPrincipalKind;
@@ -99,11 +100,11 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
   'access.credential.finalize': defineOperation<
     AccessCredentialFinalizeInput,
     AccessCredentialFinalizeResult,
-    (typeof ACCESS_ERRORS)[number]
+    (typeof FINALIZE_ERRORS)[number]
   >({
     mode: 'command',
     availability: 'ready',
-    errors: ACCESS_ERRORS,
+    errors: FINALIZE_ERRORS,
     decodeInput: decodeAccessCredentialFinalizeInput,
     decodeOutput: decodeAccessCredentialFinalizeResult,
   }),

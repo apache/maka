@@ -27,6 +27,7 @@ import {
   createAccessCredentialFile,
   issuedAccessGrants,
   readAccessCredentialFile,
+  RuntimeHostAccessCommitOutcomeUnknownError,
   RuntimeHostAccessInputError,
   type AccessCredentialFile,
   type StoredAccessCredential,
@@ -244,15 +245,14 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
           credential.principalKind === retained.principalKind &&
           credential.principalId === retained.principalId,
       );
-      await this.#commit(
-        createAccessCredentialFile(
-          this.#file.credentials
-            .filter((credential) => !revoked.includes(credential))
-            .map((credential) =>
-              credential === retained ? activatePendingCredential(credential) : credential,
-            ),
-        ),
+      const finalized = createAccessCredentialFile(
+        this.#file.credentials
+          .filter((credential) => !revoked.includes(credential))
+          .map((credential) =>
+            credential === retained ? activatePendingCredential(credential) : credential,
+          ),
       );
+      await this.#commit(finalized);
       for (const credential of revoked) this.#publishRevocation(credential.credentialId);
       return {};
     });
@@ -439,6 +439,15 @@ export async function finalizeAccessCredential(
   } catch (error) {
     if (error instanceof RuntimeHostAccessInputError) {
       return { ok: false, error: { code: 'invalid_request', message: error.message } };
+    }
+    if (error instanceof RuntimeHostAccessCommitOutcomeUnknownError) {
+      return {
+        ok: false,
+        error: {
+          code: 'commit_outcome_unknown',
+          message: 'Access credential pairing finalization outcome is unknown',
+        },
+      };
     }
     return {
       ok: false,

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { BotIncomingMessage } from '@maka/runtime/bots';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
@@ -183,6 +184,38 @@ test('keeps Local and remote Hosts active and routes work by owning Host', async
     () => manager.enable(remoteTarget('duplicate', 'other-endpoint')),
     /already enabled/,
   );
+  await manager.close();
+});
+
+test('replays pairing finalization after an unknown commit and reconnect', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remoteHostId = 'a'.repeat(64);
+  const first = candidateHarness({
+    hostId: remoteHostId,
+    finalizeFailures: [
+      new RuntimeHostOperationError(
+        'access.credential.finalize',
+        'commit_outcome_unknown',
+        'finalization outcome is unknown',
+      ),
+    ],
+    disconnectOnFinalizeFailure: true,
+  });
+  const replacement = candidateHarness({ hostId: remoteHostId });
+  const queue = [local.candidate, first.candidate, replacement.candidate];
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => ready(queue.shift()!),
+      reconnectBackoff: { minMs: 0, maxMs: 0 },
+    },
+  );
+  await manager.enable(remoteTarget('office'));
+
+  await manager.finalizePairing('office');
+
+  assert.equal(first.finalizeCalls, 1);
+  assert.equal(replacement.finalizeCalls, 1);
   await manager.close();
 });
 
@@ -504,6 +537,8 @@ function candidateHarness(
     activeTasks?: boolean;
     lifecycleMode?: 'ephemeral' | 'service' | 'remote';
     hostId?: string;
+    finalizeFailures?: Error[];
+    disconnectOnFinalizeFailure?: boolean;
   } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
@@ -515,6 +550,7 @@ function candidateHarness(
   const stoppedSessions: string[] = [];
   let lifecycleState: 'ready' | 'unavailable' = 'ready';
   let prepareUpgradeCalls = 0;
+  let finalizeCalls = 0;
   const prepareUpgradeAuthorities: boolean[] = [];
   const candidate = {
     closed,
@@ -535,6 +571,18 @@ function candidateHarness(
           resolveClosed?.();
         }
         return { kind: 'prepared' as const, pid: 42 };
+      },
+      async finalizeAccessCredential() {
+        finalizeCalls += 1;
+        const failure = options.finalizeFailures?.shift();
+        if (failure) {
+          if (options.disconnectOnFinalizeFailure) {
+            lifecycleState = 'unavailable';
+            resolveClosed?.();
+          }
+          throw failure;
+        }
+        return {};
       },
     },
     botIncoming: {
@@ -572,6 +620,9 @@ function candidateHarness(
     },
     get prepareUpgradeAuthorities() {
       return prepareUpgradeAuthorities;
+    },
+    get finalizeCalls() {
+      return finalizeCalls;
     },
   };
 }

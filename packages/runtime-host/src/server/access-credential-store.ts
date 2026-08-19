@@ -56,6 +56,13 @@ export class RuntimeHostAccessCapacityError extends Error {
   }
 }
 
+export class RuntimeHostAccessCommitOutcomeUnknownError extends Error {
+  constructor(cause: unknown) {
+    super('Runtime Host access credential commit outcome is unknown', { cause });
+    this.name = 'RuntimeHostAccessCommitOutcomeUnknownError';
+  }
+}
+
 export function createAccessCredentialFile(
   credentials: readonly StoredAccessCredential[],
 ): AccessCredentialFile {
@@ -109,6 +116,7 @@ export async function writeAccessCredentialFile(
 ): Promise<void> {
   const contents = serializeAccessCredentialFile(file);
   const tempPath = `${path}.${randomUUID()}.tmp`;
+  let published = false;
   try {
     const handle = await open(tempPath, 'wx', 0o600);
     try {
@@ -119,9 +127,11 @@ export async function writeAccessCredentialFile(
     }
     if (process.platform !== 'win32') await chmod(tempPath, 0o600);
     await rename(tempPath, path);
+    published = true;
     await syncDirectory(dirname(path));
   } catch (error) {
     await rm(tempPath, { force: true });
+    if (published) throw new RuntimeHostAccessCommitOutcomeUnknownError(error);
     throw error;
   }
 }

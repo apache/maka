@@ -71,7 +71,7 @@ test('keeps setup credentials out of the interactive terminal projection', async
   const setup = harness.terminal.runSetup(
     {
       destination: 'operator@example.com',
-      setupPackage: { kind: 'npm', specifier: 'maka-agent@next' },
+      setupPackage: { kind: 'npm', specifier: 'maka-agent@1.2.3+desktop.1' },
       principalId: 'desktop:stable-client',
       signal: controller.signal,
     },
@@ -119,7 +119,7 @@ test('force-stops a cancelled setup when SSH ignores graceful termination', asyn
   const setup = harness.terminal.runSetup(
     {
       destination: 'operator@example.com',
-      setupPackage: { kind: 'npm', specifier: 'maka-agent@next' },
+      setupPackage: { kind: 'npm', specifier: 'maka-agent@1.2.3' },
       principalId: 'desktop:stable-client',
       signal: controller.signal,
     },

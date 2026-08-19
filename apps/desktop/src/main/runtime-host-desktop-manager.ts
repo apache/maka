@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
+  RuntimeHostOperationError,
   RuntimeHostPermanentReconnectError,
+  RuntimeHostRequestInterruptedError,
   runtimeHostStartupError,
   LOCAL_RUNTIME_HOST_PROFILE,
   sameResolvedRuntimeHostProfileTarget,
@@ -237,11 +239,20 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       throw new Error('Only remote Runtime Host profiles can finalize pairing');
     }
     const lifecycle = this.#requireLifecycle(target);
-    const candidate = await this.#waitForReadyCandidate(lifecycle);
-    if (!target.valid || candidate.client.hostId !== target.target.profile.rootId) {
-      throw new Error('Runtime Host target changed before pairing was finalized');
+    let candidate = await this.#waitForReadyCandidate(lifecycle);
+    while (true) {
+      if (!target.valid || candidate.client.hostId !== target.target.profile.rootId) {
+        throw new Error('Runtime Host target changed before pairing was finalized');
+      }
+      try {
+        await candidate.client.finalizeAccessCredential();
+        return;
+      } catch (error) {
+        const retry = pairingFinalizeRetry(error);
+        if (!retry) throw error;
+        candidate = await this.#waitForReadyCandidate(lifecycle, candidate);
+      }
     }
-    await candidate.client.finalizeAccessCredential();
   }
 
   current(profileId?: string): RuntimeHostDesktopTargetSnapshot | undefined {
@@ -575,8 +586,9 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
 
   async #waitForReadyCandidate(
     lifecycle: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>,
+    previous?: DesktopRuntimeHostCandidate,
   ): Promise<DesktopRuntimeHostCandidate> {
-    let candidate = await lifecycle.waitForCurrent();
+    let candidate = await lifecycle.waitForCurrent(previous);
     while (candidate.client.lifecycleState !== 'ready') {
       candidate = await lifecycle.waitForCurrent(candidate);
     }
@@ -721,6 +733,20 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       );
     }
   }
+}
+
+function pairingFinalizeRetry(error: unknown): boolean {
+  if (
+    error instanceof RuntimeHostRequestInterruptedError &&
+    error.operation === 'access.credential.finalize' &&
+    error.reason === 'connection_lost'
+  ) {
+    return true;
+  }
+  if (error instanceof RuntimeHostOperationError && error.operation === 'access.credential.finalize') {
+    return error.code === 'commit_outcome_unknown' || error.code === 'host_draining';
+  }
+  return false;
 }
 
 function withRuntimeHostTarget(

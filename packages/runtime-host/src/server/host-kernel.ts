@@ -630,8 +630,16 @@ export class RuntimeHostKernel {
           prepareAccessCredential(this.#options.accessAuthority, input),
         'access.credential.revoke': async (input) =>
           revokeAccessCredential(this.#options.accessAuthority, input),
-        'access.credential.finalize': async (_input, context) =>
-          finalizeAccessCredential(this.#options.accessAuthority, context.credentialId),
+        'access.credential.finalize': async (_input, context) => {
+          const outcome = await finalizeAccessCredential(
+            this.#options.accessAuthority,
+            context.credentialId,
+          );
+          if (!outcome.ok && outcome.error.code === 'commit_outcome_unknown') {
+            this.#requestDrain();
+          }
+          return outcome;
+        },
       },
       domainHandlers,
     );

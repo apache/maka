@@ -48,6 +48,10 @@ export type DesktopRuntimeHostSetupPackage =
   | { readonly kind: 'npm'; readonly specifier: string }
   | { readonly kind: 'development_archive'; readonly path: string };
 
+export function isExactRuntimeHostSetupPackageSpecifier(value: unknown): value is string {
+  return typeof value === 'string' && /^maka-agent@[0-9][0-9A-Za-z.+-]*$/u.test(value);
+}
+
 type RuntimeHostSetupCompleteFrame = Extract<RuntimeHostSetupFrame, { kind: 'complete' }>;
 
 export function createDesktopRuntimeHostSshTerminal(input: {
@@ -452,7 +456,7 @@ async function prepareSetupPackage(
   stopGraceMs: number | undefined,
 ): Promise<PreparedSetupPackage> {
   if (setupPackage.kind === 'npm') {
-    if (!/^maka-agent@[A-Za-z0-9._-]+$/u.test(setupPackage.specifier)) {
+    if (!isExactRuntimeHostSetupPackageSpecifier(setupPackage.specifier)) {
       throw new Error('Runtime Host setup package is invalid');
     }
     return { specifier: setupPackage.specifier };

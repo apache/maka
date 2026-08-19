@@ -303,6 +303,9 @@ export function createDesktopRuntimeHostProfileService(input: {
               }
               preferences = next;
             }
+            await input.finalizePairing(profile.id);
+            unavailable.delete(profile.id);
+            return { profileId: profile.id };
           } catch (error) {
             const rollbackFailures: unknown[] = [];
             await input.disable(profile.id).catch((failure) => rollbackFailures.push(failure));
@@ -341,17 +344,10 @@ export function createDesktopRuntimeHostProfileService(input: {
             }
             throw error;
           }
-          try {
-            await input.finalizePairing(profile.id);
-            unavailable.delete(profile.id);
-            return { profileId: profile.id };
-          } catch (error) {
-            unavailable.set(profile.id, asError(error));
-            throw error;
-          }
         }
 
         const document = await catalog.create(value.profile, value.credential);
+        const previousPreferences = preferences;
         const profile = document.profiles.find((candidate) => candidate.id === value.profile.id);
         if (!profile) throw new Error("Runtime Host profile creation did not persist");
         const target = { profile, credential: value.credential } as const;
@@ -365,9 +361,26 @@ export function createDesktopRuntimeHostProfileService(input: {
           const next = withEnabled(preferences, profile.id, true);
           await persistIfCurrentTarget(catalog, profilePath, preferencesPath, target, next);
           preferences = next;
+          await input.finalizePairing(profile.id);
+          unavailable.delete(profile.id);
+          return { profileId: profile.id };
         } catch (failure) {
           const rollbackFailures: unknown[] = [];
           await input.disable(profile.id).catch((error) => rollbackFailures.push(error));
+          if (preferences !== previousPreferences) {
+            await persistIfCurrentTarget(
+              catalog,
+              profilePath,
+              preferencesPath,
+              target,
+              previousPreferences,
+            ).then(
+              () => {
+                preferences = previousPreferences;
+              },
+              (error) => rollbackFailures.push(error),
+            );
+          }
           await catalog.removeIfCurrent(target).catch((error) => rollbackFailures.push(error));
           unavailable.delete(profile.id);
           if (rollbackFailures.length > 0) {
@@ -377,14 +390,6 @@ export function createDesktopRuntimeHostProfileService(input: {
             );
           }
           throw failure;
-        }
-        try {
-          await input.finalizePairing(profile.id);
-          unavailable.delete(profile.id);
-          return { profileId: profile.id };
-        } catch (error) {
-          unavailable.set(profile.id, asError(error));
-          throw error;
         }
       });
     },

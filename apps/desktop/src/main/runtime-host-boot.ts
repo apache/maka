@@ -117,6 +117,7 @@ import {
 } from "./runtime-host-profile-service.js";
 import {
   createDesktopRuntimeHostSshTerminal,
+  isExactRuntimeHostSetupPackageSpecifier,
   type DesktopRuntimeHostSetupPackage,
 } from "./runtime-host-ssh-terminal.js";
 import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js";
@@ -321,10 +322,7 @@ function runtimeHostSetupPackage(): DesktopRuntimeHostSetupPackage {
     readFileSync(join(app.getAppPath(), "package.json"), "utf8"),
   ) as { runtimeHostSetupPackage?: unknown };
   const specifier = manifest.runtimeHostSetupPackage;
-  if (
-    typeof specifier !== "string" ||
-    !/^maka-agent@[0-9][0-9A-Za-z.+-]*$/u.test(specifier)
-  ) {
+  if (!isExactRuntimeHostSetupPackageSpecifier(specifier)) {
     throw new Error("Desktop does not declare an exact Runtime Host setup package");
   }
   return { kind: "npm", specifier };
