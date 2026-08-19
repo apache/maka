@@ -119,6 +119,94 @@ export type GenericRuntimeHostCompositionSource = RuntimeHostCompositionSource<'
 export type GenericRuntimeHostKernelOptions = RuntimeHostKernelOptions<'interactive'>;
 
 describe('non-serving Runtime Host kernel', () => {
+  test('rejects divergent required and candidate generations before election', async () => {
+    await assert.rejects(
+      connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: '/not-resolved',
+          surface: 'tui',
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          generation: 'maka-agent@1.2.3',
+          candidateGeneration: 'maka-agent@1.2.4',
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: () => {
+            throw new Error('must not launch');
+          },
+        },
+      ),
+      /generation and candidateGeneration must match/u,
+    );
+  });
+
+  test('candidate generation does not reject a compatible existing Host generation', async () => {
+    await withHostPaths(async (paths) => {
+      const existing = await startTestRuntimeHostCandidate(paths, {
+        rootPath: paths.root,
+        generation: 'desktop-existing',
+        idleGraceMs: 10_000,
+      });
+      assert.equal(existing.kind, 'winner');
+      if (existing.kind !== 'winner') return;
+
+      let launches = 0;
+      const connected = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          surface: 'tui',
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          candidateGeneration: 'maka-agent@1.2.3',
+          electionDeadlineMs: 1_000,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: () => {
+            launches += 1;
+            return { spawned: new Promise(() => undefined) };
+          },
+        },
+      );
+
+      assert.equal(connected.kind, 'connected');
+      if (connected.kind === 'connected') {
+        assert.equal(connected.registration.generation, 'desktop-existing');
+        await connected.connection.close();
+      }
+      assert.equal(launches, 0);
+    });
+  });
+
+  test('candidate generation is published by a newly elected Host', async () => {
+    await withHostPaths(async (paths) => {
+      const connected = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          surface: 'tui',
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          candidateGeneration: 'maka-agent@1.2.3',
+          electionDeadlineMs: 5_000,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: (input) => launchTestRuntimeHostCandidate(paths, input),
+        },
+      );
+
+      assert.equal(connected.kind, 'connected');
+      if (connected.kind === 'connected') {
+        assert.equal(connected.registration.generation, 'maka-agent@1.2.3');
+        await connected.connection.close();
+      }
+    });
+  });
+
   test('reports a recovery failure when the election produces no ready Host', async () => {
     await withHostPaths(async (paths) => {
       const result = await connectOrSpawnRuntimeHostWithDependencies(
@@ -2456,7 +2544,6 @@ function testComposition(
     ...overrides,
   };
 }
-
 interface HostPaths {
   base: string;
   root: string;

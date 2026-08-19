@@ -1,7 +1,6 @@
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { formatMakaResumeHint } from './cli-invocation.js';
+import { loadRuntimeHostCliInstallationContext } from './runtime-host-installation-context.js';
 import { resolveMakaDataRoots } from './workspace-root.js';
 import { parseRuntimeHostCommand, type RuntimeHostCliCommand } from './runtime-host-cli.js';
 import { resolveCliUiLocale } from './cli-ui-locale.js';
@@ -27,7 +26,6 @@ export interface MakaCliLaunchOptions {
   readonly cliCommand: string;
   readonly capabilityProviderIdentityScope: 'legacy-home' | 'client-data-root';
 }
-
 export const RELEASE_MAKA_CLI_LAUNCH_OPTIONS = {
   dataProfileName: 'Maka',
   cliCommand: 'maka',
@@ -183,7 +181,8 @@ export async function runMakaCli(
   argv: string[] = process.argv.slice(2),
   options: MakaCliLaunchOptions = RELEASE_MAKA_CLI_LAUNCH_OPTIONS,
 ): Promise<number> {
-  const version = await readPackageVersion();
+  const installation = await loadRuntimeHostCliInstallationContext();
+  const version = installation.version;
   const command = parseMakaCliArgs(argv, version, options.cliCommand);
   const dataRoots = resolveMakaDataRoots({ profileName: options.dataProfileName });
   switch (command.kind) {
@@ -223,7 +222,7 @@ export async function runMakaCli(
         json: command.json,
         clientDataRoot: dataRoots.clientDataRoot,
         defaultRootPath: dataRoots.workspaceRoot,
-        sourcePackageRoot: fileURLToPath(new URL('..', import.meta.url)),
+        sourcePackageRoot: installation.packageRoot,
         version,
         principalId: command.principalId,
         preset: command.preset,
@@ -397,12 +396,6 @@ function parseTuiArgs(argv: string[]): MakaCliCommand {
     ...(values.has('--host') ? { hostProfileId: values.get('--host') } : {}),
     ...(values.has('--project') ? { projectId: values.get('--project') } : {}),
   };
-}
-
-async function readPackageVersion(): Promise<string> {
-  const raw = await readFile(new URL('../package.json', import.meta.url), 'utf8');
-  const parsed = JSON.parse(raw) as { version?: unknown };
-  return typeof parsed.version === 'string' ? parsed.version : '0.0.0';
 }
 
 export function launchMakaCli(options: MakaCliLaunchOptions): void {

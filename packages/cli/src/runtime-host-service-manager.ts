@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   isCanonicalRuntimeHostWebSocketPath,
   PROJECT_DIRECTORY_MAX_ROOTS,
@@ -15,6 +15,7 @@ import {
   isRuntimeHostManagedDeploymentCli,
   removeRuntimeHostManagedDeployment,
 } from './runtime-host-managed-deployment.js';
+import { isTemporaryNpxInstallation } from './runtime-host-installation-provenance.js';
 
 const SERVICE_CONFIG_FILE = 'runtime-host-service.json';
 const DEFAULT_WEBSOCKET_PATH = '/runtime-host';
@@ -511,25 +512,12 @@ async function assertPersistentCliInstallation(
   environment: NodeJS.ProcessEnv,
   homeDir: string,
 ): Promise<void> {
-  const cacheRoots = await Promise.all(
-    [environment.npm_config_cache, join(homeDir, '.npm')].flatMap((root) =>
-      root ? [realpath(resolve(root, '_npx')).catch(() => resolve(root, '_npx'))] : [],
-    ),
-  );
-  if (cacheRoots.some((root) => isWithin(root, cliPath))) {
+  if (await isTemporaryNpxInstallation(cliPath, { environment, homeDir })) {
     throw new RuntimeHostServiceManagerError(
       'invalid_launch',
       'A persistent Runtime Host service cannot use a temporary npx installation; install Maka globally and retry',
     );
   }
-}
-
-function isWithin(root: string, candidate: string): boolean {
-  const pathFromRoot = relative(root, candidate);
-  return (
-    pathFromRoot === '' ||
-    (pathFromRoot !== '..' && !pathFromRoot.startsWith(`..${sep}`) && !isAbsolute(pathFromRoot))
-  );
 }
 
 async function waitForManagedRuntimeHostReady(

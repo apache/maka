@@ -22,13 +22,16 @@ import {
   type HostIncompatible,
 } from '@maka/runtime-host/protocol';
 import {
+  canRestartRuntimeHostCliConflict,
   connectRuntimeHostCli,
+  resolveRuntimeHostCliConflictDecision,
   RuntimeHostCliConflictError,
-  shouldRetryRuntimeHostConflict,
 } from '../runtime-host-cli-context.js';
 
 test('CLI Runtime Host bootstrap launches the execution composition', async () => {
   let candidateEntrypoint: string | URL | undefined;
+  let candidateGeneration: string | undefined;
+  let requiredGeneration: string | undefined;
   let clientInstanceId: string | undefined;
   let closes = 0;
   const connection = {
@@ -55,6 +58,8 @@ test('CLI Runtime Host bootstrap launches the execution composition', async () =
     {
       connectOrSpawn: async (input) => {
         candidateEntrypoint = input.candidateEntrypoint;
+        candidateGeneration = input.candidateGeneration;
+        requiredGeneration = input.generation;
         clientInstanceId = input.clientInstanceId;
         return {
           kind: 'connected',
@@ -67,11 +72,19 @@ test('CLI Runtime Host bootstrap launches the execution composition', async () =
         defaultTarget: null,
         connections: [],
       }),
+      loadInstallationContext: async () => ({
+        packageRoot: '/maka-cli',
+        version: '1.2.3',
+        installationScope: 'persistent',
+        artifactGeneration: 'maka-agent@1.2.3',
+      }),
     },
   );
 
   assert.ok(candidateEntrypoint instanceof URL);
   assert.equal(basename(fileURLToPath(candidateEntrypoint)), 'execution-candidate-main.js');
+  assert.equal(candidateGeneration, 'maka-agent@1.2.3');
+  assert.equal(requiredGeneration, undefined);
   assert.ok(clientInstanceId);
   await context.close();
   assert.equal(closes, 1);
@@ -112,7 +125,7 @@ test('non-interactive CLI reports how to retire an incompatible Runtime Host', a
       );
       assert.match(
         error.message,
-        /ephemeral Host is not currently idle and cannot be replaced by this Client/,
+        /ephemeral Host still owns this State Root/,
       );
       assert.match(error.message, /previous compatible Maka build/);
       return true;
@@ -152,15 +165,93 @@ test('CLI explains a service Host without inventing resident work', async () => 
   );
 });
 
-test('Runtime Host conflict waits only after an explicit wait answer', () => {
-  assert.equal(shouldRetryRuntimeHostConflict('w'), true);
-  assert.equal(shouldRetryRuntimeHostConflict(' wait '), true);
-  assert.equal(shouldRetryRuntimeHostConflict(' W '), true);
-  assert.equal(shouldRetryRuntimeHostConflict('WAIT'), true);
-  assert.equal(shouldRetryRuntimeHostConflict(''), false);
-  assert.equal(shouldRetryRuntimeHostConflict('c'), false);
-  assert.equal(shouldRetryRuntimeHostConflict('cancel'), false);
-  assert.equal(shouldRetryRuntimeHostConflict('unexpected'), false);
+test('CLI local generation takeover is exact and remains a typed conflict while blocked', async () => {
+  let connectInput:
+    | {
+        readonly generation?: string;
+        readonly candidateGeneration?: string;
+        readonly takeoverHostEpoch?: string;
+      }
+    | undefined;
+  await assert.rejects(
+    connectRuntimeHostCli(
+      {
+        rootPath: '/runtime-host-root',
+        surface: 'tui',
+        localGenerationRequest: {
+          kind: 'takeover',
+          expectedHostEpoch: 'host-old',
+        },
+      },
+      {
+        loadInstallationContext: async () => ({
+          packageRoot: '/maka-cli',
+          version: '1.2.3',
+          installationScope: 'persistent',
+          artifactGeneration: 'maka-agent@1.2.3',
+        }),
+        connectOrSpawn: async (input) => {
+          connectInput = input;
+          return {
+            kind: 'upgrade_required',
+            restartable: false,
+            registration: hostRegistration({ generation: 'maka-agent@1.2.2' }),
+            handshake: {
+              kind: 'incompatible',
+              hostEpoch: 'host-old',
+              protocolMin: 0,
+              protocolMax: 0,
+              compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+              compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+              compositionRevision: 'current',
+              generation: 'maka-agent@1.2.2',
+              state: 'ready',
+              replacement: 'blocked_by_residency',
+              activity: {
+                connections: 1,
+                activeOperations: 0,
+                processUptimeSeconds: 61,
+                residencies: [{ label: 'scheduled-task', count: 1 }],
+              },
+            },
+          };
+        },
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof RuntimeHostCliConflictError);
+      assert.equal(error.conflict.kind, 'upgrade_required');
+      assert.equal(canRestartRuntimeHostCliConflict(error), false);
+      assert.match(error.message, /1 connection\(s\), 0 active operation\(s\), uptime 61s/);
+      assert.match(error.message, /scheduled-task \(1\)/);
+      return true;
+    },
+  );
+
+  assert.equal(connectInput?.generation, 'maka-agent@1.2.3');
+  assert.equal(connectInput?.candidateGeneration, 'maka-agent@1.2.3');
+  assert.equal(connectInput?.takeoverHostEpoch, 'host-old');
+});
+
+test('CLI conflict decisions require an offered restart action', () => {
+  assert.equal(resolveRuntimeHostCliConflictDecision('r', true), 'restart');
+  assert.equal(resolveRuntimeHostCliConflictDecision(' restart ', true), 'restart');
+  assert.equal(resolveRuntimeHostCliConflictDecision('r', false), 'cancel');
+  assert.equal(resolveRuntimeHostCliConflictDecision('w', true), 'wait');
+  assert.equal(resolveRuntimeHostCliConflictDecision(' WAIT ', false), 'wait');
+  assert.equal(resolveRuntimeHostCliConflictDecision('', true), 'cancel');
+  assert.equal(resolveRuntimeHostCliConflictDecision('unexpected', true), 'cancel');
+});
+
+test('temporary npx invocation cannot turn a restartable Host fact into replacement authority', () => {
+  const error = new RuntimeHostCliConflictError(
+    { kind: 'upgrade_required', restartable: true },
+    hostRegistration({ generation: 'maka-agent@1.2.2' }),
+    false,
+  );
+
+  assert.equal(canRestartRuntimeHostCliConflict(error), false);
+  assert.match(error.message, /transient CLI invocation is not a persistent installation owner/u);
 });
 
 test('CLI reports an actionable stored-data startup failure', async () => {
@@ -246,6 +337,8 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
         },
       },
       loadClientInstanceId: async () => '11111111-1111-4111-8111-111111111111',
+      loadInstallationContext: async () =>
+        assert.fail('remote profile must not resolve local installation'),
       readConnectionCatalog: async () => ({ revision: 1, defaultTarget: null, connections: [] }),
     },
   );
@@ -256,6 +349,40 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
   assert.equal(remoteInput?.clientInstanceId, '11111111-1111-4111-8111-111111111111');
   assert.equal(Object.hasOwn(context.profile, 'credential'), false);
   await context.close();
+});
+
+test('remote CLI profiles reject local generation intent before connecting', async (t) => {
+  const clientDataRoot = await mkdtemp(join(tmpdir(), 'maka-cli-remote-generation-root-'));
+  t.after(() => rm(clientDataRoot, { recursive: true, force: true }));
+  await createClientRuntimeHostProfileCatalog(clientDataRoot).save(
+    {
+      id: 'office',
+      name: 'Office',
+      kind: 'remote',
+      transport: { kind: 'tls', url: 'wss://runtime.example.com/runtime-host' },
+      rootId: 'c'.repeat(64),
+    },
+    'opaque-token',
+  );
+
+  await assert.rejects(
+    connectRuntimeHostCli(
+      {
+        rootPath: '/unused-local-root',
+        clientDataRoot,
+        surface: 'tui',
+        profileId: 'office',
+        localGenerationRequest: { kind: 'require_installed' },
+      },
+      {
+        connectOrSpawn: async () => assert.fail('remote profile must not use local discovery'),
+        connectRemoteProfile: async () => assert.fail('local generation intent must be rejected'),
+        loadInstallationContext: async () =>
+          assert.fail('remote profile must not resolve local installation'),
+      },
+    ),
+    /remote Runtime Host does not accept local generation requests/u,
+  );
 });
 
 test('remote CLI profile state and Client identity use the explicit Client Data Root', async (t) => {
@@ -397,6 +524,7 @@ function hostRegistration(
   overrides: Partial<{
     compatibilityEpoch: number;
     lifecycleMode: 'ephemeral' | 'service';
+    generation: string;
   }> = {},
 ) {
   return {
