@@ -164,6 +164,7 @@ export interface LlmCallRecord {
   cacheWriteInputTokens?: number;
   reasoningTokens?: number;
   totalTokens?: number;
+  totalTokensSource?: 'reported' | 'derived';
   rawFinishReason?: string;
   rawUsage?: {
     prompt_tokens?: number;
