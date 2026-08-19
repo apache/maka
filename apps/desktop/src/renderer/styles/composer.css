@@ -158,31 +158,37 @@
 /* Cursor: product-wide native-cursor.css (maka.legacy) owns default vs pointer. */
 
 /* Astryx sm list density: DropdownMenuItem + Selector options use
-   padding-block: var(--spacing-1) (4px) when size=sm. RadioItem only sizes its
-   radio glyph from menuSize and never applies itemSizeStyles, so it stays on
-   Item balanced (8px) and permission rows look taller than + / model. Quiet
-   menus force the sm block pad so all three composer popouts share one ladder.
-   Use product --space-1 (same 4px step as Astryx --spacing-1). Upstream
-   should wire itemSizeStyles into RadioItem; drop this when it does. */
-.maka-composer-quiet-menu [role="menuitemradio"] {
+   padding-block: var(--spacing-1) (4px) when size=sm. The two selectable item
+   types only size their glyph from menuSize and never apply itemSizeStyles, so
+   they stay on Item balanced (8px) and their rows look taller than + / model.
+   Quiet menus force the sm block pad so all three composer popouts share one
+   ladder. Use product --space-1 (same 4px step as Astryx --spacing-1).
+   Upstream should wire itemSizeStyles into both; drop this when it does. */
+.maka-composer-quiet-menu [role="menuitemradio"],
+.maka-composer-quiet-menu [role="menuitemcheckbox"] {
   padding-block: var(--space-1);
 }
 
 /* The ＋ menu's mode rows carry the mark Astryx draws for a chosen option — a
    check when chosen, nothing when not — which is what its own Selector puts on
    a selected option, and what a menu of otherwise identical rows needs: no
-   column of empty circles ahead of the labels. A menu radio item draws the
-   circle instead, so composer.tsx passes the check through `endContent` and
-   the circle is suppressed here.
+   column of empty circles and boxes ahead of the labels.
 
-   `astryx-radio-indicator` is RadioIndicator's published theme target (see its
-   themeProps call), not an internal class. Scoped to the ＋ panel alone: the
-   permission menu beside it keeps its radio circles, and nothing outside these
-   two menus is touched.
+   Plan is a toggle and orchestration is a one-of-N choice, so the two rows are
+   honestly different roles (`menuitemcheckbox` against `menuitemradio`) and
+   assistive technology reads them as such. Only the rhythm is shared: each
+   item type draws its own marker at the row's start, so composer.tsx passes
+   the check through `endContent` and both markers are suppressed here.
 
-   Drop this rule and the `endContent` mark together once a radio item can
-   choose its own indicator upstream. */
-.maka-composer-plus-panel [role="menuitemradio"] .astryx-radio-indicator {
+   `astryx-radio-indicator` and `astryx-checkbox-indicator` are the two
+   indicators' published theme targets (see their themeProps calls), not
+   internal classes. Scoped to the ＋ panel alone: the permission menu beside
+   it keeps its radio circles, and nothing outside these two menus is touched.
+
+   Drop these rules and the `endContent` mark together once a selectable menu
+   item can choose its own indicator upstream. */
+.maka-composer-plus-panel [role="menuitemradio"] .astryx-radio-indicator,
+.maka-composer-plus-panel [role="menuitemcheckbox"] .astryx-checkbox-indicator {
   display: none;
 }
 

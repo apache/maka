@@ -438,13 +438,15 @@ type ShellCopy = {
     permissionModeWaiting: string;
     /** The one mode control locks for the same four reasons, worded once. */
     /** The Session summary has not arrived, so its mode is not known yet. */
-    sessionModeLoading: string;
-    sessionModeChanging: string;
-    sessionModeStreaming: string;
-    sessionModeRunning: string;
-    sessionModeWaiting: string;
-    sessionModeFailedTitle: string;
-    sessionModeFallback: string;
+    modeChangeLoading: string;
+    modeChanging: string;
+    modeChangeStreaming: string;
+    modeChangeRunning: string;
+    modeChangeWaiting: string;
+    planModeFailedTitle: string;
+    planModeFallback: string;
+    orchestrationModeFailedTitle: string;
+    orchestrationModeFallback: string;
     planModeExitPendingTitle: string;
     planModeExitPendingDescription(title: string): string;
     planModeExitConfirm: string;
@@ -1136,13 +1138,15 @@ const SHELL_COPY_BY_LOCALE = {
       permissionModeStreaming: '当前任务正在流式输出，等结束后再切换权限模式。',
       permissionModeRunning: '当前任务正在运行，等结束后再切换权限模式。',
       permissionModeWaiting: '当前有工具调用正在等待确认，处理后再切换权限模式。',
-      sessionModeLoading: '会话还在载入，稍候即可切换模式。',
-      sessionModeChanging: '会话模式正在切换，完成后再继续操作。',
-      sessionModeStreaming: '当前任务正在流式输出，等结束后再切换会话模式。',
-      sessionModeRunning: '当前任务正在运行，等结束后再切换会话模式。',
-      sessionModeWaiting: '当前有工具调用正在等待确认，处理后再切换会话模式。',
-      sessionModeFailedTitle: '切换会话模式失败',
-      sessionModeFallback: '会话模式暂时无法切换，请稍后重试。',
+      modeChangeLoading: '会话还在载入，稍候即可切换模式。',
+      modeChanging: '模式正在切换，完成后再继续操作。',
+      modeChangeStreaming: '当前任务正在流式输出，等结束后再切换模式。',
+      modeChangeRunning: '当前任务正在运行，等结束后再切换模式。',
+      modeChangeWaiting: '当前有工具调用正在等待确认，处理后再切换模式。',
+      planModeFailedTitle: '切换 Plan 模式失败',
+      planModeFallback: 'Plan 模式暂时无法切换，请稍后重试。',
+      orchestrationModeFailedTitle: '切换编排模式失败',
+      orchestrationModeFallback: '编排模式暂时无法切换，请稍后重试。',
       planModeExitPendingTitle: '放弃当前方案？',
       planModeExitPendingDescription: (title: string) =>
         `「${title}」尚未审批。退出 Plan Mode 后，该方案会标记为已放弃，但历史记录仍会保留。`,
@@ -1661,13 +1665,15 @@ const SHELL_COPY_BY_LOCALE = {
         'This task is streaming. Wait for it to finish before changing the permission mode.',
       permissionModeRunning: 'This task is running. Wait for it to finish before changing the permission mode.',
       permissionModeWaiting: 'A tool call is waiting for confirmation. Respond before changing the permission mode.',
-      sessionModeLoading: 'This session is still loading. Its mode can be changed in a moment.',
-      sessionModeChanging: 'The session mode is changing. Wait for it to finish before continuing.',
-      sessionModeStreaming: 'This task is streaming. Wait for it to finish before changing the session mode.',
-      sessionModeRunning: 'This task is running. Wait for it to finish before changing the session mode.',
-      sessionModeWaiting: 'A tool call is waiting for confirmation. Respond before changing the session mode.',
-      sessionModeFailedTitle: 'Could not change the session mode',
-      sessionModeFallback: 'The session mode could not be changed. Try again later.',
+      modeChangeLoading: 'This session is still loading. Its mode can be changed in a moment.',
+      modeChanging: 'The mode is changing. Wait for it to finish before continuing.',
+      modeChangeStreaming: 'This task is streaming. Wait for it to finish before changing the mode.',
+      modeChangeRunning: 'This task is running. Wait for it to finish before changing the mode.',
+      modeChangeWaiting: 'A tool call is waiting for confirmation. Respond before changing the mode.',
+      planModeFailedTitle: 'Could not change Plan mode',
+      planModeFallback: 'Plan mode could not be changed. Try again later.',
+      orchestrationModeFailedTitle: 'Could not change the orchestration mode',
+      orchestrationModeFallback: 'The orchestration mode could not be changed. Try again later.',
       planModeExitPendingTitle: 'Abandon the current plan?',
       planModeExitPendingDescription: (title: string) =>
         `“${title}” has not been approved. Leaving Plan Mode will mark it as abandoned while preserving its history.`,

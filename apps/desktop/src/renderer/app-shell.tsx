@@ -13,6 +13,7 @@ import type { ScheduledTask } from '@maka/core/scheduled-task';
 import type { ProjectRecord } from '@maka/core/project';
 import type { QuoteRef } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
+import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
 import type { UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
@@ -27,7 +28,6 @@ import {
   ChatSurfaceLayout,
   type ComposerHandle,
   type ComposerSendMetadata,
-  type ComposerSessionMode,
   type ComposerSlashCommandOption,
   type MakaUriDest,
   MakaUriContext,
@@ -226,7 +226,6 @@ function rebaseWorkspaceFileReferences(
 
 import { useSettingsModal } from './use-settings-modal';
 import { RemoteProjectDirectoryDialog } from './remote-project-directory-dialog';
-import { SESSION_MODE_FIELDS, sessionModeOf } from '../shared/session-mode';
 import { useSystemUiLocale } from './use-system-ui-locale';
 import {
   isSessionWorkspaceUnavailableError,
@@ -419,12 +418,13 @@ function AppShellContent({
     removeQuote,
     clearQuotes,
   } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
-  // The mode a new chat will start in. One value, like the Session field pair
-  // it becomes on first send — three booleans here could hold a combination
-  // (Plan + Swarm) that no Session can be created in.
-  const [newChatSessionMode, setNewChatSessionMode] = useState<ComposerSessionMode>('default');
+  // What a new chat will start with, held the way the Session holds it: a
+  // Plan toggle and one orchestration value, not one fused choice.
+  const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
+  const [newChatOrchestrationMode, setNewChatOrchestrationMode] = useState<OrchestrationMode>('default');
   const [scheduledTaskCreateRequestNonce, setScheduledTaskCreateRequestNonce] = useState(0);
-  const [pendingSessionModeBySession, setPendingSessionModeBySession] = useState<Record<string, boolean>>({});
+  const [pendingCollaborationModeBySession, setPendingCollaborationModeBySession] = useState<Record<string, boolean>>({});
+  const [pendingOrchestrationModeBySession, setPendingOrchestrationModeBySession] = useState<Record<string, boolean>>({});
   const [newTaskPermissionChoice, setNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
@@ -922,10 +922,10 @@ function AppShellContent({
   const pendingTurnActions = turnActionRegistry.keys;
   const sessionRowActionRegistry = useKeyedPendingRegistry();
   const permissionModeChangeRegistry = useKeyedPendingRegistry();
-  // One registry for the whole mode choice, not one per persisted field: a
-  // transition writes both fields, so a gate on either alone would let a
-  // second transition start between them.
-  const sessionModeChangeRegistry = useKeyedPendingRegistry();
+  // One registry per persisted field. The two controls are independent, so a
+  // Plan transition in flight is no reason to hold the orchestration choice.
+  const collaborationModeChangeRegistry = useKeyedPendingRegistry();
+  const orchestrationModeChangeRegistry = useKeyedPendingRegistry();
   const sessionModelChangeRegistry = useKeyedPendingRegistry();
   const pendingKeyOf = (sessionId: string, turnId: string, actionId: string) =>
     `${sessionId}:${turnId}:${actionId}`;
@@ -961,8 +961,10 @@ function AppShellContent({
     clearOwnedSessionState(sessionId);
     turnActionRegistry.clearForSession(sessionId);
     permissionModeChangeRegistry.keysRef.current.delete(sessionId);
-    sessionModeChangeRegistry.keysRef.current.delete(sessionId);
-    setPendingSessionModeBySession((current) => omitSessionKey(current, sessionId));
+    collaborationModeChangeRegistry.keysRef.current.delete(sessionId);
+    setPendingCollaborationModeBySession((current) => omitSessionKey(current, sessionId));
+    orchestrationModeChangeRegistry.keysRef.current.delete(sessionId);
+    setPendingOrchestrationModeBySession((current) => omitSessionKey(current, sessionId));
     sessionModelChangeRegistry.keysRef.current.delete(sessionId);
   }
 
@@ -1010,36 +1012,33 @@ function AppShellContent({
   });
 
   /**
-   * Put one Session into one mode. The only path that writes either field.
+   * Enter or leave Plan for one Session — the only path that writes
+   * `collaborationMode`, and it writes nothing else.
    *
    * `sessionId` is a parameter rather than a read of `activeIdRef`, because
    * this awaits — a Plan-exit confirmation can sit open while the user opens
-   * another Session, and a re-read partway through would finish the transition
-   * somewhere else.
+   * another Session, and a re-read partway through would finish the
+   * transition somewhere else.
    *
    * Both gates read the Host through `getPlanState`, not the projected mode.
    * The projection can be a frame behind; the question "does this discard a
    * pending plan proposal" has an authoritative answer and deserves it.
    *
-   * The two fields travel as one patch, so the Session is never left between
-   * two modes: `updateSessionConfiguration` merges them into the whole
-   * configuration and writes it against the Session revision. A failure
-   * changes nothing.
+   * The Session's orchestration default is left exactly as it was. Plan is a
+   * temporary excursion that Runtime ends by itself once a proposal is
+   * approved or abandoned, so clearing the default on the way in would lose
+   * it for the execution the plan was written for.
    */
-  async function applySessionMode(
-    mode: ComposerSessionMode,
-    sessionId: string,
-  ): Promise<boolean> {
+  async function applyPlanMode(active: boolean, sessionId: string): Promise<boolean> {
     if (!addPendingSessionAction(
       sessionId,
-      sessionModeChangeRegistry.keysRef,
-      setPendingSessionModeBySession,
+      collaborationModeChangeRegistry.keysRef,
+      setPendingCollaborationModeBySession,
     )) return false;
 
-    const fields = SESSION_MODE_FIELDS[mode];
     try {
       const planState = await window.maka.sessions.getPlanState(sessionId);
-      if (mode === 'plan' && planState.activeExecutionId) {
+      if (active && planState.activeExecutionId) {
         toastApi.error(
           shellCopy.planModeExecutionActiveTitle,
           shellCopy.planModeExecutionActiveDescription,
@@ -1049,8 +1048,7 @@ function AppShellContent({
       const latestProposal = planState.proposals.find(
         (proposal) => proposal.proposalId === planState.latestProposalId,
       );
-      const discardsProposal = mode !== 'plan' && latestProposal?.status === 'pending_approval';
-      if (discardsProposal && latestProposal) {
+      if (!active && latestProposal?.status === 'pending_approval') {
         const confirmed = await toastApi.confirm({
           title: shellCopy.planModeExitPendingTitle,
           description: shellCopy.planModeExitPendingDescription(latestProposal.title),
@@ -1059,58 +1057,111 @@ function AppShellContent({
           destructive: true,
         });
         if (!confirmed) return false;
+        // Abandoning the proposal is what leaves Plan: Runtime writes the
+        // Session back to `agent` itself as part of it.
         await window.maka.sessions.abandonPlanProposal(sessionId, latestProposal.proposalId);
+        setSessions((current) => current.map((session) => (
+          session.id === sessionId ? { ...session, collaborationMode: 'agent' } : session
+        )));
+      } else {
+        const next = await window.maka.sessions.setCollaborationMode(
+          sessionId,
+          active ? 'plan' : 'agent',
+        );
+        setSessions((current) => current.map((session) => session.id === next.id ? next : session));
       }
-
-      const next = await window.maka.sessions.setSessionMode(sessionId, fields);
-      setSessions((current) => current.map((session) => session.id === next.id ? next : session));
       await refreshSessions();
       return true;
     } catch (error) {
       if (activeIdRef.current === sessionId) {
         toastApi.error(
-          shellCopy.sessionModeFailedTitle,
-          localizedShellErrorMessage(error, shellCopy.sessionModeFallback, uiLocale),
+          shellCopy.planModeFailedTitle,
+          localizedShellErrorMessage(error, shellCopy.planModeFallback, uiLocale),
         );
       }
       return false;
     } finally {
       clearPendingSessionAction(
         sessionId,
-        sessionModeChangeRegistry.keysRef,
-        setPendingSessionModeBySession,
+        collaborationModeChangeRegistry.keysRef,
+        setPendingCollaborationModeBySession,
       );
     }
   }
 
   /**
-   * The ＋ menu's choice and the `/swarm` and `/graph` commands both land here,
-   * so there is no entry point that can write one field without the other.
+   * Set the Session's standing orchestration default — the only path that
+   * writes `orchestrationMode`, and it writes nothing else.
+   *
+   * One field with three values, so there is nothing to sequence and nothing
+   * to leave half-applied: Swarm, Graph and off are one write each.
    */
-  async function setSessionMode(next: ComposerSessionMode): Promise<boolean> {
+  async function applyOrchestrationMode(
+    mode: OrchestrationMode,
+    sessionId: string,
+  ): Promise<boolean> {
+    if (!addPendingSessionAction(
+      sessionId,
+      orchestrationModeChangeRegistry.keysRef,
+      setPendingOrchestrationModeBySession,
+    )) return false;
+
+    try {
+      const next = await window.maka.sessions.setOrchestrationMode(sessionId, mode);
+      setSessions((current) => current.map((session) => session.id === next.id ? next : session));
+      await refreshSessions();
+      return true;
+    } catch (error) {
+      if (activeIdRef.current === sessionId) {
+        toastApi.error(
+          shellCopy.orchestrationModeFailedTitle,
+          localizedShellErrorMessage(error, shellCopy.orchestrationModeFallback, uiLocale),
+        );
+      }
+      return false;
+    } finally {
+      clearPendingSessionAction(
+        sessionId,
+        orchestrationModeChangeRegistry.keysRef,
+        setPendingOrchestrationModeBySession,
+      );
+    }
+  }
+
+  function setPlanMode(active: boolean): Promise<boolean> {
     const sessionId = activeIdRef.current;
     if (!sessionId) {
-      setNewChatSessionMode(next);
-      return true;
+      setNewChatPlanModeActive(active);
+      return Promise.resolve(true);
     }
-    if (next === activeSessionMode) return true;
-    return applySessionMode(next, sessionId);
+    if (active === activePlanMode) return Promise.resolve(true);
+    return applyPlanMode(active, sessionId);
   }
 
   /**
-   * `/swarm off` means "leave swarm", not "go to default" — a Session in Plan
-   * is not in swarm, so the command has nothing to do there. Reading the
-   * projected mode to decide that is safe in the one direction it can be
-   * wrong: Plan wins the projection, so a stale read turns the command into a
-   * no-op rather than into an unasked-for mode change.
+   * The ＋ menu's orchestration choice and the `/swarm` and `/graph` commands
+   * all land here, so every entry point spells the field the same way.
+   *
+   * `/swarm off` means "leave swarm", not "go to default": a Session already
+   * in Graph has nothing for it to do.
    */
-  function setOrchestrationSessionMode(
-    mode: Extract<ComposerSessionMode, 'swarm' | 'graph'>,
+  function setOrchestrationMode(mode: OrchestrationMode): Promise<boolean> {
+    const sessionId = activeIdRef.current;
+    if (!sessionId) {
+      setNewChatOrchestrationMode(mode);
+      return Promise.resolve(true);
+    }
+    if (mode === activeOrchestrationMode) return Promise.resolve(true);
+    return applyOrchestrationMode(mode, sessionId);
+  }
+
+  function setOrchestrationModeActive(
+    mode: Exclude<OrchestrationMode, 'default'>,
     active: boolean,
   ): Promise<boolean> {
-    if (active) return setSessionMode(mode);
-    if (activeSessionMode !== mode) return Promise.resolve(true);
-    return setSessionMode('default');
+    if (active) return setOrchestrationMode(mode);
+    if (activeOrchestrationMode !== mode) return Promise.resolve(true);
+    return setOrchestrationMode('default');
   }
 
   // Handed to ChatView, which calls it with the turns its transcript projection
@@ -1260,15 +1311,29 @@ function AppShellContent({
     permissionMode: defaultPermissionMode,
         }
       : undefined);
+  // Each control reads its own field. There is nothing to project and nothing
+  // to keep in sync: a Session in Plan with Swarm as its orchestration default
+  // says both, because it is both.
+  const activePlanMode = activeId
+    ? (activeSessionForView?.collaborationMode ?? 'agent') === 'plan'
+    : newChatPlanModeActive;
+  const activeOrchestrationMode: OrchestrationMode = activeId
+    ? activeSessionForView?.orchestrationMode ?? 'default'
+    : newChatOrchestrationMode;
   /**
-   * The Session's mode as the composer offers it: one value projected from the
-   * two fields that carry it. Plan wins when both are set, which no session
-   * reaches through this control — it is how a record written by an older
-   * build, or by a model's own mode change, still reads as one of the four.
+   * Why neither mode can be changed right now, if either cannot. Both controls
+   * write the same Session configuration, so everything that holds one holds
+   * the other; only "this one is already changing" is per-control.
    */
-  const activeSessionMode: ComposerSessionMode = activeId
-    ? sessionModeOf(activeSessionForView ?? {})
-    : newChatSessionMode;
+  const modeChangeDisabledReason = activeId && !activeSession
+    ? shellCopy.modeChangeLoading
+    : activeStreamingLive
+      ? shellCopy.modeChangeStreaming
+      : activeId && turnActive
+        ? shellCopy.modeChangeRunning
+        : activeId && activeSessionForView?.status === 'waiting_for_user'
+          ? shellCopy.modeChangeWaiting
+          : undefined;
   const {
     boundary: activeExecutionBoundary,
     unreadable: activeExecutionBoundaryUnreadable,
@@ -2009,7 +2074,7 @@ function AppShellContent({
     projectPath: activeId ? projectInfo?.projectPath : newTask.projectPath,
     newTaskTarget: activeId ? undefined : newTask.target,
     newSessionModel: newChatModel,
-    newSessionCollaborationMode: newChatSessionMode === 'plan' ? 'plan' : 'agent',
+    newSessionCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
     // Refresh only; Desktop Main re-reads the authoritative default before
     // constructing the Runtime Host preview target.
     newSessionPermissionMode: newTaskPermissionMode,
@@ -2062,11 +2127,8 @@ function AppShellContent({
     newChatModel: newChatModel ?? null,
     pendingNewChatThinkingLevel: newChatThinkingLevel ?? null,
     newChatPermissionMode: newTaskPermissionMode,
-    newChatCollaborationMode: newChatSessionMode === 'plan' ? 'plan' : 'agent',
-    newChatOrchestrationMode:
-      newChatSessionMode === 'graph' || newChatSessionMode === 'swarm'
-        ? newChatSessionMode
-        : 'default',
+    newChatCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
+    newChatOrchestrationMode: newChatOrchestrationMode,
     newTaskTarget: newTask.target,
   });
 
@@ -2192,9 +2254,7 @@ function AppShellContent({
     if (slashCommand?.kind === 'swarm') {
       const swarmCommand = slashCommand.command;
       if (swarmCommand.kind === 'status') {
-        const active = activeIdRef.current
-          ? (activeSessionForView?.orchestrationMode ?? 'default') === 'swarm'
-          : newChatSessionMode === 'swarm';
+        const active = activeOrchestrationMode === 'swarm';
         toastApi.info(
           active ? shellCopy.swarmModeEnabledTitle : shellCopy.swarmModeDisabledTitle,
           shellCopy.swarmModeStatusDescription,
@@ -2202,10 +2262,7 @@ function AppShellContent({
         return true;
       }
       if (swarmCommand.kind === 'set_mode') {
-        const changed = await setOrchestrationSessionMode(
-          'swarm',
-          swarmCommand.mode === 'swarm',
-        );
+        const changed = await setOrchestrationModeActive('swarm', swarmCommand.mode === 'swarm');
         if (changed) {
           toastApi.info(
             swarmCommand.mode === 'swarm'
@@ -2238,9 +2295,7 @@ function AppShellContent({
     if (slashCommand?.kind === 'graph') {
       const graphCommand = slashCommand.command;
       if (graphCommand.kind === 'status') {
-        const active = activeIdRef.current
-          ? (activeSessionForView?.orchestrationMode ?? 'default') === 'graph'
-          : newChatSessionMode === 'graph';
+        const active = activeOrchestrationMode === 'graph';
         toastApi.info(
           active ? shellCopy.graphModeEnabledTitle : shellCopy.graphModeDisabledTitle,
           shellCopy.graphModeStatusDescription,
@@ -2252,10 +2307,7 @@ function AppShellContent({
         return true;
       }
       if (graphCommand.kind === 'set_mode') {
-        const changed = await setOrchestrationSessionMode(
-          'graph',
-          graphCommand.mode === 'graph',
-        );
+        const changed = await setOrchestrationModeActive('graph', graphCommand.mode === 'graph');
         if (changed) {
           toastApi.info(
             graphCommand.mode === 'graph'
@@ -2648,10 +2700,9 @@ function AppShellContent({
 
   function openNewTaskSurface() {
     startNewSession();
-    // Only Plan resets. Swarm and Graph carried across new tasks before the
-    // three booleans became one value, and this keeps that: a new task starts
-    // out of Plan, in whatever orchestration the last one was set to.
-    setNewChatSessionMode((current) => (current === 'plan' ? 'default' : current));
+    // Only Plan resets: a new task starts out of Plan, in whatever
+    // orchestration the last one was set to.
+    setNewChatPlanModeActive(false);
     setNavSelection({ section: 'sessions' });
     setSearchScrollTarget(null);
     // New-task affordances reset to the empty-state composer; move focus
@@ -3205,25 +3256,29 @@ function AppShellContent({
                       ? (mode) => setPermissionMode(mode)
                       : undefined
                   }
-                  sessionMode={activeSessionMode}
-                  sessionModePending={activeId
-                    ? pendingSessionModeBySession[activeId] === true
+                  planModeActive={activePlanMode}
+                  planModePending={activeId
+                    ? pendingCollaborationModeBySession[activeId] === true
                     : false}
-                  sessionModeDisabledReason={
-                    activeId && pendingSessionModeBySession[activeId] === true
-                      ? shellCopy.sessionModeChanging
-                      : activeId && !activeSession
-                        ? shellCopy.sessionModeLoading
-                      : activeStreamingLive
-                          ? shellCopy.sessionModeStreaming
-                        : activeId && turnActive
-                            ? shellCopy.sessionModeRunning
-                          : activeId && activeSessionForView?.status === 'waiting_for_user'
-                              ? shellCopy.sessionModeWaiting
-                            : undefined
+                  planModeDisabledReason={
+                    activeId && pendingCollaborationModeBySession[activeId] === true
+                      ? shellCopy.modeChanging
+                      : modeChangeDisabledReason
                   }
-                  onSessionModeChange={(mode) => {
-                    void setSessionMode(mode);
+                  onPlanModeChange={(active) => {
+                    void setPlanMode(active);
+                  }}
+                  orchestrationMode={activeOrchestrationMode}
+                  orchestrationModePending={activeId
+                    ? pendingOrchestrationModeBySession[activeId] === true
+                    : false}
+                  orchestrationModeDisabledReason={
+                    activeId && pendingOrchestrationModeBySession[activeId] === true
+                      ? shellCopy.modeChanging
+                      : modeChangeDisabledReason
+                  }
+                  onOrchestrationModeChange={(mode) => {
+                    void setOrchestrationMode(mode);
                   }}
                     />
                   </>

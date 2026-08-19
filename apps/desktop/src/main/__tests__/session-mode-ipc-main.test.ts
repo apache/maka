@@ -1,7 +1,9 @@
 /**
- * The Session's mode is one choice held in two persisted fields. It has to
- * reach the Host as one mutation, or a failure between two writes leaves the
- * Session in neither the mode it had nor the one that was asked for.
+ * Plan and orchestration are two Session fields with two lifetimes, so they
+ * are two channels here, and each writes only its own field. A Plan excursion
+ * that cleared the orchestration default would lose it for the execution the
+ * plan was written for — Runtime leaves Plan by itself on approval, and the
+ * default has to still be there when it does.
  */
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
@@ -67,53 +69,51 @@ function harness(patches: DesktopSessionConfigurationPatch[]) {
   };
 }
 
-test('the whole mode reaches the Host as one configuration patch', async () => {
+test('entering or leaving Plan writes the collaboration field alone', async () => {
   const patches: DesktopSessionConfigurationPatch[] = [];
   const ipc = harness(patches);
 
-  await ipc.invoke('sessions:setSessionMode', 'session-1', {
-    collaborationMode: 'plan',
-    orchestrationMode: 'default',
-  });
+  await ipc.invoke('sessions:setCollaborationMode', 'session-1', 'plan');
+  await ipc.invoke('sessions:setCollaborationMode', 'session-1', 'agent');
 
-  assert.deepEqual(patches, [{ collaborationMode: 'plan', orchestrationMode: 'default' }]);
-  // No per-field channel survives, so no caller can write one without the other.
-  assert.equal(ipc.channels.has('sessions:setCollaborationMode'), false);
-  assert.equal(ipc.channels.has('sessions:setOrchestrationMode'), false);
+  assert.deepEqual(patches, [{ collaborationMode: 'plan' }, { collaborationMode: 'agent' }]);
 });
 
-test('a complete but illegal pair is refused, not persisted', async () => {
+test('the orchestration default writes its own field alone', async () => {
   const patches: DesktopSessionConfigurationPatch[] = [];
   const ipc = harness(patches);
 
-  // Both values are individually valid; the pair is not. Plan strips the tools
-  // Swarm and Graph are made of, so this Session could not be honoured.
+  await ipc.invoke('sessions:setOrchestrationMode', 'session-1', 'swarm');
+  await ipc.invoke('sessions:setOrchestrationMode', 'session-1', 'default');
+
+  assert.deepEqual(patches, [{ orchestrationMode: 'swarm' }, { orchestrationMode: 'default' }]);
+});
+
+test('a Plan Session keeps the orchestration default it was carrying', async () => {
+  const patches: DesktopSessionConfigurationPatch[] = [];
+  const ipc = harness(patches);
+
+  await ipc.invoke('sessions:setOrchestrationMode', 'session-1', 'swarm');
+  await ipc.invoke('sessions:setCollaborationMode', 'session-1', 'plan');
+
+  // Nothing in the Plan write names `orchestrationMode`, so the merge at the
+  // Host leaves Swarm standing. Plan strips the tools it needs for as long as
+  // the excursion lasts; it does not end it.
+  assert.deepEqual(patches[1], { collaborationMode: 'plan' });
+  assert.equal('orchestrationMode' in (patches[1] ?? {}), false);
+});
+
+test('an unknown mode is refused rather than persisted', async () => {
+  const patches: DesktopSessionConfigurationPatch[] = [];
+  const ipc = harness(patches);
+
   await assert.rejects(
-    ipc.invoke('sessions:setSessionMode', 'session-1', {
-      collaborationMode: 'plan',
-      orchestrationMode: 'swarm',
-    }) as Promise<unknown>,
-    /cannot be combined/,
+    ipc.invoke('sessions:setCollaborationMode', 'session-1', 'swarm') as Promise<unknown>,
+    /Invalid collaboration mode/,
   );
   await assert.rejects(
-    ipc.invoke('sessions:setSessionMode', 'session-1', {
-      collaborationMode: 'plan',
-      orchestrationMode: 'graph',
-    }) as Promise<unknown>,
+    ipc.invoke('sessions:setOrchestrationMode', 'session-1', 'plan') as Promise<unknown>,
+    /Invalid orchestration mode/,
   );
   assert.deepEqual(patches, [], 'nothing reached the Host');
-});
-
-test('a half-named mode is refused rather than half-applied', async () => {
-  const patches: DesktopSessionConfigurationPatch[] = [];
-  const ipc = harness(patches);
-
-  await assert.rejects(
-    ipc.invoke('sessions:setSessionMode', 'session-1', { collaborationMode: 'plan' }) as Promise<unknown>,
-  );
-  await assert.rejects(
-    ipc.invoke('sessions:setSessionMode', 'session-1', { orchestrationMode: 'swarm' }) as Promise<unknown>,
-  );
-  await assert.rejects(ipc.invoke('sessions:setSessionMode', 'session-1', 'plan') as Promise<unknown>);
-  assert.deepEqual(patches, []);
 });

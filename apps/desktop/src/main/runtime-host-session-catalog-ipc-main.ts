@@ -22,7 +22,6 @@ import {
 } from './session-family-action.js';
 import { normalizeSessionModelSelection } from './session-model-input.js';
 import type { SessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
-import { isLegalSessionModePair } from '../shared/session-mode.js';
 import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,
@@ -158,39 +157,30 @@ export function registerRuntimeHostSessionCatalogIpc(
     if (!isPermissionMode(mode)) throw new Error(`Invalid permission mode: ${String(mode)}`);
     return updateConfiguration(deps, sessionId, { permissionMode: mode }, 'mode-change');
   });
-  // The Session's mode is one choice spread over two persisted fields, so it
-  // travels as one patch. `updateSessionConfiguration` merges a patch into the
-  // whole configuration and writes it back against the Session revision, which
-  // makes both fields land in a single revision-checked mutation — there is no
-  // moment where one has changed and the other has not.
-  ipcMain.handle('sessions:setSessionMode', async (_event, sessionId: string, mode: unknown) => {
-    if (typeof mode !== 'object' || mode === null) {
-      throw new Error('Invalid session mode');
-    }
-    const { collaborationMode, orchestrationMode } = mode as Record<string, unknown>;
-    if (!isCollaborationMode(collaborationMode)) {
-      throw new Error(`Invalid collaboration mode: ${String(collaborationMode)}`);
-    }
-    if (!isOrchestrationMode(orchestrationMode)) {
-      throw new Error(`Invalid orchestration mode: ${String(orchestrationMode)}`);
-    }
-    // Each field being a valid value does not make the pair one. Plan strips
-    // the subagent-category and agent-graph tools that Swarm and Graph are
-    // made of, so Plan-plus-orchestration is a Session the runtime cannot
-    // honour — and the boundary that can persist it is the one that has to
-    // refuse it, rather than trusting every present and future caller.
-    if (!isLegalSessionModePair({ collaborationMode, orchestrationMode })) {
-      throw new Error(
-        `Invalid session mode: ${collaborationMode} cannot be combined with ${orchestrationMode}`,
-      );
-    }
-    return updateConfiguration(
-      deps,
-      sessionId,
-      { collaborationMode, orchestrationMode },
-      'mode-change',
-    );
-  });
+  // Two fields, two channels, one field each. Plan is a temporary
+  // collaboration excursion that Runtime ends by itself on approval or
+  // abandonment; orchestration is the Session's standing default for how a
+  // turn fans out. Runtime resolves the overlap by stripping the subagent and
+  // agent-graph tools while planning, and validates the two independently, so
+  // neither channel has any business writing the other's field.
+  ipcMain.handle(
+    'sessions:setCollaborationMode',
+    async (_event, sessionId: string, mode: unknown) => {
+      if (!isCollaborationMode(mode)) {
+        throw new Error(`Invalid collaboration mode: ${String(mode)}`);
+      }
+      return updateConfiguration(deps, sessionId, { collaborationMode: mode }, 'mode-change');
+    },
+  );
+  ipcMain.handle(
+    'sessions:setOrchestrationMode',
+    async (_event, sessionId: string, mode: unknown) => {
+      if (!isOrchestrationMode(mode)) {
+        throw new Error(`Invalid orchestration mode: ${String(mode)}`);
+      }
+      return updateConfiguration(deps, sessionId, { orchestrationMode: mode }, 'mode-change');
+    },
+  );
   ipcMain.handle('sessions:setModel', async (_event, sessionId: string, input: unknown) => {
     const modelTarget = normalizeExplicitModel(input);
     return updateConfiguration(
