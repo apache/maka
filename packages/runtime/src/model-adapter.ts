@@ -38,6 +38,10 @@ export type {
 
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import {
+  plaintextResponsesReasoningProviderOptions,
+  type PlaintextResponsesReasoningCarrier,
+} from './responses-reasoning-state.js';
+import {
   classifyError,
   errorPresentationFromClass,
   providerFailureSummary,
@@ -191,9 +195,15 @@ export class ModelAdapter {
       // recorded to the event log and rendered regardless.
       unsignedThinking: this.runtime.reasoningReplay.kind === 'openai-chat-plaintext',
       responsesReasoning:
-        this.runtime.reasoningReplay.kind === 'responses'
-          ? this.runtime.reasoningReplay.contract.reasoningReplay
-          : 'none',
+        this.runtime.reasoningReplay.kind !== 'responses'
+          ? 'none'
+          : this.runtime.reasoningReplay.contract.reasoningReplay === 'encrypted-content'
+            ? 'encrypted-content'
+            : {
+                kind: 'plaintext-item',
+                carrier: plaintextCarrier(this.runtime.reasoningReplay.contract.reasoningReplay),
+                providerOptionsKey: requireResponsesProviderOptionsKey(this.runtime),
+              },
     };
   }
 
@@ -332,6 +342,7 @@ export class ModelAdapter {
         ? this.openAiChatReasoningTransportState
         : undefined;
     const openAiResponsesTransportState = this.openAiResponsesTransportState;
+    const resolvedRuntime = this.runtime;
     let settleOutcome!: (outcome: ModelStepOutcome) => void;
     const outcome = new Promise<ModelStepOutcome>((resolve) => {
       settleOutcome = resolve;
@@ -345,7 +356,11 @@ export class ModelAdapter {
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
             onStreamActivity();
-            for (const event of translateChunk(chunk, openAiChatReasoningTransportState)) {
+            for (const event of translateChunk(
+              chunk,
+              openAiChatReasoningTransportState,
+              resolvedRuntime,
+            )) {
               if (event.kind === 'error') failure = event.failure;
               if (event.kind === 'finish') sawFinish = true;
               if (event.kind === 'finish' || event.kind === 'step-finish') {
@@ -480,6 +495,7 @@ export class ModelAdapter {
       this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
         ? this.openAiChatReasoningTransportState
         : undefined,
+      this.runtime,
     );
   }
 
@@ -643,7 +659,27 @@ export interface ModelAdapterRuntimeEventReplaySupport {
   providerExecutedTools: boolean;
   signedThinking: boolean;
   unsignedThinking: boolean;
-  responsesReasoning: 'none' | 'encrypted-content' | 'plaintext-content';
+  responsesReasoning:
+    | 'none'
+    | 'encrypted-content'
+    | {
+        kind: 'plaintext-item';
+        carrier: PlaintextResponsesReasoningCarrier;
+        providerOptionsKey: string;
+      };
+}
+
+function plaintextCarrier(
+  replay: 'plaintext-content' | 'plaintext-summary',
+): PlaintextResponsesReasoningCarrier {
+  return replay === 'plaintext-summary' ? 'summary' : 'content';
+}
+
+function requireResponsesProviderOptionsKey(runtime: ResolvedModelRuntime): string {
+  if (!runtime.responsesProviderOptionsKey) {
+    throw new Error('Plaintext Responses replay requires a provider-options key');
+  }
+  return runtime.responsesProviderOptionsKey;
 }
 
 /**
@@ -722,9 +758,27 @@ function reasoningSignatureFromChunk(chunk: AiSdkStreamChunk): string | undefine
 
 function openAiResponsesReasoningProviderOptionsFromChunk(
   chunk: AiSdkStreamChunk,
+  runtime: ResolvedModelRuntime,
 ): NonNullable<ModelMessage['providerOptions']> | undefined {
   const meta = chunk.providerMetadata;
   if (!meta || typeof meta !== 'object') return undefined;
+  if (
+    runtime.reasoningReplay.kind === 'responses' &&
+    runtime.reasoningReplay.contract.reasoningReplay !== 'encrypted-content'
+  ) {
+    const providerOptionsKey = runtime.responsesProviderOptionsKey;
+    const provider = providerOptionsKey
+      ? (meta as Record<string, unknown>)[providerOptionsKey]
+      : undefined;
+    if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return undefined;
+    const itemId = (provider as { itemId?: unknown }).itemId;
+    return typeof itemId === 'string'
+      ? plaintextResponsesReasoningProviderOptions(
+          itemId,
+          plaintextCarrier(runtime.reasoningReplay.contract.reasoningReplay),
+        )
+      : undefined;
+  }
   const openai = (meta as { openai?: unknown }).openai;
   if (!openai || typeof openai !== 'object' || Array.isArray(openai)) return undefined;
   const { itemId, reasoningEncryptedContent } = openai as {
@@ -750,6 +804,7 @@ function openAiResponsesReasoningProviderOptionsFromChunk(
 function translateChunk(
   chunk: AiSdkStreamChunk,
   openAiChatReasoningTransportState?: OpenAiChatReasoningTransportState,
+  runtime?: ResolvedModelRuntime,
 ): ModelStreamEvent[] {
   switch (chunk.type) {
     case 'text-start':
@@ -778,7 +833,9 @@ function translateChunk(
               ? chunk.delta
               : undefined;
       const signature = reasoningSignatureFromChunk(chunk);
-      const responsesProviderOptions = openAiResponsesReasoningProviderOptionsFromChunk(chunk);
+      const responsesProviderOptions = runtime
+        ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
+        : undefined;
       const events: ModelStreamEvent[] = [];
       if (signature) events.push({ kind: 'thinking-signature', signature });
       // The signed reasoning chunk arrives as a standalone delta with empty
@@ -804,7 +861,9 @@ function translateChunk(
     }
     case 'reasoning-end': {
       const signature = reasoningSignatureFromChunk(chunk);
-      const responsesProviderOptions = openAiResponsesReasoningProviderOptionsFromChunk(chunk);
+      const responsesProviderOptions = runtime
+        ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
+        : undefined;
       return [
         ...(signature ? [{ kind: 'thinking-signature' as const, signature }] : []),
         ...(responsesProviderOptions

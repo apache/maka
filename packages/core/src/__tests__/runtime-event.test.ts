@@ -48,6 +48,12 @@ test('Stored assistant reasoning parts survive recovery decoding', () => {
         openai: { itemId: 'rs_second', reasoningEncryptedContent: 'encrypted-second' },
       },
     },
+    {
+      text: 'Alibaba summary',
+      providerOptions: {
+        makaResponses: { version: 1, itemId: 'alibaba-item', carrier: 'summary' },
+      },
+    },
   ];
   const stored = decodeStoredMessage({
     type: 'assistant',
@@ -55,7 +61,7 @@ test('Stored assistant reasoning parts survive recovery decoding', () => {
     turnId: 'turn-1',
     ts: 1,
     text: 'answer',
-    thinking: { text: 'first summarysecond summary', parts },
+    thinking: { text: 'first summarysecond summaryAlibaba summary', parts },
     modelId: 'ark-code-latest',
   });
 

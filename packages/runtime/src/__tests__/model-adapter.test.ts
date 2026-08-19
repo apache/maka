@@ -147,8 +147,82 @@ describe('ModelAdapter stream and error normalization', () => {
       providerExecutedTools: false,
       signedThinking: false,
       unsignedThinking: false,
-      responsesReasoning: 'plaintext-content',
+      responsesReasoning: {
+        kind: 'plaintext-item',
+        carrier: 'content',
+        providerOptionsKey: 'deepseek',
+      },
     });
+  });
+
+  test('supports summary-item Responses reasoning replay for Alibaba Token Plan', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'alibaba-token-plan-cn',
+        providerType: 'alibaba-token-plan-cn',
+        defaultModel: 'qwen3.8-max',
+      },
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(adapter.runtimeEventReplaySupport(), {
+      toolCalls: true,
+      toolResults: true,
+      providerExecutedTools: false,
+      signedThinking: false,
+      unsignedThinking: false,
+      responsesReasoning: {
+        kind: 'plaintext-item',
+        carrier: 'summary',
+        providerOptionsKey: 'alibaba-token-plan-cn',
+      },
+    });
+  });
+
+  test('normalizes Open Responses item metadata into bounded durable state', () => {
+    for (const [providerType, modelId, carrier] of [
+      ['deepseek', 'deepseek-v4-flash', 'content'],
+      ['alibaba-token-plan-cn', 'qwen3.8-max', 'summary'],
+    ] as const) {
+      const adapter = new ModelAdapter({
+        connection: { slug: providerType, providerType, defaultModel: modelId },
+        apiKey: 'token',
+        modelId,
+        modelFactory: () => ({}),
+        newId: idGenerator(),
+        now: monotonicClock(),
+      });
+      type Chunk = Parameters<typeof adapter.translateChunk>[0];
+      assert.deepEqual(
+        adapter.translateChunk({
+          type: 'reasoning-end',
+          providerMetadata: {
+            [providerType]: {
+              itemId: `${providerType}-reasoning-item`,
+              reasoningSummary: [{ type: 'summary_text', text: 'summary' }],
+            },
+          },
+        } as Chunk),
+        [
+          {
+            kind: 'thinking',
+            text: '',
+            providerOptions: {
+              makaResponses: {
+                version: 1,
+                itemId: `${providerType}-reasoning-item`,
+                carrier,
+              },
+            },
+          },
+        ],
+        providerType,
+      );
+    }
   });
 
   test('translates provider text, reasoning, tool calls, and errors into ModelStreamEvents', () => {

@@ -17,6 +17,10 @@ export type ProviderCatalogGroup = 'recommended' | 'plans' | 'api' | 'aggregator
 
 export type ApplyPatchProtocol = 'openai-structured' | 'codex-v4a-freeform';
 
+export type ProviderResponsesCompatibilityModule =
+  | 'force-store-false'
+  | 'reject-forced-tool-choice';
+
 export type ProviderResponsesContract =
   | {
       readonly adapter: 'openai';
@@ -24,7 +28,8 @@ export type ProviderResponsesContract =
     }
   | {
       readonly adapter: 'open-responses';
-      readonly reasoningReplay: 'plaintext-content';
+      readonly reasoningReplay: 'plaintext-content' | 'plaintext-summary';
+      readonly compatibility?: readonly ProviderResponsesCompatibilityModule[];
     };
 
 type ProviderRuntimeAdapterDefinition =
@@ -528,6 +533,15 @@ const alibabaTokenPlanModelIds = [
   'glm-5',
   'MiniMax-M2.5',
 ] as const;
+const alibabaTokenPlanRuntimeAdapter = {
+  kind: 'openai-compatible',
+  name: 'provider',
+  responses: {
+    adapter: 'open-responses',
+    reasoningReplay: 'plaintext-summary',
+    compatibility: ['force-store-false', 'reject-forced-tool-choice'],
+  },
+} as const satisfies ProviderRuntimeAdapter;
 for (const id of alibabaTokenPlanModelIds) {
   if (!GENERATED_MODELS_DEV_METADATA['alibaba-token-plan-cn'][id]?.capabilities?.functionCalling) {
     throw new Error(
@@ -1586,7 +1600,7 @@ const providerRegistry = {
     fallbackModels: [...alibabaTokenPlanModelIds],
     status: 'ready',
     protocol: 'openai',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: alibabaTokenPlanRuntimeAdapter,
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -1606,7 +1620,7 @@ const providerRegistry = {
     fallbackModels: [...alibabaTokenPlanModelIds],
     status: 'ready',
     protocol: 'openai',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: alibabaTokenPlanRuntimeAdapter,
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',

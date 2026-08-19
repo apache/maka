@@ -148,6 +148,11 @@ import {
   type RequestProjectionContext,
   type RequestProjectionStage,
 } from './request-projection.js';
+import {
+  readPlaintextResponsesReasoningState,
+  replayPlaintextResponsesProviderOptions,
+  responsesReasoningItemId,
+} from './responses-reasoning-state.js';
 import type { ActiveToolResultPruneDiagnosticPatch } from './active-tool-result-prune.js';
 import { toolResultOutput } from './tool-result-output.js';
 import { buildActiveCompactionHeadAnchor } from './active-compaction-kernel.js';
@@ -2365,16 +2370,10 @@ export class AiSdkBackend implements AgentBackend {
                   }
                   stepThinkingProviderOptions = event.providerOptions;
                 }
-                const openai = event.providerOptions?.openai;
-                const itemId =
-                  openai && typeof openai === 'object' && !Array.isArray(openai)
-                    ? (openai as { itemId?: unknown }).itemId
-                    : undefined;
+                const itemId = responsesReasoningItemId(event.providerOptions);
                 if (typeof itemId === 'string' && itemId.length > 0) {
                   let part = stepResponsesThinkingParts.find(
-                    (candidate) =>
-                      (candidate.providerOptions?.openai as { itemId?: unknown } | undefined)
-                        ?.itemId === itemId,
+                    (candidate) => responsesReasoningItemId(candidate.providerOptions) === itemId,
                   );
                   if (!part) {
                     part = {
@@ -3973,12 +3972,37 @@ export class AiSdkBackend implements AgentBackend {
             }
           : undefined;
       }
-      if (replaySupport.responsesReasoning === 'plaintext-content') {
+      if (
+        typeof replaySupport.responsesReasoning === 'object' &&
+        replaySupport.responsesReasoning.kind === 'plaintext-item'
+      ) {
         if (item.text.length === 0) return undefined;
+        const rawState = item.providerOptions?.makaResponses;
+        const state = readPlaintextResponsesReasoningState(item.providerOptions);
+        if (rawState !== undefined && !state) {
+          throw new Error('Malformed durable plaintext Responses reasoning state');
+        }
+        if (!state) {
+          // Legacy DeepSeek events predate the versioned provider state. Its
+          // plaintext-content contract can reconstruct a valid item from the
+          // canonical reasoning text alone; summary carriers cannot.
+          if (replaySupport.responsesReasoning.carrier === 'content') {
+            return { part: { type: 'reasoning' as const, text: item.text } };
+          }
+          throw new Error('Summary Responses reasoning is missing durable provider state');
+        }
+        if (state.carrier !== replaySupport.responsesReasoning.carrier) {
+          throw new Error('Durable plaintext Responses reasoning carrier does not match provider');
+        }
         return {
           part: {
             type: 'reasoning' as const,
             text: item.text,
+            providerOptions: replayPlaintextResponsesProviderOptions({
+              providerOptionsKey: replaySupport.responsesReasoning.providerOptionsKey,
+              state,
+              text: item.text,
+            }),
           },
         };
       }

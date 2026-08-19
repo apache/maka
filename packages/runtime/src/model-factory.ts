@@ -33,6 +33,7 @@ import {
   openAiResponsesBaseUrl,
   openResponsesUrl,
 } from './provider-urls.js';
+import { createOpenResponsesCompatibilityFetch } from './open-responses-compatibility.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
@@ -65,10 +66,12 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
   const hasRequestCustomization =
     Object.keys(requestHeaders ?? {}).length > 0 ||
     Object.keys(connection.requestBodyOverlay ?? {}).length > 0;
-  const requestFetch = createRequestCustomizationFetch(fetch ?? globalThis.fetch, {
+  const baseFetch = fetch ?? globalThis.fetch;
+  const requestCustomization = {
     headers: requestHeaders,
     bodyOverlay: connection.requestBodyOverlay,
-  });
+  } as const;
+  const requestFetch = createRequestCustomizationFetch(baseFetch, requestCustomization);
 
   if (adapter.kind === 'google' && adapter.normalizeBaseUrl === false) {
     return createGoogle({ apiKey, baseURL, fetch: requestFetch }).chat(modelId);
@@ -156,11 +159,21 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           throw new Error('Responses wire requires a Responses continuation contract');
         }
         if (reasoningReplay.contract.adapter === 'open-responses') {
+          // Request customization is applied first; provider compatibility is
+          // the final authority before network dispatch, so an overlay cannot
+          // re-enable storage or force a tool-choice shape the provider rejects.
+          const responsesFetch = createRequestCustomizationFetch(
+            createOpenResponsesCompatibilityFetch(
+              baseFetch,
+              reasoningReplay.contract.compatibility,
+            ),
+            requestCustomization,
+          );
           return createOpenResponses({
             name: openAiCompatibleProviderName(adapter, connection),
             apiKey,
             url: openResponsesUrl(baseURL),
-            fetch: requestFetch,
+            fetch: responsesFetch,
           })(modelId);
         }
         return createOpenAI({

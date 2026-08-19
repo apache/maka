@@ -103,10 +103,15 @@ export function openAiAdapterApiProtocol(
 ): 'openai-responses' | 'openai-chat' {
   const id = modelId.trim();
   return (providerType === 'deepseek' && deepSeekModelSupportsResponses(id)) ||
+    (isAlibabaTokenPlanProvider(providerType) && id === 'qwen3.8-max') ||
     /^gpt-5/i.test(id) ||
     ((providerType === 'xai' || providerType === 'xai-oauth') && id === 'grok-4.5')
     ? 'openai-responses'
     : 'openai-chat';
+}
+
+function isAlibabaTokenPlanProvider(providerType: ProviderType | undefined): boolean {
+  return providerType === 'alibaba-token-plan-cn' || providerType === 'alibaba-token-plan';
 }
 
 /** DeepSeek models whose first-party API contract includes the Responses wire. */

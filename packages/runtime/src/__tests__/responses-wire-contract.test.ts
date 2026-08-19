@@ -32,12 +32,20 @@ function openAiNamespace(options: Record<string, unknown>): Record<string, unkno
 }
 
 describe('responses wire contract', () => {
-  test('keeps Qwen3.8 Max on Token Plan Chat until the provider adapter supports Responses', () => {
+  test('routes only Qwen3.8 Max through Token Plan Responses', () => {
     for (const providerType of ['alibaba-token-plan-cn', 'alibaba-token-plan'] as const) {
       assert.equal(
         resolveModelRuntime({ providerType }, 'qwen3.8-max').wire,
-        'openai-chat',
+        'openai-responses',
         providerType,
+      );
+      assert.equal(resolveModelRuntime({ providerType }, 'qwen3.7-max').wire, 'openai-chat');
+      assert.equal(
+        resolveModelRuntime(
+          { providerType, models: [{ id: 'qwen3.8-max', apiProtocol: 'openai-chat' }] },
+          'qwen3.8-max',
+        ).wire,
+        'openai-chat',
       );
     }
   });
@@ -96,6 +104,17 @@ describe('responses wire contract', () => {
       contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
     });
 
+    const alibaba = resolveModelRuntime({ providerType: 'alibaba-token-plan-cn' }, 'qwen3.8-max');
+    assert.deepEqual(alibaba.reasoningReplay, {
+      kind: 'responses',
+      contract: {
+        adapter: 'open-responses',
+        reasoningReplay: 'plaintext-summary',
+        compatibility: ['force-store-false', 'reject-forced-tool-choice'],
+      },
+    });
+    assert.equal(alibaba.responsesProviderOptionsKey, 'alibaba-token-plan-cn');
+
     const xai = resolveModelRuntime({ providerType: 'xai' }, 'grok-4.5');
     assert.deepEqual(xai.reasoningReplay, {
       kind: 'responses',
@@ -133,6 +152,22 @@ describe('responses wire contract', () => {
         providerType: 'xai-oauth',
         contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
       },
+      {
+        providerType: 'alibaba-token-plan-cn',
+        contract: {
+          adapter: 'open-responses',
+          reasoningReplay: 'plaintext-summary',
+          compatibility: ['force-store-false', 'reject-forced-tool-choice'],
+        },
+      },
+      {
+        providerType: 'alibaba-token-plan',
+        contract: {
+          adapter: 'open-responses',
+          reasoningReplay: 'plaintext-summary',
+          compatibility: ['force-store-false', 'reject-forced-tool-choice'],
+        },
+      },
     ]);
 
     const relay = PROVIDER_REGISTRY['openai-responses-compatible'].runtimeAdapter;
@@ -163,7 +198,7 @@ describe('responses wire contract', () => {
         if (
           runtime.wire !== 'openai-responses' ||
           (runtime.reasoningReplay.kind === 'responses' &&
-            runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-content')
+            runtime.reasoningReplay.contract.adapter === 'open-responses')
         ) {
           continue;
         }
@@ -187,6 +222,106 @@ describe('responses wire contract', () => {
 });
 
 describe('responses wire request body', () => {
+  test('Alibaba compatibility owns store:false after request overlays', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const urls: string[] = [];
+    const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      urls.push(String(url));
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({
+        id: 'response-1',
+        object: 'response',
+        created_at: 1,
+        model: 'qwen3.8-max',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const connection = {
+      ...conn('alibaba-token-plan-cn'),
+      baseUrl: 'https://token-plan.example/compatible-mode/v1',
+      requestBodyOverlay: { store: true },
+    };
+    const model = getAIModel({
+      connection,
+      apiKey: 'token-plan-key',
+      modelId: 'qwen3.8-max',
+      fetch,
+    });
+
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+      providerOptions: buildProviderOptions(connection, 'qwen3.8-max', 'medium'),
+    });
+
+    assert.deepEqual(urls, ['https://token-plan.example/compatible-mode/v1/responses']);
+    assert.equal(bodies[0]?.store, false);
+    assert.deepEqual(bodies[0]?.reasoning, { effort: 'medium' });
+  });
+
+  test('Alibaba stateless request carries the reconstructed summary item', async () => {
+    let body: Record<string, unknown> | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({
+        id: 'response-2',
+        object: 'response',
+        created_at: 2,
+        model: 'qwen3.8-max',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const connection = {
+      ...conn('alibaba-token-plan-cn'),
+      baseUrl: 'https://token-plan.example/compatible-mode/v1',
+    };
+    const model = getAIModel({
+      connection,
+      apiKey: 'token-plan-key',
+      modelId: 'qwen3.8-max',
+      fetch,
+    });
+
+    await model.doGenerate({
+      prompt: [
+        { role: 'user', content: [{ type: 'text', text: 'first question' }] },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'durable reasoning summary',
+              providerOptions: {
+                'alibaba-token-plan-cn': {
+                  itemId: 'reasoning-item-1',
+                  reasoningSummary: [{ type: 'summary_text', text: 'durable reasoning summary' }],
+                  reasoningContent: null,
+                },
+              },
+            },
+            { type: 'text', text: 'first answer' },
+          ],
+        },
+        { role: 'user', content: [{ type: 'text', text: 'follow up' }] },
+      ],
+    });
+
+    assert.equal(body?.store, false);
+    assert.deepEqual(
+      (body?.input as Array<Record<string, unknown>> | undefined)?.find(
+        (item) => item.type === 'reasoning',
+      ),
+      {
+        type: 'reasoning',
+        id: 'reasoning-item-1',
+        summary: [{ type: 'summary_text', text: 'durable reasoning summary' }],
+      },
+    );
+  });
+
   test('adds the V2 trigger only through the explicit OpenAI provider option', async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {

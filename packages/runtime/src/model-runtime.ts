@@ -31,11 +31,14 @@ export interface ResolvedModelRuntime {
   wire: ModelRuntimeWire;
   /** Durable reasoning replay semantics carried by that wire. */
   reasoningReplay: ReasoningReplayContract;
+  /** Provider-options namespace used by @ai-sdk/open-responses. */
+  responsesProviderOptionsKey?: string;
   /** Effective ApplyPatch contract after provider, model, and request wire are resolved. */
   applyPatchProfile: ApplyPatchProfile | null;
 }
 
 export interface ModelRuntimeConnection {
+  readonly slug?: string;
   readonly providerType: ProviderType;
   readonly baseUrl?: string;
   readonly models?: readonly ModelInfo[];
@@ -81,6 +84,7 @@ export function resolveModelRuntime(
     ? effectiveBaseUrl(connection)
     : (override?.api ?? effectiveBaseUrl(connection));
   const wire = resolveModelRuntimeWire(connection.providerType, modelId, adapter, apiProtocol);
+  const replay = reasoningReplayContract(adapter, wire);
   return {
     adapter,
     baseUrl:
@@ -89,7 +93,10 @@ export function resolveModelRuntime(
         : resolvedBaseUrl,
     ...(apiProtocol ? { apiProtocol } : {}),
     wire,
-    reasoningReplay: reasoningReplayContract(adapter, wire),
+    reasoningReplay: replay,
+    ...(replay.kind === 'responses' && replay.contract.adapter === 'open-responses'
+      ? { responsesProviderOptionsKey: responsesProviderOptionsKey(connection, adapter) }
+      : {}),
     applyPatchProfile: resolveApplyPatchProfile(
       {
         wire,
@@ -98,6 +105,15 @@ export function resolveModelRuntime(
       modelId,
     ),
   };
+}
+
+function responsesProviderOptionsKey(
+  connection: ModelRuntimeConnection,
+  adapter: ProviderRuntimeAdapter,
+): string {
+  return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
+    ? (connection.slug ?? connection.providerType)
+    : connection.providerType;
 }
 
 export function modelUsesAnthropicMessages(

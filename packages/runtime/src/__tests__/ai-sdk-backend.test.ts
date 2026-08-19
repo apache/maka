@@ -12899,6 +12899,144 @@ describe('AiSdkBackend thinking persistence', () => {
     );
   });
 
+  test('Alibaba Responses rebuilds summary reasoning from durable item state', async () => {
+    const runtimeContext: RuntimeEvent[] = [
+      runtimeEvent({
+        id: 'e1',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'reasoning summary for the previous tool step',
+          providerOptions: {
+            makaResponses: {
+              version: 1,
+              itemId: 'alibaba-reasoning-item',
+              carrier: 'summary',
+            },
+          },
+        },
+        refs: { providerEventId: 'm1' },
+      }),
+      runtimeEvent({
+        id: 'e2',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'tool-1',
+          name: 'Read',
+          args: { path: 'package.json' },
+        },
+        refs: { toolCallId: 'tool-1', stepId: 'm1' },
+      }),
+      runtimeEvent({
+        id: 'e3',
+        turnId: 'turn-prev',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'tool-1',
+          name: 'Read',
+          result: { kind: 'text', text: 'file contents' },
+        },
+        refs: { toolCallId: 'tool-1' },
+      }),
+    ];
+    const secondModel = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'alibaba-token-plan-cn',
+        providerType: 'alibaba-token-plan-cn',
+        defaultModel: 'qwen3.8-max',
+      },
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => secondModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({ turnId: 'turn-current', text: 'follow up', context: [], runtimeContext }),
+    );
+
+    const prompt = compactPrompt(secondModel) as ModelMessage[];
+    const assistant = prompt.find(
+      (message) => message.role === 'assistant' && Array.isArray(message.content),
+    );
+    assert.ok(assistant && Array.isArray(assistant.content));
+    assert.deepEqual(
+      assistant.content.filter((part) => part.type === 'reasoning'),
+      [
+        {
+          type: 'reasoning',
+          text: 'reasoning summary for the previous tool step',
+          providerOptions: {
+            'alibaba-token-plan-cn': {
+              itemId: 'alibaba-reasoning-item',
+              reasoningSummary: [
+                { type: 'summary_text', text: 'reasoning summary for the previous tool step' },
+              ],
+              reasoningContent: null,
+            },
+          },
+        },
+      ],
+    );
+  });
+
+  test('Alibaba Responses rejects summary replay without durable item state', async () => {
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'alibaba-token-plan-cn',
+        providerType: 'alibaba-token-plan-cn',
+        defaultModel: 'qwen3.8-max',
+      },
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => completionModel(),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const runtimeContext: RuntimeEvent[] = [
+      runtimeEvent({
+        id: 'e1',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'summary without a provider item identity',
+        },
+        refs: { providerEventId: 'm1' },
+      }),
+    ];
+
+    await assert.rejects(
+      drain(
+        backend.send({
+          turnId: 'turn-current',
+          text: 'follow up',
+          context: [],
+          runtimeContext,
+        }),
+      ),
+      /Summary Responses reasoning is missing durable provider state/,
+    );
+  });
+
   test('passes DeepSeek max reasoning through as the provider-native effort', async () => {
     let requestBody: Record<string, unknown> | undefined;
     const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
