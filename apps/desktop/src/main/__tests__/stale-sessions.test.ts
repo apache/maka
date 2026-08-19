@@ -4,10 +4,10 @@ import { deriveStaleSessionIds } from '../../renderer/stale-sessions.js';
 
 test('derives stale rows from each Session Host readiness projection', () => {
   const sessions = [
-    session('local-ready'),
-    session('remote-missing'),
-    session('remote-rebind'),
-    session('legacy-fake', 'fake'),
+    { id: 'local-ready' },
+    { id: 'remote-missing' },
+    { id: 'remote-rebind' },
+    { id: 'legacy-fake' },
   ];
 
   assert.deepEqual(
@@ -25,12 +25,19 @@ test('derives stale rows from each Session Host readiness projection', () => {
           connectionSlug: 'replacement',
           model: 'model',
         },
+        // #3211: a retired backend reaches the rail as a projection reason like
+        // any other. The row is no longer identified by reading its `backend`.
+        'legacy-fake': {
+          kind: 'blocked',
+          reason: 'fake_backend',
+          connectionLocked: false,
+        },
       },
     })],
     ['remote-missing', 'legacy-fake'],
   );
 });
 
-function session(id: string, backend = 'ai-sdk') {
-  return { id, backend };
-}
+test('a row whose readiness has not arrived yet is not called stale', () => {
+  assert.deepEqual([...deriveStaleSessionIds({ sessions: [{ id: 'unknown' }], sendOutcomes: {} })], []);
+});

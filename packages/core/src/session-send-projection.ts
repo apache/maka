@@ -137,10 +137,18 @@ function ownConnectionBlockReason(
  * listed here (e.g. `missing_api_key`, `connection_disabled`) stay blocked
  * even when unlocked because masking an explicitly configured connection
  * would make the health/readiness UI misleading.
+ *
+ * `fake_backend` is deliberately absent (#3211). Every reason listed here
+ * names a broken *connection*, which another connection can stand in for. A
+ * retired backend is not: activation dispatches off the session header's own
+ * `backend`, so pointing the session at a healthy connection still leaves
+ * `'fake'` in the header and still gets refused. Claiming a rebind for these
+ * rows made the projection promise a recovery nothing performs — and the
+ * surfaces that must answer "is this task usable?" had to bypass the
+ * projection and read `backend` themselves to work around it.
  */
 function shouldRebindSessionToDefault(reason: string | undefined): boolean {
   return (
-    reason === 'fake_backend' ||
     reason === 'connection_missing' ||
     reason === 'missing_model' ||
     reason === 'empty_model_list' ||
