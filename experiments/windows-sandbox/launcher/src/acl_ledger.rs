@@ -30,9 +30,7 @@ use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForS
 
 use crate::broker_pipe_security::pipe_security_sddl;
 use crate::protocol::LaunchRequest;
-use crate::windows_launcher::{
-    appcontainer_profile_name, current_token_owner_sid_string, current_user_sid_string, sid_string,
-};
+use crate::windows_launcher::{appcontainer_profile_name, current_user_sid_string, sid_string};
 
 pub(crate) const LEDGER_VERSION: u8 = 2;
 const ACL_MUTEX_TIMEOUT_MS: u32 = 30_000;
@@ -249,8 +247,7 @@ impl LedgerLock {
         // pre-existed (`ERROR_ALREADY_EXISTS` — also the normal same-user
         // contention path), the owner is verified to be the current user or
         // SYSTEM before any wait; anything else fails closed.
-        let sddl = pipe_security_sddl(user_sid)
-            .map_err(|error| format!("invalid ACL lock owner SID: {error:?}"))?;
+        let sddl = lock_sddl(user_sid)?;
         let descriptor = lock_security_descriptor(&sddl)?;
         let mut attributes: SECURITY_ATTRIBUTES = unsafe { std::mem::zeroed() };
         attributes.nLength = size_of::<SECURITY_ATTRIBUTES>() as u32;
@@ -287,23 +284,36 @@ impl LedgerLock {
     }
 }
 
+/// Security descriptor for a named lock. Beyond the SYSTEM+user-only DACL, the
+/// owner is pinned explicitly to the user SID: without `O:`, the object owner
+/// comes from the creating token's *default* owner, which is the user SID for a
+/// standard token but `BUILTIN\Administrators` for an elevated one — so the
+/// same user's elevated and non-elevated processes would create locks with
+/// different owners and each reject the other's legitimate lock. Pinning the
+/// owner makes the lock's identity elevation-independent (the user SID is
+/// always an assignable owner for the user's own token, elevated or not).
+pub(crate) fn lock_sddl(user_sid: &str) -> Result<String, String> {
+    let dacl = pipe_security_sddl(user_sid)
+        .map_err(|error| format!("invalid ACL lock owner SID: {error:?}"))?;
+    Ok(format!("O:{user_sid}{dacl}"))
+}
+
 /// Owner check for a named lock that existed before this process created it.
 /// The pre-existing object keeps whatever security descriptor its creator gave
 /// it, so ownership is the one property a permissive squatter cannot forge:
 /// re-owning an object to another SID requires SeTakeOwnership/SeRestore, which
-/// standard users do not hold. The legitimate creators are another process of
-/// the same user (normal contention) or SYSTEM — where "the same user" must be
-/// judged by the token's *default owner* SID, not only the user SID: an
-/// elevated administrator's token stamps `BUILTIN\Administrators` as owner on
-/// objects it creates, so a lock this very code created earlier on an elevated
-/// host (e.g. a CI runner) is owned by S-1-5-32-544, and rejecting it would
-/// deny our own locks. Accepting the token-owner SID stays inside the threat
-/// model: whoever can create objects owned by Administrators is an elevated
-/// administrator, which RFC §1/§5 explicitly does not defend against. Any
-/// other owner means the name was squatted and arbitration must fail closed
-/// instead of blocking on an attacker-held mutex.
+/// standard users do not hold. Legitimate owners are exactly three: the current
+/// user SID (what `lock_sddl` pins at creation, in any elevation state),
+/// SYSTEM, and `BUILTIN\Administrators` — the last because locks created by
+/// builds that predate the owner pinning (or by other elevated tooling of this
+/// user) carry the elevated token's default owner, and whoever can create
+/// Administrators-owned objects is an elevated administrator, which RFC §1/§5
+/// explicitly does not defend against. Any other owner means the name was
+/// squatted and arbitration must fail closed instead of blocking on an
+/// attacker-held mutex.
 fn validate_existing_lock_owner(handle: HANDLE, user_sid: &str) -> Result<(), String> {
     const SYSTEM_SID: &str = "S-1-5-18";
+    const ADMINISTRATORS_SID: &str = "S-1-5-32-544";
     let mut owner: *mut std::ffi::c_void = std::ptr::null_mut();
     let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
     let status = unsafe {
@@ -326,19 +336,16 @@ fn validate_existing_lock_owner(handle: HANDLE, user_sid: &str) -> Result<(), St
     let rendered = unsafe { sid_string(owner) };
     unsafe { LocalFree(descriptor as *mut std::ffi::c_void) };
     let rendered = rendered?;
-    if rendered.eq_ignore_ascii_case(user_sid) || rendered == SYSTEM_SID {
-        return Ok(());
-    }
-    // Elevated hosts: our own creations are owned by the token's default-owner
-    // SID (typically BUILTIN\Administrators), not the user SID.
-    let token_owner = current_token_owner_sid_string()?;
-    if rendered.eq_ignore_ascii_case(&token_owner) {
+    if rendered.eq_ignore_ascii_case(user_sid)
+        || rendered == SYSTEM_SID
+        || rendered == ADMINISTRATORS_SID
+    {
         return Ok(());
     }
     Err(format!(
         "pre-existing lock is owned by {rendered}, not the current user \
-         ({user_sid}), this token's default owner ({token_owner}), or SYSTEM; \
-         refusing to arbitrate on a squatted mutex"
+         ({user_sid}), SYSTEM, or Administrators; refusing to arbitrate on a \
+         squatted mutex"
     ))
 }
 
