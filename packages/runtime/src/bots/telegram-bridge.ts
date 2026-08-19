@@ -267,7 +267,7 @@ function telegramMessageToEvent(
   if (!message?.from) return null;
   const userId = String(message.from.id);
   if (!isAllowedUser(allowedUserIds, userId)) return null;
-  const chatId = normalizeBotSourceEventId(message.chat?.id);
+  const chatId = normalizeTelegramChatId(message.chat?.id);
   const sourceEventId = normalizeBotSourceEventId(message.message_id);
   if (!chatId || !sourceEventId) return null;
   const attachmentKind = telegramAttachmentKind(message);
@@ -283,6 +283,16 @@ function telegramMessageToEvent(
     receivedAt,
     ...(attachmentKind ? { attachmentKind } : {}),
   };
+}
+
+function normalizeTelegramChatId(value: unknown): string | undefined {
+  const id =
+    typeof value === 'string'
+      ? value
+      : typeof value === 'number' && Number.isSafeInteger(value) && value !== 0
+        ? String(value)
+        : undefined;
+  return id && id.trim() === id ? id : undefined;
 }
 
 export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {

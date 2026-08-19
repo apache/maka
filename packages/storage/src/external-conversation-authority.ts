@@ -356,6 +356,8 @@ function digestConversationId(conversationId: string): string {
   ) {
     throw new Error('Invalid external-conversation identity');
   }
+  // This is a fixed-length lookup key, not a confidentiality boundary:
+  // low-entropy platform identifiers remain enumerable to a database reader.
   return `sha256:${createHash('sha256').update(conversationId, 'utf8').digest('hex')}`;
 }
 

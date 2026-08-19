@@ -25,7 +25,7 @@
  */
 
 import { proxiedFetch } from './proxied-fetch.js';
-import type { BotSendOptions, SendCapable } from './types.js';
+import { normalizeBotSourceEventId, type BotSendOptions, type SendCapable } from './types.js';
 import { WsBridgeBase, type WsCloseDecision } from './ws-bridge-base.js';
 
 const DINGTALK_API = 'https://api.dingtalk.com';
@@ -190,6 +190,7 @@ export function dingTalkPayloadToEvent(
   text: string;
   receivedAt: number;
 } | null {
+  const normalizedSourceEventId = normalizeBotSourceEventId(sourceEventId);
   if (!payload || typeof payload !== 'object') return null;
   const content = payload.text?.content;
   if (typeof content !== 'string' || content.length === 0) return null;
@@ -197,14 +198,14 @@ export function dingTalkPayloadToEvent(
   const userId = payload.senderId;
   if (typeof chatId !== 'string' || chatId.length === 0) return null;
   if (typeof userId !== 'string' || userId.length === 0) return null;
-  if (!sourceEventId) return null;
+  if (!normalizedSourceEventId) return null;
   const isGroup = payload.conversationType === '2';
   return {
     platform: 'dingtalk',
     userId,
     userName: payload.senderNick ?? userId,
     conversationId: chatId,
-    sourceEventId,
+    sourceEventId: normalizedSourceEventId,
     replyTarget: { chatId: isGroup ? chatId : userId },
     isGroup,
     text: content,

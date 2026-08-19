@@ -115,7 +115,9 @@ test('production composition owns external conversation binding and Session crea
 
       const repeated = await reconcile({ kind: 'resolve', conversationId }, client);
       assert.equal(repeated.ok, true);
-      if (!repeated.ok || repeated.result.kind !== 'resolved') return;
+      if (!repeated.ok || repeated.result.kind !== 'resolved') {
+        assert.fail(JSON.stringify(repeated));
+      }
       assert.equal(repeated.result.disposition, 'existing');
       assert.equal(repeated.result.session.id, created.result.session.id);
 

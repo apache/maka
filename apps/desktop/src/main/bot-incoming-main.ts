@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   botConversationKey,
   botDisplayLabel,
@@ -36,7 +36,6 @@ interface BotIncomingMainServiceDeps {
 }
 
 export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): BotIncomingMainService {
-  const newId = deps.newId ?? randomUUID;
   const botConversationQueues = new Map<string, Promise<void>>();
   const botConversationRateBuckets = new Map<string, BotConversationRateBucket>();
   const activeTasks = new Set<Promise<void>>();
@@ -204,7 +203,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     if (isPlaintextResetCommand({ text, isGroup: message.isGroup })) {
       const had = await deps.sessions.releaseConversation({
         conversationId: conversationKey,
-        operationId: botSourceOperationId(message, newId),
+        operationId: botSourceOperationId(message),
       });
       botConversationRateBuckets.delete(conversationKey);
       const replyOptions = {
@@ -229,7 +228,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       );
       if (!sessionId) return;
 
-      const messageId = botSourceOperationId(message, newId);
+      const messageId = botSourceOperationId(message);
       const replyOptions = message.replyTarget.replyToMessageId
         ? { replyToMessageId: message.replyTarget.replyToMessageId }
         : undefined;
@@ -379,9 +378,11 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   return { handleBotIncomingMessage, close };
 }
 
-function botSourceOperationId(message: BotIncomingMessage, newId: () => string): string {
+function botSourceOperationId(message: BotIncomingMessage): string {
   const sourceEventKey = botSourceEventKey(message);
-  if (!sourceEventKey) return newId();
+  if (!sourceEventKey) {
+    throw new Error('Bot source event identity is required');
+  }
   // Host message admission is idempotent for this source operation and exact
   // payload, so a reconnect redelivery cannot run the model twice. Reply delivery remains
   // at-least-once: IM send APIs provide no transaction shared with Host state.

@@ -60,6 +60,10 @@ describe('Slack bridge message mapping', () => {
       null,
     );
     assert.equal(
+      slackMessageToEvent({ type: 'message', user: 'U123', channel: 'D456', ts: '   ' }, 5),
+      null,
+    );
+    assert.equal(
       slackMessageToEvent(
         {
           type: 'message',

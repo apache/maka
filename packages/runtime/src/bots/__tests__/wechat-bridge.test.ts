@@ -195,6 +195,23 @@ describe('WechatBridge', () => {
       }),
       null,
     );
+    assert.equal(
+      mapWechatIlinkMessage({
+        from_user_id: 'wxid_friend',
+        client_id: '   ',
+        item_list: [{ type: 1, text_item: { text: 'blank id' } }],
+      }),
+      null,
+    );
+    assert.equal(
+      mapWechatBridgeMessage({
+        chatId: 'wxid_friend',
+        senderId: 'wxid_friend',
+        messageId: '   ',
+        text: 'blank id',
+      }),
+      null,
+    );
   });
 
   test('maps bridge media kinds and rejects empty non-media messages', () => {

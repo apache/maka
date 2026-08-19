@@ -146,14 +146,16 @@ export function qqChannelMessageToEvent(
   if (!d?.author || d.author.bot === true) return null;
   const sourceEventId = normalizeBotSourceEventId(d.id);
   if (!sourceEventId) return null;
-  const userId = String(d.author.id);
+  const channelId = normalizeBotSourceEventId(d.channel_id);
+  const userId = normalizeBotSourceEventId(d.author.id);
+  if (!channelId || !userId) return null;
   return {
     platform: 'qq',
     userId,
     userName: d.author.username ?? userId,
-    conversationId: `channel:${d.channel_id}`,
+    conversationId: `channel:${channelId}`,
     sourceEventId,
-    replyTarget: { chatId: `channel:${d.channel_id}`, replyToMessageId: sourceEventId },
+    replyTarget: { chatId: `channel:${channelId}`, replyToMessageId: sourceEventId },
     isGroup: true,
     text: typeof d.content === 'string' ? d.content : '',
     receivedAt,
@@ -234,7 +236,6 @@ export function qqDirectMessageToEvent(
     conversationId: `dm:${channel.conversationId}`,
     // QQ direct messages still use the channel REST route. Only continuity
     // needs a DM-specific identity; transport must retain the real address.
-    replyTarget: channel.replyTarget,
     isGroup: false,
   };
 }

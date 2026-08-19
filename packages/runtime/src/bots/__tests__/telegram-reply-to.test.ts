@@ -40,3 +40,21 @@ it('drops Telegram payloads without a stable platform message id', () => {
     null,
   );
 });
+
+it('preserves signed Telegram group and supergroup chat ids', () => {
+  for (const chatId of [-123456789, -1001234567890]) {
+    const event = telegramMessageToEvent(
+      {
+        from: { id: 1 },
+        chat: { id: chatId, type: 'supergroup' },
+        message_id: 42,
+        text: 'hello',
+      },
+      123,
+      undefined,
+    );
+    assert.equal(event?.conversationId, String(chatId));
+    assert.equal(event?.replyTarget.chatId, String(chatId));
+    assert.equal(event?.isGroup, true);
+  }
+});

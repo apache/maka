@@ -146,6 +146,14 @@ describe('QQ message mapping', () => {
       null,
     );
     assert.equal(
+      qqChannelMessageToEvent({ id: 'm-4', channel_id: ' ', author: { id: 'u' } }, 1),
+      null,
+    );
+    assert.equal(
+      qqChannelMessageToEvent({ id: 'm-5', channel_id: 'c', author: { id: ' ' } }, 1),
+      null,
+    );
+    assert.equal(
       qqGroupMessageToEvent(
         { id: 'gm-4', group_openid: '' as string, author: { id: 'x' } } as any,
         1,
