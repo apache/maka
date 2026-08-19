@@ -587,18 +587,11 @@ function usageBucket(key: string, rows: readonly PersistedLlmCallRecord[]): Usag
 }
 
 function canonicalTotalTokens(row: PersistedLlmCallRecord): number {
-  // Rows written by the current recorder carry explicit provenance. Trust it:
-  // a provider total can coincide with input + output + reasoning without
-  // being the legacy derived fallback.
-  if (row.totalTokensSource !== undefined) return row.totalTokens;
-  const inputAndOutput = row.inputTokens + row.outputTokens;
-  // Legacy rows never carried a source. The frozen recorder used input +
-  // output + reasoning only when its caller omitted totalTokens, so that exact
-  // shape is the artifact to normalize at the frozen read boundary.
-  return row.rawUsage?.total_tokens === undefined &&
-    row.totalTokens === inputAndOutput + row.reasoningTokens
-    ? inputAndOutput
-    : row.totalTokens;
+  // Source-less legacy rows are ambiguous: the stored total may be a provider
+  // fact or an old derived fallback. Preserve the stored value rather than
+  // silently rewriting a provider-reported camelCase total. Current writers
+  // persist explicit provenance, so only frozen history follows this rule.
+  return row.totalTokens;
 }
 
 function toolBuckets(rows: readonly PersistedToolInvocationRecord[]): UsageBucket[] {

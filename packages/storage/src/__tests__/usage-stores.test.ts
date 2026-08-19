@@ -297,7 +297,7 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
-  test('normalizes legacy reasoning details out of total tokens', async () => {
+  test('preserves ambiguous legacy totals and trusts explicit current provenance', async () => {
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert(owner);
@@ -333,14 +333,14 @@ describe('InteractiveUsageStores', () => {
       const logs = await stores.telemetry.logs({ range: 'all' });
 
       assert.equal(summary.totalTokens.reasoning, 16);
-      assert.equal(summary.totalTokens.total, 100);
+      assert.equal(summary.totalTokens.total, 107);
       assert.equal(buckets[0]?.reasoningTokens, 16);
-      assert.equal(buckets[0]?.totalTokens, 100);
+      assert.equal(buckets[0]?.totalTokens, 107);
       assert.equal(logs.rows[0]?.reasoningTokens, 2);
       assert.equal(logs.rows[0]?.totalTokens, 30);
       assert.equal(logs.rows[1]?.reasoningTokens, 7);
       assert.equal(logs.rows[1]?.totalTokens, 40);
-      assert.equal(logs.rows[2]?.totalTokens, 30);
+      assert.equal(logs.rows[2]?.totalTokens, 37);
       await stores.close();
       await owner.close();
     });

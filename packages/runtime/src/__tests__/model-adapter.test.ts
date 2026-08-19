@@ -648,6 +648,7 @@ describe('ModelAdapter stream and error normalization', () => {
         cacheWriteInputTokens: 3,
         reasoningTokens: 2,
         totalTokens: 30,
+        totalTokensSource: 'reported',
       },
     );
   });
@@ -665,6 +666,7 @@ describe('ModelAdapter stream and error normalization', () => {
       cacheWriteInputTokens: 0,
       reasoningTokens: 0,
       totalTokens: 15,
+      totalTokensSource: 'reported',
     });
   });
 
@@ -693,6 +695,7 @@ describe('ModelAdapter stream and error normalization', () => {
         cacheWriteInputTokens: 2,
         reasoningTokens: 3,
         totalTokens: 24,
+        totalTokensSource: 'derived',
       },
     );
   });
@@ -724,6 +727,7 @@ describe('ModelAdapter stream and error normalization', () => {
         cacheWriteInputTokens: 0,
         reasoningTokens: 8,
         totalTokens: 120,
+        totalTokensSource: 'derived',
         rawFinishReason: 'provider_stop',
         raw: {
           prompt_cache_hit_tokens: 40,
@@ -764,6 +768,7 @@ describe('ModelAdapter stream and error normalization', () => {
         cacheWriteInputTokens: 0,
         reasoningTokens: 0,
         totalTokens: 1462,
+        totalTokensSource: 'reported',
         rawFinishReason: 'stop',
         raw: {
           prompt_tokens: 1460,

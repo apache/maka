@@ -12,6 +12,7 @@ type LlmCallUsageFields = Pick<
   | 'cacheWriteInputTokens'
   | 'reasoningTokens'
   | 'totalTokens'
+  | 'totalTokensSource'
   | 'rawFinishReason'
   | 'rawUsage'
 >;
@@ -27,6 +28,9 @@ export function llmCallUsageFields(usage: NormalizedUsage): LlmCallUsageFields {
     cacheWriteInputTokens: usage.cacheWriteInputTokens,
     reasoningTokens: usage.reasoningTokens,
     totalTokens: usage.totalTokens,
+    ...(usage.totalTokensSource !== undefined
+      ? { totalTokensSource: usage.totalTokensSource }
+      : {}),
     ...(usage.rawFinishReason !== undefined ? { rawFinishReason: usage.rawFinishReason } : {}),
     ...(usage.raw !== undefined ? { rawUsage: usage.raw } : {}),
   };
