@@ -82,6 +82,122 @@ test('atomically reapplies current owner schema without republishing its registr
   }
 });
 
+test('retires completed released migration metadata during schema convergence', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-retirement-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    const metadata = createSqliteSessionMetadataStore(databasePath, {
+      databaseLease: acquireOperationalStateDatabase(root),
+    });
+    await metadata.create(sessionHeader());
+    metadata.close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyCutoverJournal(legacy);
+    createLegacyImportSourceTables(legacy);
+    legacy
+      .prepare(`
+        INSERT INTO cutover_journal(
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at,
+          completed_at,
+          validation_json
+        ) VALUES (?, ?, ?, 'completed', ?, ?, ?)
+      `)
+      .run(
+        'session_metadata',
+        join(root, 'sessions.sqlite'),
+        'sha256:released-source',
+        10,
+        20,
+        JSON.stringify({ session_metadata: 4, session_metadata_labels: 0 }),
+      );
+    legacy
+      .prepare(`
+        INSERT INTO runtime_import_sources(source_path, fingerprint, imported_at)
+        VALUES (?, ?, ?)
+      `)
+      .run(join(root, 'runtime-events.jsonl'), 'sha256:released-events', 20);
+    legacy
+      .prepare(`
+        INSERT INTO session_metadata_import_sources(
+          source_path,
+          fingerprint,
+          session_id,
+          imported_at
+        ) VALUES (?, ?, ?, ?)
+      `)
+      .run(join(root, 'sessions.json'), 'sha256:released-session', 'session-1', 20);
+    legacy.close();
+
+    const migrated = acquireOperationalStateDatabase(root);
+    assert.equal(
+      migrated.database
+        .prepare(`
+          SELECT 1
+          FROM sqlite_schema
+          WHERE type = 'table'
+            AND name IN (
+              'cutover_journal',
+              'runtime_import_sources',
+              'session_metadata_import_sources'
+            )
+          LIMIT 1
+        `)
+        .get(),
+      undefined,
+    );
+    migrated.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves an interrupted released cutover journal and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-interrupted-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    acquireOperationalStateDatabase(root).close();
+    const legacy = new DatabaseSync(databasePath);
+    createLegacyCutoverJournal(legacy);
+    legacy
+      .prepare(`
+        INSERT INTO cutover_journal(
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at
+        ) VALUES (?, ?, ?, 'started', ?)
+      `)
+      .run('session_metadata', join(root, 'sessions.sqlite'), 'sha256:released-source', 10);
+    legacy.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as { code?: unknown }).code === 'operational_state_migration_blocked' &&
+        /cutover journal is incomplete or invalid/u.test(error.message),
+    );
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    assert.deepEqual(
+      {
+        ...(preserved.prepare('SELECT store_name, state FROM cutover_journal').get() as Record<
+          string,
+          unknown
+        >),
+      },
+      { store_name: 'session_metadata', state: 'started' },
+    );
+    preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('rolls back every scope when migration publication fails', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-rollback-'));
   const databasePath = join(root, 'runtime.sqlite');
@@ -765,6 +881,38 @@ test('rejects an invalid registered schema version before migrating', async () =
 function rewindRuntimeSchema(database: DatabaseSync): void {
   database.exec('DROP TABLE runtime_session_event_ordinals');
   database.exec(`PRAGMA user_version = ${SQLITE_RUNTIME_SCHEMA_VERSION - 1}`);
+}
+
+function createLegacyCutoverJournal(database: DatabaseSync): void {
+  database.exec(`
+    CREATE TABLE cutover_journal (
+      store_name TEXT PRIMARY KEY,
+      source_path TEXT NOT NULL,
+      source_fingerprint TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('started', 'completed')),
+      started_at INTEGER NOT NULL CHECK (started_at >= 0),
+      completed_at INTEGER,
+      validation_json TEXT
+    )
+  `);
+}
+
+function createLegacyImportSourceTables(database: DatabaseSync): void {
+  database.exec(`
+    CREATE TABLE runtime_import_sources (
+      source_path TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      imported_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE session_metadata_import_sources (
+      source_path TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      imported_at INTEGER NOT NULL,
+      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+    )
+  `);
 }
 
 async function copyV016Database(databasePath: string): Promise<void> {

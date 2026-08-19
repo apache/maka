@@ -58,6 +58,26 @@ const OPERATIONAL_SCHEMA_VERSIONS: ReadonlyMap<string, number> = new Map([
 const REMOVED_OPERATIONAL_SCHEMA_VERSIONS: ReadonlyMap<string, number> = new Map([
   ['automation', 2],
 ]);
+const LEGACY_CUTOVER_JOURNAL_COLUMNS = [
+  { name: 'store_name', type: 'TEXT', notNull: 0, primaryKey: 1 },
+  { name: 'source_path', type: 'TEXT', notNull: 1, primaryKey: 0 },
+  { name: 'source_fingerprint', type: 'TEXT', notNull: 1, primaryKey: 0 },
+  { name: 'state', type: 'TEXT', notNull: 1, primaryKey: 0 },
+  { name: 'started_at', type: 'INTEGER', notNull: 1, primaryKey: 0 },
+  { name: 'completed_at', type: 'INTEGER', notNull: 0, primaryKey: 0 },
+  { name: 'validation_json', type: 'TEXT', notNull: 0, primaryKey: 0 },
+] as const;
+const LEGACY_RUNTIME_IMPORT_SOURCE_COLUMNS = [
+  { name: 'source_path', type: 'TEXT', notNull: 0, primaryKey: 1 },
+  { name: 'fingerprint', type: 'TEXT', notNull: 1, primaryKey: 0 },
+  { name: 'imported_at', type: 'INTEGER', notNull: 1, primaryKey: 0 },
+] as const;
+const LEGACY_SESSION_IMPORT_SOURCE_COLUMNS = [
+  { name: 'source_path', type: 'TEXT', notNull: 0, primaryKey: 1 },
+  { name: 'fingerprint', type: 'TEXT', notNull: 1, primaryKey: 0 },
+  { name: 'session_id', type: 'TEXT', notNull: 1, primaryKey: 0 },
+  { name: 'imported_at', type: 'INTEGER', notNull: 1, primaryKey: 0 },
+] as const;
 
 const require = createRequire(import.meta.url);
 const owners = new Map<string, OperationalStateDatabaseOwner>();
@@ -365,6 +385,7 @@ export function migrateOperationalStateDatabaseInternal(db: DatabaseSync, now: (
       DROP TABLE IF EXISTS automation_authority_state;
       DELETE FROM operational_schema_migrations WHERE scope = 'automation';
     `);
+    retireCompletedLegacyMigrationMetadata(db);
     assertCurrentOperationalTargetSchema(db);
     for (const [scope, version] of OPERATIONAL_SCHEMA_VERSIONS) {
       registerSchema(db, scope, version, appliedAt);
@@ -374,6 +395,158 @@ export function migrateOperationalStateDatabaseInternal(db: DatabaseSync, now: (
     rollback(db);
     throw error;
   }
+}
+
+/**
+ * Retire import and cutover evidence written before SQLite became the sole
+ * operational authority. Only exact released tables with internally valid,
+ * completed rows may be removed; interrupted or unfamiliar state stays
+ * fail-closed and the surrounding migration transaction rolls back unchanged.
+ */
+function retireCompletedLegacyMigrationMetadata(db: DatabaseSync): void {
+  if (hasTable(db, 'cutover_journal')) {
+    assertReleasedLegacyTableShape(db, 'cutover_journal', LEGACY_CUTOVER_JOURNAL_COLUMNS);
+    const rows = db
+      .prepare(`
+        SELECT
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at,
+          completed_at,
+          validation_json
+        FROM cutover_journal
+        ORDER BY store_name
+      `)
+      .all() as Array<Record<string, unknown>>;
+    for (const row of rows) assertCompletedLegacyCutoverJournalRow(row);
+  }
+  if (hasTable(db, 'runtime_import_sources')) {
+    assertReleasedLegacyTableShape(
+      db,
+      'runtime_import_sources',
+      LEGACY_RUNTIME_IMPORT_SOURCE_COLUMNS,
+    );
+    const rows = db
+      .prepare(`
+        SELECT source_path, fingerprint, imported_at
+        FROM runtime_import_sources
+        ORDER BY source_path
+      `)
+      .all() as Array<Record<string, unknown>>;
+    for (const row of rows) assertLegacyImportSourceRow(row);
+  }
+  if (hasTable(db, 'session_metadata_import_sources')) {
+    assertReleasedLegacyTableShape(
+      db,
+      'session_metadata_import_sources',
+      LEGACY_SESSION_IMPORT_SOURCE_COLUMNS,
+    );
+    const rows = db
+      .prepare(`
+        SELECT source_path, fingerprint, session_id, imported_at
+        FROM session_metadata_import_sources
+        ORDER BY source_path
+      `)
+      .all() as Array<Record<string, unknown>>;
+    const sessionExists = db.prepare('SELECT 1 FROM session_metadata WHERE session_id = ?');
+    for (const row of rows) {
+      assertLegacyImportSourceRow(row);
+      if (
+        typeof row.session_id !== 'string' ||
+        row.session_id.length === 0 ||
+        !sessionExists.get(row.session_id)
+      ) {
+        throw new Error('Legacy session import source is incomplete or invalid');
+      }
+    }
+  }
+
+  db.exec(`
+    DROP TABLE IF EXISTS session_metadata_import_sources;
+    DROP TABLE IF EXISTS runtime_import_sources;
+    DROP TABLE IF EXISTS cutover_journal;
+  `);
+}
+
+function assertReleasedLegacyTableShape(
+  db: DatabaseSync,
+  table: string,
+  expectedColumns: ReadonlyArray<{
+    readonly name: string;
+    readonly type: string;
+    readonly notNull: number;
+    readonly primaryKey: number;
+  }>,
+): void {
+  const columns = db
+    .prepare(`
+      SELECT name, type, "notnull" AS not_null, pk
+      FROM pragma_table_info(?)
+      ORDER BY cid
+    `)
+    .all(table) as Array<{ name?: unknown; type?: unknown; not_null?: unknown; pk?: unknown }>;
+  const releasedShape = columns.every((column, index) => {
+    const expected = expectedColumns[index];
+    return (
+      expected !== undefined &&
+      column.name === expected.name &&
+      column.type === expected.type &&
+      column.not_null === expected.notNull &&
+      column.pk === expected.primaryKey
+    );
+  });
+  if (columns.length !== expectedColumns.length || !releasedShape) {
+    throw new Error(`Legacy operational metadata table ${table} has an unfamiliar schema`);
+  }
+}
+
+function assertCompletedLegacyCutoverJournalRow(row: Record<string, unknown>): void {
+  if (
+    typeof row.store_name !== 'string' ||
+    row.store_name.length === 0 ||
+    typeof row.source_path !== 'string' ||
+    row.source_path.length === 0 ||
+    typeof row.source_fingerprint !== 'string' ||
+    row.source_fingerprint.length === 0 ||
+    row.state !== 'completed' ||
+    !isNonnegativeInteger(row.started_at) ||
+    !isNonnegativeInteger(row.completed_at) ||
+    typeof row.validation_json !== 'string'
+  ) {
+    throw new Error('Legacy operational cutover journal is incomplete or invalid');
+  }
+  let validation: unknown;
+  try {
+    validation = JSON.parse(row.validation_json);
+  } catch {
+    throw new Error('Legacy operational cutover journal has invalid validation evidence');
+  }
+  if (
+    typeof validation !== 'object' ||
+    validation === null ||
+    Array.isArray(validation) ||
+    !Object.values(validation).every(isNonnegativeInteger)
+  ) {
+    throw new Error('Legacy operational cutover journal has invalid validation evidence');
+  }
+}
+
+function assertLegacyImportSourceRow(row: Record<string, unknown>): void {
+  if (
+    typeof row.source_path !== 'string' ||
+    row.source_path.length === 0 ||
+    typeof row.fingerprint !== 'string' ||
+    row.fingerprint.length === 0 ||
+    !isNonnegativeInteger(row.imported_at)
+  ) {
+    throw new Error('Legacy operational import source is incomplete or invalid');
+  }
+}
+
+function isNonnegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function registerSchema(db: DatabaseSync, scope: string, version: number, appliedAt: number): void {
