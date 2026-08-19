@@ -75,7 +75,20 @@ test('managed setup converges on one exact package and verified Client pairing',
     },
     prepareDeployment: (input: Parameters<typeof prepareRuntimeHostManagedPackageDeployment>[0]) =>
       prepareRuntimeHostManagedPackageDeployment(input, deploymentPathOptions),
-    issueCredential: async () => {
+    replaceCredential: async () => {
+      pairCount += 1;
+      return {
+        rootId: 'a'.repeat(64),
+        credential: `secret-${pairCount}`,
+        credentialId: `credential-${pairCount}`,
+        principalKind: 'remote_owner' as const,
+        principalId: 'desktop.client-1',
+        operationGrants: ['host.status'] as const,
+        canPublishClientCapabilities: true,
+        canUseHostPaths: false,
+      };
+    },
+    prepareCredential: async () => {
       pairCount += 1;
       return {
         rootId: 'a'.repeat(64),
@@ -103,7 +116,10 @@ test('managed setup converges on one exact package and verified Client pairing',
   assert.equal(await runRuntimeHostSetupCli(options, overrides), 0);
   assert.equal(await runRuntimeHostSetupCli(options, overrides), 0);
   rejectVerification = true;
-  assert.equal(await runRuntimeHostSetupCli(options, overrides), 1);
+  assert.equal(
+    await runRuntimeHostSetupCli({ ...options, deferPairingCommit: true }, overrides),
+    1,
+  );
   assert.equal(installCount, 3);
   assert.equal(pairCount, 3);
   assert.deepEqual(revokedCredentialIds, ['credential-3']);
@@ -200,7 +216,7 @@ test('managed setup replaces one exact development package with another', async 
           homeDir: join(base, 'home'),
           platform: 'linux',
         }),
-      issueCredential: async () => ({
+      replaceCredential: async () => ({
         rootId: 'a'.repeat(64),
         credential: 'new-development-secret',
         credentialId: 'new-development-credential',

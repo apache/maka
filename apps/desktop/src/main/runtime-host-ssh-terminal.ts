@@ -62,6 +62,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   runSetup(
     input: DesktopRuntimeHostSshSetupInput,
     onProgress: (frame: Extract<RuntimeHostSetupFrame, { kind: 'progress' }>) => void,
+    onComplete?: (frame: RuntimeHostSetupCompleteFrame) => void,
   ): Promise<RuntimeHostSetupCompleteFrame>;
   close(): Promise<void>;
 } {
@@ -230,7 +231,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       terminal.pty.resize(request.cols, request.rows);
     },
   );
-  input.ipcMain.handle(channels[3], (_event, sessionId: string) => {
+  input.ipcMain.handle(channels[3], async (_event, sessionId: string) => {
     if (presentation?.sessionId === sessionId) {
       presentation = undefined;
       revision += 1;
@@ -238,11 +239,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     const terminal = findActive(active, sessionId);
     if (!terminal) return;
     terminal.dismissed = true;
-    try {
-      terminal.pty.kill();
-    } catch {
-      // The process may have exited between validation and cancellation.
-    }
+    await terminateActiveTerminal(terminal, input.processStopGraceMs);
   });
 
   return {
@@ -254,73 +251,86 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       if (terminal) completePresentation(terminal);
       return tunnel;
     },
-    runSetup: async (setupInput, onProgress) => {
+    runSetup: async (setupInput, onProgress, onComplete) => {
       setupInput.signal?.throwIfAborted();
-      const destination = requireSetupDestination(setupInput.destination);
-      const sshPort = setupInput.sshPort === undefined
-        ? undefined
-        : requireSetupPort(setupInput.sshPort);
-      const setupPackage = await prepareSetupPackage(
-        setupInput.setupPackage,
-        destination,
-        sshPort,
-        startTerminalProcess,
-        setupInput.signal,
-        input.processStopGraceMs,
-      );
-      const remoteCommand = runtimeHostSetupRemoteCommand(setupPackage, setupInput.principalId);
-      let complete: RuntimeHostSetupCompleteFrame | undefined;
-      let setupFailure: Error | undefined;
-      let setupTerminal: ActiveTerminal | undefined;
-      const filter = createSetupOutputFilter((frame) => {
-        if (frame.kind === 'progress') onProgress(frame);
-        else if (frame.kind === 'complete') {
-          complete = frame;
-          if (setupTerminal) completePresentation(setupTerminal);
-        }
-        else setupFailure = new Error(frame.error.message);
-      }, (error) => {
-        setupFailure = error;
-      });
-      const { process, terminal } = startTerminalProcess('ssh', [
-        '-tt',
-        '-o',
-        'BatchMode=no',
-        '-o',
-        'ConnectTimeout=15',
-        '-o',
-        'ControlMaster=no',
-        '-o',
-        'ControlPath=none',
-        '-o',
-        'ClearAllForwardings=yes',
-        '-o',
-        'RemoteCommand=none',
-        ...(sshPort === undefined ? [] : ['-p', String(sshPort)]),
-        destination,
-        remoteCommand,
-      ], filter.push);
-      setupTerminal = terminal;
-      if (complete) completePresentation(terminal);
-      const result = await waitForTerminalProcess(process, {
-        signal: setupInput.signal,
-        timeoutMs: SETUP_TIMEOUT_MS,
-        timeoutMessage: 'Remote Maka setup timed out',
-        stopGraceMs: input.processStopGraceMs,
-      });
-      filter.finish();
-      if (setupFailure) throw setupFailure;
-      if (!complete) {
-        throw new Error(
-          result.code === 0
-            ? 'Remote Maka setup ended without a completion result'
-            : result.code === 2
-              ? 'The released Maka CLI on this channel does not support automated Runtime Host setup'
-            : `Remote Maka setup exited with code ${String(result.code)}`,
+      const cancellation = cancellableUntilComplete(setupInput.signal);
+      try {
+        const destination = requireSetupDestination(setupInput.destination);
+        const sshPort = setupInput.sshPort === undefined
+          ? undefined
+          : requireSetupPort(setupInput.sshPort);
+        const setupPackage = await prepareSetupPackage(
+          setupInput.setupPackage,
+          destination,
+          sshPort,
+          startTerminalProcess,
+          cancellation.signal,
+          input.processStopGraceMs,
         );
+        const remoteCommand = runtimeHostSetupRemoteCommand(setupPackage, setupInput.principalId);
+        let complete: RuntimeHostSetupCompleteFrame | undefined;
+        let setupFailure: Error | undefined;
+        let setupTerminal: ActiveTerminal | undefined;
+        const filter = createSetupOutputFilter(
+          (frame) => {
+            if (frame.kind === 'progress') onProgress(frame);
+            else if (frame.kind === 'complete') {
+              if (!cancellation.commit()) return;
+              complete = frame;
+              onComplete?.(frame);
+              if (setupTerminal) completePresentation(setupTerminal);
+            } else setupFailure = new Error(frame.error.message);
+          },
+          (error) => {
+            setupFailure = error;
+          },
+        );
+        const { process, terminal } = startTerminalProcess(
+          'ssh',
+          [
+            '-tt',
+            '-o',
+            'BatchMode=no',
+            '-o',
+            'ConnectTimeout=15',
+            '-o',
+            'ControlMaster=no',
+            '-o',
+            'ControlPath=none',
+            '-o',
+            'ClearAllForwardings=yes',
+            '-o',
+            'RemoteCommand=none',
+            ...(sshPort === undefined ? [] : ['-p', String(sshPort)]),
+            destination,
+            remoteCommand,
+          ],
+          filter.push,
+        );
+        setupTerminal = terminal;
+        if (complete) completePresentation(terminal);
+        const result = await waitForTerminalProcess(process, {
+          signal: cancellation.signal,
+          timeoutMs: SETUP_TIMEOUT_MS,
+          timeoutMessage: 'Remote Maka setup timed out',
+          stopGraceMs: input.processStopGraceMs,
+        });
+        filter.finish();
+        if (setupFailure) throw setupFailure;
+        if (!complete) {
+          throw new Error(
+            result.code === 0
+              ? 'Remote Maka setup ended without a completion result'
+              : result.code === 2
+                ? 'The released Maka CLI on this channel does not support automated Runtime Host setup'
+                : `Remote Maka setup exited with code ${String(result.code)}`,
+          );
+        }
+        completePresentation(terminal);
+        return complete;
+      } finally {
+        cancellation.close();
       }
-      completePresentation(terminal);
-      return complete;
     },
     close: async () => {
       for (const channel of channels) input.ipcMain.removeHandler(channel);
@@ -330,14 +340,33 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       presentation = undefined;
       terminal.dismissed = true;
       if (terminal.revealTimer !== undefined) clearTimeout(terminal.revealTimer);
-      await terminateTerminalProcess(
-        {
-          exited: terminal.exited.then(() => ({ code: null, signal: null })),
-          kill: (signal) => terminal.pty.kill(signal),
-        },
-        input.processStopGraceMs,
-      ).catch(() => undefined);
+      await terminateActiveTerminal(terminal, input.processStopGraceMs).catch(() => undefined);
     },
+  };
+}
+
+function cancellableUntilComplete(signal: AbortSignal | undefined): {
+  readonly signal: AbortSignal;
+  commit(): boolean;
+  close(): void;
+} {
+  const controller = new AbortController();
+  let committed = false;
+  const onAbort = () => {
+    if (!committed) controller.abort();
+  };
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener('abort', onAbort, { once: true });
+  const close = () => signal?.removeEventListener('abort', onAbort);
+  return {
+    signal: controller.signal,
+    commit() {
+      if (controller.signal.aborted) return false;
+      committed = true;
+      close();
+      return true;
+    },
+    close,
   };
 }
 
@@ -547,6 +576,7 @@ function runtimeHostSetupRemoteCommand(
     principalId,
     '--preset',
     'desktop-client',
+    '--defer-pairing-commit',
     '--json',
   ].map(quotePosix).join(' ');
   const command = setupPackage.removeAfterSetup
@@ -591,6 +621,25 @@ function findActive(
   sessionId: string,
 ): ActiveTerminal | undefined {
   return active?.sessionId === sessionId ? active : undefined;
+}
+
+function terminateActiveTerminal(
+  terminal: ActiveTerminal,
+  graceMs: number | undefined,
+): Promise<void> {
+  return terminateTerminalProcess(
+    {
+      exited: terminal.exited.then(() => ({ code: null, signal: null })),
+      kill: (signal) => {
+        try {
+          terminal.pty.kill(signal);
+        } catch {
+          // The exit promise is the authority for concurrent process exit.
+        }
+      },
+    },
+    graceMs,
+  );
 }
 
 function sshEnvironment(): Record<string, string> {

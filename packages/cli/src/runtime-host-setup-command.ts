@@ -15,7 +15,8 @@ import {
 } from '@maka/runtime-host/protocol';
 import { withFileUpdateLock } from '@maka/storage/file-update-lock';
 import {
-  issueRuntimeHostAccessCredential,
+  prepareRuntimeHostAccessCredential,
+  replaceRuntimeHostAccessCredential,
   revokeRuntimeHostAccessCredential,
   type RuntimeHostAccessPreset,
 } from './runtime-host-access-command.js';
@@ -42,6 +43,7 @@ export interface RuntimeHostSetupCliOptions {
   readonly version: string;
   readonly principalId: string;
   readonly preset: RuntimeHostAccessPreset;
+  readonly deferPairingCommit?: boolean;
   readonly rootPath?: string;
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly websocketPort?: number;
@@ -52,7 +54,8 @@ interface RuntimeHostSetupDeps {
   readonly manageService: typeof manageRuntimeHostService;
   readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
   readonly prepareDeployment: typeof prepareRuntimeHostManagedPackageDeployment;
-  readonly issueCredential: typeof issueRuntimeHostAccessCredential;
+  readonly prepareCredential: typeof prepareRuntimeHostAccessCredential;
+  readonly replaceCredential: typeof replaceRuntimeHostAccessCredential;
   readonly revokeCredential: typeof revokeRuntimeHostAccessCredential;
   readonly verifyCredential: typeof verifyRuntimeHostSetupCredential;
   readonly writeOutput: (value: string) => unknown;
@@ -78,7 +81,8 @@ export async function runRuntimeHostSetupCli(
     manageService: manageRuntimeHostService,
     createBackend: createPlatformRuntimeHostServiceBackend,
     prepareDeployment: prepareRuntimeHostManagedPackageDeployment,
-    issueCredential: issueRuntimeHostAccessCredential,
+    prepareCredential: prepareRuntimeHostAccessCredential,
+    replaceCredential: replaceRuntimeHostAccessCredential,
     revokeCredential: revokeRuntimeHostAccessCredential,
     verifyCredential: verifyRuntimeHostSetupCredential,
     writeOutput: (value) => process.stdout.write(value),
@@ -156,9 +160,12 @@ async function runRuntimeHostSetupLocked(
   }
 
   emit({ kind: 'progress', phase: 'pairing_client' });
-  let paired: Awaited<ReturnType<typeof issueRuntimeHostAccessCredential>>;
+  let paired: Awaited<ReturnType<typeof prepareRuntimeHostAccessCredential>>;
   try {
-    paired = await deps.issueCredential({
+    const pairCredential = options.deferPairingCommit
+      ? deps.prepareCredential
+      : deps.replaceCredential;
+    paired = await pairCredential({
       rootPath: config.rootPath,
       principalKind: 'remote_owner',
       principalId: options.principalId,
@@ -192,16 +199,18 @@ async function runRuntimeHostSetupLocked(
       credential: paired.credential,
     });
   } catch (error) {
-    try {
-      await deps.revokeCredential({
-        rootPath: config.rootPath,
-        credentialId: paired.credentialId,
-      });
-    } catch (rollbackError) {
-      throw new AggregateError(
-        [error, rollbackError],
-        'Runtime Host pairing failed and its candidate credential could not be revoked',
-      );
+    if (options.deferPairingCommit) {
+      try {
+        await deps.revokeCredential({
+          rootPath: config.rootPath,
+          credentialId: paired.credentialId,
+        });
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          'Runtime Host pairing failed and its candidate credential could not be revoked',
+        );
+      }
     }
     throw error;
   }

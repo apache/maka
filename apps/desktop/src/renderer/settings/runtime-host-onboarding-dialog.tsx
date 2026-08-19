@@ -54,8 +54,13 @@ export function RuntimeHostOnboardingDialog(props: {
   }
 
   function close(): void {
-    if (running) void window.maka.runtimeHostOnboarding.cancel();
-    else void window.maka.runtimeHostOnboarding.reset();
+    if (running) {
+      void window.maka.runtimeHostOnboarding.cancel().then((cancelled) => {
+        if (cancelled) props.onClose();
+      });
+      return;
+    }
+    void window.maka.runtimeHostOnboarding.reset();
     props.onClose();
   }
 
@@ -140,12 +145,16 @@ export function RuntimeHostOnboardingDialog(props: {
                     }}
                   />
                 </>
-              ) : running && snapshot.phase !== 'connecting_host' ? (
-                <Button
-                  variant="secondary"
-                  label={copy.setupCancel}
-                  clickAction={() => window.maka.runtimeHostOnboarding.cancel()}
-                />
+              ) : running ? (
+                snapshot.phase === 'connecting_host' ? null : (
+                  <Button
+                    variant="secondary"
+                    label={copy.setupCancel}
+                    clickAction={async () => {
+                      await window.maka.runtimeHostOnboarding.cancel();
+                    }}
+                  />
+                )
               ) : snapshot.kind === 'failed' ? (
                 <>
                   <Button variant="secondary" label={copy.setupCancel} onClick={close} />

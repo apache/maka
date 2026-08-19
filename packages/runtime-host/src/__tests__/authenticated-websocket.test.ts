@@ -335,7 +335,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       'session',
     );
 
-    const candidate = await local.request('access.credential.issue', {
+    const candidate = await local.request('access.credential.prepare', {
       principalKind: 'remote_owner',
       principalId: 'remote-device',
       operationGrants: issued.operationGrants,
@@ -347,6 +347,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       candidate.deliveryId,
       candidate.credentialId,
     );
+    assert.deepEqual(await remote.request('access.credential.finalize', {}), {});
     const replacementConnection = await connectRemoteRuntimeHost({
       url,
       credential: replacementCredential,
@@ -358,16 +359,13 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
     if (replacementConnection.kind === 'connected') {
       assert.deepEqual(
         await replacementConnection.connection.request('access.credential.finalize', {}),
-        {
-          credentialId: candidate.credentialId,
-          revokedCredentialIds: [issued.credentialId],
-        },
+        {},
       );
       await remote.closed;
       remote = undefined;
       assert.deepEqual(
         await replacementConnection.connection.request('access.credential.finalize', {}),
-        { credentialId: candidate.credentialId, revokedCredentialIds: [] },
+        {},
       );
       await replacementConnection.connection.close();
     }
@@ -576,6 +574,44 @@ test('access credentials persist only as hashes and stay revoked after reload', 
   }
 });
 
+test('expired pairing candidates are denied and removed from durable access state', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-expired-pairing-'));
+  const credential = 'maka_rh_expired_pairing';
+  const path = join(directory, 'runtime-host-access.json');
+  try {
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        credentials: [
+          {
+            credentialId: 'expired-pairing',
+            credentialHash: createHash('sha256').update(credential).digest('hex'),
+            principalId: 'expired-client',
+            principalKind: 'remote_owner',
+            status: 'pending',
+            operationGrants: ['host.status', 'access.credential.finalize'],
+            canPublishClientCapabilities: false,
+            canUseHostPaths: false,
+            createdAt: '2026-01-01T00:00:00.000Z',
+            expiresAt: '2026-01-01T00:05:00.000Z',
+          },
+        ],
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const authority = await openRuntimeHostAccessAuthority(directory);
+    assert.equal(authority.authenticate(credential), undefined);
+    await waitForCondition(async () => {
+      const file = JSON.parse(await readFile(path, 'utf8')) as { credentials?: unknown[] };
+      return file.credentials?.length === 0;
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('keeps a formerly accepted local-only grant inert when opening an existing access file', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-legacy-'));
   const credential = 'maka_rh_existing';
@@ -721,4 +757,12 @@ function requireConnection(
 ): RuntimeHostConnection {
   if (result.kind !== 'connected') throw new Error(`Local Client did not connect: ${result.kind}`);
   return result.connection;
+}
+
+async function waitForCondition(condition: () => Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail('condition did not become true');
 }

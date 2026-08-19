@@ -36,6 +36,8 @@ export interface AccessCredentialIssueResult {
 
 export type AccessCredentialReplaceInput = AccessCredentialIssueInput;
 export type AccessCredentialReplaceResult = AccessCredentialIssueResult;
+export type AccessCredentialPrepareInput = AccessCredentialIssueInput;
+export type AccessCredentialPrepareResult = AccessCredentialIssueResult;
 
 export interface AccessCredentialRevokeInput {
   readonly credentialId: string;
@@ -47,11 +49,7 @@ export interface AccessCredentialRevokeResult {
 }
 
 export type AccessCredentialFinalizeInput = Record<string, never>;
-
-export interface AccessCredentialFinalizeResult {
-  readonly credentialId: string;
-  readonly revokedCredentialIds: readonly string[];
-}
+export type AccessCredentialFinalizeResult = Record<string, never>;
 
 export const ACCESS_AUTHORITY_OPERATION_SPECS = {
   'access.credential.issue': defineOperation<
@@ -68,6 +66,17 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
   'access.credential.replace': defineOperation<
     AccessCredentialReplaceInput,
     AccessCredentialReplaceResult,
+    (typeof ACCESS_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: ACCESS_ERRORS,
+    decodeInput: decodeAccessCredentialIssueInput,
+    decodeOutput: decodeAccessCredentialIssueResult,
+  }),
+  'access.credential.prepare': defineOperation<
+    AccessCredentialPrepareInput,
+    AccessCredentialPrepareResult,
     (typeof ACCESS_ERRORS)[number]
   >({
     mode: 'command',
@@ -175,19 +184,8 @@ export function decodeAccessCredentialFinalizeInput(value: unknown): AccessCrede
 export function decodeAccessCredentialFinalizeResult(
   value: unknown,
 ): AccessCredentialFinalizeResult {
-  const record = requireExactRecord(value, 'access credential finalize result', [
-    'credentialId',
-    'revokedCredentialIds',
-  ]);
-  if (!Array.isArray(record.revokedCredentialIds)) {
-    throw invalidProtocolFrame('Invalid revokedCredentialIds');
-  }
-  return {
-    credentialId: requireId(record.credentialId, 'credentialId'),
-    revokedCredentialIds: record.revokedCredentialIds.map((credentialId) =>
-      requireId(credentialId, 'revokedCredentialId'),
-    ),
-  };
+  requireExactRecord(value, 'access credential finalize result', []);
+  return {};
 }
 
 function operationGrants(value: unknown): readonly OperationKey[] {

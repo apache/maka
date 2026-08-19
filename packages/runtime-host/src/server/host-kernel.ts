@@ -40,6 +40,7 @@ import {
 import {
   issueAccessCredential,
   finalizeAccessCredential,
+  prepareAccessCredential,
   replaceAccessCredential,
   revokeAccessCredential,
   type RuntimeHostAccessAuthority,
@@ -625,6 +626,8 @@ export class RuntimeHostKernel {
           issueAccessCredential(this.#options.accessAuthority, input),
         'access.credential.replace': async (input) =>
           replaceAccessCredential(this.#options.accessAuthority, input),
+        'access.credential.prepare': async (input) =>
+          prepareAccessCredential(this.#options.accessAuthority, input),
         'access.credential.revoke': async (input) =>
           revokeAccessCredential(this.#options.accessAuthority, input),
         'access.credential.finalize': async (_input, context) =>

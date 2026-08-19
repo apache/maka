@@ -28,6 +28,7 @@ export type RuntimeHostCliCommand =
       json: boolean;
       principalId: string;
       preset: 'desktop-client' | 'terminal-client';
+      deferPairingCommit: boolean;
       rootPath?: string;
       projectDirectoryRoots?: { label: string; path: string }[];
       websocketPort?: number;
@@ -108,15 +109,24 @@ export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
 function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
   let principalId: string | undefined;
   let preset: 'desktop-client' | 'terminal-client' | undefined;
+  let deferPairingCommit = false;
   const options = parseManagedServiceOptions(argv, {
-    '--principal': (value) => {
-      principalId = value;
+    valueOptions: {
+      '--principal': (value) => {
+        principalId = value;
+      },
+      '--preset': (value) => {
+        if (value !== 'desktop-client' && value !== 'terminal-client') {
+          return error('--preset must be desktop-client or terminal-client');
+        }
+        preset = value;
+      },
     },
-    '--preset': (value) => {
-      if (value !== 'desktop-client' && value !== 'terminal-client') {
-        return error('--preset must be desktop-client or terminal-client');
-      }
-      preset = value;
+    flagOptions: {
+      '--defer-pairing-commit': () => {
+        if (deferPairingCommit) return error('Duplicate --defer-pairing-commit');
+        deferPairingCommit = true;
+      },
     },
   });
   if ('kind' in options) return options;
@@ -129,6 +139,7 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
     ...options,
     principalId,
     preset,
+    deferPairingCommit,
   };
 }
 
@@ -149,7 +160,9 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     );
   }
 
-  const options = parseManagedServiceOptions(argv.slice(1), {}, action === 'install');
+  const options = parseManagedServiceOptions(argv.slice(1), {
+    allowConfiguration: action === 'install',
+  });
   if ('kind' in options) return options;
   return {
     kind: 'runtime-host-service-manage',
@@ -168,10 +181,11 @@ interface ManagedServiceOptions {
 
 function parseManagedServiceOptions(
   argv: string[],
-  additionalValueOptions: Readonly<
-    Record<string, (value: string) => RuntimeHostCliError | void>
-  > = {},
-  allowConfiguration = true,
+  input: {
+    readonly valueOptions?: Readonly<Record<string, (value: string) => RuntimeHostCliError | void>>;
+    readonly flagOptions?: Readonly<Record<string, () => RuntimeHostCliError | void>>;
+    readonly allowConfiguration?: boolean;
+  } = {},
 ): ManagedServiceOptions | RuntimeHostCliError {
   let json = false;
   let rootPath: string | undefined;
@@ -184,13 +198,20 @@ function parseManagedServiceOptions(
       json = true;
       continue;
     }
-    if (!allowConfiguration) return error(`Unexpected argument: ${argument ?? ''}`);
+    if (Object.hasOwn(input.flagOptions ?? {}, argument ?? '')) {
+      const optionError = input.flagOptions?.[argument ?? '']?.();
+      if (optionError) return optionError;
+      continue;
+    }
+    if (input.allowConfiguration === false) {
+      return error(`Unexpected argument: ${argument ?? ''}`);
+    }
     if (
       argument === '--root' ||
       argument === '--websocket-port' ||
       argument === '--websocket-path' ||
       argument === '--project-root' ||
-      Object.hasOwn(additionalValueOptions, argument ?? '')
+      Object.hasOwn(input.valueOptions ?? {}, argument ?? '')
     ) {
       const parsed = optionValue(argv, index, argument ?? '');
       if (typeof parsed !== 'string') return parsed;
@@ -210,7 +231,7 @@ function parseManagedServiceOptions(
         }
         projectDirectoryRoots.push(root);
       } else {
-        const optionError = additionalValueOptions[argument ?? '']?.(parsed);
+        const optionError = input.valueOptions?.[argument ?? '']?.(parsed);
         if (optionError) return optionError;
       }
       index += 1;

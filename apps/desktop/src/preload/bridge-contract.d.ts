@@ -451,7 +451,7 @@ export interface MakaBridge {
   runtimeHostOnboarding: {
     getSnapshot(): Promise<DesktopRuntimeHostOnboardingSnapshot>;
     start(input: DesktopRuntimeHostOnboardingInput): Promise<DesktopRuntimeHostOnboardingSnapshot>;
-    cancel(): Promise<void>;
+    cancel(): Promise<boolean>;
     reset(): Promise<void>;
     subscribe(handler: (snapshot: DesktopRuntimeHostOnboardingSnapshot) => void): () => void;
   };

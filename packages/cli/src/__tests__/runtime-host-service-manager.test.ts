@@ -86,6 +86,7 @@ describe('managed Runtime Host service', () => {
         'desktop.client-1',
         '--preset',
         'desktop-client',
+        '--defer-pairing-commit',
         '--json',
       ]),
       {
@@ -93,6 +94,7 @@ describe('managed Runtime Host service', () => {
         json: true,
         principalId: 'desktop.client-1',
         preset: 'desktop-client',
+        deferPairingCommit: true,
       },
     );
   });

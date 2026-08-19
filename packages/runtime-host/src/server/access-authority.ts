@@ -4,6 +4,8 @@ import {
   type AccessCredentialIssueInput,
   type AccessCredentialIssueResult,
   type AccessCredentialFinalizeResult,
+  type AccessCredentialPrepareInput,
+  type AccessCredentialPrepareResult,
   type AccessCredentialReplaceInput,
   type AccessCredentialReplaceResult,
   type AccessCredentialRevokeInput,
@@ -32,6 +34,7 @@ import {
 } from './access-credential-store.js';
 
 const ACCESS_CREDENTIAL_PREFIX = 'maka_rh_';
+const PENDING_CREDENTIAL_LIFETIME_MS = 15 * 60_000;
 const CAPABILITY_PROVIDER_GRANTS = new Set([
   'host.status',
   'client.capability.replace',
@@ -42,6 +45,7 @@ export interface RuntimeHostAccessAuthority {
   authenticate(credential: string): RuntimeHostConnectionAuthority | undefined;
   issue(input: AccessCredentialIssueInput): Promise<AccessCredentialIssueResult>;
   replace(input: AccessCredentialReplaceInput): Promise<AccessCredentialReplaceResult>;
+  prepare(input: AccessCredentialPrepareInput): Promise<AccessCredentialPrepareResult>;
   revoke(input: AccessCredentialRevokeInput): Promise<AccessCredentialRevokeResult>;
   finalize(credentialId: string): Promise<AccessCredentialFinalizeResult>;
   subscribeRevocations(listener: (credentialId: string) => void): () => void;
@@ -64,12 +68,14 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   readonly #path: string;
   #file: AccessCredentialFile;
   #mutation = Promise.resolve();
+  #expiryTimer: NodeJS.Timeout | undefined;
   readonly #revocationListeners = new Set<(credentialId: string) => void>();
 
   constructor(controlDirectory: string, path: string, file: AccessCredentialFile) {
     this.#controlDirectory = controlDirectory;
     this.#path = path;
     this.#file = file;
+    this.#schedulePendingExpiry();
   }
 
   authenticate(credential: string): RuntimeHostConnectionAuthority | undefined {
@@ -79,7 +85,13 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       const storedHash = Buffer.from(stored.credentialHash, 'hex');
       const equal =
         storedHash.byteLength === candidate.byteLength && timingSafeEqual(storedHash, candidate);
-      if (equal && stored.status === 'active') match = stored;
+      if (
+        equal &&
+        (stored.status === 'active' ||
+          (stored.status === 'pending' && Date.parse(stored.expiresAt!) > Date.now()))
+      ) {
+        match = stored;
+      }
     }
     return match
       ? createRuntimeHostConnectionAuthority({
@@ -94,20 +106,33 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   }
 
   issue(input: AccessCredentialIssueInput): Promise<AccessCredentialIssueResult> {
-    return this.#issue(input, false);
+    return this.#issue(input, 'issue');
   }
 
   replace(input: AccessCredentialReplaceInput): Promise<AccessCredentialReplaceResult> {
-    return this.#issue(input, true);
+    return this.#issue(input, 'replace');
+  }
+
+  prepare(input: AccessCredentialPrepareInput): Promise<AccessCredentialPrepareResult> {
+    return this.#issue(input, 'prepare');
   }
 
   #issue(
     input: AccessCredentialIssueInput,
-    replacePrincipal: boolean,
+    mode: 'issue' | 'replace' | 'prepare',
   ): Promise<AccessCredentialIssueResult> {
     return this.#mutate(async () => {
       const operationGrants = issuedAccessGrants(input.operationGrants);
       assertCredentialAuthority(input, operationGrants);
+      if (
+        mode === 'prepare' &&
+        (input.principalKind !== 'remote_owner' ||
+          !operationGrants.includes('access.credential.finalize'))
+      ) {
+        throw new RuntimeHostAccessInputError(
+          'A pairing candidate must be a remote owner that can finalize its pairing',
+        );
+      }
       const credentialId = randomUUID();
       createRuntimeHostConnectionAuthority({
         principalKind: input.principalKind,
@@ -118,25 +143,32 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
         canUseHostPaths: input.canUseHostPaths,
       });
       const credential = `${ACCESS_CREDENTIAL_PREFIX}${randomBytes(32).toString('base64url')}`;
+      const createdAt = new Date();
       const stored: StoredAccessCredential = {
         credentialId,
         credentialHash: hashCredential(credential).toString('hex'),
         principalId: input.principalId,
         principalKind: input.principalKind,
-        status: 'active',
+        status: mode === 'prepare' ? 'pending' : 'active',
         operationGrants,
         canPublishClientCapabilities: input.canPublishClientCapabilities,
         canUseHostPaths: input.canUseHostPaths,
-        createdAt: new Date().toISOString(),
+        createdAt: createdAt.toISOString(),
+        ...(mode === 'prepare'
+          ? {
+              expiresAt: new Date(
+                createdAt.getTime() + PENDING_CREDENTIAL_LIFETIME_MS,
+              ).toISOString(),
+            }
+          : {}),
       };
-      const replaced = replacePrincipal
-        ? this.#file.credentials.filter(
-            (candidate) =>
-              candidate.status === 'active' &&
-              candidate.principalKind === input.principalKind &&
-              candidate.principalId === input.principalId,
-          )
-        : [];
+      const replaced = this.#file.credentials.filter(
+        (candidate) =>
+          candidate.principalKind === input.principalKind &&
+          candidate.principalId === input.principalId &&
+          ((mode === 'replace' && candidate.status !== 'revoked') ||
+            (mode === 'prepare' && candidate.status === 'pending')),
+      );
       const retained =
         replaced.length === 0
           ? this.#file.credentials
@@ -177,12 +209,15 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       if (index === -1 || this.#file.credentials[index]?.status === 'revoked') {
         return { credentialId: input.credentialId, revoked: false };
       }
-      const credentials = [...this.#file.credentials];
-      credentials[index] = {
-        ...credentials[index]!,
-        status: 'revoked',
-        revokedAt: new Date().toISOString(),
-      };
+      const current = this.#file.credentials[index]!;
+      const credentials =
+        current.status === 'pending'
+          ? this.#file.credentials.filter((credential) => credential !== current)
+          : this.#file.credentials.map((credential, candidateIndex) =>
+              candidateIndex === index
+                ? { ...credential, status: 'revoked' as const, revokedAt: new Date().toISOString() }
+                : credential,
+            );
       await this.#commit(createAccessCredentialFile(credentials));
       this.#publishRevocation(input.credentialId);
       return { credentialId: input.credentialId, revoked: true };
@@ -192,10 +227,15 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   finalize(credentialId: string): Promise<AccessCredentialFinalizeResult> {
     return this.#mutate(async () => {
       const retained = this.#file.credentials.find(
-        (credential) => credential.credentialId === credentialId && credential.status === 'active',
+        (credential) => credential.credentialId === credentialId,
       );
-      if (!retained) {
+      if (!retained || retained.status === 'revoked') {
         throw new RuntimeHostAccessInputError('The current access credential is no longer active');
+      }
+      if (retained.status === 'active') return {};
+      if (Date.parse(retained.expiresAt!) <= Date.now()) {
+        await this.#expirePending();
+        throw new RuntimeHostAccessInputError('The pairing candidate has expired');
       }
       const revoked = this.#file.credentials.filter(
         (credential) =>
@@ -204,18 +244,17 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
           credential.principalKind === retained.principalKind &&
           credential.principalId === retained.principalId,
       );
-      if (revoked.length > 0) {
-        await this.#commit(
-          createAccessCredentialFile(
-            this.#file.credentials.filter((credential) => !revoked.includes(credential)),
-          ),
-        );
-        for (const credential of revoked) this.#publishRevocation(credential.credentialId);
-      }
-      return {
-        credentialId,
-        revokedCredentialIds: revoked.map((credential) => credential.credentialId),
-      };
+      await this.#commit(
+        createAccessCredentialFile(
+          this.#file.credentials
+            .filter((credential) => !revoked.includes(credential))
+            .map((credential) =>
+              credential === retained ? activatePendingCredential(credential) : credential,
+            ),
+        ),
+      );
+      for (const credential of revoked) this.#publishRevocation(credential.credentialId);
+      return {};
     });
   }
 
@@ -236,6 +275,47 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   async #commit(file: AccessCredentialFile): Promise<void> {
     await writeAccessCredentialFile(this.#path, file);
     this.#file = file;
+    this.#schedulePendingExpiry();
+  }
+
+  async #expirePending(): Promise<void> {
+    const now = Date.now();
+    const expired = this.#file.credentials.filter(
+      (credential) => credential.status === 'pending' && Date.parse(credential.expiresAt!) <= now,
+    );
+    if (expired.length === 0) {
+      this.#schedulePendingExpiry();
+      return;
+    }
+    await this.#commit(
+      createAccessCredentialFile(
+        this.#file.credentials.filter((credential) => !expired.includes(credential)),
+      ),
+    );
+    for (const credential of expired) this.#publishRevocation(credential.credentialId);
+  }
+
+  #schedulePendingExpiry(retryMs?: number): void {
+    if (this.#expiryTimer) clearTimeout(this.#expiryTimer);
+    const nextExpiry = this.#file.credentials.reduce<number | undefined>((earliest, credential) => {
+      if (credential.status !== 'pending') return earliest;
+      const expiresAt = Date.parse(credential.expiresAt!);
+      return earliest === undefined || expiresAt < earliest ? expiresAt : earliest;
+    }, undefined);
+    if (nextExpiry === undefined) {
+      this.#expiryTimer = undefined;
+      return;
+    }
+    this.#expiryTimer = setTimeout(
+      () => {
+        this.#expiryTimer = undefined;
+        void this.#mutate(() => this.#expirePending()).catch(() => {
+          this.#schedulePendingExpiry(1_000);
+        });
+      },
+      retryMs ?? Math.max(0, nextExpiry - Date.now()),
+    );
+    this.#expiryTimer.unref();
   }
 
   #publishRevocation(credentialId: string): void {
@@ -247,6 +327,11 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       }
     }
   }
+}
+
+function activatePendingCredential(credential: StoredAccessCredential): StoredAccessCredential {
+  const { expiresAt: _expiresAt, ...retained } = credential;
+  return { ...retained, status: 'active' };
 }
 
 function assertCredentialAuthority(
@@ -305,6 +390,24 @@ export async function replaceAccessCredential(
   }
 }
 
+export async function prepareAccessCredential(
+  authority: RuntimeHostAccessAuthority | undefined,
+  input: AccessCredentialPrepareInput,
+): Promise<OperationOutcome<'access.credential.prepare'>> {
+  if (!authority) return unavailable('prepare');
+  try {
+    return { ok: true, result: await authority.prepare(input) };
+  } catch (error) {
+    if (error instanceof RuntimeHostAccessInputError) {
+      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+    }
+    return {
+      ok: false,
+      error: { code: 'persistence_failed', message: 'Access credential pairing could not begin' },
+    };
+  }
+}
+
 export async function revokeAccessCredential(
   authority: RuntimeHostAccessAuthority | undefined,
   input: AccessCredentialRevokeInput,
@@ -349,13 +452,15 @@ export async function finalizeAccessCredential(
 
 function unavailable(operation: 'issue'): OperationOutcome<'access.credential.issue'>;
 function unavailable(operation: 'replace'): OperationOutcome<'access.credential.replace'>;
+function unavailable(operation: 'prepare'): OperationOutcome<'access.credential.prepare'>;
 function unavailable(operation: 'revoke'): OperationOutcome<'access.credential.revoke'>;
 function unavailable(operation: 'finalize'): OperationOutcome<'access.credential.finalize'>;
 function unavailable(
-  _operation: 'issue' | 'replace' | 'revoke' | 'finalize',
+  _operation: 'issue' | 'replace' | 'prepare' | 'revoke' | 'finalize',
 ):
   | OperationOutcome<'access.credential.issue'>
   | OperationOutcome<'access.credential.replace'>
+  | OperationOutcome<'access.credential.prepare'>
   | OperationOutcome<'access.credential.revoke'>
   | OperationOutcome<'access.credential.finalize'> {
   return {

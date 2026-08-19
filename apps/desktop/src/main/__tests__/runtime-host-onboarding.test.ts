@@ -66,6 +66,19 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
     finishPairing = resolve;
   });
   let pairingStarted = false;
+  let completeReceived = false;
+  let finishSetup!: (value: {
+    rootId: string;
+    endpoint: string;
+    credential: string;
+  }) => void;
+  const setupDrain = new Promise<{
+    rootId: string;
+    endpoint: string;
+    credential: string;
+  }>((resolve) => {
+    finishSetup = resolve;
+  });
   const profiles: DesktopRuntimeHostProfileService = {
     getSnapshot: async () => ({ defaultProfileId: 'local', entries: [] }),
     addAndEnable: async () => assert.fail('manual profile path must not be used'),
@@ -85,11 +98,11 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
     clientInstanceId: 'stable-client',
     profiles,
     setupPackage: { kind: 'npm', specifier: 'maka-agent@0.2.0' },
-    runSetup: async () => ({
-      rootId: 'a'.repeat(64),
-      endpoint: 'ws://127.0.0.1:7443/runtime-host',
-      credential: 'candidate-token',
-    }),
+    runSetup: async (_input, _onProgress, onComplete) => {
+      onComplete();
+      completeReceived = true;
+      return setupDrain;
+    },
     send: () => undefined,
   });
   const start = handlers.get('runtime-host-onboarding:start');
@@ -98,17 +111,17 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
   assert.ok(cancel);
 
   const setup = start({}, { destination: 'operator@example.com' }) as Promise<unknown>;
-  while (!pairingStarted) await Promise.resolve();
-  const cancellation = cancel({}) as Promise<void>;
-  let cancellationSettled = false;
-  void cancellation.then(() => {
-    cancellationSettled = true;
+  while (!completeReceived) await Promise.resolve();
+  assert.equal(await cancel({}), false);
+
+  finishSetup({
+    rootId: 'a'.repeat(64),
+    endpoint: 'ws://127.0.0.1:7443/runtime-host',
+    credential: 'candidate-token',
   });
-  await Promise.resolve();
-  assert.equal(cancellationSettled, false);
+  while (!pairingStarted) await Promise.resolve();
 
   finishPairing({ profileId: 'office' });
   assert.deepEqual(await setup, { kind: 'complete', profileId: 'office', revision: 3 });
-  await cancellation;
   await onboarding.close();
 });

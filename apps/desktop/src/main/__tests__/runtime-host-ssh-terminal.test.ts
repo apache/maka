@@ -48,6 +48,7 @@ test('dismisses a closed SSH prompt from the authoritative presentation', async 
 test('does not reopen a cancelled SSH prompt for late process output', async () => {
   const harness = createHarness('exit');
   harness.pty.deferKill = true;
+  harness.pty.exitOnForceKill = true;
   const opening = openTunnel(harness);
   harness.pty.emitData('Password: ');
   const connecting = (await harness.getSnapshot()) as { sessionId?: string };
@@ -55,9 +56,9 @@ test('does not reopen a cancelled SSH prompt for late process output', async () 
 
   await harness.cancel(connecting.sessionId);
   harness.pty.emitData('late output');
-  harness.pty.exit(1);
   await assert.rejects(opening, /SSH exited/u);
 
+  assert.deepEqual(harness.pty.killSignals, ['SIGTERM', 'SIGKILL']);
   assert.deepEqual(harness.eventKinds(), ['opened', 'data']);
   assert.deepEqual(await harness.getSnapshot(), { kind: 'idle', revision: 3 });
   await harness.terminal.close();
@@ -65,12 +66,14 @@ test('does not reopen a cancelled SSH prompt for late process output', async () 
 
 test('keeps setup credentials out of the interactive terminal projection', async () => {
   const harness = createHarness('pending');
+  const controller = new AbortController();
   const progress: string[] = [];
   const setup = harness.terminal.runSetup(
     {
       destination: 'operator@example.com',
       setupPackage: { kind: 'npm', specifier: 'maka-agent@next' },
       principalId: 'desktop:stable-client',
+      signal: controller.signal,
     },
     (frame) => progress.push(frame.phase),
   );
@@ -95,6 +98,9 @@ test('keeps setup credentials out of the interactive terminal projection', async
     credential: 'secret-access-token',
   });
   harness.pty.emitData(completeFrame);
+  controller.abort();
+  await Promise.resolve();
+  assert.deepEqual(harness.pty.killSignals, []);
   harness.pty.exit(0);
 
   const result = await setup;
@@ -170,6 +176,7 @@ test('uploads a development release archive before running the same remote setup
     remoteCommand,
     /npx.*--package.*maka-runtime-host-setup-.+\.tgz.*maka.*runtime-host.*setup/u,
   );
+  assert.match(remoteCommand, /--defer-pairing-commit/u);
   assert.match(remoteCommand, /rm -f/u);
   assert.doesNotMatch(remoteCommand, /status=0; 'exec'/u);
   launches[1]?.pty.emitData(

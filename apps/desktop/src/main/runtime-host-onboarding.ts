@@ -24,6 +24,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
   readonly runSetup: (
     input: DesktopRuntimeHostSshSetupInput,
     onProgress: (frame: { readonly phase: RuntimeHostSetupPhase }) => void,
+    onComplete: () => void,
   ) => Promise<{
     readonly rootId: string;
     readonly endpoint: string;
@@ -56,7 +57,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
     const request = requireOnboardingInput(value);
     const abort = new AbortController();
     publish({ kind: 'running', phase: 'connecting_ssh' });
-    const task = run(request, abort.signal).finally(() => {
+    const task = Promise.resolve().then(() => run(request, abort.signal)).finally(() => {
       if (active?.task === task) active = undefined;
     });
     active = { abort, task, cancellable: true };
@@ -68,6 +69,16 @@ export function createDesktopRuntimeHostOnboarding(input: {
     signal: AbortSignal,
   ): Promise<DesktopRuntimeHostOnboardingSnapshot> => {
     try {
+      let commitStarted = false;
+      const beginCommit = () => {
+        if (commitStarted) return;
+        commitStarted = true;
+        if (active) active.cancellable = false;
+        publish({
+          kind: 'running',
+          phase: 'connecting_host',
+        });
+      };
       const complete = await input.runSetup(
         {
           destination: request.destination,
@@ -77,18 +88,15 @@ export function createDesktopRuntimeHostOnboarding(input: {
           signal,
         },
         (progress) => {
+          if (commitStarted) return;
           publish({
             kind: 'running',
             phase: progress.phase,
           });
         },
+        beginCommit,
       );
-      signal.throwIfAborted();
-      if (active) active.cancellable = false;
-      publish({
-        kind: 'running',
-        phase: 'connecting_host',
-      });
+      beginCommit();
       const endpoint = requireSetupEndpoint(complete.endpoint);
       const profileId = `remote-${randomUUID()}`;
       const profileName = request.name?.trim() || request.destination;
@@ -131,9 +139,11 @@ export function createDesktopRuntimeHostOnboarding(input: {
   input.ipcMain.handle(channels[1], (_event, value: unknown) => start(value));
   input.ipcMain.handle(channels[2], async () => {
     const current = active;
-    if (!current) return;
-    if (current.cancellable) current.abort.abort();
+    if (!current) return true;
+    if (!current.cancellable) return false;
+    current.abort.abort();
     await current.task;
+    return true;
   });
   input.ipcMain.handle(channels[3], () => {
     if (active) throw new Error('Remote Runtime Host setup is still running');

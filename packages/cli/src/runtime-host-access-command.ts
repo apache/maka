@@ -70,6 +70,12 @@ export function issueRuntimeHostAccessCredential(
   return mutateRuntimeHostAccessCredential(options, 'access.credential.issue');
 }
 
+export function prepareRuntimeHostAccessCredential(
+  options: RuntimeHostAccessIssueOptions,
+): Promise<IssuedRuntimeHostAccessCredential> {
+  return mutateRuntimeHostAccessCredential(options, 'access.credential.prepare');
+}
+
 export async function replaceRuntimeHostAccessCredential(
   options: RuntimeHostAccessIssueOptions,
 ): Promise<ReplacedRuntimeHostAccessCredential> {
@@ -80,7 +86,7 @@ export type ReplacedRuntimeHostAccessCredential = IssuedRuntimeHostAccessCredent
 
 async function mutateRuntimeHostAccessCredential(
   options: RuntimeHostAccessIssueOptions,
-  operation: 'access.credential.issue' | 'access.credential.replace',
+  operation: 'access.credential.issue' | 'access.credential.prepare' | 'access.credential.replace',
 ): Promise<IssuedRuntimeHostAccessCredential> {
   const resolved = resolveRuntimeHostAccessIssue(options);
   const connection = await connectLocalOwner(options.rootPath);
@@ -92,10 +98,7 @@ async function mutateRuntimeHostAccessCredential(
       canPublishClientCapabilities: resolved.canPublishClientCapabilities,
       canUseHostPaths: resolved.canUseHostPaths,
     };
-    const result =
-      operation === 'access.credential.issue'
-        ? await connection.request('access.credential.issue', credentialInput)
-        : await connection.request('access.credential.replace', credentialInput);
+    const result = await connection.request(operation, credentialInput);
     const credential = await consumeAccessCredentialDelivery(
       options.rootPath,
       result.deliveryId,
