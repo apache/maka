@@ -29,7 +29,7 @@ import {
   isThirdPartyDevelopmentArtifact,
   releaseNpmEnvironment,
   resolveReleaseWorkspacePackages,
-  workspaceReleaseFiles,
+  resolveWorkspaceReleaseFiles,
 } from './release-cli-file-policy.mjs';
 
 export { releaseToolchainFromManifest } from './product-release-identity.mjs';
@@ -174,7 +174,7 @@ export async function stageWorkspacePackages(installRoot, workspacePackages) {
       await mkdir(targetDirectory, { recursive: true });
       await copyFile(join(directory, 'package.json'), join(targetDirectory, 'package.json'));
       await Promise.all(
-        workspaceReleaseFiles(manifest).map(async (releaseFile) => {
+        resolveWorkspaceReleaseFiles(directory, manifest).map(async (releaseFile) => {
           const source = join(directory, ...releaseFile.split('/'));
           const target = join(targetDirectory, ...releaseFile.split('/'));
           await mkdir(dirname(target), { recursive: true });
@@ -536,7 +536,7 @@ export function assertAcceptedNotarization(output) {
 }
 
 export function decodeSigningCertificate(value) {
-  const encoded = value?.trim();
+  const encoded = value?.replace(/[\t\n\r ]+/gu, '');
   if (!encoded || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/u.test(encoded)) {
     throw new Error('CSC_LINK must contain one base64-encoded PKCS12 certificate.');
   }

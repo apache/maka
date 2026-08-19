@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { access, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { writeSha256Sidecar } from './release-checksum.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const desktopRoot = join(repoRoot, 'apps', 'desktop');
@@ -79,6 +80,7 @@ export async function packageMacosArm64({
   await assertFile(dmgPath);
   await assertFile(zipPath);
   await assertFile(updateMetadataPath);
+  await writeSha256Sidecar(dmgPath);
   await remove(join(releaseDirectory, 'mac-arm64'), { recursive: true, force: true });
 
   return dmgPath;

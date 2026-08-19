@@ -49,7 +49,6 @@ jobs:
           test "$release_tag" = "$PRODUCT_TAG"
           git fetch --no-tags origin "refs/tags/$PRODUCT_TAG"
           source_commit="$(git rev-list -n 1 FETCH_HEAD)"
-          test "$(git rev-parse "FETCH_HEAD^{commit}")" = "$source_commit"
           echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
           echo "product_tag=$PRODUCT_TAG" >> "$GITHUB_OUTPUT"
 

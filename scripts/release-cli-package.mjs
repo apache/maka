@@ -25,7 +25,7 @@ import {
   orderWorkspaceBuilds,
   releaseNpmEnvironment,
   resolveReleaseWorkspacePackages,
-  workspaceReleaseFiles,
+  resolveWorkspaceReleaseFiles,
 } from './release-cli-file-policy.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '..');
@@ -343,7 +343,7 @@ function copyInternalPackage(source, destination) {
       .map((field) => [field, manifest[field]]),
   );
   writeFileSync(join(destination, 'package.json'), `${JSON.stringify(releaseManifest, null, 2)}\n`);
-  for (const releaseFile of workspaceReleaseFiles(manifest)) {
+  for (const releaseFile of resolveWorkspaceReleaseFiles(source, manifest)) {
     if (releaseFile === 'dist') copyRuntimeDist(source, destination);
     else copyDeclaredFile(source, destination, releaseFile);
   }

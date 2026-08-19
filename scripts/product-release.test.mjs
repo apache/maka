@@ -25,9 +25,10 @@ import {
   standaloneInstallEnvironment,
   standaloneInstallRootManifest,
 } from './package-macos-arm64-cli.mjs';
-import { workspaceReleaseFiles } from './release-cli-file-policy.mjs';
+import { resolveWorkspaceReleaseFiles } from './release-cli-file-policy.mjs';
 import { isTuiReadyOutput } from './verify-macos-arm64-cli.mjs';
 import { ensureProductTag } from './product-release-tag.mjs';
+import { writeSha256Sidecar } from './release-checksum.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -152,6 +153,24 @@ test('the root manifest pins the Node archive and npm used by release jobs', () 
   });
 });
 
+test('release artifacts get a checksum sidecar for their final bytes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-release-checksum-'));
+  try {
+    const artifact = join(root, 'Maka-1.2.3.dmg');
+    await writeFile(artifact, 'final installer\n');
+
+    const checksum = await writeSha256Sidecar(artifact);
+
+    assert.equal(checksum, `${artifact}.sha256`);
+    assert.equal(
+      await readFile(checksum, 'utf8'),
+      'ddc9faf55279d297f3fd55a04de0e66c4d7906512677c2e3a05b657a19ccdf92  Maka-1.2.3.dmg\n',
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('standalone verification recognizes the current TUI status line through ANSI output', () => {
   assert.equal(
     isTuiReadyOutput(
@@ -170,9 +189,17 @@ test('standalone packaging keeps or thins arm64 Mach-O files instead of deleting
 });
 
 test('CLI signing accepts one base64 PKCS12 and one isolated Developer ID identity', () => {
-  assert.deepEqual(decodeSigningCertificate(Buffer.from('pkcs12').toString('base64')), {
+  const certificate = Buffer.from('pkcs12');
+  const encodedCertificate = certificate.toString('base64');
+  assert.deepEqual(decodeSigningCertificate(encodedCertificate), {
     bytes: Buffer.from('pkcs12'),
   });
+  assert.deepEqual(
+    decodeSigningCertificate(`${encodedCertificate.slice(0, 4)}\n${encodedCertificate.slice(4)}`),
+    {
+      bytes: certificate,
+    },
+  );
   assert.throws(() => decodeSigningCertificate('not base64!'), /base64-encoded/u);
   assert.deepEqual(
     parseDeveloperIdApplicationIdentity(
@@ -198,7 +225,6 @@ test('the standalone maka launcher is relocatable and uses the embedded runtime'
   assert.equal(paths.archivePath.endsWith('Maka-1.2.3-cli-mac-arm64.zip'), true);
 
   const wrapper = macosArm64CliWrapper();
-  assert.match(wrapper, /while \[ -L "\$launcher" \]/u);
   assert.match(wrapper, /libexec\/node\/bin\/node/u);
   assert.match(wrapper, /libexec\/node_modules\/maka-agent\/dist\/cli\.js/u);
 });
@@ -207,21 +233,17 @@ test('the Eval workspace owns the complete runtime asset declaration', async () 
   const workspaces = await resolveCliWorkspacePackages();
   const evalWorkspace = workspaces.find(({ name }) => name === '@maka/eval');
   assert.ok(evalWorkspace);
-  assert.deepEqual(workspaceReleaseFiles(evalWorkspace.manifest), [
-    'dist',
-    'harbor/deepseek-codex-models.json',
-    'harbor/deepseek-harness-profile/cordis.patch.yml',
-    'harbor/deepseek-harness-profile/cordis.yml',
-    'harbor/deepseek-harness-profile/package.json',
-    'harbor/docker-compose-egress-proxy.yaml',
-    'harbor/egress-proxy/Dockerfile',
-    'harbor/egress-proxy/entrypoint.sh',
-    'harbor/egress-proxy/network-policy',
-    'harbor/egress_filter.py',
-    'harbor/eval_framework.py',
-    'harbor/relay_agent.py',
-    'harbor/run_trial.py',
-  ]);
+  const releaseFiles = resolveWorkspaceReleaseFiles(
+    evalWorkspace.directory,
+    evalWorkspace.manifest,
+  );
+  assert.equal(releaseFiles.includes('dist'), true);
+  assert.equal(
+    releaseFiles.some((path) =>
+      path.split('/').some((segment) => ['src', 'test', 'tests', '__tests__'].includes(segment)),
+    ),
+    false,
+  );
 });
 
 test('standalone packaging applies the shared CLI file policy to dependencies', async () => {

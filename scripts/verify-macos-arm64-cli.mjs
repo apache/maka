@@ -8,6 +8,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -214,8 +215,8 @@ async function assertWorkspaceClosure(archiveRoot, metadata) {
     const linkPath = join(archiveRoot, 'libexec', 'node_modules', ...name.split('/'));
     const packagePath = join(archiveRoot, 'libexec', workspacePath);
     const [resolvedLink, resolvedPackage] = await Promise.all([
-      import('node:fs/promises').then(({ realpath }) => realpath(linkPath)),
-      import('node:fs/promises').then(({ realpath }) => realpath(packagePath)),
+      realpath(linkPath),
+      realpath(packagePath),
     ]);
     if (resolvedLink !== resolvedPackage) {
       throw new Error(`${name} does not resolve to the packaged workspace directory.`);
@@ -339,11 +340,11 @@ async function smokePackagedEval(archiveRoot, sourceCommit, environment, run) {
     }
 
     const marker = JSON.parse(await readFile(markerPath, 'utf8'));
-    const expectedRunTrial = await import('node:fs/promises').then(({ realpath }) =>
-      realpath(join(archiveRoot, 'libexec', 'packages', 'eval', 'harbor', 'run_trial.py')),
+    const expectedRunTrial = await realpath(
+      join(archiveRoot, 'libexec', 'packages', 'eval', 'harbor', 'run_trial.py'),
     );
-    const expectedRelayAgent = await import('node:fs/promises').then(({ realpath }) =>
-      realpath(join(archiveRoot, 'libexec', 'packages', 'eval', 'harbor', 'relay_agent.py')),
+    const expectedRelayAgent = await realpath(
+      join(archiveRoot, 'libexec', 'packages', 'eval', 'harbor', 'relay_agent.py'),
     );
     if (
       marker.runTrial !== expectedRunTrial ||

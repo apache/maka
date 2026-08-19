@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   collectWorkspaceDependencyClosure,
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
   orderWorkspaceBuilds,
+  resolveWorkspaceReleaseFiles,
   workspaceReleaseFiles,
 } from './release-cli-file-policy.mjs';
 
@@ -46,6 +50,24 @@ describe('CLI release file policy', () => {
         () => workspaceReleaseFiles({ name: '@maka/example', releaseFiles }),
         /unsafe|overlap/u,
       );
+    }
+  });
+
+  test('release file declarations reject directories other than dist', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'maka-release-files-'));
+    try {
+      mkdirSync(join(workspace, 'dist'));
+      mkdirSync(join(workspace, 'runtime-assets'));
+      assert.throws(
+        () =>
+          resolveWorkspaceReleaseFiles(workspace, {
+            name: '@maka/example',
+            releaseFiles: ['dist', 'runtime-assets'],
+          }),
+        /must be a regular file/u,
+      );
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
     }
   });
 

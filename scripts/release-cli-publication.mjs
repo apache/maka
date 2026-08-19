@@ -234,17 +234,18 @@ function loadReleaseRecord(releaseDirectory) {
     throw new Error('Unsupported CLI release record');
   }
   const identity = parseCliReleaseVersion(record.version);
-  for (const key of ['distTag', 'tarball']) {
-    if (record[key] !== identity[key]) throw new Error(`Release record ${key} is inconsistent`);
+  const derivedFields = {
+    productTag: `v${identity.version}`,
+    distTag: identity.distTag,
+    tarball: identity.tarball,
+    checksum: `${identity.tarball}.sha256`,
+    inventory: `${identity.tarball}.files.json`,
+  };
+  for (const [key, expected] of Object.entries(derivedFields)) {
+    if (record[key] !== expected) throw new Error(`Release record ${key} is inconsistent`);
   }
   if (!/^[0-9a-f]{64}$/u.test(record.sha256)) {
     throw new Error('Release record sha256 is invalid');
-  }
-  if (
-    record.checksum !== `${identity.tarball}.sha256` ||
-    record.inventory !== `${identity.tarball}.files.json`
-  ) {
-    throw new Error('Release record sidecar names are inconsistent');
   }
   exactKeys(
     record.source,

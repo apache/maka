@@ -40,8 +40,8 @@ The TUI is the default interactive mode of `maka`, not a separate artifact.
 
 The CLI-specific `THIRD_PARTY_NOTICES.txt` must enumerate exactly the external production
 dependencies recorded in `RELEASE.json`. The archive also carries the repository's
-`DISCLAIMER-WIP`, `LICENSE`, and `NOTICE`. The archive checksum is generated only after signing and
-notarization complete.
+`DISCLAIMER-WIP`, `LICENSE`, `NOTICE`, and the pinned Node runtime license. The archive checksum is
+generated only after signing and notarization complete.
 
 Every Mach-O file inside the archive is signed and the ZIP is submitted to Apple's notary service.
 ZIP files cannot carry a stapled notarization ticket, so the first Gatekeeper assessment on another

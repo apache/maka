@@ -22,6 +22,16 @@ const CURRENT_CLI_VERSION = JSON.parse(
   readFileSync(resolve(import.meta.dirname, '../packages/cli/package.json'), 'utf8'),
 ).version;
 const PRODUCT_TAG = 'v0.1.0-beta.1';
+const STAGE_RUN = {
+  id: 321,
+  run_attempt: 1,
+  path: WORKFLOW_PATH,
+  event: 'workflow_dispatch',
+  head_branch: 'main',
+  head_sha: WORKFLOW_SHA,
+  conclusion: 'success',
+  head_repository: { full_name: 'maka-agent/maka-agent' },
+};
 
 test('release versions map prereleases and stable versions to distinct channels', () => {
   assert.deepEqual(parseCliReleaseVersion('0.1.0-beta.1'), {
@@ -103,6 +113,26 @@ test('stage records bind the checked candidate to one source workflow run', () =
   );
 });
 
+test('stage preparation rejects a product tag that does not match the version', () => {
+  const fixture = createCandidate();
+  assert.throws(
+    () =>
+      prepareStageRelease({
+        repoRoot: fixture.root,
+        releaseDirectory: fixture.releaseDirectory,
+        expectedVersion: fixture.version,
+        productTag: 'v9.9.9',
+        sourceSha: SOURCE_SHA,
+        workflowSha: WORKFLOW_SHA,
+        runId: '321',
+        runAttempt: '1',
+        repository: 'maka-agent/maka-agent',
+        workflowPath: WORKFLOW_PATH,
+      }),
+    /Product tag .* does not match/u,
+  );
+});
+
 test('stage preparation rejects confirmation and checksum drift', () => {
   const fixture = createCandidate();
   assert.throws(
@@ -143,22 +173,12 @@ test('stage preparation rejects confirmation and checksum drift', () => {
 
 test('finalization accepts only the exact successful main stage run', () => {
   const fixture = createPreparedCandidate();
-  const run = {
-    id: 321,
-    run_attempt: 1,
-    path: WORKFLOW_PATH,
-    event: 'workflow_dispatch',
-    head_branch: 'main',
-    head_sha: WORKFLOW_SHA,
-    conclusion: 'success',
-    head_repository: { full_name: 'maka-agent/maka-agent' },
-  };
 
   assert.equal(
     validateStageRun({
       releaseDirectory: fixture.releaseDirectory,
       expectedVersion: fixture.version,
-      run,
+      run: STAGE_RUN,
     }).source.commit,
     SOURCE_SHA,
   );
@@ -176,11 +196,28 @@ test('finalization accepts only the exact successful main stage run', () => {
         validateStageRun({
           releaseDirectory: fixture.releaseDirectory,
           expectedVersion: fixture.version,
-          run: { ...run, ...drift },
+          run: { ...STAGE_RUN, ...drift },
         }),
       /stage workflow run/u,
     );
   }
+});
+
+test('finalization rejects a release record whose product tag does not match its version', () => {
+  const fixture = createPreparedCandidate();
+  const recordPath = join(fixture.releaseDirectory, 'release.json');
+  const record = JSON.parse(readFileSync(recordPath, 'utf8'));
+  writeFileSync(recordPath, `${JSON.stringify({ ...record, productTag: 'v9.9.9' }, null, 2)}\n`);
+
+  assert.throws(
+    () =>
+      validateStageRun({
+        releaseDirectory: fixture.releaseDirectory,
+        expectedVersion: fixture.version,
+        run: STAGE_RUN,
+      }),
+    /productTag is inconsistent/u,
+  );
 });
 
 test('registry finalization requires the exact staged bytes and dist-tag', async () => {

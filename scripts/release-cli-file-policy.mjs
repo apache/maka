@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 const DEVELOPMENT_DIRECTORIES = new Set([
@@ -113,6 +113,30 @@ export function workspaceReleaseFiles(manifest) {
   }
   if (!releaseFiles.includes('dist')) {
     throw new Error(`${manifest.name ?? 'Workspace package'} releaseFiles must include dist.`);
+  }
+  return releaseFiles;
+}
+
+export function resolveWorkspaceReleaseFiles(directory, manifest) {
+  const releaseFiles = workspaceReleaseFiles(manifest);
+  for (const releaseFile of releaseFiles) {
+    const entry = lstatSync(join(directory, ...releaseFile.split('/')), { throwIfNoEntry: false });
+    if (!entry) {
+      throw new Error(
+        `${manifest.name ?? 'Workspace package'} release file is missing: ${releaseFile}`,
+      );
+    }
+    if (releaseFile === 'dist') {
+      if (!entry.isDirectory()) {
+        throw new Error(
+          `${manifest.name ?? 'Workspace package'} release dist must be a directory.`,
+        );
+      }
+    } else if (!entry.isFile()) {
+      throw new Error(
+        `${manifest.name ?? 'Workspace package'} release asset must be a regular file: ${releaseFile}`,
+      );
+    }
   }
   return releaseFiles;
 }
