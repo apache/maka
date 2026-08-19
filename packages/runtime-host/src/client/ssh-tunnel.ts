@@ -3,6 +3,7 @@ import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isCanonicalRuntimeHostWebSocketPath } from '../protocol/index.js';
 import type { RuntimeHostConnectionResource } from './connection.js';
 
 const SSH_BATCH_START_TIMEOUT_MS = 15_000;
@@ -432,8 +433,8 @@ function requirePort(value: number, label: string): number {
 }
 
 function requireWebSocketPath(value: string): string {
-  if (!value.startsWith('/') || value.includes('?') || value.includes('#')) {
-    throw new Error('Runtime Host SSH WebSocket path must be an absolute URL path');
+  if (!isCanonicalRuntimeHostWebSocketPath(value)) {
+    throw new Error('Runtime Host SSH WebSocket path must be a canonical absolute URL path');
   }
   return value;
 }

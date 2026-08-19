@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
+import { resolveRuntimeHostManagedDeploymentRoot } from '../runtime-host-managed-deployment.js';
 import { runManagedRuntimeHostServiceCli } from '../runtime-host-service-management-command.js';
 import {
   manageRuntimeHostService,
@@ -48,6 +49,23 @@ describe('managed Runtime Host service', () => {
       json: true,
     });
     assert.equal(parseRuntimeHostCommand(['service', 'status', '--root', '/tmp']).kind, 'error');
+    assert.equal(
+      parseRuntimeHostCommand([
+        'setup',
+        '--principal',
+        'desktop.client-1',
+        '--preset',
+        'desktop-client',
+        '--websocket-path',
+        '/runtime host',
+      ]).kind,
+      'error',
+    );
+    assert.equal(
+      parseRuntimeHostCommand(['service', 'install', '--websocket-path', `/${'x'.repeat(1_000)}`])
+        .kind,
+      'error',
+    );
     assert.deepEqual(
       parseRuntimeHostCommand([
         'setup',
@@ -73,13 +91,19 @@ describe('managed Runtime Host service', () => {
     const clientDataRoot = join(base, 'config', 'Maka');
     const rootPath = join(base, 'state root');
     const projectPath = join(base, 'projects');
-    const cliPath = join(base, 'maka cli.js');
-    await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
     await writeFile(join(base, 'placeholder'), '', 'utf8');
     await mkdir(projectPath, { recursive: true });
     const env = { XDG_CONFIG_HOME: join(base, 'xdg-config') };
     const configPath = resolveRuntimeHostManagedServiceConfigPath(clientDataRoot);
     const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
+    const deploymentRoot = resolveRuntimeHostManagedDeploymentRoot(serviceId, {
+      env: { XDG_DATA_HOME: join(base, 'xdg-data') },
+      homeDir,
+      platform: 'linux',
+    });
+    const cliPath = join(deploymentRoot, 'versions', '0.2.0', 'dist', 'cli.js');
+    await mkdir(dirname(cliPath), { recursive: true });
+    await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
     const unitPath = resolveSystemdUserRuntimeHostServicePath(serviceId, env, homeDir);
     const systemd = createFakeSystemd(unitPath);
     const backend = () =>
@@ -95,6 +119,7 @@ describe('managed Runtime Host service', () => {
       defaultRootPath: rootPath,
       nodePath: process.execPath,
       cliPath,
+      managedDeploymentRoot: deploymentRoot,
     } as const;
     const managerDeps = {
       allocateLoopbackPort: async () => 49_999,
@@ -139,6 +164,7 @@ describe('managed Runtime Host service', () => {
     await access(rootPath);
     await assert.rejects(access(configPath));
     await assert.rejects(access(unitPath));
+    await assert.rejects(access(deploymentRoot));
 
     const repeated = await manageRuntimeHostService({ ...common, action: 'uninstall' }, backend());
     assert.equal(repeated.service.installed, false);
@@ -377,6 +403,17 @@ describe('managed Runtime Host service', () => {
       (error: unknown) =>
         error instanceof RuntimeHostServiceManagerError && error.code === 'invalid_launch',
     );
+
+    const installedFromNpx = await manageRuntimeHostService(input, createReadyBackend(), {
+      environment: {
+        npm_command: 'exec',
+        npm_lifecycle_event: 'npx',
+        npm_config_cache: join(base, '.npm'),
+      },
+      homeDir: base,
+      waitForReady: async () => undefined,
+    });
+    assert.equal(installedFromNpx.service.config?.launch.cliPath, await realpath(cliPath));
   });
 
   it('reports an unavailable systemd manager instead of not installed', async () => {

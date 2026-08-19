@@ -1,5 +1,6 @@
 import { isAbsolute } from 'node:path';
 import {
+  isCanonicalRuntimeHostWebSocketPath,
   PROJECT_DIRECTORY_MAX_ROOTS,
   PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
 } from '@maka/runtime-host/protocol';
@@ -105,83 +106,29 @@ export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
 }
 
 function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
-  let json = false;
   let principalId: string | undefined;
   let preset: 'desktop-client' | 'terminal-client' | undefined;
-  let rootPath: string | undefined;
-  let websocketPort: number | undefined;
-  let websocketPath: string | undefined;
-  const projectDirectoryRoots: { label: string; path: string }[] = [];
-  for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index];
-    if (argument === '--json') {
-      json = true;
-      continue;
-    }
-    if (
-      argument === '--principal' ||
-      argument === '--preset' ||
-      argument === '--root' ||
-      argument === '--websocket-port' ||
-      argument === '--websocket-path'
-    ) {
-      const parsed = optionValue(argv, index, argument);
-      if (typeof parsed !== 'string') return parsed;
-      if (argument === '--principal') principalId = parsed;
-      if (argument === '--preset') {
-        if (parsed !== 'desktop-client' && parsed !== 'terminal-client') {
-          return error('--preset must be desktop-client or terminal-client');
-        }
-        preset = parsed;
+  const options = parseManagedServiceOptions(argv, {
+    '--principal': (value) => {
+      principalId = value;
+    },
+    '--preset': (value) => {
+      if (value !== 'desktop-client' && value !== 'terminal-client') {
+        return error('--preset must be desktop-client or terminal-client');
       }
-      if (argument === '--root') rootPath = parsed;
-      if (argument === '--websocket-port') websocketPort = Number(parsed);
-      if (argument === '--websocket-path') websocketPath = parsed;
-      index += 1;
-      continue;
-    }
-    if (argument === '--project-root') {
-      const parsed = optionValue(argv, index, argument);
-      if (typeof parsed !== 'string') return parsed;
-      const root = parseProjectRoot(parsed);
-      if ('kind' in root) return root;
-      if (projectDirectoryRoots.length >= PROJECT_DIRECTORY_MAX_ROOTS) {
-        return error(`--project-root may be provided at most ${PROJECT_DIRECTORY_MAX_ROOTS} times`);
-      }
-      if (projectDirectoryRoots.some((candidate) => candidate.label === root.label)) {
-        return error(`Duplicate --project-root label: ${root.label}`);
-      }
-      projectDirectoryRoots.push(root);
-      index += 1;
-      continue;
-    }
-    return error(`Unexpected argument: ${argument ?? ''}`);
-  }
+      preset = value;
+    },
+  });
+  if ('kind' in options) return options;
   if (!principalId || !/^[A-Za-z0-9_.:-]{1,128}$/u.test(principalId)) {
     return error('runtime-host setup requires a valid --principal');
   }
   if (!preset) return error('runtime-host setup requires --preset');
-  if (
-    websocketPort !== undefined &&
-    (!Number.isInteger(websocketPort) || websocketPort < 1 || websocketPort > 65_535)
-  ) {
-    return error('--websocket-port must be an integer between 1 and 65535');
-  }
-  if (
-    websocketPath !== undefined &&
-    (!websocketPath.startsWith('/') || websocketPath.includes('?') || websocketPath.includes('#'))
-  ) {
-    return error('--websocket-path must be an absolute URL path without a query or fragment');
-  }
   return {
     kind: 'runtime-host-setup',
-    json,
+    ...options,
     principalId,
     preset,
-    ...(rootPath ? { rootPath } : {}),
-    ...(projectDirectoryRoots.length > 0 ? { projectDirectoryRoots } : {}),
-    ...(websocketPort === undefined ? {} : { websocketPort }),
-    ...(websocketPath === undefined ? {} : { websocketPath }),
   };
 }
 
@@ -202,45 +149,70 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     );
   }
 
+  const options = parseManagedServiceOptions(argv.slice(1), {}, action === 'install');
+  if ('kind' in options) return options;
+  return {
+    kind: 'runtime-host-service-manage',
+    action,
+    ...options,
+  };
+}
+
+interface ManagedServiceOptions {
+  readonly json: boolean;
+  readonly rootPath?: string;
+  readonly projectDirectoryRoots?: { readonly label: string; readonly path: string }[];
+  readonly websocketPort?: number;
+  readonly websocketPath?: string;
+}
+
+function parseManagedServiceOptions(
+  argv: string[],
+  additionalValueOptions: Readonly<
+    Record<string, (value: string) => RuntimeHostCliError | void>
+  > = {},
+  allowConfiguration = true,
+): ManagedServiceOptions | RuntimeHostCliError {
   let json = false;
   let rootPath: string | undefined;
   let websocketPort: number | undefined;
   let websocketPath: string | undefined;
   const projectDirectoryRoots: { label: string; path: string }[] = [];
-  for (let index = 1; index < argv.length; index += 1) {
+  for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--json') {
       json = true;
       continue;
     }
-    if (action !== 'install') {
-      return error(`Unexpected argument: ${argument ?? ''}`);
-    }
+    if (!allowConfiguration) return error(`Unexpected argument: ${argument ?? ''}`);
     if (
       argument === '--root' ||
       argument === '--websocket-port' ||
-      argument === '--websocket-path'
+      argument === '--websocket-path' ||
+      argument === '--project-root' ||
+      Object.hasOwn(additionalValueOptions, argument ?? '')
     ) {
-      const parsed = optionValue(argv, index, argument);
+      const parsed = optionValue(argv, index, argument ?? '');
       if (typeof parsed !== 'string') return parsed;
       if (argument === '--root') rootPath = parsed;
-      if (argument === '--websocket-port') websocketPort = Number(parsed);
-      if (argument === '--websocket-path') websocketPath = parsed;
-      index += 1;
-      continue;
-    }
-    if (argument === '--project-root') {
-      const parsed = optionValue(argv, index, argument);
-      if (typeof parsed !== 'string') return parsed;
-      const root = parseProjectRoot(parsed);
-      if ('kind' in root) return root;
-      if (projectDirectoryRoots.length >= PROJECT_DIRECTORY_MAX_ROOTS) {
-        return error(`--project-root may be provided at most ${PROJECT_DIRECTORY_MAX_ROOTS} times`);
+      else if (argument === '--websocket-port') websocketPort = Number(parsed);
+      else if (argument === '--websocket-path') websocketPath = parsed;
+      else if (argument === '--project-root') {
+        const root = parseProjectRoot(parsed);
+        if ('kind' in root) return root;
+        if (projectDirectoryRoots.length >= PROJECT_DIRECTORY_MAX_ROOTS) {
+          return error(
+            `--project-root may be provided at most ${PROJECT_DIRECTORY_MAX_ROOTS} times`,
+          );
+        }
+        if (projectDirectoryRoots.some((candidate) => candidate.label === root.label)) {
+          return error(`Duplicate --project-root label: ${root.label}`);
+        }
+        projectDirectoryRoots.push(root);
+      } else {
+        const optionError = additionalValueOptions[argument ?? '']?.(parsed);
+        if (optionError) return optionError;
       }
-      if (projectDirectoryRoots.some((candidate) => candidate.label === root.label)) {
-        return error(`Duplicate --project-root label: ${root.label}`);
-      }
-      projectDirectoryRoots.push(root);
       index += 1;
       continue;
     }
@@ -252,15 +224,10 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   ) {
     return error('--websocket-port must be an integer between 1 and 65535');
   }
-  if (
-    websocketPath !== undefined &&
-    (!websocketPath.startsWith('/') || websocketPath.includes('?') || websocketPath.includes('#'))
-  ) {
-    return error('--websocket-path must be an absolute URL path without a query or fragment');
+  if (websocketPath !== undefined && !isCanonicalRuntimeHostWebSocketPath(websocketPath)) {
+    return error('--websocket-path must be a canonical absolute URL path');
   }
   return {
-    kind: 'runtime-host-service-manage',
-    action,
     json,
     ...(rootPath ? { rootPath } : {}),
     ...(projectDirectoryRoots.length > 0 ? { projectDirectoryRoots } : {}),
@@ -574,6 +541,9 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   }
   if (websocketConfigured && websocketPort === undefined) {
     return error('--websocket-port is required for WebSocket options');
+  }
+  if (websocketPath !== undefined && !isCanonicalRuntimeHostWebSocketPath(websocketPath)) {
+    return error('--websocket-path must be a canonical absolute URL path');
   }
   return {
     kind: 'runtime-host-serve',

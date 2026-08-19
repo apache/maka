@@ -1,14 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { cp, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
-import { resolveRuntimeHostManagedServiceId } from './runtime-host-service-manager.js';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 const PACKAGE_NAME = 'maka-agent';
 
 export class RuntimeHostManagedDeploymentError extends Error {
   constructor(
-    readonly code: 'invalid_package' | 'deployment_failed' | 'uninstall_incomplete',
+    readonly code: 'invalid_package' | 'deployment_failed',
     message: string,
     options?: ErrorOptions,
   ) {
@@ -19,19 +18,14 @@ export class RuntimeHostManagedDeploymentError extends Error {
 
 export interface RuntimeHostManagedPackageDeployment {
   readonly version: string;
+  readonly root: string;
   readonly cliPath: string;
   rollback(): Promise<void>;
 }
 
-interface RuntimeHostManagedDeploymentPathOptions {
-  readonly env?: NodeJS.ProcessEnv;
-  readonly homeDir?: string;
-  readonly platform?: NodeJS.Platform;
-}
-
 export async function prepareRuntimeHostManagedPackageDeployment(
   input: {
-    readonly clientDataRoot: string;
+    readonly serviceId: string;
     readonly sourcePackageRoot: string;
     readonly version: string;
   },
@@ -39,13 +33,13 @@ export async function prepareRuntimeHostManagedPackageDeployment(
 ): Promise<RuntimeHostManagedPackageDeployment> {
   assertVersion(input.version);
   const sourcePackageRoot = await validatePackage(input.sourcePackageRoot, input.version);
-  const deploymentRoot = resolveRuntimeHostManagedDeploymentRoot(input.clientDataRoot, options);
+  const deploymentRoot = resolveRuntimeHostManagedDeploymentRoot(input.serviceId, options);
   const versionsRoot = join(deploymentRoot, 'versions');
   const packageRoot = join(versionsRoot, input.version);
   const cliPath = join(packageRoot, 'dist', 'cli.js');
   if (await pathExists(packageRoot)) {
     await validatePackage(packageRoot, input.version);
-    return deployment(input.version, packageRoot, cliPath, false);
+    return deployment(input.version, deploymentRoot, packageRoot, cliPath, false);
   }
 
   await mkdir(versionsRoot, { recursive: true, mode: 0o700 });
@@ -65,9 +59,9 @@ export async function prepareRuntimeHostManagedPackageDeployment(
       if (!isNodeError(error, 'EEXIST') && !isNodeError(error, 'ENOTEMPTY')) throw error;
       await validatePackage(packageRoot, input.version);
       await rm(stagingRoot, { recursive: true, force: true });
-      return deployment(input.version, packageRoot, cliPath, false);
+      return deployment(input.version, deploymentRoot, packageRoot, cliPath, false);
     }
-    return deployment(input.version, packageRoot, cliPath, true);
+    return deployment(input.version, deploymentRoot, packageRoot, cliPath, true);
   } catch (error) {
     await rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
     if (error instanceof RuntimeHostManagedDeploymentError) throw error;
@@ -91,51 +85,63 @@ async function removeAbandonedStagingPackages(
   );
 }
 
+export interface RuntimeHostManagedDeploymentPathOptions {
+  readonly env?: NodeJS.ProcessEnv;
+  readonly homeDir?: string;
+  readonly platform?: NodeJS.Platform;
+}
+
 export function resolveRuntimeHostManagedDeploymentRoot(
-  clientDataRoot: string,
+  serviceId: string,
   options: RuntimeHostManagedDeploymentPathOptions = {},
 ): string {
   const env = options.env ?? process.env;
   const homeDir = options.homeDir ?? homedir();
-  const dataHome = resolveManagedDataHome(env, homeDir, options.platform ?? process.platform);
-  return join(
-    dataHome,
-    'Maka',
-    'runtime-host-services',
-    resolveRuntimeHostManagedServiceId(clientDataRoot),
+  const dataHome =
+    (options.platform ?? process.platform) === 'darwin'
+      ? join(homeDir, 'Library', 'Application Support')
+      : env.XDG_DATA_HOME && isAbsolute(env.XDG_DATA_HOME)
+        ? env.XDG_DATA_HOME
+        : join(homeDir, '.local', 'share');
+  return join(dataHome, 'Maka', 'runtime-host-services', serviceId);
+}
+
+export function isRuntimeHostManagedDeploymentRoot(root: string, serviceId: string): boolean {
+  const canonical = resolve(root);
+  return (
+    isAbsolute(root) &&
+    basename(canonical) === serviceId &&
+    basename(dirname(canonical)) === 'runtime-host-services' &&
+    basename(dirname(dirname(canonical))) === 'Maka'
+  );
+}
+
+export function isRuntimeHostManagedDeploymentCli(
+  root: string,
+  serviceId: string,
+  cliPath: string,
+): boolean {
+  if (!isRuntimeHostManagedDeploymentRoot(root, serviceId)) return false;
+  const pathFromVersions = relative(join(resolve(root), 'versions'), resolve(cliPath));
+  return (
+    pathFromVersions !== '' &&
+    pathFromVersions !== '..' &&
+    !pathFromVersions.startsWith(`..${sep}`) &&
+    !isAbsolute(pathFromVersions)
   );
 }
 
 export async function removeRuntimeHostManagedDeployment(
-  clientDataRoot: string,
-  options: RuntimeHostManagedDeploymentPathOptions = {},
+  root: string,
+  serviceId: string,
 ): Promise<void> {
-  const deploymentRoot = resolveRuntimeHostManagedDeploymentRoot(clientDataRoot, options);
-  try {
-    await rm(deploymentRoot, { recursive: true, force: true });
-  } catch (error) {
+  if (!isRuntimeHostManagedDeploymentRoot(root, serviceId)) {
     throw new RuntimeHostManagedDeploymentError(
-      'uninstall_incomplete',
-      `Unable to remove the managed Runtime Host deployment at ${deploymentRoot}`,
-      { cause: error },
+      'deployment_failed',
+      'Refusing to remove an invalid managed Runtime Host deployment path',
     );
   }
-}
-
-function resolveManagedDataHome(
-  env: NodeJS.ProcessEnv,
-  homeDir: string,
-  platform: NodeJS.Platform,
-): string {
-  if (platform === 'darwin') return join(homeDir, 'Library', 'Application Support');
-  if (platform === 'win32') {
-    return env.LOCALAPPDATA && isAbsolute(env.LOCALAPPDATA)
-      ? env.LOCALAPPDATA
-      : join(homeDir, 'AppData', 'Local');
-  }
-  return env.XDG_DATA_HOME && isAbsolute(env.XDG_DATA_HOME)
-    ? env.XDG_DATA_HOME
-    : join(homeDir, '.local', 'share');
+  await rm(root, { recursive: true, force: true });
 }
 
 async function validatePackage(path: string, version: string): Promise<string> {
@@ -177,12 +183,14 @@ async function pathExists(path: string): Promise<boolean> {
 
 function deployment(
   version: string,
+  root: string,
   packageRoot: string,
   cliPath: string,
   created: boolean,
 ): RuntimeHostManagedPackageDeployment {
   return {
     version,
+    root,
     cliPath,
     rollback: () =>
       created ? rm(packageRoot, { recursive: true, force: true }) : Promise.resolve(),

@@ -72,6 +72,8 @@ export { loadOrCreateRuntimeHostClientInstanceId } from './client-instance-ident
 export { consumeAccessCredentialDelivery } from '../control/access-credential-delivery.js';
 export {
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
+  RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES,
+  RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES,
   decodeRuntimeHostSetupFrame,
   encodeRuntimeHostSetupFrame,
   type RuntimeHostSetupFrame,

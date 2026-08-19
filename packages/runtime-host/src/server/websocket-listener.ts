@@ -3,7 +3,10 @@ import { createServer as createHttpsServer, type Server as HttpsServer } from 'n
 import type { Duplex } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { WebSocketServer } from 'ws';
-import { RUNTIME_HOST_MAX_MESSAGE_BYTES } from '../protocol/index.js';
+import {
+  isCanonicalRuntimeHostWebSocketPath,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
+} from '../protocol/index.js';
 import { WebSocketTransport } from '../transport/websocket-transport.js';
 import type { RuntimeHostAccessAuthority } from './access-authority.js';
 import type { RuntimeHostListener, RuntimeHostListenerConnection } from './listener-set.js';
@@ -211,8 +214,8 @@ function validateWebSocketListenerOptions(options: StartRuntimeHostWebSocketList
     throw new RangeError('Runtime Host WebSocket port must be between 0 and 65535');
   }
   const path = options.path ?? DEFAULT_WEBSOCKET_PATH;
-  if (!path.startsWith('/') || path.includes('?') || path.includes('#')) {
-    throw new Error('Runtime Host WebSocket path must be an absolute URL path');
+  if (!isCanonicalRuntimeHostWebSocketPath(path)) {
+    throw new Error('Runtime Host WebSocket path must be a canonical absolute URL path');
   }
   if (options.tls && options.allowInsecureRemote === true) {
     throw new Error('Insecure Runtime Host listener opt-in cannot be combined with TLS');

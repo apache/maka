@@ -22,8 +22,8 @@ instead of accumulating credentials. The command installs its exact Maka package
 directory, starts a loopback-only service, verifies the new credential, and then prints the connection
 details once. Use `terminal-client` for TUI or CLI.
 
-Run `maka runtime-host service uninstall` on the Host to remove the service and managed package. The
-State Root and Project data are retained.
+Run `npx --yes maka-agent@next runtime-host service uninstall` on the Host to remove the service and
+managed package. The State Root and Project data are retained.
 
 ## Manual Host setup
 

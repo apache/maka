@@ -5,6 +5,7 @@ import { createFileCredentialStore, type CredentialStore } from '@maka/storage';
 import { withFileUpdateLock } from '@maka/storage/file-update-lock';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  isCanonicalRuntimeHostWebSocketPath,
   RUNTIME_HOST_PROTOCOL_VERSION,
   requireHostRootId,
   type ClientSurface,
@@ -644,8 +645,8 @@ function requirePort(value: unknown, label: string): number {
 
 function requireWebSocketPath(value: unknown): string {
   const path = requireString(value, 'Runtime Host SSH WebSocket path');
-  if (!path.startsWith('/') || path.includes('?') || path.includes('#')) {
-    throw new Error('Runtime Host SSH WebSocket path must be an absolute URL path');
+  if (!isCanonicalRuntimeHostWebSocketPath(path)) {
+    throw new Error('Runtime Host SSH WebSocket path must be a canonical absolute URL path');
   }
   return path;
 }

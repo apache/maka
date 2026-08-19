@@ -18,7 +18,7 @@ npx --yes maka-agent@next runtime-host setup \
 
 `--principal` 应使用稳定标识；重复执行会替换该 Client 的 credential，不会不断累积 credential。命令会把当前精确版本的 Maka 安装到托管目录，启动仅监听 loopback 的服务，验证新 credential，然后只显示一次连接信息。TUI 或 CLI 使用 `terminal-client`。
 
-在 Host 上运行 `maka runtime-host service uninstall` 会删除 service 与托管 package，但保留 State Root 和 Project 数据。
+在 Host 上运行 `npx --yes maka-agent@next runtime-host service uninstall` 会删除 service 与托管 package，但保留 State Root 和 Project 数据。
 
 ## 手动设置 Host
 

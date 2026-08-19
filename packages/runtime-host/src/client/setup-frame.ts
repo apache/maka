@@ -4,6 +4,8 @@ export const RUNTIME_HOST_SETUP_FRAME_PREFIX = 'MAKA_RUNTIME_HOST_SETUP_V1 ';
 const SETUP_FRAME_MAX_BYTES = 16 * 1024;
 const SETUP_FIELD_MAX_BYTES = 1024;
 const SETUP_CREDENTIAL_MAX_BYTES = 8 * 1024;
+export const RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES = 128;
+export const RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES = SETUP_FIELD_MAX_BYTES;
 const SETUP_PHASES = [
   'checking_environment',
   'installing_package',
@@ -13,31 +15,6 @@ const SETUP_PHASES = [
 ] as const;
 
 export type RuntimeHostSetupPhase = (typeof SETUP_PHASES)[number];
-
-export type RuntimeHostSetupFrame =
-  | {
-      readonly schemaVersion: 1;
-      readonly sequence: number;
-      readonly kind: 'progress';
-      readonly phase: RuntimeHostSetupPhase;
-    }
-  | {
-      readonly schemaVersion: 1;
-      readonly sequence: number;
-      readonly kind: 'complete';
-      readonly version: string;
-      readonly rootId: string;
-      readonly endpoint: string;
-      readonly serviceManager: 'systemd_user' | 'launch_agent';
-      readonly credentialId: string;
-      readonly credential: string;
-    }
-  | {
-      readonly schemaVersion: 1;
-      readonly sequence: number;
-      readonly kind: 'error';
-      readonly error: { readonly code: string; readonly message: string };
-    };
 
 const boundedString = (maxBytes: number) =>
   z
@@ -63,7 +40,6 @@ const SETUP_FRAME_SCHEMA = z.discriminatedUnion('kind', [
       version: boundedString(128),
       rootId: z.string().regex(/^[a-f0-9]{64}$/u),
       endpoint: boundedString(SETUP_FIELD_MAX_BYTES).refine(isLoopbackWebSocketUrl),
-      serviceManager: z.enum(['systemd_user', 'launch_agent']),
       credentialId: boundedString(SETUP_FIELD_MAX_BYTES),
       credential: boundedString(SETUP_CREDENTIAL_MAX_BYTES),
     })
@@ -74,16 +50,24 @@ const SETUP_FRAME_SCHEMA = z.discriminatedUnion('kind', [
       kind: z.literal('error'),
       error: z
         .object({
-          code: boundedString(128),
-          message: boundedString(SETUP_FIELD_MAX_BYTES),
+          code: boundedString(RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES),
+          message: boundedString(RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES),
         })
         .strict(),
     })
     .strict(),
 ]);
 
+export type RuntimeHostSetupFrame = z.infer<typeof SETUP_FRAME_SCHEMA>;
+
 export function encodeRuntimeHostSetupFrame(frame: RuntimeHostSetupFrame): string {
-  return `${RUNTIME_HOST_SETUP_FRAME_PREFIX}${Buffer.from(JSON.stringify(frame)).toString('base64url')}\n`;
+  const encoded = Buffer.from(JSON.stringify(SETUP_FRAME_SCHEMA.parse(frame))).toString(
+    'base64url',
+  );
+  if (Buffer.byteLength(encoded, 'utf8') > SETUP_FRAME_MAX_BYTES) {
+    throw new RangeError('Runtime Host setup frame exceeds the encoded size limit');
+  }
+  return `${RUNTIME_HOST_SETUP_FRAME_PREFIX}${encoded}\n`;
 }
 
 export function decodeRuntimeHostSetupFrame(line: string): RuntimeHostSetupFrame | undefined {

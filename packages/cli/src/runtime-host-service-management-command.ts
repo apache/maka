@@ -7,10 +7,6 @@ import {
   type RuntimeHostServiceBackend,
 } from './runtime-host-service-manager.js';
 import { createSystemdUserRuntimeHostService } from './runtime-host-systemd-service.js';
-import {
-  removeRuntimeHostManagedDeployment,
-  RuntimeHostManagedDeploymentError,
-} from './runtime-host-managed-deployment.js';
 
 export interface RuntimeHostServiceManagementCliOptions extends RuntimeHostManagedServiceInput {
   readonly json: boolean;
@@ -19,7 +15,6 @@ export interface RuntimeHostServiceManagementCliOptions extends RuntimeHostManag
 export interface RuntimeHostServiceManagementCliDeps {
   readonly manage: typeof manageRuntimeHostService;
   readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
-  readonly removeManagedDeployment: typeof removeRuntimeHostManagedDeployment;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
 }
@@ -31,7 +26,6 @@ export async function runManagedRuntimeHostServiceCli(
   const deps: RuntimeHostServiceManagementCliDeps = {
     manage: manageRuntimeHostService,
     createBackend: createPlatformRuntimeHostServiceBackend,
-    removeManagedDeployment: removeRuntimeHostManagedDeployment,
     writeOutput: (value) => process.stdout.write(value),
     writeError: (value) => process.stderr.write(value),
     ...overrides,
@@ -40,20 +34,13 @@ export async function runManagedRuntimeHostServiceCli(
     const { json: _json, ...input } = options;
     const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
     const result = await deps.manage(input, deps.createBackend(serviceId));
-    if (options.action === 'uninstall') {
-      await deps.removeManagedDeployment(options.clientDataRoot);
-    }
     deps.writeOutput(
       options.json ? `${JSON.stringify({ ...result, ok: true })}\n` : formatHumanResult(result),
     );
     return 0;
   } catch (error) {
     const code =
-      error instanceof RuntimeHostServiceManagerError
-        ? error.code
-        : error instanceof RuntimeHostManagedDeploymentError
-          ? error.code
-          : 'internal_service_error';
+      error instanceof RuntimeHostServiceManagerError ? error.code : 'internal_service_error';
     const message = error instanceof Error ? error.message : String(error);
     if (options.json) {
       deps.writeOutput(

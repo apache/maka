@@ -66,6 +66,7 @@ export * from './session-transcript.js';
 export * from './session-turns.js';
 export * from './task-ledger.js';
 export * from './workspace.js';
+export * from './websocket-path.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;

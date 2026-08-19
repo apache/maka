@@ -10,11 +10,11 @@ import {
 } from '@maka/runtime-host/client';
 import {
   prepareRuntimeHostManagedPackageDeployment,
-  removeRuntimeHostManagedDeployment,
   resolveRuntimeHostManagedDeploymentRoot,
 } from '../runtime-host-managed-deployment.js';
 import { runRuntimeHostSetupCli } from '../runtime-host-setup-command.js';
 import {
+  resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceConfig,
   type RuntimeHostManagedServiceResult,
@@ -27,16 +27,13 @@ test('managed setup converges on one exact package and verified Client pairing',
   const sourcePackageRoot = await createReleasePackage(base, '0.2.0');
   const clientDataRoot = join(base, 'config', 'Maka');
   const stateRoot = join(clientDataRoot, 'workspaces', 'default');
-  const dataHome = join(base, 'data');
+  const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
   const deploymentPathOptions = {
-    env: { XDG_DATA_HOME: dataHome },
+    env: { XDG_DATA_HOME: join(base, 'data') },
     homeDir: join(base, 'home'),
     platform: 'linux' as const,
   };
-  const deploymentRoot = resolveRuntimeHostManagedDeploymentRoot(
-    clientDataRoot,
-    deploymentPathOptions,
-  );
+  const deploymentRoot = resolveRuntimeHostManagedDeploymentRoot(serviceId, deploymentPathOptions);
   await mkdir(join(deploymentRoot, 'versions', '.0.2.0.interrupted.tmp'), { recursive: true });
   let config: RuntimeHostManagedServiceConfig | null = null;
   let installCount = 0;
@@ -54,12 +51,19 @@ test('managed setup converges on one exact package and verified Client pairing',
   } as const;
   const overrides = {
     createBackend: () => unusedBackend(),
-    manageService: async (input: { readonly action: string; readonly cliPath: string }) => {
+    manageService: async (input: {
+      readonly action: string;
+      readonly cliPath: string;
+      readonly managedDeploymentRoot?: string;
+    }) => {
       if (input.action === 'status') return serviceResult('status', config);
       installCount += 1;
       installedCliPath = input.cliPath;
       config = {
         schemaVersion: 1,
+        ...(input.managedDeploymentRoot
+          ? { managedDeploymentRoot: input.managedDeploymentRoot }
+          : {}),
         rootPath: stateRoot,
         projectDirectoryRoots: [],
         websocket: { host: '127.0.0.1', port: 42_111, path: '/runtime-host' },
@@ -93,7 +97,7 @@ test('managed setup converges on one exact package and verified Client pairing',
   assert.equal(await runRuntimeHostSetupCli(options, overrides), 0);
   assert.equal(installCount, 2);
   assert.equal(pairCount, 2);
-  assert.ok(installedCliPath.startsWith(dataHome));
+  assert.ok(installedCliPath.startsWith(deploymentRoot));
   assert.equal(
     outputs.some((output) => output.includes('secret-')),
     false,
@@ -109,8 +113,6 @@ test('managed setup converges on one exact package and verified Client pairing',
       .version,
     '0.2.0',
   );
-  await removeRuntimeHostManagedDeployment(clientDataRoot, deploymentPathOptions);
-  await assert.rejects(access(deploymentRoot));
 });
 
 test('managed setup frames reject malformed machine output', () => {
@@ -135,7 +137,6 @@ test('managed setup frames reject malformed machine output', () => {
           version: '0.2.0',
           rootId: 'root',
           endpoint: 'ws://example.com/runtime-host',
-          serviceManager: 'systemd_user',
           credentialId: 'credential',
           credential: 'secret',
         }),
@@ -150,9 +151,9 @@ test('managed setup removes a newly copied package when service installation fai
   t.after(() => rm(base, { recursive: true, force: true }));
   const sourcePackageRoot = await createReleasePackage(base, '0.2.0');
   const clientDataRoot = join(base, 'config', 'Maka');
-  const dataHome = join(base, 'data');
+  const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
   const deploymentPathOptions = {
-    env: { XDG_DATA_HOME: dataHome },
+    env: { XDG_DATA_HOME: join(base, 'data') },
     homeDir: join(base, 'home'),
     platform: 'linux' as const,
   };
@@ -173,7 +174,7 @@ test('managed setup removes a newly copied package when service installation fai
         if (input.action === 'status') return serviceResult('status', null);
         throw new RuntimeHostServiceManagerError(
           'service_manager_operation_failed',
-          'Injected service failure',
+          `Injected service failure ${'x'.repeat(2_000)}`,
         );
       },
       prepareDeployment: (input) =>
@@ -182,11 +183,16 @@ test('managed setup removes a newly copied package when service installation fai
     },
   );
   assert.equal(exitCode, 1);
-  assert.equal(decodeRuntimeHostSetupFrame(outputs.at(-1) ?? '')?.kind, 'error');
+  const failure = decodeRuntimeHostSetupFrame(outputs.at(-1) ?? '');
+  assert.equal(failure?.kind, 'error');
+  assert.equal(
+    failure?.kind === 'error' ? Buffer.byteLength(failure.error.message, 'utf8') : 0,
+    1_024,
+  );
   await assert.rejects(
     access(
       join(
-        resolveRuntimeHostManagedDeploymentRoot(clientDataRoot, deploymentPathOptions),
+        resolveRuntimeHostManagedDeploymentRoot(serviceId, deploymentPathOptions),
         'versions',
         '0.2.0',
       ),

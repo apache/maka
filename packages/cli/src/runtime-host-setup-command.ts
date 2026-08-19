@@ -1,8 +1,11 @@
 import { mkdir, readFile, realpath } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   connectRemoteRuntimeHost,
   encodeRuntimeHostSetupFrame,
+  RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES,
+  RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
 } from '@maka/runtime-host/client';
@@ -114,7 +117,7 @@ async function runRuntimeHostSetupLocked(
 
   emit({ kind: 'progress', phase: 'installing_package' });
   const deployment = await deps.prepareDeployment({
-    clientDataRoot: options.clientDataRoot,
+    serviceId,
     sourcePackageRoot: options.sourcePackageRoot,
     version: options.version,
   });
@@ -127,6 +130,7 @@ async function runRuntimeHostSetupLocked(
         ...common,
         action: 'install',
         cliPath: deployment.cliPath,
+        managedDeploymentRoot: deployment.root,
         ...(options.rootPath ? { rootPath: options.rootPath } : {}),
         ...(options.projectDirectoryRoots
           ? { projectDirectoryRoots: options.projectDirectoryRoots }
@@ -180,7 +184,6 @@ async function runRuntimeHostSetupLocked(
     version: deployment.version,
     rootId: paired.rootId,
     endpoint,
-    serviceManager: installed.service.manager,
     credentialId: paired.credentialId,
     credential: paired.credential,
   });
@@ -273,14 +276,22 @@ function createEmitter(json: boolean, deps: RuntimeHostSetupDeps): SetupEmitter 
 }
 
 function setupFailure(error: unknown): { code: string; message: string } {
+  let code = 'internal_setup_failure';
+  let message = 'Runtime Host setup failed';
   if (
     error instanceof RuntimeHostSetupError ||
     error instanceof RuntimeHostServiceManagerError ||
     error instanceof RuntimeHostManagedDeploymentError
   ) {
-    return { code: error.code, message: error.message };
+    code = error.code;
+    message = error.message;
   }
-  return { code: 'internal_setup_failure', message: 'Runtime Host setup failed' };
+  return {
+    code: truncateUtf8(code, RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES) || 'internal_setup_failure',
+    message:
+      truncateUtf8(message, RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES) ||
+      'Runtime Host setup failed',
+  };
 }
 
 function websocketUrl(input: {

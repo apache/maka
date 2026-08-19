@@ -36,7 +36,8 @@ maka --help
 ```
 
 `maka-agent` 是 `maka` 的别名。一次性运行请使用 `npx --yes maka-agent@next`；npm 上与本项目
-无关的 `maka` 包不是本项目。Managed Runtime Host service 必须使用上面的持久全局安装。
+无关的 `maka` 包不是本项目。`runtime-host service install` 使用上面的持久全局安装；
+`runtime-host setup` 会从 `npx` 调用的精确 package 创建自己的托管副本。
 
 ## 第一次运行
 
@@ -88,14 +89,15 @@ npx --yes maka-agent@next runtime-host setup \
   --preset terminal-client
 ```
 
-重复设置会安全轮换该 Client credential。设置成功后，service 不再依赖临时 `npx` cache。
+重复设置会替换该 Client credential。设置成功后，service 不再依赖临时 `npx` cache。
 
 ## 卸载
 
 ```sh
 # 仅限安装过 managed Runtime Host service 的 Linux
-maka runtime-host service uninstall
+npx --yes maka-agent@next runtime-host service uninstall
 
+# 如果曾全局安装 Maka
 npm uninstall --global maka-agent
 ```
 
