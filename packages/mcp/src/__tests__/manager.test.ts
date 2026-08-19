@@ -192,6 +192,24 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       );
     });
 
+    test('joins an explicit refresh to initial discovery without queuing another list', async () => {
+      const fixture = await createRemoteFixture('sse');
+      const gate = fixture.holdNextToolList();
+      const manager = createManager();
+      const syncPromise = manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto'));
+      await gate.started;
+
+      const refreshPromise = manager.refreshTools('remote');
+      gate.release();
+
+      const [, descriptors] = await Promise.all([syncPromise, refreshPromise]);
+      assert.deepEqual(
+        descriptors.map(({ name }) => name),
+        manager.toolSnapshot().tools.map(({ descriptor }) => descriptor.name),
+      );
+      assert.equal(countProtocolMethod(fixture, 'tools/list'), 1);
+    });
+
     test('keeps the connection and latest initial snapshot when notifications exhaust the refresh budget', async () => {
       const fixture = await createRemoteFixture('sse');
       fixture.setNotifyBeforeEveryToolListResponse(true);

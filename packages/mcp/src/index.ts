@@ -302,6 +302,18 @@ export class McpClientManager {
   async refreshTools(serverId: string): Promise<McpToolDescriptor[]> {
     if (this.closed) throw new Error('MCP client manager is closed');
     const entry = this.requireConnection(serverId);
+    const connectingRefresh = entry.refreshState;
+    // Initial discovery already defines the first callable snapshot. An
+    // explicit refresh during that connect joins it without requesting the
+    // notification-style follow-up pass used after publication.
+    if (
+      entry.status.state === 'connecting' &&
+      entry.client &&
+      connectingRefresh?.client === entry.client &&
+      connectingRefresh.connectionGeneration === entry.connectionGeneration
+    ) {
+      return (await connectingRefresh.promise).descriptors;
+    }
     if (!entry.client || entry.status.state !== 'connected') await this.connect(serverId);
     const client = entry.client;
     if (!client) throw new Error(`MCP server "${serverId}" is not connected`);
