@@ -228,6 +228,11 @@ describe('Runtime Host bootstrap protocol', () => {
         requiredActiveCredentialId: 'credential-current',
       },
     );
+  test('publishes a new compatibility epoch for required Usage snapshot revisions', () => {
+    // Usage responses now require an explicit snapshot revision,
+    // so an epoch-27 peer must be rejected before either exact decoder sees the
+    // other side's incompatible response shape.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 27);
   });
 
   test('publishes a new compatibility epoch for provider capacity retry progress', () => {
