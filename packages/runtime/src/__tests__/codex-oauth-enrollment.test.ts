@@ -52,6 +52,31 @@ test('Codex device enrollment rejects a failed usercode request', async () => {
   );
 });
 
+test('Codex device enrollment classifies an unsupported network region', async () => {
+  await assert.rejects(
+    () =>
+      startCodexDeviceAuthorization({
+        fetchFn: async () =>
+          Response.json(
+            {
+              error: {
+                code: 'unsupported_country_region_territory',
+                message: 'Country, region, or territory not supported',
+                type: 'request_forbidden',
+              },
+            },
+            { status: 403 },
+          ),
+        signal: new AbortController().signal,
+        now: () => NOW,
+      }),
+    (error: unknown) =>
+      error instanceof OAuthTokenEndpointError &&
+      error.category === 'unsupported_region' &&
+      error.status === 403,
+  );
+});
+
 test('Codex device polling retries through pending and returns the grant on approval', async () => {
   let polls = 0;
   const fetchFn: typeof fetch = async (url) => {

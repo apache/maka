@@ -152,6 +152,27 @@ export function useOAuthLoginFlow(params: {
     if (oauthLoginFlowMountedRef.current) setPendingAction(null);
   }
 
+  function showLoginFailure(title: string, message: string, reason?: string) {
+    if (reason === 'network_unavailable' || reason === 'unsupported_region') {
+      toast.toast({
+        title,
+        description: message,
+        variant: 'error',
+        duration: 0,
+        action: {
+          label: copy.openNetworkSettings,
+          onClick: () => {
+            window.dispatchEvent(new CustomEvent('maka:jumpToSettingsSection', {
+              detail: { section: 'general', focusId: 'network-settings-section-title' },
+            }));
+          },
+        },
+      });
+      return;
+    }
+    toast.error(title, message);
+  }
+
   async function startLogin() {
     if (!beginPendingAction('login')) return;
     setErrorMessage(null);
@@ -162,7 +183,11 @@ export function useOAuthLoginFlow(params: {
         const result = await direct.login();
         if (!oauthLoginFlowMountedRef.current) return;
         if (!result.ok) {
-          toast.error(copy.accountActionFailed(display.name), subscriptionResultMessage(result.message, copy.loginFailedRetry, locale));
+          showLoginFailure(
+            copy.accountActionFailed(display.name),
+            subscriptionResultMessage(result.message, copy.loginFailedRetry, locale, result.reason),
+            result.reason,
+          );
         }
         await refresh();
         if (!oauthLoginFlowMountedRef.current) return;
@@ -179,8 +204,15 @@ export function useOAuthLoginFlow(params: {
       const payload = await bridge.getAuthUrl();
       if ('ok' in payload) {
         if (!oauthLoginFlowMountedRef.current) return;
-        const failureMessage = payload.ok ? copy.retry : subscriptionResultMessage(payload.message, copy.startFailedRetry, locale);
-        toast.error(copy.startFailed, failureMessage);
+        const failureMessage = payload.ok
+          ? copy.retry
+          : subscriptionResultMessage(
+              payload.message,
+              copy.startFailedRetry,
+              locale,
+              payload.reason,
+            );
+        showLoginFailure(copy.startFailed, failureMessage, payload.reason);
         setErrorMessage(failureMessage);
         return;
       }
@@ -195,8 +227,13 @@ export function useOAuthLoginFlow(params: {
       const opened = await bridge.openAuthUrl(payload.authRequestId);
       if (!oauthLoginFlowMountedRef.current) return;
       if (!opened.ok) {
-        const message = subscriptionResultMessage(opened.message, copy.openFailedRetry, locale);
-        toast.error(copy.openFailed, message);
+        const message = subscriptionResultMessage(
+          opened.message,
+          copy.openFailedRetry,
+          locale,
+          opened.reason,
+        );
+        showLoginFailure(copy.openFailed, message, opened.reason);
         setErrorMessage(message);
         void bridge.cancelAuthorization(payload.authRequestId);
         authRequestIdRef.current = null;
@@ -218,8 +255,13 @@ export function useOAuthLoginFlow(params: {
         if (!oauthLoginFlowMountedRef.current) return;
         if (params.onLoginSuccess) await params.onLoginSuccess();
       } else {
-        const message = subscriptionResultMessage(result.message, copy.incompleteRetry, locale);
-        toast.error(copy.incomplete, message);
+        const message = subscriptionResultMessage(
+          result.message,
+          copy.incompleteRetry,
+          locale,
+          result.reason,
+        );
+        showLoginFailure(copy.incomplete, message, result.reason);
         setErrorMessage(message);
       }
     } catch (error) {
@@ -324,7 +366,15 @@ export function subscriptionActionErrorMessage(error: unknown, locale: UiLocale 
   return subscriptionResultMessage(message, getProviderSettingsCopy(locale).oauthFlow.serviceUnavailable, locale);
 }
 
-export function subscriptionResultMessage(message: string | undefined, fallback: string, locale: UiLocale = 'zh'): string {
+export function subscriptionResultMessage(
+  message: string | undefined,
+  fallback: string,
+  locale: UiLocale = 'zh',
+  reason?: string,
+): string {
+  const copy = getProviderSettingsCopy(locale).oauthFlow;
+  if (reason === 'unsupported_region') return copy.unsupportedRegion;
+  if (reason === 'network_unavailable') return copy.networkUnavailable;
   const raw = redactSecrets(message ?? '').trim();
   if (!raw) return fallback;
   // Host conflict / supersede copy before the coarse keyword classifier turns

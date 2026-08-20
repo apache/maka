@@ -319,6 +319,83 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
   assert.equal(changed, 1);
 });
 
+test('preserves an actionable reason when OAuth fails before presentation', async () => {
+  const provider = 'openai-codex' as const;
+  const connection = {
+    connectionId: '00000000-0000-4000-8000-000000000003',
+    revision: 1,
+    slug: 'codex-subscription',
+    name: 'OpenAI Codex',
+    providerType: provider,
+    enabled: true,
+    enabledModelIds: [...PROVIDER_DEFAULTS[provider].fallbackModels],
+    models: [],
+  };
+  const catalog: ConnectionCatalogSnapshot = {
+    revision: 1,
+    defaultTarget: null,
+    connections: [connection],
+  };
+  const handlers = new Map<
+    string,
+    Parameters<RuntimeHostOAuthIpcDeps['ipcMain']['handle']>[1]
+  >();
+  const client = {
+    loadConnectionCatalog: async () => catalog,
+    createConnection: async () => {
+      throw new Error('Existing OAuth Connection must be reused');
+    },
+    updateConnection: async () => {
+      throw new Error('Enabled OAuth Connection must not be rewritten');
+    },
+    startOAuthLogin: async (attemptId: string) => ({
+      attemptId,
+      connectionId: connection.connectionId,
+      provider,
+      phase: 'failed' as const,
+      failure: 'unsupported_region' as const,
+    }),
+    queryOAuthLogin: async () => {
+      throw new Error('A terminal start must not be queried');
+    },
+    cancelOAuthLogin: async (attemptId: string) => ({
+      attemptId,
+      connectionId: connection.connectionId,
+      provider,
+      phase: 'failed' as const,
+      failure: 'unsupported_region' as const,
+    }),
+    fetchConnectionModels: async () => {
+      throw new Error('Model discovery must not run');
+    },
+    fetchOAuthAccountUsage: async () => ({
+      kind: 'unavailable' as const,
+      reason: 'provider_unavailable' as const,
+    }),
+    setDefaultConnectionTarget: async () => {
+      throw new Error('Default selection must not run');
+    },
+    queryCredential: async () => null,
+    deleteCredential: async () => {
+      throw new Error('Credential deletion must not run');
+    },
+  } satisfies RuntimeHostOAuthIpcDeps['client'];
+
+  registerRuntimeHostOAuthIpc({
+    ipcMain: { handle: (channel, handler) => void handlers.set(channel, handler) },
+    client,
+    presentation: new RuntimeHostOAuthPresentation(async () => undefined),
+    emitConnectionListChanged: () => undefined,
+    isProviderEnabled: () => true,
+  });
+
+  assert.deepEqual(await invoke(handlers, 'openai-codex:get-auth-url'), {
+    ok: false,
+    reason: 'unsupported_region',
+    message: 'OAuth authorization failed: unsupported_region',
+  });
+});
+
 function oauthProjection(
   attemptId: string,
   connectionId: string,

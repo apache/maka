@@ -47,3 +47,17 @@ test('settings hides expanded workbar chrome and restores it on close', async ({
   await expect(workbarToolbar).toBeVisible();
   await expect(taskTab).toBeVisible();
 });
+
+test('settings section jump opens the network recovery target', async ({ window: page }) => {
+  await page.getByRole('button', { name: '设置' }).click();
+  const networkTitle = page.locator('#network-settings-section-title');
+  await expect(networkTitle).toHaveCount(0);
+
+  await page.evaluate(() => {
+    window.dispatchEvent(new CustomEvent('maka:jumpToSettingsSection', {
+      detail: { section: 'general', focusId: 'network-settings-section-title' },
+    }));
+  });
+
+  await expect(networkTitle).toBeVisible();
+});

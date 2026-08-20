@@ -66,6 +66,24 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
   );
 });
 
+test('OAuth login protocol carries actionable network failure codes', () => {
+  for (const failure of ['network_unavailable', 'unsupported_region'] as const) {
+    const frame = {
+      requestId: `request-${failure}`,
+      operation: 'oauth.login.query',
+      ok: true,
+      result: {
+        attemptId: 'attempt',
+        connectionId: 'connection',
+        provider: 'openai-codex',
+        phase: 'failed',
+        failure,
+      },
+    };
+    assert.deepEqual(decodeHostFrame(frame), frame);
+  }
+});
+
 test('OAuth account usage exposes only a bounded safe quota projection', () => {
   assert.deepEqual(
     decodeHostFrame({

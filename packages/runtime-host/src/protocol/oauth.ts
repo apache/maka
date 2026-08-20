@@ -26,6 +26,8 @@ export const OAUTH_LOGIN_PHASES = [
 export const OAUTH_LOGIN_FAILURE_CODES = [
   'capability_unavailable',
   'authorization_failed',
+  'network_unavailable',
+  'unsupported_region',
   'provider_rejected',
   'credential_changed',
   'persistence_failed',

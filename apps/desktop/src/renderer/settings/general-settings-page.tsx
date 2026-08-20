@@ -177,6 +177,7 @@ export function GeneralSettingsPage(props: {
           <ShellSettingsSection settings={props.settings} onUpdate={props.onUpdate} />
           <SettingsSection
             title={sections.network}
+            titleId="network-settings-section-title"
             description={sections.networkHelp}
           >
             <NetworkProxySection

@@ -68,6 +68,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.deepEqual(decodeClientFrame(hello), expected);
   });
 
+  test('publishes a new compatibility epoch for actionable OAuth failures', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 28);
+  });
+
   test('publishes a new compatibility epoch for Session catalog live-run state', () => {
     // Epoch 22 predates the live-run projection and rejects its added catalog
     // field, so mixed-version peers must fail during the handshake instead.
