@@ -24,7 +24,6 @@ import {
   type UpdateScheduledTaskInput,
 } from '@maka/core/scheduled-task';
 import { isThinkingLevel } from '@maka/core/model-thinking';
-import type { PersistedBackendKind } from '@maka/core/session';
 import {
   requireCount,
   requireEncodedByteLimit,
@@ -304,7 +303,7 @@ export function decodeScheduledTask(value: unknown): ScheduledTask {
       body: boundedText(intent.body, 'ScheduledTask intent body', SCHEDULED_TASK_INTENT_MAX_CHARS),
     },
     schedule: decodeSchedule(task.schedule),
-    effect: decodeEffect(task.effect, 'stored'),
+    effect: decodeEffect(task.effect),
     status: task.status,
     nextFireAt: nullableCount(task.nextFireAt, 'ScheduledTask nextFireAt'),
     lastFireAt: nullableCount(task.lastFireAt, 'ScheduledTask lastFireAt'),
@@ -341,7 +340,7 @@ function decodeCreateInput(value: unknown): Omit<CreateScheduledTaskInput, 'crea
       SCHEDULED_TASK_INTENT_MAX_CHARS,
     ),
     schedule: decodeSchedule(input.schedule),
-    effect: decodeEffect(input.effect, 'mutation'),
+    effect: decodeEffect(input.effect),
     ...(Object.hasOwn(input, 'maxFires')
       ? { maxFires: nullablePositiveCount(input.maxFires, 'ScheduledTask maxFires') }
       : {}),
@@ -380,7 +379,7 @@ function decodeUpdateInput(value: unknown): UpdateScheduledTaskInput {
         }
       : {}),
     ...(Object.hasOwn(patch, 'schedule') ? { schedule: decodeSchedule(patch.schedule) } : {}),
-    ...(Object.hasOwn(patch, 'effect') ? { effect: decodeEffect(patch.effect, 'mutation') } : {}),
+    ...(Object.hasOwn(patch, 'effect') ? { effect: decodeEffect(patch.effect) } : {}),
     ...(Object.hasOwn(patch, 'maxFires')
       ? { maxFires: nullablePositiveCount(patch.maxFires, 'ScheduledTask maxFires') }
       : {}),
@@ -454,7 +453,7 @@ function decodeSchedule(value: unknown): ScheduledTaskSchedule {
   throw invalidProtocolFrame('Invalid ScheduledTask schedule');
 }
 
-function decodeEffect(value: unknown, origin: BackendOrigin): ScheduledTaskEffect {
+function decodeEffect(value: unknown): ScheduledTaskEffect {
   const effect = requireRecord(value, 'ScheduledTask effect');
   if (effect.kind === 'notify') {
     if (effect.channel === 'local') {
@@ -490,7 +489,7 @@ function decodeEffect(value: unknown, origin: BackendOrigin): ScheduledTaskEffec
       'kind',
       'execution',
     ]);
-    return { kind: 'agent_run', execution: decodeExecution(exact.execution, origin) };
+    return { kind: 'agent_run', execution: decodeExecution(exact.execution) };
   }
   if (effect.kind === 'session_resume') {
     const exact = requireExactRecord(effect, 'ScheduledTask Session resume effect', [
@@ -510,23 +509,23 @@ function decodeEffect(value: unknown, origin: BackendOrigin): ScheduledTaskEffec
   throw invalidProtocolFrame('Invalid ScheduledTask effect');
 }
 
-function decodeExecution(value: unknown, origin: BackendOrigin): ScheduledTaskExecutionTemplate {
+function decodeExecution(value: unknown): ScheduledTaskExecutionTemplate {
+  // `backend` left the template (#3306), but templates frozen by older builds
+  // still carry it and this is a closed shape: the key must stay tolerated on
+  // the way in, and it never lands on the decoded value.
   const execution = requireShapedRecord(
     value,
     'ScheduledTask execution template',
     [
       'cwd',
-      'backend',
       'llmConnectionSlug',
       'model',
       'permissionMode',
       'collaborationMode',
       'orchestrationMode',
     ],
-    ['projectId', 'thinkingLevel'],
+    ['projectId', 'thinkingLevel', 'backend'],
   );
-  if (!isBackendFor(origin, execution.backend))
-    throw invalidProtocolFrame('Invalid ScheduledTask backend');
   if (!isPermissionMode(execution.permissionMode)) {
     throw invalidProtocolFrame('Invalid ScheduledTask permission mode');
   }
@@ -551,7 +550,6 @@ function decodeExecution(value: unknown, origin: BackendOrigin): ScheduledTaskEx
     ...(Object.hasOwn(execution, 'projectId')
       ? { projectId: execution.projectId as string | null }
       : {}),
-    backend: execution.backend,
     llmConnectionSlug: boundedText(
       execution.llmConnectionSlug,
       'ScheduledTask connection slug',
@@ -633,18 +631,4 @@ function nullablePositiveCount(value: unknown, label: string): number | null {
   const count = requireCount(value, label);
   if (count === 0) throw invalidProtocolFrame(`Invalid ${label}`);
   return count;
-}
-
-/**
- * Which direction an execution template is crossing the protocol.
- *
- * The same decoder serves both, but they carry different backend invariants:
- * a `'stored'` template is durable data that may have been frozen by a build
- * shipping FakeBackend and must stay decodable, while a `'mutation'` template
- * is a live write and may not introduce the retired value (#3211).
- */
-type BackendOrigin = 'stored' | 'mutation';
-
-function isBackendFor(origin: BackendOrigin, value: unknown): value is PersistedBackendKind {
-  return value === 'ai-sdk' || (origin === 'stored' && value === 'fake');
 }

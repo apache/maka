@@ -781,7 +781,6 @@ function executionTemplateFromHeader(header: SessionHeader): ScheduledTaskExecut
   return {
     cwd: header.cwd,
     ...(header.projectId === undefined ? {} : { projectId: header.projectId }),
-    backend: header.backend,
     llmConnectionSlug: header.llmConnectionSlug,
     model: header.model,
     ...(header.thinkingLevel === undefined ? {} : { thinkingLevel: header.thinkingLevel }),
