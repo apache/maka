@@ -94,6 +94,19 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheReadUsdPer1M: 0.2,
     cacheWriteUsdPer1M: 2.5,
   },
+  {
+    modelKey: 'alibaba:deepseek-v4-flash-0731',
+    inputUsdPer1M: 0.2,
+    outputUsdPer1M: 0.4,
+    cacheReadUsdPer1M: 0.04,
+  },
+  {
+    modelKey: 'alibaba:glm-5.2',
+    inputUsdPer1M: 1.4,
+    outputUsdPer1M: 4.4,
+    cacheReadUsdPer1M: 0.28,
+    cacheWriteUsdPer1M: 0,
+  },
   { modelKey: 'alibaba:qvq-max', inputUsdPer1M: 1.2, outputUsdPer1M: 4.8 },
   { modelKey: 'alibaba:qwen-flash', inputUsdPer1M: 0.05, outputUsdPer1M: 0.4 },
   { modelKey: 'alibaba:qwen-max', inputUsdPer1M: 1.6, outputUsdPer1M: 6.4 },
@@ -167,6 +180,8 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheWriteUsdPer1M: 2.5,
   },
   { modelKey: 'alibaba:qwq-plus', inputUsdPer1M: 0.8, outputUsdPer1M: 2.4 },
+  { modelKey: 'cerebras:gemma-4-31b', inputUsdPer1M: 0.99, outputUsdPer1M: 1.49 },
+  { modelKey: 'cerebras:gpt-oss-120b', inputUsdPer1M: 0.35, outputUsdPer1M: 0.75 },
   { modelKey: 'cohere:command-a-03-2025', inputUsdPer1M: 2.5, outputUsdPer1M: 10 },
   { modelKey: 'cohere:command-a-plus-05-2026', inputUsdPer1M: 2.5, outputUsdPer1M: 10 },
   { modelKey: 'cohere:command-a-reasoning-08-2025', inputUsdPer1M: 2.5, outputUsdPer1M: 10 },
@@ -186,6 +201,18 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     modelKey: 'cloudflare-workers-ai:@cf/deepseek-ai/deepseek-r1-distill-qwen-32b',
     inputUsdPer1M: 0.497,
     outputUsdPer1M: 4.881,
+  },
+  {
+    modelKey: 'cloudflare-workers-ai:@cf/deepseek-ai/deepseek-v4-flash-0731',
+    inputUsdPer1M: 0.44,
+    outputUsdPer1M: 1.32,
+    cacheReadUsdPer1M: 0.014,
+  },
+  {
+    modelKey: 'cloudflare-workers-ai:@cf/deepseek-ai/deepseek-v4-pro-0813',
+    inputUsdPer1M: 1.32,
+    outputUsdPer1M: 3.96,
+    cacheReadUsdPer1M: 0.044,
   },
   {
     modelKey: 'cloudflare-workers-ai:@cf/google/gemma-4-26b-a4b-it',
@@ -274,6 +301,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     inputUsdPer1M: 0.0509,
     outputUsdPer1M: 0.335,
   },
+  {
+    modelKey: 'cloudflare-workers-ai:@cf/qwen/qwen3.8-27b',
+    inputUsdPer1M: 0.45,
+    outputUsdPer1M: 3.2,
+    cacheReadUsdPer1M: 0.05,
+  },
   { modelKey: 'cloudflare-workers-ai:@cf/qwen/qwq-32b', inputUsdPer1M: 0.66, outputUsdPer1M: 1 },
   {
     modelKey: 'cloudflare-workers-ai:@cf/zai-org/glm-4.7-flash',
@@ -294,6 +327,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   { modelKey: 'deepinfra:deepseek-ai/DeepSeek-V3', inputUsdPer1M: 0.32, outputUsdPer1M: 0.89 },
   {
+    modelKey: 'deepinfra:deepseek-ai/DeepSeek-V3-0324',
+    inputUsdPer1M: 0.24,
+    outputUsdPer1M: 0.9,
+    cacheReadUsdPer1M: 0.135,
+  },
+  {
     modelKey: 'deepinfra:deepseek-ai/DeepSeek-V3.1',
     inputUsdPer1M: 0.25,
     outputUsdPer1M: 0.95,
@@ -313,12 +352,18 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'deepinfra:deepseek-ai/DeepSeek-V4-Flash-0731',
-    inputUsdPer1M: 0.09,
+    inputUsdPer1M: 0.08,
     outputUsdPer1M: 0.18,
-    cacheReadUsdPer1M: 0.018,
+    cacheReadUsdPer1M: 0.016,
   },
   {
     modelKey: 'deepinfra:deepseek-ai/DeepSeek-V4-Pro',
+    inputUsdPer1M: 1.3,
+    outputUsdPer1M: 2.6,
+    cacheReadUsdPer1M: 0.1,
+  },
+  {
+    modelKey: 'deepinfra:deepseek-ai/DeepSeek-V4-Pro-0813',
     inputUsdPer1M: 1.3,
     outputUsdPer1M: 2.6,
     cacheReadUsdPer1M: 0.1,
@@ -379,9 +424,9 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'deepinfra:moonshotai/Kimi-K3',
-    inputUsdPer1M: 2.7,
-    outputUsdPer1M: 13.5,
-    cacheReadUsdPer1M: 0.27,
+    inputUsdPer1M: 2.85,
+    outputUsdPer1M: 14.25,
+    cacheReadUsdPer1M: 0.285,
   },
   {
     modelKey: 'deepinfra:nvidia/Llama-3.3-Nemotron-Super-49B-v1.5',
@@ -406,6 +451,7 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     inputUsdPer1M: 0.09,
     outputUsdPer1M: 0.55,
   },
+  { modelKey: 'deepinfra:Qwen/Qwen3-30B-A3B', inputUsdPer1M: 0.12, outputUsdPer1M: 0.5 },
   { modelKey: 'deepinfra:Qwen/Qwen3-32B', inputUsdPer1M: 0.08, outputUsdPer1M: 0.28 },
   {
     modelKey: 'deepinfra:Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo',
@@ -417,6 +463,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     modelKey: 'deepinfra:Qwen/Qwen3-Next-80B-A3B-Instruct',
     inputUsdPer1M: 0.09,
     outputUsdPer1M: 1.1,
+  },
+  {
+    modelKey: 'deepinfra:Qwen/Qwen3-VL-235B-A22B-Instruct',
+    inputUsdPer1M: 0.2,
+    outputUsdPer1M: 0.88,
+    cacheReadUsdPer1M: 0.11,
   },
   { modelKey: 'deepinfra:Qwen/Qwen3.5-122B-A10B', inputUsdPer1M: 0.29, outputUsdPer1M: 2.4 },
   { modelKey: 'deepinfra:Qwen/Qwen3.5-27B', inputUsdPer1M: 0.26, outputUsdPer1M: 2.6 },
@@ -435,6 +487,18 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   { modelKey: 'deepinfra:Qwen/Qwen3.5-9B', inputUsdPer1M: 0.1, outputUsdPer1M: 0.15 },
   { modelKey: 'deepinfra:Qwen/Qwen3.6-27B', inputUsdPer1M: 0.32, outputUsdPer1M: 3.2 },
   { modelKey: 'deepinfra:Qwen/Qwen3.6-35B-A3B', inputUsdPer1M: 0.1, outputUsdPer1M: 0.95 },
+  {
+    modelKey: 'deepinfra:Qwen/Qwen3.8-2.4T-A95B',
+    inputUsdPer1M: 2,
+    outputUsdPer1M: 6,
+    cacheReadUsdPer1M: 0.2,
+  },
+  {
+    modelKey: 'deepinfra:Qwen/Qwen3.8-27B',
+    inputUsdPer1M: 0.4,
+    outputUsdPer1M: 3,
+    cacheReadUsdPer1M: 0.04,
+  },
   {
     modelKey: 'deepinfra:Qwen/Qwen3.8-Max',
     inputUsdPer1M: 1.65,
@@ -556,6 +620,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheReadUsdPer1M: 0.145,
   },
   {
+    modelKey: 'fireworks-ai:accounts/fireworks/models/deepseek-v4-pro-0813',
+    inputUsdPer1M: 1.32,
+    outputUsdPer1M: 3.96,
+    cacheReadUsdPer1M: 0.044,
+  },
+  {
     modelKey: 'fireworks-ai:accounts/fireworks/models/glm-5p2',
     inputUsdPer1M: 1.4,
     outputUsdPer1M: 4.4,
@@ -572,6 +642,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     inputUsdPer1M: 0.07,
     outputUsdPer1M: 0.3,
     cacheReadUsdPer1M: 0.035,
+  },
+  {
+    modelKey: 'fireworks-ai:accounts/fireworks/models/inkling',
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 4.05,
+    cacheReadUsdPer1M: 0.17,
   },
   {
     modelKey: 'fireworks-ai:accounts/fireworks/models/kimi-k2p6',
@@ -604,10 +680,34 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheReadUsdPer1M: 0.06,
   },
   {
+    modelKey: 'fireworks-ai:accounts/fireworks/models/muse-glimmer-30b',
+    inputUsdPer1M: 0.35,
+    outputUsdPer1M: 1.5,
+    cacheReadUsdPer1M: 0.04,
+  },
+  {
+    modelKey: 'fireworks-ai:accounts/fireworks/models/nemotron-3-ultra-nvfp4',
+    inputUsdPer1M: 0.6,
+    outputUsdPer1M: 2.4,
+    cacheReadUsdPer1M: 0.119,
+  },
+  {
+    modelKey: 'fireworks-ai:accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b',
+    inputUsdPer1M: 0.05,
+    outputUsdPer1M: 0.2,
+    cacheReadUsdPer1M: 0.01,
+  },
+  {
     modelKey: 'fireworks-ai:accounts/fireworks/models/qwen3p7-plus',
     inputUsdPer1M: 0.4,
     outputUsdPer1M: 1.6,
     cacheReadUsdPer1M: 0.08,
+  },
+  {
+    modelKey: 'fireworks-ai:accounts/fireworks/models/qwen3p8-max',
+    inputUsdPer1M: 2,
+    outputUsdPer1M: 6,
+    cacheReadUsdPer1M: 0.25,
   },
   {
     modelKey: 'fireworks-ai:accounts/fireworks/routers/glm-5p2-fast',
@@ -639,13 +739,6 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 22.5,
     cacheReadUsdPer1M: 0.45,
   },
-  {
-    modelKey: 'google:gemini-2.0-flash',
-    inputUsdPer1M: 0.1,
-    outputUsdPer1M: 0.4,
-    cacheReadUsdPer1M: 0.025,
-  },
-  { modelKey: 'google:gemini-2.0-flash-lite', inputUsdPer1M: 0.075, outputUsdPer1M: 0.3 },
   {
     modelKey: 'google:gemini-2.5-flash',
     inputUsdPer1M: 0.3,
@@ -710,6 +803,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 7.5,
     cacheReadUsdPer1M: 0.15,
   },
+  {
+    modelKey: 'google:gemini-3.7-flash',
+    inputUsdPer1M: 0.75,
+    outputUsdPer1M: 3.75,
+    cacheReadUsdPer1M: 0.075,
+  },
   { modelKey: 'google:gemini-embedding-001', inputUsdPer1M: 0.15, outputUsdPer1M: 0 },
   { modelKey: 'google:gemini-embedding-2', inputUsdPer1M: 0.2, outputUsdPer1M: 0 },
   {
@@ -728,6 +827,14 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   { modelKey: 'google:gemini-robotics-er-1.6-preview', inputUsdPer1M: 1, outputUsdPer1M: 5 },
   { modelKey: 'google:lyria-3-clip-preview', inputUsdPer1M: 0, outputUsdPer1M: 0 },
   { modelKey: 'google:lyria-3-pro-preview', inputUsdPer1M: 0, outputUsdPer1M: 0 },
+  { modelKey: 'groq:allam-2-7b', inputUsdPer1M: 0, outputUsdPer1M: 0 },
+  { modelKey: 'groq:llama-3.1-8b-instant', inputUsdPer1M: 0.05, outputUsdPer1M: 0.08 },
+  { modelKey: 'groq:llama-3.3-70b-versatile', inputUsdPer1M: 0.59, outputUsdPer1M: 0.79 },
+  {
+    modelKey: 'groq:meta-llama/llama-prompt-guard-2-22m',
+    inputUsdPer1M: 0.03,
+    outputUsdPer1M: 0.03,
+  },
   {
     modelKey: 'groq:meta-llama/llama-prompt-guard-2-86m',
     inputUsdPer1M: 0.04,
@@ -755,6 +862,11 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   { modelKey: 'huggingface:deepseek-ai/DeepSeek-R1', inputUsdPer1M: 0.7, outputUsdPer1M: 2.5 },
   { modelKey: 'huggingface:deepseek-ai/DeepSeek-R1-0528', inputUsdPer1M: 3, outputUsdPer1M: 5 },
   { modelKey: 'huggingface:deepseek-ai/DeepSeek-V3', inputUsdPer1M: 0.4, outputUsdPer1M: 1.3 },
+  {
+    modelKey: 'huggingface:deepseek-ai/DeepSeek-V3-0324',
+    inputUsdPer1M: 0.27,
+    outputUsdPer1M: 1.12,
+  },
   { modelKey: 'huggingface:deepseek-ai/DeepSeek-V3.1', inputUsdPer1M: 0.27, outputUsdPer1M: 1 },
   { modelKey: 'huggingface:deepseek-ai/DeepSeek-V3.2', inputUsdPer1M: 0.28, outputUsdPer1M: 0.4 },
   {
@@ -773,8 +885,18 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 0.87,
     cacheReadUsdPer1M: 0.003625,
   },
+  {
+    modelKey: 'huggingface:deepseek-ai/DeepSeek-V4-Pro-0813',
+    inputUsdPer1M: 1.32,
+    outputUsdPer1M: 3.96,
+  },
   { modelKey: 'huggingface:google/gemma-4-26B-A4B-it', inputUsdPer1M: 0.13, outputUsdPer1M: 0.4 },
   { modelKey: 'huggingface:google/gemma-4-31B-it', inputUsdPer1M: 0.14, outputUsdPer1M: 0.4 },
+  {
+    modelKey: 'huggingface:meta-llama/Llama-3.1-8B-Instruct',
+    inputUsdPer1M: 0.06,
+    outputUsdPer1M: 0.06,
+  },
   {
     modelKey: 'huggingface:meta-llama/Llama-3.3-70B-Instruct',
     inputUsdPer1M: 0.59,
@@ -819,6 +941,11 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   { modelKey: 'huggingface:moonshotai/Kimi-K3', inputUsdPer1M: 3, outputUsdPer1M: 15 },
   { modelKey: 'huggingface:openai/gpt-oss-120b', inputUsdPer1M: 0.25, outputUsdPer1M: 0.69 },
   { modelKey: 'huggingface:openai/gpt-oss-20b', inputUsdPer1M: 0.1, outputUsdPer1M: 0.5 },
+  {
+    modelKey: 'huggingface:Qwen/Qwen2.5-Coder-32B-Instruct',
+    inputUsdPer1M: 0.06,
+    outputUsdPer1M: 0.2,
+  },
   { modelKey: 'huggingface:Qwen/Qwen3-235B-A22B', inputUsdPer1M: 0.2, outputUsdPer1M: 0.8 },
   {
     modelKey: 'huggingface:Qwen/Qwen3-235B-A22B-Instruct-2507',
@@ -830,6 +957,7 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     inputUsdPer1M: 0.3,
     outputUsdPer1M: 3,
   },
+  { modelKey: 'huggingface:Qwen/Qwen3-30B-A3B', inputUsdPer1M: 0.12, outputUsdPer1M: 0.5 },
   { modelKey: 'huggingface:Qwen/Qwen3-32B', inputUsdPer1M: 0.29, outputUsdPer1M: 0.59 },
   {
     modelKey: 'huggingface:Qwen/Qwen3-Coder-30B-A3B-Instruct',
@@ -854,6 +982,16 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     inputUsdPer1M: 0.3,
     outputUsdPer1M: 2,
   },
+  {
+    modelKey: 'huggingface:Qwen/Qwen3-VL-235B-A22B-Instruct',
+    inputUsdPer1M: 0.3,
+    outputUsdPer1M: 1.5,
+  },
+  {
+    modelKey: 'huggingface:Qwen/Qwen3-VL-235B-A22B-Thinking',
+    inputUsdPer1M: 0.98,
+    outputUsdPer1M: 3.95,
+  },
   { modelKey: 'huggingface:Qwen/Qwen3.5-122B-A10B', inputUsdPer1M: 0.4, outputUsdPer1M: 3.2 },
   { modelKey: 'huggingface:Qwen/Qwen3.5-27B', inputUsdPer1M: 0.3, outputUsdPer1M: 2.4 },
   { modelKey: 'huggingface:Qwen/Qwen3.5-35B-A3B', inputUsdPer1M: 0.25, outputUsdPer1M: 2 },
@@ -861,6 +999,7 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   { modelKey: 'huggingface:Qwen/Qwen3.5-9B', inputUsdPer1M: 0.17, outputUsdPer1M: 0.25 },
   { modelKey: 'huggingface:Qwen/Qwen3.6-27B', inputUsdPer1M: 0.47, outputUsdPer1M: 3.19 },
   { modelKey: 'huggingface:Qwen/Qwen3.6-35B-A3B', inputUsdPer1M: 0.15, outputUsdPer1M: 0.95 },
+  { modelKey: 'huggingface:Qwen/Qwen3.8-2.4T-A95B', inputUsdPer1M: 2.5, outputUsdPer1M: 6.25 },
   { modelKey: 'huggingface:stepfun-ai/Step-3.5-Flash', inputUsdPer1M: 0.1, outputUsdPer1M: 0.3 },
   { modelKey: 'huggingface:stepfun-ai/Step-3.7-Flash', inputUsdPer1M: 0.2, outputUsdPer1M: 1.15 },
   { modelKey: 'huggingface:tencent/Hy3', inputUsdPer1M: 0.14, outputUsdPer1M: 0.58 },
@@ -877,6 +1016,7 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   { modelKey: 'huggingface:zai-org/GLM-4.5-Air', inputUsdPer1M: 0.13, outputUsdPer1M: 0.85 },
   { modelKey: 'huggingface:zai-org/GLM-4.5V', inputUsdPer1M: 0.6, outputUsdPer1M: 1.8 },
   { modelKey: 'huggingface:zai-org/GLM-4.6', inputUsdPer1M: 0.55, outputUsdPer1M: 2.2 },
+  { modelKey: 'huggingface:zai-org/GLM-4.6V-Flash', inputUsdPer1M: 0.3, outputUsdPer1M: 0.9 },
   {
     modelKey: 'huggingface:zai-org/GLM-4.7',
     inputUsdPer1M: 0.6,
@@ -1059,6 +1199,7 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 0,
   },
   { modelKey: 'nvidia:meta/llama-guard-4-12b', inputUsdPer1M: 0, outputUsdPer1M: 0 },
+  { modelKey: 'nvidia:meta/muse-glimmer-30b', inputUsdPer1M: 0, outputUsdPer1M: 0 },
   { modelKey: 'nvidia:microsoft/phi-4-mini-instruct', inputUsdPer1M: 0, outputUsdPer1M: 0 },
   { modelKey: 'nvidia:microsoft/phi-4-multimodal-instruct', inputUsdPer1M: 0, outputUsdPer1M: 0 },
   { modelKey: 'nvidia:minimaxai/minimax-m2.7', inputUsdPer1M: 0, outputUsdPer1M: 0 },
@@ -1139,6 +1280,7 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 2.5,
     cacheReadUsdPer1M: 0.15,
   },
+  { modelKey: 'nvidia:nvidia/nemotron-3.5-lightning-30b-a3b', inputUsdPer1M: 0, outputUsdPer1M: 0 },
   {
     modelKey: 'nvidia:nvidia/nemotron-content-safety-reasoning-4b',
     inputUsdPer1M: 0,
@@ -1415,6 +1557,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 7.5,
     cacheReadUsdPer1M: 0.15,
   },
+  {
+    modelKey: 'opencode:gemini-3.7-flash',
+    inputUsdPer1M: 1.5,
+    outputUsdPer1M: 7.5,
+    cacheReadUsdPer1M: 0.15,
+  },
   { modelKey: 'opencode:glm-4.6', inputUsdPer1M: 0.6, outputUsdPer1M: 2.2, cacheReadUsdPer1M: 0.1 },
   { modelKey: 'opencode:glm-4.7', inputUsdPer1M: 0.6, outputUsdPer1M: 2.2, cacheReadUsdPer1M: 0.1 },
   { modelKey: 'opencode:glm-4.7-free', inputUsdPer1M: 0, outputUsdPer1M: 0, cacheReadUsdPer1M: 0 },
@@ -1587,6 +1735,7 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 0,
     cacheReadUsdPer1M: 0,
   },
+  { modelKey: 'opencode:ling-3.0-tiny-free', inputUsdPer1M: 0, outputUsdPer1M: 0 },
   {
     modelKey: 'opencode:longcat-2.0-free',
     inputUsdPer1M: 0,
@@ -1660,6 +1809,18 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheReadUsdPer1M: 0,
   },
   {
+    modelKey: 'opencode:muse-spark-1.2',
+    inputUsdPer1M: 1.25,
+    outputUsdPer1M: 4.25,
+    cacheReadUsdPer1M: 0.15,
+  },
+  {
+    modelKey: 'opencode:muse-spark-1.2-contributor-free',
+    inputUsdPer1M: 0,
+    outputUsdPer1M: 0,
+    cacheReadUsdPer1M: 0,
+  },
+  {
     modelKey: 'opencode:nemotron-3-super-free',
     inputUsdPer1M: 0,
     outputUsdPer1M: 0,
@@ -1667,6 +1828,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'opencode:nemotron-3-ultra-free',
+    inputUsdPer1M: 0,
+    outputUsdPer1M: 0,
+    cacheReadUsdPer1M: 0,
+  },
+  {
+    modelKey: 'opencode:nemotron-3.5-lightning-free',
     inputUsdPer1M: 0,
     outputUsdPer1M: 0,
     cacheReadUsdPer1M: 0,
@@ -1725,21 +1892,21 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'openrouter:~deepseek/deepseek-v4-flash-latest',
-    inputUsdPer1M: 0.09,
-    outputUsdPer1M: 0.18,
-    cacheReadUsdPer1M: 0.018,
+    inputUsdPer1M: 0.065,
+    outputUsdPer1M: 0.14,
+    cacheReadUsdPer1M: 0.014,
   },
   {
     modelKey: 'openrouter:~google/gemini-flash-latest',
-    inputUsdPer1M: 1.5,
-    outputUsdPer1M: 7.5,
-    cacheReadUsdPer1M: 0.15,
-    cacheWriteUsdPer1M: 0.083333,
+    inputUsdPer1M: 0.375,
+    outputUsdPer1M: 1.875,
+    cacheReadUsdPer1M: 0.0375,
+    cacheWriteUsdPer1M: 0.020833,
   },
   {
     modelKey: 'openrouter:~moonshotai/kimi-latest',
-    inputUsdPer1M: 2.9,
-    outputUsdPer1M: 14,
+    inputUsdPer1M: 2.6,
+    outputUsdPer1M: 13,
     cacheReadUsdPer1M: 0.29,
   },
   {
@@ -1748,7 +1915,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 4.5,
     cacheReadUsdPer1M: 0.075,
   },
-  { modelKey: 'openrouter:ai21/jamba-large-1.7', inputUsdPer1M: 2, outputUsdPer1M: 8 },
+  {
+    modelKey: 'openrouter:~z-ai/glm-latest',
+    inputUsdPer1M: 1.4,
+    outputUsdPer1M: 4.4,
+    cacheReadUsdPer1M: 0.26,
+  },
   {
     modelKey: 'openrouter:aion-labs/aion-2.0',
     inputUsdPer1M: 0.8,
@@ -1880,6 +2052,7 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     inputUsdPer1M: 0.42,
     outputUsdPer1M: 1.25,
   },
+  { modelKey: 'openrouter:bytedance-seed/seed-2-1-turbo', inputUsdPer1M: 0.5, outputUsdPer1M: 2.5 },
   {
     modelKey: 'openrouter:bytedance/ui-tars-1.5-7b',
     inputUsdPer1M: 0.1,
@@ -1902,12 +2075,7 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   { modelKey: 'openrouter:cohere/north-mini-code:free', inputUsdPer1M: 0, outputUsdPer1M: 0 },
   { modelKey: 'openrouter:deepcogito/cogito-v2.1-671b', inputUsdPer1M: 1.25, outputUsdPer1M: 1.25 },
   { modelKey: 'openrouter:deepseek/deepseek-chat', inputUsdPer1M: 0.2574, outputUsdPer1M: 1.0287 },
-  {
-    modelKey: 'openrouter:deepseek/deepseek-chat-v3-0324',
-    inputUsdPer1M: 0.27,
-    outputUsdPer1M: 1.12,
-    cacheReadUsdPer1M: 0.135,
-  },
+  { modelKey: 'openrouter:deepseek/deepseek-chat-v3-0324', inputUsdPer1M: 0.25, outputUsdPer1M: 1 },
   {
     modelKey: 'openrouter:deepseek/deepseek-chat-v3.1',
     inputUsdPer1M: 0.25,
@@ -1930,7 +2098,6 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     modelKey: 'openrouter:deepseek/deepseek-v3.1-terminus',
     inputUsdPer1M: 0.27,
     outputUsdPer1M: 1,
-    cacheReadUsdPer1M: 0.135,
   },
   {
     modelKey: 'openrouter:deepseek/deepseek-v3.2',
@@ -1941,21 +2108,32 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   { modelKey: 'openrouter:deepseek/deepseek-v3.2-exp', inputUsdPer1M: 0.27, outputUsdPer1M: 0.41 },
   {
     modelKey: 'openrouter:deepseek/deepseek-v4-flash',
-    inputUsdPer1M: 0.0882,
-    outputUsdPer1M: 0.1764,
-    cacheReadUsdPer1M: 0.01764,
+    inputUsdPer1M: 0.0868,
+    outputUsdPer1M: 0.1736,
+    cacheReadUsdPer1M: 0.01736,
   },
   {
     modelKey: 'openrouter:deepseek/deepseek-v4-flash-0731',
-    inputUsdPer1M: 0.09,
-    outputUsdPer1M: 0.18,
-    cacheReadUsdPer1M: 0.018,
+    inputUsdPer1M: 0.14,
+    outputUsdPer1M: 0.28,
+    cacheReadUsdPer1M: 0.028,
   },
   {
     modelKey: 'openrouter:deepseek/deepseek-v4-pro',
-    inputUsdPer1M: 0.435,
-    outputUsdPer1M: 0.87,
-    cacheReadUsdPer1M: 0.003625,
+    inputUsdPer1M: 1.6,
+    outputUsdPer1M: 3.2,
+    cacheReadUsdPer1M: 0.135,
+  },
+  {
+    modelKey: 'openrouter:deepseek/deepseek-v4-pro-0813',
+    inputUsdPer1M: 1.188,
+    outputUsdPer1M: 3.564,
+    cacheReadUsdPer1M: 0.0396,
+  },
+  {
+    modelKey: 'openrouter:dots-studio/dots-3-note-preview:free',
+    inputUsdPer1M: 0,
+    outputUsdPer1M: 0,
   },
   {
     modelKey: 'openrouter:google/gemini-2.5-flash',
@@ -2040,10 +2218,17 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'openrouter:google/gemini-3.6-flash',
-    inputUsdPer1M: 1.5,
-    outputUsdPer1M: 7.5,
-    cacheReadUsdPer1M: 0.15,
-    cacheWriteUsdPer1M: 0.083333,
+    inputUsdPer1M: 0.75,
+    outputUsdPer1M: 3.75,
+    cacheReadUsdPer1M: 0.075,
+    cacheWriteUsdPer1M: 0.041667,
+  },
+  {
+    modelKey: 'openrouter:google/gemini-3.7-flash',
+    inputUsdPer1M: 0.375,
+    outputUsdPer1M: 1.875,
+    cacheReadUsdPer1M: 0.0375,
+    cacheWriteUsdPer1M: 0.020833,
   },
   { modelKey: 'openrouter:google/gemma-2-27b-it', inputUsdPer1M: 0.65, outputUsdPer1M: 0.65 },
   { modelKey: 'openrouter:google/gemma-3-12b-it', inputUsdPer1M: 0.05, outputUsdPer1M: 0.15 },
@@ -2059,14 +2244,14 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   { modelKey: 'openrouter:google/gemma-4-26b-a4b-it:free', inputUsdPer1M: 0, outputUsdPer1M: 0 },
   {
     modelKey: 'openrouter:google/gemma-4-31b-it',
-    inputUsdPer1M: 0.1,
+    inputUsdPer1M: 0.09,
     outputUsdPer1M: 0.34,
-    cacheReadUsdPer1M: 0.1,
+    cacheReadUsdPer1M: 0.05,
   },
   { modelKey: 'openrouter:google/gemma-4-31b-it:free', inputUsdPer1M: 0, outputUsdPer1M: 0 },
   { modelKey: 'openrouter:google/lyria-3-clip-preview', inputUsdPer1M: 0, outputUsdPer1M: 0 },
   { modelKey: 'openrouter:google/lyria-3-pro-preview', inputUsdPer1M: 0, outputUsdPer1M: 0 },
-  { modelKey: 'openrouter:gryphe/mythomax-l2-13b', inputUsdPer1M: 0.08, outputUsdPer1M: 0.11 },
+  { modelKey: 'openrouter:gryphe/mythomax-l2-13b', inputUsdPer1M: 0.06, outputUsdPer1M: 0.06 },
   {
     modelKey: 'openrouter:ibm-granite/granite-4.0-h-micro',
     inputUsdPer1M: 0.017,
@@ -2102,7 +2287,6 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 0.063,
     cacheReadUsdPer1M: 0.0042,
   },
-  { modelKey: 'openrouter:inclusionai/ling-3.0-tiny:free', inputUsdPer1M: 0, outputUsdPer1M: 0 },
   {
     modelKey: 'openrouter:inclusionai/ring-2.6-1t',
     inputUsdPer1M: 0.075,
@@ -2127,7 +2311,7 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 2.96,
     cacheReadUsdPer1M: 0.15,
   },
-  { modelKey: 'openrouter:mancer/weaver', inputUsdPer1M: 0.5, outputUsdPer1M: 0.75 },
+  { modelKey: 'openrouter:liquid/lfm-2.5-2.6b:free', inputUsdPer1M: 0, outputUsdPer1M: 0 },
   {
     modelKey: 'openrouter:meituan/longcat-2.0',
     inputUsdPer1M: 0.3,
@@ -2168,6 +2352,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 0.18,
   },
   {
+    modelKey: 'openrouter:meta/muse-glimmer-30b',
+    inputUsdPer1M: 0.35,
+    outputUsdPer1M: 1.5,
+    cacheReadUsdPer1M: 0.04,
+  },
+  {
     modelKey: 'openrouter:meta/muse-spark-1.1',
     inputUsdPer1M: 1.25,
     outputUsdPer1M: 4.25,
@@ -2198,15 +2388,15 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'openrouter:minimax/minimax-m2.5',
-    inputUsdPer1M: 0.22,
+    inputUsdPer1M: 0.225,
     outputUsdPer1M: 0.9,
-    cacheReadUsdPer1M: 0.05,
+    cacheReadUsdPer1M: 0.06,
   },
   {
     modelKey: 'openrouter:minimax/minimax-m2.7',
-    inputUsdPer1M: 0.27,
-    outputUsdPer1M: 1.08,
-    cacheReadUsdPer1M: 0.054,
+    inputUsdPer1M: 0.3,
+    outputUsdPer1M: 1.2,
+    cacheReadUsdPer1M: 0.06,
   },
   {
     modelKey: 'openrouter:minimax/minimax-m3',
@@ -2319,19 +2509,19 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'openrouter:moonshotai/kimi-k2.5',
-    inputUsdPer1M: 0.57,
-    outputUsdPer1M: 2.85,
-    cacheReadUsdPer1M: 0.095,
+    inputUsdPer1M: 0.45,
+    outputUsdPer1M: 2.25,
+    cacheReadUsdPer1M: 0.07,
   },
   {
     modelKey: 'openrouter:moonshotai/kimi-k2.6',
-    inputUsdPer1M: 0.589,
-    outputUsdPer1M: 2.48,
-    cacheReadUsdPer1M: 0.0992,
+    inputUsdPer1M: 0.9405,
+    outputUsdPer1M: 3.96,
+    cacheReadUsdPer1M: 0.1584,
   },
   {
     modelKey: 'openrouter:moonshotai/kimi-k2.7-code',
-    inputUsdPer1M: 0.7,
+    inputUsdPer1M: 0.71,
     outputUsdPer1M: 3.5,
     cacheReadUsdPer1M: 0.15,
   },
@@ -2385,8 +2575,8 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'openrouter:nvidia/nemotron-3-super-120b-a12b',
-    inputUsdPer1M: 0.3,
-    outputUsdPer1M: 0.9,
+    inputUsdPer1M: 0.085,
+    outputUsdPer1M: 0.4,
   },
   {
     modelKey: 'openrouter:nvidia/nemotron-3-super-120b-a12b:free',
@@ -2406,6 +2596,17 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'openrouter:nvidia/nemotron-3.5-content-safety:free',
+    inputUsdPer1M: 0,
+    outputUsdPer1M: 0,
+  },
+  {
+    modelKey: 'openrouter:nvidia/nemotron-3.5-lightning',
+    inputUsdPer1M: 0.08,
+    outputUsdPer1M: 0.2,
+    cacheReadUsdPer1M: 0.04,
+  },
+  {
+    modelKey: 'openrouter:nvidia/nemotron-3.5-lightning:free',
     inputUsdPer1M: 0,
     outputUsdPer1M: 0,
   },
@@ -2546,12 +2747,6 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   { modelKey: 'openrouter:openai/gpt-5.2-pro', inputUsdPer1M: 21, outputUsdPer1M: 168 },
   {
-    modelKey: 'openrouter:openai/gpt-5.3-chat',
-    inputUsdPer1M: 1.75,
-    outputUsdPer1M: 14,
-    cacheReadUsdPer1M: 0.175,
-  },
-  {
     modelKey: 'openrouter:openai/gpt-5.3-codex',
     inputUsdPer1M: 1.75,
     outputUsdPer1M: 14,
@@ -2583,7 +2778,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 30,
     cacheReadUsdPer1M: 0.5,
   },
-  { modelKey: 'openrouter:openai/gpt-oss-120b', inputUsdPer1M: 0.037, outputUsdPer1M: 0.17 },
+  {
+    modelKey: 'openrouter:openai/gpt-oss-120b',
+    inputUsdPer1M: 0.03,
+    outputUsdPer1M: 0.17,
+    cacheReadUsdPer1M: 0.03,
+  },
   {
     modelKey: 'openrouter:openai/gpt-oss-20b',
     inputUsdPer1M: 0.03,
@@ -2660,10 +2860,11 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'openrouter:qwen/qwen2.5-vl-72b-instruct',
-    inputUsdPer1M: 0.25,
-    outputUsdPer1M: 0.75,
+    inputUsdPer1M: 0.8,
+    outputUsdPer1M: 1,
+    cacheReadUsdPer1M: 0.4,
   },
-  { modelKey: 'openrouter:qwen/qwen3-14b', inputUsdPer1M: 0.2275, outputUsdPer1M: 0.91 },
+  { modelKey: 'openrouter:qwen/qwen3-14b', inputUsdPer1M: 0.12, outputUsdPer1M: 0.24 },
   { modelKey: 'openrouter:qwen/qwen3-235b-a22b', inputUsdPer1M: 0.455, outputUsdPer1M: 1.82 },
   { modelKey: 'openrouter:qwen/qwen3-235b-a22b-2507', inputUsdPer1M: 0.09, outputUsdPer1M: 0.55 },
   {
@@ -2671,7 +2872,7 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     inputUsdPer1M: 0.23,
     outputUsdPer1M: 2.3,
   },
-  { modelKey: 'openrouter:qwen/qwen3-30b-a3b', inputUsdPer1M: 0.12, outputUsdPer1M: 0.5 },
+  { modelKey: 'openrouter:qwen/qwen3-30b-a3b', inputUsdPer1M: 0.13, outputUsdPer1M: 0.52 },
   {
     modelKey: 'openrouter:qwen/qwen3-30b-a3b-instruct-2507',
     inputUsdPer1M: 0.04815,
@@ -2693,7 +2894,7 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   {
     modelKey: 'openrouter:qwen/qwen3-coder-30b-a3b-instruct',
     inputUsdPer1M: 0.07,
-    outputUsdPer1M: 0.27,
+    outputUsdPer1M: 0.28,
   },
   {
     modelKey: 'openrouter:qwen/qwen3-coder-next',
@@ -2724,8 +2925,8 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'openrouter:qwen/qwen3-vl-30b-a3b-instruct',
-    inputUsdPer1M: 0.15,
-    outputUsdPer1M: 0.6,
+    inputUsdPer1M: 0.13,
+    outputUsdPer1M: 0.52,
   },
   {
     modelKey: 'openrouter:qwen/qwen3-vl-30b-a3b-thinking',
@@ -2739,9 +2940,14 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   { modelKey: 'openrouter:qwen/qwen3-vl-8b-instruct', inputUsdPer1M: 0.117, outputUsdPer1M: 0.455 },
   { modelKey: 'openrouter:qwen/qwen3-vl-8b-thinking', inputUsdPer1M: 0.18, outputUsdPer1M: 2.1 },
-  { modelKey: 'openrouter:qwen/qwen3.5-122b-a10b', inputUsdPer1M: 0.29, outputUsdPer1M: 2.4 },
+  { modelKey: 'openrouter:qwen/qwen3.5-122b-a10b', inputUsdPer1M: 0.26, outputUsdPer1M: 2.08 },
   { modelKey: 'openrouter:qwen/qwen3.5-27b', inputUsdPer1M: 0.195, outputUsdPer1M: 1.56 },
-  { modelKey: 'openrouter:qwen/qwen3.5-35b-a3b', inputUsdPer1M: 0.14, outputUsdPer1M: 1 },
+  {
+    modelKey: 'openrouter:qwen/qwen3.5-35b-a3b',
+    inputUsdPer1M: 0.25,
+    outputUsdPer1M: 1.25,
+    cacheReadUsdPer1M: 0.25,
+  },
   { modelKey: 'openrouter:qwen/qwen3.5-397b-a17b', inputUsdPer1M: 0.39, outputUsdPer1M: 2.34 },
   { modelKey: 'openrouter:qwen/qwen3.5-9b', inputUsdPer1M: 0.1, outputUsdPer1M: 0.15 },
   { modelKey: 'openrouter:qwen/qwen3.5-flash-02-23', inputUsdPer1M: 0.065, outputUsdPer1M: 0.26 },
@@ -2765,6 +2971,18 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheWriteUsdPer1M: 1.84375,
   },
   {
+    modelKey: 'openrouter:qwen/qwen3.8-2.4t-a95b',
+    inputUsdPer1M: 2,
+    outputUsdPer1M: 6,
+    cacheReadUsdPer1M: 0.25,
+  },
+  {
+    modelKey: 'openrouter:qwen/qwen3.8-27b',
+    inputUsdPer1M: 0.45,
+    outputUsdPer1M: 3.2,
+    cacheReadUsdPer1M: 0.05,
+  },
+  {
     modelKey: 'openrouter:qwen/qwen3.8-max',
     inputUsdPer1M: 2,
     outputUsdPer1M: 6,
@@ -2775,6 +2993,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   { modelKey: 'openrouter:rekaai/reka-flash-3', inputUsdPer1M: 0.1, outputUsdPer1M: 0.2 },
   { modelKey: 'openrouter:relace/relace-apply-3', inputUsdPer1M: 0.85, outputUsdPer1M: 1.25 },
   { modelKey: 'openrouter:relace/relace-search', inputUsdPer1M: 1, outputUsdPer1M: 3 },
+  {
+    modelKey: 'openrouter:sakana/sakana-namazu',
+    inputUsdPer1M: 0.95,
+    outputUsdPer1M: 4,
+    cacheReadUsdPer1M: 0.15,
+  },
   { modelKey: 'openrouter:sao10k/l3-lunaris-8b', inputUsdPer1M: 0.04, outputUsdPer1M: 0.05 },
   { modelKey: 'openrouter:sao10k/l3.1-euryale-70b', inputUsdPer1M: 0.85, outputUsdPer1M: 0.85 },
   { modelKey: 'openrouter:sao10k/l3.3-euryale-70b', inputUsdPer1M: 0.65, outputUsdPer1M: 0.75 },
@@ -2790,6 +3014,8 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     inputUsdPer1M: 0.14,
     outputUsdPer1M: 0.57,
   },
+  { modelKey: 'openrouter:tencent/hy-mt2-1.8b', inputUsdPer1M: 0.044, outputUsdPer1M: 0.177 },
+  { modelKey: 'openrouter:tencent/hy-mt2-30b-a3b', inputUsdPer1M: 0.074, outputUsdPer1M: 0.295 },
   {
     modelKey: 'openrouter:tencent/hy3',
     inputUsdPer1M: 0.132,
@@ -2798,9 +3024,9 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'openrouter:tencent/hy3-preview',
-    inputUsdPer1M: 0.063,
-    outputUsdPer1M: 0.21,
-    cacheReadUsdPer1M: 0.021,
+    inputUsdPer1M: 0.18,
+    outputUsdPer1M: 0.6,
+    cacheReadUsdPer1M: 0.06,
   },
   {
     modelKey: 'openrouter:thedrummer/cydonia-24b-v4.1',
@@ -2818,13 +3044,13 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   { modelKey: 'openrouter:thedrummer/unslopnemo-12b', inputUsdPer1M: 0.4, outputUsdPer1M: 0.4 },
   {
     modelKey: 'openrouter:thinkingmachines/inkling',
-    inputUsdPer1M: 1,
+    inputUsdPer1M: 0.95,
     outputUsdPer1M: 4.05,
-    cacheReadUsdPer1M: 0.17,
+    cacheReadUsdPer1M: 0.16,
   },
   {
     modelKey: 'openrouter:thinkingmachines/inkling-small',
-    inputUsdPer1M: 0.5,
+    inputUsdPer1M: 0.45,
     outputUsdPer1M: 1.2,
     cacheReadUsdPer1M: 0.1,
   },
@@ -2834,6 +3060,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     inputUsdPer1M: 0.15,
     outputUsdPer1M: 0.6,
     cacheReadUsdPer1M: 0.015,
+  },
+  {
+    modelKey: 'openrouter:upstage/solar-pro4',
+    inputUsdPer1M: 0.03,
+    outputUsdPer1M: 0.12,
+    cacheReadUsdPer1M: 0.006,
   },
   { modelKey: 'openrouter:writer/palmyra-x5', inputUsdPer1M: 0.6, outputUsdPer1M: 6 },
   {
@@ -2892,9 +3124,9 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'openrouter:z-ai/glm-5',
-    inputUsdPer1M: 0.95,
-    outputUsdPer1M: 2.55,
-    cacheReadUsdPer1M: 0.2,
+    inputUsdPer1M: 0.6,
+    outputUsdPer1M: 1.92,
+    cacheReadUsdPer1M: 0.12,
   },
   {
     modelKey: 'openrouter:z-ai/glm-5-turbo',
@@ -2904,15 +3136,22 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'openrouter:z-ai/glm-5.1',
-    inputUsdPer1M: 0.952,
-    outputUsdPer1M: 2.992,
-    cacheReadUsdPer1M: 0.1768,
+    inputUsdPer1M: 0.966,
+    outputUsdPer1M: 3.036,
+    cacheReadUsdPer1M: 0.1794,
   },
   {
     modelKey: 'openrouter:z-ai/glm-5.2',
-    inputUsdPer1M: 0.6958,
-    outputUsdPer1M: 2.1868,
-    cacheReadUsdPer1M: 0.12922,
+    inputUsdPer1M: 0.966,
+    outputUsdPer1M: 3.036,
+    cacheReadUsdPer1M: 0.1932,
+  },
+  { modelKey: 'openrouter:z-ai/glm-5.2:free', inputUsdPer1M: 0, outputUsdPer1M: 0 },
+  {
+    modelKey: 'openrouter:z-ai/glm-5.3',
+    inputUsdPer1M: 1.4,
+    outputUsdPer1M: 4.4,
+    cacheReadUsdPer1M: 0.26,
   },
   {
     modelKey: 'openrouter:z-ai/glm-5v-turbo',
@@ -3146,6 +3385,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 3.48,
     cacheReadUsdPer1M: 0.2,
   },
+  {
+    modelKey: 'togetherai:deepseek-ai/DeepSeek-V4-Pro-0813',
+    inputUsdPer1M: 1.32,
+    outputUsdPer1M: 3.96,
+    cacheReadUsdPer1M: 0.13,
+  },
   { modelKey: 'togetherai:essentialai/Rnj-1-Instruct', inputUsdPer1M: 0.15, outputUsdPer1M: 0.15 },
   { modelKey: 'togetherai:google/gemma-3n-E4B-it', inputUsdPer1M: 0.06, outputUsdPer1M: 0.12 },
   { modelKey: 'togetherai:google/gemma-4-31B-it', inputUsdPer1M: 0.39, outputUsdPer1M: 0.97 },
@@ -3374,6 +3619,18 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheWriteUsdPer1M: 0.5,
   },
   {
+    modelKey: 'vercel:alibaba/qwen3.8-2.4t-a95b',
+    inputUsdPer1M: 2,
+    outputUsdPer1M: 6,
+    cacheReadUsdPer1M: 0.2,
+  },
+  {
+    modelKey: 'vercel:alibaba/qwen3.8-27b',
+    inputUsdPer1M: 0.55,
+    outputUsdPer1M: 3.3,
+    cacheReadUsdPer1M: 0.11,
+  },
+  {
     modelKey: 'vercel:alibaba/qwen3.8-max',
     inputUsdPer1M: 2,
     outputUsdPer1M: 6,
@@ -3475,6 +3732,13 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheWriteUsdPer1M: 6.25,
   },
   {
+    modelKey: 'vercel:anthropic/claude-opus-5-fast',
+    inputUsdPer1M: 10,
+    outputUsdPer1M: 50,
+    cacheReadUsdPer1M: 1,
+    cacheWriteUsdPer1M: 12.5,
+  },
+  {
     modelKey: 'vercel:anthropic/claude-sonnet-4',
     inputUsdPer1M: 3,
     outputUsdPer1M: 15,
@@ -3542,9 +3806,9 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   { modelKey: 'vercel:deepseek/deepseek-v3.2-thinking', inputUsdPer1M: 0.62, outputUsdPer1M: 1.85 },
   {
     modelKey: 'vercel:deepseek/deepseek-v4-flash',
-    inputUsdPer1M: 0.2,
-    outputUsdPer1M: 0.4,
-    cacheReadUsdPer1M: 0.04,
+    inputUsdPer1M: 0.13,
+    outputUsdPer1M: 0.26,
+    cacheReadUsdPer1M: 0.028,
   },
   {
     modelKey: 'vercel:deepseek/deepseek-v4-flash-0731',
@@ -3557,6 +3821,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     inputUsdPer1M: 1.74,
     outputUsdPer1M: 3.48,
     cacheReadUsdPer1M: 0.14,
+  },
+  {
+    modelKey: 'vercel:deepseek/deepseek-v4-pro-0813',
+    inputUsdPer1M: 1.32,
+    outputUsdPer1M: 3.96,
+    cacheReadUsdPer1M: 0.132,
   },
   {
     modelKey: 'vercel:google/gemini-2.5-flash',
@@ -3632,9 +3902,15 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'vercel:google/gemini-3.6-flash',
-    inputUsdPer1M: 1.5,
-    outputUsdPer1M: 7.5,
-    cacheReadUsdPer1M: 0.15,
+    inputUsdPer1M: 0.75,
+    outputUsdPer1M: 3.75,
+    cacheReadUsdPer1M: 0.075,
+  },
+  {
+    modelKey: 'vercel:google/gemini-3.7-flash',
+    inputUsdPer1M: 0.75,
+    outputUsdPer1M: 3.75,
+    cacheReadUsdPer1M: 0.075,
   },
   { modelKey: 'vercel:google/gemini-omni-flash-preview', inputUsdPer1M: 1.5, outputUsdPer1M: 9 },
   {
@@ -3687,6 +3963,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   { modelKey: 'vercel:meta/llama-3.3-70b', inputUsdPer1M: 0, outputUsdPer1M: 0 },
   { modelKey: 'vercel:meta/llama-4-maverick', inputUsdPer1M: 0, outputUsdPer1M: 0 },
   { modelKey: 'vercel:meta/llama-4-scout', inputUsdPer1M: 0, outputUsdPer1M: 0 },
+  {
+    modelKey: 'vercel:meta/muse-glimmer-30b',
+    inputUsdPer1M: 0.35,
+    outputUsdPer1M: 1.5,
+    cacheReadUsdPer1M: 0.04,
+  },
   {
     modelKey: 'vercel:meta/muse-spark-1.1',
     inputUsdPer1M: 1.25,
@@ -3831,6 +4113,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 2.4,
     cacheReadUsdPer1M: 0.12,
   },
+  {
+    modelKey: 'vercel:nvidia/nemotron-3.5-lightning',
+    inputUsdPer1M: 0.05,
+    outputUsdPer1M: 0.2,
+    cacheReadUsdPer1M: 0.01,
+  },
   { modelKey: 'vercel:nvidia/nemotron-nano-12b-v2-vl', inputUsdPer1M: 0.2, outputUsdPer1M: 0.6 },
   { modelKey: 'vercel:nvidia/nemotron-nano-9b-v2', inputUsdPer1M: 0.06, outputUsdPer1M: 0.23 },
   { modelKey: 'vercel:openai/gpt-3.5-turbo', inputUsdPer1M: 0.5, outputUsdPer1M: 1.5 },
@@ -3842,10 +4130,22 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheReadUsdPer1M: 0.5,
   },
   {
+    modelKey: 'vercel:openai/gpt-4.1-fast',
+    inputUsdPer1M: 3.5,
+    outputUsdPer1M: 14,
+    cacheReadUsdPer1M: 0.875,
+  },
+  {
     modelKey: 'vercel:openai/gpt-4.1-mini',
     inputUsdPer1M: 0.4,
     outputUsdPer1M: 1.6,
     cacheReadUsdPer1M: 0.1,
+  },
+  {
+    modelKey: 'vercel:openai/gpt-4.1-mini-fast',
+    inputUsdPer1M: 0.7,
+    outputUsdPer1M: 2.8,
+    cacheReadUsdPer1M: 0.175,
   },
   {
     modelKey: 'vercel:openai/gpt-4.1-nano',
@@ -3854,16 +4154,34 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheReadUsdPer1M: 0.025,
   },
   {
+    modelKey: 'vercel:openai/gpt-4.1-nano-fast',
+    inputUsdPer1M: 0.2,
+    outputUsdPer1M: 0.8,
+    cacheReadUsdPer1M: 0.05,
+  },
+  {
     modelKey: 'vercel:openai/gpt-4o',
     inputUsdPer1M: 2.5,
     outputUsdPer1M: 10,
     cacheReadUsdPer1M: 1.25,
   },
   {
+    modelKey: 'vercel:openai/gpt-4o-fast',
+    inputUsdPer1M: 4.25,
+    outputUsdPer1M: 17,
+    cacheReadUsdPer1M: 2.125,
+  },
+  {
     modelKey: 'vercel:openai/gpt-4o-mini',
     inputUsdPer1M: 0.15,
     outputUsdPer1M: 0.6,
     cacheReadUsdPer1M: 0.075,
+  },
+  {
+    modelKey: 'vercel:openai/gpt-4o-mini-fast',
+    inputUsdPer1M: 0.25,
+    outputUsdPer1M: 1,
+    cacheReadUsdPer1M: 0.125,
   },
   {
     modelKey: 'vercel:openai/gpt-4o-mini-search-preview',
@@ -3885,10 +4203,22 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheReadUsdPer1M: 0.13,
   },
   {
+    modelKey: 'vercel:openai/gpt-5-fast',
+    inputUsdPer1M: 2.5,
+    outputUsdPer1M: 20,
+    cacheReadUsdPer1M: 0.25,
+  },
+  {
     modelKey: 'vercel:openai/gpt-5-mini',
     inputUsdPer1M: 0.25,
     outputUsdPer1M: 2,
     cacheReadUsdPer1M: 0.025,
+  },
+  {
+    modelKey: 'vercel:openai/gpt-5-mini-fast',
+    inputUsdPer1M: 0.45,
+    outputUsdPer1M: 3.6,
+    cacheReadUsdPer1M: 0.045,
   },
   {
     modelKey: 'vercel:openai/gpt-5-nano',
@@ -3916,16 +4246,16 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheReadUsdPer1M: 0.03,
   },
   {
-    modelKey: 'vercel:openai/gpt-5.1-instant',
-    inputUsdPer1M: 1.25,
-    outputUsdPer1M: 10,
-    cacheReadUsdPer1M: 0.13,
-  },
-  {
     modelKey: 'vercel:openai/gpt-5.1-thinking',
     inputUsdPer1M: 1.25,
     outputUsdPer1M: 10,
     cacheReadUsdPer1M: 0.125,
+  },
+  {
+    modelKey: 'vercel:openai/gpt-5.1-thinking-fast',
+    inputUsdPer1M: 2.5,
+    outputUsdPer1M: 20,
+    cacheReadUsdPer1M: 0.25,
   },
   {
     modelKey: 'vercel:openai/gpt-5.2',
@@ -3939,18 +4269,24 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 14,
     cacheReadUsdPer1M: 0.175,
   },
-  { modelKey: 'vercel:openai/gpt-5.2-pro', inputUsdPer1M: 21, outputUsdPer1M: 168 },
   {
-    modelKey: 'vercel:openai/gpt-5.3-chat',
-    inputUsdPer1M: 1.75,
-    outputUsdPer1M: 14,
-    cacheReadUsdPer1M: 0.175,
+    modelKey: 'vercel:openai/gpt-5.2-fast',
+    inputUsdPer1M: 3.5,
+    outputUsdPer1M: 28,
+    cacheReadUsdPer1M: 0.35,
   },
+  { modelKey: 'vercel:openai/gpt-5.2-pro', inputUsdPer1M: 21, outputUsdPer1M: 168 },
   {
     modelKey: 'vercel:openai/gpt-5.3-codex',
     inputUsdPer1M: 1.75,
     outputUsdPer1M: 14,
     cacheReadUsdPer1M: 0.175,
+  },
+  {
+    modelKey: 'vercel:openai/gpt-5.3-codex-fast',
+    inputUsdPer1M: 3.5,
+    outputUsdPer1M: 28,
+    cacheReadUsdPer1M: 0.35,
   },
   {
     modelKey: 'vercel:openai/gpt-5.4',
@@ -3959,10 +4295,22 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheReadUsdPer1M: 0.25,
   },
   {
+    modelKey: 'vercel:openai/gpt-5.4-fast',
+    inputUsdPer1M: 5,
+    outputUsdPer1M: 30,
+    cacheReadUsdPer1M: 0.5,
+  },
+  {
     modelKey: 'vercel:openai/gpt-5.4-mini',
     inputUsdPer1M: 0.75,
     outputUsdPer1M: 4.5,
     cacheReadUsdPer1M: 0.075,
+  },
+  {
+    modelKey: 'vercel:openai/gpt-5.4-mini-fast',
+    inputUsdPer1M: 1.5,
+    outputUsdPer1M: 9,
+    cacheReadUsdPer1M: 0.15,
   },
   {
     modelKey: 'vercel:openai/gpt-5.4-nano',
@@ -3977,6 +4325,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     outputUsdPer1M: 30,
     cacheReadUsdPer1M: 0.5,
   },
+  {
+    modelKey: 'vercel:openai/gpt-5.5-fast',
+    inputUsdPer1M: 12.5,
+    outputUsdPer1M: 75,
+    cacheReadUsdPer1M: 1.25,
+  },
   { modelKey: 'vercel:openai/gpt-5.5-pro', inputUsdPer1M: 30, outputUsdPer1M: 180 },
   {
     modelKey: 'vercel:openai/gpt-5.6-luna',
@@ -3986,17 +4340,38 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheWriteUsdPer1M: 0.25,
   },
   {
+    modelKey: 'vercel:openai/gpt-5.6-luna-fast',
+    inputUsdPer1M: 0.4,
+    outputUsdPer1M: 2.4,
+    cacheReadUsdPer1M: 0.04,
+    cacheWriteUsdPer1M: 0.25,
+  },
+  {
     modelKey: 'vercel:openai/gpt-5.6-sol',
+    inputUsdPer1M: 2.5,
+    outputUsdPer1M: 15,
+    cacheReadUsdPer1M: 0.25,
+    cacheWriteUsdPer1M: 3.125,
+  },
+  {
+    modelKey: 'vercel:openai/gpt-5.6-sol-fast',
     inputUsdPer1M: 5,
     outputUsdPer1M: 30,
     cacheReadUsdPer1M: 0.5,
-    cacheWriteUsdPer1M: 6.25,
+    cacheWriteUsdPer1M: 3.125,
   },
   {
     modelKey: 'vercel:openai/gpt-5.6-terra',
     inputUsdPer1M: 2,
     outputUsdPer1M: 12,
     cacheReadUsdPer1M: 0.2,
+    cacheWriteUsdPer1M: 2.5,
+  },
+  {
+    modelKey: 'vercel:openai/gpt-5.6-terra-fast',
+    inputUsdPer1M: 4,
+    outputUsdPer1M: 24,
+    cacheReadUsdPer1M: 0.4,
     cacheWriteUsdPer1M: 2.5,
   },
   {
@@ -4064,6 +4439,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheReadUsdPer1M: 2.5,
   },
   {
+    modelKey: 'vercel:openai/o3-fast',
+    inputUsdPer1M: 3.5,
+    outputUsdPer1M: 14,
+    cacheReadUsdPer1M: 0.875,
+  },
+  {
     modelKey: 'vercel:openai/o3-mini',
     inputUsdPer1M: 1.1,
     outputUsdPer1M: 4.4,
@@ -4077,6 +4458,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheReadUsdPer1M: 0.275,
   },
   {
+    modelKey: 'vercel:openai/o4-mini-fast',
+    inputUsdPer1M: 2,
+    outputUsdPer1M: 8,
+    cacheReadUsdPer1M: 0.5,
+  },
+  {
     modelKey: 'vercel:poolside/laguna-s-2.1',
     inputUsdPer1M: 0.1,
     outputUsdPer1M: 0.2,
@@ -4088,6 +4475,12 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     inputUsdPer1M: 5,
     outputUsdPer1M: 30,
     cacheReadUsdPer1M: 0.5,
+  },
+  {
+    modelKey: 'vercel:sakana/namazu',
+    inputUsdPer1M: 0.95,
+    outputUsdPer1M: 4,
+    cacheReadUsdPer1M: 0.15,
   },
   {
     modelKey: 'vercel:stepfun/step-3.5-flash',
@@ -4174,6 +4567,7 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheReadUsdPer1M: 0.2,
   },
   { modelKey: 'vercel:xai/grok-4.5', inputUsdPer1M: 2, outputUsdPer1M: 6, cacheReadUsdPer1M: 0.3 },
+  { modelKey: 'vercel:xai/grok-4.6', inputUsdPer1M: 2, outputUsdPer1M: 6, cacheReadUsdPer1M: 0.5 },
   {
     modelKey: 'vercel:xai/grok-build-0.1',
     inputUsdPer1M: 1,
@@ -4217,12 +4611,6 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
     cacheReadUsdPer1M: 0.11,
   },
   {
-    modelKey: 'vercel:zai/glm-4.6v',
-    inputUsdPer1M: 0.3,
-    outputUsdPer1M: 0.9,
-    cacheReadUsdPer1M: 0.05,
-  },
-  {
     modelKey: 'vercel:zai/glm-4.7',
     inputUsdPer1M: 0.6,
     outputUsdPer1M: 2.2,
@@ -4250,15 +4638,21 @@ export const GENERATED_MODEL_PRICING: readonly PricingConfig[] = [
   },
   {
     modelKey: 'vercel:zai/glm-5.2',
-    inputUsdPer1M: 1.1,
-    outputUsdPer1M: 3.851,
-    cacheReadUsdPer1M: 0.275,
+    inputUsdPer1M: 0.8,
+    outputUsdPer1M: 2.55,
+    cacheReadUsdPer1M: 0.16,
   },
   {
     modelKey: 'vercel:zai/glm-5.2-fast',
     inputUsdPer1M: 2.1,
     outputUsdPer1M: 6.6,
     cacheReadUsdPer1M: 0.21,
+  },
+  {
+    modelKey: 'vercel:zai/glm-5.3',
+    inputUsdPer1M: 1.4,
+    outputUsdPer1M: 4.4,
+    cacheReadUsdPer1M: 0.26,
   },
   {
     modelKey: 'vercel:zai/glm-5v-turbo',

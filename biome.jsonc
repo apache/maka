@@ -87,6 +87,18 @@
   },
   // Import-sorting / organize-imports assist actions stay disabled; they are
   // a formatting concern and belong with the formatter baseline PR (#415).
+  // packages/core/src/model-metadata.generated.ts sits ~2 KB under Biome's 1 MiB
+  // default, and this refresh alone added 57 KB, so the next one crosses it. An
+  // over-size file is skipped with a warning while `format:check` still exits 0,
+  // so crossing would quietly stop checking the snapshot rather than fail on it.
+  // Raise the ceiling for that one file; a global raise would also disarm the
+  // guard for hand-written files, which is what it exists for.
+  "overrides": [
+    {
+      "includes": ["packages/core/src/model-metadata.generated.ts"],
+      "files": { "maxSize": 2097152 }
+    }
+  ],
   "assist": {
     "enabled": false
   }
