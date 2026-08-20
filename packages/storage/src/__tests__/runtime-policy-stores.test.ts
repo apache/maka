@@ -1000,7 +1000,11 @@ describe('runtime policy stores', () => {
       assert.deepEqual(afterDiscovery.models, [
         { id: 'gpt-5.1' },
         { id: 'gpt-5.2' },
-        { id: 'gpt-5', apiProtocol: 'openai-responses' },
+        {
+          id: 'gpt-5',
+          apiProtocol: 'openai-responses',
+          factOverriddenFields: ['apiProtocol'],
+        },
       ]);
       assert.deepEqual(afterDiscovery.enabledModelIds, ['gpt-5']);
       assert.equal(afterDiscovery.modelSource, 'fetched');
