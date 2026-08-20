@@ -547,6 +547,26 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     );
   });
 
+  test('custom Responses relays use per-model declared levels on the Responses wire', () => {
+    const declared: LlmConnection = {
+      ...conn('openai-responses-compatible', 'my-responses-relay'),
+      baseUrl: 'https://relay.example/v1',
+      models: [{ id: 'custom-reasoner', apiProtocol: 'openai-responses' }],
+      relayModelProfiles: {
+        'custom-reasoner': { thinkingLevels: ['minimal', 'low', 'medium', 'high', 'max'] },
+      },
+    };
+    assert.deepEqual(buildProviderOptions(declared, 'custom-reasoner', 'high'), {
+      openai: { store: false, forceReasoning: true, reasoningEffort: 'high' },
+    });
+    assert.deepEqual(buildProviderOptions(declared, 'custom-reasoner', 'max'), {
+      openai: { store: false, forceReasoning: true, reasoningEffort: 'max' },
+    });
+    assert.deepEqual(buildProviderOptions(declared, 'custom-reasoner', 'xhigh'), {
+      openai: { store: false, forceReasoning: true },
+    });
+  });
+
   test('declared relay levels reach the actual chat-completions request body', async () => {
     // Intermediate providerOptions objects matching does not prove the wire
     // carries the effort — this capture asserts the SDK's camelCase slug key

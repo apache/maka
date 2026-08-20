@@ -49,6 +49,12 @@ export type {
   ProviderType,
 };
 
+export function isRelayProviderType(
+  providerType: ProviderType,
+): providerType is 'openai-compatible' | 'openai-responses-compatible' {
+  return PROVIDER_REGISTRY[providerType].relayModelProfiles === true;
+}
+
 export type ConnectionAuth =
   | { kind: 'api_key'; apiKey: string }
   | { kind: 'optional_api_key'; apiKey?: string }
@@ -107,13 +113,13 @@ export interface RuntimeExecutionConnection {
   defaultModel: string;
   models?: ModelInfo[];
   /**
-   * Per-model user declarations for an `openai-compatible` relay: the facts
+   * Per-model user declarations for a custom OpenAI relay: the facts
    * (offered thinking levels, vision enable/disable, context window) that
    * neither the relay's /models report nor built-in metadata can decide
    * (see `RelayModelProfile` in `model-thinking.ts`). First-class and typed —
    * relay models are unknown to metadata and a catalog refresh rewrites
    * `models[]` rows, so declarations live next to the user-edited fields.
-   * Invariants enforced at store boundaries: only `openai-compatible`
+   * Invariants enforced at store boundaries: only custom OpenAI relay
    * connections carry profiles, and only for ids in `enabledModelIds`
    * (disabling a model deletes its profile).
    */
@@ -624,7 +630,7 @@ export interface UpdateConnectionInput {
   /**
    * Replace the whole relay profiles table: absent leaves it untouched,
    * `null` clears it outright, a table replaces it (with the usual rules —
-   * only `openai-compatible`, only for `enabledModelIds`).
+   * only custom OpenAI relays, only for `enabledModelIds`).
    */
   relayModelProfiles?: RelayModelProfiles | null;
   requestBodyOverlay?: JsonObject | null;

@@ -557,7 +557,10 @@ function buildFamilyWire(
   switch (adapter.kind) {
     case 'openai-compatible':
       return {
-        [openAiCompatibleProviderOptionsKey(adapter, connection)]: { reasoningEffort },
+        [openAiCompatibleProviderOptionsKey(adapter, connection)]: {
+          ...(reasoningEffort ? { reasoningEffort } : {}),
+          ...(reasoningEffort ? { reasoningEffort } : {}),
+        },
       };
     case 'openai':
       return { openai: { reasoningEffort } };

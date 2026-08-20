@@ -17,6 +17,7 @@
  * per-model supported set, so the UI and runtime share one source of truth.
  */
 
+import { isRelayProviderType } from './llm-connections.js';
 import type { ProviderType } from './llm-connections.js';
 import { lookupModelMetadata } from './model-metadata.js';
 
@@ -101,7 +102,8 @@ export function deriveThinkingChoices(
 }
 
 /**
- * One model behind an `openai-compatible` relay, as declared by the user:
+ * One model behind an OpenAI-compatible relay (Chat Completions or Responses),
+ * as declared by the user:
  * the facts neither the relay's /models report nor built-in metadata can be
  * trusted to know. Every field is independent, and every ABSENT field means
  * "Auto" — the /models report and the metadata chain decide. The single
@@ -113,8 +115,8 @@ export function deriveThinkingChoices(
  * (`relayModelProfiles`, keyed by model id): relay models are unknown to
  * `model-metadata.ts` and a catalog refresh rewrites `models[]` rows, so
  * declarations sit next to the user-edited connection fields. Two invariants
- * are enforced at the store boundaries — profiles exist only for
- * `openai-compatible` connections, and only for models in `enabledModelIds`
+ * are enforced at the store boundaries — profiles exist only for custom OpenAI
+ * relay connections, and only for models in `enabledModelIds`
  * (disabling a model deletes its profile).
  */
 export interface RelayModelProfile {
@@ -231,12 +233,12 @@ export function relayModelProfile(
   connection: ConnectionThinkingContext,
   modelId: string,
 ): RelayModelProfile | undefined {
-  if (connection.providerType !== 'openai-compatible') return undefined;
+  if (!isRelayProviderType(connection.providerType)) return undefined;
   return normalizeRelayModelProfile(connection.relayModelProfiles?.[modelId]);
 }
 
 /**
- * `openai-compatible` connections declare thinking support **per model** via
+ * OpenAI-compatible relay connections declare thinking support **per model** via
  * `relayModelProfiles[modelId].thinkingLevels` — a relay may front a
  * DeepSeek-family reasoner and a plain instruct model side by side, so the
  * declaration granularity is the model, not the connection. Without a usable

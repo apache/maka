@@ -11,7 +11,7 @@ import {
   Text,
   VStack,
 } from '@astryxdesign/core';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { isRelayProviderType, PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   THINKING_LEVELS,
@@ -158,12 +158,12 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
-  // Capability switches only exist for openai-compatible relays: built-in
+  // Capability switches only exist for custom OpenAI relays: built-in
   // providers declare their thinking support in model metadata, a custom
   // relay's backing model is unknown until the user says what it can do. The
   // declaration is per model — a relay can front both a reasoner and a plain
   // instruct model.
-  const showsCapabilities = connection.providerType === 'openai-compatible';
+  const showsCapabilities = isRelayProviderType(connection.providerType);
   // Rows are the enabled models, exactly — the store prunes a model's profile
   // the moment it is disabled, so no declaration can ever belong to a row
   // this list does not show. The editor edits the per-model draft; 保存

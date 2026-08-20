@@ -1,4 +1,5 @@
 import {
+  isRelayProviderType,
   PROVIDER_DEFAULTS,
   providerDefaultsOf,
   validateSlug,
@@ -208,12 +209,12 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
   };
 }
 
-// Relay profiles are an openai-compatible feature: on any other provider the
+// Relay profiles are a custom OpenAI relay feature: on any other provider the
 // metadata chain is the truth, and a table here would either sit as dead
 // state or silently shadow metadata for the ungated read seams.
 function rejectForeignProfiles(providerType: ProviderType): void {
-  if (providerType !== 'openai-compatible') {
-    throw domainError('relay model profiles are only supported for openai-compatible connections');
+  if (!isRelayProviderType(providerType)) {
+    throw domainError('relay model profiles are only supported for OpenAI-compatible connections');
   }
 }
 
