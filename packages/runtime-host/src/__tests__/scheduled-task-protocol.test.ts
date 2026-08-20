@@ -12,7 +12,7 @@ import {
   authorizeRuntimeHostOperation,
   createRuntimeHostConnectionAuthority,
 } from '../server/connection-authority.js';
-import { decodeScheduledTask, decodeScheduledTaskMutateInput } from '../protocol/scheduled-task.js';
+import { decodeScheduledTaskMutateInput } from '../protocol/scheduled-task.js';
 
 describe('ScheduledTask protocol', () => {
   test('requires Host-path authority only when a mutation submits a Host path', () => {
@@ -44,17 +44,20 @@ describe('ScheduledTask protocol', () => {
       effect.kind === 'agent_run'
         ? { ...effect, execution: { ...effect.execution, backend: 'fake' } }
         : effect;
+    const template = agentRunEffect('project-1');
+    const expectedExecution = template.kind === 'agent_run' ? template.execution : assert.fail();
     const assertDropped = (effect: ScheduledTaskEffect | undefined) => {
       assert.equal(effect?.kind, 'agent_run');
       if (effect?.kind !== 'agent_run') return;
-      assert.equal('backend' in effect.execution, false);
+      assert.deepEqual(effect.execution, expectedExecution);
     };
 
-    const stored = {
-      ...scheduledTask('task-1'),
-      effect: withRetiredBackend(agentRunEffect('project-1')),
-    };
-    assertDropped(decodeScheduledTask(stored).effect);
+    // Stored direction, through the full query-result frame.
+    const fetched = decodeScheduledTaskQueryResult({
+      kind: 'task',
+      task: { ...scheduledTask('task-1'), effect: withRetiredBackend(template) },
+    });
+    assertDropped(fetched.kind === 'task' ? fetched.task?.effect : undefined);
 
     const created = decodeScheduledTaskMutateInput({
       kind: 'create',
@@ -62,7 +65,7 @@ describe('ScheduledTask protocol', () => {
         title: 'Inspect workspace',
         intentBody: 'Summarize the workspace.',
         schedule: { kind: 'once', runAt: 1 },
-        effect: withRetiredBackend(agentRunEffect('project-1')),
+        effect: withRetiredBackend(template),
       },
     });
     assertDropped(created.kind === 'create' ? created.input.effect : undefined);
@@ -70,7 +73,7 @@ describe('ScheduledTask protocol', () => {
     const updated = decodeScheduledTaskMutateInput({
       kind: 'update',
       taskId: 'task-1',
-      patch: { effect: withRetiredBackend(agentRunEffect('project-1')) },
+      patch: { effect: withRetiredBackend(template) },
     });
     assertDropped(updated.kind === 'update' ? updated.patch.effect : undefined);
   });
