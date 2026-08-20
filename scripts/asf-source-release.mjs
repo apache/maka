@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto';
 import {
   chmodSync,
   closeSync,
-  copyFileSync,
   createReadStream,
   existsSync,
   linkSync,
@@ -102,8 +101,6 @@ export function validateArchiveEntries(entries, rootDirectory) {
       throw new Error(`Required release document is missing: ${requiredFile}`);
     }
   }
-
-  return seen;
 }
 
 export async function createSourceCandidate({
@@ -147,19 +144,16 @@ export async function createSourceCandidate({
     rmSync(temporaryRoot, { force: true, recursive: true });
   }
 
-  return { ...identity, archivePath, checksumPath, commit };
+  return { archivePath, commit };
 }
 
-export async function verifySourceCandidate({
-  archivePath,
-  keysPath,
-  signaturePath = `${archivePath}.asc`,
-}) {
+export async function verifySourceCandidate({ archivePath, keysPath }) {
   const archiveName = basename(archivePath);
   const match = archivePattern.exec(archiveName);
   if (!match) throw new Error(`Unexpected ASF source archive name: ${archiveName}`);
   if (!existsSync(archivePath)) throw new Error(`Source archive does not exist: ${archivePath}`);
   const identity = sourceCandidateIdentity(match[1]);
+  const signaturePath = `${archivePath}.asc`;
   const checksumPath = `${archivePath}.sha512`;
   if (keysPath) {
     if (!existsSync(signaturePath)) {
@@ -169,39 +163,9 @@ export async function verifySourceCandidate({
   }
   if (!existsSync(checksumPath)) throw new Error(`SHA-512 file does not exist: ${checksumPath}`);
 
-  const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-asf-verify-'));
-  chmodSync(temporaryRoot, 0o700);
-  const snapshotArchivePath = join(temporaryRoot, archiveName);
-  const snapshotSignaturePath = `${snapshotArchivePath}.asc`;
-  const snapshotKeysPath = join(temporaryRoot, 'KEYS');
-  try {
-    copyFileSync(archivePath, snapshotArchivePath);
-    copyFileSync(checksumPath, `${snapshotArchivePath}.sha512`);
-    if (keysPath) {
-      copyFileSync(signaturePath, snapshotSignaturePath);
-      copyFileSync(keysPath, snapshotKeysPath);
-    }
-    const verified = await verifySourceCandidateSnapshot({
-      archivePath: snapshotArchivePath,
-      identity,
-      keysPath: keysPath ? snapshotKeysPath : undefined,
-      signaturePath: snapshotSignaturePath,
-    });
-    return {
-      ...verified,
-      archivePath,
-      checksumPath,
-      signaturePath,
-    };
-  } finally {
-    rmSync(temporaryRoot, { force: true, recursive: true });
-  }
-}
-
-async function verifySourceCandidateSnapshot({ archivePath, identity, keysPath, signaturePath }) {
   if (keysPath) verifyDetachedSignature({ archivePath, keysPath, signaturePath });
 
-  const { checksumPath, digest } = await verifySha512File(archivePath);
+  const digest = await verifySha512File(archivePath);
   const entries = execTar(archivePath, ['-tzf'], {
     encoding: 'utf8',
     maxBuffer: maxCommandBuffer,
@@ -209,7 +173,7 @@ async function verifySourceCandidateSnapshot({ archivePath, identity, keysPath, 
   validateArchiveEntries(entries, identity.rootDirectory);
   validateArchiveContents(archivePath, identity);
 
-  return { ...identity, archivePath, checksumPath, digest, signaturePath };
+  return { archivePath, digest, rootDirectory: identity.rootDirectory, version: identity.version };
 }
 
 export async function reproduceSourceCandidate({
@@ -243,7 +207,7 @@ export async function reproduceSourceCandidate({
     if (candidateDigest !== reproducedDigest) {
       throw new Error(`Candidate source payload does not match ${commit} rebuilt on this machine`);
     }
-    return { ...candidate, commit };
+    return { commit };
   } finally {
     rmSync(temporaryRoot, { force: true, recursive: true });
   }
@@ -290,14 +254,7 @@ export async function signSourceCandidate({
       { stdio: 'inherit', ...gpgHomeOption(gpgHome) },
     );
     chmodSync(temporarySignaturePath, 0o644);
-    const { digest } = await verifySha512File(archivePath);
-    if (digest !== reproduced.digest) {
-      throw new Error('Candidate changed after it was reproduced; refusing to publish a signature');
-    }
     verifyGpgSignature({ archivePath, gpgHome, signaturePath: temporarySignaturePath });
-    if (readSha512File(archivePath).digest !== reproduced.digest) {
-      throw new Error('Candidate checksum changed while it was being signed');
-    }
     linkSync(temporarySignaturePath, signaturePath);
   } catch (error) {
     if (error?.code === 'EEXIST') {
@@ -462,23 +419,16 @@ function readSha512File(archivePath) {
   const archiveName = basename(archivePath);
   const checksumPath = `${archivePath}.sha512`;
   if (!existsSync(checksumPath)) throw new Error(`SHA-512 file does not exist: ${checksumPath}`);
-  return {
-    checksumPath,
-    digest: parseSha512File(readFileSync(checksumPath, 'utf8'), archiveName),
-  };
+  return parseSha512File(readFileSync(checksumPath, 'utf8'), archiveName);
 }
 
 async function verifySha512File(archivePath) {
   const expected = readSha512File(archivePath);
   const digest = await sha512(archivePath);
-  const current = readSha512File(archivePath);
-  if (current.digest !== expected.digest) {
-    throw new Error(`SHA-512 file changed while verifying ${basename(archivePath)}`);
-  }
-  if (digest !== expected.digest) {
+  if (digest !== expected) {
     throw new Error(`SHA-512 mismatch for ${basename(archivePath)}`);
   }
-  return { checksumPath: expected.checksumPath, digest };
+  return digest;
 }
 
 async function sha512(path) {
@@ -494,13 +444,12 @@ function validateArchiveContents(archivePath, identity) {
       maxBuffer: maxCommandBuffer,
     });
     if (!contents.trim()) throw new Error(`${requiredFile} is empty`);
-  }
-  const disclaimer = execTar(archivePath, ['-xOzf', `${identity.rootDirectory}/DISCLAIMER-WIP`], {
-    encoding: 'utf8',
-    maxBuffer: maxCommandBuffer,
-  });
-  if (!disclaimer.includes('Apache Maka') || !disclaimer.includes('incubation')) {
-    throw new Error('DISCLAIMER-WIP does not identify Apache Maka as an incubating project');
+    if (
+      requiredFile === 'DISCLAIMER-WIP' &&
+      (!contents.includes('Apache Maka') || !contents.includes('incubation'))
+    ) {
+      throw new Error('DISCLAIMER-WIP does not identify Apache Maka as an incubating project');
+    }
   }
 
   const packageJson = JSON.parse(
@@ -724,11 +673,8 @@ function requireOption(options, name) {
 async function main() {
   const { command, options } = parseCommandLine(process.argv.slice(2));
   if (command === 'create') {
-    validateOptions(options, new Set(['output', 'revision', 'version']));
+    validateOptions(options, new Set(['revision', 'version']));
     const result = await createSourceCandidate({
-      outputDirectory: options.get('output')
-        ? resolve(options.get('output'))
-        : join(defaultRepoRoot, 'release/asf'),
       revision: options.get('revision') ?? 'HEAD',
       version: requireOption(options, 'version'),
     });

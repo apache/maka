@@ -22,7 +22,6 @@ jobs:
     timeout-minutes: 60
     env:
       CANDIDATE_PATH: release/asf/apache-maka-${{ inputs.version }}-incubating-src.tar.gz
-      RELEASE_SHA: ${{ github.sha }}
       RELEASE_VERSION: ${{ inputs.version }}
     steps:
       - name: Require main
@@ -37,7 +36,7 @@ jobs:
       - name: Check out the candidate commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.RELEASE_SHA }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -65,7 +64,7 @@ jobs:
         run: |
           npm run release:asf:source -- \
             --version "$RELEASE_VERSION" \
-            --revision "$RELEASE_SHA"
+            --revision "$GITHUB_SHA"
 
       - name: Extract the exact candidate
         run: |
@@ -123,7 +122,7 @@ jobs:
             echo "## Unsigned ASF source candidate"
             echo
             echo "- Version: \`$RELEASE_VERSION\`"
-            echo "- Commit: \`$RELEASE_SHA\`"
+            echo "- Commit: \`$GITHUB_SHA\`"
             echo "- Artifact: $ARTIFACT_URL"
             echo "- Release Manager runbook: $RUNBOOK_URL"
             echo

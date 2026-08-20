@@ -8,9 +8,10 @@ const workflowPath = join(import.meta.dirname, '../.github/workflows/asf-source-
 describe('ASF source workflow policy', () => {
   test('binds the candidate handoff to the dispatched commit and artifact', () => {
     const workflow = readFileSync(workflowPath, 'utf8');
-    assert.match(workflow, /RELEASE_SHA: \$\{\{ github\.sha \}\}/);
-    assert.match(workflow, /ref: \$\{\{ env\.RELEASE_SHA \}\}/);
-    assert.match(workflow, /--revision "\$RELEASE_SHA"/);
+    assert.doesNotMatch(workflow, /RELEASE_SHA/);
+    assert.match(workflow, /ref: \$\{\{ github\.sha \}\}/);
+    assert.match(workflow, /--revision "\$GITHUB_SHA"/);
+    assert.match(workflow, /Commit: \\`\$GITHUB_SHA\\`/);
     assert.match(workflow, /tar -xzf "\$CANDIDATE_PATH"/);
     assert.doesNotMatch(workflow, /rc_number/);
     assert.match(workflow, /name: apache-maka-.*-incubating-\$\{\{ github\.sha \}\}-unsigned/);
