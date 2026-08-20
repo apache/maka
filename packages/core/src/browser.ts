@@ -11,7 +11,6 @@ export interface BrowserState {
   canGoBack: boolean;
   canGoForward: boolean;
   loading: boolean;
-  favicon: string | null;
   /** https origin. */
   secure: boolean;
   /** A real page is loaded (not blank / about:) — gates the DOM empty state. */

@@ -34,6 +34,8 @@ const FIXTURES = [
   // tables now sit under the alignment auditor's watch.
   ['settings-usage', '.settingsSurface'],
   ['turn-narrative', '.maka-session-workbar'],
+  // #2188: the browser toolbar's four-control-plus-input row.
+  ['turn-narrative-browser', '.maka-browser-panel'],
   ['settings-permissions', '.settingsSurface'],
   // #1233 deferral: bot QR-onboarding modal in its deterministic waiting state.
   ['settings-bots-onboarding', '.settingsSurface'],
