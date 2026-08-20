@@ -97,8 +97,11 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
   // per frame is negligible and the IPC only fires when the rect changes.
   const showView = !hidden && state.hasPage;
   useEffect(() => {
+    // Captured because this passive cleanup can run after a bridge host
+    // (Storybook's scoped decorator) has already torn `window.maka` down.
+    const { browser } = window.maka;
     if (!showView) {
-      window.maka.browser.setViewport({ sessionId, rect: null });
+      browser.setViewport({ sessionId, rect: null });
       return;
     }
     const el = stripRef.current;
@@ -116,14 +119,14 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
       const key = `${rect.x},${rect.y},${rect.width},${rect.height}`;
       if (key !== last) {
         last = key;
-        window.maka.browser.setViewport({ sessionId, rect });
+        browser.setViewport({ sessionId, rect });
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => {
       cancelAnimationFrame(raf);
-      window.maka.browser.setViewport({ sessionId, rect: null });
+      browser.setViewport({ sessionId, rect: null });
     };
   }, [sessionId, showView]);
 

@@ -89,6 +89,38 @@ test('narrow right workbar keeps launcher shortcuts and side-chat send button in
   );
 });
 
+// #2188: the address field, not the nav buttons, absorbs the column's free
+// width. The rule reaches into Astryx Toolbar's slot div, which nothing else
+// pins — an upstream slot-wrapper change would silently regress it.
+test('browser address field tracks the workbar column width', async ({ window: page }) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('create browser session');
+  await composer.press('Enter');
+  await expect(page.getByText(/Fake backend received: create browser session/)).toBeVisible();
+  await page.getByRole('button', { name: '展开任务工作栏' }).click();
+  await expect(page.getByRole('list', { name: '打开工具' })).toBeVisible();
+  await page.getByRole('button', { name: /浏览器.*打开内置浏览器/ }).click();
+  await expect(page.getByRole('region', { name: '嵌入式浏览器' })).toBeVisible();
+
+  const addressInput = page.getByRole('textbox', { name: '浏览器地址' });
+  const inputWidth = async () => (await addressInput.boundingBox())!.width;
+  // The tab's content lives in the overlay panel next to the workbar frame,
+  // so the width override must land there, not on `.maka-session-workbar`.
+  const setPanelWidth = async (width: number) => {
+    const panel = page.locator('.maka-session-workbar-panel[data-overlay][data-placement="right"]');
+    await panel.evaluate((element, nextWidth) => {
+      (element as HTMLElement).style.setProperty('--maka-session-workbar-width', `${nextWidth}px`);
+    }, width);
+    await expect.poll(async () => (await panel.boundingBox())?.width).toBeCloseTo(width, 0);
+  };
+  await setPanelWidth(480);
+  await expect.poll(inputWidth).toBeGreaterThan(250);
+  await setPanelWidth(320);
+  // Fails at a flat width without the slot rule: 480 and 320 would measure the same.
+  await expect.poll(inputWidth).toBeLessThan(220);
+  await expect.poll(inputWidth).toBeGreaterThan(100);
+});
+
 test('titlebar workbar action restores an existing tool instead of the picker', async ({
   gitReviewWindow,
 }) => {

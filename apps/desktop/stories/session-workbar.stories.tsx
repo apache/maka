@@ -736,7 +736,8 @@ export const BrowserAt400: Story = {
 };
 
 // Below 990px the grid stacks the same right-placement column under the
-// conversation: full width, capped at 42dvh.
+// conversation: full width, capped at 42dvh. Storybook-UI only: the smoke lane
+// loads iframes at 1280px, above the stack point, so it renders wide there.
 export const BrowserStacked: Story = {
   parameters: { viewport: { options: STACKED_WINDOW_VIEWPORT } },
   globals: { viewport: { value: 'makaStackedWindow', isRotated: false } },
