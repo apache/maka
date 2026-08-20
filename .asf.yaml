@@ -63,6 +63,21 @@ github:
         contexts:
           - test
 
+  environments:
+    # release holds the Apple notarization and code signing credentials used by
+    # .github/workflows/release-desktop.yml. That workflow's own branch guard
+    # sits inside the file it is meant to protect, so this policy is the only
+    # boundary GitHub enforces from outside the workflow.
+    #
+    # Naming an environment here replaces its settings wholesale, so restate
+    # its full configuration when adding one. npm-release carries a required
+    # reviewer and a branch policy that live only on GitHub.
+    release:
+      deployment_branch_policy:
+        policies:
+          - name: main
+            type: branch
+
 notifications:
   commits:      commits@maka.apache.org
   discussions:  dev@maka.apache.org 
