@@ -70,6 +70,7 @@
     "verify:windows-installer": "node scripts/verify-windows-installer-lifecycle.mjs",
     "package:windows-autoupdate-next": "node scripts/package-windows-autoupdate-next.mjs",
     "verify:windows-autoupdate": "node scripts/verify-windows-autoupdate.mjs",
+    "verify:windows-installer-rollback": "node scripts/verify-windows-installer-rollback.mjs",
     "astryx:theme": "node scripts/build-astryx-theme.mjs",
     "astryx:surface-inventory": "node scripts/check-astryx-surface-inventory.mjs",
     "astryx:surface-inventory:write": "node scripts/generate-astryx-surface-inventory.mjs",

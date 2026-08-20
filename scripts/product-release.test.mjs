@@ -620,7 +620,11 @@ test('one product workflow gates one draft release on every required artifact', 
   const desktopStepNames = jobs.desktop.steps.map((step) => step.name);
   const uploadIndex = desktopStepNames.indexOf('Upload the verified release assets');
   assert.ok(uploadIndex >= 0);
-  for (const verifier of ['Verify the final DMG', 'Verify the Windows release']) {
+  for (const verifier of [
+    'Verify the final DMG',
+    'Verify the Windows release',
+    'Prove deterministic mid-install failure rollback',
+  ]) {
     const verifierIndex = desktopStepNames.indexOf(verifier);
     assert.ok(verifierIndex >= 0 && verifierIndex < uploadIndex);
   }
@@ -649,9 +653,10 @@ test('one product workflow gates one draft release on every required artifact', 
     .filter((run) => typeof run === 'string')
     .join('\n');
   assert.equal((commands.match(/gh release create/gu) ?? []).length, 1);
-  assert.equal(jobs.desktop['timeout-minutes'], 60);
+  assert.equal(jobs.desktop['timeout-minutes'], 75);
   assert.match(commands, /npm run package:windows-autoupdate-next/u);
   assert.match(commands, /npm run verify:windows-autoupdate/u);
+  assert.match(commands, /npm run verify:windows-installer-rollback/u);
   assert.match(commands, /product-release-tag\.mjs ensure/u);
   assert.doesNotMatch(commands, /RECOVERY_SOURCE|inputs\.source_commit/u);
   assert.match(commands, /if gh release view "\$TAG"/u);

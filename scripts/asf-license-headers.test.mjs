@@ -209,6 +209,7 @@ describe('ASF header classification', () => {
       'packages/core/src/settings.ts',
       'apps/desktop/src/renderer/app-shell.tsx',
       'scripts/asf-source-release.mjs',
+      'apps/desktop/build/installer.nsh',
       'experiments/windows-sandbox/launcher/src/main.rs',
       'packages/eval/harbor/egress-proxy/Dockerfile',
       'packages/eval/harbor/egress-proxy/network-policy',
