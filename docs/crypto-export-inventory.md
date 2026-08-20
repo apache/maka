@@ -141,7 +141,7 @@ Two tracked lockfiles exist: the root `package-lock.json` and [packages/eval/har
 
 ### Build and dev only — not in the runtime product
 
-`pkijs` 3.4.0, `@peculiar/webcrypto` 1.7.1 (a full WebCrypto implementation including AES-CBC/CTR/GCM/KW), `asn1js`, and `@noble/hashes` — all reached through `app-builder-lib` / electron-builder 26.15.3 for Windows signing.
+`pkijs` 3.4.0, `@peculiar/webcrypto` 1.7.1 (a full WebCrypto implementation including AES-CBC/CTR/GCM/KW), `asn1js`, and `@noble/hashes`, reached through `app-builder-lib` / electron-builder 26.15.3 for Windows signing; `aws4` 1.13.2 (HMAC request signing) through `electron-publish`.
 
 ### Coverage limit
 
