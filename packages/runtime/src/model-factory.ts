@@ -17,7 +17,7 @@ import type { ProviderRuntimeAdapter } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
   resolveThinkingLevel,
-  thinkingOptionsForModel,
+  thinkingOptionsForConnection,
   thinkingVariantsForConnection,
   type ThinkingOptions,
 } from '@maka/core/model-thinking';
@@ -361,7 +361,7 @@ export function buildProviderOptions(
   modelId: string,
   thinkingLevel?: ThinkingLevel,
 ): SharedV4ProviderOptions {
-  const thinkingOptions = thinkingOptionsForModel(connection.providerType, modelId);
+  const thinkingOptions = thinkingOptionsForConnection(connection, modelId);
   const level = resolveThinkingLevel(connection, modelId, thinkingLevel);
   switch (connection.providerType) {
     case 'kimi-coding-plan': {
@@ -450,22 +450,6 @@ export function buildProviderOptions(
           forceReasoning: true,
         },
       };
-    case 'xai':
-    case 'xai-oauth':
-      // Only grok-4.5 needs the Responses reasoning extras; every other xAI
-      // model serves the plain OpenAI-compatible chat wire handled below.
-      if (modelId === 'grok-4.5') {
-        return {
-          openai: {
-            store: false,
-            forceReasoning: true,
-            reasoningSummary: null,
-            include: ['reasoning.encrypted_content'],
-            ...(level ? { reasoningEffort: level } : {}),
-          },
-        };
-      }
-      return buildFamilyWire(connection, modelId, level, thinkingOptions);
     case 'volcengine-ark':
       return {
         [connection.providerType]: {
@@ -546,6 +530,12 @@ function buildFamilyWire(
     return {
       openai: {
         store: false,
+        ...(connection.providerType === 'xai' || connection.providerType === 'xai-oauth'
+          ? {
+              reasoningSummary: null,
+              include: ['reasoning.encrypted_content'],
+            }
+          : {}),
         ...(reasons || reasoningReplay.contract.reasoningReplay === 'encrypted-content'
           ? { forceReasoning: true }
           : {}),

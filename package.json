@@ -58,7 +58,7 @@
     "astryx:theme": "node scripts/build-astryx-theme.mjs",
     "astryx:surface-inventory": "node scripts/check-astryx-surface-inventory.mjs",
     "astryx:surface-inventory:write": "node scripts/generate-astryx-surface-inventory.mjs",
-    "sync:model-metadata": "node scripts/sync-model-metadata.mjs",
+    "sync:model-metadata": "node scripts/sync-model-metadata.mjs && biome format --write --files-max-size=5000000 packages/core/src/model-metadata.generated.ts packages/runtime/src/telemetry/model-pricing.generated.ts",
     "generate:bundled-skills": "node scripts/gen-bundled-skill-catalog.mjs",
     "cost:deepseek-baseline": "node scripts/deepseek-live-cost-baseline.mjs",
     "computer-use": "node scripts/computer-use.mjs",

@@ -264,6 +264,7 @@ export function toMetadata(providerId, modelId, provider, model) {
     maxOutputTokens: model.limit?.output,
     ...(model.knowledge !== undefined ? { knowledgeCutoff: model.knowledge } : {}),
     ...(model.structured_output !== undefined ? { structuredOutput: model.structured_output } : {}),
+    ...(model.cost?.input === 0 && model.cost?.output === 0 ? { isFree: true } : {}),
     ...(model.last_updated !== undefined ? { lastUpdated: model.last_updated } : {}),
     capabilities: {
       ...(model.modalities ? { vision: model.modalities.input.includes('image') } : {}),

@@ -216,6 +216,14 @@ export function pruneRelayModelProfiles(
  */
 export interface ConnectionThinkingContext {
   readonly providerType: ProviderType;
+  readonly models?: readonly {
+    readonly id: string;
+    readonly capabilities?: { readonly reasoning?: boolean };
+    readonly thinkingOptions?: {
+      readonly efforts?: readonly string[];
+      readonly toggle?: boolean;
+    };
+  }[];
   readonly relayModelProfiles?: RelayModelProfiles;
 }
 
@@ -249,7 +257,7 @@ export function thinkingVariantsForConnection(
 ): readonly ThinkingLevel[] {
   const declared = relayModelProfile(connection, modelId)?.thinkingLevels;
   if (declared) return declared;
-  return thinkingVariantsForModel(connection.providerType, modelId);
+  return deriveThinkingChoices(thinkingOptionsForConnection(connection, modelId));
 }
 
 /**
@@ -279,6 +287,23 @@ export function thinkingOptionsForModel(
   modelId: string,
 ): ThinkingOptions | undefined {
   return lookupModelMetadata(providerType, modelId).thinkingOptions;
+}
+
+/**
+ * Resolve one model's reasoning controls from the provider inventory first,
+ * then the bundled catalog. An explicit live `reasoning: false` defeats stale
+ * static metadata; live effort values override the snapshot while
+ * adapter-owned off-wire knowledge remains local.
+ */
+export function thinkingOptionsForConnection(
+  connection: ConnectionThinkingContext,
+  modelId: string,
+): ThinkingOptions | undefined {
+  const inventory = connection.models?.find((model) => model.id === modelId);
+  if (inventory?.capabilities?.reasoning === false) return undefined;
+  const metadata = thinkingOptionsForModel(connection.providerType, modelId);
+  if (!inventory?.thinkingOptions) return metadata;
+  return { ...metadata, ...inventory.thinkingOptions };
 }
 
 /**

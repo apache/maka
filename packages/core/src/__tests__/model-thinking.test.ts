@@ -7,9 +7,38 @@ import {
   resolveThinkingLevel,
   deriveThinkingChoices,
   thinkingOptionsForModel,
+  thinkingOptionsForConnection,
   thinkingVariantsForConnection,
   thinkingVariantsForModel,
 } from '../model-thinking.js';
+
+test('provider inventory reasoning controls outrank the bundled snapshot', () => {
+  const connection = {
+    providerType: 'github-copilot',
+    models: [
+      {
+        id: 'grok-4.6',
+        capabilities: { reasoning: true },
+        thinkingOptions: { efforts: ['low', 'xhigh'] },
+      },
+    ],
+  } as const;
+  assert.deepEqual(thinkingOptionsForConnection(connection, 'grok-4.6'), {
+    efforts: ['low', 'xhigh'],
+  });
+  assert.deepEqual(thinkingVariantsForConnection(connection, 'grok-4.6'), ['low', 'xhigh']);
+
+  assert.equal(
+    thinkingOptionsForConnection(
+      {
+        providerType: 'xai',
+        models: [{ id: 'grok-4.5', capabilities: { reasoning: false } }],
+      },
+      'grok-4.5',
+    ),
+    undefined,
+  );
+});
 
 test('declarable relay levels are every intensity tier but off', () => {
   // `off` is a disable-wire encoding (reasoning_effort 'none'), not an

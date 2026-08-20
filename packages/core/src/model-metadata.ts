@@ -15,6 +15,8 @@ export interface ModelMetadata {
   maxOutputTokens?: number;
   knowledgeCutoff?: string;
   structuredOutput?: boolean;
+  /** Public catalog pricing is exactly zero for both input and output. */
+  isFree?: boolean;
   lastUpdated?: string;
   capabilities?: ModelInfo['capabilities'];
   modalities?: ModelInfo['modalities'];
@@ -91,7 +93,7 @@ export function lookupModelProviderOverride(
 /**
  * The request wire a model served over the OpenAI adapter must use.
  *
- * OpenAI's `gpt-5*` families and xAI's `grok-4.5` are served only over the
+ * OpenAI's `gpt-5*` families and xAI's Responses-generation Grok models are served over the
  * Responses API; every other model on the native OpenAI adapter uses Chat
  * Completions. This is the single declared source of that protocol split,
  * expressed through the {@link ModelInfo.apiProtocol} seam. It is consumed by
@@ -104,9 +106,18 @@ export function openAiAdapterApiProtocol(
   const id = modelId.trim();
   return (providerType === 'deepseek' && deepSeekModelSupportsResponses(id)) ||
     /^gpt-5/i.test(id) ||
-    ((providerType === 'xai' || providerType === 'xai-oauth') && id === 'grok-4.5')
+    ((providerType === 'xai' || providerType === 'xai-oauth') && xAiModelSupportsResponses(id))
     ? 'openai-responses'
     : 'openai-chat';
+}
+
+/** xAI documents the Responses reasoning contract for Grok 4.5 and later text models. */
+function xAiModelSupportsResponses(modelId: string): boolean {
+  const match = /^grok-(\d+)(?:\.(\d+))?(?:$|-)/i.exec(modelId.trim());
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2] ?? 0);
+  return major > 4 || (major === 4 && minor >= 5);
 }
 
 /** DeepSeek models whose first-party API contract includes the Responses wire. */

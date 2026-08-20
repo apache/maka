@@ -542,6 +542,9 @@ function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
         : {}),
       apiProtocol,
       capabilities: { vision, reasoning, functionCalling: true },
+      ...(supports.reasoning_effort?.length
+        ? { thinkingOptions: { efforts: [...new Set(supports.reasoning_effort)] } }
+        : {}),
     },
   ];
 }

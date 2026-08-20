@@ -133,15 +133,15 @@ describe('buildProviderOptions: thinking level', () => {
     });
   });
 
-  test('google effort model (gemini-3) sends thinkingLevel; Gemini 2.5 Flash off sends thinkingBudget 0; safetySettings always present', () => {
-    const g3 = buildProviderOptions(conn('google'), 'gemini-3-pro-preview', 'high');
+  test('Google effort models send thinkingLevel; Gemini 2.5 Flash off sends thinkingBudget 0; safetySettings always present', () => {
+    const g3 = buildProviderOptions(conn('google'), 'gemini-3.1-pro-preview', 'high');
     assert.equal(
       (g3.google as { thinkingConfig: { thinkingLevel: string } }).thinkingConfig.thinkingLevel,
       'high',
     );
     assert.ok((g3.google as { safetySettings: unknown[] }).safetySettings.length > 0);
-    // off not in gemini-3-pro-preview variants (only low/high) → dropped → no thinkingConfig
-    const g3off = buildProviderOptions(conn('google'), 'gemini-3-pro-preview', 'off');
+    // off is not in the model's effort variants → dropped → no thinkingConfig
+    const g3off = buildProviderOptions(conn('google'), 'gemini-3.1-pro-preview', 'off');
     assert.equal((g3off.google as { thinkingConfig?: unknown }).thinkingConfig, undefined);
     // gemini-2.5-flash is toggle-only (off); off is the Google budget-zero wire.
     const g25 = buildProviderOptions(conn('google'), 'gemini-2.5-flash', 'off');
@@ -266,6 +266,20 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(conn('github-copilot'), 'gpt-5.4', 'high'), {
       'github-copilot': { reasoningEffort: 'high' },
     });
+  });
+
+  test('xAI Responses-generation models share one reasoning wire contract', () => {
+    for (const modelId of ['grok-4.5', 'grok-4.6']) {
+      assert.deepEqual(buildProviderOptions(conn('xai'), modelId, 'high'), {
+        openai: {
+          store: false,
+          reasoningSummary: null,
+          include: ['reasoning.encrypted_content'],
+          forceReasoning: true,
+          reasoningEffort: 'high',
+        },
+      });
+    }
   });
 
   test('github-copilot routes thinking by the account-declared model protocol', () => {

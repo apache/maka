@@ -81,6 +81,11 @@ export interface ModelInfo {
     /** Provider-hosted live web search, using this exact model and connection. */
     webSearch?: boolean;
   };
+  /** Exact reasoning controls advertised by this provider's model inventory. */
+  thinkingOptions?: {
+    efforts?: string[];
+    toggle?: boolean;
+  };
   /** Multimodal input/output support from provider catalog metadata. */
   modalities?: {
     input: Array<'text' | 'image' | 'audio' | 'pdf'>;

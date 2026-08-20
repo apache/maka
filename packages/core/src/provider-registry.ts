@@ -592,27 +592,20 @@ const opencodeGoModelIds = toolCallingModelIds(
   GENERATED_MODELS_DEV_METADATA['opencode-go'],
   ['minimax-m3'],
 ).filter((id) => GENERATED_MODELS_DEV_METADATA['opencode-go'][id]?.lifecycle !== 'deprecated');
-// opencode-free is Maka's first-class free anonymous default. It shares the
-// OpenCode Zen endpoint and model ids, but exposes only the active free
-// (cost.input === 0) models from the models.dev opencode snapshot. The
-// snapshot carries no cost field, so the free set is pinned here; each id is
-// validated against the opencode snapshot for active + tool-capable, mirroring
-// the bootstrap validation every other opencode plan entry performs.
-const opencodeFreeModelIds = [
-  OPENCODE_FREE_DEFAULT_MODEL,
-  'mimo-v2.5-free',
-  'big-pickle',
-  'deepseek-v4-flash-free',
-  'north-mini-code-free',
-  'laguna-s-2.1-free',
-] as const;
-for (const id of opencodeFreeModelIds) {
-  const model = GENERATED_MODELS_DEV_METADATA.opencode[id];
-  if (!model?.capabilities?.functionCalling || model.lifecycle === 'deprecated') {
-    throw new Error(
-      `models.dev opencode snapshot is missing an active tool-capable free model ${id} for opencode-free`,
-    );
-  }
+// opencode-free shares the OpenCode Zen endpoint and derives its inventory
+// from the same catalog facts as every other provider. A model enters only
+// while upstream declares it active, tool-capable, and zero-cost; retirement
+// therefore cannot leave a hand-maintained id that breaks application startup.
+const opencodeFreeModelIds = Object.entries(GENERATED_MODELS_DEV_METADATA.opencode)
+  .filter(
+    ([, model]) =>
+      model.isFree && model.capabilities?.functionCalling && model.lifecycle !== 'deprecated',
+  )
+  .map(([id]) => id);
+if (!opencodeFreeModelIds.includes(OPENCODE_FREE_DEFAULT_MODEL)) {
+  throw new Error(
+    `models.dev opencode snapshot is missing free default ${OPENCODE_FREE_DEFAULT_MODEL}`,
+  );
 }
 const githubCopilot = GENERATED_MODELS_DEV_PROVIDER_FACTS['github-copilot'];
 if (githubCopilot.id !== 'github-copilot') {

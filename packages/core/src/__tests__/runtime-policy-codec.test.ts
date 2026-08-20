@@ -383,12 +383,24 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
 test('normalizes exact bounded model discovery results', () => {
   assert.deepEqual(
     normalizeConnectionModelDiscoveryResult({
-      models: [{ id: 'gpt-5', capabilities: { chat: true } }],
+      models: [
+        {
+          id: 'gpt-5',
+          capabilities: { chat: true },
+          thinkingOptions: { efforts: ['low', 'high'] },
+        },
+      ],
       source: 'fetched',
       fetchedAt: 42,
     }),
     {
-      models: [{ id: 'gpt-5', capabilities: { chat: true } }],
+      models: [
+        {
+          id: 'gpt-5',
+          capabilities: { chat: true },
+          thinkingOptions: { efforts: ['low', 'high'] },
+        },
+      ],
       source: 'fetched',
       fetchedAt: 42,
     },

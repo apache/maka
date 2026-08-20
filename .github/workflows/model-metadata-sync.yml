@@ -1,0 +1,72 @@
+name: Model metadata sync
+
+on:
+  schedule:
+    # Keep newly released models from waiting for an unrelated code change.
+    - cron: '43 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: model-metadata-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Install validation dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Refresh models.dev facts
+        run: npm run sync:model-metadata
+
+      - id: changes
+        name: Detect catalog changes
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate generated catalog contracts
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          npm --workspace @maka/core run build
+          node -e "import('./packages/core/dist/provider-registry.js')"
+
+      - name: Open or update the sync pull request
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: automation/models-dev-sync
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git switch -C "$BRANCH"
+          git add packages/core/src/model-metadata.generated.ts packages/runtime/src/telemetry/model-pricing.generated.ts
+          git commit -m "chore(models): refresh models.dev metadata"
+          git push --force origin "HEAD:$BRANCH"
+
+          if [[ "$(gh pr list --head "$BRANCH" --state open --json number --jq length)" == "0" ]]; then
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore(models): refresh models.dev metadata" \
+              --body "Automated refresh of bundled model capabilities and pricing from models.dev."
+          fi

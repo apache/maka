@@ -415,7 +415,15 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
   const item = exactRecord(
     value,
     'connection model',
-    ['id', 'displayName', 'apiProtocol', 'contextWindow', 'maxOutputTokens', 'capabilities'],
+    [
+      'id',
+      'displayName',
+      'apiProtocol',
+      'contextWindow',
+      'maxOutputTokens',
+      'capabilities',
+      'thinkingOptions',
+    ],
     ['id'],
   );
   if (
@@ -440,6 +448,31 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
         raw[key],
         `connection model capability ${key}`,
       );
+    }
+  }
+  let thinkingOptions: ConnectionModel['thinkingOptions'];
+  if (item.thinkingOptions !== undefined) {
+    const raw = exactRecord(
+      item.thinkingOptions,
+      'connection model thinking options',
+      ['efforts', 'toggle'],
+      [],
+    );
+    thinkingOptions = {};
+    if (raw.efforts !== undefined) {
+      if (
+        !Array.isArray(raw.efforts) ||
+        raw.efforts.length > 32 ||
+        raw.efforts.some(
+          (effort) => typeof effort !== 'string' || effort.length === 0 || effort.length > 64,
+        )
+      ) {
+        throw domainError('connection model thinking efforts are invalid');
+      }
+      thinkingOptions.efforts = raw.efforts as string[];
+    }
+    if (raw.toggle !== undefined) {
+      thinkingOptions.toggle = booleanValue(raw.toggle, 'connection model thinking toggle');
     }
   }
   return {
@@ -469,6 +502,7 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
           ),
         }),
     ...(capabilities === undefined ? {} : { capabilities }),
+    ...(thinkingOptions === undefined ? {} : { thinkingOptions }),
   };
 }
 

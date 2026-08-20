@@ -205,6 +205,7 @@ async function runGitHubCopilotDiscovery(): Promise<void> {
       maxOutputTokens: 128_000,
       apiProtocol: 'openai-responses',
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
     },
     {
       id: 'claude-sonnet-4.6',
@@ -213,6 +214,7 @@ async function runGitHubCopilotDiscovery(): Promise<void> {
       maxOutputTokens: 128_000,
       apiProtocol: 'anthropic-messages',
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
     },
     {
       id: 'gemini-3.1-pro-preview',
@@ -221,6 +223,7 @@ async function runGitHubCopilotDiscovery(): Promise<void> {
       maxOutputTokens: 128_000,
       apiProtocol: 'openai-chat',
       capabilities: { vision: true, reasoning: true, functionCalling: true },
+      thinkingOptions: { efforts: ['low', 'medium', 'high'] },
     },
   ]);
 }
