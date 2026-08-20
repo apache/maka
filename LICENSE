@@ -203,16 +203,24 @@
 
 THIRD-PARTY COMPONENTS
 
-Vercel AI SDK provider-utils
+Vercel AI SDK
 
-Source: https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.25
+Source: https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.11
+        https://www.npmjs.com/package/@ai-sdk/provider/v/4.0.3
 Repository: https://github.com/vercel/ai/tree/main/packages/provider-utils
-Version: @ai-sdk/provider-utils 5.0.25
+            https://github.com/vercel/ai/tree/main/packages/provider
+Version: @ai-sdk/provider-utils 5.0.11, @ai-sdk/provider 4.0.3
 Copyright 2023 Vercel, Inc.
 License: Apache-2.0
 
-Maka's provider-boundary model protocol types include shapes adapted from this
-component. The Apache License, Version 2.0 above applies to that material.
+`packages/runtime/src/model-protocol.ts` adapts the JSON value, provider
+option, file data, content part, and message shapes from these components and
+modifies them. That file carries the required modification notice. The Apache
+License, Version 2.0 above applies to the adapted material.
+
+The pinned versions are the ones present when the adaptation was made. The
+adapted declarations are unchanged through @ai-sdk/provider-utils 5.0.25 and
+@ai-sdk/provider 4.0.7, the versions recorded by the code origin audit.
 
 Astryx
 

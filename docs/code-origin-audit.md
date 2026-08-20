@@ -9,7 +9,7 @@
 The recovered historical scan contains no unaddressed GPL, AGPL, source-available, commercial, or unknown-license match. Of 417 files with SCANOSS results, 392 matched Maka repositories and 25 matched other projects. Manual review classified 22 of the 25 external candidates as common or structurally necessary short code and three as real third-party lineage with an incorrect or incomplete scanner attribution:
 
 - the generated Astryx theme and ejected Astryx `ChatReasoning` component are MIT-licensed Meta material;
-- Maka's model protocol types are adapted from Apache-2.0 `@ai-sdk/provider-utils`, not from the `talkio` package selected by the scanner.
+- Maka's model protocol types are adapted from the Apache-2.0 AI SDK packages `@ai-sdk/provider-utils` and `@ai-sdk/provider`, not from the `talkio` package selected by the scanner.
 
 This audit adds Astryx and the AI SDK adaptation to the top-level `LICENSE`. `NOTICE` does not change: the fixed Astryx and AI SDK sources contain no upstream `NOTICE`, and their license notices are carried in `LICENSE` or in the source file. The 22 incidental matches do not add third-party material or attribution obligations.
 
@@ -73,7 +73,7 @@ The WFP records the MD5 content hash and an obfuscated filename for every scanne
 | 14 | `packages/core/src/user-question.ts:7-19` | [`baochipham942-eng/code-agent`](https://github.com/baochipham942-eng/code-agent) v0.2.4, `src/shared/types.ts:489-501` (MIT) | 50% | Short structural types for questions, IDs, and answers. No distinctive shared expression. No attribution. |
 | 15 | `packages/eval/src/__tests__/fixtures/writer-worker.ts:3-22` | [`agent-awareness`](https://www.npmjs.com/package/agent-awareness/v/0.4.5) 0.4.5, `src/commands/codex-hooks.ts:10-29` (MIT) | 86% | Small concurrency-test worker composed of standard file markers, a polling loop, and exit status. Candidate purpose and identifiers differ. No attribution. File is absent from current `main`. |
 | 16 | `packages/runtime/src/http-response.ts:9-14` | [`different-ai/openwork`](https://github.com/different-ai/openwork) `alpha-macos-v0.14.1-alpha.982-1aeb1e4`, `apps/server/src/server.ts:869-874` (MIT) | 35% | Necessary Fetch API reconstruction after deleting encoding/length headers. No distinctive expression. No attribution. |
-| 17 | `packages/runtime/src/model-protocol.ts:89-106,123-142,211-227,275-290` | [`talkio`](https://www.npmjs.com/package/talkio/v/1.0.0-alpha.1) 1.0.0-alpha.1, `src/types/common.ts:16-33,23-42,72-88,104-119` (Apache-2.0) | 14% | **Real third-party lineage, wrong candidate.** The file declares its adaptation from `@ai-sdk/provider-utils@5.0.25` (Apache-2.0). The fixed AI SDK source is now named in `LICENSE`; desktop notices already carry its exact license. |
+| 17 | `packages/runtime/src/model-protocol.ts:89-106,123-142,211-227,275-290` | [`talkio`](https://www.npmjs.com/package/talkio/v/1.0.0-alpha.1) 1.0.0-alpha.1, `src/types/common.ts:16-33,23-42,72-88,104-119` (Apache-2.0) | 14% | **Real third-party lineage, wrong candidate.** The source is the Apache-2.0 AI SDK, not `talkio`; see [Model protocol adaptation](#model-protocol-adaptation). Both AI SDK packages are now named in `LICENSE` and the file carries an Apache-2.0 §4(b) modification notice. |
 | 18 | `packages/storage/src/__tests__/package-import.test.ts:5-14` | [`openbroker`](https://www.npmjs.com/package/openbroker/v/1.9.5) 1.9.5, `scripts/setup/package-catalog.test.ts:4-13` (MIT) | 64% | Conventional `spawnSync` import-isolation test. No distinctive shared expression. No attribution. File is absent from current `main`. |
 | 19 | `packages/ui/src/__tests__/input-history.test.ts:14-46` | [`erichgschmidt/colorsmash`](https://github.com/erichgschmidt/colorsmash) `v2-preview-6559730`, `ColorSmash-v2/src/core/prefs.test.ts:7-39` (MIT) | 24% | Minimal implementation of the standard Web Storage interface. No distinctive shared expression. No attribution. File is absent from current `main`. |
 | 20 | `packages/ui/src/astryx-chat-reasoning.tsx:37-73` | [`@astryxdesign/lab`](https://www.npmjs.com/package/@astryxdesign/lab/v/0.1.2-canary.3f9afb0) 0.1.2-canary.3f9afb0, `src/ChatReasoning/ChatReasoning.tsx:181-217` (MIT) | 24% | **True third-party lineage.** The complete file already identifies the ejected Astryx v0.1.9 component, fixed commit, Meta copyright, MIT SPDX identifier, and local modifications. Covered by the new Astryx entry in `LICENSE`. |
@@ -83,11 +83,37 @@ The WFP records the MD5 content hash and an obfuscated filename for every scanne
 | 24 | `scripts/apply-dependency-patches.mjs:17-22` | [`walkersutton/cyclemetry`](https://github.com/walkersutton/cyclemetry) v0.2.0, `scripts/release.mjs:4-9` (MIT) | 12% | Standard ESM `fileURLToPath` repository-root calculation. No attribution. |
 | 25 | `scripts/check-astryx-alignment.test.mjs:5-10` | [`naimkatiman/continuous-improvement`](https://github.com/naimkatiman/continuous-improvement) v3.9.1, `test/backfill.test.mjs:10-15` (MIT) | 25% | Standard Node test imports and `new URL('..', import.meta.url)` root calculation. No attribution. File is absent from current `main`. |
 
+## Model protocol adaptation
+
+Entry 17 was re-examined directly against upstream source rather than against the scanner candidate. The finding is that `packages/runtime/src/model-protocol.ts` adapts AI SDK material and that the first revision of this report overstated what the file itself disclosed: the file's header claimed only that its shapes were "structurally equivalent" and "Maka-owned", and named neither a source version nor the adaptation.
+
+The adaptation is established by more than shape equivalence:
+
+- The `ProviderReference` doc comment reproduces the upstream `SharedV4ProviderReference` comment near-verbatim, including its explanation of the `type?: never` constraint and its two examples, with only the type name changed.
+- `JSONValue`, `JSONObject`, and `JSONArray` match upstream exactly, including the union order and the `| undefined` index signature.
+- Field order matches upstream member for member, including an upstream inconsistency: `FilePart` orders `data, filename, mediaType` while the tool-result `file` variant orders `data, mediaType, filename`. Both orderings are reproduced.
+- Union member order matches, including arbitrary sequences such as `CustomPart` appearing second in `AssistantContent`.
+- The upstream choice of `interface` versus `type` is reproduced per declaration. `ToolApprovalRequest` and `ToolApprovalResponse` are the only content-part shapes declared as `type` in the Maka file, matching upstream.
+
+Maka's modifications are the removal of the deprecated `file-*` and `image-*` tool-result content variants, extraction of the inline tool-result content union into `ToolResultContentPart`, inlining of the shared provider aliases, and declaration of the role message shapes as interfaces. Roughly 170 of the file's 418 lines — the tool definition, usage, finish reason, failure, request metadata, and stream contracts — are Maka-authored with no upstream counterpart.
+
+The material spans two packages. `JSONValue` and the `SharedV4` provider option, provider reference, and file data shapes come from `@ai-sdk/provider`, not from `@ai-sdk/provider-utils`. The first revision of this report named only `provider-utils`; `LICENSE` now names both.
+
+The versions pinned in `LICENSE` are those installed when the adaptation was made in `3249f2a0ec2b389efcd935078c6c835c31195e88` (#1381 slice 1, 2026-07-23): `@ai-sdk/provider-utils@5.0.11` and `@ai-sdk/provider@4.0.3`. The audit baseline snapshot resolved `5.0.25` and `4.0.7`; every adapted declaration is byte-identical across those version ranges, so the two pinnings identify the same source material. Reproduce with:
+
+```sh
+npm pack @ai-sdk/provider-utils@5.0.11 @ai-sdk/provider@4.0.3
+```
+
+and compare `package/src/types/`, `package/src/json-value/`, and `package/src/shared/v4/` against the module.
+
+The file now carries the Apache-2.0 §4(b) modification notice that this lineage requires. Adding the component to `LICENSE` alone did not satisfy that obligation.
+
 ## LICENSE and NOTICE review
 
 The top-level `LICENSE` now accounts for source material that is directly included or adapted in Maka:
 
-- Apache-2.0 [`@ai-sdk/provider-utils@5.0.25`](https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.25), from which `packages/runtime/src/model-protocol.ts` adapts provider-boundary shapes;
+- Apache-2.0 [`@ai-sdk/provider-utils@5.0.11`](https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.11) and [`@ai-sdk/provider@4.0.3`](https://www.npmjs.com/package/@ai-sdk/provider/v/4.0.3), from which `packages/runtime/src/model-protocol.ts` adapts provider-boundary shapes;
 - MIT Astryx at `c9fe4379e9959b9ba5eeff56def34c752223450e` for the ejected `ChatReasoning` source and `82d4dab3d05b9314a76ab0bda296491a65f69c88` for theme-neutral v0.3.0 and its generated theme material;
 - MIT `trycua/cua` at `8c921b2b3bf13494724ead4f0a814d80c56a7e8b`, already recorded by pull request #2676.
 
@@ -95,7 +121,7 @@ The desktop binary distribution also carries generated production npm notices at
 
 The audit also corrected the notice generator's version-pinned Apache override. It previously read the entire top-level `LICENSE`; once that file acquired third-party appendices, those unrelated appendices were copied into the `@ai-sdk/provider-utils` package section and the checked artifact became stale. The override now extracts only the standard Apache-2.0 portion, with a focused regression test.
 
-No `NOTICE` addition is warranted. The fixed Astryx and `trycua/cua` revisions have no upstream `NOTICE`; the AI SDK package has no upstream `NOTICE`; and MIT copyright notices already preserved in `LICENSE` or source should not be duplicated into `NOTICE`. This follows ASF guidance to keep `NOTICE` limited to legally required notices and to make `LICENSE`/`NOTICE` reflect only bundled bits.
+No `NOTICE` addition is warranted. The fixed Astryx and `trycua/cua` revisions have no upstream `NOTICE`; neither AI SDK package has an upstream `NOTICE`; and MIT copyright notices already preserved in `LICENSE` or source should not be duplicated into `NOTICE`. This follows ASF guidance to keep `NOTICE` limited to legally required notices and to make `LICENSE`/`NOTICE` reflect only bundled bits.
 
 ## Other provenance evidence
 
