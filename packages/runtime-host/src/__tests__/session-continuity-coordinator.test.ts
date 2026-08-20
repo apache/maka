@@ -88,6 +88,39 @@ test('open is an inactive publication barrier and live sequence starts at nextSe
   coordinator.close();
 });
 
+test('forwards the durable steering echo to subscribers as a session event', async () => {
+  const sink = new RecordingSink();
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+  await delayImmediate();
+  sink.frames.length = 0;
+
+  const steering = {
+    type: 'steering_message' as const,
+    id: 'steering-event-1',
+    turnId: 'turn-1',
+    ts: 7,
+    messageId: 'steering-message-1',
+    content: { text: 'steer the turn' },
+  };
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', steering);
+
+  assert.equal(sink.frames.length, 1);
+  const frame = sink.frames[0];
+  assert.equal(frame?.kind, 'subscription.session_event');
+  if (frame?.kind !== 'subscription.session_event') return;
+  assert.deepEqual(frame.event, steering);
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
 test('open snapshot includes pending Interactions from the canonical projection', async () => {
   const pending = pendingInteraction();
   const coordinator = new SessionContinuityCoordinator(

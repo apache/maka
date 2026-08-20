@@ -27,6 +27,7 @@ import {
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type SessionContinuitySnapshot,
+  type SteeringMessageSnapshot,
   type SubscriptionFrame,
 } from '../protocol/index.js';
 
@@ -261,6 +262,130 @@ test('does not replay settled transcript steps when the active step reaches term
     ],
   );
 });
+
+test('projects the durable steering echo even when the in-flight queue state was never observed', () => {
+  // Regression for apache/maka#3304: the coalesced canonical refresh can jump
+  // the queue straight from queued to consumed, so the in-flight synthesis
+  // never fires. The forwarded steering_message event must render the message.
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const skipped = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({ queue: queue(4, []) }),
+  });
+  assert.deepEqual(
+    skipped.events.map((event) => event.type),
+    ['queue_update'],
+  );
+
+  const echoed = projector.accept(steeringFrame(2)).events;
+  assert.equal(echoed.length, 1);
+  assert.deepEqual(echoed[0], {
+    type: 'steering_message',
+    id: 'steering-event-1',
+    turnId: 'turn-1',
+    ts: 10,
+    messageId: 'steering-message-1',
+    content: { text: 'steer the turn' },
+  });
+});
+
+test('projects a steering message exactly once across both authoritative paths', () => {
+  // The queue in-flight synthesis and the durable session-event echo race;
+  // whichever projects the message first suppresses the other.
+  const inFlightFirst = new RuntimeHostSessionProjector(
+    snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const synthesized = inFlightFirst.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({ queue: queue(3, [steeringEntry('in_flight')]) }),
+  });
+  assert.deepEqual(
+    synthesized.events.map((event) => event.type),
+    ['steering_message', 'queue_update'],
+  );
+  assert.deepEqual(inFlightFirst.accept(steeringFrame(2)).events, []);
+
+  const echoFirst = new RuntimeHostSessionProjector(
+    snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  assert.equal(echoFirst.accept(steeringFrame(1)).events.length, 1);
+  const suppressed = echoFirst.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 2,
+    snapshot: snapshot({ queue: queue(3, [steeringEntry('in_flight')]) }),
+  });
+  assert.deepEqual(
+    suppressed.events.map((event) => event.type),
+    ['queue_update'],
+  );
+});
+
+test('seeds an unrendered in-flight steering message once on rejoin', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({ queue: queue(3, [steeringEntry('in_flight')]) }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  assert.deepEqual(
+    projector.seedActive(false).map((event) => event.type),
+    ['steering_message', 'queue_update'],
+  );
+  // A live echo of the same message arriving after the seed is the duplicate.
+  assert.deepEqual(projector.accept(steeringFrame(1)).events, []);
+});
+
+function steeringEntry(state: 'queued' | 'in_flight'): SteeringMessageSnapshot {
+  return {
+    entryId: 'entry-1',
+    messageId: 'steering-message-1',
+    content: { text: 'steer the turn' },
+    placement: 'current_turn',
+    state,
+  };
+}
+
+function queue(
+  queueRevision: number,
+  steering: readonly SteeringMessageSnapshot[],
+): SessionContinuitySnapshot['queue'] {
+  return { hostEpoch: 'host-1', queueRevision, steering, followup: [] };
+}
+
+function steeringFrame(sequence: number): SubscriptionFrame {
+  return {
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: {
+      type: 'steering_message',
+      id: 'steering-event-1',
+      turnId: 'turn-1',
+      ts: 10,
+      messageId: 'steering-message-1',
+      content: { text: 'steer the turn' },
+    },
+  };
+}
 
 function deltaFrame(
   sequence: number,

@@ -38,6 +38,7 @@ import {
   type SessionDomainChangedFrame,
   type SessionEventFrame,
   type SessionRuntimeResourcePtyDataFrame,
+  type SessionSteeringEvent,
   type SessionToolEvent,
   type SessionTranscriptAdvancedFrame,
   type SessionTranscriptPageInput,
@@ -92,6 +93,7 @@ export type RuntimeSessionTransientEvent = Extract<
       | 'tool_progress'
       | 'tool_result_preview'
       | 'tool_result'
+      | 'steering_message'
       | 'provider_retry';
   }
 >;
@@ -733,7 +735,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       } else if (event.type === 'tool_result') {
         state.toolResultPreviews.delete(event.toolUseId);
       }
-      const projected = projectToolEvent(event);
+      const projected = projectSessionEvent(event);
       for (const subscriber of state.subscribers.values()) {
         const frame: SessionEventFrame = {
           kind: 'subscription.session_event',
@@ -967,7 +969,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
                     sequence: subscriber.nextSequence,
                     sessionId,
                     runId: rootTurn.runId,
-                    event: projectToolEvent(preview),
+                    event: projectSessionEvent(preview),
                   };
                   this.#enqueue(subscriber, frame);
                 }
@@ -1918,7 +1920,7 @@ function jsonStringContentBytes(value: string): number {
   return Buffer.byteLength(encoded.slice(1, -1), 'utf8');
 }
 
-function projectToolEvent(
+function projectSessionEvent(
   event: Exclude<
     RuntimeSessionTransientEvent,
     {
@@ -1930,7 +1932,20 @@ function projectToolEvent(
         | 'provider_retry';
     }
   >,
-): SessionToolEvent {
+): SessionToolEvent | SessionSteeringEvent {
+  if (event.type === 'steering_message') {
+    // The durable steering echo: forwarded verbatim so subscribers render the
+    // interjection in place instead of depending on observing the transient
+    // in-flight queue state.
+    return {
+      type: 'steering_message',
+      id: event.id,
+      turnId: event.turnId,
+      ts: event.ts,
+      messageId: event.messageId,
+      content: structuredClone(event.content),
+    };
+  }
   const identity = {
     id: event.id,
     turnId: event.turnId,

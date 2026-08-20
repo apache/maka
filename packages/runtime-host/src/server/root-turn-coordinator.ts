@@ -2806,6 +2806,7 @@ function isRuntimeSessionTransientEvent(
     event.type === 'tool_progress' ||
     event.type === 'tool_result_preview' ||
     event.type === 'tool_result' ||
+    event.type === 'steering_message' ||
     event.type === 'provider_retry'
   );
 }
