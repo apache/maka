@@ -204,6 +204,29 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(shaped.message, 'Rate limit exceeded');
   });
 
+  test('keeps a free-form provider code out of the failure taxonomy input (#2521)', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+    const error = Object.assign(new Error('Invalid request'), {
+      name: 'AI_APICallError',
+      statusCode: 400,
+      data: { error: { code: 'tool_choice_invalid', message: 'tool_choice is not supported' } },
+    });
+
+    const events: ModelStreamEvent[] = adapter.translateChunk({ type: 'error', error } as Chunk);
+
+    const errorEvent = events.find(
+      (event): event is Extract<ModelStreamEvent, { kind: 'error' }> => event.kind === 'error',
+    );
+    assert.ok(errorEvent);
+    // 'tool_choice_invalid' contains 'tool' but must not steer the Host's
+    // terminal-state taxonomy or the Desktop label/recovery substring
+    // matching that reads it.
+    assert.equal(errorEvent.failure.code, undefined);
+    const shaped = adapter.makeErrorEvent('turn-1', errorEvent.failure);
+    assert.equal(shaped.code, undefined);
+  });
+
   test('preserves an explicit empty reasoning delta without inventing one for absent text', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];
@@ -597,6 +620,7 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(adapter.classifyError(error), 'Error');
     assert.equal(event.reason, undefined);
     assert.equal(event.message, 'Network error');
+    assert.equal(event.boundedProviderMessage, undefined);
   });
 
   test('projects string provider errors through the same classification', () => {
@@ -619,11 +643,48 @@ describe('ModelAdapter stream and error normalization', () => {
     const event = adapter.makeErrorEvent('turn-1', failure);
 
     assert.equal(event.reason, undefined);
-    assert.equal(event.code, 'provider_error');
+    // A free-form provider code stays in the bounded summary text but no
+    // longer enters `code`: that field feeds the Host's terminal-state
+    // taxonomy, which only a closed vocabulary may steer (#2521).
+    assert.equal(event.code, undefined);
     assert.match(event.message, /^provider exploded api_key=\[redacted\]/);
     assert.match(event.message, /… \(code=provider_error, requestId=req-123\)$/);
     assert.equal(Buffer.byteLength(event.message, 'utf8') <= 2 * 1024, true);
     assert.equal(event.message.includes('sk-live-secret-token-value'), false);
+  });
+
+  test('projects the observed Kimi plan limit as a non-retryable provider explanation', () => {
+    const observedMessage =
+      "You've reached your usage limit for this billing cycle. Your quota will be refreshed in the next cycle. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/code/#pricing";
+    const error = Object.assign(new Error(observedMessage), {
+      name: 'AI_APICallError',
+      statusCode: 403,
+      data: {
+        type: 'error',
+        error: { type: 'permission_error', message: observedMessage },
+      },
+    });
+    const adapter = newAdapter();
+
+    const failure = adapter.normalizeFailure(error);
+    assert.deepEqual(failure, {
+      type: 'model_failure',
+      kind: 'unknown',
+      retryable: false,
+      message: `${observedMessage} (code=permission_error, status=403)`,
+      boundedProviderMessage: true,
+    });
+    const event = adapter.makeErrorEvent('turn-1', failure);
+    assert.equal(event.reason, undefined);
+    // 'permission_error' is not closed-vocabulary: it remains in the summary
+    // text but must not become a taxonomy input (#2521).
+    assert.equal(event.code, undefined);
+    assert.equal(event.message, `${observedMessage} (code=permission_error, status=403)`);
+    assert.equal(event.boundedProviderMessage, true);
+
+    const rawEvent = adapter.makeErrorEvent('turn-1', error);
+    assert.equal(rawEvent.message, `${observedMessage} (code=permission_error, status=403)`);
+    assert.equal(rawEvent.boundedProviderMessage, true);
   });
 
   test('normalizes cache and reasoning usage variants in the adapter module', () => {

@@ -1720,43 +1720,50 @@ describe('non-serving Runtime Host kernel', () => {
   });
 
   test('rejects a handshake whose compatibility epoch does not match', async () => {
-    await withHostPaths(async (paths) => {
-      const candidate = await startTestRuntimeHostCandidate(paths, {
-        rootPath: paths.root,
-        idleGraceMs: 10_000,
-      });
-      assert.equal(candidate.kind, 'winner');
-      if (candidate.kind !== 'winner') return;
-
-      const transport = new FramedTransport(await openSocket(candidate.host.endpoint));
-      try {
-        await writeClientFrame(transport, {
-          kind: 'hello',
-          clientInstanceId: 'epoch-mismatch-client',
-          protocolMin: CURRENT_PROTOCOL.min,
-          protocolMax: CURRENT_PROTOCOL.max,
-          compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH + 1,
-          compositionId: 'maka.interactive',
+    // Both directions: an older peer and a NEWER peer are both refused.
+    for (const compatibilityEpoch of [
+      RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+      RUNTIME_HOST_COMPATIBILITY_EPOCH + 1,
+    ]) {
+      await withHostPaths(async (paths) => {
+        const candidate = await startTestRuntimeHostCandidate(paths, {
+          rootPath: paths.root,
+          idleGraceMs: 10_000,
         });
-        const response = decodeHostFrame(await transport.read(2_000));
-        assert.ok('kind' in response && response.kind === 'incompatible');
-        if (!('kind' in response) || response.kind !== 'incompatible') return;
-        assert.equal(response.compatibilityEpoch, RUNTIME_HOST_COMPATIBILITY_EPOCH);
-        assert.equal(response.hostEpoch, candidate.host.hostEpoch);
-        await transport.closed;
-        await assert.rejects(
-          () =>
-            writeClientFrame(transport, {
-              requestId: 'post-epoch-mismatch-status',
-              operation: 'host.status',
-              input: {},
-            }),
-          (error: unknown) => error instanceof RuntimeHostTransportError && error.code === 'closed',
-        );
-      } finally {
-        transport.abort();
-      }
-    });
+        assert.equal(candidate.kind, 'winner');
+        if (candidate.kind !== 'winner') return;
+
+        const transport = new FramedTransport(await openSocket(candidate.host.endpoint));
+        try {
+          await writeClientFrame(transport, {
+            kind: 'hello',
+            clientInstanceId: 'epoch-mismatch-client',
+            protocolMin: CURRENT_PROTOCOL.min,
+            protocolMax: CURRENT_PROTOCOL.max,
+            compatibilityEpoch,
+            compositionId: 'maka.interactive',
+          });
+          const response = decodeHostFrame(await transport.read(2_000));
+          assert.ok('kind' in response && response.kind === 'incompatible');
+          if (!('kind' in response) || response.kind !== 'incompatible') return;
+          assert.equal(response.compatibilityEpoch, RUNTIME_HOST_COMPATIBILITY_EPOCH);
+          assert.equal(response.hostEpoch, candidate.host.hostEpoch);
+          await transport.closed;
+          await assert.rejects(
+            () =>
+              writeClientFrame(transport, {
+                requestId: 'post-epoch-mismatch-status',
+                operation: 'host.status',
+                input: {},
+              }),
+            (error: unknown) =>
+              error instanceof RuntimeHostTransportError && error.code === 'closed',
+          );
+        } finally {
+          transport.abort();
+        }
+      });
+    }
   });
 
   test('accepts Client hellos with and without the legacy surface identity', async () => {

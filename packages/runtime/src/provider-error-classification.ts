@@ -1,5 +1,6 @@
 import { RetryError } from 'ai';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { isProviderFailureClass, type ProviderFailureResult } from '@maka/core/provider-failure';
 import { isAuthenticationErrorText, redactSecrets } from '@maka/core/redaction';
 
 /**
@@ -12,6 +13,58 @@ const CONTEXT_OVERFLOW_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'model_context_window_exceeded', // z.ai: error.code
   'request_too_large', // Anthropic byte-size overflow (HTTP 413): error.type
 ]);
+
+/** Stable account-state meanings exposed by provider-owned structured fields. */
+const PROVIDER_AUTH_CODES: ReadonlySet<string> = new Set([
+  'authentication',
+  'authentication_error',
+  'invalid_api_key',
+]);
+const PROVIDER_BILLING_CODES: ReadonlySet<string> = new Set([
+  'insufficient_quota',
+  'payment_required',
+]);
+const PROVIDER_PERMISSION_CODES: ReadonlySet<string> = new Set(['permission_denied']);
+const PROVIDER_USAGE_LIMIT_CODES: ReadonlySet<string> = new Set(['usage_limit_reached']);
+const PROVIDER_RATE_LIMIT_CODES: ReadonlySet<string> = new Set([
+  'rate_limit_error',
+  'rate_limit_exceeded',
+  'rate_limited',
+]);
+const PROVIDER_UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
+  'overloaded_error',
+  'provider_overloaded',
+  'provider_unavailable',
+]);
+
+/**
+ * Closed vocabulary check for provider codes that may feed Maka's
+ * terminal-state taxonomy (`ErrorEvent.code` → `failureClass`). A provider's
+ * free-form code string is display metadata; an arbitrary token such as
+ * `tool_choice_invalid` must never steer the Host-owned taxonomy or the
+ * Desktop label/recovery matching that reads it (#2521).
+ */
+export function taxonomySafeProviderCode(code: string | undefined): string | undefined {
+  if (code === undefined) return undefined;
+  const lower = code.toLowerCase();
+  if (
+    // Maka-owned sentinels are deterministic, not provider free-form wording.
+    RUNTIME_RETRYABLE_ERROR_CODES.has(code) ||
+    // ContinuationReplayEmptyError.code (ai-sdk-backend): a Maka-owned class.
+    lower === 'continuation_replay_empty' ||
+    PROVIDER_AUTH_CODES.has(lower) ||
+    PROVIDER_BILLING_CODES.has(lower) ||
+    PROVIDER_PERMISSION_CODES.has(lower) ||
+    PROVIDER_USAGE_LIMIT_CODES.has(lower) ||
+    PROVIDER_RATE_LIMIT_CODES.has(lower) ||
+    PROVIDER_UNAVAILABLE_CODES.has(lower) ||
+    CONTEXT_OVERFLOW_PROVIDER_CODES.has(lower) ||
+    /^[1-5]\d{2}$/.test(lower)
+  ) {
+    return code;
+  }
+  return undefined;
+}
 
 /**
  * A provider failure normalized into classification evidence. classifyError's
@@ -31,7 +84,7 @@ interface ProviderErrorEvidence {
   statusCode: string;
   /** Top-level code field as a string ('' when absent). */
   code: string;
-  /** Structured provider identifiers (code/type), lowercased. */
+  /** Structured provider identifiers (code/type/error_type/provider_code), lowercased. */
   structuredCodes: string[];
 }
 
@@ -39,7 +92,12 @@ interface ProviderErrorFacts {
   target: unknown;
   evidence: ProviderErrorEvidence;
   summarySources: ProviderFailureSources;
+  messageSources?: ProviderFailureSources;
+  boundedProviderMessageSource?: boolean;
   bareMessage?: string;
+  /** The chain link the projected message was selected from; its code/status
+   * are the only ones that may be presented alongside that message. */
+  messageLink?: ProviderErrorFacts;
   responseHeaders?: Record<string, string>;
 }
 
@@ -48,18 +106,19 @@ export interface ProviderRetryMetadata {
   retryAfterMs?: number;
 }
 
-/** Bounded, allowlisted provider failure facts safe for durable telemetry. */
-export interface ProviderFailureDiagnostic {
-  errorClass: string;
-  httpStatus?: number;
-  providerCode?: string;
-  providerRequestId?: string;
-  retryable: boolean;
-}
+/** Bounded provider facts safe for durable telemetry (no presentation text). */
+export type ProviderFailureDiagnostic = Pick<
+  ProviderFailureResult,
+  'errorClass' | 'httpStatus' | 'providerCode' | 'providerRequestId' | 'retryable'
+>;
 
 interface ProviderFailureSummary {
   message: string;
   code?: string;
+}
+
+interface ProviderFailureSummaryEvidence extends ProviderFailureSummary {
+  boundedProviderMessage: boolean;
 }
 
 const PROVIDER_FAILURE_SUMMARY_MAX_BYTES = 2 * 1024;
@@ -110,24 +169,50 @@ function parseRetryAfterMs(headers: Record<string, string>): number | null | und
  * response headers across the ModelAdapter boundary.
  */
 export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
-  const facts = normalizeProviderError(error);
+  const facts = providerFailureDiagnosticFacts(error);
   if (!facts) return { retryable: false };
+  return providerRetryMetadataFromFacts(facts);
+}
+
+function providerRetryMetadataFromFacts(facts: ProviderErrorFacts): ProviderRetryMetadata {
   const { evidence } = facts;
 
   if (RUNTIME_RETRYABLE_ERROR_CODES.has(evidence.code)) return { retryable: true };
 
   const status = Number(evidence.statusCode || evidence.code);
   const errorClass = classifyProviderFacts(facts);
+  // Account state cannot be repaired by immediately repeating the same
+  // physical request, even when a provider reports it through HTTP 429. An
+  // Abort is by definition not repairable by repeating the request either —
+  // the RetryError early return already says so, and a text-derived Abort
+  // must not fall through to the 5xx retryable rule with the opposite answer.
+  if (
+    errorClass === 'Abort' ||
+    errorClass === 'Auth' ||
+    errorClass === 'ProviderBilling' ||
+    errorClass === 'ProviderPermission' ||
+    errorClass === 'UsageLimit' ||
+    errorClass === 'ContextLength'
+  ) {
+    return { retryable: false };
+  }
   const retryAfterMs = parseRetryAfterMs(facts.responseHeaders ?? {});
   if (errorClass === 'RateLimit' || status === 429) {
     if (retryAfterMs === undefined || retryAfterMs === null) return { retryable: false };
     return { retryable: true, retryAfterMs };
   }
+  const sdkRetryable =
+    typeof facts.target === 'object' &&
+    facts.target !== null &&
+    typeof (facts.target as { isRetryable?: unknown }).isRetryable === 'boolean'
+      ? (facts.target as { isRetryable: boolean }).isRetryable
+      : undefined;
   const retryable =
-    errorClass === 'Network' ||
-    status === 408 ||
-    status === 409 ||
-    (status >= 500 && status <= 599);
+    sdkRetryable ??
+    (errorClass === 'Network' ||
+      status === 408 ||
+      status === 409 ||
+      (status >= 500 && status <= 599));
   if (!retryable) return { retryable: false };
   if (retryAfterMs === null) return { retryable: false };
   return {
@@ -136,18 +221,27 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
   };
 }
 
-/** Collects `code`/`type` strings from a payload and from its `error` wrapper. */
+/** Collects stable identifiers from the provider envelopes Maka receives. */
 function collectStructuredCodes(payload: unknown, out: string[]): void {
   const fromRecord = (record: Record<string, unknown> | undefined) => {
     if (!record) return;
-    for (const key of ['code', 'type'] as const) {
+    for (const key of ['code', 'type', 'error_type', 'provider_code'] as const) {
       const value = safeField(record, key);
       if (typeof value === 'string' && value) out.push(value.toLowerCase());
     }
   };
   const record = providerRecord(payload);
   fromRecord(record);
-  fromRecord(record ? providerRecord(safeField(record, 'error')) : undefined);
+  if (!record) return;
+  fromRecord(providerRecord(safeField(record, 'metadata')));
+  const error = providerRecord(safeField(record, 'error'));
+  fromRecord(error);
+  fromRecord(error ? providerRecord(safeField(error, 'metadata')) : undefined);
+  const response = providerRecord(safeField(record, 'response'));
+  fromRecord(response);
+  const responseError = response ? providerRecord(safeField(response, 'error')) : undefined;
+  fromRecord(responseError);
+  fromRecord(responseError ? providerRecord(safeField(responseError, 'metadata')) : undefined);
 }
 
 function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined {
@@ -164,8 +258,9 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
     const rawBody = (target as { responseBody?: unknown }).responseBody;
     const body = typeof rawBody === 'string' ? rawBody : '';
     const structuredCodes: string[] = [];
+    collectStructuredCodes(target, structuredCodes);
     collectStructuredCodes((target as { data?: unknown }).data, structuredCodes);
-    if (structuredCodes.length === 0 && body) {
+    if (body) {
       // The failed-response handler keeps the raw body even when the provider
       // JSON failed the schema (which is exactly when `data` is absent).
       try {
@@ -215,6 +310,11 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
     };
     const structuredCodes: string[] = [];
     collectStructuredCodes(record, structuredCodes);
+    const rawBody = safeField(record, 'responseBody');
+    if (typeof rawBody === 'string') {
+      const parsedBody = parsedProviderValue(rawBody);
+      if (parsedBody !== undefined) collectStructuredCodes(parsedBody, structuredCodes);
+    }
     let text: string;
     try {
       // Serialize the whole value so message/code text is evidence no matter
@@ -244,11 +344,23 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
  * or serialized as diagnostic output wholesale.
  */
 export function providerFailureSummary(error: unknown): ProviderFailureSummary | undefined {
-  const facts = normalizeProviderError(error);
+  const facts = providerFailureDiagnosticFacts(error);
   if (!facts) return undefined;
-  const sources = facts.summarySources;
-  const message = firstProviderMessage(facts);
-  const code = firstProviderField(sources, ['code']) ?? firstProviderField(sources, ['type']);
+  const summary = providerFailureSummaryFromFacts(facts);
+  if (!summary) return undefined;
+  return {
+    message: summary.message,
+    ...(summary.code !== undefined ? { code: summary.code } : {}),
+  };
+}
+
+function providerFailureSummaryFromFacts(
+  facts: ProviderErrorFacts,
+): ProviderFailureSummaryEvidence | undefined {
+  const link = facts.messageLink;
+  const sources = link ? link.summarySources : facts.summarySources;
+  const message = link ? firstProviderMessage(link) : undefined;
+  const code = strongestProviderCode(link ?? facts);
   const statusCode = firstProviderField(sources, ['statusCode', 'status']);
   const requestId =
     firstProviderField(sources, ['requestId', 'request_id']) ??
@@ -272,19 +384,9 @@ export function providerFailureSummary(error: unknown): ProviderFailureSummary |
   return {
     message: truncateUtf8(summary, PROVIDER_FAILURE_SUMMARY_MAX_BYTES, '…'),
     ...(code || statusCode ? { code: code ?? statusCode } : {}),
+    boundedProviderMessage: message !== undefined && hasProviderMessageSource(facts),
   };
 }
-
-const DURABLE_PROVIDER_ERROR_CLASSES: ReadonlySet<string> = new Set([
-  'Abort',
-  'Auth',
-  'ContextLength',
-  'Network',
-  'ProviderBilling',
-  'ProviderUnavailable',
-  'RateLimit',
-  'Timeout',
-]);
 
 /**
  * Projects provider errors into a small durable fingerprint. Unlike the
@@ -292,6 +394,23 @@ const DURABLE_PROVIDER_ERROR_CLASSES: ReadonlySet<string> = new Set([
  * response bodies: even redacted free text can echo prompts or credentials.
  */
 export function providerFailureDiagnostic(error: unknown): ProviderFailureDiagnostic {
+  const failure = providerFailureResult(error);
+  return {
+    errorClass: failure.errorClass,
+    ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {}),
+    ...(failure.providerCode !== undefined ? { providerCode: failure.providerCode } : {}),
+    ...(failure.providerRequestId !== undefined
+      ? { providerRequestId: failure.providerRequestId }
+      : {}),
+    retryable: failure.retryable,
+  };
+}
+
+/** The single structured provider-failure authority for Runtime consumers. */
+export function providerFailureResult(error: unknown): ProviderFailureResult {
+  if (RetryError.isInstance(error) && error.reason === 'abort') {
+    return { errorClass: 'Abort', retryable: false };
+  }
   const facts = providerFailureDiagnosticFacts(error);
   if (!facts) return { errorClass: 'Other', retryable: false };
   const sources = facts.summarySources;
@@ -303,26 +422,66 @@ export function providerFailureDiagnostic(error: unknown): ProviderFailureDiagno
       ? numericStatus
       : undefined;
   const classified = classifyProviderFacts(facts);
-  const errorClass = durableProviderErrorClass(classified, httpStatus);
-  const providerCode =
-    firstProviderField(sources, ['code']) ?? firstProviderField(sources, ['type']);
+  const errorClass = normalizedProviderFailureClass(
+    classified === 'Auth' &&
+      httpStatus !== undefined &&
+      httpStatus !== 401 &&
+      !facts.evidence.structuredCodes.some((value) => PROVIDER_AUTH_CODES.has(value))
+      ? 'Other'
+      : classified,
+    httpStatus,
+  );
+  // When a provider message is projected, its code must come from the same
+  // chain link — never an outer link's code paired with an inner link's
+  // message (#2521).
+  const providerCode = strongestProviderCode(facts.messageLink ?? facts);
   const providerRequestId =
     firstProviderField(sources, ['requestId', 'request_id']) ??
     boundedProviderField(facts.responseHeaders?.['x-request-id']);
+  const retry = providerRetryMetadataFromFacts(facts);
+  const summary = providerFailureSummaryFromFacts(facts);
   return {
     errorClass,
     ...(httpStatus !== undefined ? { httpStatus } : {}),
     ...(providerCode !== undefined ? { providerCode } : {}),
     ...(providerRequestId !== undefined ? { providerRequestId } : {}),
-    retryable: providerRetryMetadata(facts.target).retryable,
+    retryable: retry.retryable,
+    ...(retry.retryAfterMs !== undefined ? { retryAfterMs: retry.retryAfterMs } : {}),
+    ...(summary?.boundedProviderMessage === true
+      ? {
+          message: summary.message,
+          boundedProviderMessage: true as const,
+        }
+      : {}),
   };
 }
 
-function durableProviderErrorClass(classified: string, httpStatus: number | undefined): string {
-  // Structured context-overflow evidence can legitimately arrive behind a
-  // generic 4xx/5xx proxy response and remains stronger than the wrapper code.
-  if (classified === 'ContextLength') return classified;
-  if (httpStatus === 401 || httpStatus === 403) return 'Auth';
+function strongestProviderCode(facts: ProviderErrorFacts): string | undefined {
+  const semantic = facts.evidence.structuredCodes.find(
+    (value) =>
+      PROVIDER_AUTH_CODES.has(value) ||
+      PROVIDER_BILLING_CODES.has(value) ||
+      PROVIDER_PERMISSION_CODES.has(value) ||
+      PROVIDER_USAGE_LIMIT_CODES.has(value) ||
+      PROVIDER_RATE_LIMIT_CODES.has(value) ||
+      PROVIDER_UNAVAILABLE_CODES.has(value) ||
+      CONTEXT_OVERFLOW_PROVIDER_CODES.has(value),
+  );
+  return (
+    boundedProviderField(semantic) ??
+    firstProviderField(facts.summarySources, ['code']) ??
+    firstProviderField(facts.summarySources, ['type'])
+  );
+}
+
+function normalizedProviderFailureClass(
+  classified: string,
+  httpStatus: number | undefined,
+): ProviderFailureResult['errorClass'] {
+  // The semantic class already includes structured provider identifiers and
+  // therefore outranks the transport status used only as a fallback.
+  if (isProviderFailureClass(classified) && classified !== 'Other') return classified;
+  if (httpStatus === 401) return 'Auth';
   if (httpStatus === 402) return 'ProviderBilling';
   if (httpStatus === 408) return 'Timeout';
   if (httpStatus === 413) return 'ContextLength';
@@ -333,28 +492,60 @@ function durableProviderErrorClass(classified: string, httpStatus: number | unde
   if (httpStatus !== undefined && httpStatus >= 500 && httpStatus <= 599) {
     return 'ProviderUnavailable';
   }
-  return DURABLE_PROVIDER_ERROR_CLASSES.has(classified) ? classified : 'Other';
+  return 'Other';
 }
 
 function providerFailureDiagnosticFacts(error: unknown): ProviderErrorFacts | undefined {
   let current = providerErrorTarget(error);
-  let fallback: ProviderErrorFacts | undefined;
-  let codedFallback: ProviderErrorFacts | undefined;
+  const chain: ProviderErrorFacts[] = [];
   const seen = new Set<unknown>();
   for (let depth = 0; depth < 4 && current !== undefined && !seen.has(current); depth += 1) {
     seen.add(current);
     const facts = normalizeProviderError(current);
-    fallback ??= facts;
-    if (facts && (facts.evidence.statusCode || facts.evidence.structuredCodes.length > 0)) {
-      return facts;
-    }
-    if (facts?.evidence.code) codedFallback ??= facts;
+    if (facts) chain.push(facts);
     current =
       current && typeof current === 'object'
         ? safeField(current as Record<string, unknown>, 'cause')
         : undefined;
   }
-  return codedFallback ?? fallback;
+  if (chain.length === 0) return undefined;
+
+  // Provider semantics can sit below an SDK/transport wrapper that also owns
+  // the HTTP status. Aggregate the bounded cause chain instead of letting the
+  // first status-bearing object discard stronger structured codes. Provider
+  // sources are ordered inner-first for message/code projection; transport
+  // status and retry hints remain available as fallback evidence.
+  const providerFirst = [...chain].reverse();
+  const messageFacts = providerFirst.filter((facts) => hasProviderMessageSource(facts));
+  // The message and its paired code/status must come from the SAME chain
+  // link: an inner link's transport message stamped with an outer link's
+  // provider code presents a sentence the provider never said (#2521).
+  const messageLink = messageFacts.find((facts) => firstProviderMessage(facts) !== undefined);
+  const responseHeaders = Object.assign({}, ...chain.map((facts) => facts.responseHeaders ?? {})) as
+    | Record<string, string>
+    | undefined;
+  const bareMessage = messageFacts.find((facts) => facts.bareMessage)?.bareMessage;
+  return {
+    target: chain[0]!.target,
+    ...(messageLink ? { messageLink } : {}),
+    evidence: {
+      text: chain.map((facts) => facts.evidence.text).join(' '),
+      statusCode: chain.find((facts) => facts.evidence.statusCode)?.evidence.statusCode ?? '',
+      code: chain.find((facts) => facts.evidence.code)?.evidence.code ?? '',
+      structuredCodes: [...new Set(chain.flatMap((facts) => facts.evidence.structuredCodes))],
+    },
+    summarySources: {
+      records: providerFirst.flatMap((facts) => facts.summarySources.records),
+      stringErrors: providerFirst.flatMap((facts) => facts.summarySources.stringErrors),
+    },
+    messageSources: {
+      records: messageFacts.flatMap((facts) => facts.summarySources.records),
+      stringErrors: messageFacts.flatMap((facts) => facts.summarySources.stringErrors),
+    },
+    boundedProviderMessageSource: messageFacts.length > 0,
+    ...(bareMessage ? { bareMessage } : {}),
+    ...(responseHeaders && Object.keys(responseHeaders).length > 0 ? { responseHeaders } : {}),
+  };
 }
 
 interface ProviderFailureSources {
@@ -388,7 +579,7 @@ function providerRecord(value: unknown): Record<string, unknown> | undefined {
 
 function firstProviderMessage(facts: ProviderErrorFacts): string | undefined {
   if (facts.bareMessage !== undefined) return boundedProviderMessage(facts.bareMessage);
-  const sources = facts.summarySources;
+  const sources = facts.messageSources ?? facts.summarySources;
   const candidates = [
     ...sources.records.map((source) => safeField(source, 'message')),
     ...sources.stringErrors,
@@ -396,6 +587,29 @@ function firstProviderMessage(facts: ProviderErrorFacts): string | undefined {
   return candidates
     .map((candidate) => boundedProviderMessage(candidate))
     .find((value) => value !== undefined);
+}
+
+function hasProviderMessageSource(facts: ProviderErrorFacts): boolean {
+  if (facts.boundedProviderMessageSource !== undefined) {
+    return facts.boundedProviderMessageSource;
+  }
+  // Positive provider provenance is required for every link shape: the link's
+  // own `.message` — Error or plain object alike — is internal text until a
+  // nested provider source (data/error/responseBody payloads) or a string
+  // error carries provider wording. A bare `{ message }` cause from our own
+  // code or a transport shim must not be certified as a bounded provider
+  // message (#2521).
+  const targetRecord = objectRecord(facts.target);
+  return (
+    facts.summarySources.records.some(
+      (source) =>
+        source !== targetRecord &&
+        boundedProviderMessage(safeField(source, 'message')) !== undefined,
+    ) ||
+    facts.summarySources.stringErrors.some(
+      (candidate) => boundedProviderMessage(candidate) !== undefined,
+    )
+  );
 }
 
 function firstProviderField(
@@ -564,40 +778,56 @@ export function isContextOverflowErrorText(text: string): boolean {
 /**
  * Classifies a provider error by DESCENDING evidence strength over the
  * normalized evidence (Error, string, or plain stream-error-part object):
- * abort → 402 → 429 → 401/403 (numeric fields, never substrings) → the
- * provider's structured overflow code → bare 413 (HTTP: request entity too
- * large — itself input-side evidence, Cerebras sends it with no body) →
- * vetoable free-text overflow relations → generic 5xx → weak word
+ * abort wrapper → structured account state → the provider's structured
+ * overflow code → numeric status fallbacks (402, 429, 401; numeric fields,
+ * never substrings) → bare 413
+ * (HTTP: request entity too large — itself input-side evidence, Cerebras sends it with no body) →
+ * vetoable free-text overflow relations → generic 5xx → free-text abort → weak word
  * heuristics. Specific overflow evidence outranks a generic 5xx because
  * proxies (LiteLLM) wrap provider overflows in 503s; the weak heuristics
- * rank last so "generate" can never become a rate limit.
+ * rank last so "generate" can never become a rate limit. Numeric status
+ * outranks free text because the text spans the whole chain, JSON key names
+ * included.
  */
 export function classifyError(error: unknown): string {
   if (RetryError.isInstance(error) && error.reason === 'abort') return 'Abort';
-  const facts = normalizeProviderError(error);
+  const facts = providerFailureDiagnosticFacts(error);
   return facts ? classifyProviderFacts(facts) : 'Other';
 }
 
 function classifyProviderFacts(facts: ProviderErrorFacts): string {
   const { target: classificationTarget, evidence } = facts;
   const { text, statusCode, code, structuredCodes } = evidence;
-  if (text.includes('abort')) return 'Abort';
   if (code === OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR) return 'Network';
+  if (structuredCodes.some((value) => PROVIDER_AUTH_CODES.has(value))) return 'Auth';
+  if (structuredCodes.some((value) => PROVIDER_BILLING_CODES.has(value))) return 'ProviderBilling';
+  if (structuredCodes.some((value) => PROVIDER_PERMISSION_CODES.has(value)))
+    return 'ProviderPermission';
+  if (structuredCodes.some((value) => PROVIDER_USAGE_LIMIT_CODES.has(value))) return 'UsageLimit';
+  if (structuredCodes.some((value) => PROVIDER_RATE_LIMIT_CODES.has(value))) return 'RateLimit';
+  if (structuredCodes.some((value) => PROVIDER_UNAVAILABLE_CODES.has(value)))
+    return 'ProviderUnavailable';
+  // The provider's structured context code is unconditional input-overflow
+  // evidence. It outranks outer transport status and message fallbacks.
+  if (structuredCodes.some((c) => CONTEXT_OVERFLOW_PROVIDER_CODES.has(c))) return 'ContextLength';
+  // Numeric status outranks free text: the text spans the whole cause chain
+  // including JSON key names, so a 429 whose body reads "request aborted:
+  // too many requests" must keep its rate-limit class and retry-after
+  // handling, and a 500 carrying an `aborted` key stays ProviderUnavailable
+  // (#2521).
   if (statusCode === '402' || code === '402') return 'ProviderBilling';
   if (statusCode === '429' || code === '429') return 'RateLimit';
-  if (statusCode === '401' || statusCode === '403' || code === '401' || code === '403')
-    return 'Auth';
-  // Structured provider evidence: the parsed error JSON's code/type is the
-  // only unconditional signal for a context overflow.
-  if (structuredCodes.some((c) => CONTEXT_OVERFLOW_PROVIDER_CODES.has(c))) return 'ContextLength';
+  if (statusCode === '401' || code === '401') return 'Auth';
+  // A bare 403 is intentionally unknown: providers use it for valid-key
+  // permission failures, guardrails, subscription limits, and occasionally
+  // authentication. The provider's bounded diagnostic remains available.
   if (statusCode === '413' || code === '413') return 'ContextLength';
   // Free-text overflow relations on the composite text, veto-first inside.
   if (isContextOverflowErrorText(text)) return 'ContextLength';
   if (/^5\d\d$/.test(statusCode) || /^5\d\d$/.test(code)) return 'ProviderUnavailable';
-  // Weak word heuristics, last: they only catch errors that carried no
-  // stronger evidence for any other class. `rate` must be word-shaped
-  // ("generate"/"separate" are not rate limits) while still matching the
-  // rate_limit/RateLimitError identifier spellings.
+  if (text.includes('abort')) return 'Abort';
+  // Weak word heuristics remain as compatibility fallbacks after all stronger
+  // provider facts. They must not override a structured account state.
   if (/\brate\b|rate[_-]?limit/.test(text)) return 'RateLimit';
   if (isAuthenticationErrorText(text)) return 'Auth';
   if (text.includes('timeout')) return 'Timeout';
@@ -623,10 +853,14 @@ export function errorPresentationFromClass(errorClass: string): {
       return { reason: 'auth', message: 'Authentication failed' };
     case 'ProviderBilling':
       return { reason: 'provider_billing', message: 'Provider billing required' };
+    case 'ProviderPermission':
+      return { reason: 'provider_permission', message: 'Provider access denied' };
     case 'ProviderUnavailable':
       return { reason: 'provider_unavailable', message: 'Provider returned an error' };
     case 'RateLimit':
       return { reason: 'rate_limit', message: 'Rate limit exceeded' };
+    case 'UsageLimit':
+      return { reason: 'usage_limit', message: 'Usage limit reached' };
     case 'Network':
       return { reason: 'network', message: 'Network error' };
     default:

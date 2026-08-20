@@ -40,8 +40,9 @@ import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.
 import {
   classifyError,
   errorPresentationFromClass,
-  providerFailureSummary,
+  providerFailureResult,
   providerRetryMetadata,
+  taxonomySafeProviderCode,
 } from './provider-error-classification.js';
 import {
   withProviderGenerateTracking,
@@ -484,7 +485,7 @@ export class ModelAdapter {
   }
 
   makeErrorEvent(turnId: string, err: unknown): ErrorEvent {
-    const failure = normalizeModelFailure(err);
+    const failure = normalizeProviderFailure(err);
     return {
       type: 'error',
       id: this.input.newId(),
@@ -492,6 +493,7 @@ export class ModelAdapter {
       ts: this.input.now(),
       recoverable: false,
       ...(failure.code !== undefined ? { code: failure.code } : {}),
+      ...(failure.boundedProviderMessage === true ? { boundedProviderMessage: true } : {}),
       ...(failure.kind !== 'abort' && failure.kind !== 'unknown' ? { reason: failure.kind } : {}),
       message: failure.message,
     };
@@ -949,12 +951,29 @@ function normalizeModelFailure(error: unknown): ModelFailure {
 
 function normalizeProviderFailure(error: unknown): ModelFailure {
   if (isModelFailure(error)) return error;
-  const summary = providerFailureSummary(error);
-  const failure = normalizeModelFailure(error);
+  const result = providerFailureResult(error);
+  const errorClass = result.errorClass === 'Other' ? classifyError(error) : result.errorClass;
+  const presentation = errorPresentationFromClass(errorClass);
+  // The bounded summary is display-safe provider wording; a generalized
+  // presentation message is not. The marker must follow the message, not the
+  // presence of a code (Error.code and provider codes both exist here).
+  const kind = modelFailureKind(errorClass);
+  const boundedProviderMessage = kind === 'unknown' && result.boundedProviderMessage === true;
+  // Only a closed vocabulary of provider codes may enter `code`: this field
+  // falls back into the Host's terminal-state taxonomy (`failureClass`), so a
+  // provider's free-form token must never steer it (#2521).
+  const code = taxonomySafeProviderCode(result.providerCode);
   return {
-    ...failure,
-    ...(summary?.code !== undefined ? { code: summary.code } : {}),
-    ...(failure.kind === 'unknown' && summary !== undefined ? { message: summary.message } : {}),
+    type: 'model_failure',
+    kind,
+    retryable: result.retryable,
+    ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {}),
+    ...(code !== undefined ? { code } : {}),
+    message:
+      boundedProviderMessage && result.message
+        ? result.message
+        : (presentation.message ?? generalizedErrorMessage(error)),
+    ...(boundedProviderMessage ? { boundedProviderMessage: true } : {}),
   };
 }
 
@@ -980,12 +999,16 @@ function modelFailureKind(errorClass: string): ModelFailureKind {
       return 'network';
     case 'ProviderBilling':
       return 'provider_billing';
+    case 'ProviderPermission':
+      return 'provider_permission';
     case 'ProviderUnavailable':
       return 'provider_unavailable';
     case 'RateLimit':
       return 'rate_limit';
     case 'Timeout':
       return 'timeout';
+    case 'UsageLimit':
+      return 'usage_limit';
     default:
       return 'unknown';
   }
@@ -1003,12 +1026,16 @@ function errorClassFromFailureKind(kind: ModelFailureKind): string {
       return 'Network';
     case 'provider_billing':
       return 'ProviderBilling';
+    case 'provider_permission':
+      return 'ProviderPermission';
     case 'provider_unavailable':
       return 'ProviderUnavailable';
     case 'rate_limit':
       return 'RateLimit';
     case 'timeout':
       return 'Timeout';
+    case 'usage_limit':
+      return 'UsageLimit';
     case 'unknown':
       return 'Other';
   }

@@ -46,14 +46,20 @@ export async function readCanonicalTurnSnapshot(
     }
     if (fact.runStatus === 'failed') {
       if (!fact.failureClass) throw new Error('Failed terminal fact has no failure class');
+      const errorContent = fact.terminalEvent.content;
       const failureMessage =
-        fact.terminalEvent.content?.kind === 'error'
-          ? truncateUtf8(
-              redactSecrets(fact.terminalEvent.content.message),
-              TURN_FAILURE_MESSAGE_MAX_BYTES,
-              '…',
-            )
+        errorContent?.kind === 'error'
+          ? truncateUtf8(redactSecrets(errorContent.message), TURN_FAILURE_MESSAGE_MAX_BYTES, '…')
           : undefined;
+      const failureCode =
+        errorContent?.kind === 'error' &&
+        typeof errorContent.code === 'string' &&
+        errorContent.code.length > 0 &&
+        errorContent.code.length <= 128
+          ? errorContent.code
+          : undefined;
+      const boundedProviderMessage =
+        errorContent?.kind === 'error' && errorContent.boundedProviderMessage === true;
       return {
         sessionId,
         turnId,
@@ -61,7 +67,9 @@ export async function readCanonicalTurnSnapshot(
         status: 'failed',
         terminalEventId: fact.terminalEvent.id,
         failureClass: fact.failureClass,
+        ...(failureCode !== undefined ? { failureCode } : {}),
         ...(failureMessage ? { failureMessage } : {}),
+        ...(boundedProviderMessage ? { boundedProviderMessage: true } : {}),
       };
     }
     if (!fact.abortSource) throw new Error('Cancelled terminal fact has no abort source');
@@ -93,7 +101,9 @@ export function worstCaseFailedTurnSnapshot(identity: CanonicalTurnIdentity): Tu
     status: 'failed',
     terminalEventId: 'x'.repeat(128),
     failureClass: '\0'.repeat(128),
+    failureCode: '\0'.repeat(128),
     failureMessage: '\0'.repeat(TURN_FAILURE_MESSAGE_MAX_BYTES),
+    boundedProviderMessage: true,
   };
 }
 

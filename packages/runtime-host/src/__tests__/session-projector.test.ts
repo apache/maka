@@ -81,6 +81,72 @@ test('reseeds the latest provider retry when the active Turn still carries one',
   assert.equal(seeded[0] && 'phase' in seeded[0] ? seeded[0].phase : undefined, 'scheduled');
 });
 
+test('projects a failed Turn with its provider code and bounded-summary marker', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const failed = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 2,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        status: 'failed',
+        terminalEventId: 'terminal-1',
+        failureClass: 'permission_error',
+        failureCode: 'permission_error',
+        failureMessage: 'bounded provider wording',
+        boundedProviderMessage: true,
+      },
+    }),
+  }).events;
+  const errorEvent = failed.find((event) => event.type === 'error');
+  assert.ok(errorEvent && errorEvent.type === 'error');
+  assert.equal(errorEvent.code, 'permission_error');
+  assert.equal(errorEvent.boundedProviderMessage, true);
+  assert.equal(errorEvent.message, 'bounded provider wording');
+});
+
+test('does not mark an unmarked failed-Turn message as a bounded provider summary', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const failed = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 2,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        status: 'failed',
+        terminalEventId: 'terminal-1',
+        failureClass: 'ECONNRESET',
+        failureCode: 'ECONNRESET',
+        failureMessage: 'raw internal socket text',
+      },
+    }),
+  }).events;
+  const errorEvent = failed.find((event) => event.type === 'error');
+  assert.ok(errorEvent && errorEvent.type === 'error');
+  assert.equal(errorEvent.code, 'ECONNRESET');
+  assert.equal(errorEvent.boundedProviderMessage, undefined);
+});
+
 test('emits a live provider retry when the snapshot overlay appears, then drops it after content', () => {
   const projector = new RuntimeHostSessionProjector(
     snapshot(),

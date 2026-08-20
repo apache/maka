@@ -544,6 +544,101 @@ describe('models.dev provider conformance', () => {
     assert.deepEqual(requestedModels, ['kimi-k2.6']);
   });
 
+  test('connection probe keeps a Kimi permission 403 out of authentication', async () => {
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, '/v1/chat/completions');
+      await readBody(request);
+      respondJson(response, 403, {
+        error: {
+          type: 'permission_error',
+          message: 'You have reached the plan usage limit for this model.',
+        },
+      });
+    });
+    const connection: LlmConnection = {
+      slug: 'moonshot-plan-limit',
+      name: 'Moonshot Plan Limit',
+      providerType: 'moonshot',
+      baseUrl: `${server.url}/v1`,
+      defaultModel: 'kimi-k2.6',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const result = await testConnection(connection, 'moonshot-key');
+
+    assert.equal(result.ok, false);
+    assert.equal(result.statusCode, 403);
+    assert.equal(result.errorClass, 'unknown');
+    assert.deepEqual(result.providerFailure, {
+      errorClass: 'RequestRejected',
+      httpStatus: 403,
+      providerCode: 'permission_error',
+      retryable: false,
+      message:
+        'You have reached the plan usage limit for this model. (code=permission_error, status=403)',
+      boundedProviderMessage: true,
+    });
+  });
+
+  test('connection probe distinguishes a structured usage limit from transient 429', async () => {
+    const server = await startJsonServer(async (request, response) => {
+      await readBody(request);
+      respondJson(response, 429, {
+        error: {
+          type: 'usage_limit_reached',
+          message: 'Your plan allowance is exhausted.',
+        },
+      });
+    });
+    const connection: LlmConnection = {
+      slug: 'moonshot-usage-limit',
+      name: 'Moonshot Usage Limit',
+      providerType: 'moonshot',
+      baseUrl: `${server.url}/v1`,
+      defaultModel: 'kimi-k2.6',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const result = await testConnection(connection, 'moonshot-key');
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorClass, 'provider_unavailable');
+    assert.equal(result.providerFailure?.errorClass, 'UsageLimit');
+    assert.equal(result.providerFailure?.retryable, false);
+    assert.equal(result.providerFailure?.boundedProviderMessage, true);
+  });
+
+  test('connection probe still classifies a bare 401 as authentication', async () => {
+    const server = await startJsonServer(async (request, response) => {
+      await readBody(request);
+      respondJson(response, 401, {});
+    });
+    const connection: LlmConnection = {
+      slug: 'moonshot-bare-401',
+      name: 'Moonshot Bare 401',
+      providerType: 'moonshot',
+      baseUrl: `${server.url}/v1`,
+      defaultModel: 'kimi-k2.6',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const result = await testConnection(connection, 'moonshot-key');
+
+    assert.equal(result.ok, false);
+    assert.equal(result.statusCode, 401);
+    assert.equal(result.errorClass, 'auth');
+    assert.equal(result.errorMessage, undefined);
+    assert.equal(result.providerFailure?.message, undefined);
+    assert.equal(result.providerFailure?.boundedProviderMessage, undefined);
+  });
+
   test('OpenAI routes gpt-5* through the Responses wire and other models through Chat Completions by declaration', async () => {
     const requests: string[] = [];
     const server = await startJsonServer(async (request, response) => {

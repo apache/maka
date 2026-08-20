@@ -169,6 +169,10 @@ export type TurnSnapshot =
       terminalEventId: string;
       failureClass: string;
       failureMessage?: string;
+      /** Stable provider/transport code preserved from the terminal error fact. */
+      failureCode?: string;
+      /** Marks `failureMessage` as a safe, bounded provider summary. */
+      boundedProviderMessage?: boolean;
     })
   | (TurnSnapshotBase & {
       status: 'cancelled';
@@ -308,6 +312,11 @@ export const TURN_OPERATION_SPECS = {
     },
   }),
 } as const;
+
+function decodeBoundedProviderMessage(value: unknown): boolean {
+  if (typeof value !== 'boolean') throw invalidProtocolFrame('Invalid boundedProviderMessage');
+  return value;
+}
 
 function decodeTurnStartInput(value: unknown): TurnStartInput {
   const record = requireShapedRecord(
@@ -630,13 +639,16 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
       record,
       'failed Turn snapshot',
       ['sessionId', 'turnId', 'runId', 'status', 'terminalEventId', 'failureClass'],
-      ['failureMessage'],
+      ['failureMessage', 'failureCode', 'boundedProviderMessage'],
     );
     return {
       ...base,
       status,
       terminalEventId: requireId(record.terminalEventId, 'terminalEventId'),
       failureClass: requireString(record.failureClass, 'failureClass', 128),
+      ...(record.failureCode !== undefined
+        ? { failureCode: requireString(record.failureCode, 'failureCode', 128) }
+        : {}),
       ...(record.failureMessage !== undefined
         ? {
             failureMessage: requireUtf8String(
@@ -645,6 +657,11 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
               TURN_FAILURE_MESSAGE_MAX_BYTES,
               false,
             ),
+          }
+        : {}),
+      ...(record.boundedProviderMessage !== undefined
+        ? {
+            boundedProviderMessage: decodeBoundedProviderMessage(record.boundedProviderMessage),
           }
         : {}),
     };

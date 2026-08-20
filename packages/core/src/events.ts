@@ -1066,6 +1066,13 @@ export interface ErrorEvent extends BaseEvent {
   /** Stable machine-readable reason for UI / telemetry routing. */
   reason?: string;
   message: string;
+  /**
+   * Marks `message` as the allowlisted, redacted, bounded provider summary
+   * produced by the Runtime provider-failure boundary. Presentation layers may
+   * render such a message verbatim; an unmarked message must not be shown raw
+   * even when `code` is present (Node error codes carry unbounded text).
+   */
+  boundedProviderMessage?: boolean;
   /** Adapter MUST scrub secrets before populating this field. */
   details?: string[] | Record<string, unknown>;
 }

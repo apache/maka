@@ -17,12 +17,33 @@ export function describeSessionErrorReason(reason: string | undefined, locale: U
       return copy.auth;
     case 'provider_billing':
       return copy.providerBilling;
+    case 'provider_permission':
+      return copy.providerPermission;
     case 'provider_unavailable':
       return copy.provider;
     case 'rate_limit':
       return copy.rateLimit;
+    case 'usage_limit':
+      return copy.usageLimit;
     case 'network':
       return copy.network;
+    default:
+      return undefined;
+  }
+}
+
+/** Shared safe copy for structured provider account failures without displayable provider text. */
+export function describeProviderAccountFailure(
+  errorClass: string | undefined,
+  locale: UiLocale = 'zh',
+): string | undefined {
+  switch (errorClass) {
+    case 'ProviderBilling':
+      return describeSessionErrorReason('provider_billing', locale);
+    case 'ProviderPermission':
+      return describeSessionErrorReason('provider_permission', locale);
+    case 'UsageLimit':
+      return describeSessionErrorReason('usage_limit', locale);
     default:
       return undefined;
   }

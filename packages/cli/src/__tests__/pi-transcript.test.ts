@@ -118,6 +118,107 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(stripAnsi(renderMakaPiStatusLine({ ...meta(), goal: null }, 120)), /goal/);
   });
 
+  test('renders a Runtime Host provider-limit explanation as the turn error', () => {
+    const state = createMakaPiTranscriptState();
+    const message =
+      "You've reached your usage limit for this billing cycle. Your quota will be refreshed in the next cycle.";
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'error',
+        recoverable: false,
+        code: 'permission_error',
+        message,
+        boundedProviderMessage: true,
+      }),
+    );
+
+    assert.deepEqual(state.entries.at(-1), {
+      kind: 'notice',
+      level: 'error',
+      text: message,
+      runtimeError: {},
+    });
+    assert.match(
+      renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n'),
+      /usage limit/,
+    );
+  });
+
+  test('renders a Runtime-owned reason before unmarked provider text', () => {
+    const state = createMakaPiTranscriptState();
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'error',
+        recoverable: false,
+        reason: 'context_overflow',
+        message: 'unbounded provider response',
+      }),
+    );
+
+    assert.deepEqual(state.entries.at(-1), {
+      kind: 'notice',
+      level: 'error',
+      text: '',
+      runtimeError: { reason: 'context_overflow' },
+    });
+    const chinese = renderMakaPiTranscript(state, { ...meta(), uiLocale: 'zh' }, 100)
+      .map(stripAnsi)
+      .join('\n');
+    assert.match(chinese, /上下文窗口已超出限制/);
+    assert.doesNotMatch(chinese, /Context window exceeded/);
+  });
+
+  test('renders a marked provider summary without inventing a code requirement', () => {
+    const state = createMakaPiTranscriptState();
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'error',
+        recoverable: false,
+        message: 'Provider request failed safely.',
+        boundedProviderMessage: true,
+      }),
+    );
+
+    assert.deepEqual(state.entries.at(-1), {
+      kind: 'notice',
+      level: 'error',
+      text: 'Provider request failed safely.',
+      runtimeError: {},
+    });
+  });
+
+  test('hides an unmarked Runtime error behind the safe fallback', () => {
+    const state = createMakaPiTranscriptState();
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'error',
+        recoverable: false,
+        code: 'permission_error',
+        message: 'unbounded provider response',
+      }),
+    );
+
+    assert.deepEqual(state.entries.at(-1), {
+      kind: 'notice',
+      level: 'error',
+      text: '',
+      runtimeError: {},
+    });
+    const chinese = renderMakaPiTranscript(state, { ...meta(), uiLocale: 'zh' }, 100)
+      .map(stripAnsi)
+      .join('\n');
+    assert.match(chinese, /任务运行失败，请稍后重试/);
+    assert.doesNotMatch(chinese, /The task run failed/);
+  });
+
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'inspect the package');

@@ -7,8 +7,11 @@ import { z } from 'zod/v4';
 import {
   classifyError,
   providerFailureDiagnostic,
+  providerFailureResult,
+  errorPresentationFromClass,
   providerFailureSummary,
   providerRetryMetadata,
+  taxonomySafeProviderCode,
 } from '../provider-error-classification.js';
 
 describe('Provider error classification', () => {
@@ -65,11 +68,71 @@ describe('Provider error classification', () => {
     assert.equal(diagnostic.retryable, false);
   });
 
+  test('ranks structured cause semantics above an outer HTTP status', () => {
+    const wrapped = (cause: unknown) =>
+      Object.assign(new Error('transport wrapper rejected the request'), {
+        status: 403,
+        code: 'FETCH_FAILED',
+        cause,
+      });
+    const cases: Array<[Record<string, unknown>, string, string]> = [
+      [{ error: { code: 'usage_limit_reached' } }, 'UsageLimit', 'usage_limit_reached'],
+      [{ error: { type: 'permission_denied' } }, 'ProviderPermission', 'permission_denied'],
+      [{ error: { code: 'context_length_exceeded' } }, 'ContextLength', 'context_length_exceeded'],
+    ];
+
+    for (const [cause, expectedClass, expectedCode] of cases) {
+      const result = providerFailureResult(wrapped(cause));
+      assert.equal(result.errorClass, expectedClass);
+      assert.equal(result.httpStatus, 403);
+      assert.equal(result.providerCode, expectedCode);
+      assert.equal(result.retryable, false);
+      assert.deepEqual(providerRetryMetadata(wrapped(cause)), { retryable: false });
+    }
+  });
+
+  test('ranks structured context overflow above numeric and text fallbacks', () => {
+    const cases = [
+      Object.assign(new Error('provider rejected the request'), {
+        statusCode: 429,
+        data: { error: { code: 'context_length_exceeded' } },
+      }),
+      Object.assign(new Error('request aborted because the prompt is too long'), {
+        data: { error: { code: 'context_length_exceeded' } },
+      }),
+      Object.assign(new Error('proxy service unavailable'), {
+        statusCode: 503,
+        data: { error: { code: 'context_length_exceeded' } },
+      }),
+    ];
+
+    for (const error of cases) {
+      assert.equal(classifyError(error), 'ContextLength');
+      assert.deepEqual(providerRetryMetadata(error), { retryable: false });
+    }
+  });
+
   test('durable diagnostics distinguish the provider failure classes used by fail-open handling', () => {
     const cases: Array<[unknown, string]> = [
       [Object.assign(new Error('bad request'), { statusCode: 400 }), 'RequestRejected'],
       [Object.assign(new Error('slow down'), { statusCode: 429 }), 'RateLimit'],
       [Object.assign(new Error('upstream failed'), { statusCode: 503 }), 'ProviderUnavailable'],
+      [
+        Object.assign(new Error('access denied'), {
+          statusCode: 403,
+          data: { error: { type: 'permission_denied' } },
+        }),
+        'ProviderPermission',
+      ],
+      [
+        Object.assign(new Error('plan exhausted'), {
+          statusCode: 429,
+          data: { error: { type: 'usage_limit_reached' } },
+        }),
+        'UsageLimit',
+      ],
+      [{ error: { type: 'permission_denied' } }, 'ProviderPermission'],
+      [{ error: { type: 'usage_limit_reached' } }, 'UsageLimit'],
       [new DOMException('request timed out', 'TimeoutError'), 'Timeout'],
       [new TypeError('fetch failed'), 'Network'],
       [
@@ -384,6 +447,202 @@ describe('Provider error classification', () => {
       ),
       'AI_RetryError',
     );
+  });
+
+  test('separates structured account limits, permission, and transient throttling', () => {
+    const providerError = (
+      statusCode: number,
+      message: string,
+      structured: Record<string, unknown> = {},
+    ) =>
+      Object.assign(new Error(message), {
+        name: 'AI_APICallError',
+        statusCode,
+        data: { error: { message, ...structured } },
+      });
+
+    const insufficientQuota = providerError(429, 'You exceeded your current quota', {
+      type: 'insufficient_quota',
+      code: 'insufficient_quota',
+    });
+    assert.equal(classifyError(insufficientQuota), 'ProviderBilling');
+    assert.deepEqual(providerRetryMetadata(insufficientQuota), { retryable: false });
+
+    const planUsageLimit = providerError(429, 'Your subscription usage limit has been reached', {
+      type: 'usage_limit_reached',
+    });
+    assert.equal(classifyError(planUsageLimit), 'UsageLimit');
+    assert.deepEqual(providerRetryMetadata(planUsageLimit), { retryable: false });
+
+    const abortedUsageLimit = providerError(429, 'The request was aborted at the account limit', {
+      type: 'usage_limit_reached',
+    });
+    assert.equal(classifyError(abortedUsageLimit), 'UsageLimit');
+
+    const permission = providerError(403, 'This key cannot access the requested model', {
+      type: 'permission_denied',
+    });
+    assert.equal(classifyError(permission), 'ProviderPermission');
+    assert.deepEqual(providerRetryMetadata(permission), { retryable: false });
+
+    const throttle = providerError(429, 'Too many requests', {
+      code: 'rate_limit_exceeded',
+    });
+    assert.equal(classifyError(throttle), 'RateLimit');
+    // A bare rate limit fails closed; automatic retries need a named delay.
+    assert.deepEqual(providerRetryMetadata(throttle), { retryable: false });
+    const delayedThrottle = Object.assign(
+      providerError(429, 'Too many requests', { code: 'rate_limit_exceeded' }),
+      { responseHeaders: { 'retry-after': '40' } },
+    );
+    assert.deepEqual(providerRetryMetadata(delayedThrottle), {
+      retryable: true,
+      retryAfterMs: 40_000,
+    });
+
+    assert.equal(classifyError(providerError(401, 'Invalid API key')), 'Auth');
+    assert.equal(classifyError(providerError(403, 'Request forbidden')), 'AI_APICallError');
+    assert.equal(classifyError(providerError(400, 'Quota exceeded')), 'AI_APICallError');
+  });
+
+  test('keeps the observed Kimi plan-limit explanation without guessing its account state', async () => {
+    const handler = createJsonErrorResponseHandler({
+      errorSchema: z.object({
+        type: z.literal('error'),
+        error: z.object({
+          type: z.string(),
+          message: z.string(),
+        }),
+      }),
+      errorToMessage: (data) => data.error.message,
+    });
+    const observedMessage =
+      "You've reached your usage limit for this billing cycle. Your quota will be refreshed in the next cycle. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/code/#pricing";
+    const planCycleLimit = (
+      await handler({
+        response: new Response(
+          JSON.stringify({
+            error: { type: 'permission_error', message: observedMessage },
+            type: 'error',
+          }),
+          {
+            status: 403,
+            headers: { 'content-type': 'application/json; charset=utf-8' },
+          },
+        ),
+        url: 'https://api.example.test/coding/v1/messages',
+        requestBodyValues: {},
+      })
+    ).value;
+
+    assert.equal(classifyError(planCycleLimit), 'AI_APICallError');
+    assert.deepEqual(providerRetryMetadata(planCycleLimit), { retryable: false });
+    assert.deepEqual(providerFailureSummary(planCycleLimit), {
+      message: `${observedMessage} (code=permission_error, status=403)`,
+      code: 'permission_error',
+    });
+    assert.deepEqual(providerFailureResult(planCycleLimit), {
+      errorClass: 'RequestRejected',
+      httpStatus: 403,
+      providerCode: 'permission_error',
+      retryable: false,
+      message: `${observedMessage} (code=permission_error, status=403)`,
+      boundedProviderMessage: true,
+    });
+    assert.deepEqual(providerFailureDiagnostic(planCycleLimit), {
+      errorClass: 'RequestRejected',
+      httpStatus: 403,
+      providerCode: 'permission_error',
+      retryable: false,
+    });
+  });
+
+  test('does not mark a metadata-only fallback as provider wording', () => {
+    assert.deepEqual(providerFailureResult({ statusCode: 403 }), {
+      errorClass: 'RequestRejected',
+      httpStatus: 403,
+      retryable: false,
+    });
+  });
+
+  test('requires positive provider provenance before certifying a cause message (#2521)', () => {
+    // A plain-object cause whose only message is its own `.message` is
+    // internal text, not a bounded provider message.
+    const result = providerFailureResult(
+      new Error('Request failed', {
+        cause: { message: 'internal maka path /Users/x/.maka/keys.json missing' },
+      }),
+    );
+    assert.equal(result.boundedProviderMessage, undefined);
+    assert.equal(result.message, undefined);
+  });
+
+  test('numeric status outranks abort wording anywhere in the chain text (#2521)', () => {
+    const rateLimited = Object.assign(new Error('request aborted: too many requests'), {
+      name: 'AI_APICallError',
+      statusCode: 429,
+      data: { error: { message: 'request aborted: too many requests' } },
+    });
+    assert.equal(classifyError(rateLimited), 'RateLimit');
+    const unavailable = Object.assign(new Error('request aborted by gateway'), {
+      name: 'AI_APICallError',
+      statusCode: 500,
+      data: { error: { message: 'request aborted by gateway' } },
+    });
+    assert.equal(classifyError(unavailable), 'ProviderUnavailable');
+    // Even a JSON key name carrying "aborted" must not reclassify a 5xx.
+    assert.equal(classifyError({ statusCode: 500, aborted: false }), 'ProviderUnavailable');
+  });
+
+  test('never reports a text-derived Abort as retryable (#2521)', () => {
+    const result = providerFailureResult(new Error('The operation was aborted'));
+    assert.equal(result.errorClass, 'Abort');
+    assert.equal(result.retryable, false);
+  });
+
+  test('selects the message and the provider code from the same chain link (#2521)', () => {
+    const error = Object.assign(new Error('Request failed'), {
+      name: 'AI_APICallError',
+      statusCode: 429,
+      data: { error: { code: 'rate_limit_exceeded' } },
+      cause: { error: { message: 'transport detail: socket hang up' } },
+    });
+    const result = providerFailureResult(error);
+    // Classification still sees the aggregated structured code...
+    assert.equal(result.errorClass, 'RateLimit');
+    // ...but the projected message is never stamped with a code from a
+    // different link.
+    assert.equal(result.providerCode, undefined);
+    assert.match(result.message ?? '', /socket hang up/);
+    assert.doesNotMatch(result.message ?? '', /rate_limit/i);
+  });
+
+  test('admits only closed-vocabulary provider codes into the taxonomy input (#2521)', () => {
+    assert.equal(taxonomySafeProviderCode('rate_limit_exceeded'), 'rate_limit_exceeded');
+    assert.equal(taxonomySafeProviderCode('429'), '429');
+    // Free-form tokens containing taxonomy-matched substrings are refused.
+    assert.equal(taxonomySafeProviderCode('tool_choice_invalid'), undefined);
+    assert.equal(taxonomySafeProviderCode('auth_custom_scheme'), undefined);
+    assert.equal(taxonomySafeProviderCode(undefined), undefined);
+  });
+
+  test('maps provider classes to stable user-safe presentations', () => {
+    assert.deepEqual(errorPresentationFromClass('ProviderBilling'), {
+      reason: 'provider_billing',
+      message: 'Provider billing required',
+    });
+    assert.deepEqual(errorPresentationFromClass('ProviderPermission'), {
+      reason: 'provider_permission',
+      message: 'Provider access denied',
+    });
+    assert.deepEqual(errorPresentationFromClass('RateLimit'), {
+      reason: 'rate_limit',
+      message: 'Rate limit exceeded',
+    });
+    assert.deepEqual(errorPresentationFromClass('UsageLimit'), {
+      reason: 'usage_limit',
+      message: 'Usage limit reached',
+    });
   });
 });
 

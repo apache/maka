@@ -3,6 +3,7 @@ import type { TextFileImportPreflightFailureReason } from '@maka/core/text-file-
 import type { UiLocale } from '@maka/core/ui-locale';
 import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
 import { getShellCopy } from './locales/shell-copy.js';
+import { describeProviderAccountFailure } from './session-error-presentation.js';
 
 const SESSION_READ_MESSAGES_ERROR_MARKER = 'MAKA_SESSION_READ_MESSAGES_ERROR:';
 
@@ -41,21 +42,34 @@ export function openPathActionErrorMessage(
 
 export function commandPaletteConnectionTestFailureMessage(result: ConnectionTestResult, locale: UiLocale): string {
   const fallback = commandPaletteConnectionTestFailureFallback(result, locale);
-  if (!result.errorMessage) return fallback;
-  return localizedErrorMessage(new Error(result.errorMessage), fallback, locale);
+  const failure = result.providerFailure;
+  return failure?.boundedProviderMessage === true && failure.message
+    ? failure.message
+    : fallback;
 }
 
 function commandPaletteConnectionTestFailureFallback(result: ConnectionTestResult, locale: UiLocale): string {
+  const accountFailure = describeProviderAccountFailure(result.providerFailure?.errorClass, locale);
+  if (accountFailure) return accountFailure;
   const copy = getShellCopy(locale).commandActions.connectionFailures;
-  if (result.statusCode === 429) return copy.rateLimit;
+  switch (result.providerFailure?.errorClass) {
+    case 'Auth':
+      return copy.auth;
+    case 'Timeout':
+      return copy.timeout;
+    case 'RateLimit':
+      return copy.rateLimit;
+    case 'Network':
+      return copy.network;
+    case 'ProviderUnavailable':
+      return copy.provider;
+    default:
+      break;
+  }
   if (result.errorClass === 'timeout') return copy.timeout;
-  if (result.errorClass === 'auth' || result.statusCode === 401 || result.statusCode === 403) {
-    return copy.auth;
-  }
+  if (result.errorClass === 'auth') return copy.auth;
   if (result.errorClass === 'network') return copy.network;
-  if (result.errorClass === 'provider_unavailable' || (result.statusCode && result.statusCode >= 500)) {
-    return copy.provider;
-  }
+  if (result.errorClass === 'provider_unavailable') return copy.provider;
   return copy.unknown;
 }
 

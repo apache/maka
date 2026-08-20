@@ -177,6 +177,13 @@ export interface RuntimeEventErrorContent {
   /** Stable machine-readable reason for routing; mirrors ErrorEvent.reason. */
   reason?: string;
   message: string;
+  /**
+   * Marks `message` as the allowlisted, redacted, bounded provider summary
+   * produced by the Runtime provider-failure boundary. Presentation layers
+   * may render such a message verbatim; an unmarked message must not be
+   * shown raw even when `code` is present.
+   */
+  boundedProviderMessage?: boolean;
   /** Adapter MUST scrub secrets before populating this field. */
   details?: string[] | Record<string, unknown>;
 }
@@ -478,7 +485,7 @@ const FUNCTION_RESPONSE_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionRe
 );
 const ERROR_CONTENT_SHAPE = defineObjectShape<RuntimeEventErrorContent>()(
   ['kind', 'message'],
-  ['code', 'reason', 'details'],
+  ['code', 'reason', 'boundedProviderMessage', 'details'],
 );
 const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
   [],
@@ -684,6 +691,8 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         hasExactShape(value, ERROR_CONTENT_SHAPE) &&
         isOptionalString(value.code) &&
         isOptionalString(value.reason) &&
+        (value.boundedProviderMessage === undefined ||
+          typeof value.boundedProviderMessage === 'boolean') &&
         typeof value.message === 'string' &&
         (value.details === undefined || isStringArray(value.details) || isRecord(value.details))
       );

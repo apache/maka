@@ -351,6 +351,7 @@ export interface ConnectionTestResult {
   errorMessage?: string;
   statusCode?: number;
   errorClass?: ConnectionTestErrorClass;
+  providerFailure?: import('./provider-failure.js').ProviderFailureResult;
 }
 
 export const PROVIDER_DEFAULTS = PROVIDER_REGISTRY;

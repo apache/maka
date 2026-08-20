@@ -303,6 +303,9 @@ export function projectHostConnectionTest(result: ConnectionTestRunResult): Conn
     errorClass: result.test.errorClass === 'invalid_response'
       ? 'unknown'
       : result.test.errorClass,
+    ...(result.test.providerFailure === undefined
+      ? {}
+      : { providerFailure: result.test.providerFailure }),
   };
 }
 

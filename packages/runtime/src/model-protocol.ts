@@ -319,9 +319,11 @@ export type ModelFailureKind =
   | 'context_overflow'
   | 'network'
   | 'provider_billing'
+  | 'provider_permission'
   | 'provider_unavailable'
   | 'rate_limit'
   | 'timeout'
+  | 'usage_limit'
   | 'unknown';
 
 export interface ModelFailure {
@@ -333,6 +335,11 @@ export interface ModelFailure {
   /** Provider-requested delay for the next physical attempt, in milliseconds. */
   retryAfterMs?: number;
   code?: string;
+  /**
+   * True when `message` is the bounded, redacted provider summary from the
+   * provider-failure boundary rather than a generalized error message.
+   */
+  boundedProviderMessage?: boolean;
 }
 
 /**

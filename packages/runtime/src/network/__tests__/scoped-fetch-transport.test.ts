@@ -360,7 +360,15 @@ describe('connection effect network transport', () => {
 
       assert.equal(outcome.ok, false);
       if (outcome.ok) return;
-      assert.deepEqual(outcome.error, { kind: 'auth', statusCode: 401 });
+      assert.deepEqual(outcome.error, {
+        kind: 'auth',
+        statusCode: 401,
+        providerFailure: {
+          errorClass: 'Auth',
+          httpStatus: 401,
+          retryable: false,
+        },
+      });
       assert.equal(outcome.modelId, undefined);
       assert.equal(typeof outcome.latencyMs, 'number');
       assert.deepEqual(Object.keys(outcome).sort(), ['error', 'latencyMs', 'ok']);
@@ -369,7 +377,8 @@ describe('connection effect network transport', () => {
       const legacy = await testConnection(connection, 'provider-key', undefined, {
         fetch: transport.fetch,
       });
-      assert.match(legacy.errorMessage ?? '', /raw-provider-auth-detail/);
+      assert.equal(legacy.errorMessage, undefined);
+      assert.equal(legacy.providerFailure?.boundedProviderMessage, undefined);
     } finally {
       await transport.close();
       await closeServer(server);

@@ -3,7 +3,6 @@ import type { SessionEvent } from '@maka/core/events';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
-import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import { describeSessionErrorReason } from './session-error-presentation.js';
 
 const NO_REAL_CONNECTION_CODE = 'NO_REAL_CONNECTION';
@@ -43,8 +42,19 @@ export function sessionEventErrorMessage(
   }
   const reasonDescription = describeSessionErrorReason(event.reason, locale);
   if (reasonDescription) return reasonDescription;
+
+  // Provider errors reach this boundary with a stable code plus the
+  // allowlisted, redacted, bounded summary produced by ModelAdapter. Keep that
+  // structured result authoritative instead of reclassifying words or HTTP
+  // status fragments in the presentation layer. The bounded marker is the only
+  // proof that `message` is safe to render verbatim: a code alone can be a Node
+  // transport code whose message is unbounded internal text.
+  if (event.boundedProviderMessage === true && event.message.length > 0) {
+    return event.message;
+  }
+
   const fallback = getDesktopConversationCopy(locale).actions.conversationErrorFallback;
-  return localizedShellErrorMessage(new Error(event.message), fallback, locale);
+  return fallback;
 }
 
 /**

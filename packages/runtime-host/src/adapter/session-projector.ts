@@ -401,6 +401,8 @@ export class RuntimeHostSessionProjector {
         recoverable: false,
         reason: root.failureClass,
         message: root.failureMessage ?? `Turn failed: ${root.failureClass}`,
+        ...(root.failureCode !== undefined ? { code: root.failureCode } : {}),
+        ...(root.boundedProviderMessage === true ? { boundedProviderMessage: true } : {}),
       });
     } else {
       events.push({
