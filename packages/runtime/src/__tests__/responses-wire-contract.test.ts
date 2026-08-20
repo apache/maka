@@ -113,7 +113,7 @@ describe('responses wire contract', () => {
       contract: {
         adapter: 'open-responses',
         reasoningReplay: 'plaintext-summary',
-        compatibility: ['force-store-false', 'reject-forced-tool-choice'],
+        compatibility: 'alibaba-token-plan',
       },
     });
     assert.equal(alibaba.responsesProviderOptionsKey, 'alibaba-token-plan-cn');
@@ -170,7 +170,7 @@ describe('responses wire contract', () => {
         contract: {
           adapter: 'open-responses',
           reasoningReplay: 'plaintext-summary',
-          compatibility: ['force-store-false', 'reject-forced-tool-choice'],
+          compatibility: 'alibaba-token-plan',
         },
       },
       {
@@ -178,7 +178,7 @@ describe('responses wire contract', () => {
         contract: {
           adapter: 'open-responses',
           reasoningReplay: 'plaintext-summary',
-          compatibility: ['force-store-false', 'reject-forced-tool-choice'],
+          compatibility: 'alibaba-token-plan',
         },
       },
     ]);

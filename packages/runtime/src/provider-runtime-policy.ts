@@ -5,16 +5,14 @@ import type {
 } from '@maka/core/llm-connections';
 import { openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 
-export type ProviderResponsesCompatibilityModule =
-  | 'force-store-false'
-  | 'reject-forced-tool-choice';
+export type OpenResponsesCompatibilityProfile = 'alibaba-token-plan';
 
 export type RuntimeProviderResponsesContract =
   | Extract<ProviderResponsesContract, { adapter: 'openai' }>
   | {
       readonly adapter: 'open-responses';
       readonly reasoningReplay: 'plaintext-content' | 'plaintext-summary';
-      readonly compatibility?: readonly ProviderResponsesCompatibilityModule[];
+      readonly compatibility?: OpenResponsesCompatibilityProfile;
     };
 
 type OpenAiCompatibleRuntimeAdapter = Omit<
@@ -28,10 +26,15 @@ export type RuntimeProviderAdapter =
   | Exclude<ProviderRuntimeAdapter, { kind: 'openai-compatible' }>
   | OpenAiCompatibleRuntimeAdapter;
 
+interface RuntimeProviderIdentity {
+  readonly providerType: ProviderType;
+  readonly slug?: string;
+}
+
 const ALIBABA_TOKEN_PLAN_RESPONSES = {
   adapter: 'open-responses',
   reasoningReplay: 'plaintext-summary',
-  compatibility: ['force-store-false', 'reject-forced-tool-choice'],
+  compatibility: 'alibaba-token-plan',
 } as const satisfies RuntimeProviderResponsesContract;
 
 export function resolveRuntimeProviderAdapter(
@@ -52,6 +55,16 @@ export function defaultOpenAiApiProtocol(
   return isAlibabaTokenPlanProvider(providerType) && modelId.trim() === 'qwen3.8-max'
     ? 'openai-responses'
     : openAiAdapterApiProtocol(modelId, providerType);
+}
+
+/** Raw provider identity passed to open-responses and used as its provider-options key. */
+export function runtimeProviderName(
+  adapter: RuntimeProviderAdapter,
+  connection: RuntimeProviderIdentity,
+): string {
+  return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
+    ? (connection.slug ?? connection.providerType)
+    : connection.providerType;
 }
 
 function isAlibabaTokenPlanProvider(providerType: ProviderType): boolean {

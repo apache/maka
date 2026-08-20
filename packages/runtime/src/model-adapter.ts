@@ -40,7 +40,6 @@ import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.
 import {
   plaintextResponsesReasoningProviderOptions,
   safePlaintextResponsesReasoningItemId,
-  type PlaintextResponsesReasoningCarrier,
 } from './responses-reasoning-state.js';
 import {
   classifyError,
@@ -204,7 +203,6 @@ export class ModelAdapter {
               ? 'plaintext-content'
               : {
                   kind: 'plaintext-item',
-                  carrier: plaintextCarrier(this.runtime.reasoningReplay.contract.reasoningReplay),
                   profile: requireResponsesReplayProfile(this.runtime),
                   providerOptionsKey: requireResponsesProviderOptionsKey(this.runtime),
                 },
@@ -731,16 +729,9 @@ export interface ModelAdapterRuntimeEventReplaySupport {
     | 'plaintext-content'
     | {
         kind: 'plaintext-item';
-        carrier: PlaintextResponsesReasoningCarrier;
         profile: string;
         providerOptionsKey: string;
       };
-}
-
-function plaintextCarrier(
-  replay: 'plaintext-content' | 'plaintext-summary',
-): PlaintextResponsesReasoningCarrier {
-  return replay === 'plaintext-summary' ? 'summary' : 'content';
 }
 
 function requireResponsesProviderOptionsKey(runtime: ResolvedModelRuntime): string {
@@ -867,7 +858,6 @@ function openAiResponsesReasoningProviderOptionsFromChunk(
     }
     const providerOptions = plaintextResponsesReasoningProviderOptions(
       itemId,
-      plaintextCarrier(runtime.reasoningReplay.contract.reasoningReplay),
       requireResponsesReplayProfile(runtime),
       summaryParts,
     );

@@ -7,19 +7,12 @@ const MAX_PROFILE_LENGTH = 128;
 const MAX_SUMMARY_PARTS = 128;
 const MAX_SUMMARY_TEXT_LENGTH = 10_000_000;
 
-export type PlaintextResponsesReasoningCarrier = 'content' | 'summary';
-
-export type PlaintextResponsesReasoningState = {
+export interface PlaintextResponsesReasoningState {
   readonly version: 1;
   readonly profile: string;
   readonly itemId: string;
-} & (
-  | { readonly carrier: 'content' }
-  | {
-      readonly carrier: 'summary';
-      readonly summaryPartLengths: readonly number[];
-    }
-);
+  readonly summaryPartLengths: readonly number[];
+}
 
 export type PlaintextResponsesReasoningStateDecodeResult =
   | { readonly kind: 'missing' }
@@ -28,25 +21,19 @@ export type PlaintextResponsesReasoningStateDecodeResult =
 
 export function plaintextResponsesReasoningProviderOptions(
   itemId: string,
-  carrier: PlaintextResponsesReasoningCarrier,
   profile: string,
-  summaryParts?: readonly string[],
+  summaryParts: readonly string[],
 ): NonNullable<ModelMessage['providerOptions']> | undefined {
-  if (!isSafeItemId(itemId) || !isSafeProfile(profile)) return undefined;
-  if (carrier === 'summary') {
-    if (!isSafeSummaryParts(summaryParts)) return undefined;
-    return {
-      [STATE_KEY]: {
-        version: STATE_VERSION,
-        profile,
-        itemId,
-        carrier,
-        summaryPartLengths: summaryParts.map((part) => part.length),
-      },
-    };
+  if (!isSafeItemId(itemId) || !isSafeProfile(profile) || !isSafeSummaryParts(summaryParts)) {
+    return undefined;
   }
   return {
-    [STATE_KEY]: { version: STATE_VERSION, profile, itemId, carrier },
+    [STATE_KEY]: {
+      version: STATE_VERSION,
+      profile,
+      itemId,
+      summaryPartLengths: summaryParts.map((part) => part.length),
+    },
   };
 }
 
@@ -59,34 +46,14 @@ export function decodePlaintextResponsesReasoningState(
   const record = raw as Record<string, unknown>;
   const profile = isSafeProfile(record.profile) ? record.profile : undefined;
   const itemId = isSafeItemId(record.itemId) ? record.itemId : undefined;
-  const baseInvalid =
-    record.version !== STATE_VERSION ||
-    !profile ||
-    !itemId ||
-    (record.carrier !== 'content' && record.carrier !== 'summary');
+  const baseInvalid = record.version !== STATE_VERSION || !profile || !itemId;
   if (baseInvalid) {
     return { kind: 'malformed', ...(profile ? { profile } : {}) };
-  }
-  if (record.carrier === 'content') {
-    if (
-      Object.keys(record).some((key) => !['version', 'profile', 'itemId', 'carrier'].includes(key))
-    ) {
-      return { kind: 'malformed', ...(profile ? { profile } : {}) };
-    }
-    return {
-      kind: 'valid',
-      state: {
-        version: STATE_VERSION,
-        profile,
-        itemId,
-        carrier: 'content',
-      },
-    };
   }
   if (
     !isSafeSummaryPartLengths(record.summaryPartLengths) ||
     Object.keys(record).some(
-      (key) => !['version', 'profile', 'itemId', 'carrier', 'summaryPartLengths'].includes(key),
+      (key) => !['version', 'profile', 'itemId', 'summaryPartLengths'].includes(key),
     )
   ) {
     return { kind: 'malformed', ...(profile ? { profile } : {}) };
@@ -97,7 +64,6 @@ export function decodePlaintextResponsesReasoningState(
       version: STATE_VERSION,
       profile,
       itemId,
-      carrier: 'summary',
       summaryPartLengths: record.summaryPartLengths,
     },
   };
@@ -119,17 +85,14 @@ export function replayPlaintextResponsesProviderOptions(input: {
   state: PlaintextResponsesReasoningState;
   text: string;
 }): NonNullable<ModelMessage['providerOptions']> {
-  const reasoningSummary =
-    input.state.carrier === 'summary' ? reconstructSummaryParts(input.text, input.state) : [];
   return {
     [input.providerOptionsKey]: {
       itemId: input.state.itemId,
-      reasoningSummary,
+      reasoningSummary: reconstructSummaryParts(input.text, input.state),
       // Presence is meaningful to @ai-sdk/open-responses: null prevents its
       // fallback from copying the canonical text into content when the
       // provider replays reasoning through summary instead.
-      reasoningContent:
-        input.state.carrier === 'content' ? [{ type: 'reasoning_text', text: input.text }] : null,
+      reasoningContent: null,
     },
   };
 }
@@ -140,7 +103,7 @@ export function safePlaintextResponsesReasoningItemId(value: unknown): string | 
 
 function reconstructSummaryParts(
   text: string,
-  state: Extract<PlaintextResponsesReasoningState, { carrier: 'summary' }>,
+  state: PlaintextResponsesReasoningState,
 ): Array<{ type: 'summary_text'; text: string }> {
   let offset = 0;
   const parts = state.summaryPartLengths.map((length) => {

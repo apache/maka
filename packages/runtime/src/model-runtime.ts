@@ -10,6 +10,7 @@ import { resolveApplyPatchProfile, type ApplyPatchProfile } from './apply-patch-
 import {
   defaultOpenAiApiProtocol,
   resolveRuntimeProviderAdapter,
+  runtimeProviderName,
   type RuntimeProviderAdapter,
   type RuntimeProviderResponsesContract,
 } from './provider-runtime-policy.js';
@@ -106,7 +107,7 @@ export function resolveModelRuntime(
     replay.contract.adapter === 'open-responses' &&
     replay.contract.reasoningReplay === 'plaintext-summary'
       ? {
-          responsesProviderOptionsKey: responsesProviderOptionsKey(connection, adapter),
+          responsesProviderOptionsKey: runtimeProviderName(adapter, connection),
           responsesReplayProfile: connection.slug ?? connection.providerType,
         }
       : {}),
@@ -118,15 +119,6 @@ export function resolveModelRuntime(
       modelId,
     ),
   };
-}
-
-function responsesProviderOptionsKey(
-  connection: ModelRuntimeConnection,
-  adapter: RuntimeProviderAdapter,
-): string {
-  return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
-    ? (connection.slug ?? connection.providerType)
-    : connection.providerType;
 }
 
 export function modelUsesAnthropicMessages(

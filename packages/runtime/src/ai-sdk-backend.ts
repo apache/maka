@@ -2404,7 +2404,7 @@ export class AiSdkBackend implements AgentBackend {
                   const lastState = decodePlaintextResponsesReasoningState(
                     lastPart.providerOptions,
                   );
-                  if (lastState.kind === 'valid' && lastState.state.carrier === 'summary') {
+                  if (lastState.kind === 'valid') {
                     // An invalid next item has no usable stream id. Do not
                     // append its deltas to the finalized item: partial-error
                     // flush must keep that item's durable boundaries valid.
@@ -4012,9 +4012,6 @@ export class AiSdkBackend implements AgentBackend {
         const state = decoded.state;
         if (state.profile !== replaySupport.responsesReasoning.profile) {
           return undefined;
-        }
-        if (state.carrier !== replaySupport.responsesReasoning.carrier) {
-          throw new Error('Durable plaintext Responses reasoning carrier does not match provider');
         }
         return {
           part: {

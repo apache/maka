@@ -10,7 +10,6 @@ import {
 test('round-trips one bounded versioned plaintext Responses item identity', () => {
   const options = plaintextResponsesReasoningProviderOptions(
     'reasoning-item-1',
-    'summary',
     'alibaba-token-plan-cn',
     ['reasoning summary'],
   );
@@ -19,7 +18,6 @@ test('round-trips one bounded versioned plaintext Responses item identity', () =
       version: 1,
       profile: 'alibaba-token-plan-cn',
       itemId: 'reasoning-item-1',
-      carrier: 'summary',
       summaryPartLengths: [17],
     },
   });
@@ -29,7 +27,6 @@ test('round-trips one bounded versioned plaintext Responses item identity', () =
       version: 1,
       profile: 'alibaba-token-plan-cn',
       itemId: 'reasoning-item-1',
-      carrier: 'summary',
       summaryPartLengths: [17],
     },
   });
@@ -38,17 +35,15 @@ test('round-trips one bounded versioned plaintext Responses item identity', () =
 
 test('rejects malformed, widened, and unsafe plaintext Responses state', () => {
   for (const makaResponses of [
-    { version: 2, profile: 'alibaba-token-plan-cn', itemId: 'item', carrier: 'summary' },
-    { version: 1, profile: '', itemId: 'item', carrier: 'summary' },
-    { version: 1, profile: 'bad\nprofile', itemId: 'item', carrier: 'summary' },
-    { version: 1, profile: 'alibaba-token-plan-cn', itemId: '', carrier: 'summary' },
-    { version: 1, profile: 'alibaba-token-plan-cn', itemId: 'bad\nitem', carrier: 'summary' },
-    { version: 1, profile: 'alibaba-token-plan-cn', itemId: 'item', carrier: 'unknown' },
+    { version: 2, profile: 'alibaba-token-plan-cn', itemId: 'item' },
+    { version: 1, profile: '', itemId: 'item' },
+    { version: 1, profile: 'bad\nprofile', itemId: 'item' },
+    { version: 1, profile: 'alibaba-token-plan-cn', itemId: '' },
+    { version: 1, profile: 'alibaba-token-plan-cn', itemId: 'bad\nitem' },
     {
       version: 1,
       profile: 'alibaba-token-plan-cn',
       itemId: 'item',
-      carrier: 'summary',
       summaryPartLengths: [4],
       raw: 'provider-body',
     },
@@ -62,19 +57,17 @@ test('rejects malformed, widened, and unsafe plaintext Responses state', () => {
         version: 2,
         profile: 'another-provider',
         itemId: 'item',
-        carrier: 'summary',
       },
     }),
     { kind: 'malformed', profile: 'another-provider' },
   );
 });
 
-test('reconstructs provider-native summary and content carriers', () => {
+test('reconstructs provider-native summary parts', () => {
   const summary = {
     version: 1,
     profile: 'alibaba-token-plan-cn',
     itemId: 'summary-item',
-    carrier: 'summary',
     summaryPartLengths: [10, 7],
   } as const;
   assert.deepEqual(
@@ -94,27 +87,6 @@ test('reconstructs provider-native summary and content carriers', () => {
       },
     },
   );
-
-  const content = {
-    version: 1,
-    profile: 'deepseek',
-    itemId: 'content-item',
-    carrier: 'content',
-  } as const;
-  assert.deepEqual(
-    replayPlaintextResponsesProviderOptions({
-      providerOptionsKey: 'deepseek',
-      state: content,
-      text: 'plaintext reasoning',
-    }),
-    {
-      deepseek: {
-        itemId: 'content-item',
-        reasoningSummary: [],
-        reasoningContent: [{ type: 'reasoning_text', text: 'plaintext reasoning' }],
-      },
-    },
-  );
 });
 
 test('rejects summary boundaries that disagree with canonical text', () => {
@@ -122,7 +94,6 @@ test('rejects summary boundaries that disagree with canonical text', () => {
     version: 1,
     profile: 'alibaba-token-plan-cn',
     itemId: 'summary-item',
-    carrier: 'summary',
     summaryPartLengths: [8],
   } as const;
   assert.throws(

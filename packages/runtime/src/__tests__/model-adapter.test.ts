@@ -173,7 +173,6 @@ describe('ModelAdapter stream and error normalization', () => {
       unsignedThinking: false,
       responsesReasoning: {
         kind: 'plaintext-item',
-        carrier: 'summary',
         profile: 'alibaba-token-plan-cn',
         providerOptionsKey: 'alibaba-token-plan-cn',
       },
@@ -196,7 +195,6 @@ describe('ModelAdapter stream and error normalization', () => {
         version: 1,
         profile: providerType,
         itemId: 'alibaba-reasoning-item',
-        carrier: 'summary',
         summaryPartLengths: [7],
       },
     };

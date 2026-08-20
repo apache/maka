@@ -32,9 +32,9 @@ import {
   openAiResponsesBaseUrl,
   openResponsesUrl,
 } from './provider-urls.js';
-import { createOpenResponsesCompatibilityFetch } from './open-responses-compatibility.js';
+import { createOpenResponsesCompatibilityFinalizer } from './open-responses-compatibility.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
-import type { RuntimeProviderAdapter } from './provider-runtime-policy.js';
+import { runtimeProviderName, type RuntimeProviderAdapter } from './provider-runtime-policy.js';
 import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
 
@@ -162,15 +162,14 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           // Request customization is applied first; provider compatibility is
           // the final authority before network dispatch, so an overlay cannot
           // re-enable storage or force a tool-choice shape the provider rejects.
-          const responsesFetch = createRequestCustomizationFetch(
-            createOpenResponsesCompatibilityFetch(
-              baseFetch,
+          const responsesFetch = createRequestCustomizationFetch(baseFetch, {
+            ...requestCustomization,
+            finalizeBody: createOpenResponsesCompatibilityFinalizer(
               reasoningReplay.contract.compatibility,
             ),
-            requestCustomization,
-          );
+          });
           return createOpenResponses({
-            name: openAiCompatibleProviderName(adapter, connection),
+            name: runtimeProviderName(adapter, connection),
             apiKey,
             url: openResponsesUrl(baseURL),
             fetch: responsesFetch,
@@ -200,7 +199,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           )
         : reasoningTransport.transformRequestBody;
       const model = createOpenAICompatible({
-        name: openAiCompatibleProviderName(adapter, connection),
+        name: runtimeProviderName(adapter, connection),
         apiKey,
         baseURL,
         includeUsage: adapter.includeUsage,
@@ -553,7 +552,7 @@ function buildFamilyWire(
       // under the raw provider `name` — no camelCase alias, unlike
       // openai-compatible — so key by the same name getAIModel passes.
       return reasoningEffort
-        ? { [openAiCompatibleProviderName(adapter, connection)]: { reasoningEffort } }
+        ? { [runtimeProviderName(adapter, connection)]: { reasoningEffort } }
         : {};
     }
     return {
@@ -609,15 +608,6 @@ function buildFamilyWire(
  * `getAIModel` — the raw slug for custom relays. Distinct from the
  * providerOptions key the SDK wants: see `openAiCompatibleProviderOptionsKey`.
  */
-function openAiCompatibleProviderName(
-  adapter: RuntimeProviderAdapter,
-  connection: RuntimeExecutionConnection,
-): string {
-  return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
-    ? connection.slug
-    : connection.providerType;
-}
-
 // Mirrors @ai-sdk/openai-compatible's own toCamelCase derivation, so the
 // key we emit always matches the alias the SDK resolves.
 function toCamelCase(name: string): string {
