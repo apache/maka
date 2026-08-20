@@ -111,6 +111,7 @@ export function buildSearchHistoryTool(deps: HistoryToolDeps): MakaTool {
         {
           activeSessionId: context.sessionId,
           excludeTurnIds: new Set([context.turnId]),
+          includeArchived: true,
           abortSignal: context.abortSignal,
         },
       );
@@ -224,7 +225,9 @@ export function buildReadHistoryTool(deps: HistoryToolDeps): MakaTool {
     ) => {
       if (context.abortSignal.aborted) return historyError('aborted', 'History read was aborted.');
 
-      const privacy = validateWorkspacePrivacyContext(await deps.getPrivacyContext());
+      const privacyPayload = await deps.getPrivacyContext();
+      if (context.abortSignal.aborted) return historyError('aborted', 'History read was aborted.');
+      const privacy = validateWorkspacePrivacyContext(privacyPayload);
       if (!privacy.ok) {
         return historyError(
           'incognito_active',
@@ -239,6 +242,7 @@ export function buildReadHistoryTool(deps: HistoryToolDeps): MakaTool {
       }
 
       const sessions = collapseSessionRevisions(await deps.listSessions(), context.sessionId);
+      if (context.abortSignal.aborted) return historyError('aborted', 'History read was aborted.');
       const session = sessions.find(
         (candidate) => candidate.id === sessionId && candidate.backend !== 'fake',
       );
@@ -247,13 +251,20 @@ export function buildReadHistoryTool(deps: HistoryToolDeps): MakaTool {
       }
       if (context.abortSignal.aborted) return historyError('aborted', 'History read was aborted.');
 
-      const messages = await deps.readMessages(sessionId);
+      const messages = await deps.readMessages(sessionId, context.abortSignal);
+      if (context.abortSignal.aborted) return historyError('aborted', 'History read was aborted.');
       if (!messages) {
         return historyError('session_not_found', 'The requested session was not found.');
       }
-      const anchor = resolveHistoryAnchor(messages, messageId, requestedTurnId);
+      const readableMessages =
+        sessionId === context.sessionId
+          ? messages.filter(
+              (message) => !('turnId' in message) || message.turnId !== context.turnId,
+            )
+          : messages;
+      const anchor = resolveHistoryAnchor(readableMessages, messageId, requestedTurnId);
       if (!anchor.ok) return historyError(anchor.reason, anchor.message);
-      const turns = projectHistoryTurns(messages);
+      const turns = projectHistoryTurns(readableMessages);
       if (turns.length === 0) {
         return historyError('empty_transcript', 'The requested session has no visible transcript.');
       }
@@ -261,7 +272,12 @@ export function buildReadHistoryTool(deps: HistoryToolDeps): MakaTool {
       if (!selected) {
         return historyError('turn_not_found', 'The requested turn was not found in that session.');
       }
-      const bounded = boundHistoryTurns(selected.turns, HISTORY_READ_MAX_BYTES);
+      const bounded = boundHistoryTurns(
+        selected.turns,
+        HISTORY_READ_MAX_BYTES,
+        anchor.turnId,
+        messageId,
+      );
       return {
         kind: 'history_read' as const,
         session_id: session.id,
@@ -401,28 +417,61 @@ function selectHistoryTurns(
 function boundHistoryTurns(
   turns: readonly HistoryTurn[],
   maxBytes: number,
+  anchorTurnId: string | undefined,
+  anchorMessageId: string | undefined,
 ): { turns: HistoryTurn[]; truncated: boolean } {
-  const bounded: HistoryTurn[] = [];
+  const boundedMessages = new Map<number, Map<number, HistoryTurnMessage>>();
   let remaining = maxBytes;
   let truncated = false;
-  for (const turn of turns) {
-    const messages: HistoryTurnMessage[] = [];
-    for (const message of turn.messages) {
-      const overhead = Buffer.byteLength(JSON.stringify({ ...message, text: '' }), 'utf8');
-      if (remaining <= overhead) {
-        truncated = true;
-        break;
-      }
-      const messageBudget = Math.min(remaining - overhead, HISTORY_READ_MAX_MESSAGE_BYTES);
-      const text = truncateUtf8(message.text, messageBudget);
-      const bytes = overhead + Buffer.byteLength(text, 'utf8');
-      messages.push({ ...message, text });
-      remaining -= bytes;
-      if (text !== message.text) truncated = true;
-    }
-    if (messages.length > 0) bounded.push({ turnId: turn.turnId, messages });
-    if (truncated) break;
+
+  const candidates = turns.flatMap((turn, turnIndex) =>
+    turn.messages.map((_message, messageIndex) => ({ turnIndex, messageIndex })),
+  );
+  const anchorTurnIndex = turns.findIndex((turn) => turn.turnId === anchorTurnId);
+  const requestedAnchorIndex =
+    anchorTurnIndex < 0
+      ? -1
+      : turns[anchorTurnIndex]!.messages.findIndex(
+          (message) => message.messageId === anchorMessageId,
+        );
+  const anchorMessageIndex = Math.max(0, requestedAnchorIndex);
+  if (anchorTurnIndex >= 0 && turns[anchorTurnIndex]!.messages.length > 0) {
+    candidates.unshift({ turnIndex: anchorTurnIndex, messageIndex: anchorMessageIndex });
   }
+
+  const seen = new Set<string>();
+  for (const { turnIndex, messageIndex } of candidates) {
+    const key = `${turnIndex}:${messageIndex}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const message = turns[turnIndex]!.messages[messageIndex]!;
+    const overhead = Buffer.byteLength(JSON.stringify({ ...message, text: '' }), 'utf8');
+    if (remaining <= overhead) {
+      truncated = true;
+      continue;
+    }
+    const messageBudget = Math.min(remaining - overhead, HISTORY_READ_MAX_MESSAGE_BYTES);
+    const text = truncateUtf8(message.text, messageBudget);
+    const bytes = overhead + Buffer.byteLength(text, 'utf8');
+    const byMessage = boundedMessages.get(turnIndex) ?? new Map<number, HistoryTurnMessage>();
+    byMessage.set(messageIndex, { ...message, text });
+    boundedMessages.set(turnIndex, byMessage);
+    remaining -= bytes;
+    if (text !== message.text) truncated = true;
+  }
+
+  const bounded = turns.flatMap((turn, turnIndex) => {
+    const byMessage = boundedMessages.get(turnIndex);
+    if (!byMessage) return [];
+    return [
+      {
+        turnId: turn.turnId,
+        messages: [...byMessage.entries()]
+          .sort(([left], [right]) => left - right)
+          .map(([, message]) => message),
+      },
+    ];
+  });
   return { turns: bounded, truncated };
 }
 

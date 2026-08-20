@@ -110,6 +110,8 @@ export async function runThreadSearch(
   options: {
     readonly activeSessionId?: string;
     readonly excludeSessionIds?: ReadonlySet<string>;
+    /** Desktop excludes archived tasks by default; Agent global history opts in explicitly. */
+    readonly includeArchived?: boolean;
     /** Keeps Agent global search from matching the user/tool text of its active turn. */
     readonly excludeTurnIds?: ReadonlySet<string>;
     readonly abortSignal?: AbortSignal;
@@ -177,7 +179,12 @@ export async function runThreadSearch(
   )
     // Exclude fake-backend sessions — e2e-fixture fixtures and
     // similar dev-only state should not surface as real chat hits.
-    .filter((session) => session.backend !== 'fake' && !options.excludeSessionIds?.has(session.id))
+    .filter(
+      (session) =>
+        session.backend !== 'fake' &&
+        (options.includeArchived === true || !session.isArchived) &&
+        !options.excludeSessionIds?.has(session.id),
+    )
     // Newest first by lastMessageAt; secondary by id for determinism.
     .sort((a, b) => {
       const ts = (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0);
@@ -213,7 +220,7 @@ export async function runThreadSearch(
       results.push({
         source: THREAD_SOURCE,
         title: redactSecrets(session.name),
-        summary: '会话标题',
+        summary: '任务标题',
         snippet,
         target: {
           kind: 'thread',
@@ -277,6 +284,7 @@ export async function runThreadSearch(
           kind: 'thread',
           sessionId: session.id,
           ...(turnId ? { turnId } : {}),
+          sequence: messageIndex,
           messageId: message.id,
           matchKind: threadSearchMatchKind(message),
           messageTimestamp: message.ts,

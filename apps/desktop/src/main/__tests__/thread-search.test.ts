@@ -245,6 +245,32 @@ describe('runThreadSearch', () => {
     assert.equal(hits[0]?.snippet?.includes('sk-ant-test-secret-token-12345'), false);
   });
 
+  it('includes archived sessions only when the caller explicitly opts in', async () => {
+    const entries = {
+      archived: {
+        session: session({ id: 'archived', isArchived: true }),
+        messages: [userMessage('archived needle')],
+      },
+    };
+    assert.deepEqual(
+      expectResults(
+        await runThreadSearch(
+          { source: 'thread', query: 'archived needle', limit: 5 },
+          makeDeps(entries),
+        ),
+      ),
+      [],
+    );
+    const optedIn = expectResults(
+      await runThreadSearch(
+        { source: 'thread', query: 'archived needle', limit: 5 },
+        makeDeps(entries),
+        { includeArchived: true },
+      ),
+    );
+    assert.equal(optedIn[0]?.target?.kind === 'thread' && optedIn[0].target.sessionId, 'archived');
+  });
+
   it('searches only the current committed conversation revision', async () => {
     const hits = expectResults(
       await runThreadSearch(

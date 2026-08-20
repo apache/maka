@@ -52,6 +52,7 @@ test('SearchHistory returns typed message hits from current and other sessions',
       revisionState: 'committed' as const,
     },
     session('past', 'Deployment sk-ant-title-secret-12345 work', 2),
+    { ...session('archived', 'Archived deployment', 1), isArchived: true },
     session('fixture', 'Fixture', 1, 'fake'),
   ];
   const messages = new Map<string, StoredMessage[]>([
@@ -71,6 +72,7 @@ test('SearchHistory returns typed message hits from current and other sessions',
       ],
     ],
     ['fixture', [user('deploy fixture', 'fixture-turn')]],
+    ['archived', [user('deploy archived history', 'archived-turn')]],
   ]);
   const tool = buildSearchHistoryTool(historyDeps(sessions, messages));
 
@@ -83,7 +85,10 @@ test('SearchHistory returns typed message hits from current and other sessions',
   assert.equal(result.kind, 'history_search');
   assert.equal(result.truncated, false);
   assert.ok(result.rows.length > 0);
-  assert.deepEqual(new Set(result.rows.map((row) => row.session_id)), new Set(['current', 'past']));
+  assert.deepEqual(
+    new Set(result.rows.map((row) => row.session_id)),
+    new Set(['current', 'past', 'archived']),
+  );
   assert.ok(result.rows.every((row) => row.session_id !== 'current-newer-revision'));
   const messageRows = result.rows.filter((row) => row.match_kind !== 'session_title');
   assert.ok(messageRows.every((row) => typeof row.message_id === 'string'));
@@ -196,6 +201,91 @@ test('ReadHistory can open the current session around a message anchor', async (
   );
 });
 
+test('ReadHistory excludes the currently executing turn only in the current session', async () => {
+  const messages = new Map<string, StoredMessage[]>([
+    ['current', [user('active secret', 'current-turn'), user('older visible', 'older-turn')]],
+    ['past', [user('copied active id remains readable', 'current-turn')]],
+  ]);
+  const tool = buildReadHistoryTool(
+    historyDeps([session('current', 'Current', 2), session('past', 'Past', 1)], messages),
+  );
+
+  assert.match(
+    JSON.stringify(
+      await tool.impl({ session_id: 'current', message_id: 'user-current-turn' }, context()),
+    ),
+    /message_not_found/u,
+  );
+  assert.match(
+    JSON.stringify(
+      await tool.impl({ session_id: 'past', message_id: 'user-current-turn' }, context()),
+    ),
+    /copied active id remains readable/u,
+  );
+});
+
+test('ReadHistory propagates cancellation across privacy and transcript awaits', async () => {
+  const privacyAbort = new AbortController();
+  let privacyListCalls = 0;
+  const privacyResult = await buildReadHistoryTool({
+    listSessions: async () => {
+      privacyListCalls += 1;
+      return [session('past', 'Past', 1)];
+    },
+    readMessages: async () => [user('visible', 'turn-1')],
+    getPrivacyContext: async () => {
+      privacyAbort.abort();
+      return { incognitoActive: false };
+    },
+  }).impl({ session_id: 'past' }, context(privacyAbort.signal));
+  assert.match(JSON.stringify(privacyResult), /aborted/u);
+  assert.equal(privacyListCalls, 0);
+
+  const readAbort = new AbortController();
+  let receivedSignal: AbortSignal | undefined;
+  const readResult = await buildReadHistoryTool({
+    listSessions: async () => [session('past', 'Past', 1)],
+    readMessages: async (_sessionId: string, signal?: AbortSignal) => {
+      receivedSignal = signal;
+      readAbort.abort();
+      return [user('visible', 'turn-1')];
+    },
+    getPrivacyContext: async () => ({ incognitoActive: false }),
+  }).impl({ session_id: 'past' }, context(readAbort.signal));
+  assert.equal(receivedSignal, readAbort.signal);
+  assert.match(JSON.stringify(readResult), /aborted/u);
+});
+
+test('ReadHistory preserves the requested anchor when earlier context fills the byte cap', async () => {
+  const huge = 'x'.repeat(HISTORY_READ_MAX_BYTES);
+  const prior: StoredMessage[] = Array.from({ length: 5 }, (_, index) => ({
+    type: 'assistant',
+    id: `prior-${index}`,
+    turnId: 'prior-turn',
+    ts: index,
+    text: huge,
+    modelId: 'test-model',
+  }));
+  const anchor: StoredMessage = {
+    type: 'assistant',
+    id: 'requested-anchor',
+    turnId: 'anchor-turn',
+    ts: 10,
+    text: 'anchor must survive',
+    modelId: 'test-model',
+  };
+  const tool = buildReadHistoryTool(
+    historyDeps([session('past', 'Past', 1)], new Map([['past', [...prior, anchor]]])),
+  );
+
+  const result = await tool.impl(
+    { session_id: 'past', message_id: 'requested-anchor', before: 1, after: 0 },
+    context(),
+  );
+  assert.match(JSON.stringify(result), /anchor must survive/u);
+  assert.match(JSON.stringify(result), /"truncated":true/u);
+});
+
 test('ReadHistory rejects mismatched or hidden message anchors', async () => {
   const messages = new Map<string, StoredMessage[]>([
     [
@@ -299,13 +389,13 @@ function assistant(text: string, turnId: string): StoredMessage {
   };
 }
 
-function context(): MakaToolContext {
+function context(abortSignal: AbortSignal = new AbortController().signal): MakaToolContext {
   return {
     sessionId: 'current',
     turnId: 'current-turn',
     cwd: '/tmp',
     toolCallId: 'tool-call',
-    abortSignal: new AbortController().signal,
+    abortSignal,
     emitOutput: () => {},
   };
 }
