@@ -218,6 +218,20 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(stdout.join(''), 'Final graph answer\n');
   });
 
+  test('returns exit code 0 when a root Graph boundary failure recovers', async () => {
+    const stdout: string[] = [];
+    const fixture = runFixture({
+      graph: true,
+      turnEvents: recoveredSandboxEvents('turn-1'),
+    });
+    const exitCode = await runFixtureCommand(fixture, ['recover once', '--graph'], (text) =>
+      stdout.push(text),
+    );
+
+    assert.equal(exitCode, 0);
+    assert.equal(stdout.join(''), 'Final graph answer\n');
+  });
+
   test('returns exit code 1 when the final Graph Turn fails', async () => {
     const fixture = runFixture({
       graph: true,
