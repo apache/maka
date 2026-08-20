@@ -64,12 +64,13 @@ const MARKER = join(DEV_RUNTIME_DIR, 'runtime.json');
 const ELECTRON_PACKAGE = join(REPO_ROOT, 'node_modules', 'electron', 'package.json');
 const SOURCE_APP = join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'Electron.app');
 const WORKTREE_ID = createHash('sha256').update(REPO_ROOT).digest('hex').slice(0, 12);
-const DEV_USER_DATA_DIR = join(
-  homedir(),
-  'Library',
-  'Application Support',
-  `Maka Dev-${WORKTREE_ID}`,
-);
+// Deliberately NOT worktree-scoped, unlike the bundle identifier above: the
+// profile is what `app.setName('Maka Dev')` already yields on the plain
+// `npm run dev` path and what `npm run cli:dev` writes to, so scoping it here
+// would only mean that turning MAKA_DEV_TCC on silently switched the
+// developer's database. TCC isolation is provided by DEV_BUNDLE_ID, not by the
+// data root. An explicit `--user-data-dir=` still takes precedence.
+const DEV_USER_DATA_DIR = join(homedir(), 'Library', 'Application Support', 'Maka Dev');
 
 /**
  * Per-worktree, and deliberately so. An ad-hoc signature designates a bare
@@ -503,6 +504,9 @@ export function createRuntimeMarker(electronVersion) {
     electronVersion,
     bundleId: DEV_BUNDLE_ID,
     desktopDir: DESKTOP_DIR,
+    // Burned into the generated bootstrap, so a change here must invalidate
+    // the cached bundle (isDevelopmentRuntimeCurrent compares every field).
+    userDataDir: DEV_USER_DATA_DIR,
   };
 }
 

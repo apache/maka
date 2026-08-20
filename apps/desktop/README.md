@@ -79,10 +79,12 @@ signature seal. Write access to this repository is therefore a deliberate trust
 assumption of the development workflow — a separate matter from who may claim
 the bundle's identity.
 
-The default profile is `~/Library/Application Support/Maka Dev-<worktree-id>`,
-which keeps development isolated from the packaged Maka profile; an explicit
-`--user-data-dir` takes precedence. Shutdown matches this worktree's own bundle
-path, so a concurrent worktree's app is unaffected. Because that lock is keyed
+The default profile is `~/Library/Application Support/Maka Dev`, which keeps
+development isolated from the packaged Maka profile and is shared by the
+repository CLI (`npm run cli:dev`), the plain dev build, and the TCC dev build;
+an explicit `--user-data-dir` takes precedence. Shutdown matches this worktree's
+own bundle path, so a concurrent worktree's app survives — and then holds the
+single-instance lock for the shared profile. Because that lock is keyed
 on the profile, a launch first reclaims any app left over from a hard-killed
 session — otherwise the stale app would absorb the new launch and keep showing
 its old, dead Vite URL.
