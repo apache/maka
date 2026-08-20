@@ -95,3 +95,4 @@ export {
   createOAuthPresentationClientProvider,
   type OAuthPresentationBackend,
 } from './oauth-presentation.js';
+export { readHostRegistration } from '../control/registration.js';

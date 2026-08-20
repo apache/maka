@@ -20,6 +20,7 @@ import { buildMcpTools } from '@maka/runtime/mcp-tools';
 import {
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
+  readHostRegistration,
 } from "@maka/runtime-host/client";
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { McpClientManager } from "@maka/mcp";
@@ -27,7 +28,10 @@ import {
   createSettingsStore,
   createMcpConfigStore,
 } from "@maka/storage";
-import { resolveStorageRoot } from "@maka/storage/root-authority";
+import {
+  resolveExistingStorageRootControlDirectory,
+  resolveStorageRoot,
+} from "@maka/storage/root-authority";
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import { createAppUpdateService } from "./app-update-service.js";
@@ -578,6 +582,15 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
   },
   {
     upgradePrompts: createRuntimeHostUpgradePrompts(() => desktopLocale.resolve()),
+    // Update-drain residue sweep (#3340): the manager needs to read the local
+    // root's host registration to find an election winner it never adopted,
+    // and the storage-root capability that authorizes that read lives here.
+    readLocalHostRegistration: async () => {
+      const { controlDirectory } = await resolveExistingStorageRootControlDirectory(
+        startupLocalStorageRoot,
+      );
+      return readHostRegistration(controlDirectory);
+    },
     onTargetStateChanged: (state) => {
       const hostId = state.readiness === "ready"
         ? state.candidate.client.hostId
