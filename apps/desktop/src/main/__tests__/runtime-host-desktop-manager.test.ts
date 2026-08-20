@@ -295,6 +295,50 @@ test('defers reconnecting pairing finalization when the manager closes', async (
   assert.equal(starts, 3);
 });
 
+test('defers pairing finalization when reconnect does not complete in time', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remoteHostId = 'a'.repeat(64);
+  const remote = candidateHarness({
+    hostId: remoteHostId,
+    finalizeFailures: [
+      new RuntimeHostOperationError(
+        'access.credential.finalize',
+        'commit_outcome_unknown',
+        'finalization outcome is unknown',
+      ),
+    ],
+    disconnectOnFinalizeFailure: true,
+  });
+  let starts = 0;
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async (input) => {
+        starts += 1;
+        if (starts === 1) return ready(local.candidate);
+        if (starts === 2) return ready(remote.candidate);
+        const signal = input.signal;
+        assert.ok(signal);
+        return await new Promise<DesktopRuntimeHostCandidateStartResult>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+      reconnectBackoff: { minMs: 0, maxMs: 0 },
+      pairingFinalizationTimeoutMs: 10,
+    },
+  );
+  await manager.enable(remoteTarget('office'));
+
+  await assert.rejects(
+    () => manager.finalizePairing('office'),
+    RuntimeHostPairingFinalizationInterruptedError,
+  );
+
+  assert.equal(remote.finalizeCalls, 1);
+  assert.equal(starts, 3);
+  await manager.close();
+});
+
 test('coalesces concurrent enable requests for one remote profile', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
   const remote = candidateHarness({ hostId: 'host-b', lifecycleMode: 'remote' });

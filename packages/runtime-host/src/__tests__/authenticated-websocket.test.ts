@@ -379,7 +379,6 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
         credential,
         expectedRootId: capability.rootId,
         compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-        surface: 'tui',
         protocol: PROTOCOL,
       }),
       { kind: 'unavailable', reason: 'authentication_failed' },

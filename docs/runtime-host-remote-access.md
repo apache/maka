@@ -183,5 +183,6 @@ Remote Clients never auto-upgrade or restart the Host, downgrade the transport, 
 - Do not put credentials on the command line or in Profile JSON.
 - Plaintext requires durable Client acknowledgement and an independent Host startup flag.
 - Session responses may include a resolved `hostCwd`. Treat it as Host metadata, never as a Client filesystem path.
-- A remote Client neither upgrades nor terminates the service process.
+- A remote Client cannot request a service upgrade, restart, or shutdown. The Host may still drain
+  itself after an indeterminate durable commit; a managed service supervisor restarts it.
 - Revoke a credential on the Host with `maka runtime-host access revoke --root /srv/maka --credential <credentialId>`.

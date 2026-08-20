@@ -91,6 +91,8 @@ export {
   RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES,
   decodeRuntimeHostSetupFrame,
   encodeRuntimeHostSetupFrame,
+  parseRuntimeHostSetupEndpoint,
+  type RuntimeHostSetupEndpoint,
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
 } from './setup-frame.js';

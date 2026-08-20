@@ -1029,8 +1029,8 @@ const makaBridge = {
     setDefault(profileId: string) {
       return ipcRenderer.invoke('runtime-host-profiles:set-default', profileId);
     },
-    discardPairingRecovery() {
-      return ipcRenderer.invoke('runtime-host-profiles:discard-pairing-recovery');
+    resolvePairingRecovery() {
+      return ipcRenderer.invoke('runtime-host-profiles:resolve-pairing-recovery');
     },
     subscribeChanges(handler: (event: DesktopRuntimeHostProfileChangedEvent) => void) {
       const listener = (

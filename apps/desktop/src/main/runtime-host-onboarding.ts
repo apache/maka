@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { IpcMain } from 'electron';
-import type { RuntimeHostSetupPhase } from '@maka/runtime-host/client';
+import {
+  parseRuntimeHostSetupEndpoint,
+  type RuntimeHostSetupPhase,
+} from '@maka/runtime-host/client';
 import type {
   DesktopRuntimeHostOnboardingInput,
   DesktopRuntimeHostOnboardingSnapshot,
@@ -105,7 +108,8 @@ export function createDesktopRuntimeHostOnboarding(input: {
         beginCommit,
       );
       beginCommit();
-      const endpoint = requireSetupEndpoint(complete.endpoint);
+      const endpoint = parseRuntimeHostSetupEndpoint(complete.endpoint);
+      if (!endpoint) throw new Error('Remote Maka setup returned an invalid endpoint');
       const profileId = `remote-${randomUUID()}`;
       const profileName = request.name?.trim() || request.destination;
       const connected = await input.profiles.addAndEnableVerified({
@@ -192,21 +196,4 @@ function requireOnboardingInput(value: unknown): DesktopRuntimeHostOnboardingInp
     ...(input.name?.trim() ? { name: input.name.trim() } : {}),
     ...(input.sshPort === undefined ? {} : { sshPort: input.sshPort }),
   };
-}
-
-function requireSetupEndpoint(value: string): { readonly port: number; readonly websocketPath: string } {
-  const endpoint = new URL(value);
-  const port = Number(endpoint.port);
-  if (
-    endpoint.protocol !== 'ws:' ||
-    (endpoint.hostname !== '127.0.0.1' && endpoint.hostname !== '[::1]' && endpoint.hostname !== '::1') ||
-    !Number.isInteger(port) ||
-    port < 1 ||
-    port > 65_535 ||
-    endpoint.search ||
-    endpoint.hash
-  ) {
-    throw new Error('Remote Maka setup returned an invalid endpoint');
-  }
-  return { port, websocketPath: endpoint.pathname };
 }

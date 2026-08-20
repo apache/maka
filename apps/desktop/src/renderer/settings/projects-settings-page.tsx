@@ -145,7 +145,7 @@ export function ProjectsSettingsPage(props: {
   if (!host) {
     return (
       <SettingsPage as="section" aria-label={copy.section}>
-        <RuntimeHostProfilesSection onChooseProject={props.onRemoteHostAdded} />
+        <RuntimeHostProfilesSection onRemoteHostAdded={props.onRemoteHostAdded} />
         <Banner
           status={props.runtimeHostStatus === 'error' ? 'error' : 'warning'}
           title={props.runtimeHostStatus === 'loading'
@@ -166,7 +166,7 @@ export function ProjectsSettingsPage(props: {
 
   return (
     <SettingsPage as="section" aria-label={copy.section}>
-      <RuntimeHostProfilesSection onChooseProject={props.onRemoteHostAdded} />
+      <RuntimeHostProfilesSection onRemoteHostAdded={props.onRemoteHostAdded} />
       {/* No section title: the page header already says 项目, and repeating it
           straight above the rows is the same duplicate-heading noise we
           removed from the skills page. The rule this page exists for lives in

@@ -177,13 +177,13 @@ describe('Runtime Host profiles', () => {
     assert.deepEqual(await desktop.read(), { schemaVersion: 1, profiles: [] });
   });
 
-  test('conditionally rebinds one Host identity to a new transport and credential', async () => {
+  test('conditionally updates one Host connection and credential', async () => {
     const path = await profilePath();
     const credentials = memoryCredentials();
     const desktop = createFileRuntimeHostProfileCatalog(path, credentials);
     const external = createFileRuntimeHostProfileCatalog(path, credentials);
-    const original = remoteProfile('office', 'wss://old.example.com', ROOT_A);
-    const replacement = remoteProfile('office', 'wss://new.example.com', ROOT_A);
+    const original = remoteProfile('office', 'wss://runtime.example.com', ROOT_A);
+    const replacement = { ...original, name: 'Renamed office' };
 
     await desktop.create(original, 'old-token');
     const expected = await desktop.resolve(original.id);
@@ -191,14 +191,10 @@ describe('Runtime Host profiles', () => {
     assert.deepEqual(await desktop.resolve(original.id), {
       profile: {
         ...replacement,
-        transport: { kind: 'tls', url: 'wss://new.example.com/' },
+        transport: { kind: 'tls', url: 'wss://runtime.example.com/' },
       },
       credential: 'new-token',
     });
-    assert.equal(
-      expected.profile.kind === 'remote' ? await credentials.get(expected.profile) : undefined,
-      null,
-    );
 
     await external.save({ ...replacement, name: 'Externally updated' }, 'external-token');
     assert.equal((await desktop.rebindIfCurrent(expected, original, 'stale-token')).rebound, false);

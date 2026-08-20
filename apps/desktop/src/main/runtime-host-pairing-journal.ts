@@ -5,11 +5,16 @@ import {
   type RemoteRuntimeHostProfile,
   type ResolvedRuntimeHostProfile,
 } from '@maka/runtime-host/client';
-import type { CredentialStore } from '@maka/storage';
+import type { CredentialStore } from '@maka/storage/credential-store';
 
 const PAIRING_JOURNAL_SCHEMA_VERSION = 1;
 const PAIRING_JOURNAL_CREDENTIAL_SLOT = 'runtime-host-pairing-recovery';
 const PAIRING_JOURNAL_MAX_BYTES = 512 * 1024;
+const PAIRING_JOURNAL_MAX_ENTRIES = 32;
+
+export class DesktopRuntimeHostPairingJournalInvalidError extends Error {
+  override readonly name = 'DesktopRuntimeHostPairingJournalInvalidError';
+}
 
 export interface DesktopRuntimeHostPairingIntent {
   readonly target: {
@@ -44,29 +49,37 @@ export function pairingIntentMatchesTarget(
   return sameResolvedRuntimeHostProfileTarget(intentTarget, target);
 }
 
-export async function readDesktopRuntimeHostPairingIntent(
+export async function readDesktopRuntimeHostPairingIntents(
   credentials: Pick<CredentialStore, 'getSecret'>,
-): Promise<DesktopRuntimeHostPairingIntent | undefined> {
+): Promise<readonly DesktopRuntimeHostPairingIntent[]> {
   const contents = await credentials.getSecret(
     PAIRING_JOURNAL_CREDENTIAL_SLOT,
     'runtime_host_access',
   );
-  if (contents === null) return undefined;
+  if (contents === null) return [];
   if (Buffer.byteLength(contents, 'utf8') > PAIRING_JOURNAL_MAX_BYTES) {
-    throw new Error('Runtime Host pairing recovery journal exceeds its size limit');
+    throw new DesktopRuntimeHostPairingJournalInvalidError(
+      'Runtime Host pairing recovery journal exceeds its size limit',
+    );
   }
   try {
     return decodePairingJournal(JSON.parse(contents));
   } catch (error) {
-    throw new Error('Runtime Host pairing recovery journal is invalid', { cause: error });
+    throw new DesktopRuntimeHostPairingJournalInvalidError(
+      'Runtime Host pairing recovery journal is invalid',
+      { cause: error },
+    );
   }
 }
 
-export async function writeDesktopRuntimeHostPairingIntent(
+export async function writeDesktopRuntimeHostPairingIntents(
   credentials: Pick<CredentialStore, 'setSecret' | 'deleteSecret'>,
-  intent: DesktopRuntimeHostPairingIntent | undefined,
+  intents: readonly DesktopRuntimeHostPairingIntent[],
 ): Promise<void> {
-  if (!intent) {
+  if (intents.length > PAIRING_JOURNAL_MAX_ENTRIES) {
+    throw new Error('Runtime Host pairing recovery journal has too many entries');
+  }
+  if (intents.length === 0) {
     await credentials.deleteSecret(
       PAIRING_JOURNAL_CREDENTIAL_SLOT,
       'runtime_host_access',
@@ -75,7 +88,7 @@ export async function writeDesktopRuntimeHostPairingIntent(
   }
   const contents = JSON.stringify({
     schemaVersion: PAIRING_JOURNAL_SCHEMA_VERSION,
-    intent,
+    intents,
   });
   if (Buffer.byteLength(contents) > PAIRING_JOURNAL_MAX_BYTES) {
     throw new Error('Runtime Host pairing recovery journal exceeds its size limit');
@@ -87,12 +100,20 @@ export async function writeDesktopRuntimeHostPairingIntent(
   );
 }
 
-function decodePairingJournal(value: unknown): DesktopRuntimeHostPairingIntent {
-  const journal = requireExactRecord(value, ['schemaVersion', 'intent']);
-  if (journal.schemaVersion !== PAIRING_JOURNAL_SCHEMA_VERSION) {
+function decodePairingJournal(value: unknown): readonly DesktopRuntimeHostPairingIntent[] {
+  const journal = requireExactRecord(value, ['schemaVersion', 'intents']);
+  if (
+    journal.schemaVersion !== PAIRING_JOURNAL_SCHEMA_VERSION ||
+    !Array.isArray(journal.intents) ||
+    journal.intents.length > PAIRING_JOURNAL_MAX_ENTRIES
+  ) {
     throw new Error('Unsupported Runtime Host pairing recovery journal');
   }
-  return decodePairingIntent(journal.intent);
+  const intents = journal.intents.map(decodePairingIntent);
+  if (new Set(intents.map((intent) => intent.target.profile.id)).size !== intents.length) {
+    throw new Error('Duplicate Runtime Host pairing recovery profile');
+  }
+  return intents;
 }
 
 function decodePairingIntent(value: unknown): DesktopRuntimeHostPairingIntent {

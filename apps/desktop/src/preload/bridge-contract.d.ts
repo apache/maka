@@ -232,6 +232,7 @@ export interface DesktopRuntimeHostProfileSnapshot {
   readonly entries: readonly DesktopRuntimeHostProfileEntry[];
   readonly defaultProfileId: string;
   readonly pairingRecoveryBlocked?: true;
+  readonly pairingRecoveryPending?: true;
 }
 
 export interface DesktopRuntimeHostRef {
@@ -433,7 +434,7 @@ export interface MakaBridge {
     remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
     setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
     setDefault(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
-    discardPairingRecovery(): Promise<DesktopRuntimeHostProfileSnapshot>;
+    resolvePairingRecovery(): Promise<DesktopRuntimeHostProfileSnapshot>;
     subscribeChanges(
       handler: (event: DesktopRuntimeHostProfileChangedEvent) => void,
     ): () => void;

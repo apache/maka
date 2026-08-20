@@ -9,7 +9,7 @@ import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
 export function RuntimeHostOnboardingDialog(props: {
   readonly isOpen: boolean;
   readonly onClose: () => void;
-  readonly onChooseProject: (profileId: string) => void;
+  readonly onRemoteHostAdded: (profileId: string) => void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
@@ -139,7 +139,7 @@ export function RuntimeHostOnboardingDialog(props: {
                     variant="primary"
                     label={copy.setupChooseProject}
                     onClick={() => {
-                      props.onChooseProject(snapshot.profileId);
+                      props.onRemoteHostAdded(snapshot.profileId);
                       void reset();
                       props.onClose();
                     }}

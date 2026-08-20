@@ -102,6 +102,8 @@ export class RuntimeHostPairingFinalizationInterruptedError extends Error {
   }
 }
 
+const DEFAULT_PAIRING_FINALIZATION_TIMEOUT_MS = 30_000;
+
 export type RuntimeHostRestartableConflict = Extract<
   DesktopRuntimeHostCandidateStartResult,
   { kind: 'upgrade_required'; restartable: true }
@@ -148,6 +150,7 @@ export async function startRuntimeHostDesktopManager(
       signal: AbortSignal,
     ) => Promise<void>;
     reconnectBackoff?: RuntimeHostReconnectBackoff;
+    pairingFinalizationTimeoutMs?: number;
     onTargetStateChanged?: (state: RuntimeHostDesktopTargetState) => void;
     onTargetRemoved?: (state: RuntimeHostDesktopTargetState) => void;
     onDefaultProfileChanged?: (profileId: string) => void;
@@ -162,6 +165,7 @@ export async function startRuntimeHostDesktopManager(
     options.waitForHostExit ?? waitForProcessExit,
     options.waitForHostRetirement ?? waitForProcessRetirement,
     options.reconnectBackoff,
+    options.pairingFinalizationTimeoutMs ?? DEFAULT_PAIRING_FINALIZATION_TIMEOUT_MS,
     options.onTargetStateChanged,
     options.onTargetRemoved,
     options.onDefaultProfileChanged,
@@ -198,6 +202,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       signal: AbortSignal,
     ) => Promise<void>,
     private readonly reconnectBackoff: RuntimeHostReconnectBackoff | undefined,
+    private readonly pairingFinalizationTimeoutMs: number,
     private readonly onTargetStateChanged:
       | ((state: RuntimeHostDesktopTargetState) => void)
       | undefined,
@@ -251,21 +256,34 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       throw new Error('Only remote Runtime Host profiles can finalize pairing');
     }
     const lifecycle = this.#requireLifecycle(target);
-    const signal = this.#pairingFinalizationShutdown.signal;
-    let candidate = await this.#waitForReadyCandidate(lifecycle, undefined, signal);
-    while (true) {
-      signal.throwIfAborted();
-      if (!target.valid || candidate.client.hostId !== target.target.profile.rootId) {
-        throw new Error('Runtime Host target changed before pairing was finalized');
+    const timeout = new AbortController();
+    const timer = setTimeout(
+      () => timeout.abort(new RuntimeHostPairingFinalizationInterruptedError()),
+      this.pairingFinalizationTimeoutMs,
+    );
+    timer.unref();
+    const signal = AbortSignal.any([
+      this.#pairingFinalizationShutdown.signal,
+      timeout.signal,
+    ]);
+    try {
+      let candidate = await this.#waitForReadyCandidate(lifecycle, undefined, signal);
+      while (true) {
+        signal.throwIfAborted();
+        if (!target.valid || candidate.client.hostId !== target.target.profile.rootId) {
+          throw new Error('Runtime Host target changed before pairing was finalized');
+        }
+        try {
+          await candidate.client.finalizeAccessCredential();
+          return;
+        } catch (error) {
+          const retry = pairingFinalizeRetry(error);
+          if (!retry) throw error;
+          candidate = await this.#waitForReadyCandidate(lifecycle, candidate, signal);
+        }
       }
-      try {
-        await candidate.client.finalizeAccessCredential();
-        return;
-      } catch (error) {
-        const retry = pairingFinalizeRetry(error);
-        if (!retry) throw error;
-        candidate = await this.#waitForReadyCandidate(lifecycle, candidate, signal);
-      }
+    } finally {
+      clearTimeout(timer);
     }
   }
 

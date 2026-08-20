@@ -91,6 +91,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   function completePresentation(terminal: ActiveTerminal): void {
     if (active !== terminal || terminal.phase !== 'connecting') return;
     terminal.phase = 'connected';
+    active = undefined;
     presentation = undefined;
     revision += 1;
     if (terminal.revealTimer !== undefined) {
@@ -599,11 +600,7 @@ function runtimeHostSetupRemoteCommand(
   if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(principalId)) {
     throw new Error('Runtime Host setup principal is invalid');
   }
-  const setup = [
-    'npx',
-    '--yes',
-    '--package',
-    setupPackage.specifier,
+  const setupArguments = [
     'maka',
     'runtime-host',
     'setup',
@@ -614,9 +611,12 @@ function runtimeHostSetupRemoteCommand(
     '--defer-pairing-commit',
     '--json',
   ].map(quotePosix).join(' ');
+  const setup = setupPackage.removeAfterSetup
+    ? `npx --yes --package ${quotePosix(setupPackage.specifier)} ${setupArguments}`
+    : `npx --yes --prefix "$maka_setup_prefix" --package ${quotePosix(setupPackage.specifier)} ${setupArguments}`;
   const command = setupPackage.removeAfterSetup
     ? `cd "$HOME" || exit 1; maka_setup_exit=0; ${setup} || maka_setup_exit=$?; rm -f -- ${quotePosix(setupPackage.removeAfterSetup)}; exit "$maka_setup_exit"`
-    : `exec ${setup}`;
+    : `maka_setup_prefix=$(mktemp -d) || exit 1; trap 'rm -rf -- "$maka_setup_prefix"' EXIT; cd "$maka_setup_prefix" || exit 1; ${setup}`;
   const loginCommand = `exec /bin/sh -c ${quotePosix(command)}`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(loginCommand)}`;
 }

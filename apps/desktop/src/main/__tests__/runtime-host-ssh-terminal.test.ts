@@ -23,7 +23,10 @@ test('keeps a connecting SSH prompt observable across renderer presentation chan
   assert.deepEqual(harness.eventKinds(), ['opened', 'data', 'connected']);
   assert.deepEqual(await harness.getSnapshot(), { kind: 'idle', revision: 3 });
 
+  const secondTunnel = await openTunnel(harness);
+
   await tunnel.resource.close();
+  await secondTunnel.resource.close();
   await harness.terminal.close();
   assert.equal(harness.handlers.size, 0);
 });
@@ -105,6 +108,8 @@ test('keeps setup credentials out of the interactive terminal projection', async
   assert.deepEqual(progress, ['installing_service']);
   assert.doesNotMatch(JSON.stringify(harness.events), /secret-access-token|MAKA_RUNTIME/u);
   assert.match(JSON.stringify(harness.events), /Password/u);
+  assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /mktemp -d/u);
+  assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /--prefix/u);
   await harness.terminal.close();
 });
 
@@ -183,6 +188,7 @@ function createHarness(mode: 'pending' | 'exit') {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const events: Array<{ kind: string }> = [];
   const pty = new FakePty();
+  const launchArgs: string[][] = [];
   let releaseTunnel!: () => void;
   const tunnelReady = new Promise<void>((resolve) => {
     releaseTunnel = resolve;
@@ -194,7 +200,10 @@ function createHarness(mode: 'pending' | 'exit') {
       removeHandler: (channel) => handlers.delete(channel),
     },
     send: (_channel, event) => events.push(event),
-    spawnPty: (() => pty as unknown as IPty) as typeof import('node-pty').spawn,
+    spawnPty: ((_file: string, args: string[]) => {
+      launchArgs.push(args);
+      return pty as unknown as IPty;
+    }) as typeof import('node-pty').spawn,
     revealDelayMs: 0,
     processStopGraceMs: 1,
     openSshTunnel: async (input, overrides) => {
@@ -217,6 +226,7 @@ function createHarness(mode: 'pending' | 'exit') {
     terminal,
     handlers,
     pty,
+    launchArgs,
     releaseTunnel,
     eventKinds: () => events.map(({ kind }) => kind),
     events,

@@ -46,7 +46,7 @@ function createRemoteHostDraft() {
 }
 
 export function RuntimeHostProfilesSection(props: {
-  readonly onChooseProject?: (profileId: string) => void;
+  readonly onRemoteHostAdded: (profileId: string) => void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
@@ -156,15 +156,15 @@ export function RuntimeHostProfilesSection(props: {
     }
   }
 
-  async function discardPairingRecovery() {
+  async function resolvePairingRecovery() {
     setSwitching(true);
     try {
-      const next = await window.maka.runtimeHostProfiles.discardPairingRecovery();
+      const next = await window.maka.runtimeHostProfiles.resolvePairingRecovery();
       if (mountedRef.current) setSnapshot(next);
     } catch (error) {
       if (mountedRef.current) {
         toast.error(
-          copy.discardPairingRecoveryFailed,
+          copy.resolvePairingRecoveryFailed,
           settingsActionErrorMessage(error, locale),
         );
       }
@@ -222,7 +222,7 @@ export function RuntimeHostProfilesSection(props: {
           </HStack>
         }
       >
-        {snapshot?.pairingRecoveryBlocked ? (
+        {snapshot?.pairingRecoveryBlocked || snapshot?.pairingRecoveryPending ? (
           <SettingsRow
             label={copy.pairingRecoveryTitle}
             description={copy.pairingRecoveryDescription}
@@ -230,9 +230,9 @@ export function RuntimeHostProfilesSection(props: {
               <Button
                 variant="secondary"
                 size="sm"
-                label={copy.discardPairingRecovery}
+                label={copy.resolvePairingRecovery}
                 isDisabled={switching}
-                onClick={() => void discardPairingRecovery()}
+                onClick={() => void resolvePairingRecovery()}
               />
             )}
           />
@@ -377,7 +377,7 @@ export function RuntimeHostProfilesSection(props: {
           setShowOnboarding(false);
           void reload();
         }}
-        onChooseProject={(profileId) => props.onChooseProject?.(profileId)}
+        onRemoteHostAdded={props.onRemoteHostAdded}
       />
     </>
   );

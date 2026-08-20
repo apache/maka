@@ -1,14 +1,9 @@
-import { readFileSync } from 'node:fs';
-
-const cliManifest = JSON.parse(
-  readFileSync(new URL('../../packages/cli/package.json', import.meta.url), 'utf8'),
-);
+const runtimeHostSetupPackage = process.env.MAKA_RUNTIME_HOST_SETUP_PACKAGE?.trim();
 if (
-  cliManifest.name !== 'maka-agent' ||
-  typeof cliManifest.version !== 'string' ||
-  !/^[0-9][0-9A-Za-z.+-]*$/u.test(cliManifest.version)
+  runtimeHostSetupPackage !== undefined &&
+  !/^maka-agent@[0-9][0-9A-Za-z.+-]*$/u.test(runtimeHostSetupPackage)
 ) {
-  throw new Error('Desktop packaging requires a valid Maka CLI release identity');
+  throw new Error('MAKA_RUNTIME_HOST_SETUP_PACKAGE must name an exact Maka CLI version');
 }
 
 export default {
@@ -16,9 +11,9 @@ export default {
   productName: 'Maka',
   artifactName: 'Maka-${version}-mac-${arch}.${ext}',
   asar: true,
-  extraMetadata: {
-    runtimeHostSetupPackage: `maka-agent@${cliManifest.version}`,
-  },
+  ...(runtimeHostSetupPackage
+    ? { extraMetadata: { runtimeHostSetupPackage } }
+    : {}),
   directories: {
     output: 'release',
   },

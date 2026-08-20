@@ -465,10 +465,11 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     }
     const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
     const profile = decodeRemoteRuntimeHostProfile(value);
-    if (profile.id !== expectedProfile.id || profile.rootId !== expectedProfile.rootId) {
-      return Promise.reject(
-        new Error('A Runtime Host profile rebind must retain its Host identity'),
-      );
+    if (
+      profile.id !== expectedProfile.id ||
+      !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile)
+    ) {
+      return Promise.reject(new Error('A Runtime Host profile rebind must retain its connection'));
     }
     return this.#exclusive(async () => {
       const current = await this.read();
@@ -486,15 +487,11 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
           candidate.id === profile.id ? profile : candidate,
         ),
       });
-      const bindingChanged = profileCredentialBinding(stored) !== profileCredentialBinding(profile);
-      const displacedCredential = bindingChanged
-        ? await this.credentials.get(profile)
-        : target.credential;
       await this.credentials.set(profile, credential);
       try {
         await writeProfileDocument(this.path, next);
       } catch (error) {
-        await restoreCredential(this.credentials, profile, displacedCredential).catch(
+        await restoreCredential(this.credentials, profile, target.credential).catch(
           (rollbackError) => {
             throw new AggregateError(
               [error, rollbackError],
@@ -503,26 +500,6 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
           },
         );
         throw error;
-      }
-      if (bindingChanged) {
-        try {
-          await this.credentials.delete(stored);
-        } catch (error) {
-          const rollbackFailures: unknown[] = [];
-          await writeProfileDocument(this.path, current).catch((failure) =>
-            rollbackFailures.push(failure),
-          );
-          await restoreCredential(this.credentials, profile, displacedCredential).catch((failure) =>
-            rollbackFailures.push(failure),
-          );
-          if (rollbackFailures.length > 0) {
-            throw new AggregateError(
-              [error, ...rollbackFailures],
-              'Runtime Host profile rebind failed and its prior target could not be restored',
-            );
-          }
-          throw error;
-        }
       }
       return { rebound: true, document: next };
     });

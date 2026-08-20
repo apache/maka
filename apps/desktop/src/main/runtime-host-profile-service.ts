@@ -14,7 +14,7 @@ import {
   type ResolvedRuntimeHostProfile,
   type RuntimeHostProfileCatalog,
 } from "@maka/runtime-host/client";
-import type { CredentialStore } from "@maka/storage";
+import type { CredentialStore } from "@maka/storage/credential-store";
 import { withFileUpdateLock } from "@maka/storage/file-update-lock";
 import type {
   DesktopRuntimeHostProfileAddInput,
@@ -28,9 +28,10 @@ import {
 } from "./runtime-host-desktop-manager.js";
 import {
   createDesktopRuntimeHostPairingIntent,
+  DesktopRuntimeHostPairingJournalInvalidError,
   pairingIntentMatchesTarget,
-  readDesktopRuntimeHostPairingIntent,
-  writeDesktopRuntimeHostPairingIntent,
+  readDesktopRuntimeHostPairingIntents,
+  writeDesktopRuntimeHostPairingIntents,
   type DesktopRuntimeHostPairingIntent,
 } from "./runtime-host-pairing-journal.js";
 
@@ -47,7 +48,7 @@ export interface DesktopRuntimeHostPreferences {
 export interface DesktopRuntimeHostStartup {
   readonly preferences: DesktopRuntimeHostPreferences;
   readonly preferencesReadFailure?: Error;
-  readonly pairingIntent?: DesktopRuntimeHostPairingIntent;
+  readonly pairingIntents: readonly DesktopRuntimeHostPairingIntent[];
   readonly pairingReadFailure?: Error;
   readonly remotes: readonly ResolvedRuntimeHostProfile[];
   readonly unavailable: ReadonlyMap<string, Error>;
@@ -62,7 +63,7 @@ export interface DesktopRuntimeHostProfileService {
     input: DesktopRuntimeHostProfileAddInput & { readonly credential: string },
   ): Promise<{ readonly profileId: string }>;
   startEnabledProfiles(): Promise<void>;
-  discardPairingRecovery(): Promise<DesktopRuntimeHostProfileSnapshot>;
+  resolvePairingRecovery(): Promise<DesktopRuntimeHostProfileSnapshot>;
   setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
   setDefault(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
   remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
@@ -90,12 +91,12 @@ export async function resolveDesktopRuntimeHostStartup(
     );
     preferences = defaultPreferences();
   }
-  let pairingIntent: DesktopRuntimeHostPairingIntent | undefined;
+  let pairingIntents: readonly DesktopRuntimeHostPairingIntent[] = [];
   let pairingReadFailure: Error | undefined;
   const credentialStore =
     overrides.credentialStore ?? createClientRuntimeHostCredentialStore(clientDataRoot);
   try {
-    pairingIntent = await readDesktopRuntimeHostPairingIntent(credentialStore);
+    pairingIntents = await readDesktopRuntimeHostPairingIntents(credentialStore);
   } catch (error) {
     pairingReadFailure = asError(error);
     console.error("[runtime-host] pairing recovery journal could not be read:", pairingReadFailure);
@@ -121,7 +122,7 @@ export async function resolveDesktopRuntimeHostStartup(
     return {
       preferences,
       ...(preferencesReadFailure ? { preferencesReadFailure } : {}),
-      ...(pairingIntent ? { pairingIntent } : {}),
+      pairingIntents,
       ...(pairingReadFailure ? { pairingReadFailure } : {}),
       remotes: [],
       unavailable,
@@ -164,7 +165,7 @@ export async function resolveDesktopRuntimeHostStartup(
   return {
     preferences,
     ...(preferencesReadFailure ? { preferencesReadFailure } : {}),
-    ...(pairingIntent ? { pairingIntent } : {}),
+    pairingIntents,
     ...(pairingReadFailure ? { pairingReadFailure } : {}),
     remotes,
     unavailable,
@@ -193,7 +194,9 @@ export function createDesktopRuntimeHostProfileService(input: {
   const profilePath = join(input.clientDataRoot, PROFILE_FILE);
   let preferences = input.startup.preferences;
   const unavailable = new Map(input.startup.unavailable);
-  let pairingIntent = input.startup.pairingIntent;
+  let pairingIntents = new Map(
+    input.startup.pairingIntents.map((intent) => [intent.target.profile.id, intent]),
+  );
   let pairingReadFailure = input.startup.pairingReadFailure;
   let mutationTail = Promise.resolve();
 
@@ -218,23 +221,26 @@ export function createDesktopRuntimeHostProfileService(input: {
       }
       if (pairingReadFailure) {
         throw new Error(
-          "Discard the unreadable Runtime Host pairing recovery state before changing profiles",
+          "Resolve the unreadable Runtime Host pairing recovery state before changing profiles",
           { cause: pairingReadFailure },
         );
       }
       return operation();
     });
 
-  const persistPairingIntent = async (
-    next: DesktopRuntimeHostPairingIntent | undefined,
+  const persistPairingIntents = async (
+    next: ReadonlyMap<string, DesktopRuntimeHostPairingIntent>,
   ): Promise<void> => {
-    await writeDesktopRuntimeHostPairingIntent(credentialStore, next);
-    pairingIntent = next;
+    await writeDesktopRuntimeHostPairingIntents(credentialStore, [...next.values()]);
+    pairingIntents = new Map(next);
   };
 
   const beginPairingIntent = async (intent: DesktopRuntimeHostPairingIntent): Promise<void> => {
-    if (pairingIntent) throw new Error("Another Runtime Host has an unfinished pairing recovery");
-    await persistPairingIntent(intent);
+    const profileId = intent.target.profile.id;
+    if (pairingIntents.has(profileId)) {
+      throw new Error("This Runtime Host has an unfinished pairing recovery");
+    }
+    await persistPairingIntents(new Map(pairingIntents).set(profileId, intent));
   };
 
   const snapshot = async (): Promise<DesktopRuntimeHostProfileSnapshot> => {
@@ -245,6 +251,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     return {
       defaultProfileId: preferences.defaultProfileId,
       ...(pairingReadFailure ? { pairingRecoveryBlocked: true as const } : {}),
+      ...(pairingIntents.size > 0 ? { pairingRecoveryPending: true as const } : {}),
       entries: profiles.map((profile): DesktopRuntimeHostProfileEntry => {
         const isEnabled = profile.kind === "local" || enabled.has(profile.id);
         const state = states.get(profile.id);
@@ -274,8 +281,10 @@ export function createDesktopRuntimeHostProfileService(input: {
     preferences = next;
   };
 
-  const clearPairingIntentBestEffort = async (): Promise<void> => {
-    await persistPairingIntent(undefined).catch((error) =>
+  const clearPairingIntentBestEffort = async (profileId: string): Promise<void> => {
+    const next = new Map(pairingIntents);
+    next.delete(profileId);
+    await persistPairingIntents(next).catch((error) =>
       console.error("[runtime-host] completed pairing recovery could not be cleared:", error),
     );
   };
@@ -299,6 +308,13 @@ export function createDesktopRuntimeHostProfileService(input: {
         await input.disable(target.profile.id);
         throw new Error("Runtime Host profile changed while it was connecting");
       }
+      const remainsEnabled =
+        target.profile.id === preferences.defaultProfileId ||
+        preferences.enabledRemoteProfileIds.includes(target.profile.id);
+      if (!remainsEnabled) {
+        await input.disable(target.profile.id);
+        return;
+      }
       unavailable.delete(target.profile.id);
     } catch (error) {
       const failure = asError(error);
@@ -317,7 +333,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     await ensureEnabled(target);
     await activateTarget(target, "terminal");
     await input.finalizePairing(target.profile.id);
-    await clearPairingIntentBestEffort();
+    await clearPairingIntentBestEffort(target.profile.id);
   };
 
   const rollbackPairingIntent = async (
@@ -326,7 +342,7 @@ export function createDesktopRuntimeHostProfileService(input: {
   ): Promise<void> => {
     const current = await catalog.resolve(intent.target.profile.id).catch(() => undefined);
     if (!current || !pairingIntentMatchesTarget(intent.target, current)) {
-      await clearPairingIntentBestEffort();
+      await clearPairingIntentBestEffort(intent.target.profile.id);
       return;
     }
     const rollbackFailures: unknown[] = [];
@@ -393,7 +409,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       );
     }
     unavailable.delete(current.profile.id);
-    await clearPairingIntentBestEffort();
+    await clearPairingIntentBestEffort(intent.target.profile.id);
   };
 
   const recoverPairingIntent = async (
@@ -401,7 +417,7 @@ export function createDesktopRuntimeHostProfileService(input: {
   ): Promise<Error | undefined> => {
     const current = await catalog.resolve(intent.target.profile.id).catch(() => undefined);
     if (!current || !pairingIntentMatchesTarget(intent.target, current)) {
-      await clearPairingIntentBestEffort();
+      await clearPairingIntentBestEffort(intent.target.profile.id);
       return undefined;
     }
     try {
@@ -431,7 +447,8 @@ export function createDesktopRuntimeHostProfileService(input: {
   };
 
   const enable = async (profileId: string): Promise<Error | undefined> => {
-    if (pairingIntent?.target.profile.id === profileId) {
+    const pairingIntent = pairingIntents.get(profileId);
+    if (pairingIntent) {
       return recoverPairingIntent(pairingIntent);
     }
     const target = await catalog.resolve(profileId);
@@ -444,9 +461,11 @@ export function createDesktopRuntimeHostProfileService(input: {
     }
   };
 
-  const recoverPendingPairing = (): Promise<void> =>
+  const recoverPendingPairings = (): Promise<void> =>
     mutateProfiles(async () => {
-      if (pairingIntent) await recoverPairingIntent(pairingIntent);
+      for (const intent of [...pairingIntents.values()]) {
+        await recoverPairingIntent(intent);
+      }
     });
 
   return {
@@ -477,14 +496,10 @@ export function createDesktopRuntimeHostProfileService(input: {
       requireSaveInput(value);
       return mutateProfiles(async () => {
         const currentDocument = await catalog.read();
-        const existing = currentDocument.profiles.find(
-          (profile) => profile.rootId === value.profile.rootId,
+        const existing = currentDocument.profiles.find((profile) =>
+          profile.rootId === value.profile.rootId &&
+          sameRemoteRuntimeHostProfileTarget(profile, value.profile),
         );
-        if (existing && !sameRemoteRuntimeHostProfileTarget(existing, value.profile)) {
-          throw new Error(
-            "This Runtime Host is already configured through another connection",
-          );
-        }
         const previousTarget = existing ? await catalog.resolve(existing.id) : undefined;
         const profile = existing ? { ...value.profile, id: existing.id } : value.profile;
         const target = { profile, credential: value.credential } as const;
@@ -520,34 +535,51 @@ export function createDesktopRuntimeHostProfileService(input: {
     },
     startEnabledProfiles() {
       const tasks: Promise<unknown>[] = [];
-      if (!pairingReadFailure && pairingIntent) {
-        tasks.push(
-          recoverPendingPairing().catch((error) =>
-            console.error("[runtime-host] pairing recovery failed:", error),
-          ),
+      let interactiveStartup = Promise.resolve();
+      if (!pairingReadFailure && pairingIntents.size > 0) {
+        interactiveStartup = recoverPendingPairings().catch((error) =>
+          console.error("[runtime-host] pairing recovery failed:", error),
         );
+        tasks.push(interactiveStartup);
       }
       for (const target of input.startup.remotes) {
         if (target.profile.kind !== "remote" || !target.credential) continue;
-        if (pairingIntent?.target.profile.id === target.profile.id) continue;
+        if (pairingIntents.has(target.profile.id)) continue;
         const sshInteraction =
           target.profile.transport.kind === "ssh" &&
           target.profile.id === preferences.defaultProfileId
             ? "terminal"
             : "batch";
+        const activation = () => activateTarget(target, sshInteraction);
         tasks.push(
-          activateTarget(target, sshInteraction).catch((error) =>
+          (sshInteraction === "terminal" ? interactiveStartup.then(activation) : activation()).catch((error) =>
             console.error(`[runtime-host] ${target.profile.name} is unavailable:`, error),
           ),
         );
       }
       return Promise.all(tasks).then(() => undefined);
     },
-    discardPairingRecovery() {
+    resolvePairingRecovery() {
       return mutate(async () => {
-        if (!pairingReadFailure) return snapshot();
-        await writeDesktopRuntimeHostPairingIntent(credentialStore, undefined);
-        pairingReadFailure = undefined;
+        if (pairingReadFailure) {
+          try {
+            pairingIntents = new Map(
+              (await readDesktopRuntimeHostPairingIntents(credentialStore)).map((intent) => [
+                intent.target.profile.id,
+                intent,
+              ]),
+            );
+            pairingReadFailure = undefined;
+          } catch (error) {
+            if (!(error instanceof DesktopRuntimeHostPairingJournalInvalidError)) throw error;
+            await writeDesktopRuntimeHostPairingIntents(credentialStore, []);
+            pairingIntents = new Map();
+            pairingReadFailure = undefined;
+          }
+        }
+        for (const intent of [...pairingIntents.values()]) {
+          await recoverPairingIntent(intent);
+        }
         return snapshot();
       });
     },
@@ -687,7 +719,7 @@ export function registerDesktopRuntimeHostProfileIpc(
     "runtime-host-profiles:set-enabled",
     "runtime-host-profiles:set-default",
     "runtime-host-profiles:remove",
-    "runtime-host-profiles:discard-pairing-recovery",
+    "runtime-host-profiles:resolve-pairing-recovery",
   ] as const;
   ipcMain.handle(channels[0], () => service.getSnapshot());
   ipcMain.handle(channels[1], (_event, value: DesktopRuntimeHostProfileAddInput) =>
@@ -698,7 +730,7 @@ export function registerDesktopRuntimeHostProfileIpc(
   );
   ipcMain.handle(channels[3], (_event, profileId: string) => service.setDefault(profileId));
   ipcMain.handle(channels[4], (_event, profileId: string) => service.remove(profileId));
-  ipcMain.handle(channels[5], () => service.discardPairingRecovery());
+  ipcMain.handle(channels[5], () => service.resolvePairingRecovery());
   return () => {
     for (const channel of channels) ipcMain.removeHandler(channel);
   };

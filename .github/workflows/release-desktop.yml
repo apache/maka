@@ -2,6 +2,11 @@ name: Release desktop
 
 on:
   workflow_dispatch:
+    inputs:
+      runtime_host_setup_package:
+        description: Exact published Maka CLI package used for remote Runtime Host setup
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -26,6 +31,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     environment: release
     timeout-minutes: 60
+    env:
+      MAKA_RUNTIME_HOST_SETUP_PACKAGE: ${{ inputs.runtime_host_setup_package }}
     defaults:
       run:
         # Windows runners default to pwsh; the release steps are written once,
@@ -48,6 +55,19 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Verify Runtime Host setup package
+        run: |
+          if [[ ! "$MAKA_RUNTIME_HOST_SETUP_PACKAGE" =~ ^maka-agent@[0-9][0-9A-Za-z.+-]*$ ]]; then
+            echo "Runtime Host setup package must be an exact maka-agent version." >&2
+            exit 1
+          fi
+          requested_version="${MAKA_RUNTIME_HOST_SETUP_PACKAGE#maka-agent@}"
+          published_version="$(npm view "$MAKA_RUNTIME_HOST_SETUP_PACKAGE" version)"
+          if [ "$published_version" != "$requested_version" ]; then
+            echo "Published package resolved to ${published_version}, expected ${requested_version}." >&2
+            exit 1
+          fi
 
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=moderate
