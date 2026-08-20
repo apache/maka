@@ -120,6 +120,7 @@ export interface ConversationCopy {
     thinkingDisabledStreaming: string;
     thinkingDisabledRunning: string;
     thinkingDisabledPermission: string;
+    orchestrationModeAriaLabel: string;
     planModeLabel: string;
     enablePlanMode: string;
     disablePlanMode: string;
@@ -388,6 +389,7 @@ const CONVERSATION_COPY = {
       chooseSkill: '选择技能', noSkillsAvailable: '当前没有可用技能',
       switchDisabledStreaming: '当前任务正在流式输出，等结束后再切换模型。', switchDisabledRunning: '当前任务正在运行，等结束后再切换模型。', switchDisabledPermission: '当前有工具调用正在等待确认，处理后再切换模型。',
       thinkingDisabledStreaming: '当前任务正在流式输出，等结束后再切换思考级别。', thinkingDisabledRunning: '当前任务正在运行，等结束后再切换思考级别。', thinkingDisabledPermission: '当前有工具调用正在等待确认，处理后再切换思考级别。',
+      orchestrationModeAriaLabel: '编排模式',
       planModeLabel: 'Plan', enablePlanMode: '开启 Plan Mode', disablePlanMode: '退出 Plan Mode',
       planModeOnTitle: 'Plan 模式已启用，点击关闭',
       swarmModeLabel: 'Swarm', swarmModeOnTitle: 'Swarm 模式已启用，点击关闭',
@@ -527,6 +529,7 @@ const CONVERSATION_COPY = {
       chooseSkill: 'Choose skills', noSkillsAvailable: 'No skills available',
       switchDisabledStreaming: 'Wait for the current response to finish before switching models.', switchDisabledRunning: 'Wait for the current run to finish before switching models.', switchDisabledPermission: 'Resolve the pending tool permission before switching models.',
       thinkingDisabledStreaming: 'Wait for the current response to finish before changing the thinking level.', thinkingDisabledRunning: 'Wait for the current run to finish before changing the thinking level.', thinkingDisabledPermission: 'Resolve the pending tool permission before changing the thinking level.',
+      orchestrationModeAriaLabel: 'Orchestration mode',
       planModeLabel: 'Plan', enablePlanMode: 'Enable Plan Mode', disablePlanMode: 'Disable Plan Mode',
       planModeOnTitle: 'Plan mode is on — click to turn off',
       swarmModeLabel: 'Swarm', swarmModeOnTitle: 'Swarm mode is on — click to turn off',
