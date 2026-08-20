@@ -207,6 +207,15 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(exitCode, 1);
   });
 
+  test('returns exit code 1 when a same-step sibling succeeds after a sandbox failure', async () => {
+    const fixture = runFixture({
+      turnEvents: sandboxBoundaryEvents('turn-1', 'step-1', 'step-1', 'Incomplete answer'),
+    });
+    const exitCode = await runFixtureCommand(fixture, ['run parallel tools']);
+
+    assert.equal(exitCode, 1);
+  });
+
   test('returns exit code 0 when the final Graph Turn completes', async () => {
     const stdout: string[] = [];
     const fixture = runFixture({ graph: true });
@@ -222,7 +231,7 @@ describe('Runtime Host maka run adapter', () => {
     const stdout: string[] = [];
     const fixture = runFixture({
       graph: true,
-      turnEvents: recoveredSandboxEvents('turn-1'),
+      turnEvents: sandboxBoundaryEvents('turn-1', 'step-1', 'step-2', 'Recovered answer'),
     });
     const exitCode = await runFixtureCommand(fixture, ['recover once', '--graph'], (text) =>
       stdout.push(text),
@@ -230,6 +239,16 @@ describe('Runtime Host maka run adapter', () => {
 
     assert.equal(exitCode, 0);
     assert.equal(stdout.join(''), 'Final graph answer\n');
+  });
+
+  test('returns exit code 1 when a same-step Graph sibling succeeds after a sandbox failure', async () => {
+    const fixture = runFixture({
+      graph: true,
+      finalMessages: sandboxBoundaryMessages('step-1', 'step-1'),
+    });
+    const exitCode = await runFixtureCommand(fixture, ['run parallel tools', '--graph']);
+
+    assert.equal(exitCode, 1);
   });
 
   test('returns exit code 1 when the final Graph Turn fails', async () => {
@@ -296,14 +315,37 @@ describe('Runtime Host maka run adapter', () => {
   });
 
   test('reports a recovered sandbox boundary from live and durable Turns', async () => {
-    const live = await observeFixtureOutcome({ turnEvents: recoveredSandboxEvents('turn-1') });
+    const live = await observeFixtureOutcome({
+      turnEvents: sandboxBoundaryEvents('turn-1', 'step-1', 'step-2', 'Recovered answer'),
+    });
     const durable = await observeFixtureOutcome({
       graph: true,
-      finalMessages: recoveredSandboxMessages(),
+      finalMessages: sandboxBoundaryMessages('step-1', 'step-2'),
     });
 
     assert.equal(live.sandboxBoundary, 'recovered');
     assert.equal(durable.sandboxBoundary, 'recovered');
+  });
+
+  test('leaves sandbox failures unresolved when their provider steps are unavailable', async () => {
+    const live = await observeFixtureOutcome({
+      turnEvents: sandboxBoundaryEvents('turn-1', undefined, undefined, 'Incomplete answer'),
+    });
+    const durable = await observeFixtureOutcome({
+      graph: true,
+      finalMessages: sandboxBoundaryMessages(undefined, undefined),
+    });
+
+    assert.equal(live.sandboxBoundary, 'unresolved');
+    assert.equal(durable.sandboxBoundary, 'unresolved');
+  });
+
+  test('returns a recovered boundary to unresolved after a later sandbox failure', async () => {
+    const outcome = await observeFixtureOutcome({
+      turnEvents: sandboxFailureAfterRecoveryEvents('turn-1'),
+    });
+
+    assert.equal(outcome.sandboxBoundary, 'unresolved');
   });
 
   test('classifies live and durable Turn cancellations as aborted', async () => {
@@ -1134,16 +1176,25 @@ function graphMessages(includeTerminal = true): StoredMessage[] {
   return messages;
 }
 
-function recoveredSandboxMessages(): StoredMessage[] {
+function sandboxBoundaryMessages(
+  failureStepId: string | undefined,
+  successStepId: string | undefined,
+): StoredMessage[] {
+  const sameStep = failureStepId !== undefined && failureStepId === successStepId;
   return [
     ...graphMessages(false),
-    sandboxFailureToolResult('turn-2', 5),
-    successfulToolResult('turn-2', 6),
+    ...(failureStepId === undefined ? [] : [storedToolCall('turn-2', 'tool-1', failureStepId, 5)]),
+    ...(sameStep ? [storedToolCall('turn-2', 'tool-2', successStepId, 6)] : []),
+    sandboxFailureToolResult('turn-2', 7),
+    ...(successStepId === undefined || sameStep
+      ? []
+      : [storedToolCall('turn-2', 'tool-2', successStepId, 8)]),
+    successfulToolResult('turn-2', 9),
     {
       type: 'turn_state',
       id: 'state-turn-2',
       turnId: 'turn-2',
-      ts: 7,
+      ts: 10,
       status: 'completed',
       partialOutputRetained: true,
     },
@@ -1232,22 +1283,43 @@ function multiWakeGraphMessages(includeFinalTerminal: boolean): StoredMessage[] 
   return messages;
 }
 
-async function* eventsFor(turnId: string, text: string): AsyncIterable<SessionEvent> {
+async function* eventsFor(turnId: string, text: string, ts = 1): AsyncIterable<SessionEvent> {
   yield {
     type: 'text_complete',
     id: `${turnId}-text`,
     turnId,
     messageId: `${turnId}-message`,
-    ts: 1,
+    ts,
     text,
   };
-  yield { type: 'complete', id: `${turnId}-complete`, turnId, ts: 2, stopReason: 'end_turn' };
+  yield { type: 'complete', id: `${turnId}-complete`, turnId, ts: ts + 1, stopReason: 'end_turn' };
 }
 
-async function* recoveredSandboxEvents(turnId: string): AsyncIterable<SessionEvent> {
-  yield sandboxFailureToolResult(turnId, 1);
-  yield successfulToolResult(turnId, 2);
-  yield* eventsFor(turnId, 'Recovered answer');
+async function* sandboxBoundaryEvents(
+  turnId: string,
+  failureStepId: string | undefined,
+  successStepId: string | undefined,
+  text: string,
+): AsyncIterable<SessionEvent> {
+  const sameStep = failureStepId !== undefined && failureStepId === successStepId;
+  if (failureStepId !== undefined) yield toolStart(turnId, 'tool-1', failureStepId, 1);
+  if (sameStep) yield toolStart(turnId, 'tool-2', successStepId, 2);
+  yield sandboxFailureToolResult(turnId, 3);
+  if (successStepId !== undefined && !sameStep) {
+    yield toolStart(turnId, 'tool-2', successStepId, 4);
+  }
+  yield successfulToolResult(turnId, 5);
+  yield* eventsFor(turnId, text, 6);
+}
+
+async function* sandboxFailureAfterRecoveryEvents(turnId: string): AsyncIterable<SessionEvent> {
+  yield toolStart(turnId, 'tool-1', 'step-1', 1);
+  yield sandboxFailureToolResult(turnId, 2);
+  yield toolStart(turnId, 'tool-2', 'step-2', 3);
+  yield successfulToolResult(turnId, 4);
+  yield toolStart(turnId, 'tool-3', 'step-3', 5);
+  yield sandboxFailureToolResult(turnId, 6, 'tool-3');
+  yield* eventsFor(turnId, 'Incomplete answer', 7);
 }
 
 async function* abortedEvents(turnId: string): AsyncIterable<SessionEvent> {
@@ -1283,13 +1355,52 @@ async function* failedEvents(turnId: string, reason: string): AsyncIterable<Sess
 type SharedToolResult = Extract<SessionEvent, { type: 'tool_result' }> &
   Extract<StoredMessage, { type: 'tool_result' }>;
 
-function sandboxFailureToolResult(turnId: string, ts: number): SharedToolResult {
+function toolStart(
+  turnId: string,
+  toolUseId: string,
+  stepId: string,
+  ts: number,
+): Extract<SessionEvent, { type: 'tool_start' }> {
   return {
-    type: 'tool_result',
-    id: `${turnId}-sandbox-failure`,
+    type: 'tool_start',
+    id: `${turnId}-${toolUseId}-start`,
     turnId,
     ts,
-    toolUseId: 'tool-1',
+    toolUseId,
+    toolName: 'Read',
+    args: {},
+    stepId,
+  };
+}
+
+function storedToolCall(
+  turnId: string,
+  toolUseId: string,
+  stepId: string,
+  ts: number,
+): Extract<StoredMessage, { type: 'tool_call' }> {
+  return {
+    type: 'tool_call',
+    id: toolUseId,
+    turnId,
+    ts,
+    toolName: 'Read',
+    args: {},
+    stepId,
+  };
+}
+
+function sandboxFailureToolResult(
+  turnId: string,
+  ts: number,
+  toolUseId = 'tool-1',
+): SharedToolResult {
+  return {
+    type: 'tool_result',
+    id: `${turnId}-${toolUseId}-sandbox-failure`,
+    turnId,
+    ts,
+    toolUseId,
     isError: true,
     content: sandboxFailureContent(),
   };

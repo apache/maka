@@ -513,17 +513,29 @@ type TurnOutcomeObservation =
       readonly status: 'failed';
       readonly failure: NonNullable<MakaRunOutcome['failure']>;
     }
-  | { readonly kind: 'sandbox_failure' }
-  | { readonly kind: 'tool_success' };
+  | {
+      readonly kind: 'tool_call';
+      readonly toolUseId: string;
+      readonly stepId: string | undefined;
+    }
+  | {
+      readonly kind: 'tool_result';
+      readonly toolUseId: string;
+      readonly outcome: 'sandbox_failure' | 'success';
+    };
 
 type TerminalOutcomeObservation = Extract<TurnOutcomeObservation, { kind: 'terminal' }>;
+type SandboxBoundaryState =
+  | { readonly status: 'none' }
+  | { readonly status: 'unresolved'; readonly failedStepId: string | undefined }
+  | { readonly status: 'recovered' };
 
 class TurnOutcomeClassifier {
   readonly #outcomeId: string;
+  readonly #stepByToolUseId = new Map<string, string>();
   #finalOutput: string | undefined;
   #terminal: TerminalOutcomeObservation | undefined;
-  #unresolvedBoundary = false;
-  #recoveredBoundary = false;
+  #sandboxBoundary: SandboxBoundaryState = { status: 'none' };
 
   constructor(outcomeId: string) {
     this.#outcomeId = outcomeId;
@@ -539,14 +551,28 @@ class TurnOutcomeClassifier {
       case 'terminal':
         this.#terminal = observation;
         return;
-      case 'sandbox_failure':
-        this.#unresolvedBoundary = true;
-        return;
-      case 'tool_success':
-        if (this.#unresolvedBoundary) {
-          this.#unresolvedBoundary = false;
-          this.#recoveredBoundary = true;
+      case 'tool_call':
+        if (observation.stepId !== undefined) {
+          this.#stepByToolUseId.set(observation.toolUseId, observation.stepId);
         }
+        return;
+      case 'tool_result': {
+        const stepId = this.#stepByToolUseId.get(observation.toolUseId);
+        if (observation.outcome === 'sandbox_failure') {
+          this.#sandboxBoundary = { status: 'unresolved', failedStepId: stepId };
+          return;
+        }
+        if (
+          observation.outcome === 'success' &&
+          this.#sandboxBoundary.status === 'unresolved' &&
+          stepId !== undefined &&
+          this.#sandboxBoundary.failedStepId !== undefined &&
+          stepId !== this.#sandboxBoundary.failedStepId
+        ) {
+          this.#sandboxBoundary = { status: 'recovered' };
+        }
+        return;
+      }
     }
   }
 
@@ -568,11 +594,7 @@ class TurnOutcomeClassifier {
       status: completed ? 'completed' : 'failed',
       ...(completed && this.#finalOutput !== undefined ? { finalOutput: this.#finalOutput } : {}),
       ...(!completed ? { failure } : {}),
-      sandboxBoundary: this.#unresolvedBoundary
-        ? 'unresolved'
-        : this.#recoveredBoundary
-          ? 'recovered'
-          : 'none',
+      sandboxBoundary: this.#sandboxBoundary.status,
     };
   }
 }
@@ -597,6 +619,13 @@ function observationFromSessionEvent(event: SessionEvent): TurnOutcomeObservatio
   }
   if (event.type === 'complete') {
     return { kind: 'terminal', status: 'completed' };
+  }
+  if (event.type === 'tool_start') {
+    return {
+      kind: 'tool_call',
+      toolUseId: event.toolUseId,
+      stepId: event.stepId,
+    };
   }
   return event.type === 'tool_result' ? observationFromToolResult(event) : undefined;
 }
@@ -625,16 +654,29 @@ function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObserv
       },
     };
   }
+  if (message.type === 'tool_call') {
+    return {
+      kind: 'tool_call',
+      toolUseId: message.id,
+      stepId: message.stepId,
+    };
+  }
   return message.type === 'tool_result' ? observationFromToolResult(message) : undefined;
 }
 
 function observationFromToolResult(
-  result: Pick<Extract<SessionEvent, { type: 'tool_result' }>, 'content' | 'isError'>,
+  result: Pick<Extract<SessionEvent, { type: 'tool_result' }>, 'content' | 'isError' | 'toolUseId'>,
 ): TurnOutcomeObservation | undefined {
   if (result.isError && result.content.kind === 'text' && result.content.sandboxFailure) {
-    return { kind: 'sandbox_failure' };
+    return {
+      kind: 'tool_result',
+      toolUseId: result.toolUseId,
+      outcome: 'sandbox_failure',
+    };
   }
-  return result.isError ? undefined : { kind: 'tool_success' };
+  return result.isError
+    ? undefined
+    : { kind: 'tool_result', toolUseId: result.toolUseId, outcome: 'success' };
 }
 
 function graphSupervisorTurnIds(messages: readonly StoredMessage[]): Set<string> {
