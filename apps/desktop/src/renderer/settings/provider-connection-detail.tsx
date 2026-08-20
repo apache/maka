@@ -45,8 +45,8 @@ import type { StatusSemantic } from '@maka/ui';
 import {
   useConnectionDetail,
   type ConnectionDetailProps,
-  type OAuthLoginService,
 } from './use-connection-detail';
+import type { OAuthLoginService } from './oauth-relogin-service.js';
 import {
   formatRequestBodyOverlay,
   parseRequestBodyOverlay,
@@ -828,7 +828,8 @@ function OAuthReloginNotice(props: {
   hasSecret: CredentialPresenceStatus;
   onRelogin(): Promise<void>;
 }) {
-  const copy = getProviderSettingsCopy(useUiLocale()).detail;
+  const providerCopy = getProviderSettingsCopy(useUiLocale());
+  const copy = providerCopy.detail;
   const flow = useOAuthLoginFlow({
     bridge: props.service.bridge,
     display: props.service.display,
@@ -852,11 +853,18 @@ function OAuthReloginNotice(props: {
       : errored
         ? copy.oauthUnknownDetail
         : copy.oauthStartDetail;
+  // Codex's device page has no code in its URL — the user must type the
+  // code shown here, so hiding it makes the re-login impossible to finish.
+  const deviceCode = props.service.showsDeviceCode ? flow.stateHint : null;
   return (
     <Banner
       status="info"
       title={title}
-      description={detail}
+      description={deviceCode ? (
+        <>
+          {detail} {providerCopy.oauthSection.deviceCode} <code>{deviceCode}</code>
+        </>
+      ) : detail}
       endContent={!loading ? (
           <Button
             variant="primary"
