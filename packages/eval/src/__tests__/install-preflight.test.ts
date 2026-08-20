@@ -13,11 +13,13 @@ test('preflights the pinned Python framework and Docker before execution', async
   t.after(() => rm(root, { recursive: true, force: true }));
   const trials = join(root, 'trials');
   const mount = join(root, 'mount');
+  const egressTarget = join(root, 'egress-target');
   const egress = join(root, 'egress');
-  await Promise.all([mkdir(trials), mkdir(mount), mkdir(egress)]);
+  await Promise.all([mkdir(trials), mkdir(mount), mkdir(egressTarget)]);
+  await symlink(egressTarget, egress, process.platform === 'win32' ? 'junction' : 'dir');
   await Promise.all([
-    writeFile(join(egress, 'compose.yaml'), 'services: {}\n'),
-    writeFile(join(egress, 'network-policy.json'), '{}\n'),
+    writeFile(join(egressTarget, 'compose.yaml'), 'services: {}\n'),
+    writeFile(join(egressTarget, 'network-policy.json'), '{}\n'),
   ]);
   const restore = setMachinePaths({
     MAKA_TEST_PREFLIGHT_PYTHON: process.execPath,
@@ -46,10 +48,10 @@ test('preflights the pinned Python framework and Docker before execution', async
   assert.equal(calls[0]?.environment.MAKA_TEST_PREFLIGHT_SECRET, undefined);
   assert.equal(calls[0]?.environment.MAKA_EVAL_EGRESS_REQUIRED, '1');
   assert.equal(calls[0]?.environment.MAKA_EVAL_EGRESS_ALLOWED_HOST, 'api.example.test');
-  assert.equal(
-    calls[0]?.environment.MAKA_EVAL_NETWORK_POLICY_PATH,
-    await realpath(join(egress, 'network-policy.json')),
-  );
+  const networkPolicyPath = join(egress, 'network-policy.json');
+  const canonicalNetworkPolicyPath = await realpath(networkPolicyPath);
+  assert.notEqual(canonicalNetworkPolicyPath, networkPolicyPath);
+  assert.equal(calls[0]?.environment.MAKA_EVAL_NETWORK_POLICY_PATH, canonicalNetworkPolicyPath);
   assert.deepEqual(calls[1], {
     command: 'docker',
     args: ['version', '--format', '{{.Server.Version}}'],
