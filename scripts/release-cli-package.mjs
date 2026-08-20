@@ -37,7 +37,6 @@ if (unsupportedArguments.length > 0) {
   throw new Error(`Unsupported release argument: ${unsupportedArguments.join(', ')}`);
 }
 const internalPackageNames = [
-  '@maka/code-mode',
   '@maka/core',
   '@maka/eval',
   '@maka/mcp',
@@ -47,7 +46,6 @@ const internalPackageNames = [
 ];
 const internalPackageSet = new Set(internalPackageNames);
 const buildOrder = [
-  '@maka/code-mode',
   '@maka/core',
   '@maka/storage',
   '@maka/mcp',

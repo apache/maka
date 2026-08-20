@@ -1,3 +1,8 @@
+// packages/runtime/src/code-mode.ts
+// Integration glue over `@ai-sdk/code-mode`: the product execution policy, the
+// result shapes the backend publishes, and the adapter that bridges sandbox
+// tool calls onto host tools and waits for them to drain.
+
 import {
   CodeModeError,
   type CodeModeExecutionPolicy,
@@ -5,13 +10,69 @@ import {
   experimental_runCodeMode as runCodeMode,
 } from '@ai-sdk/code-mode';
 import { jsonSchema, tool, type ToolSet } from 'ai';
-import type {
-  CodeModeDiagnostic,
-  CodeModeExecutionResult,
-  CodeModeToolCall,
-  ExecuteCodeCellInput,
-} from './index.js';
-import { DEFAULT_CODE_MODE_EXECUTION_POLICY } from './index.js';
+
+export interface CodeModeToolDefinition {
+  name: string;
+}
+
+/**
+ * Product limits for a Code Mode cell, expressed in the SDK's own policy shape.
+ * The SDK applies looser defaults; these are the values Maka ships.
+ */
+export const DEFAULT_CODE_MODE_EXECUTION_POLICY: Readonly<Required<CodeModeExecutionPolicy>> =
+  Object.freeze({
+    /** Sandbox invocation deadline; aborted host operations still drain before settlement. */
+    timeoutMs: 30_000,
+    memoryLimitBytes: 64 * 1024 * 1024,
+    maxStackSizeBytes: 2 * 1024 * 1024,
+    maxResultBytes: 1024 * 1024,
+    maxConsoleOutputBytes: 1,
+    maxSourceBytes: 64 * 1024,
+    maxToolInputBytes: 1024 * 1024,
+    maxToolOutputBytes: 1024 * 1024,
+    maxBridgeRequests: 32,
+    maxInFlightBridgeRequests: 8,
+  });
+
+export type CodeModeDiagnosticKind =
+  | 'parse_error'
+  | 'execution_error'
+  | 'unknown_tool'
+  | 'limit_exceeded'
+  | 'tool_failure';
+
+export interface CodeModeDiagnostic {
+  kind: CodeModeDiagnosticKind;
+  message: string;
+}
+
+export interface CodeModeToolCall {
+  index: number;
+  name: string;
+}
+
+export interface CodeModeExecutionSuccess {
+  ok: true;
+  value: unknown;
+  toolCalls: CodeModeToolCall[];
+}
+
+export interface CodeModeExecutionFailure {
+  ok: false;
+  error: CodeModeDiagnostic;
+  toolCalls: CodeModeToolCall[];
+}
+
+export type CodeModeExecutionResult = CodeModeExecutionSuccess | CodeModeExecutionFailure;
+
+export interface ExecuteCodeCellInput {
+  code: string;
+  tools: readonly CodeModeToolDefinition[];
+  callTool(name: string, input: unknown, signal: AbortSignal): Promise<unknown>;
+  isFatalToolError?: (error: unknown) => boolean;
+  signal?: AbortSignal;
+  executionPolicy?: CodeModeExecutionPolicy;
+}
 
 /**
  * Runs one Code Mode cell to quiescence.
@@ -30,7 +91,7 @@ export async function executeCodeCell(
   // Overrides are admitted only for known fields and only as positive integers.
   // Anything else keeps Maka's product default: the SDK resolves its policy with
   // `??`, so copying a `null` through would silently restore the SDK's looser
-  // default instead of the tighter one this package ships.
+  // default instead of the tighter one Maka ships.
   const executionPolicy: CodeModeExecutionPolicy = { ...DEFAULT_CODE_MODE_EXECUTION_POLICY };
   const overrides = input.executionPolicy;
   if (overrides) {

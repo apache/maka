@@ -89,11 +89,6 @@ import type {
   ToolInvocationRecord,
 } from '@maka/core/usage-stats/types';
 import type { ContextBudgetDiagnostic, PromptSegmentEstimate } from '@maka/core/usage-stats/types';
-import {
-  type CodeModeExecutionResult,
-  DEFAULT_CODE_MODE_EXECUTION_POLICY,
-  executeCodeCell,
-} from '@maka/code-mode';
 import type {
   JSONValue,
   ModelFinishReason,
@@ -116,6 +111,11 @@ import { z } from 'zod';
 
 import { AsyncEventQueue } from './async-queue.js';
 import { CodeCellAdmission } from './code-cell-admission.js';
+import {
+  type CodeModeExecutionResult,
+  DEFAULT_CODE_MODE_EXECUTION_POLICY,
+  executeCodeCell,
+} from './code-mode.js';
 import {
   StreamWatchdog,
   formatStreamWatchdogError,

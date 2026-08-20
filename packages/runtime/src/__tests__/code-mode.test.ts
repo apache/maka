@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { jsonSchema, tool } from 'ai';
-import { type ExecuteCodeCellInput, executeCodeCell } from '../index.js';
+import { type ExecuteCodeCellInput, executeCodeCell } from '../code-mode.js';
 
 function execute(code: string, input: Partial<Omit<ExecuteCodeCellInput, 'code'>> = {}) {
   return executeCodeCell({
