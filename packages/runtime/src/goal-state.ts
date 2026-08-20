@@ -144,6 +144,7 @@ type GoalStatePatch = Partial<
 
 export class GoalManager {
   private goals = new Map<string, GoalRecord>();
+  private disposed = false;
 
   constructor(private readonly deps: GoalManagerDeps) {}
 
@@ -194,6 +195,12 @@ export class GoalManager {
       armed?: boolean;
     },
   ): GoalCreateResult {
+    // A disposed manager has no Goals, which is not the same as being able to
+    // start one. Reads after disposal answer honestly by finding nothing;
+    // this is the only entry that would answer by conjuring a Goal into a
+    // composition that is already shutting down, so it refuses instead of
+    // repopulating the map its owner just emptied.
+    if (this.disposed) throw new Error('Goal manager is disposed');
     // Every caller reaches the Goal through here, so the stored condition is
     // trimmed once here rather than by each caller in its own way.
     const trimmed = condition.trim();
@@ -416,6 +423,7 @@ export class GoalManager {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.goals.clear();
   }
 }

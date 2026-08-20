@@ -872,6 +872,87 @@ test('resuming a Goal no Turn has carried leaves it for the next Turn, not for a
   }
 });
 
+test('an arm admitted before the drain creates no Goal after it', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-arm-drain-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'root'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
+  try {
+    const session = await stores.sessionStore.create({
+      cwd: capability.canonicalPath,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const sessionAdmission = new SessionAdmissionGate();
+    const host = new HostGoalCoordinator({
+      store: goalStore,
+      stores,
+      executions: {
+        reconcile: async () => assert.fail('A refused arm has no execution'),
+        subscribe: () => () => undefined,
+      },
+      sessionAdmission,
+      evaluator: {
+        evaluate: async () => assert.fail('A refused arm must not evaluate a Goal'),
+        close: async () => {},
+      },
+      admitTurn: () => assert.fail('A refused arm must not admit a Turn'),
+      listActionableTaskKeys: async () => [],
+      acquireResidency: () => ({ release: () => {} }),
+      onProjectionChanged: () => {},
+      requestDrain: () => {},
+      newId: () => 'goal-arm-after-drain',
+    });
+    await host.prepareRecovery();
+
+    // Hold this Session's admission so the arm is admitted but still queued
+    // when the composition begins to drain — the one window in which the
+    // Goal manager is already cleared and the callback has yet to run.
+    let releaseHolder = () => {};
+    const holder = sessionAdmission.run(
+      session.id,
+      () =>
+        new Promise<void>((resolve) => {
+          releaseHolder = () => resolve();
+        }),
+    );
+    const arming = host.handlers['goal.arm'](
+      {
+        sessionId: session.id,
+        condition: 'All tests pass',
+        maxIterations: null,
+        tokenBudget: null,
+      },
+      operationContext('connection-1'),
+    );
+    for (let tick = 0; tick < 5; tick += 1) await new Promise((r) => setImmediate(r));
+    host.beginDrain();
+    releaseHolder();
+    await holder;
+
+    const outcome = await arming;
+    assert.equal(outcome.ok, false, 'a draining Host answered an arm with success');
+    assert.equal(outcome.ok === false && outcome.error.code, 'host_draining');
+    assert.equal(host.readProjection(session.id), null, 'the drained Host holds a new Goal');
+    for (let tick = 0; tick < 20; tick += 1) await new Promise((r) => setImmediate(r));
+    assert.equal(await goalStore.read(session.id), null, 'the drain persisted a new Goal');
+    await host.close();
+  } finally {
+    await goalStore.close();
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 function operationContext(connectionId: string) {
   return {
     hostEpoch: 'epoch-1',

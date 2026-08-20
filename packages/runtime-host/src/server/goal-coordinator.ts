@@ -348,6 +348,12 @@ export class HostGoalCoordinator {
    */
   #arm(input: GoalArmInput): Promise<OperationOutcome<'goal.arm'>> {
     return this.#sessionAdmission.run(input.sessionId, async () => {
+      // Admission is a queue, and the composition begins to drain without
+      // waiting for it to empty. An arm let through before that can still be
+      // waiting behind another operation when the Goal manager is disposed,
+      // and it is the one operation here that would answer by creating state:
+      // the others read a manager that no longer holds anything and say so.
+      if (this.#draining) return hostDraining();
       let header;
       try {
         header = await this.#stores.sessionStore.readHeaderSnapshot(input.sessionId);
@@ -634,6 +640,13 @@ function operationConflict(message: string) {
   return {
     ok: false as const,
     error: { code: 'operation_conflict' as const, message },
+  };
+}
+
+function hostDraining() {
+  return {
+    ok: false as const,
+    error: { code: 'host_draining' as const, message: 'Runtime Host is draining' },
   };
 }
 
