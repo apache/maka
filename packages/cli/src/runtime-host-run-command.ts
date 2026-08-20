@@ -619,7 +619,10 @@ function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObserv
     return {
       kind: 'terminal',
       status: 'failed',
-      failure: { class: message.errorClass ?? 'runtime_error' },
+      failure: {
+        class: message.errorClass ?? 'runtime_error',
+        message: 'Agent Graph final Turn failed',
+      },
     };
   }
   return message.type === 'tool_result' ? observationFromToolResult(message) : undefined;

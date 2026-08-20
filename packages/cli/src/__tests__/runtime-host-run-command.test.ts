@@ -233,13 +233,20 @@ describe('Runtime Host maka run adapter', () => {
   });
 
   test('returns exit code 1 when the final Graph Turn fails', async () => {
+    const stderr: string[] = [];
     const fixture = runFixture({
       graph: true,
       finalMessages: failedGraphMessages('provider_failure'),
     });
-    const exitCode = await runFixtureCommand(fixture, ['delegate once', '--graph']);
+    const exitCode = await runFixtureCommand(
+      fixture,
+      ['delegate once', '--graph'],
+      undefined,
+      (text) => stderr.push(text),
+    );
 
     assert.equal(exitCode, 1);
+    assert.equal(stderr.join(''), 'maka run: Agent Graph final Turn failed\n');
   });
 
   test('waits for Host-started graph supervisor Turns before returning', async () => {
@@ -898,10 +905,11 @@ function runFixtureCommand(
   fixture: ReturnType<typeof runFixture>,
   argv: readonly string[],
   writeStdout: (text: string) => void = () => {},
+  writeStderr: (text: string) => void = () => {},
 ): Promise<number> {
   return runRuntimeHostTextCli(
     argv,
-    { ...publicCommandEnvironment(), writeStdout },
+    { ...publicCommandEnvironment(), writeStdout, writeStderr },
     {
       connect: async () => ({
         connection: readinessConnection(),
