@@ -226,6 +226,14 @@ test('specialized platform workflows stay reachable without pull requests', () =
   assert.match(baseline, /\n  schedule:/u);
 });
 
+test('workflows never persist the job credential into the checkout', () => {
+  for (const name of readdirSync(WORKFLOW_DIR)) {
+    for (const step of checkoutSteps(name)) {
+      assert.match(step, /persist-credentials: false/u, `${name}: ${step.trim()}`);
+    }
+  }
+});
+
 const WORKFLOW_DIR = new URL('../.github/workflows/', import.meta.url);
 
 function readWorkflow(name) {
@@ -241,4 +249,18 @@ function hasPullRequestTrigger(name) {
   const triggers = withoutComments.match(/^on:(.*(?:\n(?![^\s#]).*)*)/mu)?.[1] ?? '';
 
   return /\bpull_request(_target)?\b/u.test(triggers);
+}
+
+/**
+ * Slices each checkout step from its `uses:` line to the next step, so the
+ * assertion is per checkout: a bare one cannot be balanced out by a sibling
+ * step that opts out, or by the string appearing in a comment.
+ */
+function checkoutSteps(name) {
+  const withoutComments = readWorkflow(name).replaceAll(/^[ \t]*#.*$/gmu, '');
+
+  return (
+    withoutComments.match(/^[ \t]*- uses: actions\/checkout@.*\n(?:(?![ \t]*- )[ \t]+.*\n)*/gmu) ??
+    []
+  );
 }
