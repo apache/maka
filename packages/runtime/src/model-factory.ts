@@ -623,11 +623,6 @@ function buildFamilyWire(
   }
 }
 
-/**
- * The provider IDENTITY passed as `name` to `createOpenAICompatible` in
- * `getAIModel` — the raw slug for custom relays. Distinct from the
- * providerOptions key the SDK wants: see `openAiCompatibleProviderOptionsKey`.
- */
 // Mirrors @ai-sdk/openai-compatible's own toCamelCase derivation, so the
 // key we emit always matches the alias the SDK resolves.
 function toCamelCase(name: string): string {
