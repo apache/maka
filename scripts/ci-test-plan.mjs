@@ -25,19 +25,21 @@ const TYPECHECK_ONLY_FILES = new Set([
 ]);
 
 const CLI_PACKAGE_FILES = new Set([
-  '.gitattributes',
-  '.npmrc',
-  'DISCLAIMER-WIP',
   'LICENSE',
   'NOTICE',
-  'package-lock.json',
-  'package.json',
   'scripts/apply-dependency-patches.mjs',
   'scripts/clean-paths.mjs',
   'scripts/generate-third-party-notices.mjs',
   'scripts/install-electron-with-retry.mjs',
   'scripts/npm-spawn.mjs',
   'scripts/smoke-release-cli-package.mjs',
+]);
+
+const ASF_SOURCE_FILES = new Set([
+  '.github/workflows/asf-source-candidate.yml',
+  'scripts/asf-source-release.mjs',
+  'scripts/asf-source-release.test.mjs',
+  'scripts/asf-source-workflow-policy.test.mjs',
 ]);
 
 const CLI_PACKAGE_WORKSPACES = [
@@ -244,6 +246,7 @@ export function planTests(changedFiles, options = {}) {
   if (full) {
     const workspaces = [...graph.dirs];
     return {
+      asfSource: true,
       astryxSurface: true,
       cliPackage: true,
       code: true,
@@ -305,6 +308,7 @@ export function planTests(changedFiles, options = {}) {
   const storageStress = files.some((path) => STORAGE_STRESS_FILES.has(path));
 
   return {
+    asfSource: files.some((path) => ASF_SOURCE_FILES.has(path)),
     astryxSurface: files.some((path) => isAstryxSurfaceInventoryPath(path)),
     cliPackage: files.some((path) => isCliPackagePath(path)),
     code,
@@ -330,6 +334,7 @@ export function planTests(changedFiles, options = {}) {
 
 export function formatGitHubOutputs(plan) {
   return [
+    `asf_source=${plan.asfSource}`,
     `astryx_surface=${plan.astryxSurface}`,
     `cli_package=${plan.cliPackage}`,
     `code=${plan.code}`,

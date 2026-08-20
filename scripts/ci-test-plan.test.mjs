@@ -32,6 +32,7 @@ test('documentation-only changes do not select code validation', () => {
   const plan = planTests(['docs/ci.md'], { graph });
 
   assert.equal(plan.code, false);
+  assert.equal(plan.asfSource, false);
   assert.equal(plan.astryxSurface, false);
   assert.deepEqual(plan.workspaces, []);
 });
@@ -76,8 +77,25 @@ test('CLI release inputs select installed-package validation', () => {
   assert.equal(plan.cliPackage, true);
 });
 
-test('release metadata selects installed-package validation', () => {
-  assert.equal(planTests(['LICENSE'], { graph }).cliPackage, true);
+test('release metadata selects only the gate that consumes it', () => {
+  for (const path of ['LICENSE', 'NOTICE']) {
+    const plan = planTests([path], { graph });
+    assert.equal(plan.cliPackage, true, path);
+    assert.equal(plan.asfSource, false, path);
+  }
+});
+
+test('ASF source authority changes select their dedicated gate', () => {
+  for (const path of [
+    '.gitattributes',
+    '.github/workflows/asf-source-candidate.yml',
+    'scripts/asf-source-release.mjs',
+    'scripts/asf-source-release.test.mjs',
+  ]) {
+    assert.equal(planTests([path], { graph }).asfSource, true, path);
+  }
+  assert.equal(planTests(['.github/ASF_SOURCE_RELEASE.md'], { graph }).asfSource, false);
+  assert.equal(planTests(['scripts/audit-alignment.mjs'], { graph }).asfSource, false);
 });
 
 test('desktop-only changes skip installed-package validation', () => {
@@ -88,6 +106,7 @@ test('full selection covers every live surface', () => {
   const plan = planTests([], { graph, forceFull: true });
 
   assert.equal(plan.full, true);
+  assert.equal(plan.asfSource, true);
   assert.equal(plan.cliPackage, true);
   assert.equal(plan.code, true);
   assert.equal(plan.e2e, true);
