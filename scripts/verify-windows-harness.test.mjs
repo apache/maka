@@ -1,0 +1,279 @@
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
+import { after, describe, it } from 'node:test';
+import {
+  diffTreeManifests,
+  directoryTreeManifest,
+  runCommand,
+  waitForDevToolsPort,
+  waitForUsableRenderer,
+} from './verify-packaged-app.mjs';
+import {
+  waitForInstalledProcessesToExit,
+  waitForUninstallRegistrationToClear,
+} from './verify-windows-installer-lifecycle.mjs';
+
+// Tests for the shared release-verification helpers. Everything here is
+// platform-neutral on purpose: the Windows lanes execute these helpers for
+// real, and this file proves their contracts on every PR that touches them.
+
+const temporaryRoots = [];
+async function makeTree(shape) {
+  const root = await mkdtemp(join(tmpdir(), 'maka-harness-test-'));
+  temporaryRoots.push(root);
+  for (const [relative, content] of Object.entries(shape)) {
+    const absolute = join(root, relative);
+    if (content === null) {
+      await mkdir(absolute, { recursive: true });
+    } else {
+      await mkdir(join(absolute, '..'), { recursive: true });
+      await writeFile(absolute, content);
+    }
+  }
+  return root;
+}
+
+after(async () => {
+  for (const root of temporaryRoots) {
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+describe('directoryTreeManifest', () => {
+  it('returns sorted POSIX-relative paths with sha256 content hashes', async () => {
+    const root = await makeTree({
+      'b.txt': 'bee',
+      'a/nested.txt': 'nested',
+      'a/z.txt': 'zed',
+    });
+    const manifest = await directoryTreeManifest(root);
+    assert.deepEqual(
+      manifest.map((entry) => entry.path),
+      ['a/nested.txt', 'a/z.txt', 'b.txt'],
+    );
+    for (const entry of manifest) {
+      assert.match(entry.sha256, /^[0-9a-f]{64}$/);
+    }
+  });
+
+  it('records empty directories so their loss is visible', async () => {
+    const root = await makeTree({ 'a/file.txt': 'x', 'a/empty': null });
+    const manifest = await directoryTreeManifest(root);
+    assert.deepEqual(
+      manifest.map((entry) => entry.path),
+      ['a/empty/', 'a/file.txt'],
+    );
+    assert.equal(manifest.find((entry) => entry.path === 'a/empty/').sha256, null);
+  });
+
+  it('hashes content, not names: same names different bytes differ', async () => {
+    const left = await directoryTreeManifest(await makeTree({ 'f.txt': 'one' }));
+    const right = await directoryTreeManifest(await makeTree({ 'f.txt': 'two' }));
+    assert.notEqual(left[0].sha256, right[0].sha256);
+  });
+
+  it('throws on non-regular entries instead of skipping them', async (t) => {
+    const root = await makeTree({ 'real.txt': 'x' });
+    try {
+      await symlink(join(root, 'real.txt'), join(root, 'link.txt'));
+    } catch (error) {
+      // Windows without Developer Mode cannot create symlinks; the guard
+      // itself is platform-neutral readdir dirent logic.
+      if (error.code === 'EPERM') return t.skip('symlink creation requires privilege here');
+      throw error;
+    }
+    await assert.rejects(
+      () => directoryTreeManifest(root),
+      /Unsupported directory entry .*link\.txt/,
+    );
+  });
+});
+
+describe('diffTreeManifests', () => {
+  const manifest = (entries) => entries.map(([path, sha256]) => ({ path, sha256 }));
+  const cases = [
+    {
+      name: 'identical manifests diff empty',
+      before: manifest([
+        ['a.txt', '1'.repeat(64)],
+        ['b/c.txt', '2'.repeat(64)],
+      ]),
+      after: manifest([
+        ['a.txt', '1'.repeat(64)],
+        ['b/c.txt', '2'.repeat(64)],
+      ]),
+      expected: { missing: [], extra: [], changed: [] },
+    },
+    {
+      name: 'a lost file is missing',
+      before: manifest([['a.txt', '1'.repeat(64)]]),
+      after: manifest([]),
+      expected: { missing: ['a.txt'], extra: [], changed: [] },
+    },
+    {
+      name: 'a new file is extra',
+      before: manifest([]),
+      after: manifest([['n.txt', '3'.repeat(64)]]),
+      expected: { missing: [], extra: ['n.txt'], changed: [] },
+    },
+    {
+      name: 'different bytes at the same path are changed',
+      before: manifest([['a.txt', '1'.repeat(64)]]),
+      after: manifest([['a.txt', '4'.repeat(64)]]),
+      expected: { missing: [], extra: [], changed: ['a.txt'] },
+    },
+    {
+      name: 'a lost empty directory is missing',
+      before: manifest([['a/empty/', null]]),
+      after: manifest([]),
+      expected: { missing: ['a/empty/'], extra: [], changed: [] },
+    },
+  ];
+  for (const { name, before, after: afterManifest, expected } of cases) {
+    it(name, () => {
+      assert.deepEqual(diffTreeManifests(before, afterManifest), expected);
+    });
+  }
+});
+
+describe('runCommand', () => {
+  it('kills the child and rejects when timeoutMs elapses', async () => {
+    await assert.rejects(
+      () =>
+        runCommand(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { timeoutMs: 300 }),
+      /did not finish within 300ms/,
+    );
+  });
+
+  it('resolves stdout for a completing command without a timeout', async () => {
+    const { stdout } = await runCommand(process.execPath, ['-e', "process.stdout.write('ok')"]);
+    assert.equal(stdout, 'ok');
+  });
+});
+
+describe('waitForDevToolsPort', () => {
+  const makeChild = () => {
+    const child = new EventEmitter();
+    child.stderr = new PassThrough();
+    child.exitCode = null;
+    return child;
+  };
+
+  it('resolves the announced port', async () => {
+    const child = makeChild();
+    const wait = waitForDevToolsPort(child, { timeoutMs: 2_000 });
+    child.stderr.write('DevTools listening on ws://127.0.0.1:54321/devtools/browser/abc\n');
+    assert.equal(await wait, 54321);
+  });
+
+  it('rejects when the child exits before announcing', async () => {
+    const child = makeChild();
+    const wait = waitForDevToolsPort(child, { timeoutMs: 2_000 });
+    child.exitCode = 1;
+    child.emit('exit');
+    await assert.rejects(() => wait, /exited before announcing/);
+  });
+});
+
+describe('waitForUsableRenderer', () => {
+  it('fails fast when the child is already dead', async () => {
+    await assert.rejects(
+      () =>
+        waitForUsableRenderer(
+          'ws://127.0.0.1:1/devtools/page/x',
+          { exitCode: 1 },
+          {
+            deadlineMs: 5_000,
+            description: 'T',
+          },
+        ),
+      /T exited before it became usable/,
+    );
+  });
+
+  it('retries failed probes and fails only at the deadline', async () => {
+    const startedAt = Date.now();
+    await assert.rejects(
+      () =>
+        waitForUsableRenderer(
+          'ws://127.0.0.1:1/devtools/page/x',
+          { exitCode: null },
+          {
+            deadlineMs: 700,
+            description: 'T',
+          },
+        ),
+      /T did not become usable within 700ms/,
+    );
+    const elapsed = Date.now() - startedAt;
+    assert.ok(elapsed >= 700, `deadline respected: ${elapsed}`);
+    assert.ok(elapsed < 30_000, `no runaway: ${elapsed}`);
+  });
+});
+
+describe('waitForInstalledProcessesToExit', () => {
+  it('returns once an enumeration reports no processes', async () => {
+    const snapshots = [[{ processId: 1, name: 'Maka.exe' }], []];
+    await waitForInstalledProcessesToExit('C:/nowhere', {
+      listProcesses: async () => snapshots.shift(),
+      timeoutMs: 2_000,
+      pollIntervalMs: 10,
+    });
+  });
+
+  it('never treats a failed enumeration as empty: rejects at the deadline', async () => {
+    await assert.rejects(
+      () =>
+        waitForInstalledProcessesToExit('C:/nowhere', {
+          listProcesses: async () => {
+            throw new Error('wmi stalled');
+          },
+          timeoutMs: 200,
+          pollIntervalMs: 10,
+        }),
+      /Could not enumerate installed Maka processes within 200ms: wmi stalled/,
+    );
+  });
+});
+
+describe('waitForUninstallRegistrationToClear', () => {
+  const runReturning = (outputs) => async () => ({ stdout: outputs.shift(), stderr: '' });
+
+  it('returns once the registration reads empty', async () => {
+    await waitForUninstallRegistrationToClear({
+      run: runReturning(['0.1.11\n', '\n']),
+      timeoutMs: 2_000,
+      pollIntervalMs: 10,
+    });
+  });
+
+  it('reports the lingering registration at the deadline', async () => {
+    await assert.rejects(
+      () =>
+        waitForUninstallRegistrationToClear({
+          run: async () => ({ stdout: '0.1.11\n', stderr: '' }),
+          timeoutMs: 150,
+          pollIntervalMs: 10,
+        }),
+      /uninstall registration \(DisplayVersion "0\.1\.11"\) is still present after 150ms/,
+    );
+  });
+
+  it('tolerates probe failures but rejects with them at the deadline', async () => {
+    await assert.rejects(
+      () =>
+        waitForUninstallRegistrationToClear({
+          run: async () => {
+            throw new Error('registry stalled');
+          },
+          timeoutMs: 150,
+          pollIntervalMs: 10,
+        }),
+      /Could not read the Maka uninstall registration within 150ms: registry stalled/,
+    );
+  });
+});

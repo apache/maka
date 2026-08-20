@@ -37,7 +37,16 @@ $matches = @(
 )
 $matches | ConvertTo-Json -Compress
 `;
-  const { stdout } = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', script]);
+  // Bounded: this probe runs inside polling loops whose deadline is the
+  // authority. An unbounded WMI query that wedges would otherwise turn a
+  // 60-second wait into the workflow timeout with no diagnostic.
+  const { stdout } = await run(
+    'powershell',
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+    {
+      timeoutMs: 30_000,
+    },
+  );
   if (!stdout.trim()) return [];
   const parsed = JSON.parse(stdout);
   return Array.isArray(parsed) ? parsed : [parsed];
@@ -53,16 +62,33 @@ export async function waitForInstalledProcessesToExit(
   } = {},
 ) {
   const deadline = Date.now() + timeoutMs;
-  let processes = await listProcesses(installDirectory);
-  while (processes.length > 0) {
+  let lastProbeError;
+  for (;;) {
+    // A failed enumeration is retried, never treated as "no processes":
+    // this wait exists to prove exit, so an unreadable state must keep
+    // polling and fail at the deadline, not pass or die on one hiccup.
+    let processes;
+    try {
+      processes = await listProcesses(installDirectory);
+      lastProbeError = undefined;
+    } catch (error) {
+      lastProbeError = error;
+    }
+    if (processes && processes.length === 0) return;
     if (Date.now() >= deadline) {
+      if (lastProbeError) {
+        throw new Error(
+          `Could not enumerate installed Maka processes within ${timeoutMs}ms: ` +
+            `${lastProbeError.message}`,
+          { cause: lastProbeError },
+        );
+      }
       const summary = processes.map(({ processId, name }) => `${name} (${processId})`).join(', ');
       throw new Error(
         `Installed Maka processes did not exit within ${timeoutMs}ms: ${summary || '<unknown>'}.`,
       );
     }
     await sleep(pollIntervalMs);
-    processes = await listProcesses(installDirectory);
   }
 }
 
@@ -80,6 +106,91 @@ export async function waitUntilMissing(
     }
     if (Date.now() >= deadline) {
       throw new Error(`Installer cleanup did not remove ${path} within ${timeoutMs}ms.`);
+    }
+    await delay(pollIntervalMs);
+  }
+}
+
+/**
+ * Every HKCU `DisplayVersion` registered under the Maka display name, joined
+ * with commas ('' when none). One PowerShell scan, shared by the harnesses
+ * that assert on — or wait out — the uninstall registration.
+ */
+export async function readUninstallDisplayVersions({ run = runCommand } = {}) {
+  // electron-builder's default uninstallDisplayName is
+  // "${productName} ${version}" (NsisTarget: UNINSTALL_DISPLAY_NAME), so the
+  // registered DisplayName is "Maka 0.1.11", never the bare product name. The
+  // trailing space in the wildcard keeps other products starting with "Maka"
+  // out; the bare-name arm covers a configured uninstallDisplayName without a
+  // version, should one ever be set.
+  const script = String.raw`
+$entries = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' |
+  ForEach-Object { Get-ItemProperty $_.PSPath } |
+  Where-Object { $_.DisplayName -eq 'Maka' -or $_.DisplayName -like 'Maka *' }
+@($entries | ForEach-Object { $_.DisplayVersion }) -join ','
+`;
+  // Bounded for the same reason as listInstalledProcesses: the enclosing
+  // waits own the deadline, so one stalled registry query must fail this
+  // probe, not the whole lane.
+  const { stdout } = await run(
+    'powershell',
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+    {
+      timeoutMs: 30_000,
+    },
+  );
+  return stdout.trim();
+}
+
+/**
+ * An NSIS uninstall is not over when the files are gone. Launched without
+ * `_?=`, "Uninstall Maka.exe" copies itself to %TEMP% and detaches; the copy
+ * removes $INSTDIR first and deletes the uninstall/install registry keys as
+ * its LAST action (uninstaller.nsh: RMDir /r, then shortcuts, SHChangeNotify
+ * and app-data handling, then DeleteRegKey), which on a busy runner lands tens
+ * of seconds after `waitUntilMissing` saw the files disappear. Anything that
+ * installs into that window gets its freshly written registration deleted by
+ * the stale uninstaller — observed as an empty uninstall entry two steps
+ * later. The uninstall registration's disappearance is the near-final
+ * signal, not the final one: the uninstaller deletes the uninstall key at
+ * uninstaller.nsh:250 and the install key at :254, so when the registration
+ * vanishes the detached copy still has one registry deletion left. A fresh
+ * install writes both keys after this wait returns, so the residual window
+ * is the width of two adjacent registry calls — accepted, and stated here
+ * so the premise is re-checked if the uninstaller's ordering ever changes.
+ */
+export async function waitForUninstallRegistrationToClear({
+  run = runCommand,
+  timeoutMs = 120_000,
+  pollIntervalMs = 2_000,
+} = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastProbeError;
+  for (;;) {
+    // One stalled or failed probe is tolerated and retried — the deadline
+    // below is the authority, and a transient WMI/registry hiccup must not
+    // end a wait that owns two minutes of budget.
+    let versions;
+    try {
+      versions = await readUninstallDisplayVersions({ run });
+      lastProbeError = undefined;
+    } catch (error) {
+      lastProbeError = error;
+    }
+    if (versions === '') return;
+    if (Date.now() >= deadline) {
+      if (lastProbeError) {
+        throw new Error(
+          `Could not read the Maka uninstall registration within ${timeoutMs}ms: ` +
+            `${lastProbeError.message}`,
+          { cause: lastProbeError },
+        );
+      }
+      throw new Error(
+        `A Maka uninstall registration (DisplayVersion ${JSON.stringify(versions)}) is still ` +
+          `present after ${timeoutMs}ms — a detached uninstaller has not finished, or an ` +
+          `earlier step leaked an installation.`,
+      );
     }
     await delay(pollIntervalMs);
   }
@@ -160,6 +271,11 @@ export async function verifyWindowsInstallerLifecycle(
     console.log('[verify-windows-installer] uninstalling');
     await run(uninstaller, ['/S'], { timeoutMs: 120_000 });
     await waitForMissing(installDirectory);
+    // The registration's disappearance, not the files', is the uninstall's
+    // final action; the next verify step in this job installs immediately and
+    // must not race the detached uninstaller's DeleteRegKey (see
+    // waitForUninstallRegistrationToClear).
+    await waitForUninstallRegistrationToClear({ run });
     uninstallCompleted = true;
     console.log('[verify-windows-installer] lifecycle verified');
 

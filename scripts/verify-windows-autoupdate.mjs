@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { access, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -7,17 +8,18 @@ import { pathToFileURL } from 'node:url';
 import {
   evaluateInRenderer,
   findRendererTarget,
-  isPackagedRendererUsable,
   isolatedUserEnv,
-  RENDERER_STATE_EXPRESSION,
-  reserveTcpPort,
+  waitForDevToolsPort,
+  waitForUsableRenderer,
   runCommand,
   stopChild,
 } from './verify-packaged-app.mjs';
 import {
   installerVersion,
   listInstalledProcesses,
+  readUninstallDisplayVersions,
   waitForInstalledProcessesToExit,
+  waitForUninstallRegistrationToClear,
   waitUntilMissing,
 } from './verify-windows-installer-lifecycle.mjs';
 import {
@@ -146,7 +148,13 @@ async function startFeedServer(files) {
 
 async function readInstalledProductVersion(executablePath, { run = runCommand } = {}) {
   const script = `(Get-Item ${powerShellLiteral(executablePath)}).VersionInfo.ProductVersion`;
-  const { stdout } = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', script]);
+  const { stdout } = await run(
+    'powershell',
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+    {
+      timeoutMs: 30_000,
+    },
+  );
   return stdout;
 }
 
@@ -230,7 +238,6 @@ export async function verifyWindowsAutoupdate(
     await access(uninstaller);
 
     step('launching the installed candidate against the loopback feed');
-    const cdpPort = await reserveTcpPort();
     const home = join(temporaryDirectory, 'home');
     const userData = join(temporaryDirectory, 'user-data');
     const userEnv = isolatedUserEnv(home);
@@ -250,11 +257,7 @@ export async function verifyWindowsAutoupdate(
     delete childEnv.MAKA_UPDATE_MOCK_STATE;
     child = spawn(
       installedExecutable,
-      [
-        `--remote-debugging-port=${cdpPort}`,
-        `--user-data-dir=${userData}`,
-        '--enable-logging=stderr',
-      ],
+      ['--remote-debugging-port=0', `--user-data-dir=${userData}`, '--enable-logging=stderr'],
       { cwd: temporaryDirectory, env: childEnv, stdio: ['ignore', 'ignore', 'pipe'] },
     );
     let stderr = '';
@@ -263,22 +266,24 @@ export async function verifyWindowsAutoupdate(
       stderr = `${stderr}${chunk}`.slice(-16_384);
     });
 
-    const target = await findRendererTarget(cdpPort, child);
-    const rendererDeadline = Date.now() + 30_000;
-    for (;;) {
-      const state = await evaluateInRenderer(
-        target.webSocketDebuggerUrl,
-        RENDERER_STATE_EXPRESSION,
+    const cdpPort = await waitForDevToolsPort(child);
+    // On a CDP attach failure the app's own stderr tail is the only evidence
+    // of what the packaged process was doing (renderer crash, GPU fallback,
+    // profile lock); the bare "fetch failed" without it has already burned
+    // full CI cycles on this exact stage.
+    const target = await findRendererTarget(cdpPort, child).catch((error) => {
+      throw new Error(
+        `${error.message}${stderr.trim() ? `\napp stderr tail:\n${stderr.trim()}` : ''}`,
+        { cause: error },
       );
-      if (isPackagedRendererUsable(state)) break;
-      if (child.exitCode !== null) {
-        throw new Error(`Candidate exited before its renderer became usable.\n${stderr.trim()}`);
-      }
-      if (Date.now() >= rendererDeadline) {
-        throw new Error(`Candidate renderer did not become usable: ${JSON.stringify(state)}`);
-      }
-      await delay(250);
-    }
+    });
+    await waitForUsableRenderer(target.webSocketDebuggerUrl, child, {
+      description: 'Candidate renderer',
+    }).catch((error) => {
+      throw new Error(`${error.message}${stderr.trim() ? `\n${stderr.trim()}` : ''}`, {
+        cause: error,
+      });
+    });
 
     step('driving an update check through the renderer bridge');
     await evaluateInRenderer(target.webSocketDebuggerUrl, 'window.maka.app.checkForUpdates()', {
@@ -412,7 +417,59 @@ export async function verifyWindowsAutoupdate(
       await delay(1_000);
     }
     const productVersion = await readInstalledProductVersion(installedExecutable, { run });
-    assertWindowsProductVersion(productVersion, nextVersion);
+    try {
+      assertWindowsProductVersion(productVersion, nextVersion);
+    } catch (error) {
+      // Nondeterministic CI state observed once: a Maka.exe process is
+      // running from the install directory while the on-disk executable is
+      // still the previous version. The only code path in the NSIS template
+      // that launches the app is StartApp at full Section success, which
+      // contradicts old bytes on disk — so on mismatch, capture the raw
+      // state needed to attribute the launch and the transaction stage:
+      // each process's command line (StartApp passes `--updated`), the
+      // pre-upgrade backup directory (exists ⇒ the upgrade quit between
+      // customInit and customInstall), the uninstall registration, and the
+      // executable timestamps (rewritten ⇒ extraction ran).
+      const evidence = [`relaunched processes: ${JSON.stringify(relaunched)}`];
+      try {
+        const commandLines = await run(
+          'powershell',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            `Get-CimInstance Win32_Process -Filter "Name='${executableName}'" | Select-Object ProcessId,ExecutablePath,CommandLine,CreationDate | ConvertTo-Json -Compress`,
+          ],
+          // Bounded: this probe runs on a machine already in a wedged state,
+          // and an evidence collector that hangs destroys the evidence — the
+          // catch below keeps a timeout from aborting the rest of the capture.
+          { timeoutMs: 30_000 },
+        );
+        evidence.push(`process command lines: ${commandLines.stdout.trim() || '<none>'}`);
+      } catch (processError) {
+        evidence.push(`process command lines unavailable: ${processError.message}`);
+      }
+      const backupDirectory = `${installDirectory}.pre-upgrade-backup`;
+      evidence.push(
+        `backup directory ${backupDirectory}: ${existsSync(backupDirectory) ? 'present' : 'absent'}`,
+      );
+      try {
+        const registrations = await readUninstallDisplayVersions({ run });
+        evidence.push(`uninstall registrations: ${JSON.stringify(registrations)}`);
+      } catch (registryError) {
+        evidence.push(`uninstall registrations unavailable: ${registryError.message}`);
+      }
+      for (const name of [executableName, uninstallExecutableName]) {
+        const filePath = join(installDirectory, name);
+        try {
+          const fileStat = await stat(filePath);
+          evidence.push(`${name}: mtime ${fileStat.mtime.toISOString()}, ${fileStat.size} bytes`);
+        } catch (statError) {
+          evidence.push(`${name}: ${statError.code ?? statError.message}`);
+        }
+      }
+      throw new Error(`${error.message}\n${evidence.join('\n')}`, { cause: error });
+    }
 
     step('stopping the relaunched instance');
     // isForceRunAfter relaunches without our CDP/user-data arguments, so the
@@ -420,9 +477,17 @@ export async function verifyWindowsAutoupdate(
     // version) and then stopped before it can touch further state; the
     // environment it inherited still points at the isolated home.
     for (const processInfo of relaunched) {
-      await run('taskkill', ['/PID', String(processInfo.processId), '/T', '/F'], {
-        timeoutMs: 30_000,
-      });
+      try {
+        await run('taskkill', ['/PID', String(processInfo.processId), '/T', '/F'], {
+          timeoutMs: 30_000,
+        });
+      } catch (error) {
+        // Exit 128 means the process tree was already gone: the relaunched
+        // instance can exit on its own between the enumeration and the kill.
+        // The authoritative assertion is waitForInstalledProcessesToExit
+        // below, which fails if anything from the install tree still runs.
+        if (!/exit code 128/.test(String(error?.message))) throw error;
+      }
     }
     await waitForInstalledProcessesToExit(installDirectory);
 
@@ -442,7 +507,6 @@ export async function verifyWindowsAutoupdate(
       requireWindowsSandbox: true,
       requireDisclaimer: true,
       smokeRenderer: async (executable, { workingDirectory }) => {
-        const smokePort = await reserveTcpPort();
         const smokeHome = join(workingDirectory, 'home');
         const smokeUserData = join(workingDirectory, 'user-data');
         const smokeEnv = isolatedUserEnv(smokeHome);
@@ -453,30 +517,23 @@ export async function verifyWindowsAutoupdate(
         const smokeChild = spawn(
           executable,
           [
-            `--remote-debugging-port=${smokePort}`,
+            '--remote-debugging-port=0',
             `--user-data-dir=${smokeUserData}`,
             '--enable-logging=stderr',
           ],
           {
             cwd: workingDirectory,
             env: { ...process.env, MAKA_SKIP_SHELL_ENV: '1', ...smokeEnv },
-            stdio: ['ignore', 'ignore', 'ignore'],
+            stdio: ['ignore', 'ignore', 'pipe'],
           },
         );
+        smokeChild.stderr.setEncoding('utf8');
         try {
+          const smokePort = await waitForDevToolsPort(smokeChild);
           const smokeTarget = await findRendererTarget(smokePort, smokeChild);
-          const deadline = Date.now() + 30_000;
-          for (;;) {
-            const state = await evaluateInRenderer(
-              smokeTarget.webSocketDebuggerUrl,
-              RENDERER_STATE_EXPRESSION,
-            );
-            if (isPackagedRendererUsable(state)) break;
-            if (smokeChild.exitCode !== null || Date.now() >= deadline) {
-              throw new Error(`Upgraded renderer did not become usable: ${JSON.stringify(state)}`);
-            }
-            await delay(250);
-          }
+          await waitForUsableRenderer(smokeTarget.webSocketDebuggerUrl, smokeChild, {
+            description: 'Upgraded renderer',
+          });
           const upgradedStatus = await evaluateInRenderer(
             smokeTarget.webSocketDebuggerUrl,
             upgradedStatusExpression,
@@ -497,6 +554,12 @@ export async function verifyWindowsAutoupdate(
     step('uninstalling the upgraded application');
     await run(uninstaller, ['/S'], { timeoutMs: 120_000 });
     await waitUntilMissing(installDirectory);
+    // Files gone is not uninstall over: the detached uninstaller deletes the
+    // uninstall registry keys as its last action, tens of seconds later on a
+    // busy runner. Declaring success on files alone let the next verify step
+    // install inside that window and lose its fresh registration to this
+    // step's stale uninstaller (see waitForUninstallRegistrationToClear).
+    await waitForUninstallRegistrationToClear({ run });
     uninstallCompleted = true;
     step(`verified automatic update ${candidateVersion} -> ${nextVersion}`);
     return { candidateVersion, nextVersion, installDirectory };
