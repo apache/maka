@@ -17,6 +17,7 @@ export type HostOperationErrorCode =
   | 'commit_outcome_unknown'
   | 'already_resolved'
   | 'outcome_unknown'
+  | 'usage_revision_changed'
   | 'internal_failure';
 
 export interface HostOperationError<C extends HostOperationErrorCode = HostOperationErrorCode> {

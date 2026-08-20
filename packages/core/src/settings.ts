@@ -278,6 +278,13 @@ export interface UsageRequestLog {
   toolName?: string;
   inputTokens: number;
   outputTokens: number;
+  /**
+   * Stored canonical total for model rows (derived rows normalized at the
+   * Host's read boundary), so the request table reconciles with the summary
+   * and bucket totals. Absent only from producers that predate the
+   * Host-backed usage projection.
+   */
+  totalTokens?: number;
   cacheMiss?: number;
   cacheRead?: number;
   cacheCreation?: number;
@@ -311,6 +318,14 @@ export interface UsageStats {
   };
   summary: UsageSummary;
   logs: UsageRequestLog[];
+  /**
+   * Total recorded log rows across both sources in the window, even when
+   * `logs` itself is page-capped. `logsTruncated` marks that cap, so the UI
+   * can label the requests table as a newest-first window instead of the
+   * full history.
+   */
+  logsTotal?: number;
+  logsTruncated?: boolean;
   byProvider: Array<{
     provider: string;
     requests: number;

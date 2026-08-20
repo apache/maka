@@ -145,6 +145,13 @@ export class InteractiveUsageStoresClosedError extends Error {
   }
 }
 
+export class UsageRevisionUnsettledError extends Error {
+  constructor() {
+    super('Usage revision did not settle');
+    this.name = 'UsageRevisionUnsettledError';
+  }
+}
+
 export type InteractiveUsageStoresFailureClassification =
   | { readonly kind: 'lifecycle' }
   | {
@@ -152,6 +159,7 @@ export type InteractiveUsageStoresFailureClassification =
       readonly expectedRevision: number;
       readonly actualRevision: number;
     }
+  | { readonly kind: 'revision_unsettled' }
   | { readonly kind: 'invalid_request' }
   | { readonly kind: 'commit_outcome_unknown'; readonly needsDrain: true }
   | { readonly kind: 'persistence_failed'; readonly needsDrain: boolean }
@@ -169,6 +177,9 @@ export function classifyInteractiveUsageStoresFailure(
   }
   if (error instanceof PricingValidationError || error instanceof TelemetryQueryValidationError) {
     return { kind: 'invalid_request' };
+  }
+  if (error instanceof UsageRevisionUnsettledError) {
+    return { kind: 'revision_unsettled' };
   }
   if (
     error instanceof InteractiveUsageStoresClosedError ||
@@ -454,7 +465,7 @@ function createWriterFacade(
         await accepted;
         if (accepted === barrier) return usageRevision;
       }
-      throw new Error('Usage revision did not settle');
+      throw new UsageRevisionUnsettledError();
     },
     beginDrain,
     flush,

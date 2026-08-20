@@ -10,7 +10,7 @@ export type UsageSettingsCopy = {
     knownValuesOnly: string; projectionMayOmit: string; description(parts: string[]): string;
   };
   viewAria: string; tabs: readonly [string, string, string, string, string]; filtersAria: string; filterPlaceholder: string; filterAria: string;
-  statusAria: string; statuses: readonly [string, string, string, string]; details: string; detailsAria: string; recordCount(count: number): string; clearFilters: string;
+  statusAria: string; statuses: readonly [string, string, string, string]; details: string; detailsAria: string; recordCount(count: number): string; recordCountTruncated(shown: number, total: number): string; clearFilters: string;
   summaryOnly: string; showDetails: string; filteredEmpty: string; filteredEmptyHelp: string; requestEmpty: string;
   tables: {
     providersAria: string; modelsAria: string; toolsAria: string; pricingAria: string; requestsAria: string;
@@ -47,7 +47,7 @@ const SETTINGS_USAGE_COPY = {
       description: (parts) => `${parts.join('；')}。`,
     },
     filtersAria: '请求记录筛选', filterPlaceholder: '按模型或工具筛选…', filterAria: '按模型或工具筛选请求记录', statusAria: '请求状态筛选',
-    statuses: ['全部状态', '成功', '错误', '已中断'], details: '详情记录', detailsAria: '显示使用统计详情记录', recordCount: (count) => `共 ${count} 条记录`, clearFilters: '清除筛选',
+    statuses: ['全部状态', '成功', '错误', '已中断'], details: '详情记录', detailsAria: '显示使用统计详情记录', recordCount: (count) => `共 ${count} 条记录`, recordCountTruncated: (shown, total) => `显示最新 ${shown} 条，共 ${total} 条；缩小时间范围可查看更早记录`, clearFilters: '清除筛选',
     summaryOnly: '当前仅显示汇总指标。打开详情记录后，可以查看逐条模型请求和工具调用，按模型、工具或状态筛选，并用于排查费用与失败请求。',
     showDetails: '显示明细', filteredEmpty: '没有符合筛选条件的请求记录', filteredEmptyHelp: '调整或清除筛选条件后可查看全部请求记录。', requestEmpty: '暂无请求记录',
     tables: {
@@ -58,7 +58,7 @@ const SETTINGS_USAGE_COPY = {
       notReported: '未上报', unpriced: '未定价', notRecorded: '未记录', notApplicable: '—', partial: (value) => `${value}（部分）`,
       providerEmptyTitle: '暂无供应商用量', providerEmptyBody: '完成一次模型请求后，这里会按供应商聚合请求数、Token 与费用。',
       modelEmptyTitle: '暂无模型用量', modelEmptyBody: '完成一次模型请求后，这里会按模型聚合请求数、Token 与费用。',
-      toolEmptyTitle: '暂无工具调用', toolEmptyBody: '智能体调用工具后，这里会按工具聚合调用次数、成功、错误与平均耗时。',
+      toolEmptyTitle: '暂无工具调用', toolEmptyBody: '智能体调用工具后，这里会按工具聚合调用次数、成功、错误、已中断与平均耗时。',
       pricingEmptyBody: '未配置定价覆盖时，费用按内置模型定价表结算；在此可为特定模型登记自定义价格。',
     },
   },
@@ -86,7 +86,7 @@ const SETTINGS_USAGE_COPY = {
       description: (parts) => `${parts.join('. ')}.`,
     },
     filtersAria: 'Request filters', filterPlaceholder: 'Filter by model or tool…', filterAria: 'Filter requests by model or tool', statusAria: 'Filter by request status',
-    statuses: ['All statuses', 'Success', 'Error', 'Aborted'], details: 'Detailed records', detailsAria: 'Show detailed usage records', recordCount: (count) => `${count} ${count === 1 ? 'record' : 'records'}`, clearFilters: 'Clear filters',
+    statuses: ['All statuses', 'Success', 'Error', 'Aborted'], details: 'Detailed records', detailsAria: 'Show detailed usage records', recordCount: (count) => `${count} ${count === 1 ? 'record' : 'records'}`, recordCountTruncated: (shown, total) => `Showing newest ${shown} of ${total} records; narrow the range for older ones`, clearFilters: 'Clear filters',
     summaryOnly: 'Only summary metrics are shown. Enable detailed records to inspect individual model requests and tool calls, filter by model, tool, or status, and investigate costs or failures.',
     showDetails: 'Show details', filteredEmpty: 'No requests match these filters', filteredEmptyHelp: 'Adjust or clear the filters to see all request records.', requestEmpty: 'No request records',
     tables: {
@@ -97,7 +97,7 @@ const SETTINGS_USAGE_COPY = {
       notReported: 'Not reported', unpriced: 'Unpriced', notRecorded: 'Not recorded', notApplicable: '—', partial: (value) => `${value} (partial)`,
       providerEmptyTitle: 'No provider usage', providerEmptyBody: 'After a model request, provider request counts, tokens, and costs appear here.',
       modelEmptyTitle: 'No model usage', modelEmptyBody: 'After a model request, request counts, tokens, and costs appear here by model.',
-      toolEmptyTitle: 'No tool calls', toolEmptyBody: 'After an agent calls a tool, calls, successes, errors, and average duration appear here by tool.',
+      toolEmptyTitle: 'No tool calls', toolEmptyBody: 'After an agent calls a tool, calls, successes, errors, aborts, and average duration appear here by tool.',
       pricingEmptyBody: 'Without pricing overrides, costs use the built-in model pricing table. Add custom prices here for specific models.',
     },
   },

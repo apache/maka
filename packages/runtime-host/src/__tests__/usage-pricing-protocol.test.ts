@@ -431,6 +431,241 @@ describe('Usage/Pricing protocol', () => {
     }
   });
 
+  test('decodes the optional snapshot ticket and tool bucket status counts', () => {
+    assert.deepEqual(
+      decodeUsageQueryInput({
+        kind: 'summary',
+        query: { range: 'all' },
+        snapshot: 'snapshot-1',
+      }),
+      { kind: 'summary', query: { range: 'all' }, snapshot: 'snapshot-1' },
+    );
+    assert.deepEqual(
+      decodeUsageQueryInput({
+        kind: 'logs',
+        source: 'tool',
+        query: { range: 'all' },
+        offset: 5,
+        snapshot: 'snapshot-2',
+      }),
+      {
+        kind: 'logs',
+        source: 'tool',
+        query: { range: 'all' },
+        offset: 5,
+        limit: USAGE_PAGE_MAX_ITEMS,
+        snapshot: 'snapshot-2',
+      },
+    );
+    for (const bad of ['', 'x'.repeat(129), 7]) {
+      assert.throws(
+        () =>
+          decodeUsageQueryInput({
+            kind: 'summary',
+            query: { range: 'all' },
+            snapshot: bad,
+          }),
+        /Invalid usage snapshot ticket/,
+      );
+    }
+    assert.doesNotThrow(() =>
+      usageResponse({
+        kind: 'buckets',
+        buckets: [{ ...validBucket(), successCount: 1, errorCount: 0, abortedCount: 0 }],
+        offset: 0,
+        total: 1,
+        nextOffset: null,
+        provenance: validProvenance(),
+      }),
+    );
+    assert.throws(
+      () =>
+        usageResponse({
+          kind: 'buckets',
+          buckets: [{ ...validBucket(), successCount: -1 }],
+          offset: 0,
+          total: 1,
+          nextOffset: null,
+          provenance: validProvenance(),
+        }),
+      invalidFrame,
+    );
+  });
+
+  test('pins one repair pass across the pages of a paginating snapshot', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-usage-repair-pages-'));
+    const capability = await resolveStorageRoot({
+      path: join(base, 'interactive-root'),
+      kind: 'interactive',
+    });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner, 'test must acquire the real Interactive write lease');
+    const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+
+    try {
+      await Promise.all(
+        Array.from({ length: 60 }, (_, index) =>
+          stores.modelCalls.markRunPendingReprojection('session', `run-${index}`),
+        ),
+      );
+      const now = Date.now();
+      for (let index = 0; index < 7; index += 1) {
+        await stores.telemetry.recordLlmCall({
+          id: `paged-${index}`,
+          callKind: 'main',
+          callId: `paged-${index}`,
+          connectionSlug: 'test',
+          providerId: 'test',
+          modelId: 'test',
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheHitInputTokens: 0,
+          cacheMissInputTokens: 1,
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          reasoningTokens: 0,
+          totalTokens: 2,
+          costUsd: 0,
+          latencyMs: 1,
+          status: 'success',
+          startedAt: now - index * 1_000,
+          date: new Date(now - index * 1_000).toISOString().slice(0, 10),
+          ts: now - index * 1_000,
+        });
+      }
+      const coordinator = new HostUsagePricingCoordinator(
+        stores,
+        () => {},
+        new RuntimePolicyActivationGate(),
+        () => {},
+        async () => [],
+      );
+
+      // Page sequentially: between pages the coordinator's in-flight counter
+      // returns to zero, which is exactly the gap that used to dissolve the
+      // shared repair batch.
+      const revisions: number[] = [];
+      const rows: string[] = [];
+      let offset = 0;
+      while (true) {
+        const outcome = await coordinator.handlers['usage.query'](
+          {
+            kind: 'logs',
+            source: 'llm',
+            query: { range: 'all' },
+            offset,
+            limit: 3,
+            snapshot: 'snapshot-a',
+          },
+          CONNECTION_CONTEXT,
+        );
+        assert.ok(outcome.ok);
+        const page = outcome.result;
+        assert.ok(page.kind === 'logs' && page.source === 'llm');
+        revisions.push(page.revision);
+        assert.equal(page.provenance.pendingRepairs, 44);
+        rows.push(...page.rows.map((row) => row.id));
+        if (page.nextOffset === null) break;
+        offset = page.nextOffset;
+      }
+      assert.equal(rows.length, 7);
+      // One repair pass spanned every page: exactly 16 markers cleared, and no
+      // page observed the revision bump a fresh pass would have written.
+      assert.equal(new Set(revisions).size, 1);
+      assert.equal((await stores.modelCalls.pendingReprojections()).length, 44);
+
+      // A new snapshot ticket starts the next pass, so the backlog keeps
+      // draining across Desktop loads.
+      const next = await coordinator.handlers['usage.query'](
+        { kind: 'summary', query: { range: 'all' }, snapshot: 'snapshot-b' },
+        CONNECTION_CONTEXT,
+      );
+      assert.ok(next.ok);
+      assert.equal((await stores.modelCalls.pendingReprojections()).length, 28);
+    } finally {
+      await stores.close().catch(() => undefined);
+      await owner.close();
+      await rm(join(resolveRootControlNamespace(), capability.rootId), {
+        recursive: true,
+        force: true,
+      });
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  test('answers fence exhaustion with the retryable usage_revision_changed code', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-usage-fence-exhausted-'));
+    const capability = await resolveStorageRoot({
+      path: join(base, 'interactive-root'),
+      kind: 'interactive',
+    });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner, 'test must acquire the real Interactive write lease');
+    const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+
+    try {
+      // A continuous admitted-write stream is ordinary write traffic; the
+      // per-page fence cannot settle under it and must surface the typed,
+      // retryable outcome instead of an opaque internal failure.
+      let writing = true;
+      let index = 0;
+      const writer = (async () => {
+        while (writing) {
+          const now = Date.now();
+          await stores.telemetry.recordLlmCall({
+            id: `fence-${index}`,
+            callKind: 'main',
+            callId: `fence-${index}`,
+            connectionSlug: 'test',
+            providerId: 'test',
+            modelId: 'test',
+            inputTokens: 1,
+            outputTokens: 1,
+            cacheHitInputTokens: 0,
+            cacheMissInputTokens: 1,
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: 2,
+            costUsd: 0,
+            latencyMs: 1,
+            status: 'success',
+            startedAt: now,
+            date: new Date(now).toISOString().slice(0, 10),
+            ts: now,
+          });
+          index += 1;
+        }
+      })();
+      const coordinator = new HostUsagePricingCoordinator(
+        stores,
+        () => {},
+        new RuntimePolicyActivationGate(),
+        () => {},
+      );
+      try {
+        const outcome = await coordinator.handlers['usage.query'](
+          { kind: 'summary', query: { range: 'all' } },
+          CONNECTION_CONTEXT,
+        );
+        assert.ok(!outcome.ok);
+        assert.equal(outcome.error.code, 'usage_revision_changed');
+        assert.ok(index > 0, 'the write stream must actually advance the revision');
+      } finally {
+        writing = false;
+        await writer;
+      }
+    } finally {
+      await stores.close().catch(() => undefined);
+      await owner.close();
+      await rm(join(resolveRootControlNamespace(), capability.rootId), {
+        recursive: true,
+        force: true,
+      });
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
   test('decodes revision-pinned numeric-offset pricing pages and revision-CAS mutation', () => {
     assert.doesNotThrow(() => pricingRequest('pricing.query', { kind: 'start' }));
     assert.doesNotThrow(() =>

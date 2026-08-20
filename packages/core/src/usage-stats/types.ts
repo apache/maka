@@ -58,6 +58,15 @@ export interface UsageBucket {
   costUsd: number;
   avgLatencyMs: number;
   errorRate: number;
+  /**
+   * Terminal-status breakdown, populated only by `groupBy: 'tool'` buckets —
+   * LLM buckets derive outcomes from token/cost fields instead. `requests`
+   * stays the total call count: requests === successCount + errorCount +
+   * abortedCount whenever the three are present.
+   */
+  successCount?: number;
+  errorCount?: number;
+  abortedCount?: number;
 }
 
 export interface UsageLogRow {

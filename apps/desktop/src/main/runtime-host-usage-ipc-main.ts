@@ -1,4 +1,5 @@
 import { tryResult } from "@maka/core/result";
+import { randomUUID } from "node:crypto";
 import type { UsageRange, UsageStats } from "@maka/core/settings";
 import {
   normalizePricingConfig,
@@ -17,6 +18,7 @@ import type {
   LlmUsageLogProjection,
   ToolUsageLogProjection,
 } from "@maka/runtime-host/protocol";
+import { RuntimeHostOperationError } from "@maka/runtime-host/client";
 import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,
@@ -41,9 +43,29 @@ interface RuntimeHostUsageIpcDeps {
 
 const PAGE_LIMIT = 100;
 const SNAPSHOT_ATTEMPTS = 3;
+/**
+ * Hard bound on log paging inside one Usage snapshot: the requests table is a
+ * diagnostic view, so a snapshot pulls at most this many pages (newest first)
+ * per log source instead of walking an unbounded history. Aggregates
+ * (summary, provider/model buckets, tool buckets) always cover the full
+ * window regardless of this cap.
+ */
+const MAX_LOG_PAGES = 5;
 type UsageTimeWindow = Extract<TimeRange, { from: number; to: number }>;
 
 class UsageSnapshotChangedError extends Error {}
+
+/**
+ * The Host's per-page revision fence exhausts into this typed outcome when
+ * ordinary write traffic keeps the Usage authority moving. It is the same
+ * condition the Desktop detects locally as UsageSnapshotChangedError, so the
+ * whole-snapshot retry below folds both into one policy.
+ */
+function isUsageRevisionChangedOutcome(error: unknown): boolean {
+  return (
+    error instanceof RuntimeHostOperationError && error.code === "usage_revision_changed"
+  );
+}
 
 export function registerRuntimeHostUsageIpc(
   deps: RuntimeHostUsageIpcDeps,
@@ -91,7 +113,9 @@ export function registerRuntimeHostUsageIpc(
     (_event, query: UsageQuery & { groupBy: UsageGroupBy }) =>
       tryReconnectableReadResult(
         () =>
-          loadAllBuckets(deps.client, query).then((result) => result.buckets),
+          loadAllBuckets(deps.client, query, randomUUID()).then(
+            (result) => result.buckets,
+          ),
         "USAGE_BUCKETS_FAILED",
       ),
   );
@@ -119,9 +143,9 @@ export function registerRuntimeHostUsageIpc(
   handleReconnectableRead(deps.ipcMain, "usage:pricing:list", () =>
     tryReconnectableReadResult(async () => {
       const snapshot = await deps.client.loadPricingSnapshot();
-      return snapshot.entries
-        .filter((entry) => entry.source === "custom")
-        .map((entry) => entry.pricing);
+      return customPricingEntries(snapshot.entries).map(
+        (entry) => entry.pricing,
+      );
     }, "USAGE_PRICING_LIST_FAILED"),
   );
   deps.ipcMain.handle("usage:pricing:put", (_event, pricing: unknown) =>
@@ -157,54 +181,117 @@ export function registerRuntimeHostUsageIpc(
   );
 }
 
-async function loadAllBuckets(
-  client: DesktopRuntimeHostClient,
-  query: UsageQuery & { groupBy: UsageGroupBy },
-): Promise<{ buckets: UsageBucket[]; provenance: UsageProvenance; revision: number }> {
-  const buckets: UsageBucket[] = [];
+interface UsagePage {
+  readonly offset: number;
+  readonly total: number;
+  readonly nextOffset: number | null;
+  readonly revision: number;
+  readonly provenance?: UsageProvenance;
+}
+
+interface PagedUsageProjection<TItem> {
+  readonly items: readonly TItem[];
+  readonly total: number;
+  readonly revision: number;
+  readonly provenance: UsageProvenance | undefined;
+  readonly truncated: boolean;
+}
+
+/**
+ * The one paging loop every Usage view shares. Pages of one view must agree
+ * on total, revision, and (when the view carries it) provenance; a
+ * disagreement means the Usage authority moved mid-read, and the caller
+ * retries the whole snapshot. `maxPages` bounds the log views (diagnostic
+ * rows); bucket views stay unbounded because their size is the number of
+ * distinct providers/models/tools, not the number of recorded calls.
+ */
+async function loadUsagePages<TItem, TPage extends UsagePage>(
+  fetchPage: (offset: number) => Promise<TPage>,
+  readItems: (page: TPage) => readonly TItem[],
+  maxPages?: number,
+): Promise<PagedUsageProjection<TItem>> {
+  const items: TItem[] = [];
   let offset = 0;
   let total: number | undefined;
-  let provenance: UsageProvenance | undefined;
   let revision: number | undefined;
-  while (true) {
-    const result = await client.queryUsage(
-      query.groupBy === "tool"
-        ? {
-            kind: "buckets",
-            query: toToolQuery(query),
-            groupBy: "tool",
-            offset,
-            limit: PAGE_LIMIT,
-          }
-        : {
-            kind: "buckets",
-            query: toLlmQuery(query),
-            groupBy: query.groupBy,
-            offset,
-            limit: PAGE_LIMIT,
-          },
-    );
-    if (result.kind !== "buckets" || result.offset !== offset)
-      throw invalidUsageProjection();
+  let provenance: UsageProvenance | undefined;
+  for (let pageCount = 1; ; pageCount += 1) {
+    const page = await fetchPage(offset);
     if (
-      (total !== undefined && total !== result.total) ||
-      (revision !== undefined && revision !== result.revision) ||
-      (provenance && !sameProvenance(provenance, result.provenance))
+      (total !== undefined && total !== page.total) ||
+      (revision !== undefined && revision !== page.revision) ||
+      (provenance !== undefined &&
+        page.provenance !== undefined &&
+        !sameProvenance(provenance, page.provenance))
     ) {
       throw new UsageSnapshotChangedError();
     }
-    total = result.total;
-    revision = result.revision;
-    provenance = result.provenance;
-    buckets.push(...result.buckets);
-    if (result.nextOffset === null) {
-      if (buckets.length !== result.total)
-        throw new UsageSnapshotChangedError();
-      return { buckets, provenance: result.provenance, revision: result.revision };
+    total = page.total;
+    revision = page.revision;
+    provenance = page.provenance ?? provenance;
+    items.push(...readItems(page));
+    if (page.nextOffset === null) {
+      if (items.length !== page.total) throw new UsageSnapshotChangedError();
+      return {
+        items,
+        total: page.total,
+        revision: page.revision,
+        provenance,
+        truncated: false,
+      };
     }
-    if (result.nextOffset <= offset) throw invalidUsageProjection();
-    offset = result.nextOffset;
+    if (page.nextOffset <= offset) throw invalidUsageProjection();
+    if (maxPages !== undefined && pageCount >= maxPages) {
+      return {
+        items,
+        total: page.total,
+        revision: page.revision,
+        provenance,
+        truncated: true,
+      };
+    }
+    offset = page.nextOffset;
   }
+}
+
+function loadAllBuckets(
+  client: DesktopRuntimeHostClient,
+  query: UsageQuery & { groupBy: UsageGroupBy },
+  snapshot: string,
+): Promise<{ buckets: readonly UsageBucket[]; provenance: UsageProvenance; revision: number }> {
+  return loadUsagePages(
+    async (offset) => {
+      const result = await client.queryUsage(
+        query.groupBy === "tool"
+          ? {
+              kind: "buckets",
+              query: toToolQuery(query),
+              groupBy: "tool",
+              offset,
+              limit: PAGE_LIMIT,
+              snapshot,
+            }
+          : {
+              kind: "buckets",
+              query: toLlmQuery(query),
+              groupBy: query.groupBy,
+              offset,
+              limit: PAGE_LIMIT,
+              snapshot,
+            },
+      );
+      if (result.kind !== "buckets") throw invalidUsageProjection();
+      return result;
+    },
+    (page) => page.buckets,
+  ).then((page) => {
+    if (page.provenance === undefined) throw invalidUsageProjection();
+    return {
+      buckets: page.items,
+      provenance: page.provenance,
+      revision: page.revision,
+    };
+  });
 }
 
 export async function loadUsageStatsSnapshot(
@@ -214,25 +301,35 @@ export async function loadUsageStatsSnapshot(
   now: number,
 ): Promise<UsageStats> {
   const query = { range: usageRangeWindow(range, now) } satisfies UsageQuery;
+  // One ticket per snapshot load pins the Host's bounded repair pass across
+  // every view and every page below: a paginating reader must never trigger a
+  // fresh pass, because its writes would advance the revision mid-snapshot
+  // and trip the cross-page guards.
+  const snapshot = randomUUID();
   for (let attempt = 0; attempt < SNAPSHOT_ATTEMPTS; attempt += 1) {
     let results;
     try {
       results = await Promise.all([
-        client.queryUsage({ kind: "summary", query }),
-        loadAllBuckets(client, { ...query, groupBy: "provider" }),
-        loadAllBuckets(client, { ...query, groupBy: "model" }),
-        loadAllLlmLogs(client, query),
-        loadAllToolLogs(client, query),
+        client.queryUsage({ kind: "summary", query, snapshot }),
+        loadAllBuckets(client, { ...query, groupBy: "provider" }, snapshot),
+        loadAllBuckets(client, { ...query, groupBy: "model" }, snapshot),
+        loadAllBuckets(client, { ...query, groupBy: "tool" }, snapshot),
+        loadAllLlmLogs(client, query, snapshot),
+        loadAllToolLogs(client, query, snapshot),
         client.loadPricingSnapshot(),
       ]);
     } catch (error) {
       if (error instanceof UsageSnapshotChangedError) continue;
+      // The Host's per-page fence exhausted under ordinary write traffic;
+      // that is the same condition as a locally observed revision change.
+      if (isUsageRevisionChangedOutcome(error)) continue;
       throw error;
     }
     const [
       summaryResult,
       providerResult,
       modelResult,
+      toolBucketResult,
       llmResult,
       toolResult,
       pricingSnapshot,
@@ -246,6 +343,7 @@ export async function loadUsageStatsSnapshot(
         summaryResult.provenance,
         providerResult,
         modelResult,
+        toolBucketResult,
         llmResult,
         toolResult,
       )
@@ -256,8 +354,11 @@ export async function loadUsageStatsSnapshot(
         summaryResult.provenance,
         providerResult.buckets,
         modelResult.buckets,
+        toolBucketResult.buckets,
         llmResult.rows,
         toolResult.rows,
+        llmResult.total + toolResult.total,
+        llmResult.truncated || toolResult.truncated,
         projectCustomPricingRows(pricingSnapshot.entries),
       );
     }
@@ -265,96 +366,77 @@ export async function loadUsageStatsSnapshot(
   throw new Error("Runtime Host Usage changed while Desktop read it");
 }
 
-async function loadAllLlmLogs(
+function loadAllLlmLogs(
   client: DesktopRuntimeHostClient,
   query: UsageQuery,
+  snapshot: string,
 ): Promise<{
-  rows: LlmUsageLogProjection[];
+  rows: readonly LlmUsageLogProjection[];
   total: number;
   provenance: UsageProvenance;
   revision: number;
+  truncated: boolean;
 }> {
-  const rows: LlmUsageLogProjection[] = [];
-  let offset = 0;
-  let total: number | undefined;
-  let provenance: UsageProvenance | undefined;
-  let revision: number | undefined;
-  while (true) {
-    const result = await client.queryUsage({
-      kind: "logs",
-      source: "llm",
-      query: toLlmQuery(query),
-      offset,
-      limit: PAGE_LIMIT,
-    });
-    if (
-      result.kind !== "logs" ||
-      result.source !== "llm" ||
-      result.offset !== offset
-    )
-      throw invalidUsageProjection();
-    if (
-      (total !== undefined && total !== result.total) ||
-      (revision !== undefined && revision !== result.revision) ||
-      (provenance && !sameProvenance(provenance, result.provenance))
-    ) {
-      throw new UsageSnapshotChangedError();
-    }
-    provenance = result.provenance;
-    revision = result.revision;
-    total = result.total;
-    rows.push(...result.rows);
-    if (result.nextOffset === null) {
-      if (rows.length !== result.total) throw new UsageSnapshotChangedError();
-      return {
-        rows,
-        total: result.total,
-        provenance: result.provenance,
-        revision: result.revision,
-      };
-    }
-    if (result.nextOffset <= offset) throw invalidUsageProjection();
-    offset = result.nextOffset;
-  }
+  return loadUsagePages(
+    async (offset) => {
+      const result = await client.queryUsage({
+        kind: "logs",
+        source: "llm",
+        query: toLlmQuery(query),
+        offset,
+        limit: PAGE_LIMIT,
+        snapshot,
+      });
+      if (result.kind !== "logs" || result.source !== "llm")
+        throw invalidUsageProjection();
+      return result;
+    },
+    (page) => page.rows,
+    MAX_LOG_PAGES,
+  ).then((page) => {
+    if (page.provenance === undefined) throw invalidUsageProjection();
+    return {
+      rows: page.items,
+      total: page.total,
+      provenance: page.provenance,
+      revision: page.revision,
+      truncated: page.truncated,
+    };
+  });
 }
 
-async function loadAllToolLogs(
+function loadAllToolLogs(
   client: DesktopRuntimeHostClient,
   query: UsageQuery,
-): Promise<{ rows: ToolUsageLogProjection[]; total: number; revision: number }> {
-  const rows: ToolUsageLogProjection[] = [];
-  let offset = 0;
-  let total: number | undefined;
-  let revision: number | undefined;
-  while (true) {
-    const result = await client.queryUsage({
-      kind: "logs",
-      source: "tool",
-      query: toToolQuery(query),
-      offset,
-      limit: PAGE_LIMIT,
-    });
-    if (
-      result.kind !== "logs" ||
-      result.source !== "tool" ||
-      result.offset !== offset
-    )
-      throw invalidUsageProjection();
-    if (
-      (total !== undefined && total !== result.total) ||
-      (revision !== undefined && revision !== result.revision)
-    )
-      throw new UsageSnapshotChangedError();
-    total = result.total;
-    revision = result.revision;
-    rows.push(...result.rows);
-    if (result.nextOffset === null) {
-      if (rows.length !== result.total) throw new UsageSnapshotChangedError();
-      return { rows, total: result.total, revision: result.revision };
-    }
-    if (result.nextOffset <= offset) throw invalidUsageProjection();
-    offset = result.nextOffset;
-  }
+  snapshot: string,
+): Promise<{
+  rows: readonly ToolUsageLogProjection[];
+  total: number;
+  revision: number;
+  truncated: boolean;
+}> {
+  return loadUsagePages(
+    async (offset) => {
+      const result = await client.queryUsage({
+        kind: "logs",
+        source: "tool",
+        query: toToolQuery(query),
+        offset,
+        limit: PAGE_LIMIT,
+        snapshot,
+      });
+      if (result.kind !== "logs" || result.source !== "tool")
+        throw invalidUsageProjection();
+      return result;
+    },
+    (page) => page.rows,
+    MAX_LOG_PAGES,
+  ).then((page) => ({
+    rows: page.items,
+    total: page.total,
+    revision: page.revision,
+    truncated: page.truncated,
+  }));
 }
 
 function sameUsageSnapshot(
@@ -362,32 +444,32 @@ function sameUsageSnapshot(
   revision: number,
   summary: {
     readonly range: { readonly from: number; readonly to: number };
-    readonly totalRequests: number;
   },
   provenance: UsageProvenance,
   providers: {
-    readonly buckets: readonly UsageBucket[];
     readonly provenance: UsageProvenance;
     readonly revision: number;
   },
   models: {
-    readonly buckets: readonly UsageBucket[];
     readonly provenance: UsageProvenance;
     readonly revision: number;
   },
-  logs: { readonly total: number; readonly provenance: UsageProvenance; readonly revision: number },
+  toolBuckets: { readonly revision: number },
+  logs: { readonly provenance: UsageProvenance; readonly revision: number },
   tools: { readonly revision: number },
 ): boolean {
+  // Revision equality across every view is the consistency guarantee; the
+  // summary range pins the window. Row-count cross-sums are intentionally not
+  // re-checked here: they follow from one revision, and the log views may be
+  // page-capped while the aggregate views always cover the full window.
   return (
     revision === providers.revision &&
     revision === models.revision &&
+    revision === toolBuckets.revision &&
     revision === logs.revision &&
     revision === tools.revision &&
     summary.range.from === expectedRange.from &&
     summary.range.to === expectedRange.to &&
-    summary.totalRequests === logs.total &&
-    summary.totalRequests === sumRequests(providers.buckets) &&
-    summary.totalRequests === sumRequests(models.buckets) &&
     sameProvenance(provenance, providers.provenance) &&
     sameProvenance(provenance, models.provenance) &&
     sameProvenance(provenance, logs.provenance)
@@ -413,18 +495,17 @@ function sameProvenance(
   );
 }
 
-function sumRequests(buckets: readonly UsageBucket[]): number {
-  return buckets.reduce((total, bucket) => total + bucket.requests, 0);
-}
-
 function projectUsageStats(
   host: DesktopHostRef,
   summary: UsageSummaryV2,
   provenance: UsageProvenance,
   providerBuckets: readonly UsageBucket[],
   modelBuckets: readonly UsageBucket[],
+  toolBuckets: readonly UsageBucket[],
   llmRows: readonly LlmUsageLogProjection[],
   toolRows: readonly ToolUsageLogProjection[],
+  logsTotal: number,
+  logsTruncated: boolean,
   pricing: UsageStats["pricing"],
 ): UsageStats {
   return {
@@ -442,6 +523,8 @@ function projectUsageStats(
       cacheCreation: summary.totalTokens.cacheWrite,
       reasoning: summary.totalTokens.reasoning,
     },
+    logsTotal,
+    logsTruncated,
     logs: [
       ...llmRows.map((row) => ({
         id: row.id,
@@ -460,6 +543,10 @@ function projectUsageStats(
         model: row.modelId,
         inputTokens: row.inputTokens,
         outputTokens: row.outputTokens,
+        // The stored canonical total (derived rows normalized at the Host's
+        // read boundary) so the request row reconciles with the summary and
+        // provider totals this same row feeds.
+        totalTokens: row.totalTokens,
         cacheMiss: row.cacheMissTokens,
         cacheRead: row.cacheReadTokens,
         cacheCreation: row.cacheWriteTokens,
@@ -500,29 +587,35 @@ function projectUsageStats(
       model: bucket.label,
       ...projectLlmBucketValues(bucket),
     })),
-    byTool: projectToolBuckets(toolRows),
+    byTool: projectToolBuckets(toolBuckets),
     pricing,
   };
+}
+
+/** The `usage:pricing:list` handler and the snapshot projection share one
+ * custom-source filter so the two list paths cannot drift. */
+function customPricingEntries(
+  entries: DesktopPricingSnapshot["entries"],
+): DesktopPricingSnapshot["entries"] {
+  return entries.filter((entry) => entry.source === "custom");
 }
 
 function projectCustomPricingRows(
   entries: DesktopPricingSnapshot["entries"],
 ): UsageStats["pricing"] {
-  return entries
-    .filter((entry) => entry.source === "custom")
-    .map((entry) => {
-      const separator = entry.pricing.modelKey.indexOf(":");
-      return {
-        provider:
-          separator > 0
-            ? entry.pricing.modelKey.slice(0, separator)
-            : entry.pricing.modelKey,
-        model:
-          separator >= 0 ? entry.pricing.modelKey.slice(separator + 1) : "",
-        inputPerMTokUsd: entry.pricing.inputUsdPer1M,
-        outputPerMTokUsd: entry.pricing.outputUsdPer1M,
-      };
-    });
+  return customPricingEntries(entries).map((entry) => {
+    const separator = entry.pricing.modelKey.indexOf(":");
+    return {
+      provider:
+        separator > 0
+          ? entry.pricing.modelKey.slice(0, separator)
+          : entry.pricing.modelKey,
+      model:
+        separator >= 0 ? entry.pricing.modelKey.slice(separator + 1) : "",
+      inputPerMTokUsd: entry.pricing.inputUsdPer1M,
+      outputPerMTokUsd: entry.pricing.outputUsdPer1M,
+    };
+  });
 }
 
 function projectLlmBucketValues(bucket: UsageBucket) {
@@ -533,41 +626,22 @@ function projectLlmBucketValues(bucket: UsageBucket) {
   };
 }
 
+/**
+ * The tool table is the Host's own `groupBy: 'tool'` aggregate — the Desktop
+ * no longer recomputes it from every tool row, which is what bounded the log
+ * paging above. `avgLatencyMs` is the bucketed average invocation duration.
+ */
 function projectToolBuckets(
-  rows: readonly ToolUsageLogProjection[],
+  buckets: readonly UsageBucket[],
 ): UsageStats["byTool"] {
-  const buckets = new Map<
-    string,
-    {
-      calls: number;
-      success: number;
-      errors: number;
-      aborted: number;
-      durationMs: number;
-    }
-  >();
-  for (const row of rows) {
-    const bucket = buckets.get(row.toolName) ?? {
-      calls: 0,
-      success: 0,
-      errors: 0,
-      aborted: 0,
-      durationMs: 0,
-    };
-    bucket.calls += 1;
-    bucket[row.status === "error" ? "errors" : row.status] += 1;
-    bucket.durationMs += row.durationMs;
-    buckets.set(row.toolName, bucket);
-  }
-  return [...buckets.entries()]
-    .map(([tool, bucket]) => ({
-      tool,
-      calls: bucket.calls,
-      success: bucket.success,
-      errors: bucket.errors,
-      aborted: bucket.aborted,
-      avgDurationMs:
-        bucket.calls === 0 ? 0 : Math.round(bucket.durationMs / bucket.calls),
+  return buckets
+    .map((bucket) => ({
+      tool: bucket.label,
+      calls: bucket.requests,
+      success: bucket.successCount ?? 0,
+      errors: bucket.errorCount ?? 0,
+      aborted: bucket.abortedCount ?? 0,
+      avgDurationMs: Math.round(bucket.avgLatencyMs),
     }))
     .sort(
       (left, right) =>

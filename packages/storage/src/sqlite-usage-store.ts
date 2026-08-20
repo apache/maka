@@ -160,8 +160,9 @@ class SqliteTelemetryRepo implements TelemetryRepo {
         cacheWrite: sum(rows.map((row) => row.cacheWriteInputTokens)),
         reasoning: sum(rows.map((row) => row.reasoningTokens)),
         // `reasoningTokens` is an output-token detail, not an additional token
-        // class. Older telemetry rows sometimes stored input + output +
-        // reasoning here, so normalize at the frozen read boundary.
+        // class. Rows whose stored total is an explicit derived fallback are
+        // normalized to input + output at this frozen read boundary;
+        // provider-reported and source-less legacy totals pass through.
         total: sum(rows.map(canonicalTotalTokens)),
       },
       cacheHitRequests: rows.filter((row) => row.cacheHitInputTokens > 0).length,
@@ -587,10 +588,15 @@ function usageBucket(key: string, rows: readonly PersistedLlmCallRecord[]): Usag
 }
 
 function canonicalTotalTokens(row: PersistedLlmCallRecord): number {
-  // Source-less legacy rows are ambiguous: the stored total may be a provider
-  // fact or an old derived fallback. Preserve the stored value rather than
-  // silently rewriting a provider-reported camelCase total. Current writers
-  // persist explicit provenance, so only frozen history follows this rule.
+  // `reasoningTokens` is an output-token detail, not an additional token
+  // class, so a derived total is input + output — a legacy derivation that
+  // folded reasoning in on top would double-count it. Rows with explicit
+  // derived provenance are normalized here at the frozen read boundary.
+  // 'reported' rows keep the provider's fact, and source-less legacy rows are
+  // ambiguous (the stored total may be a provider fact or an old derived
+  // fallback), so both preserve the stored value rather than silently
+  // rewriting a provider-reported total.
+  if (row.totalTokensSource === 'derived') return row.inputTokens + row.outputTokens;
   return row.totalTokens;
 }
 
@@ -604,6 +610,7 @@ function toolBuckets(rows: readonly PersistedToolInvocationRecord[]): UsageBucke
   return [...groups.entries()]
     .map(([key, group]) => {
       const errors = group.filter((row) => row.status === 'error').length;
+      const aborted = group.filter((row) => row.status === 'aborted').length;
       const bytesIn = sum(group.map((row) => row.bytesIn));
       const bytesOut = sum(group.map((row) => row.bytesOut));
       return {
@@ -622,6 +629,11 @@ function toolBuckets(rows: readonly PersistedToolInvocationRecord[]): UsageBucke
           ? Math.round(sum(group.map((row) => row.durationMs)) / group.length)
           : 0,
         errorRate: group.length ? errors / group.length : 0,
+        // Terminal-status breakdown lets clients render the tool table from
+        // this aggregate instead of paging every tool row.
+        successCount: group.length - errors - aborted,
+        errorCount: errors,
+        abortedCount: aborted,
       };
     })
     .sort((left, right) => right.requests - left.requests);
