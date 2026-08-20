@@ -3,13 +3,15 @@ import { createHash } from 'node:crypto';
 import {
   chmodSync,
   closeSync,
-  copyFileSync,
+  createReadStream,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -39,6 +41,8 @@ const rejectedGpgStatuses = new Set([
 ]);
 const allowedGpgHashAlgorithms = new Set([8, 9, 10]);
 const rsaPublicKeyAlgorithms = new Set([1, 2, 3]);
+const asciiArmoredSignaturePattern =
+  /^-----BEGIN PGP SIGNATURE-----\r?\n(?:[\x20-\x7e]*\r?\n)+-----END PGP SIGNATURE-----\r?\n?$/;
 
 export function sourceCandidateIdentity(version) {
   if (!versionPattern.test(version) || version.includes('incubating')) {
@@ -118,22 +122,26 @@ export async function createSourceCandidate({
     }
   }
 
-  const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-asf-source-'));
+  const temporaryRoot = mkdtempSync(join(dirname(archivePath), '.maka-asf-source-'));
   try {
     const tarPath = join(temporaryRoot, 'source.tar');
+    const temporaryArchivePath = join(temporaryRoot, identity.archiveName);
+    const temporaryChecksumPath = `${temporaryArchivePath}.sha512`;
     writeSourceTar({ commit, identity, repositoryRoot, tarPath, temporaryRoot });
     execFileSync('gzip', ['-n', '-9', tarPath], {
       env: controlledProcessEnvironment({ excludedNames: ['GZIP'] }),
       stdio: 'inherit',
     });
-    copyFileSync(`${tarPath}.gz`, archivePath);
-    chmodSync(archivePath, 0o644);
-    await writeSha512File(archivePath, checksumPath);
-    await verifySourceCandidate({ archivePath });
-  } catch (error) {
-    rmSync(archivePath, { force: true });
-    rmSync(checksumPath, { force: true });
-    throw error;
+    renameSync(`${tarPath}.gz`, temporaryArchivePath);
+    chmodSync(temporaryArchivePath, 0o644);
+    await writeSha512File(temporaryArchivePath, temporaryChecksumPath);
+    await verifySourceCandidate({ archivePath: temporaryArchivePath });
+    publishSourceCandidate({
+      archivePath,
+      checksumPath,
+      temporaryArchivePath,
+      temporaryChecksumPath,
+    });
   } finally {
     rmSync(temporaryRoot, { force: true, recursive: true });
   }
@@ -152,21 +160,6 @@ export async function verifySourceCandidate({
   if (!existsSync(archivePath)) throw new Error(`Source archive does not exist: ${archivePath}`);
 
   const identity = sourceCandidateIdentity(match[1]);
-  const checksumPath = `${archivePath}.sha512`;
-  if (!existsSync(checksumPath)) throw new Error(`SHA-512 file does not exist: ${checksumPath}`);
-  const expectedDigest = parseSha512File(readFileSync(checksumPath, 'utf8'), archiveName);
-  const actualDigest = await sha512(archivePath);
-  if (actualDigest !== expectedDigest) {
-    throw new Error(`SHA-512 mismatch for ${archiveName}`);
-  }
-
-  const entries = execTar(archivePath, ['-tzf'], {
-    encoding: 'utf8',
-    maxBuffer: maxCommandBuffer,
-  }).split(/\r?\n/);
-  validateArchiveEntries(entries, identity.rootDirectory);
-  validateArchiveContents(archivePath, identity);
-
   if (keysPath) {
     if (!existsSync(signaturePath)) {
       throw new Error(`Detached signature does not exist: ${signaturePath}`);
@@ -174,7 +167,15 @@ export async function verifySourceCandidate({
     verifyDetachedSignature({ archivePath, keysPath, signaturePath });
   }
 
-  return { ...identity, archivePath, checksumPath, digest: actualDigest, signaturePath };
+  const { checksumPath, digest } = await verifySha512File(archivePath);
+  const entries = execTar(archivePath, ['-tzf'], {
+    encoding: 'utf8',
+    maxBuffer: maxCommandBuffer,
+  }).split(/\r?\n/);
+  validateArchiveEntries(entries, identity.rootDirectory);
+  validateArchiveContents(archivePath, identity);
+
+  return { ...identity, archivePath, checksumPath, digest, signaturePath };
 }
 
 export async function reproduceSourceCandidate({
@@ -201,7 +202,11 @@ export async function reproduceSourceCandidate({
       tarPath: reproducedTarPath,
       temporaryRoot,
     });
-    if (!readFileSync(candidateTarPath).equals(readFileSync(reproducedTarPath))) {
+    const [candidateDigest, reproducedDigest] = await Promise.all([
+      sha512(candidateTarPath),
+      sha512(reproducedTarPath),
+    ]);
+    if (candidateDigest !== reproducedDigest) {
       throw new Error(`Candidate source payload does not match ${commit} rebuilt on this machine`);
     }
     return { ...candidate, commit };
@@ -232,6 +237,8 @@ export async function signSourceCandidate({
   if (existsSync(signaturePath)) {
     throw new Error(`Refusing to overwrite existing detached signature: ${signaturePath}`);
   }
+  const temporaryRoot = mkdtempSync(join(dirname(archivePath), '.maka-asf-signature-'));
+  const temporarySignaturePath = join(temporaryRoot, basename(signaturePath));
   try {
     execFileSync(
       'gpg',
@@ -243,18 +250,58 @@ export async function signSourceCandidate({
         '--local-user',
         normalizedFingerprint,
         '--output',
-        signaturePath,
+        temporarySignaturePath,
         archivePath,
       ],
       { stdio: 'inherit', ...gpgHomeOption(gpgHome) },
     );
-    chmodSync(signaturePath, 0o644);
-    verifyGpgSignature({ archivePath, gpgHome, signaturePath });
+    chmodSync(temporarySignaturePath, 0o644);
+    const { digest } = await verifySha512File(archivePath);
+    if (digest !== reproduced.digest) {
+      throw new Error('Candidate changed after it was reproduced; refusing to publish a signature');
+    }
+    verifyGpgSignature({ archivePath, gpgHome, signaturePath: temporarySignaturePath });
+    if (readSha512File(archivePath).digest !== reproduced.digest) {
+      throw new Error('Candidate checksum changed while it was being signed');
+    }
+    linkSync(temporarySignaturePath, signaturePath);
   } catch (error) {
-    rmSync(signaturePath, { force: true });
+    if (error?.code === 'EEXIST') {
+      throw new Error(`Refusing to overwrite existing detached signature: ${signaturePath}`, {
+        cause: error,
+      });
+    }
     throw error;
+  } finally {
+    rmSync(temporaryRoot, { force: true, recursive: true });
   }
   return { commit: reproduced.commit, signaturePath };
+}
+
+function publishSourceCandidate({
+  archivePath,
+  checksumPath,
+  temporaryArchivePath,
+  temporaryChecksumPath,
+}) {
+  let publishedArchive = false;
+  let publishedChecksum = false;
+  try {
+    linkSync(temporaryChecksumPath, checksumPath);
+    publishedChecksum = true;
+    linkSync(temporaryArchivePath, archivePath);
+    publishedArchive = true;
+  } catch (error) {
+    if (publishedArchive) rmSync(archivePath, { force: true });
+    if (publishedChecksum) rmSync(checksumPath, { force: true });
+    if (error?.code === 'EEXIST') {
+      const outputPath = publishedChecksum ? archivePath : checksumPath;
+      throw new Error(`Refusing to overwrite existing release output: ${outputPath}`, {
+        cause: error,
+      });
+    }
+    throw error;
+  }
 }
 
 function git(repositoryRoot, arguments_, options = {}) {
@@ -377,9 +424,32 @@ async function writeSha512File(archivePath, checksumPath) {
   });
 }
 
+function readSha512File(archivePath) {
+  const archiveName = basename(archivePath);
+  const checksumPath = `${archivePath}.sha512`;
+  if (!existsSync(checksumPath)) throw new Error(`SHA-512 file does not exist: ${checksumPath}`);
+  return {
+    checksumPath,
+    digest: parseSha512File(readFileSync(checksumPath, 'utf8'), archiveName),
+  };
+}
+
+async function verifySha512File(archivePath) {
+  const expected = readSha512File(archivePath);
+  const digest = await sha512(archivePath);
+  const current = readSha512File(archivePath);
+  if (current.digest !== expected.digest) {
+    throw new Error(`SHA-512 file changed while verifying ${basename(archivePath)}`);
+  }
+  if (digest !== expected.digest) {
+    throw new Error(`SHA-512 mismatch for ${basename(archivePath)}`);
+  }
+  return { checksumPath: expected.checksumPath, digest };
+}
+
 async function sha512(path) {
   const hash = createHash('sha512');
-  hash.update(readFileSync(path));
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest('hex');
 }
 
@@ -437,23 +507,46 @@ function verifyDetachedSignature({ archivePath, keysPath, signaturePath }) {
   }
 }
 
+function validateAsciiArmoredSignature(signaturePath) {
+  const contents = readFileSync(signaturePath);
+  const isAscii = contents.every(
+    (byte) => byte === 9 || byte === 10 || byte === 13 || (byte >= 32 && byte <= 126),
+  );
+  const text = contents.toString('utf8');
+  const beginMarkers = text.match(/-----BEGIN PGP SIGNATURE-----/g)?.length ?? 0;
+  const endMarkers = text.match(/-----END PGP SIGNATURE-----/g)?.length ?? 0;
+  if (
+    !isAscii ||
+    beginMarkers !== 1 ||
+    endMarkers !== 1 ||
+    !asciiArmoredSignaturePattern.test(text)
+  ) {
+    throw new Error('Detached signature must be exactly one ASCII-armored PGP signature block');
+  }
+}
+
 function execTar(archivePath, arguments_, options) {
   return execFileSync('tar', [arguments_[0], basename(archivePath), ...arguments_.slice(1)], {
     cwd: dirname(archivePath),
     ...options,
-    env: controlledProcessEnvironment({ excludedNames: ['TAR_OPTIONS'] }),
+    env: controlledProcessEnvironment({
+      excludedNames: ['GZIP', 'TAR_OPTIONS', 'TAR_READER_OPTIONS'],
+    }),
   });
 }
 
-function controlledProcessEnvironment({
+export function controlledProcessEnvironment({
   excludedNames = [],
   excludedPrefixes = [],
   overrides = {},
 } = {}) {
+  const normalizedExcludedNames = new Set(excludedNames.map((name) => name.toUpperCase()));
+  const normalizedExcludedPrefixes = excludedPrefixes.map((prefix) => prefix.toUpperCase());
   const environment = {};
   for (const [name, value] of Object.entries(process.env)) {
-    if (excludedNames.includes(name)) continue;
-    if (excludedPrefixes.some((prefix) => name.startsWith(prefix))) continue;
+    const normalizedName = name.toUpperCase();
+    if (normalizedExcludedNames.has(normalizedName)) continue;
+    if (normalizedExcludedPrefixes.some((prefix) => normalizedName.startsWith(prefix))) continue;
     environment[name] = value;
   }
   return { ...environment, ...overrides };
@@ -544,6 +637,7 @@ function validateSigningKeyPolicy({ fingerprint, gpgHome, hashAlgorithm }) {
 }
 
 function verifyGpgSignature({ archivePath, gpgHome, signaturePath }) {
+  validateAsciiArmoredSignature(signaturePath);
   const result = spawnSync(
     'gpg',
     ['--batch', '--status-fd', '1', '--verify', signaturePath, archivePath],

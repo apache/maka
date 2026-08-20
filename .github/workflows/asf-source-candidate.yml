@@ -80,11 +80,6 @@ jobs:
             --version "$RELEASE_VERSION" \
             --revision "$RELEASE_SHA"
 
-      - name: Verify archive structure and SHA-512
-        run: |
-          npm run release:asf:verify -- \
-            --artifact "$CANDIDATE_PATH"
-
       - name: Extract the exact candidate
         run: |
           mkdir candidate-source

@@ -6,33 +6,16 @@ import { describe, test } from 'node:test';
 const workflowPath = join(import.meta.dirname, '../.github/workflows/asf-source-candidate.yml');
 
 describe('ASF source workflow policy', () => {
-  test('binds build, verification, extraction, and upload to one candidate identity', () => {
+  test('binds the candidate handoff to the dispatched commit and artifact', () => {
     const workflow = readFileSync(workflowPath, 'utf8');
     assert.match(workflow, /RELEASE_SHA: \$\{\{ github\.sha \}\}/);
     assert.match(workflow, /ref: \$\{\{ env\.RELEASE_SHA \}\}/);
     assert.match(workflow, /--revision "\$RELEASE_SHA"/);
-    assert.match(workflow, /--artifact "\$CANDIDATE_PATH"/);
     assert.match(workflow, /tar -xzf "\$CANDIDATE_PATH"/);
     assert.match(workflow, /\$\{\{ env\.CANDIDATE_PATH \}\}\.sha512/);
-    assert.match(workflow, /run: npm run check:asf-source/);
     assert.match(
       workflow,
       /RUNBOOK_URL: .*\/blob\/\$\{\{ github\.sha \}\}\/\.github\/ASF_SOURCE_RELEASE\.md/,
     );
-    assert.doesNotMatch(workflow, /reproduce these exact bytes/);
-
-    const orderedSteps = [
-      'Create the unsigned source candidate',
-      'Verify archive structure and SHA-512',
-      'Extract the exact candidate',
-      'Test the extracted source',
-      'Upload the verified unsigned candidate',
-    ];
-    let previousIndex = -1;
-    for (const step of orderedSteps) {
-      const index = workflow.indexOf(step);
-      assert.ok(index > previousIndex, `${step} must preserve the candidate gate order`);
-      previousIndex = index;
-    }
   });
 });

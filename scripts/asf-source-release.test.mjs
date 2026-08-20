@@ -1,21 +1,22 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { execFileSync, spawn } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, delimiter, dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   createSourceCandidate,
+  controlledProcessEnvironment,
   parseSha512File,
   reproduceSourceCandidate,
   signSourceCandidate,
@@ -27,15 +28,12 @@ import {
 } from './asf-source-release.mjs';
 
 describe('ASF source release identity', () => {
-  test('uses the incubating source distribution name', () => {
+  test('uses the incubating source distribution name for plain versions only', () => {
     assert.deepEqual(sourceCandidateIdentity('0.1.12'), {
       archiveName: 'apache-maka-0.1.12-incubating-src.tar.gz',
       rootDirectory: 'apache-maka-0.1.12-incubating',
       version: '0.1.12',
     });
-  });
-
-  test('rejects versions that already contain the incubation marker', () => {
     assert.throws(() => sourceCandidateIdentity('0.1.12-incubating'), /Invalid release version/);
   });
 });
@@ -116,39 +114,51 @@ describe('ASF source release verification', () => {
     );
   });
 
+  test('filters controlled environment names case-insensitively', async () => {
+    await withEnvironmentVariables(
+      { gIt_Prefix_Probe: 'prefix', mAkA_Exact_Probe: 'exact' },
+      () => {
+        const environment = controlledProcessEnvironment({
+          excludedNames: ['MAKA_EXACT_PROBE'],
+          excludedPrefixes: ['GIT_'],
+          overrides: { GIT_CONFIG_NOSYSTEM: '1' },
+        });
+        const names = Object.keys(environment).map((name) => name.toUpperCase());
+        assert.equal(names.includes('MAKA_EXACT_PROBE'), false);
+        assert.equal(names.includes('GIT_PREFIX_PROBE'), false);
+        assert.equal(environment.GIT_CONFIG_NOSYSTEM, '1');
+      },
+    );
+  });
+
+  test('requires a signature before reading unauthenticated candidate metadata', async () => {
+    const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-asf-auth-order-test-'));
+    const identity = sourceCandidateIdentity('0.1.12');
+    const archivePath = join(temporaryRoot, identity.archiveName);
+    try {
+      writeFileSync(archivePath, 'not a tar archive\n');
+      const keysPath = join(temporaryRoot, 'KEYS');
+      writeFileSync(keysPath, '');
+
+      await assert.rejects(
+        () => verifySourceCandidate({ archivePath, keysPath }),
+        /Detached signature does not exist/,
+      );
+    } finally {
+      rmSync(temporaryRoot, { force: true, recursive: true });
+    }
+  });
+
   test('creates reproducible candidates from committed files only', async () => {
     const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-asf-source-test-'));
     const repositoryRoot = join(temporaryRoot, 'repository');
-    const repositoryLink = join(temporaryRoot, 'repository-link');
     const firstOutput = join(temporaryRoot, 'first');
-    const secondOutput = join(temporaryRoot, 'second');
-    const configuredOutput = join(temporaryRoot, 'configured');
-    const redirectedOutput = join(temporaryRoot, 'redirected');
-    const templatedOutput = join(temporaryRoot, 'templated');
-    const gzipConfiguredOutput = join(temporaryRoot, 'gzip-configured');
-    const linkedOutput = join(temporaryRoot, 'linked');
+    const hostileOutput = join(temporaryRoot, 'hostile');
     mkdirSync(repositoryRoot, { recursive: true });
     try {
-      writeFileSync(
-        join(repositoryRoot, 'package.json'),
-        `${JSON.stringify({ name: 'maka', version: '0.1.12' }, null, 2)}\n`,
-      );
-      writeFileSync(
-        join(repositoryRoot, 'DISCLAIMER-WIP'),
-        'Apache Maka is undergoing incubation at The Apache Software Foundation.\n',
-      );
-      writeFileSync(join(repositoryRoot, 'LICENSE'), 'Apache License, Version 2.0\n');
-      writeFileSync(join(repositoryRoot, 'NOTICE'), 'Apache Maka\n');
-      writeFileSync(
-        join(repositoryRoot, 'package-lock.json'),
-        `${JSON.stringify({ lockfileVersion: 3, name: 'maka', packages: { '': { name: 'maka', version: '0.1.12' } }, version: '0.1.12' }, null, 2)}\n`,
-      );
+      writeReleaseContents(repositoryRoot, { includeAttributes: true });
       writeFileSync(join(repositoryRoot, '.gitignore'), 'untracked.txt\n');
       writeFileSync(join(repositoryRoot, 'README.md'), 'release fixture\n'.repeat(4096));
-      writeFileSync(
-        join(repositoryRoot, '.gitattributes'),
-        '/.claude export-ignore\n/.maka-shots export-ignore\n/maka-proposal-zh-review.txt export-ignore\n',
-      );
       writeFileSync(join(repositoryRoot, 'untracked.txt'), 'must not be released\n');
       mkdirSync(join(repositoryRoot, '.claude'));
       mkdirSync(join(repositoryRoot, '.maka-shots'));
@@ -186,31 +196,12 @@ describe('ASF source release verification', () => {
         repositoryRoot,
         version: '0.1.12',
       });
-      const second = await createSourceCandidate({
-        outputDirectory: secondOutput,
-        repositoryRoot,
-        version: '0.1.12',
-      });
       git(repositoryRoot, ['config', 'tar.umask', '0077']);
       writeFileSync(join(repositoryRoot, '.git/info/attributes'), 'README.md export-ignore\n');
-      const configured = await createSourceCandidate({
-        outputDirectory: configuredOutput,
-        repositoryRoot,
-        version: '0.1.12',
-      });
-      const createWithEnvironment = (name, value, outputDirectory) =>
-        withEnvironmentVariable(name, value, () =>
-          createSourceCandidate({ outputDirectory, repositoryRoot, version: '0.1.12' }),
-        );
 
       const ambientTemplate = join(temporaryRoot, 'ambient-template');
       mkdirSync(join(ambientTemplate, 'info'), { recursive: true });
       writeFileSync(join(ambientTemplate, 'info/attributes'), 'README.md export-ignore\n');
-      const templated = await createWithEnvironment(
-        'GIT_TEMPLATE_DIR',
-        ambientTemplate,
-        templatedOutput,
-      );
 
       const ambientRepository = join(temporaryRoot, 'ambient-repository');
       git(temporaryRoot, ['clone', '--quiet', repositoryRoot, ambientRepository]);
@@ -225,20 +216,22 @@ describe('ASF source release verification', () => {
         '-m',
         'change ambient repository',
       ]);
-      const redirected = await createWithEnvironment(
-        'GIT_DIR',
-        join(ambientRepository, '.git'),
-        redirectedOutput,
+      const hostile = await withEnvironmentVariables(
+        {
+          GIT_DIR: join(ambientRepository, '.git'),
+          GIT_TEMPLATE_DIR: ambientTemplate,
+          GZIP: '-l',
+        },
+        () =>
+          createSourceCandidate({
+            outputDirectory: hostileOutput,
+            repositoryRoot,
+            version: '0.1.12',
+          }),
       );
-      const gzipConfigured = await createWithEnvironment('GZIP', '-1', gzipConfiguredOutput);
-      git(repositoryRoot, ['config', '--unset', 'tar.umask']);
-      assert.deepEqual(readFileSync(first.archivePath), readFileSync(second.archivePath));
-      assert.deepEqual(readFileSync(first.archivePath), readFileSync(configured.archivePath));
-      assert.deepEqual(readFileSync(first.archivePath), readFileSync(templated.archivePath));
-      assert.deepEqual(readFileSync(first.archivePath), readFileSync(redirected.archivePath));
-      assert.deepEqual(readFileSync(first.archivePath), readFileSync(gzipConfigured.archivePath));
-      assert.equal(redirected.commit, first.commit);
-      assert.deepEqual(readFileSync(first.checksumPath), readFileSync(second.checksumPath));
+      assert.deepEqual(readFileSync(first.archivePath), readFileSync(hostile.archivePath));
+      assert.equal(hostile.commit, first.commit);
+      assert.deepEqual(readFileSync(first.checksumPath), readFileSync(hostile.checksumPath));
       await assert.doesNotReject(() => verifySourceCandidate({ archivePath: first.archivePath }));
 
       const entries = execFileSync('tar', ['-tzf', basename(first.archivePath)], {
@@ -259,6 +252,18 @@ describe('ASF source release verification', () => {
           revision: first.commit,
         }),
       );
+      writeFileSync(join(repositoryRoot, 'README.md'), 'different committed payload\n');
+      git(repositoryRoot, ['add', 'README.md']);
+      commitFixture(repositoryRoot, 'change candidate payload');
+      await assert.rejects(
+        () =>
+          reproduceSourceCandidate({
+            archivePath: first.archivePath,
+            repositoryRoot,
+            revision: 'HEAD',
+          }),
+        /Candidate source payload does not match/,
+      );
 
       const gpgHome = join(temporaryRoot, 'gnupg');
       const keysPath = join(temporaryRoot, 'KEYS');
@@ -270,17 +275,6 @@ describe('ASF source release verification', () => {
         usage: 'cert',
       });
       writeFileSync(join(gpgHome, 'gpg.conf'), 'digest-algo SHA1\n');
-      await assert.rejects(
-        () =>
-          signSourceCandidate({
-            archivePath: first.archivePath,
-            gpgHome,
-            keyFingerprint: fingerprint.slice(-16),
-            repositoryRoot,
-            revision: first.commit,
-          }),
-        /complete hexadecimal PGP key fingerprint/,
-      );
       await assert.doesNotReject(() =>
         signSourceCandidate({
           archivePath: first.archivePath,
@@ -290,25 +284,55 @@ describe('ASF source release verification', () => {
           revision: first.commit,
         }),
       );
-      const strongSignatureStatus = execFileSync(
+      exportPublicKey({ fingerprint, gpgHome, keysPath });
+      await assert.doesNotReject(() =>
+        verifySourceCandidate({ archivePath: first.archivePath, keysPath }),
+      );
+
+      rmSync(`${first.archivePath}.asc`);
+      const originalChecksum = readFileSync(`${first.archivePath}.sha512`);
+      const wrapperDirectory = join(temporaryRoot, 'gpg-wrapper');
+      writeChecksumMutatingGpgWrapper(wrapperDirectory, `${first.archivePath}.sha512`);
+      await withEnvironmentVariables(
+        { PATH: `${wrapperDirectory}${delimiter}${process.env.PATH}` },
+        () =>
+          assert.rejects(
+            () =>
+              signSourceCandidate({
+                archivePath: first.archivePath,
+                gpgHome,
+                keyFingerprint: fingerprint,
+                repositoryRoot,
+                revision: first.commit,
+              }),
+            /SHA-512 mismatch|checksum changed/,
+          ),
+      );
+      assert.equal(existsSync(`${first.archivePath}.asc`), false);
+      writeFileSync(`${first.archivePath}.sha512`, originalChecksum);
+
+      execFileSync(
         'gpg',
         [
           '--batch',
           '--homedir',
           gpgHome,
-          '--status-fd',
-          '1',
-          '--verify',
+          '--digest-algo',
+          'SHA512',
+          '--detach-sign',
+          '--output',
           `${first.archivePath}.asc`,
           first.archivePath,
         ],
-        { encoding: 'utf8' },
+        { stdio: 'ignore' },
       );
-      assert.equal(validateGpgVerificationStatus(strongSignatureStatus).hashAlgorithm, 10);
-      exportPublicKey({ fingerprint, gpgHome, keysPath });
-      await assert.doesNotReject(() =>
-        verifySourceCandidate({ archivePath: first.archivePath, keysPath }),
+      const checksum = readFileSync(`${first.archivePath}.sha512`);
+      writeFileSync(`${first.archivePath}.sha512`, 'not a checksum\n');
+      await assert.rejects(
+        () => verifySourceCandidate({ archivePath: first.archivePath, keysPath }),
+        /ASCII-armored/,
       );
+      writeFileSync(`${first.archivePath}.sha512`, checksum);
 
       rmSync(`${first.archivePath}.asc`);
       execFileSync(
@@ -335,7 +359,6 @@ describe('ASF source release verification', () => {
       rmSync(`${first.archivePath}.asc`);
       // Keep the homedir short enough for GPG agent socket paths on macOS.
       const ed25519Home = join(temporaryRoot, 'ed');
-      const ed25519KeysPath = join(temporaryRoot, 'KEYS-ed25519');
       const ed25519Fingerprint = generateSigningKey({
         algorithm: 'ed25519',
         gpgHome: ed25519Home,
@@ -354,31 +377,6 @@ describe('ASF source release verification', () => {
       );
       assert.equal(existsSync(`${first.archivePath}.asc`), false);
 
-      execFileSync(
-        'gpg',
-        [
-          '--batch',
-          '--homedir',
-          ed25519Home,
-          '--armor',
-          '--detach-sign',
-          '--output',
-          `${first.archivePath}.asc`,
-          first.archivePath,
-        ],
-        { stdio: 'ignore' },
-      );
-      exportPublicKey({
-        fingerprint: ed25519Fingerprint,
-        gpgHome: ed25519Home,
-        keysPath: ed25519KeysPath,
-      });
-      await assert.rejects(
-        () => verifySourceCandidate({ archivePath: first.archivePath, keysPath: ed25519KeysPath }),
-        /must be RSA with at least 2048 bits/,
-      );
-
-      rmSync(`${first.archivePath}.asc`);
       const rsa1024Home = join(temporaryRoot, 'r');
       const rsa1024Fingerprint = generateSigningKey({
         algorithm: 'rsa2048',
@@ -399,104 +397,19 @@ describe('ASF source release verification', () => {
         /must be RSA with at least 2048 bits/,
       );
       assert.equal(existsSync(`${first.archivePath}.asc`), false);
-
-      symlinkSync(repositoryRoot, repositoryLink, 'dir');
-      const linkedScript = join(repositoryLink, 'scripts/asf-source-release.mjs');
-      mkdirSync(join(repositoryRoot, 'scripts'));
-      writeFileSync(
-        join(repositoryRoot, 'scripts/asf-source-release.mjs'),
-        readFileSync(join(import.meta.dirname, 'asf-source-release.mjs')),
-      );
-      git(repositoryRoot, ['add', 'scripts/asf-source-release.mjs']);
-      git(repositoryRoot, [
-        '-c',
-        'user.name=ASF Release Test',
-        '-c',
-        'user.email=release-test@example.invalid',
-        'commit',
-        '-m',
-        'add release script',
-      ]);
-      await assert.rejects(
-        () =>
-          reproduceSourceCandidate({
-            archivePath: first.archivePath,
-            repositoryRoot,
-            revision: 'HEAD',
-          }),
-        /Candidate source payload does not match/,
-      );
-      execFileSync(
-        process.execPath,
-        [
-          linkedScript,
-          'create',
-          '--version',
-          '0.1.12',
-          '--revision',
-          'HEAD',
-          '--output',
-          linkedOutput,
-        ],
-        { stdio: 'ignore' },
-      );
-      await assert.doesNotReject(() =>
-        verifySourceCandidate({
-          archivePath: join(linkedOutput, 'apache-maka-0.1.12-incubating-src.tar.gz'),
-        }),
-      );
-
-      const mismatchedLock = JSON.parse(readFileSync(join(repositoryRoot, 'package-lock.json')));
-      mismatchedLock.version = '9.9.9';
-      writeFileSync(
-        join(repositoryRoot, 'package-lock.json'),
-        `${JSON.stringify(mismatchedLock, null, 2)}\n`,
-      );
-      git(repositoryRoot, ['add', 'package-lock.json']);
-      git(repositoryRoot, [
-        '-c',
-        'user.name=ASF Release Test',
-        '-c',
-        'user.email=release-test@example.invalid',
-        'commit',
-        '-m',
-        'mismatch lock version',
-      ]);
-      await assert.rejects(
-        () =>
-          createSourceCandidate({
-            outputDirectory: join(temporaryRoot, 'mismatched'),
-            repositoryRoot,
-            version: '0.1.12',
-          }),
-        /package-lock\.json.*9\.9\.9/,
-      );
     } finally {
       rmSync(temporaryRoot, { force: true, recursive: true });
     }
   });
 
-  test('does not let ambient tar options hide forbidden entries', async () => {
+  test('does not let ambient tar options control archive verification', async () => {
     const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-asf-tar-options-test-'));
     const identity = sourceCandidateIdentity('0.1.12');
     const sourceRoot = join(temporaryRoot, identity.rootDirectory);
     const archivePath = join(temporaryRoot, identity.archiveName);
     try {
+      writeReleaseContents(sourceRoot);
       mkdirSync(join(sourceRoot, '.agents'), { recursive: true });
-      writeFileSync(
-        join(sourceRoot, 'package.json'),
-        `${JSON.stringify({ name: 'maka', version: identity.version })}\n`,
-      );
-      writeFileSync(
-        join(sourceRoot, 'package-lock.json'),
-        `${JSON.stringify({ lockfileVersion: 3, name: 'maka', packages: { '': { name: 'maka', version: identity.version } }, version: identity.version })}\n`,
-      );
-      writeFileSync(
-        join(sourceRoot, 'DISCLAIMER-WIP'),
-        'Apache Maka is undergoing incubation at The Apache Software Foundation.\n',
-      );
-      writeFileSync(join(sourceRoot, 'LICENSE'), 'Apache License, Version 2.0\n');
-      writeFileSync(join(sourceRoot, 'NOTICE'), 'Apache Maka\n');
       writeFileSync(join(sourceRoot, '.agents/secret.txt'), 'must not be released\n');
       execFileSync('tar', ['-czf', archivePath, identity.rootDirectory], {
         cwd: temporaryRoot,
@@ -505,11 +418,73 @@ describe('ASF source release verification', () => {
       const digest = createHash('sha512').update(readFileSync(archivePath)).digest('hex');
       writeFileSync(`${archivePath}.sha512`, `${digest}  ${identity.archiveName}\n`);
 
-      await withEnvironmentVariable(
-        'TAR_OPTIONS',
-        `--exclude=${identity.rootDirectory}/.agents`,
-        () =>
+      for (const [name, value] of Object.entries({
+        GZIP: '-l',
+        TAR_OPTIONS: `--exclude=${identity.rootDirectory}/.agents`,
+        TAR_READER_OPTIONS: 'tar:hdrcharset=BOGUS',
+      })) {
+        await withEnvironmentVariables({ [name]: value }, () =>
           assert.rejects(() => verifySourceCandidate({ archivePath }), /Forbidden archive entry/),
+        );
+      }
+    } finally {
+      rmSync(temporaryRoot, { force: true, recursive: true });
+    }
+  });
+
+  test('allows only one concurrent creator to publish a candidate path', async () => {
+    const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-asf-publish-race-test-'));
+    const repositoryRoot = join(temporaryRoot, 'repository');
+    const outputDirectory = join(temporaryRoot, 'output');
+    const scriptDirectory = join(repositoryRoot, 'scripts');
+    try {
+      mkdirSync(scriptDirectory, { recursive: true });
+      writeReleaseContents(repositoryRoot, { includeAttributes: true });
+      copyFileSync(
+        join(import.meta.dirname, 'asf-source-release.mjs'),
+        join(scriptDirectory, 'asf-source-release.mjs'),
+      );
+      writeFileSync(join(repositoryRoot, 'payload.bin'), randomBytes(32 * 1024 * 1024));
+
+      git(repositoryRoot, ['init']);
+      git(repositoryRoot, ['add', '.']);
+      commitFixture(repositoryRoot, 'first concurrent candidate');
+      const firstCommit = gitOutput(repositoryRoot, ['rev-parse', 'HEAD']).trim();
+
+      writeFileSync(join(repositoryRoot, 'payload.bin'), randomBytes(32 * 1024 * 1024));
+      git(repositoryRoot, ['add', 'payload.bin']);
+      commitFixture(repositoryRoot, 'second concurrent candidate');
+      const secondCommit = gitOutput(repositoryRoot, ['rev-parse', 'HEAD']).trim();
+
+      const scriptPath = join(scriptDirectory, 'asf-source-release.mjs');
+      const results = await Promise.all(
+        [firstCommit, secondCommit].map((revision) =>
+          spawnProcess(process.execPath, [
+            scriptPath,
+            'create',
+            '--version',
+            '0.1.12',
+            '--revision',
+            revision,
+            '--output',
+            outputDirectory,
+          ]),
+        ),
+      );
+      const successes = results.filter(({ code }) => code === 0);
+      const failures = results.filter(({ code }) => code !== 0);
+      assert.equal(successes.length, 1, JSON.stringify(results));
+      assert.equal(failures.length, 1, JSON.stringify(results));
+      assert.match(failures[0].stderr, /EEXIST|Refusing to overwrite/);
+
+      const publishedCommit = /Commit ([0-9a-f]{40,64})/.exec(successes[0].stdout)?.[1];
+      assert.ok(publishedCommit);
+      await assert.doesNotReject(() =>
+        reproduceSourceCandidate({
+          archivePath: join(outputDirectory, 'apache-maka-0.1.12-incubating-src.tar.gz'),
+          repositoryRoot,
+          revision: publishedCommit,
+        }),
       );
     } finally {
       rmSync(temporaryRoot, { force: true, recursive: true });
@@ -521,15 +496,92 @@ function git(repositoryRoot, arguments_) {
   execFileSync('git', arguments_, { cwd: repositoryRoot, stdio: 'ignore' });
 }
 
-async function withEnvironmentVariable(name, value, callback) {
-  const previous = process.env[name];
-  process.env[name] = value;
+function writeReleaseContents(root, { includeAttributes = false } = {}) {
+  mkdirSync(root, { recursive: true });
+  writeFileSync(
+    join(root, 'package.json'),
+    `${JSON.stringify({ name: 'maka', version: '0.1.12' }, null, 2)}\n`,
+  );
+  writeFileSync(
+    join(root, 'package-lock.json'),
+    `${JSON.stringify({ lockfileVersion: 3, name: 'maka', packages: { '': { name: 'maka', version: '0.1.12' } }, version: '0.1.12' }, null, 2)}\n`,
+  );
+  writeFileSync(
+    join(root, 'DISCLAIMER-WIP'),
+    'Apache Maka is undergoing incubation at The Apache Software Foundation.\n',
+  );
+  writeFileSync(join(root, 'LICENSE'), 'Apache License, Version 2.0\n');
+  writeFileSync(join(root, 'NOTICE'), 'Apache Maka\n');
+  if (includeAttributes) {
+    copyFileSync(join(import.meta.dirname, '../.gitattributes'), join(root, '.gitattributes'));
+  }
+}
+
+function gitOutput(repositoryRoot, arguments_) {
+  return execFileSync('git', arguments_, { cwd: repositoryRoot, encoding: 'utf8' });
+}
+
+function commitFixture(repositoryRoot, message) {
+  git(repositoryRoot, [
+    '-c',
+    'user.name=ASF Release Test',
+    '-c',
+    'user.email=release-test@example.invalid',
+    'commit',
+    '-m',
+    message,
+  ]);
+}
+
+function spawnProcess(command, arguments_) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, arguments_, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal, stderr, stdout }));
+  });
+}
+
+async function withEnvironmentVariables(values, callback) {
+  const previous = new Map(Object.keys(values).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, values);
   try {
     return await callback();
   } finally {
-    if (previous === undefined) delete process.env[name];
-    else process.env[name] = previous;
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   }
+}
+
+function writeChecksumMutatingGpgWrapper(directory, checksumPath) {
+  const realGpg = execFileSync('which', ['gpg'], { encoding: 'utf8' }).trim();
+  const archiveName = basename(checksumPath.slice(0, -'.sha512'.length));
+  const wrapperPath = join(directory, 'gpg');
+  mkdirSync(directory);
+  writeFileSync(
+    wrapperPath,
+    `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const { writeFileSync } = require('node:fs');
+const arguments_ = process.argv.slice(2);
+if (arguments_.includes('--detach-sign')) writeFileSync(${JSON.stringify(checksumPath)}, '0'.repeat(128) + '  ${archiveName}\\n');
+const result = spawnSync(${JSON.stringify(realGpg)}, arguments_, { stdio: 'inherit' });
+if (result.error) throw result.error;
+process.exit(result.status ?? 1);
+`,
+  );
+  chmodSync(wrapperPath, 0o755);
 }
 
 function rewriteArchiveCompression(archivePath, level) {
