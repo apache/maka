@@ -22,6 +22,10 @@ The RC number identifies a staging attempt and is not part of the archive name.
 If any candidate byte changes, increment the RC number and restart the vote. Do
 not replace files in a directory that has been presented for a vote.
 
+The unsigned workflow handoff is identified by its exact source commit, not by
+an RC number. Assign the RC identity only when creating the immutable candidate
+tag and staging directory for the bytes selected by the Release Manager.
+
 ## Prerequisites
 
 1. The intended version is committed to the root `package.json` on `main`.
@@ -36,8 +40,8 @@ not replace files in a directory that has been presented for a vote.
 
 ## Build and test an unsigned candidate
 
-Run **Prepare ASF source candidate** from `main`, supplying the exact version
-and a positive RC number. The workflow:
+Run **Prepare ASF source candidate** from `main`, supplying the exact version.
+The workflow:
 
 1. builds the archive from the dispatched Git commit rather than the working
    tree;

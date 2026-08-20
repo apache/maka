@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   chmodSync,
   closeSync,
+  copyFileSync,
   createReadStream,
   existsSync,
   linkSync,
@@ -158,14 +159,47 @@ export async function verifySourceCandidate({
   const match = archivePattern.exec(archiveName);
   if (!match) throw new Error(`Unexpected ASF source archive name: ${archiveName}`);
   if (!existsSync(archivePath)) throw new Error(`Source archive does not exist: ${archivePath}`);
-
   const identity = sourceCandidateIdentity(match[1]);
+  const checksumPath = `${archivePath}.sha512`;
   if (keysPath) {
     if (!existsSync(signaturePath)) {
       throw new Error(`Detached signature does not exist: ${signaturePath}`);
     }
-    verifyDetachedSignature({ archivePath, keysPath, signaturePath });
+    if (!existsSync(keysPath)) throw new Error(`KEYS file does not exist: ${keysPath}`);
   }
+  if (!existsSync(checksumPath)) throw new Error(`SHA-512 file does not exist: ${checksumPath}`);
+
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-asf-verify-'));
+  chmodSync(temporaryRoot, 0o700);
+  const snapshotArchivePath = join(temporaryRoot, archiveName);
+  const snapshotSignaturePath = `${snapshotArchivePath}.asc`;
+  const snapshotKeysPath = join(temporaryRoot, 'KEYS');
+  try {
+    copyFileSync(archivePath, snapshotArchivePath);
+    copyFileSync(checksumPath, `${snapshotArchivePath}.sha512`);
+    if (keysPath) {
+      copyFileSync(signaturePath, snapshotSignaturePath);
+      copyFileSync(keysPath, snapshotKeysPath);
+    }
+    const verified = await verifySourceCandidateSnapshot({
+      archivePath: snapshotArchivePath,
+      identity,
+      keysPath: keysPath ? snapshotKeysPath : undefined,
+      signaturePath: snapshotSignaturePath,
+    });
+    return {
+      ...verified,
+      archivePath,
+      checksumPath,
+      signaturePath,
+    };
+  } finally {
+    rmSync(temporaryRoot, { force: true, recursive: true });
+  }
+}
+
+async function verifySourceCandidateSnapshot({ archivePath, identity, keysPath, signaturePath }) {
+  if (keysPath) verifyDetachedSignature({ archivePath, keysPath, signaturePath });
 
   const { checksumPath, digest } = await verifySha512File(archivePath);
   const entries = execTar(archivePath, ['-tzf'], {

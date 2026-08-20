@@ -7,16 +7,12 @@ on:
         description: Exact version from the root package.json
         required: true
         type: string
-      rc_number:
-        description: Positive release-candidate number
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: asf-source-${{ inputs.version }}-rc${{ inputs.rc_number }}
+  group: asf-source-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -26,24 +22,15 @@ jobs:
     timeout-minutes: 60
     env:
       CANDIDATE_PATH: release/asf/apache-maka-${{ inputs.version }}-incubating-src.tar.gz
-      RC_NUMBER: ${{ inputs.rc_number }}
       RELEASE_SHA: ${{ github.sha }}
       RELEASE_VERSION: ${{ inputs.version }}
     steps:
-      - name: Require main and valid release identity
+      - name: Require main
         env:
           RELEASE_REF: ${{ github.ref }}
         run: |
           if [[ "$RELEASE_REF" != "refs/heads/main" ]]; then
             echo "ASF source candidates must be dispatched from main; found $RELEASE_REF" >&2
-            exit 1
-          fi
-          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid release version: $RELEASE_VERSION" >&2
-            exit 1
-          fi
-          if [[ ! "$RC_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
-            echo "Invalid release-candidate number: $RC_NUMBER" >&2
             exit 1
           fi
 
@@ -119,7 +106,7 @@ jobs:
         id: candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: apache-maka-${{ inputs.version }}-incubating-rc${{ inputs.rc_number }}-unsigned
+          name: apache-maka-${{ inputs.version }}-incubating-${{ github.sha }}-unsigned
           path: |
             ${{ env.CANDIDATE_PATH }}
             ${{ env.CANDIDATE_PATH }}.sha512
@@ -136,7 +123,6 @@ jobs:
             echo "## Unsigned ASF source candidate"
             echo
             echo "- Version: \`$RELEASE_VERSION\`"
-            echo "- RC: \`$RC_NUMBER\`"
             echo "- Commit: \`$RELEASE_SHA\`"
             echo "- Artifact: $ARTIFACT_URL"
             echo "- Release Manager runbook: $RUNBOOK_URL"

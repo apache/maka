@@ -154,6 +154,7 @@ describe('ASF source release verification', () => {
     const repositoryRoot = join(temporaryRoot, 'repository');
     const firstOutput = join(temporaryRoot, 'first');
     const hostileOutput = join(temporaryRoot, 'hostile');
+    const replacementOutput = join(temporaryRoot, 'replacement');
     mkdirSync(repositoryRoot, { recursive: true });
     try {
       writeReleaseContents(repositoryRoot, { includeAttributes: true });
@@ -255,6 +256,11 @@ describe('ASF source release verification', () => {
       writeFileSync(join(repositoryRoot, 'README.md'), 'different committed payload\n');
       git(repositoryRoot, ['add', 'README.md']);
       commitFixture(repositoryRoot, 'change candidate payload');
+      const replacement = await createSourceCandidate({
+        outputDirectory: replacementOutput,
+        repositoryRoot,
+        version: '0.1.12',
+      });
       await assert.rejects(
         () =>
           reproduceSourceCandidate({
@@ -289,12 +295,40 @@ describe('ASF source release verification', () => {
         verifySourceCandidate({ archivePath: first.archivePath, keysPath }),
       );
 
+      const signedArchive = readFileSync(first.archivePath);
+      const signedChecksum = readFileSync(first.checksumPath);
+      const signedDigest = parseSha512File(
+        signedChecksum.toString('utf8'),
+        basename(first.archivePath),
+      );
+      const replacementWrapperDirectory = join(temporaryRoot, 'gpg-replace-wrapper');
+      writeInterceptingGpgWrapper(replacementWrapperDirectory);
+      const snapshotVerification = await withEnvironmentVariables(
+        {
+          MAKA_ASF_TEST_REPLACEMENT_ARCHIVE: replacement.archivePath,
+          MAKA_ASF_TEST_TARGET_ARCHIVE: first.archivePath,
+          PATH: `${replacementWrapperDirectory}${delimiter}${process.env.PATH}`,
+        },
+        () => verifySourceCandidate({ archivePath: first.archivePath, keysPath }),
+      );
+      const replacedDigest = parseSha512File(
+        readFileSync(first.checksumPath, 'utf8'),
+        basename(first.archivePath),
+      );
+      writeFileSync(first.archivePath, signedArchive);
+      writeFileSync(first.checksumPath, signedChecksum);
+      assert.equal(snapshotVerification.digest, signedDigest);
+      assert.notEqual(replacedDigest, signedDigest);
+
       rmSync(`${first.archivePath}.asc`);
       const originalChecksum = readFileSync(`${first.archivePath}.sha512`);
       const wrapperDirectory = join(temporaryRoot, 'gpg-wrapper');
-      writeChecksumMutatingGpgWrapper(wrapperDirectory, `${first.archivePath}.sha512`);
+      writeInterceptingGpgWrapper(wrapperDirectory);
       await withEnvironmentVariables(
-        { PATH: `${wrapperDirectory}${delimiter}${process.env.PATH}` },
+        {
+          MAKA_ASF_TEST_CHECKSUM: `${first.archivePath}.sha512`,
+          PATH: `${wrapperDirectory}${delimiter}${process.env.PATH}`,
+        },
         () =>
           assert.rejects(
             () =>
@@ -564,20 +598,30 @@ async function withEnvironmentVariables(values, callback) {
   }
 }
 
-function writeChecksumMutatingGpgWrapper(directory, checksumPath) {
+function writeInterceptingGpgWrapper(directory) {
   const realGpg = execFileSync('which', ['gpg'], { encoding: 'utf8' }).trim();
-  const archiveName = basename(checksumPath.slice(0, -'.sha512'.length));
   const wrapperPath = join(directory, 'gpg');
   mkdirSync(directory);
   writeFileSync(
     wrapperPath,
     `#!/usr/bin/env node
 const { spawnSync } = require('node:child_process');
-const { writeFileSync } = require('node:fs');
+const { basename } = require('node:path');
+const { copyFileSync, writeFileSync } = require('node:fs');
 const arguments_ = process.argv.slice(2);
-if (arguments_.includes('--detach-sign')) writeFileSync(${JSON.stringify(checksumPath)}, '0'.repeat(128) + '  ${archiveName}\\n');
+const checksumPath = process.env.MAKA_ASF_TEST_CHECKSUM;
+if (checksumPath && arguments_.includes('--detach-sign')) {
+  const archiveName = basename(checksumPath.slice(0, -'.sha512'.length));
+  writeFileSync(checksumPath, '0'.repeat(128) + '  ' + archiveName + '\\n');
+}
 const result = spawnSync(${JSON.stringify(realGpg)}, arguments_, { stdio: 'inherit' });
 if (result.error) throw result.error;
+const replacementArchive = process.env.MAKA_ASF_TEST_REPLACEMENT_ARCHIVE;
+const targetArchive = process.env.MAKA_ASF_TEST_TARGET_ARCHIVE;
+if (result.status === 0 && arguments_.includes('--verify') && replacementArchive && targetArchive) {
+  copyFileSync(replacementArchive, targetArchive);
+  copyFileSync(replacementArchive + '.sha512', targetArchive + '.sha512');
+}
 process.exit(result.status ?? 1);
 `,
   );

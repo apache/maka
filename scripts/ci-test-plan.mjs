@@ -25,13 +25,8 @@ const TYPECHECK_ONLY_FILES = new Set([
 ]);
 
 const CLI_PACKAGE_FILES = new Set([
-  '.gitattributes',
-  '.npmrc',
-  'DISCLAIMER-WIP',
   'LICENSE',
   'NOTICE',
-  'package-lock.json',
-  'package.json',
   'scripts/apply-dependency-patches.mjs',
   'scripts/clean-paths.mjs',
   'scripts/generate-third-party-notices.mjs',

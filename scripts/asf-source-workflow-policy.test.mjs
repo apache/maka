@@ -12,6 +12,8 @@ describe('ASF source workflow policy', () => {
     assert.match(workflow, /ref: \$\{\{ env\.RELEASE_SHA \}\}/);
     assert.match(workflow, /--revision "\$RELEASE_SHA"/);
     assert.match(workflow, /tar -xzf "\$CANDIDATE_PATH"/);
+    assert.doesNotMatch(workflow, /rc_number/);
+    assert.match(workflow, /name: apache-maka-.*-incubating-\$\{\{ github\.sha \}\}-unsigned/);
     assert.match(workflow, /\$\{\{ env\.CANDIDATE_PATH \}\}\.sha512/);
     assert.match(
       workflow,
