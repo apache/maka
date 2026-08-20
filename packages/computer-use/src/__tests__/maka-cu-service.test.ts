@@ -113,6 +113,7 @@ process.stdin.on('data', function (chunk) {
 let workDir = '';
 let mockPath = '';
 const services: MakaCuService[] = [];
+const imageDirs: string[] = [];
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -197,6 +198,7 @@ function makeService(
   };
   const service = new MakaCuService(options);
   services.push(service);
+  imageDirs.push(imageDir);
   return { service, logPath, imageDir };
 }
 
@@ -215,7 +217,24 @@ after(async () => {
       // A disposed service disposing again is not a test failure.
     }
   }
-  if (workDir) await rm(workDir, { recursive: true, force: true });
+  // `dispose()` is deliberately fire-and-forget: it SIGTERMs the child and
+  // schedules an asynchronous image-directory purge on child exit (or on the
+  // shutdown-grace SIGKILL, at most `shutdownGraceMs` = 3s later). Deleting
+  // `workDir` while those purges — and a child still flushing its ndjson log —
+  // are in flight races `rm` against concurrent writers and fails with
+  // ENOTEMPTY (issue #3290). Every `makeService` image directory is purged by
+  // its `dispose()`, so waiting for them to vanish is a "children exited and
+  // purges finished" barrier. The wait is tolerant rather than asserting —
+  // purge failures are permitted by contract ("the next spawn purges it
+  // again") and are not what this teardown tests — and the retrying `rm`
+  // backstop then only absorbs stragglers, not an unbounded race.
+  const purgeDeadline = Date.now() + 10_000;
+  while (imageDirs.some((imageDir) => existsSync(imageDir)) && Date.now() < purgeDeadline) {
+    await delay(25);
+  }
+  if (workDir) {
+    await rm(workDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
 });
 
 describe('maka-cu supervisor: what the child may put on stdout', () => {

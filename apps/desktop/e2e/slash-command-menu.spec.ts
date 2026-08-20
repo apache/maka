@@ -78,7 +78,14 @@ test('compacts the active session', async ({
   await expect.poll(() => composer.textContent()).toBe('');
   await expect(page.getByText('压缩失败')).toHaveCount(0);
 
-  await composer.fill('after compact');
+  // After the compact completes the composer clears and can remount. `fill()`
+  // can land before the contentEditable is focused again, so the draft never
+  // populates and Enter submits nothing — the flake in issue #3289. Type
+  // through the focused element and require the draft to have settled before
+  // dispatching, mirroring the running-turn spec below.
+  await composer.click();
+  await composer.pressSequentially('after compact');
+  await expect.poll(() => composer.textContent()).toBe('after compact');
   await composer.press('Enter');
   await expect(page.getByText('Fake backend received: after compact')).toBeVisible();
   await expect(page.getByText('Fake backend received: /compact')).toHaveCount(0);
