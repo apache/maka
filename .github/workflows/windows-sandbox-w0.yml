@@ -1,31 +1,21 @@
 name: Windows sandbox W0 evidence
 
-# The paths below are a pre-filter, not this lane's real input. The real input
-# is the import closure of the sandbox and filesystem-worker sources, which
-# reaches well past any list worth hand-maintaining. So they name the
-# directories that own the sandbox, which keeps a change there blocking before
-# merge, and the nightly run is what covers transitive edits once they land.
 on:
   pull_request:
     paths:
       - 'experiments/windows-sandbox/**'
       - 'packages/runtime/src/sandbox/**'
+      - 'packages/runtime/**'
+      - 'packages/core/**'
       - 'packages/runtime/src/filesystem-worker/**'
-      - 'packages/runtime/src/__tests__/filesystem-worker-windows-smoke.test.ts'
+      - 'scripts/package-windows-x64.mjs'
+      - 'scripts/verify-packaged-app.mjs'
+      - 'apps/desktop/electron-builder.config.mjs'
       - '.github/workflows/windows-sandbox-w0.yml'
-  schedule:
-    # Offset from windows-baseline so the two Windows lanes do not overlap.
-    - cron: '17 7 * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
-
-# Pull request pushes supersede each other. Scheduled and manual runs each get
-# a unique group, so neither can discard the other while pending or running.
-concurrency:
-  group: windows-sandbox-w0-${{ github.head_ref || github.run_id }}
-  cancel-in-progress: true
 
 jobs:
   protocol:
@@ -39,7 +29,6 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
-          cache: npm
       - name: Record atomic launcher capability
         shell: pwsh
         run: ./experiments/windows-sandbox/atomic-launch-capability.ps1
