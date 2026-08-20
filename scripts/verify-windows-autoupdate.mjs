@@ -482,11 +482,17 @@ export async function verifyWindowsAutoupdate(
           timeoutMs: 30_000,
         });
       } catch (error) {
-        // Exit 128 means the process tree was already gone: the relaunched
-        // instance can exit on its own between the enumeration and the kill.
-        // The authoritative assertion is waitForInstalledProcessesToExit
-        // below, which fails if anything from the install tree still runs.
-        if (!/exit code 128/.test(String(error?.message))) throw error;
+        // The kill is the mechanism, not the assertion. Exit 128 means the
+        // tree was already gone (the relaunched instance can exit on its own
+        // between the enumeration and the kill); a taskkill that exceeds its
+        // own bound has been observed on wedged runners (run 32378497920)
+        // while the target still dies. Either way the authoritative check is
+        // waitForInstalledProcessesToExit below, which fails with the live
+        // process list if anything from the install tree still runs.
+        const message = String(error?.message);
+        if (!/exit code 128/.test(message) && !/did not finish within/.test(message)) {
+          throw error;
+        }
       }
     }
     await waitForInstalledProcessesToExit(installDirectory);
