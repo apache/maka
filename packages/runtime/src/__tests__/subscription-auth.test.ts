@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { base64urlEncode } from '@maka/core/oauth-subscription';
 import {
+  codexAccountHint,
   extractCodexAccountClaims,
   extractCodexAccountId,
   openAiCodexHeaders,
@@ -78,4 +79,20 @@ test('extractCodexAccountClaims fills picture + email from id_token when access 
 test('extractCodexAccountClaims returns null when neither token contains an account id', () => {
   assert.equal(extractCodexAccountClaims(makeJwt({})), null);
   assert.equal(extractCodexAccountClaims('not-a-jwt'), null);
+});
+
+test('codexAccountHint masks a JWT email without removing the domain', () => {
+  assert.equal(
+    codexAccountHint({ accountId: 'acct_1', email: 'm1234567890123@163.com' }),
+    'm123*******123@163.com',
+  );
+});
+
+test('codexAccountHint falls back to a masked opaque account id', () => {
+  assert.equal(
+    codexAccountHint({ accountId: 'chatgpt-account-1234' }),
+    'cha****1234',
+  );
+  assert.equal(codexAccountHint(null), undefined);
+  assert.equal(codexAccountHint({ accountId: '' }), undefined);
 });

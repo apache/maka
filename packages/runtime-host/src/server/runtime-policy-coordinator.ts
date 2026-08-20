@@ -9,9 +9,15 @@ import type {
   RuntimePolicySnapshot,
 } from '@maka/core/runtime-policy';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
+import { parseOAuthSubscriptionTokens } from '@maka/runtime/subscription-credentials';
+import {
+  codexAccountHint,
+  extractCodexAccountClaims,
+} from '@maka/runtime/subscription-auth';
 import {
   authenticateRuntimePolicyStoresWriter,
   RuntimePolicyStoreError,
+  type CredentialProfileReadinessEntry,
   type RuntimePolicyStoresWriter,
 } from '@maka/storage/runtime-policy-stores';
 import {
@@ -34,6 +40,7 @@ import {
   type CredentialProfileMaterializePrimaryInput,
   type CredentialProfileMaterializePrimaryResult,
   type CredentialProfileQueryInput,
+  type CredentialProfileReadinessItem,
   type CredentialProfileRemoveInput,
   type CredentialProfileSetEnabledInput,
   type CredentialProfileSetRoutingModeInput,
@@ -328,21 +335,63 @@ export class HostRuntimePolicyCoordinator {
     input: CredentialProfileQueryInput,
   ): Promise<OperationOutcome<'credential.profile.query'>> {
     return this.#storeCredentialQuery(async () => {
-      const result = await this.#stores.operations.readCredentialProfileReadiness(
-        input.connectionId,
+      const [result, catalog] = await Promise.all([
+        this.#stores.operations.readCredentialProfileReadiness(input.connectionId),
+        this.#stores.connectionCatalog.getSnapshot(),
+      ]);
+      if (result.kind !== 'found') {
+        return { kind: 'connection_not_found' as const };
+      }
+      const connection = catalog.connections.find(
+        (candidate) => candidate.connectionId === input.connectionId,
       );
-      return result.kind === 'found'
-        ? {
-            kind: 'found' as const,
-            connectionId: result.connectionId,
-            connectionRevision: result.connectionRevision,
-            routingMode: result.routingMode,
-            routingStrategy: result.routingStrategy,
-            readyCandidateCount: result.readyCandidateCount,
-            profiles: result.profiles,
-          }
-        : { kind: 'connection_not_found' as const };
+      const profiles =
+        connection?.providerType === 'openai-codex'
+          ? await this.#decorateCodexProfileAccountHints(
+              input.connectionId,
+              result.profiles,
+            )
+          : result.profiles;
+      return {
+        kind: 'found' as const,
+        connectionId: result.connectionId,
+        connectionRevision: result.connectionRevision,
+        routingMode: result.routingMode,
+        routingStrategy: result.routingStrategy,
+        readyCandidateCount: result.readyCandidateCount,
+        profiles,
+      };
     });
+  }
+
+  async #decorateCodexProfileAccountHints(
+    connectionId: string,
+    profiles: readonly CredentialProfileReadinessEntry[],
+  ): Promise<CredentialProfileReadinessItem[]> {
+    const decorated: CredentialProfileReadinessItem[] = [];
+    for (const profile of profiles) {
+      if (!profile.credentialConfigured) {
+        decorated.push({ ...profile });
+        continue;
+      }
+      const locator = profile.primary
+        ? ({ scope: 'connection', connectionId, kind: 'oauth_token' } as const)
+        : ({
+            scope: 'connection_profile',
+            connectionId,
+            profileId: profile.profileId,
+            kind: 'oauth_token',
+          } as const);
+      const material = await this.#stores.operations.exportCredentialMaterial(locator);
+      const tokens = material ? parseOAuthSubscriptionTokens(material.secret) : null;
+      const hint = tokens
+        ? codexAccountHint(extractCodexAccountClaims(tokens.access_token, tokens.id_token))
+        : undefined;
+      decorated.push(
+        hint === undefined ? { ...profile } : { ...profile, accountHint: hint },
+      );
+    }
+    return decorated;
   }
 
   async #materializeCredentialProfilePrimary(

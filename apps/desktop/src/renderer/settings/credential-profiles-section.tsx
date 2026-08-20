@@ -442,16 +442,22 @@ export function CredentialProfilesSection(props: CredentialProfilesSectionProps)
                               isDisabled: anyAction && !credentialBusy,
                               onClick: () => void props.onOAuthLogin(profile.profileId),
                             },
-                            {
-                              label: profile.enabled ? copy.profileDisabled : copy.profileEnabled,
-                              isDisabled: anyAction && !enableBusy,
-                              onClick: () =>
-                                void props.onSetEnabled({
-                                  profileId: profile.profileId,
-                                  profileRevision: profile.revision,
-                                  enabled: !profile.enabled,
-                                }),
-                            },
+                            ...(profile.credentialConfigured
+                              ? [
+                                  {
+                                    label: profile.enabled
+                                      ? copy.profileDisabled
+                                      : copy.profileEnabled,
+                                    isDisabled: anyAction && !enableBusy,
+                                    onClick: () =>
+                                      void props.onSetEnabled({
+                                        profileId: profile.profileId,
+                                        profileRevision: profile.revision,
+                                        enabled: !profile.enabled,
+                                      }),
+                                  },
+                                ]
+                              : []),
                             {
                               label: copy.edit,
                               isDisabled: anyAction && !updateBusy,

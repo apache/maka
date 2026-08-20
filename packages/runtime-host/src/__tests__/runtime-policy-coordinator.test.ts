@@ -74,6 +74,58 @@ test('model settings tool confirms and atomically updates canonical Runtime Poli
   });
 });
 
+test('OpenAI OAuth readiness exposes only a masked account hint', async () => {
+  await withCoordinator(async ({ coordinator, stores }) => {
+    const created = await stores.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'codex-oauth',
+        name: 'OpenAI OAuth',
+        providerType: 'openai-codex',
+        enabled: true,
+        enabledModelIds: [],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+
+    const materialized = await stores.operations.materializePrimaryCredentialProfile(
+      connection.connectionId,
+    );
+    assert.equal(materialized.kind, 'committed');
+    if (materialized.kind !== 'committed') return;
+
+    const login = await stores.operations.beginInteractiveOAuthLogin(connection.connectionId);
+    assert.equal(login.kind, 'ready');
+    if (login.kind !== 'ready') return;
+    const completed = await stores.operations.completeInteractiveOAuthLogin(
+      login.ticket,
+      JSON.stringify({
+        access_token: codexJwt({
+          sub: 'acct-codex',
+          email: 'm1234567890123@163.com',
+        }),
+        refresh_token: 'refresh-codex',
+        expires_at: Date.now() + 60_000,
+      }),
+    );
+    assert.equal(completed.kind, 'committed');
+    if (completed.kind !== 'committed') return;
+
+    const queried = await coordinator.handlers['credential.profile.query'](
+      { connectionId: connection.connectionId },
+      context,
+    );
+    assert.equal(queried.ok, true);
+    if (!queried.ok || queried.result.kind !== 'found') return;
+    assert.equal(queried.result.profiles[0]?.accountHint, 'm123*******123@163.com');
+    assert.equal(JSON.stringify(queried).includes('m1234567890123@163.com'), false);
+  });
+});
+
 test('production composition shares one gate across mutation and backend activation', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-policy-composition-'));
   const root = join(base, 'interactive');
@@ -1099,6 +1151,12 @@ function expectedCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCa
 }
 
 type Stores = Awaited<ReturnType<typeof openInteractiveRuntimePolicyStoresForWrite>>;
+
+function codexJwt(payload: Record<string, unknown>): string {
+  const encode = (value: unknown) =>
+    Buffer.from(JSON.stringify(value)).toString('base64url');
+  return `${encode({ alg: 'none' })}.${encode(payload)}.signature`;
+}
 
 async function withCoordinator(
   run: (input: {

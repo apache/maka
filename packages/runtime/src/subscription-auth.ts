@@ -90,6 +90,49 @@ export function extractCodexAccountClaims(
   };
 }
 
+/**
+ * Renderer-safe account label for the OpenAI OAuth profile list. The raw
+ * email is JWT-derived identity data, so it is intentionally masked before it
+ * crosses the Host boundary; the masked form is still enough to distinguish
+ * two accounts without exposing the full address.
+ */
+export function codexAccountHint(claims: CodexAccountClaims | null): string | undefined {
+  const email = claims?.email?.trim();
+  if (email !== undefined && email.length > 0 && email.includes('@')) {
+    return limitAccountHint(maskCodexEmail(email));
+  }
+  const accountId = claims?.accountId?.trim();
+  if (accountId !== undefined && accountId.length > 0) {
+    return limitAccountHint(maskOpaqueIdentifier(accountId));
+  }
+  return undefined;
+}
+
+function limitAccountHint(hint: string): string {
+  return hint.length > 256 ? hint.slice(0, 256) : hint;
+}
+
+function maskCodexEmail(email: string): string {
+  const at = email.lastIndexOf('@');
+  if (at <= 0 || at === email.length - 1) return maskOpaqueIdentifier(email);
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  if (local.length <= 2) {
+    return `${local[0] ?? '*'}***@${domain}`;
+  }
+  const headLength = Math.max(1, Math.floor(local.length / 3));
+  const tailLength = Math.max(1, Math.floor(local.length / 4));
+  const stars = Math.max(3, local.length - headLength - tailLength);
+  return `${local.slice(0, headLength)}${'*'.repeat(stars)}${local.slice(
+    local.length - tailLength,
+  )}@${domain}`;
+}
+
+function maskOpaqueIdentifier(identifier: string): string {
+  if (identifier.length <= 6) return `${identifier.slice(0, 2)}***`;
+  return `${identifier.slice(0, 3)}****${identifier.slice(-4)}`;
+}
+
 function readNestedString(obj: Record<string, unknown>, path: string[]): string | undefined {
   let cur: unknown = obj;
   for (const key of path) {
