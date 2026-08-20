@@ -48,6 +48,7 @@ jobs:
           path: |
             packages/cli/release/*.tgz
             packages/cli/release/*.tgz.sha256
+            packages/cli/release/*.tgz.sha512
             packages/cli/release/*.tgz.files.json
           if-no-files-found: error
           retention-days: 7

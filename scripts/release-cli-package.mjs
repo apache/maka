@@ -108,7 +108,9 @@ function main() {
   const tarballPath = join(releaseRoot, pack.filename);
   validatePackedFiles(pack.files, expectedDependencyManifests);
   const sha256 = digestFile(tarballPath);
+  const sha512 = digestFile(tarballPath, 'sha512');
   writeFileSync(`${tarballPath}.sha256`, `${sha256}  ${pack.filename}\n`, 'utf8');
+  writeFileSync(`${tarballPath}.sha512`, `${sha512}  ${pack.filename}\n`, 'utf8');
   writeFileSync(
     join(releaseRoot, `${pack.filename}.files.json`),
     `${JSON.stringify(pack.files, null, 2)}\n`,
@@ -117,6 +119,7 @@ function main() {
 
   console.log(`[release-cli] tarball: ${tarballPath}`);
   console.log(`[release-cli] sha256: ${sha256}`);
+  console.log(`[release-cli] sha512: ${sha512}`);
   console.log(
     `[release-cli] size: ${formatBytes(pack.size)} compressed, ${formatBytes(pack.unpackedSize)} unpacked, ${pack.entryCount} files`,
   );
@@ -705,8 +708,8 @@ function runNpm(args, options = {}) {
   );
 }
 
-function digestFile(path) {
-  return createHash('sha256').update(readFileSync(path)).digest('hex');
+function digestFile(path, algorithm = 'sha256') {
+  return createHash(algorithm).update(readFileSync(path)).digest('hex');
 }
 
 function formatBytes(value) {
