@@ -48,7 +48,7 @@ and a positive RC number. The workflow:
    that extracted directory; and
 6. uploads an unsigned workflow artifact for Release Manager handoff.
 
-The same unsigned archive can be created locally:
+An equivalent unsigned archive can be created locally:
 
 ```sh
 npm run release:asf:source -- \
@@ -61,6 +61,9 @@ npm run release:asf:verify -- \
 
 Creation refuses to overwrite existing output. Remove or move a private local
 attempt before rebuilding; never overwrite a staged or voted candidate.
+Different gzip implementations may encode the same source tar payload into
+different compressed bytes, so use the workflow artifact as the candidate that
+will be signed rather than substituting a locally compressed archive.
 
 Before opening the vote, create the candidate tag at the exact archived commit
 and publish it through the normal reviewed Git process:
@@ -88,12 +91,15 @@ npm run release:asf:sign -- \
   --revision v<version>-incubating-rc<rc>
 ```
 
-The signing command first validates the downloaded SHA-512 and archive, rebuilds
-the archive from the specified revision on the Release Manager's hardware, and
-requires the rebuilt and downloaded archives to be byte-for-byte identical. It
-then resolves the selected secret key to the exact full fingerprint before
-creating the detached signature. A workflow-produced digest alone is not an
-independent trust check and is insufficient for signing.
+The signing command first validates the downloaded SHA-512 and archive. It then
+rebuilds the canonical uncompressed Git archive from the specified revision on
+the Release Manager's hardware, isolated from repository-local, user, and system
+Git attributes, and requires that source payload to be byte-for-byte identical
+to the downloaded candidate after decompression. The original downloaded
+candidate is then signed with SHA-512 after resolving the selected secret key to
+the exact full fingerprint. Comparing the canonical payload avoids treating a
+platform's gzip encoding as source identity. A workflow-produced digest alone
+is not an independent trust check and is insufficient for signing.
 
 Export the matching public key for the podling `KEYS` file when needed:
 
@@ -116,7 +122,8 @@ npm run release:asf:verify -- \
 
 Supplying `--keys` requires a detached signature. Verification rejects signing
 keys or subkeys that are not RSA with at least 2048 bits, expired or revoked
-keys and signatures, and bad or missing signatures.
+keys and signatures, SHA-1 or any digest outside the accepted set, and bad or
+missing signatures. SHA-256, SHA-384, and SHA-512 signatures are accepted.
 
 ## Stage on Apache dist/dev
 

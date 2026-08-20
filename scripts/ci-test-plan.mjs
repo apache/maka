@@ -41,10 +41,7 @@ const CLI_PACKAGE_FILES = new Set([
 ]);
 
 const ASF_SOURCE_FILES = new Set([
-  '.github/ASF_SOURCE_RELEASE.md',
   '.github/workflows/asf-source-candidate.yml',
-  'LICENSE',
-  'NOTICE',
   'scripts/asf-source-release.mjs',
   'scripts/asf-source-release.test.mjs',
   'scripts/asf-source-workflow-policy.test.mjs',

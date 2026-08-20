@@ -77,20 +77,24 @@ test('CLI release inputs select installed-package validation', () => {
   assert.equal(plan.cliPackage, true);
 });
 
-test('release metadata selects installed-package validation', () => {
-  assert.equal(planTests(['LICENSE'], { graph }).cliPackage, true);
+test('release metadata selects only the gate that consumes it', () => {
+  for (const path of ['LICENSE', 'NOTICE']) {
+    const plan = planTests([path], { graph });
+    assert.equal(plan.cliPackage, true, path);
+    assert.equal(plan.asfSource, false, path);
+  }
 });
 
 test('ASF source authority changes select their dedicated gate', () => {
   for (const path of [
     '.gitattributes',
-    '.github/ASF_SOURCE_RELEASE.md',
     '.github/workflows/asf-source-candidate.yml',
     'scripts/asf-source-release.mjs',
     'scripts/asf-source-release.test.mjs',
   ]) {
     assert.equal(planTests([path], { graph }).asfSource, true, path);
   }
+  assert.equal(planTests(['.github/ASF_SOURCE_RELEASE.md'], { graph }).asfSource, false);
   assert.equal(planTests(['scripts/audit-alignment.mjs'], { graph }).asfSource, false);
 });
 

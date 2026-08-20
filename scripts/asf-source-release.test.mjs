@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -84,7 +85,7 @@ describe('ASF source release verification', () => {
       validateGpgVerificationStatus(
         `[GNUPG:] GOODSIG ABCDEF0123456789 Release Test\n[GNUPG:] VALIDSIG ${fingerprint} 2026-08-20 1787193600 0 4 0 1 10 00 ${fingerprint}\n`,
       ),
-      { fingerprint, primaryFingerprint: fingerprint, publicKeyAlgorithm: 1 },
+      { fingerprint, hashAlgorithm: 10 },
     );
     for (const status of ['EXPKEYSIG', 'EXPSIG', 'KEYEXPIRED', 'KEYREVOKED', 'REVKEYSIG']) {
       assert.throws(
@@ -140,6 +141,7 @@ describe('ASF source release verification', () => {
         `${JSON.stringify({ lockfileVersion: 3, name: 'maka', packages: { '': { name: 'maka', version: '0.1.12' } }, version: '0.1.12' }, null, 2)}\n`,
       );
       writeFileSync(join(repositoryRoot, '.gitignore'), 'untracked.txt\n');
+      writeFileSync(join(repositoryRoot, 'README.md'), 'release fixture\n'.repeat(4096));
       writeFileSync(
         join(repositoryRoot, '.gitattributes'),
         '/.claude export-ignore\n/.maka-shots export-ignore\n/maka-proposal-zh-review.txt export-ignore\n',
@@ -161,6 +163,7 @@ describe('ASF source release verification', () => {
         'NOTICE',
         '.gitignore',
         '.gitattributes',
+        'README.md',
         '.claude/launch.json',
         '.maka-shots/review.png',
         'maka-proposal-zh-review.txt',
@@ -186,6 +189,7 @@ describe('ASF source release verification', () => {
         version: '0.1.12',
       });
       git(repositoryRoot, ['config', 'tar.umask', '0077']);
+      writeFileSync(join(repositoryRoot, '.git/info/attributes'), 'README.md export-ignore\n');
       const configured = await createSourceCandidate({
         outputDirectory: configuredOutput,
         repositoryRoot,
@@ -203,6 +207,18 @@ describe('ASF source release verification', () => {
       });
       assert.doesNotMatch(entries, /untracked\.txt/);
       assert.doesNotMatch(entries, /\.claude|\.maka-shots|maka-proposal-zh-review/);
+      assert.match(entries, /README\.md/);
+
+      const originalCompressedBytes = readFileSync(first.archivePath);
+      rewriteArchiveCompression(first.archivePath, 1);
+      assert.notDeepEqual(readFileSync(first.archivePath), originalCompressedBytes);
+      await assert.doesNotReject(() =>
+        reproduceSourceCandidate({
+          archivePath: first.archivePath,
+          repositoryRoot,
+          revision: first.commit,
+        }),
+      );
 
       const gpgHome = join(temporaryRoot, 'gnupg');
       const keysPath = join(temporaryRoot, 'KEYS');
@@ -213,6 +229,7 @@ describe('ASF source release verification', () => {
         signingSubkeyAlgorithm: 'rsa2048',
         usage: 'cert',
       });
+      writeFileSync(join(gpgHome, 'gpg.conf'), 'digest-algo SHA1\n');
       await assert.rejects(
         () =>
           signSourceCandidate({
@@ -233,9 +250,46 @@ describe('ASF source release verification', () => {
           revision: first.commit,
         }),
       );
+      const strongSignatureStatus = execFileSync(
+        'gpg',
+        [
+          '--batch',
+          '--homedir',
+          gpgHome,
+          '--status-fd',
+          '1',
+          '--verify',
+          `${first.archivePath}.asc`,
+          first.archivePath,
+        ],
+        { encoding: 'utf8' },
+      );
+      assert.equal(validateGpgVerificationStatus(strongSignatureStatus).hashAlgorithm, 10);
       exportPublicKey({ fingerprint, gpgHome, keysPath });
       await assert.doesNotReject(() =>
         verifySourceCandidate({ archivePath: first.archivePath, keysPath }),
+      );
+
+      rmSync(`${first.archivePath}.asc`);
+      execFileSync(
+        'gpg',
+        [
+          '--batch',
+          '--homedir',
+          gpgHome,
+          '--armor',
+          '--digest-algo',
+          'SHA1',
+          '--detach-sign',
+          '--output',
+          `${first.archivePath}.asc`,
+          first.archivePath,
+        ],
+        { stdio: 'ignore' },
+      );
+      await assert.rejects(
+        () => verifySourceCandidate({ archivePath: first.archivePath, keysPath }),
+        /must use SHA-256, SHA-384, or SHA-512/,
       );
 
       rmSync(`${first.archivePath}.asc`);
@@ -330,7 +384,7 @@ describe('ASF source release verification', () => {
             repositoryRoot,
             revision: 'HEAD',
           }),
-        /Candidate bytes do not match/,
+        /Candidate source payload does not match/,
       );
       execFileSync(
         process.execPath,
@@ -385,6 +439,14 @@ describe('ASF source release verification', () => {
 
 function git(repositoryRoot, arguments_) {
   execFileSync('git', arguments_, { cwd: repositoryRoot, stdio: 'ignore' });
+}
+
+function rewriteArchiveCompression(archivePath, level) {
+  const tarPath = archivePath.slice(0, -3);
+  execFileSync('gzip', ['-d', archivePath], { stdio: 'ignore' });
+  execFileSync('gzip', ['-n', `-${level}`, tarPath], { stdio: 'ignore' });
+  const digest = createHash('sha512').update(readFileSync(archivePath)).digest('hex');
+  writeFileSync(`${archivePath}.sha512`, `${digest}  ${basename(archivePath)}\n`);
 }
 
 function generateSigningKey({
