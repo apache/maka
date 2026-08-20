@@ -64,7 +64,7 @@ import {
   type RuntimeCommitSink,
   type ToolRecoveryMode,
 } from './runtime-commit-sink.js';
-import { ChildAgentRunLimiter } from './child-agent-run-limiter.js';
+import { AdmissionLimiter } from './admission-limiter.js';
 import type { AgentProfile } from './agent-catalog.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
 import { sandboxErrorMetadata, serializeSandboxError } from './sandbox/errors.js';
@@ -483,7 +483,7 @@ export class ToolRuntime {
   private sandboxBoundaryClosureDeferred = false;
   private questionClosureDeferred = false;
   private activeSubagentToolCount = 0;
-  private childAgentRunLimiter = new ChildAgentRunLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
+  private childAgentRunLimiter = new AdmissionLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
   /**
    * Tool-availability gating for the execute boundary. Set by the backend each
    * turn from `ToolAvailabilityRuntime`. Undefined when gating is off (economy
@@ -765,7 +765,7 @@ export class ToolRuntime {
 
   resetTurnState(): void {
     const priorChildAgentRunLimiter = this.childAgentRunLimiter;
-    this.childAgentRunLimiter = new ChildAgentRunLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
+    this.childAgentRunLimiter = new AdmissionLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
     priorChildAgentRunLimiter.close(
       new Error('Child agent run permit scope ended before capacity became available'),
     );

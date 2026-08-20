@@ -22,7 +22,9 @@ test('agrees with JSON.stringify on the payloads validation bounds', () => {
     { fileSystem: { entries: [{ path: '/tmp/工作区', scope: 'subtree', access: 'write' }] } },
     { network: { enabled: true } },
     { kind: 'managed', profile: { roots: [] }, revision: 3 },
-    { text: 'tab\tnewline\nquote"backslash\\ emoji😀 lone\ud800' },
+    // Every two-byte escape, so dropping one from the escape set and falling
+    // back to \\uXXXX shows up as a byte-count disagreement.
+    { text: 'tab\tnewline\nreturn\rbackspace\bformfeed\fquote"backslash\\ emoji😀 lone\ud800' },
     [],
     {},
   ];

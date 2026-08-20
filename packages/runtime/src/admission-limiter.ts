@@ -1,29 +1,36 @@
-export interface ChildAgentRunPermit {
+export interface AdmissionPermit {
   release(): void;
 }
 
-interface ChildAgentRunWaiter {
+interface AdmissionWaiter {
   signal: AbortSignal;
-  resolve: (permit: ChildAgentRunPermit) => void;
+  resolve: (permit: AdmissionPermit) => void;
   reject: (error: unknown) => void;
   onAbort: () => void;
 }
 
 /**
- * Abort-aware FIFO permits for real child-agent executions.
+ * Abort-aware FIFO permits, bounded by capacity.
  *
- * Tool-call admission and child-run capacity are separate boundaries: one
- * admitted tool may eventually spawn multiple children. This limiter belongs at
- * the narrow spawn capability so every caller shares the same real-run budget.
+ * Two boundaries use it, at different lifetimes. Child-agent runs take one
+ * instance per turn: tool-call admission and child-run capacity are separate
+ * boundaries, since one admitted tool may eventually spawn multiple children,
+ * so the limiter belongs at the narrow spawn capability where every caller
+ * shares the same real-run budget. Code Mode cells take one per backend, which
+ * has to outlive a turn — see `executeCodeModeCell`.
+ *
+ * A caller that must turn work away rather than queue it reads `waitingCount`
+ * before calling `acquire`. Nothing awaits between that read and the enqueue
+ * inside `acquire`, so the pair is atomic.
  */
-export class ChildAgentRunLimiter {
+export class AdmissionLimiter {
   private active = 0;
-  private readonly waiters: ChildAgentRunWaiter[] = [];
+  private readonly waiters: AdmissionWaiter[] = [];
   private closedError: Error | undefined;
 
   constructor(readonly capacity: number) {
     if (!Number.isSafeInteger(capacity) || capacity < 1) {
-      throw new Error('Child agent run capacity must be a positive safe integer');
+      throw new Error('Admission capacity must be a positive safe integer');
     }
   }
 
@@ -35,15 +42,15 @@ export class ChildAgentRunLimiter {
     return this.waiters.length;
   }
 
-  acquire(signal: AbortSignal): Promise<ChildAgentRunPermit> {
+  acquire(signal: AbortSignal): Promise<AdmissionPermit> {
     if (this.closedError) return Promise.reject(this.closedError);
     if (signal.aborted) return Promise.reject(abortReason(signal));
     if (this.active < this.capacity && this.waiters.length === 0) {
       this.active += 1;
       return Promise.resolve(this.createPermit());
     }
-    return new Promise<ChildAgentRunPermit>((resolve, reject) => {
-      const waiter: ChildAgentRunWaiter = {
+    return new Promise<AdmissionPermit>((resolve, reject) => {
+      const waiter: AdmissionWaiter = {
         signal,
         resolve,
         reject,
@@ -69,7 +76,7 @@ export class ChildAgentRunLimiter {
     }
   }
 
-  private createPermit(): ChildAgentRunPermit {
+  private createPermit(): AdmissionPermit {
     let released = false;
     return {
       release: () => {

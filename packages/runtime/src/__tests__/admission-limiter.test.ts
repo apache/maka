@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { SessionHeader } from '@maka/core/session';
-import { ChildAgentRunLimiter } from '../child-agent-run-limiter.js';
+import { AdmissionLimiter } from '../admission-limiter.js';
 import {
   MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN,
   ToolRuntime,
@@ -11,9 +11,9 @@ import {
   type MakaToolContext,
 } from '../tool-runtime.js';
 
-describe('ChildAgentRunLimiter', () => {
+describe('AdmissionLimiter', () => {
   test('grants waiting permits in FIFO order and makes release idempotent', async () => {
-    const limiter = new ChildAgentRunLimiter(1);
+    const limiter = new AdmissionLimiter(1);
     const first = await limiter.acquire(new AbortController().signal);
     const grants: string[] = [];
     const secondPending = limiter.acquire(new AbortController().signal).then((permit) => {
@@ -44,7 +44,7 @@ describe('ChildAgentRunLimiter', () => {
   });
 
   test('removes an aborted waiter without consuming capacity', async () => {
-    const limiter = new ChildAgentRunLimiter(1);
+    const limiter = new AdmissionLimiter(1);
     const first = await limiter.acquire(new AbortController().signal);
     const waitingController = new AbortController();
     const waiting = limiter.acquire(waitingController.signal);
@@ -59,7 +59,7 @@ describe('ChildAgentRunLimiter', () => {
   });
 
   test('closes the turn scope for queued and future permits', async () => {
-    const limiter = new ChildAgentRunLimiter(1);
+    const limiter = new AdmissionLimiter(1);
     const first = await limiter.acquire(new AbortController().signal);
     const second = limiter.acquire(new AbortController().signal);
     const third = limiter.acquire(new AbortController().signal);
