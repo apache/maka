@@ -468,7 +468,7 @@ export function buildProviderOptions(
       return buildFamilyWire(connection, modelId, level, thinkingOptions);
     case 'volcengine-ark':
       return {
-        [connection.providerType]: {
+        [toCamelCase(connection.providerType)]: {
           thinking: { type: level === 'off' ? 'disabled' : 'enabled' },
           ...(level && level !== 'off' ? { reasoningEffort: level } : {}),
         },
@@ -495,7 +495,7 @@ export function buildProviderOptions(
     case 'cloudflare-workers-ai':
       return level
         ? {
-            [connection.providerType]:
+            [toCamelCase(connection.providerType)]:
               level === 'off'
                 ? thinkingOptions?.offBehavior === 'cloudflare-chat-template-thinking-false'
                   ? { chat_template_kwargs: { thinking: false } }
@@ -584,7 +584,7 @@ function buildFamilyWire(
       if (copilotProtocol === 'anthropic-messages') {
         return level !== 'off' ? { anthropic: { effort: level } } : {};
       }
-      return { 'github-copilot': { reasoningEffort } };
+      return { githubCopilot: { reasoningEffort } };
     }
     default:
       return {};
@@ -612,18 +612,15 @@ function toCamelCase(name: string): string {
 }
 
 /**
- * The providerOptions key for an openai-compatible model. The SDK still
- * accepts the raw provider name but flags dashed keys as deprecated (a
- * `type: 'deprecated'` warning on every doGenerate result); its canonical
- * key is the camelCase alias. Only the custom-relay path keys options by
- * the connection slug, so only that path camelCases — built-in adapter
- * namespaces stay as they were.
+ * The providerOptions key for an openai-compatible model: the camelCase
+ * alias of the identity passed to `createOpenAICompatible`. The SDK
+ * resolves both spellings — known options and passthrough fields alike —
+ * but flags dashed keys as deprecated (a `type: 'deprecated'` warning on
+ * every doGenerate result), so the camelCase alias is the canonical key.
  */
 function openAiCompatibleProviderOptionsKey(
   adapter: ProviderRuntimeAdapter,
   connection: RuntimeExecutionConnection,
 ): string {
-  return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
-    ? toCamelCase(connection.slug)
-    : connection.providerType;
+  return toCamelCase(openAiCompatibleProviderName(adapter, connection));
 }

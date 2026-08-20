@@ -247,8 +247,8 @@ describe('prepared provider request capture', () => {
     const openaiMax = hash({ kimiCodingPlan: { reasoningEffort: 'max' } }, 32_768);
     const nativeOpenaiMax = hash({ openai: { reasoningEffort: 'max' } }, 32_768);
     const nativeOpenaiHigh = hash({ openai: { reasoningEffort: 'high' } }, 32_768);
-    const zaiHigh = hash({ 'zai-coding-plan': { reasoningEffort: 'high' } }, 32_768);
-    const zaiLow = hash({ 'zai-coding-plan': { reasoningEffort: 'low' } }, 32_768);
+    const zaiHigh = hash({ zaiCodingPlan: { reasoningEffort: 'high' } }, 32_768);
+    const zaiLow = hash({ zaiCodingPlan: { reasoningEffort: 'low' } }, 32_768);
 
     assert.equal(anthropicMax, openaiMax);
     assert.equal(anthropicMax, nativeOpenaiMax);

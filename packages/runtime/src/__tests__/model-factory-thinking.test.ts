@@ -264,7 +264,7 @@ describe('buildProviderOptions: thinking level', () => {
     });
     // Copilot defaults to its OpenAI-compatible chat wire without a protocol hint.
     assert.deepEqual(buildProviderOptions(conn('github-copilot'), 'gpt-5.4', 'high'), {
-      'github-copilot': { reasoningEffort: 'high' },
+      githubCopilot: { reasoningEffort: 'high' },
     });
   });
 
@@ -295,20 +295,20 @@ describe('buildProviderOptions: thinking level', () => {
     );
     assert.deepEqual(buildProviderOptions(conn('cloudflare-workers-ai'), modelId), {});
     assert.deepEqual(buildProviderOptions(conn('cloudflare-workers-ai'), modelId, 'high'), {
-      'cloudflare-workers-ai': { reasoningEffort: 'high' },
+      cloudflareWorkersAi: { reasoningEffort: 'high' },
     });
     assert.deepEqual(buildProviderOptions(conn('cloudflare-workers-ai'), modelId, 'off'), {
-      'cloudflare-workers-ai': { chat_template_kwargs: { thinking: false } },
+      cloudflareWorkersAi: { chat_template_kwargs: { thinking: false } },
     });
   });
 
   test('StepFun Step Plan sends only officially supported reasoning effort levels', () => {
     assert.deepEqual(buildProviderOptions(conn('stepfun-step-plan'), 'step-3.7-flash', 'medium'), {
-      'stepfun-step-plan': { reasoningEffort: 'medium' },
+      stepfunStepPlan: { reasoningEffort: 'medium' },
     });
     assert.deepEqual(
       buildProviderOptions(conn('stepfun-step-plan'), 'step-3.5-flash-2603', 'high'),
-      { 'stepfun-step-plan': { reasoningEffort: 'high' } },
+      { stepfunStepPlan: { reasoningEffort: 'high' } },
     );
     assert.deepEqual(
       buildProviderOptions(conn('stepfun-step-plan'), 'step-3.5-flash-2603', 'medium'),
@@ -329,13 +329,13 @@ describe('buildProviderOptions: thinking level', () => {
       ['off', 'minimal', 'low', 'medium', 'high'],
     );
     assert.deepEqual(buildProviderOptions(conn('volcengine-ark'), modelId), {
-      'volcengine-ark': { thinking: { type: 'enabled' } },
+      volcengineArk: { thinking: { type: 'enabled' } },
     });
     assert.deepEqual(buildProviderOptions(conn('volcengine-ark'), modelId, 'high'), {
-      'volcengine-ark': { thinking: { type: 'enabled' }, reasoningEffort: 'high' },
+      volcengineArk: { thinking: { type: 'enabled' }, reasoningEffort: 'high' },
     });
     assert.deepEqual(buildProviderOptions(conn('volcengine-ark'), modelId, 'off'), {
-      'volcengine-ark': { thinking: { type: 'disabled' } },
+      volcengineArk: { thinking: { type: 'disabled' } },
     });
   });
 
@@ -369,7 +369,7 @@ describe('buildProviderOptions: thinking level', () => {
       ['low', 'medium', 'high'],
     );
     assert.deepEqual(buildProviderOptions(conn('tencent-token-plan'), 'hy3', 'high'), {
-      'tencent-token-plan': { reasoningEffort: 'high' },
+      tencentTokenPlan: { reasoningEffort: 'high' },
     });
     assert.deepEqual(buildProviderOptions(conn('tencent-token-plan'), 'hy3', 'off'), {});
   });
@@ -394,17 +394,17 @@ describe('buildProviderOptions: thinking level', () => {
       ['off', 'low', 'medium', 'high', 'max'],
     );
     assert.deepEqual(buildProviderOptions(conn('ollama-cloud'), 'glm-5.2', 'high'), {
-      'ollama-cloud': { reasoningEffort: 'high' },
+      ollamaCloud: { reasoningEffort: 'high' },
     });
     assert.deepEqual(buildProviderOptions(conn('ollama-cloud'), 'glm-5.2', 'off'), {
-      'ollama-cloud': { reasoningEffort: 'none' },
+      ollamaCloud: { reasoningEffort: 'none' },
     });
     assert.deepEqual(
       [...thinkingVariantsForModel('ollama-cloud', 'gpt-oss:120b')],
       ['low', 'medium', 'high'],
     );
     assert.deepEqual(buildProviderOptions(conn('ollama-cloud'), 'gpt-oss:120b', 'high'), {
-      'ollama-cloud': { reasoningEffort: 'high' },
+      ollamaCloud: { reasoningEffort: 'high' },
     });
     assert.deepEqual(buildProviderOptions(conn('ollama-cloud'), 'gpt-oss:120b', 'off'), {});
   });
@@ -490,14 +490,14 @@ describe('getAIModel: models.dev registry providers', () => {
 });
 
 describe('buildProviderOptions: openai-compatible namespace', () => {
-  test('zai-coding-plan emits reasoningEffort under the raw dashed namespace', () => {
+  test('zai-coding-plan emits reasoningEffort under the camelCase namespace', () => {
     assert.deepEqual(
       buildProviderOptions(conn('zai-coding-plan', 'zai-coding-plan'), 'glm-5.2', 'high'),
-      { 'zai-coding-plan': { reasoningEffort: 'high' } },
+      { zaiCodingPlan: { reasoningEffort: 'high' } },
     );
     assert.deepEqual(
       buildProviderOptions(conn('zai-coding-plan', 'zai-coding-plan'), 'glm-5.2', 'max'),
-      { 'zai-coding-plan': { reasoningEffort: 'max' } },
+      { zaiCodingPlan: { reasoningEffort: 'max' } },
     );
   });
   test('deepseek wires provider-native effort on both chat and Responses dialects', () => {
@@ -593,6 +593,50 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     assert.equal(bodies[0]?.reasoning_effort, 'high');
     // The raw dashed slug as a providerOptions key is deprecated by the SDK:
     // the camelCase alias must carry no such warning.
+    assert.equal(
+      (result.warnings ?? []).some((warning) => warning.type === 'deprecated'),
+      false,
+      JSON.stringify(result.warnings),
+    );
+  });
+
+  test('built-in dashed provider effort reaches the chat request body without deprecation', async () => {
+    // Built-in counterpart of the relay capture above: built-in dashed
+    // providerTypes must emit the SDK's camelCase alias too.
+    const bodies: Record<string, unknown>[] = [];
+    const captureFetch: typeof globalThis.fetch = async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({
+          id: 'chatcmpl-1',
+          object: 'chat.completion',
+          created: 1,
+          model: 'glm-5.2',
+          choices: [
+            {
+              index: 0,
+              message: { role: 'assistant', content: 'ok' },
+              finish_reason: 'stop',
+            },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+    const connection = conn('zai-coding-plan', 'zai-coding-plan');
+    const model = getAIModel({
+      connection,
+      apiKey: 'zai-key',
+      modelId: 'glm-5.2',
+      fetch: captureFetch,
+    });
+    const result = await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      providerOptions: buildProviderOptions(connection, 'glm-5.2', 'high'),
+    });
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0]?.reasoning_effort, 'high');
     assert.equal(
       (result.warnings ?? []).some((warning) => warning.type === 'deprecated'),
       false,
