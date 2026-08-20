@@ -72,7 +72,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 28 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 29 as const;
+// 29: `goal.arm` is a new wire operation. An older Host decodes it as unknown
+// and tears the connection down, so the pair must be refused up front.
 // 28: Relay model profiles carry the Fast service-tier declaration. Older
 // peers cannot safely preserve that Runtime Policy field.
 // 27: Runtime Policy carries the Host-owned shell preference used by tool,
