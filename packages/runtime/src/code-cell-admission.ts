@@ -13,6 +13,14 @@
  * One active cell and one queued, which is what the Code Mode adapter enforced
  * before this moved to the side that owns execution. Widening the bound needs
  * evidence that concurrent cells are wanted; none exists today.
+ *
+ * The bound spans one backend generation, since each `AiSdkBackend` holds its
+ * own instance. A generation being replaced can still be draining a cancelled
+ * cell while its successor admits one of its own, so a session briefly exceeds
+ * the bound across a backend rebuild. Rebuilds are driven by configuration, not
+ * by the model, so this does not compound; making the bound span a session
+ * would mean giving it a home that outlives the backend, which is the package
+ * fold's business, not this change's.
  */
 export class CodeCellAdmission {
   private active = false;

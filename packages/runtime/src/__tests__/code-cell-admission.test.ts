@@ -76,18 +76,27 @@ test('rejects a cell that was already cancelled before admission', async () => {
 test('does not accumulate permits across repeated cancellation waves', async () => {
   const admission = new CodeCellAdmission();
 
-  // Each wave stands in for a cell that is cancelled but whose host operations
-  // are still draining: the permit is released only when the cell settles, so
-  // a wave that never settles must keep the next one out.
+  // A cancelled cell rejects at once but keeps draining host work, so its
+  // permit stays held until it settles. Repeating that must leave no residue:
+  // the abort path has to clear the queue slot without also freeing the
+  // active one, or waves drift until the bound stops holding.
   for (let wave = 0; wave < 8; wave += 1) {
     assert.equal(await admission.acquire(), 'admitted');
+
+    const cancelled = new AbortController();
+    const queued = admission.acquire(cancelled.signal);
+    cancelled.abort(new Error(`wave ${wave} cancelled`));
+    await assert.rejects(queued, new RegExp(`wave ${wave} cancelled`));
+
+    // The cancelled cell freed only its own slot: the active cell still holds
+    // the permit, so the next cell queues rather than running.
     let nextAdmitted = false;
     void admission.acquire().then(() => {
       nextAdmitted = true;
     });
     await tick();
     assert.equal(nextAdmitted, false, `wave ${wave} admitted a second cell`);
-    assert.equal(await admission.acquire(), 'queue_full');
+
     admission.release(); // the queued cell takes over
     admission.release(); // and settles in turn
   }
