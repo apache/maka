@@ -540,7 +540,6 @@ test('goal.arm creates one Goal per Session and refuses a second while it is unf
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -655,7 +654,6 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -757,7 +755,6 @@ test('resuming a Goal no Turn has carried leaves it for the next Turn, not for a
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -887,7 +884,6 @@ test('an arm admitted before the drain creates no Goal after it', async () => {
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
