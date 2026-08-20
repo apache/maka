@@ -791,7 +791,13 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
           oauthCopy.bound(oauthLoginService.display.name),
         );
         await props.onChanged();
-        await refreshProfileReadiness();
+        const nextReadiness = await refreshProfileReadiness();
+        if (isConnectionDetailCurrent(lifecycle) && nextReadiness) {
+          const refreshedProfile = nextReadiness.profiles.find(
+            (profile) => profile.profileId === profileId,
+          );
+          if (refreshedProfile) void refreshProfileUsage([refreshedProfile]);
+        }
         return true;
       });
       return result === true;
