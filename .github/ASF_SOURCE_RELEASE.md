@@ -28,8 +28,9 @@ not replace files in a directory that has been presented for a vote.
 2. Normal CI is green for the exact commit.
 3. The PPMC and mentors have confirmed that provenance, `LICENSE`, `NOTICE`, and
    `DISCLAIMER-WIP` are ready for an Incubator release vote.
-4. The Release Manager has a public ASF-associated PGP key whose full
-   fingerprint can be reviewed independently.
+4. The Release Manager has a public ASF-associated RSA PGP key whose actual
+   signing key or subkey is at least 2048 bits and whose full fingerprint can be
+   reviewed independently. New keys should be 4096-bit RSA.
 5. The podling `KEYS` file contains that public key and is published from the
    Apache distribution area, not only from GitHub.
 
@@ -113,8 +114,9 @@ npm run release:asf:verify -- \
   --keys <path-to-reviewed-KEYS>
 ```
 
-Supplying `--keys` requires a detached signature. Verification rejects expired
-or revoked keys and signatures as well as bad or missing signatures.
+Supplying `--keys` requires a detached signature. Verification rejects signing
+keys or subkeys that are not RSA with at least 2048 bits, expired or revoked
+keys and signatures, and bad or missing signatures.
 
 ## Stage on Apache dist/dev
 
@@ -143,6 +145,18 @@ ASF release-policy compliance and all cryptographic signatures, inspect the
 archive, and compile/test the extracted source. Non-binding voters are strongly
 encouraged to perform the same checks. Voters should record the commit, SHA-512,
 signing-key fingerprint, platform, and commands used.
+
+## Vote requirements
+
+Both the podling and Incubator PMC review periods should normally remain open
+for at least 72 hours. A shortened vote is only for exceptional expedited
+releases; the vote email must explain why it is expedited, and the deviation
+must be reported through the ASF process.
+
+The podling vote passes only with at least three PPMC `+1` votes and more `+1`
+than `-1` votes. After that result is summarized to the Incubator general list,
+the release requires at least three Incubator PMC `+1` votes and more binding
+`+1` than binding `-1` votes.
 
 ## Podling vote template
 
@@ -174,9 +188,8 @@ The vote will remain open for at least 72 hours.
 
 After the podling vote passes, send a vote to
 `general@incubator.apache.org`, linking the podling result and presenting the
-same immutable candidate bytes. Follow current Incubator voting requirements;
-the release needs at least three binding IPMC `+1` votes and more binding `+1`
-than binding `-1` votes.
+same immutable candidate bytes. Apply the requirements above independently to
+this Incubator PMC vote.
 
 ## Publish after approval
 
@@ -190,3 +203,4 @@ Current policy references:
 - https://incubator.apache.org/guides/releasemanagement.html
 - https://incubator.apache.org/guides/distribution.html
 - https://www.apache.org/legal/release-policy.html
+- https://infra.apache.org/release-distribution.html

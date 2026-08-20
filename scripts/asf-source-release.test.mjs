@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -83,7 +84,7 @@ describe('ASF source release verification', () => {
       validateGpgVerificationStatus(
         `[GNUPG:] GOODSIG ABCDEF0123456789 Release Test\n[GNUPG:] VALIDSIG ${fingerprint} 2026-08-20 1787193600 0 4 0 1 10 00 ${fingerprint}\n`,
       ),
-      { fingerprint, primaryFingerprint: fingerprint },
+      { fingerprint, primaryFingerprint: fingerprint, publicKeyAlgorithm: 1 },
     );
     for (const status of ['EXPKEYSIG', 'EXPSIG', 'KEYEXPIRED', 'KEYREVOKED', 'REVKEYSIG']) {
       assert.throws(
@@ -120,6 +121,7 @@ describe('ASF source release verification', () => {
     const repositoryLink = join(temporaryRoot, 'repository-link');
     const firstOutput = join(temporaryRoot, 'first');
     const secondOutput = join(temporaryRoot, 'second');
+    const configuredOutput = join(temporaryRoot, 'configured');
     const linkedOutput = join(temporaryRoot, 'linked');
     mkdirSync(repositoryRoot, { recursive: true });
     try {
@@ -183,7 +185,15 @@ describe('ASF source release verification', () => {
         repositoryRoot,
         version: '0.1.12',
       });
+      git(repositoryRoot, ['config', 'tar.umask', '0077']);
+      const configured = await createSourceCandidate({
+        outputDirectory: configuredOutput,
+        repositoryRoot,
+        version: '0.1.12',
+      });
+      git(repositoryRoot, ['config', '--unset', 'tar.umask']);
       assert.deepEqual(readFileSync(first.archivePath), readFileSync(second.archivePath));
+      assert.deepEqual(readFileSync(first.archivePath), readFileSync(configured.archivePath));
       assert.deepEqual(readFileSync(first.checksumPath), readFileSync(second.checksumPath));
       await assert.doesNotReject(() => verifySourceCandidate({ archivePath: first.archivePath }));
 
@@ -196,35 +206,13 @@ describe('ASF source release verification', () => {
 
       const gpgHome = join(temporaryRoot, 'gnupg');
       const keysPath = join(temporaryRoot, 'KEYS');
-      mkdirSync(gpgHome, { mode: 0o700 });
-      chmodSync(gpgHome, 0o700);
-      execFileSync(
-        'gpg',
-        [
-          '--batch',
-          '--homedir',
-          gpgHome,
-          '--pinentry-mode',
-          'loopback',
-          '--passphrase',
-          '',
-          '--quick-generate-key',
-          'ASF Release Test <release-test@example.invalid>',
-          'rsa2048',
-          'sign',
-          '1d',
-        ],
-        { stdio: 'ignore' },
-      );
-      const fingerprint = execFileSync(
-        'gpg',
-        ['--batch', '--homedir', gpgHome, '--with-colons', '--fingerprint', '--list-secret-keys'],
-        { encoding: 'utf8' },
-      )
-        .split(/\r?\n/)
-        .find((line) => line.startsWith('fpr:'))
-        ?.split(':')[9];
-      assert.match(fingerprint, /^[0-9A-F]{40}$/);
+      const fingerprint = generateSigningKey({
+        algorithm: 'rsa2048',
+        gpgHome,
+        identity: 'ASF Release Test <release-test@example.invalid>',
+        signingSubkeyAlgorithm: 'rsa2048',
+        usage: 'cert',
+      });
       await assert.rejects(
         () =>
           signSourceCandidate({
@@ -245,14 +233,78 @@ describe('ASF source release verification', () => {
           revision: first.commit,
         }),
       );
-      execFileSync(
-        'gpg',
-        ['--batch', '--homedir', gpgHome, '--armor', '--output', keysPath, '--export', fingerprint],
-        { stdio: 'ignore' },
-      );
+      exportPublicKey({ fingerprint, gpgHome, keysPath });
       await assert.doesNotReject(() =>
         verifySourceCandidate({ archivePath: first.archivePath, keysPath }),
       );
+
+      rmSync(`${first.archivePath}.asc`);
+      // Keep the homedir short enough for GPG agent socket paths on macOS.
+      const ed25519Home = join(temporaryRoot, 'ed');
+      const ed25519KeysPath = join(temporaryRoot, 'KEYS-ed25519');
+      const ed25519Fingerprint = generateSigningKey({
+        algorithm: 'ed25519',
+        gpgHome: ed25519Home,
+        identity: 'ASF Ed25519 Release Test <release-test@example.invalid>',
+      });
+      await assert.rejects(
+        () =>
+          signSourceCandidate({
+            archivePath: first.archivePath,
+            gpgHome: ed25519Home,
+            keyFingerprint: ed25519Fingerprint,
+            repositoryRoot,
+            revision: first.commit,
+          }),
+        /must be RSA with at least 2048 bits/,
+      );
+      assert.equal(existsSync(`${first.archivePath}.asc`), false);
+
+      execFileSync(
+        'gpg',
+        [
+          '--batch',
+          '--homedir',
+          ed25519Home,
+          '--armor',
+          '--detach-sign',
+          '--output',
+          `${first.archivePath}.asc`,
+          first.archivePath,
+        ],
+        { stdio: 'ignore' },
+      );
+      exportPublicKey({
+        fingerprint: ed25519Fingerprint,
+        gpgHome: ed25519Home,
+        keysPath: ed25519KeysPath,
+      });
+      await assert.rejects(
+        () => verifySourceCandidate({ archivePath: first.archivePath, keysPath: ed25519KeysPath }),
+        /must be RSA with at least 2048 bits/,
+      );
+
+      rmSync(`${first.archivePath}.asc`);
+      const rsa1024Home = join(temporaryRoot, 'r');
+      const rsa1024Fingerprint = generateSigningKey({
+        algorithm: 'rsa2048',
+        gpgHome: rsa1024Home,
+        identity: 'ASF RSA-1024 Subkey Test <release-test@example.invalid>',
+        signingSubkeyAlgorithm: 'rsa1024',
+        usage: 'cert',
+      });
+      await assert.rejects(
+        () =>
+          signSourceCandidate({
+            archivePath: first.archivePath,
+            gpgHome: rsa1024Home,
+            keyFingerprint: rsa1024Fingerprint,
+            repositoryRoot,
+            revision: first.commit,
+          }),
+        /must be RSA with at least 2048 bits/,
+      );
+      assert.equal(existsSync(`${first.archivePath}.asc`), false);
 
       symlinkSync(repositoryRoot, repositoryLink, 'dir');
       const linkedScript = join(repositoryLink, 'scripts/asf-source-release.mjs');
@@ -333,4 +385,71 @@ describe('ASF source release verification', () => {
 
 function git(repositoryRoot, arguments_) {
   execFileSync('git', arguments_, { cwd: repositoryRoot, stdio: 'ignore' });
+}
+
+function generateSigningKey({
+  algorithm,
+  gpgHome,
+  identity,
+  signingSubkeyAlgorithm,
+  usage = 'sign',
+}) {
+  mkdirSync(gpgHome, { mode: 0o700 });
+  chmodSync(gpgHome, 0o700);
+  execFileSync(
+    'gpg',
+    [
+      '--batch',
+      '--homedir',
+      gpgHome,
+      '--pinentry-mode',
+      'loopback',
+      '--passphrase',
+      '',
+      '--quick-generate-key',
+      identity,
+      algorithm,
+      usage,
+      '1d',
+    ],
+    { stdio: 'ignore' },
+  );
+  const fingerprint = execFileSync(
+    'gpg',
+    ['--batch', '--homedir', gpgHome, '--with-colons', '--fingerprint', '--list-secret-keys'],
+    { encoding: 'utf8' },
+  )
+    .split(/\r?\n/)
+    .find((line) => line.startsWith('fpr:'))
+    ?.split(':')[9];
+  assert.match(fingerprint, /^[0-9A-F]{40}$/);
+  if (signingSubkeyAlgorithm) {
+    execFileSync(
+      'gpg',
+      [
+        '--batch',
+        '--homedir',
+        gpgHome,
+        '--pinentry-mode',
+        'loopback',
+        '--passphrase',
+        '',
+        '--quick-add-key',
+        fingerprint,
+        signingSubkeyAlgorithm,
+        'sign',
+        '1d',
+      ],
+      { stdio: 'ignore' },
+    );
+  }
+  return fingerprint;
+}
+
+function exportPublicKey({ fingerprint, gpgHome, keysPath }) {
+  execFileSync(
+    'gpg',
+    ['--batch', '--homedir', gpgHome, '--armor', '--output', keysPath, '--export', fingerprint],
+    { stdio: 'ignore' },
+  );
 }

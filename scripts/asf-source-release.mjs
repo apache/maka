@@ -35,6 +35,7 @@ const rejectedGpgStatuses = new Set([
   'NO_PUBKEY',
   'REVKEYSIG',
 ]);
+const rsaPublicKeyAlgorithms = new Set([1, 2, 3]);
 
 export function sourceCandidateIdentity(version) {
   if (!versionPattern.test(version) || version.includes('incubating')) {
@@ -123,6 +124,8 @@ export async function createSourceCandidate({
   try {
     const tarPath = join(temporaryRoot, 'source.tar');
     git(repositoryRoot, [
+      '-c',
+      'tar.umask=0002',
       'archive',
       '--format=tar',
       `--prefix=${identity.rootDirectory}/`,
@@ -242,7 +245,12 @@ export async function signSourceCandidate({
       { stdio: 'inherit', ...gpgHomeOption(gpgHome) },
     );
     chmodSync(signaturePath, 0o644);
-    verifyGpgSignature({ archivePath, gpgHome, signaturePath });
+    const signature = verifyGpgSignature({ archivePath, gpgHome, signaturePath });
+    validateSigningKeyPolicy({
+      fingerprint: signature.fingerprint,
+      gpgHome,
+      publicKeyAlgorithm: signature.publicKeyAlgorithm,
+    });
   } catch (error) {
     rmSync(signaturePath, { force: true });
     throw error;
@@ -343,7 +351,16 @@ function verifyDetachedSignature({ archivePath, keysPath, signaturePath }) {
     execFileSync('gpg', ['--batch', '--homedir', temporaryHome, '--import', keysPath], {
       stdio: 'inherit',
     });
-    verifyGpgSignature({ archivePath, gpgHome: temporaryHome, signaturePath });
+    const signature = verifyGpgSignature({
+      archivePath,
+      gpgHome: temporaryHome,
+      signaturePath,
+    });
+    validateSigningKeyPolicy({
+      fingerprint: signature.fingerprint,
+      gpgHome: temporaryHome,
+      publicKeyAlgorithm: signature.publicKeyAlgorithm,
+    });
   } finally {
     rmSync(temporaryHome, { force: true, recursive: true });
   }
@@ -400,7 +417,41 @@ export function validateGpgVerificationStatus(statusOutput) {
   return {
     fingerprint: validSignatures[0][1],
     primaryFingerprint: validSignatures[0][10] ?? validSignatures[0][1],
+    publicKeyAlgorithm: Number(validSignatures[0][7]),
   };
+}
+
+function validateSigningKeyPolicy({ fingerprint, gpgHome, publicKeyAlgorithm }) {
+  const output = execFileSync(
+    'gpg',
+    ['--batch', '--with-colons', '--with-fingerprint', '--list-keys', fingerprint],
+    { encoding: 'utf8', maxBuffer: maxCommandBuffer, ...gpgHomeOption(gpgHome) },
+  );
+  let key;
+  for (const line of output.split(/\r?\n/)) {
+    const fields = line.split(':');
+    if (fields[0] === 'pub' || fields[0] === 'sub') {
+      key = {
+        bits: Number(fields[2]),
+        publicKeyAlgorithm: Number(fields[3]),
+      };
+      continue;
+    }
+    if (fields[0] !== 'fpr' || fields[9]?.toUpperCase() !== fingerprint.toUpperCase()) continue;
+    if (
+      !key ||
+      !rsaPublicKeyAlgorithms.has(publicKeyAlgorithm) ||
+      !rsaPublicKeyAlgorithms.has(key.publicKeyAlgorithm) ||
+      !Number.isInteger(key.bits) ||
+      key.bits < 2048
+    ) {
+      throw new Error(
+        `Signing key ${fingerprint} must be RSA with at least 2048 bits; found algorithm ${publicKeyAlgorithm}, ${String(key?.bits)} bits`,
+      );
+    }
+    return;
+  }
+  throw new Error(`Could not resolve signing key ${fingerprint} in the selected keyring`);
 }
 
 function verifyGpgSignature({ archivePath, gpgHome, signaturePath }) {
