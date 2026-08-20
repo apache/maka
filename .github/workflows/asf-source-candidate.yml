@@ -86,6 +86,7 @@ jobs:
         run: |
           npm run check:third-party-notices
           npm run check:cli-third-party-notices
+          npm run check:windows-cargo-notices
 
       - name: Lint and format-check the extracted source
         working-directory: candidate-source
