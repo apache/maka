@@ -2,10 +2,17 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import {
+  createRuntimeHostSessionProjectionSeed,
+  RuntimeHostSessionProjector,
+} from '@maka/runtime-host/adapter';
 import { LOCAL_RUNTIME_HOST_PROFILE, type RuntimeHostConnection } from '@maka/runtime-host/client';
-import type {
-  InteractionPendingSnapshot,
-  SessionCatalogProjection,
+import {
+  SESSION_CONTINUITY_SCHEMA_VERSION,
+  type InteractionPendingSnapshot,
+  type SessionCatalogProjection,
+  type SessionContinuitySnapshot,
+  type SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
 import { resolveRuntimeHostCliTarget } from '../runtime-host-cli-context.js';
 import { createRuntimeHostRunContext, runRuntimeHostTextCli } from '../runtime-host-run-command.js';
@@ -201,19 +208,35 @@ describe('Runtime Host maka run adapter', () => {
   });
 
   test('returns exit code 1 when an ordinary Host Turn fails', async () => {
+    const stderr: string[] = [];
     const fixture = runFixture({ turnEvents: failedEvents('turn-1', 'provider_failure') });
-    const exitCode = await runFixtureCommand(fixture, ['fail once']);
+    const exitCode = await runFixtureCommand(fixture, ['fail once'], undefined, (text) =>
+      stderr.push(text),
+    );
 
     assert.equal(exitCode, 1);
+    assert.equal(stderr.join(''), 'maka run: Turn failed\n');
   });
 
   test('returns exit code 1 when a same-step sibling succeeds after a sandbox failure', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
     const fixture = runFixture({
-      turnEvents: sandboxBoundaryEvents('turn-1', 'step-1', 'step-1', 'Incomplete answer'),
+      turnEvents: projectedSameStepSandboxFailureEvents('turn-1'),
     });
-    const exitCode = await runFixtureCommand(fixture, ['run parallel tools']);
+    const exitCode = await runFixtureCommand(
+      fixture,
+      ['run parallel tools'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
+    );
 
     assert.equal(exitCode, 1);
+    assert.equal(stdout.join(''), '');
+    assert.equal(
+      stderr.join(''),
+      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
+    );
   });
 
   test('returns exit code 0 when the final Graph Turn completes', async () => {
@@ -363,7 +386,7 @@ describe('Runtime Host maka run adapter', () => {
 
   test('classifies live and durable step-cap failures equally', async () => {
     const live = await observeFixtureOutcome({
-      turnEvents: failedEvents('turn-1', 'tool_step_cap_reached'),
+      turnEvents: completionEvents('turn-1', 'step_limit'),
     });
     const durable = await observeFixtureOutcome({
       graph: true,
@@ -374,6 +397,15 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(live.failure?.class, 'tool_step_cap_reached');
     assert.equal(durable.status, 'failed');
     assert.equal(durable.failure?.class, 'tool_step_cap_reached');
+  });
+
+  test('classifies a standalone context-budget completion as failed', async () => {
+    const outcome = await observeFixtureOutcome({
+      turnEvents: completionEvents('turn-1', 'context_budget_exhausted'),
+    });
+
+    assert.equal(outcome.status, 'failed');
+    assert.equal(outcome.failure?.class, 'context_budget_exhausted');
   });
 
   test('uses the latest durable terminal state for a Graph Turn', async () => {
@@ -1312,6 +1344,64 @@ async function* sandboxBoundaryEvents(
   yield* eventsFor(turnId, text, 6);
 }
 
+async function* projectedSameStepSandboxFailureEvents(turnId: string): AsyncIterable<SessionEvent> {
+  yield toolStart(turnId, 'tool-1', 'step-1', 1);
+  yield toolStart(turnId, 'tool-2', 'step-1', 2);
+  const initial = continuitySnapshot(turnId);
+  const projector = new RuntimeHostSessionProjector(
+    initial,
+    createRuntimeHostSessionProjectionSeed([], initial),
+    () => 10,
+  );
+  yield* projector.accept({
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    sessionId: 'session-created',
+    runId: 'run-1',
+    event: {
+      type: 'tool_result',
+      id: 'tool-1-result',
+      turnId,
+      ts: 3,
+      toolUseId: 'tool-1',
+      status: 'errored',
+      sandboxFailureReason: 'sandbox_boundary_required',
+    },
+  } satisfies SubscriptionFrame).events;
+  yield successfulToolResult(turnId, 4);
+  yield* eventsFor(turnId, 'Incomplete answer', 5);
+}
+
+function continuitySnapshot(
+  turnId: string,
+  overrides: Partial<SessionContinuitySnapshot> = {},
+): SessionContinuitySnapshot {
+  return {
+    schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
+    session: {
+      sessionId: 'session-created',
+      metadataRevision: 1,
+      status: 'running',
+      createdAt: 1,
+      lastUsedAt: 1,
+      isArchived: false,
+    },
+    projectionRevision: 1,
+    rootTurn: {
+      sessionId: 'session-created',
+      turnId,
+      runId: 'run-1',
+      status: 'running',
+    },
+    goal: null,
+    queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
+    interactions: { pending: [] },
+    ...overrides,
+  };
+}
+
 async function* sandboxFailureAfterRecoveryEvents(turnId: string): AsyncIterable<SessionEvent> {
   yield toolStart(turnId, 'tool-1', 'step-1', 1);
   yield sandboxFailureToolResult(turnId, 2);
@@ -1329,6 +1419,13 @@ async function* abortedEvents(turnId: string): AsyncIterable<SessionEvent> {
     turnId,
     ts: 1,
     reason: 'user_stop',
+  };
+  yield {
+    type: 'complete',
+    id: `${turnId}-complete`,
+    turnId,
+    ts: 2,
+    stopReason: 'user_stop',
   };
 }
 
@@ -1349,6 +1446,26 @@ async function* failedEvents(turnId: string, reason: string): AsyncIterable<Sess
     recoverable: false,
     reason,
     message: 'Turn failed',
+  };
+  yield {
+    type: 'complete',
+    id: `${turnId}-complete`,
+    turnId,
+    ts: 3,
+    stopReason: 'error',
+  };
+}
+
+async function* completionEvents(
+  turnId: string,
+  stopReason: Extract<SessionEvent, { type: 'complete' }>['stopReason'],
+): AsyncIterable<SessionEvent> {
+  yield {
+    type: 'complete',
+    id: `${turnId}-complete`,
+    turnId,
+    ts: 1,
+    stopReason,
   };
 }
 

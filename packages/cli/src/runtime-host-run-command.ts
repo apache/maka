@@ -1,4 +1,4 @@
-import { type SessionEvent } from '@maka/core/events';
+import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core/events';
 import { findProjectByIdentity } from '@maka/core/project';
 import { type StoredMessage } from '@maka/core/session';
 import type { CreateSessionInput, UserMessageInput } from '@maka/core/runtime-inputs';
@@ -507,9 +507,14 @@ function runtimeHostSessionSummaries(items: readonly SessionCatalogItem[]): Sess
 
 type TurnOutcomeObservation =
   | { readonly kind: 'output'; readonly text: string }
-  | { readonly kind: 'terminal'; readonly status: 'completed' }
   | {
       readonly kind: 'terminal';
+      readonly update: 'replace' | 'if_unset';
+      readonly status: 'completed';
+    }
+  | {
+      readonly kind: 'terminal';
+      readonly update: 'replace' | 'if_unset';
       readonly status: 'failed';
       readonly failure: NonNullable<MakaRunOutcome['failure']>;
     }
@@ -549,7 +554,9 @@ class TurnOutcomeClassifier {
         this.#finalOutput = observation.text;
         return;
       case 'terminal':
-        this.#terminal = observation;
+        if (observation.update === 'replace' || this.#terminal === undefined) {
+          this.#terminal = observation;
+        }
         return;
       case 'tool_call':
         if (observation.stepId !== undefined) {
@@ -606,6 +613,7 @@ function observationFromSessionEvent(event: SessionEvent): TurnOutcomeObservatio
   if (event.type === 'error') {
     return {
       kind: 'terminal',
+      update: 'replace',
       status: 'failed',
       failure: { class: event.reason ?? event.code ?? 'runtime_error', message: event.message },
     };
@@ -613,12 +621,13 @@ function observationFromSessionEvent(event: SessionEvent): TurnOutcomeObservatio
   if (event.type === 'abort') {
     return {
       kind: 'terminal',
+      update: 'replace',
       status: 'failed',
       failure: { class: 'aborted', message: 'Turn was cancelled' },
     };
   }
   if (event.type === 'complete') {
-    return { kind: 'terminal', status: 'completed' };
+    return observationFromCompleteEvent(event);
   }
   if (event.type === 'tool_start') {
     return {
@@ -635,11 +644,12 @@ function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObserv
     return { kind: 'output', text: message.text };
   }
   if (message.type === 'turn_state' && message.status === 'completed') {
-    return { kind: 'terminal', status: 'completed' };
+    return { kind: 'terminal', update: 'replace', status: 'completed' };
   }
   if (message.type === 'turn_state' && message.status === 'aborted') {
     return {
       kind: 'terminal',
+      update: 'replace',
       status: 'failed',
       failure: { class: 'aborted', message: 'Turn was cancelled' },
     };
@@ -647,6 +657,7 @@ function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObserv
   if (message.type === 'turn_state' && message.status === 'failed') {
     return {
       kind: 'terminal',
+      update: 'replace',
       status: 'failed',
       failure: {
         class: message.errorClass ?? 'runtime_error',
@@ -662,6 +673,28 @@ function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObserv
     };
   }
   return message.type === 'tool_result' ? observationFromToolResult(message) : undefined;
+}
+
+function observationFromCompleteEvent(
+  event: Extract<SessionEvent, { type: 'complete' }>,
+): TerminalOutcomeObservation {
+  if (event.stopReason === 'user_stop') {
+    return {
+      kind: 'terminal',
+      update: 'if_unset',
+      status: 'failed',
+      failure: { class: 'aborted', message: 'Turn was cancelled' },
+    };
+  }
+  const failureClass = failureClassFromCompleteStopReason(event.stopReason);
+  return failureClass
+    ? {
+        kind: 'terminal',
+        update: 'if_unset',
+        status: 'failed',
+        failure: { class: failureClass },
+      }
+    : { kind: 'terminal', update: 'if_unset', status: 'completed' };
 }
 
 function observationFromToolResult(
