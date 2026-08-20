@@ -68,6 +68,7 @@ function providerHostedWebSearchAdapter(
     case 'xai-oauth':
       return { adapter: 'openai-responses', implemented: true };
     case 'alibaba':
+    case 'alibaba-cn':
       return { adapter: 'openai-responses', implemented: false };
     case 'anthropic':
     case 'claude-subscription':
@@ -106,6 +107,7 @@ function providerDefaultHostedWebSearchCapability(
     case 'xai-oauth':
       return modelId === 'grok-4.5' ? capability : null;
     case 'alibaba':
+    case 'alibaba-cn':
       return /^qwen3\.5-(?:plus|flash)(?:[.-]|$)/i.test(modelId) ? capability : null;
     case 'anthropic':
     case 'claude-subscription':
