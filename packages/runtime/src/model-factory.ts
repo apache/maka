@@ -617,6 +617,12 @@ function toCamelCase(name: string): string {
  * resolves both spellings — known options and passthrough fields alike —
  * but flags dashed keys as deprecated (a `type: 'deprecated'` warning on
  * every doGenerate result), so the camelCase alias is the canonical key.
+ *
+ * The same alias also selects the SDK's *response* metadata namespace:
+ * once options are keyed `zaiCodingPlan`, provider metadata comes back as
+ * `providerMetadata.zaiCodingPlan`, not `providerMetadata['zai-coding-plan']`.
+ * A metadata reader keyed by the raw `connection.providerType` would
+ * silently read nothing for dashed providers.
  */
 function openAiCompatibleProviderOptionsKey(
   adapter: ProviderRuntimeAdapter,

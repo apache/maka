@@ -642,5 +642,53 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       false,
       JSON.stringify(result.warnings),
     );
+    // The options key also selects the SDK's response metadata namespace:
+    // metadata must come back under the camelCase alias, not the dashed name.
+    assert.deepEqual(Object.keys(result.providerMetadata ?? {}), ['zaiCodingPlan']);
+  });
+
+  test('passthrough provider options reach the chat request body without deprecation', async () => {
+    // reasoningEffort above travels the SDK's schema lane, which parses both
+    // spellings. Volcengine Ark's `thinking` object is not in the schema and
+    // travels the passthrough spread instead — pin that lane at the wire too.
+    const bodies: Record<string, unknown>[] = [];
+    const captureFetch: typeof globalThis.fetch = async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({
+          id: 'chatcmpl-1',
+          object: 'chat.completion',
+          created: 1,
+          model: 'doubao-seed-2-0-pro-260215',
+          choices: [
+            {
+              index: 0,
+              message: { role: 'assistant', content: 'ok' },
+              finish_reason: 'stop',
+            },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+    const connection = conn('volcengine-ark', 'volcengine-ark');
+    const model = getAIModel({
+      connection,
+      apiKey: 'ark-key',
+      modelId: 'doubao-seed-2-0-pro-260215',
+      fetch: captureFetch,
+    });
+    const result = await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      providerOptions: buildProviderOptions(connection, 'doubao-seed-2-0-pro-260215'),
+    });
+    assert.equal(bodies.length, 1);
+    assert.deepEqual(bodies[0]?.thinking, { type: 'enabled' });
+    assert.equal(
+      (result.warnings ?? []).some((warning) => warning.type === 'deprecated'),
+      false,
+      JSON.stringify(result.warnings),
+    );
   });
 });
