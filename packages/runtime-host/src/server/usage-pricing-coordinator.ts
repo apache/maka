@@ -67,6 +67,17 @@ import {
   type CanonicalUsageRepairStats,
 } from './canonical-usage-reader.js';
 
+export type { RunEventReader } from './canonical-usage-reader.js';
+
+const NO_REPAIR: CanonicalUsageRepairStats = { remaining: 0, unreadableEvents: 0 };
+
+/** One bounded repair pass plus the snapshot ticket that owns it. */
+interface UsageRepairEntry {
+  readonly snapshot: string | undefined;
+  settled: boolean;
+  readonly task: Promise<CanonicalUsageRepairStats>;
+}
+
 /** Root-scoped projection over the authentic lease-bound usage stores. */
 export class HostUsagePricingCoordinator {
   readonly handlers: UsagePricingOperationHandlerMap = {
@@ -81,7 +92,7 @@ export class HostUsagePricingCoordinator {
   readonly #onCommittedPricingMutation: () => void;
   #poisonDrainRequested = false;
   #activeUsageQueries = 0;
-  #usageRepairTask: Promise<CanonicalUsageRepairStats> | undefined;
+  #usageRepairTask: UsageRepairEntry | undefined;
 
   constructor(
     stores: InteractiveUsageStoresWriter,
@@ -116,7 +127,7 @@ export class HostUsagePricingCoordinator {
       // one qualified pending-repair observation. The fence itself only reads:
       // repair writes advance the snapshot revision, and fencing them in would
       // retry forever whenever more than one pass's worth of runs remain.
-      const repair = await this.#sharedUsageRepair(input.query.sessionId);
+      const repair = await this.#sharedUsageRepair(input.snapshot);
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const before = await this.#stores.usageSnapshotRevision();
         const result = await this.#queryUsageResult(input, before, repair);
@@ -128,10 +139,13 @@ export class HostUsagePricingCoordinator {
           };
         }
       }
+      // Fence exhaustion is an ordinary busy-authority outcome, not a fault:
+      // the typed code lets the Desktop fold it into its whole-snapshot retry
+      // instead of surfacing a rejected invoke on the Usage page.
       return {
         ok: false,
         error: {
-          code: 'internal_failure',
+          code: 'usage_revision_changed',
           message: 'Usage authority changed while reading the projection',
         },
       };
@@ -142,16 +156,46 @@ export class HostUsagePricingCoordinator {
           error: { code: 'invalid_request', message: 'Usage offset is invalid' },
         };
       }
+      // The revision read itself can fail to settle under dense write
+      // traffic; that is the same busy-authority condition as an exhausted
+      // fence, so it shares the retryable outcome.
+      if (classifyInteractiveUsageStoresFailure(error).kind === 'revision_unsettled') {
+        return {
+          ok: false,
+          error: {
+            code: 'usage_revision_changed',
+            message: 'Usage authority changed while reading the projection',
+          },
+        };
+      }
       return this.#mapReadFailure<'usage.query'>(error, 'Usage authority');
     } finally {
       this.#activeUsageQueries -= 1;
-      if (this.#activeUsageQueries === 0) this.#usageRepairTask = undefined;
     }
   }
 
-  #sharedUsageRepair(sessionId: string | undefined): Promise<CanonicalUsageRepairStats> {
-    this.#usageRepairTask ??= repairCanonicalUsageProjection(this.#stores, sessionId);
-    return this.#usageRepairTask;
+  #sharedUsageRepair(snapshot: string | undefined): Promise<CanonicalUsageRepairStats> {
+    const current = this.#usageRepairTask;
+    if (current !== undefined) {
+      if (!current.settled) return current.task;
+      if (snapshot !== undefined && current.snapshot === snapshot) return current.task;
+      if (snapshot === undefined && this.#activeUsageQueries > 1) return current.task;
+    }
+    // One global pass: the pending backlog spans sessions, and a paginating
+    // reader must see one consistent qualification across its pages.
+    const task = repairCanonicalUsageProjection(this.#stores, undefined);
+    const entry: UsageRepairEntry = { snapshot, settled: false, task };
+    void task.then(
+      () => {
+        entry.settled = true;
+      },
+      () => {
+        entry.settled = true;
+      },
+    );
+    this.#usageRepairTask = entry;
+    return task;
+  }
   }
 
   async #queryUsageResult(
@@ -306,6 +350,13 @@ export class HostUsagePricingCoordinator {
             actualRevision: failure.actualRevision,
           },
         };
+      case 'revision_unsettled':
+        // Pricing mutations never read the Usage revision; unreachable, so
+        // surface a plain internal failure rather than a pricing-specific lie.
+        return {
+          ok: false,
+          error: { code: 'internal_failure', message: 'Usage revision did not settle' },
+        };
       case 'invalid_request':
         return {
           ok: false,
@@ -369,6 +420,13 @@ export class HostUsagePricingCoordinator {
         } as OperationOutcome<K>;
       case 'revision_conflict':
         throw error;
+      case 'revision_unsettled':
+        // The caller in #queryUsage maps this to the retryable
+        // usage_revision_changed outcome before #mapReadFailure runs.
+        return {
+          ok: false,
+          error: { code: 'internal_failure', message: `${authority} revision did not settle` },
+        } as OperationOutcome<K>;
       case 'unknown':
         throw failure.error;
     }

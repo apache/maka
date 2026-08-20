@@ -100,7 +100,9 @@ export function UsageSettingsPage(props: {
   }, [stats, usageDraft.status, normalizedModelFilter]);
 
   const tabCounts: Record<UsageActiveTab, number> = {
-    requests: stats?.logs.length ?? 0,
+    // The requests table may be page-capped; the total recorded row count is
+    // the honest tab count when the snapshot carries it.
+    requests: stats?.logsTotal ?? stats?.logs.length ?? 0,
     providers: stats?.byProvider.length ?? 0,
     models: stats?.byModel.length ?? 0,
     tools: stats?.byTool.length ?? 0,
@@ -110,9 +112,9 @@ export function UsageSettingsPage(props: {
   const showSummaryOnlyNotice = usageDraft.activeTab === 'requests' && !usageDraft.showDetails;
 
   async function setRange(range: UsageRange) {
-    // Persist only: the surface refetches when the persisted range lands
-    // (the same trigger that reloads a Settings window restored directly
-    // onto this page), so a second fetch here would just race it.
+    // The reload is driven by the settings-surface effect on
+    // `settings.usage.range`; calling props.onReload here as well would issue
+    // a second complete snapshot load for the same change.
     await updateUsage({ range });
   }
 
@@ -244,6 +246,8 @@ export function UsageSettingsPage(props: {
             modelFilter={usageDraft.modelFilter}
             status={usageDraft.status}
             recordCount={filteredLogs.length}
+            logsTotal={stats?.logsTotal}
+            logsTruncated={stats?.logsTruncated}
             hasRequestFilters={hasRequestFilters}
             requestEmpty={hasRequestFilters ? copy.filteredEmpty : copy.requestEmpty}
             copy={copy}
@@ -338,6 +342,8 @@ function UsageRequestsPanel(props: {
   modelFilter: string;
   status: AppSettings['usage']['status'];
   recordCount: number;
+  logsTotal?: number;
+  logsTruncated?: boolean;
   hasRequestFilters: boolean;
   requestEmpty: string;
   copy: UsageSettingsCopy;
@@ -384,7 +390,11 @@ function UsageRequestsPanel(props: {
             onChange={props.onToggleDetails}
           />
         </div>
-        <small className="settingsUsageRecordCount">{props.copy.recordCount(props.recordCount)}</small>
+        <small className="settingsUsageRecordCount">
+          {props.logsTruncated && !props.hasRequestFilters && props.logsTotal !== undefined
+            ? props.copy.recordCountTruncated(props.recordCount, props.logsTotal)
+            : props.copy.recordCount(props.recordCount)}
+        </small>
         <Button
           className="settingsUsageClearFilter"
           variant="ghost"
@@ -551,7 +561,10 @@ function usageRequestStatusLabel(status: UsageStats['logs'][number]['status'], c
 
 function usageRequestTokens(row: UsageStats['logs'][number], copy: UsageSettingsCopy) {
   if (row.kind === 'tool') return copy.tables.notApplicable;
-  const total = row.inputTokens + row.outputTokens;
+  // Prefer the stored canonical total so the row reconciles with the summary
+  // and provider totals it feeds; input + output is only the fallback for
+  // rows from producers that predate the Host-backed projection.
+  const total = row.totalTokens ?? row.inputTokens + row.outputTokens;
   if (row.usageBasis === 'missing') return copy.tables.notReported;
   if (row.usageBasis === 'partial') return copy.tables.partial(total);
   return total;

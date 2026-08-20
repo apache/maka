@@ -35,7 +35,7 @@ import type {
 } from '@maka/core/usage-stats/types';
 import { MODEL_CALL_KINDS } from '@maka/core/usage-stats/types';
 import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
-import { requireCount, requireExactRecord, requireRecord } from './codec.js';
+import { requireCount, requireExactRecord, requireRecord, requireString } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
@@ -52,7 +52,7 @@ const QUERY_ERRORS = [
   'persistence_failed',
   'internal_failure',
 ] as const;
-const USAGE_QUERY_ERRORS = [...QUERY_ERRORS, 'invalid_request'] as const;
+const USAGE_QUERY_ERRORS = [...QUERY_ERRORS, 'invalid_request', 'usage_revision_changed'] as const;
 const PRICING_QUERY_ERRORS = [...QUERY_ERRORS, 'invalid_request'] as const;
 const MUTATION_ERRORS = [...QUERY_ERRORS, 'invalid_request', 'commit_outcome_unknown'] as const;
 const LLM_USAGE_QUERY_FIELDS = new Set([
@@ -79,6 +79,9 @@ const USAGE_BUCKET_FIELDS = new Set([
   'costUsd',
   'avgLatencyMs',
   'errorRate',
+  'successCount',
+  'errorCount',
+  'abortedCount',
 ]);
 const LLM_USAGE_LOG_FIELDS = new Set([
   'source',
@@ -197,13 +200,14 @@ export interface ToolUsageLogProjection {
 export type UsageLogProjection = LlmUsageLogProjection | ToolUsageLogProjection;
 
 export type UsageQueryInput =
-  | { readonly kind: 'summary'; readonly query: LlmUsageQuery }
+  | { readonly kind: 'summary'; readonly query: LlmUsageQuery; readonly snapshot?: string }
   | {
       readonly kind: 'buckets';
       readonly query: LlmUsageQuery;
       readonly groupBy: Exclude<UsageGroupBy, 'tool'>;
       readonly offset?: number;
       readonly limit?: number;
+      readonly snapshot?: string;
     }
   | {
       readonly kind: 'buckets';
@@ -211,6 +215,7 @@ export type UsageQueryInput =
       readonly groupBy: 'tool';
       readonly offset?: number;
       readonly limit?: number;
+      readonly snapshot?: string;
     }
   | {
       readonly kind: 'logs';
@@ -218,6 +223,7 @@ export type UsageQueryInput =
       readonly query: LlmUsageQuery;
       readonly offset?: number;
       readonly limit?: number;
+      readonly snapshot?: string;
     }
   | {
       readonly kind: 'logs';
@@ -225,6 +231,7 @@ export type UsageQueryInput =
       readonly query: ToolUsageQuery;
       readonly offset?: number;
       readonly limit?: number;
+      readonly snapshot?: string;
     };
 
 export type UsageQueryResult =
@@ -355,36 +362,43 @@ export const USAGE_PRICING_OPERATION_SPECS = {
 export function decodeUsageQueryInput(value: unknown): UsageQueryInput {
   const input = requireRecord(value, 'usage query input');
   if (input.kind === 'summary') {
-    const exact = requireExactRecord(input, 'usage summary input', ['kind', 'query']);
-    return { kind: 'summary', query: decodeLlmUsageQuery(exact.query) };
+    assertOptionalExactKeys(input, 'usage summary input', ['kind', 'query'], ['snapshot']);
+    return {
+      kind: 'summary',
+      query: decodeLlmUsageQuery(input.query),
+      ...decodeUsageSnapshotField(input),
+    };
   }
   if (input.kind === 'buckets') {
     assertOptionalExactKeys(
       input,
       'usage buckets input',
       ['kind', 'query', 'groupBy'],
-      ['offset', 'limit'],
+      ['offset', 'limit', 'snapshot'],
     );
     const groupBy = decodeUsageGroupBy(input.groupBy);
     const page = { offset: decodeOffset(input.offset), limit: decodeLimit(input.limit) };
+    const snapshot = decodeUsageSnapshotField(input);
     return groupBy === 'tool'
-      ? { kind: 'buckets', query: decodeToolUsageQuery(input.query), groupBy, ...page }
-      : { kind: 'buckets', query: decodeLlmUsageQuery(input.query), groupBy, ...page };
+      ? { kind: 'buckets', query: decodeToolUsageQuery(input.query), groupBy, ...page, ...snapshot }
+      : { kind: 'buckets', query: decodeLlmUsageQuery(input.query), groupBy, ...page, ...snapshot };
   }
   if (input.kind === 'logs') {
     assertOptionalExactKeys(
       input,
       'usage logs input',
       ['kind', 'source', 'query'],
-      ['offset', 'limit'],
+      ['offset', 'limit', 'snapshot'],
     );
     const page = { offset: decodeOffset(input.offset), limit: decodeLimit(input.limit) };
+    const snapshot = decodeUsageSnapshotField(input);
     if (input.source === 'llm') {
       return {
         kind: 'logs',
         source: 'llm',
         query: decodeLlmUsageQuery(input.query),
         ...page,
+        ...snapshot,
       };
     }
     if (input.source === 'tool') {
@@ -393,11 +407,24 @@ export function decodeUsageQueryInput(value: unknown): UsageQueryInput {
         source: 'tool',
         query: decodeToolUsageQuery(input.query),
         ...page,
+        ...snapshot,
       };
     }
     throw invalidProtocolFrame('Invalid usage log source');
   }
   throw invalidProtocolFrame('Invalid usage query kind');
+}
+
+/**
+ * Optional opaque snapshot ticket the Desktop threads through every page of one
+ * Usage snapshot load. The Host pins its bounded repair pass to this ticket so
+ * a paginating reader cannot observe a fresh pass (and its revision bump)
+ * mid-snapshot. Bounded like any other identity string.
+ */
+function decodeUsageSnapshotField(input: Record<string, unknown>): { snapshot?: string } {
+  return input.snapshot === undefined
+    ? {}
+    : { snapshot: requireString(input.snapshot, 'usage snapshot ticket', 128) };
 }
 
 export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
@@ -951,6 +978,15 @@ function decodeUsageBucket(value: unknown): UsageBucket {
     costUsd: nonnegativeFinite(bucket.costUsd, 'usage bucket cost'),
     avgLatencyMs: nonnegativeFinite(bucket.avgLatencyMs, 'usage bucket average latency'),
     errorRate,
+    ...(bucket.successCount === undefined
+      ? {}
+      : { successCount: requireCount(bucket.successCount, 'usage bucket success count') }),
+    ...(bucket.errorCount === undefined
+      ? {}
+      : { errorCount: requireCount(bucket.errorCount, 'usage bucket error count') }),
+    ...(bucket.abortedCount === undefined
+      ? {}
+      : { abortedCount: requireCount(bucket.abortedCount, 'usage bucket aborted count') }),
   };
 }
 
