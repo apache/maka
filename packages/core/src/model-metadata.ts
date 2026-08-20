@@ -202,6 +202,18 @@ export function deepSeekModelSupportsResponses(modelId: string): boolean {
   return id === 'deepseek-v4-flash' || id === 'deepseek-v4-pro';
 }
 
+/** An explicit model inventory is authoritative, including a PDF denial. */
+export function resolveModelPdfSupport(
+  providerType: ProviderType,
+  models: readonly ModelInfo[] | undefined,
+  modelId: string,
+): boolean {
+  const stored = models?.find((entry) => entry.id === modelId)?.modalities?.input;
+  return (stored ?? lookupModelMetadata(providerType, modelId).modalities?.input ?? []).includes(
+    'pdf',
+  );
+}
+
 /** Vision-capable Claude families, including models newer than the generated snapshot. */
 const VISION_BY_DEFAULT = /^claude-(?:[\d.]+-)*(?:opus|sonnet|haiku|fable)\b/;
 
