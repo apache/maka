@@ -238,7 +238,7 @@ const zenmuxOpenAICompatibleMetadata = Object.fromEntries(
 );
 const zenmuxModelIds = toolCallingModelIds('ZenMux', zenmuxOpenAICompatibleMetadata, [
   'moonshotai/kimi-k2.5',
-]);
+]).filter((id) => GENERATED_MODELS_DEV_METADATA.zenmux[id]?.lifecycle !== 'deprecated');
 const fireworks = GENERATED_MODELS_DEV_PROVIDER_FACTS['fireworks-ai'];
 if (fireworks.id !== 'fireworks-ai') {
   throw new Error('models.dev Fireworks AI provider facts are missing stable id fireworks-ai');
