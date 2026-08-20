@@ -43,6 +43,10 @@ import {
   type DesktopTranscriptHandle,
   type DesktopTranscriptOpenResult,
 } from './transcript-contract.js';
+import {
+  adoptTranscriptIdentity,
+  type DesktopTranscriptIdentity,
+} from './transcript-identity.js';
 import type {
   DesktopDiagnosticCopyResult,
   DesktopErrorDiagnosticInput,
@@ -1588,7 +1592,7 @@ const makaBridge = {
     ): Promise<DesktopTranscriptHandle> {
       const consumerId = crypto.randomUUID();
       const channel = `sessions:transcript:${consumerId}`;
-      let generation: string | undefined;
+      let identity: DesktopTranscriptIdentity | undefined;
       let closed = false;
       let requestClose = () => {};
       let consumerScope: DesktopTargetScope | undefined;
@@ -1607,11 +1611,12 @@ const makaBridge = {
             host.targetEpoch !== consumerScope.targetEpoch
           ) return;
           batch = assertDesktopTranscriptBatch(value);
-          if (batch.reset || generation === undefined) {
-            generation = batch.generation;
+          const adopted = adoptTranscriptIdentity(identity, batch);
+          if (adopted !== identity) {
+            identity = adopted;
             consumerScope = host;
           }
-          if (batch.generation === generation) handler(batch);
+          if (identity !== undefined && batch.generation === identity.generation) handler(batch);
         } catch (error) {
           requestClose();
           throw error;
@@ -1658,7 +1663,7 @@ const makaBridge = {
         throw error;
       }
       if (closed) throw new Error('Desktop transcript open was cancelled');
-      generation ??= opened.generation;
+      identity ??= { generation: opened.generation, hostEpoch: opened.hostEpoch };
       const range = (
         operation: 'sessions:transcript:load-before' | 'sessions:transcript:load-around',
         anchorSequence: number | null,
@@ -1667,7 +1672,7 @@ const makaBridge = {
         ipcRenderer.invoke(operation, consumerScope, {
           consumerId,
           sessionId,
-          hostEpoch: opened.hostEpoch,
+          hostEpoch: identity.hostEpoch,
           anchorSequence,
           maxBytes,
         }) as Promise<void>;
