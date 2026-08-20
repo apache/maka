@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, waitFor, within } from 'storybook/test';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionBlockedReason, SessionStatus, SessionSummary } from '@maka/core/session';
 import { SessionListPanel } from '../src/session-list-panel.js';
@@ -117,34 +118,40 @@ function StoryFrame(props: {
   children: ReactNode;
   width?: number;
   height?: number;
-  focusActiveRow?: boolean;
-  openActiveRowMenu?: boolean;
+  openSessionMenuId?: string;
 }) {
   // 260 is `SessionListPanel`'s own default width. The frame used to default to
   // 240 and clip the rail by 20px in every story that did not pass a width —
   // which lands squarely on the trailing slot, so the stories could not show
   // whether the timestamp fits. Stories that want a narrow rail pass the width
   // to both, as `panelProps` explains.
-  const { children, width = 260, height = 680, focusActiveRow = false, openActiveRowMenu = false } = props;
+  const {
+    children,
+    width = 260,
+    height = 680,
+    openSessionMenuId,
+  } = props;
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!focusActiveRow && !openActiveRowMenu) return;
-    let menuTimeout: number | undefined;
-    const focusTimeout = window.setTimeout(() => {
-      const activeRow = ref.current?.querySelector<HTMLElement>('[data-maka-contract="session-row"] [aria-current="true"]');
-      activeRow?.querySelector<HTMLButtonElement>(':scope > button')?.focus({ preventScroll: true });
-      if (openActiveRowMenu) {
-        menuTimeout = window.setTimeout(() => {
-          activeRow?.querySelector<HTMLButtonElement>('[aria-label="任务操作"]')?.click();
-        }, 0);
+    if (!openSessionMenuId) return;
+    const timeout = window.setTimeout(() => {
+      const targetRow = Array.from(
+        ref.current?.querySelectorAll<HTMLElement>('[data-maka-contract="session-row"]') ?? [],
+      ).find((row) => row.dataset.sessionId === openSessionMenuId);
+      if (!targetRow) {
+        throw new Error(`Missing task row fixture: ${openSessionMenuId}`);
       }
+      const menuButton = targetRow.querySelector<HTMLButtonElement>(
+        '[aria-label$="任务操作"]',
+      );
+      if (!menuButton) {
+        throw new Error('Task row is missing its actions menu');
+      }
+      menuButton.click();
     }, 0);
-    return () => {
-      window.clearTimeout(focusTimeout);
-      if (menuTimeout !== undefined) window.clearTimeout(menuTimeout);
-    };
-  }, [focusActiveRow, openActiveRowMenu]);
+    return () => window.clearTimeout(timeout);
+  }, [openSessionMenuId]);
 
   return (
     <div
@@ -271,6 +278,25 @@ export const ConversationStates: Story = {
       })} />
     </StoryFrame>
   ),
+};
+
+// Real path: the active task row's overflow menu after its semantic trigger is
+// opened. The menu is portaled outside the rail, so the play assertion reads
+// from the owning document rather than only the story canvas.
+export const ActiveTaskActionsOpen: Story = {
+  render: () => (
+    <StoryFrame openSessionMenuId="status-waiting">
+      <SessionListPanel {...panelProps({
+        sessions: statusSessions,
+        activeId: 'status-waiting',
+      })} />
+    </StoryFrame>
+  ),
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await waitFor(() => expect(page.getByRole('menu')).toBeVisible());
+    expect(page.getByRole('menuitem', { name: '重命名' })).toBeVisible();
+  },
 };
 
 // Real path: Runtime Host catalog refreshes distinguish an older Host (unknown),

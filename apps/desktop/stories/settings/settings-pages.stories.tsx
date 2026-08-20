@@ -1302,16 +1302,26 @@ export const MemoryPopulated: Story = {
   render: () => <SettingsStory section="memory" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const archiveButtons = await canvas.findAllByRole('button', { name: /^归档 .* · [12]$/ });
+    const archiveButtons = await canvas.findAllByRole('button', { name: /^归档：/ });
     expect(archiveButtons).toHaveLength(2);
     for (const button of archiveButtons) {
       expect(button).toHaveTextContent(/^归档$/);
     }
-    const restoreButton = await canvas.findByRole('button', { name: /^恢复 .* · 1$/ });
+    const restoreButton = await canvas.findByRole('button', { name: /^恢复：/ });
     expect(restoreButton).toHaveTextContent(/^恢复$/);
-    expect(
-      canvas.getByRole('group', { name: /^部署流程要走灰度队列.* · 1 记忆操作$/ }),
-    ).toBeInTheDocument();
+    expect(canvas.getByRole('group', {
+      name: /^部署流程要走灰度队列.*手动记录.*记忆操作$/,
+    })).toBeInTheDocument();
+
+    const stableButton = archiveButtons.find((button) =>
+      button.getAttribute('aria-label')?.includes('用户偏好中文回复'));
+    const stableName = stableButton?.getAttribute('aria-label');
+    expect(stableName).toBeTruthy();
+    await userEvent.type(
+      canvas.getByRole('textbox', { name: '筛选本地记忆' }),
+      '用户偏好中文回复',
+    );
+    expect(await canvas.findByRole('button', { name: stableName! })).toHaveTextContent(/^归档$/);
   },
 };
 // Real path: 设置 → 联网搜索.

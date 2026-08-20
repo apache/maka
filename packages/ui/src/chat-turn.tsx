@@ -146,7 +146,6 @@ function LoadedAttachmentImage(props: { src: string; name: string }) {
  */
 const UserMessageBody = memo(function UserMessageBody(props: {
   messageId: string;
-  messageNumber: number;
   text: string;
   ts?: number;
   attachments?: readonly AttachmentRef[];
@@ -180,7 +179,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         <>
           <MessageCopyButton
             messageId={props.messageId}
-            messageNumber={props.messageNumber}
             text={props.text}
             ts={props.ts}
           />
@@ -188,7 +186,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
             <UiIconButton
               label={copyText.messageActionAriaLabel(
                 editActionLabel,
-                props.messageNumber,
                 accessibleActionContext(props.text, props.ts, locale),
               )}
               tooltip={editActionLabel}
@@ -275,7 +272,6 @@ function accessibleActionContext(text: string, ts: number | undefined, locale: '
 
 function MessageCopyButton(props: {
   messageId: string;
-  messageNumber: number;
   text: string;
   ts?: number;
 }) {
@@ -306,7 +302,6 @@ function MessageCopyButton(props: {
     <UiIconButton
       label={copyText.messageActionAriaLabel(
         baseLabel,
-        props.messageNumber,
         accessibleActionContext(props.text, props.ts, locale),
       )}
       data-message-id={props.messageId}
@@ -521,7 +516,6 @@ export const TurnView = memo(function TurnView(props: {
         >
           <UserMessageBody
             messageId={turn.user.id}
-            messageNumber={1}
             text={turn.user.text}
             ts={turn.user.ts}
             attachments={turn.user.attachments}
@@ -578,7 +572,6 @@ export const TurnView = memo(function TurnView(props: {
             >
               <UserMessageBody
                 messageId={message.id}
-                messageNumber={segment.messageNumber}
                 text={message.text}
                 ts={message.ts}
                 attachments={message.attachments}
@@ -726,7 +719,7 @@ export const TurnView = memo(function TurnView(props: {
 type UserTimelineItem = Extract<TurnTimelineItem, { kind: 'user' }>;
 type AssistantFoldedTimelineEntry = Exclude<FoldedTimelineEntry, UserTimelineItem>;
 type ConversationSegment =
-  | { kind: 'user'; item: UserTimelineItem; messageNumber: number }
+  | { kind: 'user'; item: UserTimelineItem }
   | {
       kind: 'assistant';
       items: AssistantFoldedTimelineEntry[];
@@ -751,12 +744,10 @@ function splitTimelineAtUserMessages(
 ): ConversationSegment[] {
   const segments: ConversationSegment[] = [];
   let repliesTo: string | undefined;
-  let messageNumber = 2;
   for (const item of items) {
     const last = segments.at(-1);
     if (item.kind === 'user') {
-      segments.push({ kind: 'user', item, messageNumber });
-      messageNumber += 1;
+      segments.push({ kind: 'user', item });
       repliesTo = item.message.id;
     } else if (last?.kind === 'assistant') {
       last.items.push(item);

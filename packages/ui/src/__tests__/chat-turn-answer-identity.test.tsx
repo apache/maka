@@ -182,10 +182,10 @@ test('uses human conversation context instead of raw ids in action names', async
     .map((element) => element.getAttribute('aria-label'))
     .filter((label): label is string => label !== null);
   assert.ok(actionNames.some((label) => label.startsWith(
-    'Copy message 1: Summarize the accessibility findings',
+    'Copy message: Summarize the accessibility findings',
   )));
   assert.ok(actionNames.some((label) => label.startsWith(
-    'Edit & resend message 1: Summarize the accessibility findings',
+    'Edit & resend message: Summarize the accessibility findings',
   )));
   assert.ok(actionNames.some((label) => label.startsWith(
     'Response actions: Summarize the accessibility findings',
@@ -202,6 +202,11 @@ test('uses human conversation context instead of raw ids in action names', async
     actionNames.some((label) => label.includes('019f-secret')),
     false,
     'raw storage identities stay out of spoken action names',
+  );
+  assert.equal(
+    actionNames.some((label) => /\bmessage \d+\b/i.test(label)),
+    false,
+    'message actions do not claim a turn-local ordinal',
   );
 });
 

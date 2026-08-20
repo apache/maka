@@ -58,11 +58,20 @@ import { getToolActivityCopy } from './tool-activity/copy.js';
 import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
 
 /** Friendly card for a `load_tools` result; falls back to JSON on unexpected shapes. */
-function LoadToolResultPreview(props: { args: unknown; value: unknown }) {
+function LoadToolResultPreview(props: {
+  args: unknown;
+  value: unknown;
+  actionIdentity: string;
+}) {
   const locale = useUiLocale();
   const desc = describeLoadToolResult(props.args, props.value, locale);
   if (!desc) {
-    return <ToolResultPreview content={{ kind: 'json', value: props.value }} />;
+    return (
+      <ToolResultPreview
+        content={{ kind: 'json', value: props.value }}
+        actionIdentity={props.actionIdentity}
+      />
+    );
   }
   return (
     <div className={previewVariants({ part: 'load-tool' })} data-kind="load_tool">
@@ -145,7 +154,11 @@ export function ToolCallDetail({
       )}
       {showResult && ownsPanel && displayResult && (
         isConnectorTool(item.toolName) && displayResult.kind === 'json' ? (
-          <LoadToolResultPreview args={item.args} value={displayResult.value} />
+          <LoadToolResultPreview
+            args={item.args}
+            value={displayResult.value}
+            actionIdentity={outputActionIdentity}
+          />
         ) : (
           <ToolResultPreview
             content={displayResult}
@@ -189,11 +202,12 @@ export function ToolCallDetail({
                   // Only raw args dumps are JSON; quiet bodies stay untokenized.
                   language={argsBody ? 'json' : undefined}
                   title={title}
+                  actionIdentity={outputActionIdentity}
                 />
               );
             }
             if (showInvocation && invocationLine && !showResult) {
-              return <ToolCodeBlock code={invocationLine} />;
+              return <ToolCodeBlock code={invocationLine} actionIdentity={outputActionIdentity} />;
             }
             if (showResult && !ownsPanel && displayResult) {
               return (
@@ -205,7 +219,7 @@ export function ToolCallDetail({
               );
             }
             if (showInvocation && invocationLine) {
-              return <ToolCodeBlock code={invocationLine} />;
+              return <ToolCodeBlock code={invocationLine} actionIdentity={outputActionIdentity} />;
             }
             return null;
           })()}

@@ -14,7 +14,13 @@ export interface ToolActivityCopy {
     redacted: string;
     truncated: string;
   };
-  copy: { idle: string; pending: string; copied: string; failed: string };
+  copy: {
+    idle: string;
+    pending: string;
+    copied: string;
+    failed: string;
+    actionAriaLabel: (action: string, identity: string) => string;
+  };
   sandboxBlocked: {
     title: string;
     description: string;
@@ -150,7 +156,13 @@ const TOOL_ACTIVITY_COPY = {
   zh: {
     status: { sandboxBlocked: '可能被沙箱阻止', interrupted: '已中断' },
     output: { redacted: '[已脱敏]', truncated: '输出已截断' },
-    copy: { idle: '复制', pending: '复制中…', copied: '已复制', failed: '复制失败' },
+    copy: {
+      idle: '复制',
+      pending: '复制中…',
+      copied: '已复制',
+      failed: '复制失败',
+      actionAriaLabel: (action, identity) => `${action}：${identity}`,
+    },
     sandboxBlocked: { title: '操作可能被沙箱阻止', description: '沙箱可能阻止了该调用中的至少一项操作。失败前可能已经产生部分结果，请检查输出和工作区状态后再决定是否重试。', copyAriaLabel: (label) => `${label}沙箱诊断信息` },
     computer: {
       fallback: '操作电脑',
@@ -210,7 +222,13 @@ const TOOL_ACTIVITY_COPY = {
   en: {
     status: { sandboxBlocked: 'Possibly blocked by sandbox', interrupted: 'Interrupted' },
     output: { redacted: '[Redacted]', truncated: 'Output truncated' },
-    copy: { idle: 'Copy', pending: 'Copying…', copied: 'Copied', failed: 'Copy failed' },
+    copy: {
+      idle: 'Copy',
+      pending: 'Copying…',
+      copied: 'Copied',
+      failed: 'Copy failed',
+      actionAriaLabel: (action, identity) => `${action}: ${identity}`,
+    },
     sandboxBlocked: { title: 'Operation may have been blocked by sandbox', description: 'The sandbox may have blocked at least one action in this call. Some effects may have occurred before it failed; check the output and workspace state before retrying.', copyAriaLabel: (label) => `${label} sandbox diagnostics` },
     computer: {
       fallback: 'Use the computer',

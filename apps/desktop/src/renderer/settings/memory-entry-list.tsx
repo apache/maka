@@ -4,6 +4,24 @@ import { Button, MoreMenu, RelativeTime } from '@maka/ui';
 import { memoryOriginLabel } from './memory-settings-labels';
 import type { MemorySettingsCopy } from '../locales/settings-memory-copy';
 
+function memoryEntryActionIdentity(
+  entry: LocalMemoryState['activeEntries'][number],
+  copy: MemorySettingsCopy,
+): string {
+  const title = entry.title.length > 80 ? `${entry.title.slice(0, 79)}…` : entry.title;
+  const timestamp = entry.createdAt ?? entry.updatedAt;
+  const stableContext = timestamp === undefined
+    ? entry.content.replace(/\s+/g, ' ').trim().slice(0, 48)
+    : new Date(timestamp).toLocaleString(copy.intlLocale);
+  return [
+    title,
+    memoryOriginLabel(entry.origin, copy),
+    stableContext || undefined,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(' · ');
+}
+
 export function MemoryEntryList(props: {
   title: string;
   copy: MemorySettingsCopy;
@@ -30,12 +48,12 @@ export function MemoryEntryList(props: {
         />
       ) : (
         <ul className="settingsMemoryEntryList" aria-label={props.copy.listAria(props.title)}>
-          {props.entries.map((entry, index) => {
+          {props.entries.map((entry) => {
             const copyPending = props.pendingCopyIds?.has(`entry:${entry.id}:copy`) ?? false;
             const statusActionLabel = props.archived
               ? props.copy.text.restoreAction
               : props.copy.text.archiveAction;
-            const entryIdentity = `${entry.title.slice(0, 80)} · ${index + 1}`;
+            const entryIdentity = memoryEntryActionIdentity(entry, props.copy);
             return (
               <li key={entry.id}>
                 <article className="settingsMemoryEntryRow">
@@ -60,7 +78,7 @@ export function MemoryEntryList(props: {
                         size="sm"
                         isDisabled={props.busy}
                         onClick={() => void props.onStatusChange?.(entry, props.archived ? 'active' : 'archived')}
-                        label={`${statusActionLabel} ${entryIdentity}`}
+                        label={props.copy.entryActionAria(statusActionLabel, entryIdentity)}
                       >
                         {statusActionLabel}
                       </Button>

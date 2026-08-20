@@ -71,8 +71,7 @@ export function ToolOutputSurface(props: {
   const command = props.heading?.trim() ? props.heading : undefined;
   const actionIdentity =
     props.actionIdentity?.trim() ||
-    redactSecrets(command ?? '').trim().slice(0, 80) ||
-    props.kind;
+    redactSecrets(command ?? '').trim().slice(0, 80);
   const copyPayload = [command, props.body].filter(Boolean).join('\n');
   // Each surface owns its own feedback hook, so the key never has to
   // distinguish one surface from another — it only has to be stable across
@@ -111,7 +110,7 @@ export function ToolOutputSurface(props: {
               // it would compete with the thing being copied. `label` is the
               // accessible name in this mode.
               isIconOnly
-              label={`${label} · ${actionIdentity}`}
+              label={copyText.actionAriaLabel(label, actionIdentity)}
               aria-busy={phase === 'pending' ? 'true' : undefined}
               isDisabled={phase === 'pending'}
               onClick={() => void feedback.copy(copyKey, copyPayload)}
@@ -210,6 +209,7 @@ export function ToolResultPreview(props: {
         <ToolCodeBlock
           code={formatUserVisibleToolText(quiet.body, locale)}
           title={quiet.headline ? formatUserVisibleToolText(quiet.headline, locale) : undefined}
+          actionIdentity={props.actionIdentity}
         />
       </div>
     );
@@ -221,7 +221,7 @@ export function ToolResultPreview(props: {
     const code = capped > 0 ? `${body}\n\n${copy.hiddenLines(capped)}` : body;
     return (
       <div data-kind="text">
-        <ToolCodeBlock code={code} />
+        <ToolCodeBlock code={code} actionIdentity={props.actionIdentity} />
       </div>
     );
   }
@@ -231,13 +231,16 @@ export function ToolResultPreview(props: {
   if (content.kind === 'file_write') {
     return (
       <div data-kind={content.kind}>
-        <ToolCodeBlock code={`Wrote ${content.bytes} bytes to ${content.path}`} />
+        <ToolCodeBlock
+          code={`Wrote ${content.bytes} bytes to ${content.path}`}
+          actionIdentity={props.actionIdentity}
+        />
       </div>
     );
   }
   return (
     <div data-kind={content.kind}>
-      <ToolCodeBlock code={`[${content.kind}]`} />
+      <ToolCodeBlock code={`[${content.kind}]`} actionIdentity={props.actionIdentity} />
     </div>
   );
 }

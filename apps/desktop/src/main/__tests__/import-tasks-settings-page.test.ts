@@ -637,6 +637,7 @@ async function renderPage(options: {
     matchMedia,
     HTMLElement: window.HTMLElement,
     HTMLIFrameElement: window.HTMLIFrameElement ?? class HTMLIFrameElement {},
+    // Astryx 0.4 Spinner resolves its inherited canvas color during render.
     getComputedStyle: (element: Element) => ({
       color: (element as HTMLElement).style?.color || 'currentColor',
     }) as CSSStyleDeclaration,

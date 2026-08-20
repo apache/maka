@@ -6,9 +6,9 @@ import { ToolCallDetail } from '../tool-activity.js';
 import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
 
-function renderToStaticMarkup(node: ReactNode): string {
+function renderToStaticMarkup(node: ReactNode, locale: 'zh' | 'en' = 'zh'): string {
   return renderReactToStaticMarkup(createElement(LocaleProvider, {
-    locale: 'zh',
+    locale,
     children: node,
   }));
 }
@@ -148,5 +148,35 @@ describe('tool activity presentation', () => {
     assert.doesNotMatch(render(firstId), new RegExp(firstId));
     assert.doesNotMatch(render(secondId), new RegExp(secondId));
     assert.match(render(firstId), /Bash/);
+  });
+
+  it('disambiguates code copy actions by their tool call', () => {
+    const details = createElement('div', null,
+      createElement(ToolCallDetail, {
+        item: {
+          toolUseId: 'tool-alpha',
+          toolName: 'AlphaTool',
+          status: 'completed',
+          args: {},
+          result: { kind: 'json', value: { ok: true } },
+        } satisfies ToolActivityItem,
+      }),
+      createElement(ToolCallDetail, {
+        item: {
+          toolUseId: 'tool-beta',
+          toolName: 'BetaTool',
+          status: 'completed',
+          args: {},
+          result: { kind: 'json', value: { ok: true } },
+        } satisfies ToolActivityItem,
+      }),
+    );
+    const zhMarkup = renderToStaticMarkup(details);
+    const enMarkup = renderToStaticMarkup(details, 'en');
+
+    assert.match(zhMarkup, /aria-label="复制：AlphaTool"/);
+    assert.match(zhMarkup, /aria-label="复制：BetaTool"/);
+    assert.match(enMarkup, /aria-label="Copy: AlphaTool"/);
+    assert.match(enMarkup, /aria-label="Copy: BetaTool"/);
   });
 });

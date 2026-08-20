@@ -1,11 +1,16 @@
-# Computer Use UI Coverage
+# Computer Use Semantic UI Coverage
 
-Status: maintained source and runtime inventory for the Maka Desktop UI.
+Status: maintained source and runtime inventory for Maka Desktop's
+Computer Use target, state, focus, action and effect semantics.
 
-This document defines what "covered" means. A page is not complete merely
-because it renders or because every button has a non-empty name. Critical
-surfaces must expose an unambiguous target, state, keyboard/focus behavior, and
-an observable effect.
+This document defines what "covered" means for Computer Use operability. A page
+is not complete merely because it renders or because every button has a
+non-empty name. Critical surfaces must expose an unambiguous target, state,
+keyboard/focus behavior, and an observable effect.
+
+This gate is not a claim of complete WCAG conformance or complete assistive
+technology behavior. In particular, live-region and announcement completeness
+are not measured here; they require separate accessibility testing.
 
 ## Automated surface inventory
 
