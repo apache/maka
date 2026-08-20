@@ -6,7 +6,11 @@ import {
   type ProviderRuntimeAdapter,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import { lookupModelProviderOverride, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
+import {
+  lookupModelProviderOverride,
+  openAiAdapterApiProtocol,
+  resolveModelPdfSupport,
+} from '@maka/core/model-metadata';
 import { resolveApplyPatchProfile, type ApplyPatchProfile } from './apply-patch-profile.js';
 
 export type ModelRuntimeWire =
@@ -34,6 +38,15 @@ export interface ResolvedModelRuntime {
   /** Effective ApplyPatch contract after provider, model, and request wire are resolved. */
   applyPatchProfile: ApplyPatchProfile | null;
 }
+
+/**
+ * Provider/wire combinations whose native API contract has been verified to
+ * accept an AI SDK PDF file part. Provider identity is intentional: a relay
+ * using the same adapter or wire does not inherit first-party PDF support.
+ */
+export type ModelPdfInputContract =
+  | { providerType: 'anthropic'; wire: 'anthropic-messages' }
+  | { providerType: 'openai'; wire: 'openai-chat' | 'openai-responses' };
 
 export interface ModelRuntimeConnection {
   readonly providerType: ProviderType;
@@ -98,6 +111,29 @@ export function resolveModelRuntime(
       modelId,
     ),
   };
+}
+
+/**
+ * Resolve native PDF materialization only when both model metadata and the
+ * first-party provider wire authorize it. Unknown models and compatible
+ * relays fail closed even if their wire happens to use an SDK file encoding.
+ */
+export function resolveModelPdfInputContract(
+  connection: ModelRuntimeConnection,
+  modelId: string,
+): ModelPdfInputContract | null {
+  if (!resolveModelPdfSupport(connection.providerType, connection.models, modelId)) return null;
+  const { wire } = resolveModelRuntime(connection, modelId);
+  if (connection.providerType === 'anthropic' && wire === 'anthropic-messages') {
+    return { providerType: 'anthropic', wire };
+  }
+  if (
+    connection.providerType === 'openai' &&
+    (wire === 'openai-chat' || wire === 'openai-responses')
+  ) {
+    return { providerType: 'openai', wire };
+  }
+  return null;
 }
 
 export function modelUsesAnthropicMessages(

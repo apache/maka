@@ -76,10 +76,12 @@ import {
   YIELD_AGENT_GRAPH_TOOL_NAME,
   type YieldAgentGraphToolResult,
 } from './stream-graph-supervisor-tools.js';
-import type { AttachmentByteReader } from '@maka/core/attachments';
 import {
+  MAX_PROVIDER_BINARY_REQUEST_BYTES,
   MAX_PROVIDER_IMAGE_REQUEST_BYTES,
+  MAX_PROVIDER_PDF_REQUEST_BYTES,
   PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE,
+  type AttachmentByteReader,
 } from '@maka/core/attachments';
 import { stripUndefinedDeep } from '@maka/core/tool-args-identity';
 import { pricingModelKey } from '@maka/core/usage-stats/pricing';
@@ -155,7 +157,7 @@ import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
 import type {
   AutomaticMemoryCompactionDecision,
   AutomaticMemoryCompactionDispatch,
-  ProviderImageBudget,
+  ProviderAttachmentBudget,
 } from './ai-sdk-compaction.js';
 import {
   contextDiagnosticsCompactionOf,
@@ -219,7 +221,11 @@ import {
   type MemoryExtractionSourceSnapshot,
   type MemoryExtractionTrigger,
 } from './memory-extraction.js';
-import { modelUsesNativeOpenAiResponses, resolveModelRuntime } from './model-runtime.js';
+import {
+  modelUsesNativeOpenAiResponses,
+  resolveModelRuntime,
+  type ModelPdfInputContract,
+} from './model-runtime.js';
 import {
   applyPatchReplayFactText,
   normalizeApplyPatchReplayInput,
@@ -836,9 +842,10 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
    */
   recordToolArtifacts?: ToolArtifactRecorder;
   /**
-   * Optional attachment byte reader. When set, image attachments on the current
-   * user turn may be rendered as provider image parts instead of placeholder text.
-   * Caller wires this to the session ArtifactStore; runtime never imports storage.
+   * Optional attachment byte reader. When set, authorized image and PDF
+   * attachments may be rendered as provider file parts instead of placeholder
+   * text. Caller wires this to the session ArtifactStore; runtime never imports
+   * storage.
    */
   readAttachmentBytes?: AttachmentByteReader;
   /**
@@ -846,7 +853,11 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
    * image parts; false/unknown stay as text refs with a fallback note.
    */
   supportsVision?: boolean;
+  /** Verified first-party provider/wire contract for native PDF file parts. */
+  pdfInputContract?: ModelPdfInputContract;
   maxProviderImageRequestBytes?: number;
+  maxProviderPdfRequestBytes?: number;
+  maxProviderBinaryRequestBytes?: number;
   /** Host-owned bounded long-term-memory extraction. Source tools are Runtime-reserved. */
   memoryExtraction?: MemoryExtractionSourceCapabilities;
 }
@@ -979,11 +990,15 @@ class TurnScope {
   watchdog: StreamWatchdog | null = null;
   runTrace: RunTrace | null = null;
   /**
-   * Image allowance for this turn, accumulated across its provider steps. Owned
-   * by the scope so an overlapping turn cannot spend it, and non-null for the
-   * scope's whole life so no path has to decide what "no budget" means.
+   * Binary attachment allowance for this turn, accumulated across its provider
+   * steps. Owned by the scope so an overlapping turn cannot spend it, and
+   * non-null for the scope's whole life so no path has to decide what "no
+   * budget" means.
    */
-  readonly imageBudget: ProviderImageBudget = { used: 0, decisions: new Map() };
+  readonly attachmentBudget: ProviderAttachmentBudget = {
+    used: { image: 0, pdf: 0, total: 0 },
+    decisions: new Map(),
+  };
   /**
    * User messages steered into this turn, drained from the caller's queue at
    * step boundaries. Each entry is the canonical envelope-wrapped user
@@ -1105,8 +1120,8 @@ export class AiSdkBackend implements AgentBackend {
       modelAdapter: this.modelAdapter,
       createProviderRequestTracker: (trackerInput) =>
         this.createProviderRequestTracker(trackerInput),
-      materializeRuntimeReplayPlan: (plan, imageBudget, checkpoint) =>
-        this.materializeRuntimeReplayPlan(plan, imageBudget, undefined, checkpoint),
+      materializeRuntimeReplayPlan: (plan, attachmentBudget, checkpoint) =>
+        this.materializeRuntimeReplayPlan(plan, attachmentBudget, undefined, checkpoint),
       canReplayProviderNative: (plan) => this.canReplayProviderNative(plan),
       appendTurnTailPrompt: (content, turnTailPrompt) =>
         this.appendTurnTailPrompt(content, turnTailPrompt),
@@ -1326,7 +1341,12 @@ export class AiSdkBackend implements AgentBackend {
       orchestrationMode: identity.orchestrationMode,
       ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
       materializeDefaultToolResultOutput: ({ toolCallId, output }) =>
-        this.materializeToolResultOutput(identity.scope().imageBudget, output, false, toolCallId),
+        this.materializeToolResultOutput(
+          identity.scope().attachmentBudget,
+          output,
+          false,
+          toolCallId,
+        ),
       spawnChildAgent: input.spawnChildAgent,
       spawnChildSession: input.spawnChildSession,
       prepareChildAgentResume: input.prepareChildAgentResume,
@@ -1854,7 +1874,7 @@ export class AiSdkBackend implements AgentBackend {
         const currentUserContent = input.continuation
           ? undefined
           : await this.buildCurrentUserContent(
-              scope.imageBudget,
+              scope.attachmentBudget,
               input.text,
               input.attachments,
               input.quotes,
@@ -1938,7 +1958,7 @@ export class AiSdkBackend implements AgentBackend {
           });
           const currentTurnMessages = await this.materializeRuntimeReplayPlan(
             { ...replayPlan, items: replayItems },
-            scope.imageBudget,
+            scope.attachmentBudget,
             settledModelOutputs,
             projectionCheckpoint,
           );
@@ -3432,7 +3452,7 @@ export class AiSdkBackend implements AgentBackend {
     if (!input.runtimeContext) {
       return {
         status: 'ready',
-        messages: await this.materializePriorMessages(scope.imageBudget, priorStored),
+        messages: await this.materializePriorMessages(scope.attachmentBudget, priorStored),
         gate: 'stored_message_projection',
         diagnostics: [],
       };
@@ -3441,7 +3461,7 @@ export class AiSdkBackend implements AgentBackend {
       (event) => event.turnId !== input.turnId,
     );
     const projectedMessages = await this.materializePriorMessages(
-      scope.imageBudget,
+      scope.attachmentBudget,
       priorStored,
       buildSteeringSidecar(priorRuntimeContext),
     );
@@ -3782,7 +3802,7 @@ export class AiSdkBackend implements AgentBackend {
     const materializeReplayFallback = (): Promise<ModelMessage[]> =>
       fallbackUsesRuntimeReplay
         ? this.materializeRuntimeReplayTextOnly(
-            scope.imageBudget,
+            scope.attachmentBudget,
             plan,
             projectedHistoryCompactCheckpoint,
           )
@@ -3818,7 +3838,7 @@ export class AiSdkBackend implements AgentBackend {
         status: 'ready',
         messages: await this.materializeRuntimeReplayPlan(
           plan,
-          scope.imageBudget,
+          scope.attachmentBudget,
           undefined,
           projectedHistoryCompactCheckpoint,
         ),
@@ -3842,7 +3862,7 @@ export class AiSdkBackend implements AgentBackend {
           degradedPlan.items.length > 0 || hasProviderHistoryCompactCheckpoint
             ? await this.materializeRuntimeReplayPlan(
                 degradedPlan,
-                scope.imageBudget,
+                scope.attachmentBudget,
                 undefined,
                 projectedHistoryCompactCheckpoint,
               )
@@ -3861,7 +3881,7 @@ export class AiSdkBackend implements AgentBackend {
       status: 'ready',
       messages: await this.materializeRuntimeReplayPlan(
         plan,
-        scope.imageBudget,
+        scope.attachmentBudget,
         undefined,
         projectedHistoryCompactCheckpoint,
       ),
@@ -3933,7 +3953,7 @@ export class AiSdkBackend implements AgentBackend {
    */
   private async materializeRuntimeReplayPlan(
     plan: RuntimeEventModelReplayPlan,
-    budget: ProviderImageBudget,
+    budget: ProviderAttachmentBudget,
     settledModelOutputs?: ReadonlyMap<string, ToolResultOutput>,
     historyCompactCheckpoint?: HistoryCompactCheckpoint,
   ): Promise<ModelMessage[]> {
@@ -4332,7 +4352,7 @@ export class AiSdkBackend implements AgentBackend {
   }
 
   private async materializeRuntimeReplayTextOnly(
-    budget: ProviderImageBudget,
+    budget: ProviderAttachmentBudget,
     plan: RuntimeEventModelReplayPlan,
     historyCompactCheckpoint?: HistoryCompactCheckpoint,
   ): Promise<ModelMessage[]> {
@@ -4382,7 +4402,7 @@ export class AiSdkBackend implements AgentBackend {
   }
 
   private async materializeRuntimeReplayItem(
-    budget: ProviderImageBudget,
+    budget: ProviderAttachmentBudget,
     item: Extract<RuntimeEventModelReplayItem, { kind: 'text' }>,
   ): Promise<ModelMessage> {
     if (item.role === 'user') {
@@ -4397,7 +4417,7 @@ export class AiSdkBackend implements AgentBackend {
       }
       return {
         role: 'user',
-        content: await this.appendImageParts(
+        content: await this.appendAttachmentParts(
           budget,
           item.content,
           item.attachments,
@@ -4413,7 +4433,7 @@ export class AiSdkBackend implements AgentBackend {
   }
 
   private async materializePriorMessages(
-    budget: ProviderImageBudget,
+    budget: ProviderAttachmentBudget,
     stored: readonly StoredMessage[],
     steeringSidecar?: ReadonlyMap<string, { eventId: string }>,
   ): Promise<ModelMessage[]> {
@@ -4429,7 +4449,7 @@ export class AiSdkBackend implements AgentBackend {
           out.push(
             steeringModelMessage(
               sidecar.eventId,
-              await this.appendImageParts(
+              await this.appendAttachmentParts(
                 budget,
                 buildSteeringEnvelope(formatTextWithInlineRefs(m.text, m)),
                 m.attachments,
@@ -4441,7 +4461,7 @@ export class AiSdkBackend implements AgentBackend {
         }
         out.push({
           role: 'user',
-          content: await this.appendImageParts(
+          content: await this.appendAttachmentParts(
             budget,
             formatTextWithInlineRefs(m.text, m),
             m.attachments,
@@ -4480,87 +4500,148 @@ export class AiSdkBackend implements AgentBackend {
   }
 
   /** A decision key deduplicates re-materialization; no key charges each occurrence. */
-  private chargeImageBudget(
-    budget: ProviderImageBudget,
+  private chargeAttachmentBudget(
+    budget: ProviderAttachmentBudget,
+    kind: 'image' | 'pdf',
     bytes: number,
     decisionKey?: string,
-  ): boolean {
+  ): 'keep' | 'image_limit' | 'pdf_limit' | 'combined_limit' {
     if (decisionKey !== undefined) {
       const cached = budget.decisions.get(decisionKey);
       if (cached !== undefined) return cached;
     }
-    const keep =
-      budget.used + bytes <=
-      (this.input.maxProviderImageRequestBytes ?? MAX_PROVIDER_IMAGE_REQUEST_BYTES);
-    if (keep) budget.used += bytes;
-    if (decisionKey !== undefined) budget.decisions.set(decisionKey, keep);
-    return keep;
+    const subtypeLimit =
+      kind === 'image'
+        ? (this.input.maxProviderImageRequestBytes ?? MAX_PROVIDER_IMAGE_REQUEST_BYTES)
+        : (this.input.maxProviderPdfRequestBytes ?? MAX_PROVIDER_PDF_REQUEST_BYTES);
+    const decision =
+      budget.used[kind] + bytes > subtypeLimit
+        ? kind === 'image'
+          ? 'image_limit'
+          : 'pdf_limit'
+        : budget.used.total + bytes >
+            (this.input.maxProviderBinaryRequestBytes ?? MAX_PROVIDER_BINARY_REQUEST_BYTES)
+          ? 'combined_limit'
+          : 'keep';
+    if (decision === 'keep') {
+      budget.used[kind] += bytes;
+      budget.used.total += bytes;
+    }
+    if (decisionKey !== undefined) budget.decisions.set(decisionKey, decision);
+    return decision;
   }
 
   /**
    * Render provider-visible content for a user message: keep the given
-   * (already-formatted) text, and append image attachments as provider image
-   * parts only for explicitly vision-capable models. Non-image attachments stay
-   * as placeholder refs in the text. Shared by the current turn, RuntimeEvent
-   * replay, and the stored-message fallback so all paths present images identically.
+   * (already-formatted) text, then append explicitly authorized image and PDF
+   * file parts. The PDF gate is a verified first-party provider/wire contract,
+   * not a model-name or SDK-encoding guess. Shared by the current turn,
+   * RuntimeEvent replay, stored-message fallback, steering, and compaction so
+   * every path presents one durable attachment occurrence identically.
    */
-  private async appendImageParts(
-    budget: ProviderImageBudget,
+  private async appendAttachmentParts(
+    budget: ProviderAttachmentBudget,
     textContent: string,
     attachments?: AttachmentRef[],
     decisionKeyPrefix?: string,
   ): Promise<UserContent> {
-    const images = attachments?.filter((a) => a.kind === 'image') ?? [];
-    if (images.length === 0) {
-      return textContent;
-    }
-    if (this.input.supportsVision !== true) {
-      return appendNonVisionImageFallbackNotice(textContent);
-    }
-    if (!this.input.readAttachmentBytes) {
-      return textContent;
-    }
+    const binaryAttachments =
+      attachments?.filter(
+        (attachment): attachment is AttachmentRef & { kind: 'image' | 'pdf' } =>
+          attachment.kind === 'image' || attachment.kind === 'pdf',
+      ) ?? [];
+    if (binaryAttachments.length === 0) return textContent;
+    const hasUnsupportedImages =
+      this.input.supportsVision !== true &&
+      binaryAttachments.some((attachment) => attachment.kind === 'image');
+    const fallbackText = hasUnsupportedImages
+      ? appendNonVisionImageFallbackNotice(textContent)
+      : textContent;
+    const eligibleAttachments = binaryAttachments.filter(
+      (attachment) =>
+        (attachment.kind === 'image' && this.input.supportsVision === true) ||
+        (attachment.kind === 'pdf' && this.input.pdfInputContract !== undefined),
+    );
+    if (eligibleAttachments.length === 0 || !this.input.readAttachmentBytes) return fallbackText;
     const parts: Array<
       | { type: 'text'; text: string }
       | {
           type: 'file';
           data: { type: 'data'; data: Uint8Array };
           mediaType: string;
+          filename?: string;
         }
-    > = [{ type: 'text', text: textContent }];
-    let omittedByBudget = 0;
-    for (const [index, image] of images.entries()) {
-      const read = await this.input.readAttachmentBytes(image.ref);
+    > = [{ type: 'text', text: fallbackText }];
+    const omitted = { image_limit: 0, pdf_limit: 0, combined_limit: 0 };
+    for (const [index, attachment] of binaryAttachments.entries()) {
+      const isEligible =
+        (attachment.kind === 'image' && this.input.supportsVision === true) ||
+        (attachment.kind === 'pdf' && this.input.pdfInputContract !== undefined);
+      if (!isEligible) continue;
+      if (attachment.kind === 'pdf' && attachment.mimeType !== 'application/pdf') {
+        parts.push({
+          type: 'text',
+          text: `PDF attachment "${attachment.name}" was omitted because its media type is not application/pdf.`,
+        });
+        continue;
+      }
+      let read: Awaited<ReturnType<AttachmentByteReader>>;
+      try {
+        read = await this.input.readAttachmentBytes(attachment.ref);
+      } catch {
+        read = { ok: false, reason: 'read_failed' };
+      }
       if (!read.ok) {
         parts.push({
           type: 'text',
-          text: `Image attachment "${image.name}" could not be loaded: ${read.reason}.`,
+          text: `${attachment.kind === 'pdf' ? 'PDF' : 'Image'} attachment "${attachment.name}" could not be loaded: ${read.reason}.`,
         });
         continue;
       }
       const decisionKey =
-        decisionKeyPrefix === undefined ? undefined : `${decisionKeyPrefix}:image:${index}`;
-      if (!this.chargeImageBudget(budget, read.bytes.length, decisionKey)) {
-        omittedByBudget += 1;
+        decisionKeyPrefix === undefined
+          ? undefined
+          : `${decisionKeyPrefix}:${attachment.kind}:${index}`;
+      const decision = this.chargeAttachmentBudget(
+        budget,
+        attachment.kind,
+        read.bytes.length,
+        decisionKey,
+      );
+      if (decision !== 'keep') {
+        omitted[decision] += 1;
         continue;
       }
       parts.push({
         type: 'file',
         data: { type: 'data', data: read.bytes },
-        mediaType: image.mimeType,
+        mediaType: attachment.mimeType,
+        ...(attachment.kind === 'pdf' ? { filename: attachment.name } : {}),
       });
     }
-    if (omittedByBudget > 0) {
+    if (omitted.image_limit > 0) {
       parts.push({
         type: 'text',
-        text: `[${omittedByBudget} image attachment(s) omitted: the per-request image budget was exceeded. Earlier images were sent; ask the user to send fewer or smaller images.]`,
+        text: `[${omitted.image_limit} image attachment(s) omitted: the per-request image budget was exceeded. Earlier images were sent; ask the user to send fewer or smaller images.]`,
+      });
+    }
+    if (omitted.pdf_limit > 0) {
+      parts.push({
+        type: 'text',
+        text: `[${omitted.pdf_limit} PDF attachment(s) omitted: the per-request PDF budget was exceeded. Earlier PDFs were sent; ask the user to send fewer or smaller PDFs.]`,
+      });
+    }
+    if (omitted.combined_limit > 0) {
+      parts.push({
+        type: 'text',
+        text: `[${omitted.combined_limit} binary attachment(s) omitted: the combined image/PDF request budget was exceeded. Earlier attachments were sent; ask the user to send fewer or smaller attachments.]`,
       });
     }
     return parts;
   }
 
   private async materializeToolResultOutput(
-    budget: ProviderImageBudget,
+    budget: ProviderAttachmentBudget,
     output: unknown,
     isError: boolean,
     decisionKey: string,
@@ -4572,8 +4653,9 @@ export class AiSdkBackend implements AgentBackend {
     if (!this.input.readAttachmentBytes) {
       return toolResultText('Image was read, but its stored bytes are unavailable.');
     }
-    if (budget && budget.decisions.get(decisionKey) === false) {
-      return toolResultText(PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE);
+    const cachedDecision = budget.decisions.get(decisionKey);
+    if (cachedDecision !== undefined && cachedDecision !== 'keep') {
+      return toolResultText(this.imageBudgetFailureMessage(cachedDecision));
     }
     let read: Awaited<ReturnType<AttachmentByteReader>>;
     try {
@@ -4584,8 +4666,9 @@ export class AiSdkBackend implements AgentBackend {
     if (!read.ok) {
       return toolResultText(`Image could not be loaded from artifact storage: ${read.reason}.`);
     }
-    if (!this.chargeImageBudget(budget, read.bytes.length, decisionKey)) {
-      return toolResultText(PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE);
+    const decision = this.chargeAttachmentBudget(budget, 'image', read.bytes.length, decisionKey);
+    if (decision !== 'keep') {
+      return toolResultText(this.imageBudgetFailureMessage(decision));
     }
     return {
       type: 'content',
@@ -4603,14 +4686,22 @@ export class AiSdkBackend implements AgentBackend {
     };
   }
 
+  private imageBudgetFailureMessage(
+    decision: 'image_limit' | 'pdf_limit' | 'combined_limit',
+  ): string {
+    return decision === 'combined_limit'
+      ? `Image was read, but the combined image/PDF request budget (${MAX_PROVIDER_BINARY_REQUEST_BYTES / 1024 / 1024}MB across all binary attachments this turn) was exceeded; earlier attachments were sent and this one was omitted. Read fewer or smaller attachments.`
+      : PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE;
+  }
+
   private async buildCurrentUserContent(
-    budget: ProviderImageBudget,
+    budget: ProviderAttachmentBudget,
     text: string,
     attachments?: AttachmentRef[],
     quotes?: QuoteRef[],
     runtimeEventId?: string,
   ): Promise<UserContent> {
-    return await this.appendImageParts(
+    return await this.appendAttachmentParts(
       budget,
       formatTextWithInlineRefs(text, {
         ...(attachments !== undefined ? { attachments } : {}),
@@ -4737,8 +4828,8 @@ export class AiSdkBackend implements AgentBackend {
         // Materialize provider content before publishing the durable event.
         // After consumption there must be no fallible gap before ack/injection.
         const eventId = this.newId();
-        const providerContent = await this.appendImageParts(
-          scope.imageBudget,
+        const providerContent = await this.appendAttachmentParts(
+          scope.attachmentBudget,
           buildSteeringEnvelope(formatTextWithInlineRefs(lease.content.text, lease.content)),
           lease.content.attachments,
           `steering:${eventId}`,
