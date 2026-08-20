@@ -169,8 +169,12 @@ export function useOAuthCards(props: { query?: string }) {
  * level, the same ones the catalog and the connection detail use.
  */
 export function OAuthLoginPanel(props: { cardId: OAuthCardId; onLoginSuccess(): void | Promise<void> }) {
-  if (props.cardId === 'claude') return <ClaudeSubscriptionCard />;
-  if (props.cardId === 'github-copilot') return <GitHubCopilotLoginPanel />;
+  if (props.cardId === 'claude') {
+    return <ClaudeSubscriptionCard onLoginSuccess={props.onLoginSuccess} />;
+  }
+  if (props.cardId === 'github-copilot') {
+    return <GitHubCopilotLoginPanel onLoginSuccess={props.onLoginSuccess} />;
+  }
   return <SubscriptionLoginPanel service={props.cardId} onLoginSuccess={props.onLoginSuccess} />;
 }
 
@@ -253,7 +257,7 @@ function SubscriptionLoginPanel(props: {
   );
 }
 
-function GitHubCopilotLoginPanel() {
+function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void> }) {
   const host = useRuntimeHostSettingsTarget();
   const copy = getProviderSettingsCopy(useUiLocale()).oauthSection;
   // The shared login-flow controller owns the snapshot refresh, the
@@ -267,6 +271,7 @@ function GitHubCopilotLoginPanel() {
       logout: () => window.maka.githubCopilotSubscription.logout(host),
     } as OAuthLoginFlowBridge,
     display: { name: 'GitHub Copilot', shortName: 'GitHub Copilot' },
+    onLoginSuccess: props.onLoginSuccess,
     direct: {
       login: () => window.maka.githubCopilotSubscription.connectExistingLogin(host),
       refreshTokens: () => window.maka.githubCopilotSubscription.refreshTokens(host),
