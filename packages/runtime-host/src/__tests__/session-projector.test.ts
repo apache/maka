@@ -27,7 +27,6 @@ import {
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type SessionContinuitySnapshot,
-  type SteeringMessageSnapshot,
   type SubscriptionFrame,
 } from '../protocol/index.js';
 
@@ -263,23 +262,13 @@ test('does not replay settled transcript steps when the active step reaches term
   );
 });
 
-<<<<<<< HEAD
 test('marks Runtime Host tool results whose durable content is omitted', () => {
   const projector = new RuntimeHostSessionProjector(
     snapshot(),
-=======
-test('projects the durable steering echo even when the in-flight queue state was never observed', () => {
-  // Regression for apache/maka#3304: the coalesced canonical refresh can jump
-  // the queue straight from queued to consumed, so the in-flight synthesis
-  // never fires. The forwarded steering_message event must render the message.
-  const projector = new RuntimeHostSessionProjector(
-    snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
->>>>>>> 601d23866 (fix(runtime-host): forward the durable steering echo to session subscribers)
     createRuntimeHostSessionProjectionSeed([], snapshot()),
     () => 10,
   );
 
-<<<<<<< HEAD
   const projected = projector.accept({
     kind: 'subscription.session_event',
     hostEpoch: 'host-1',
@@ -341,7 +330,16 @@ test('preserves the bounded shell-run correlation on a tool start', () => {
   );
 });
 
-=======
+test('projects the durable steering echo even when the in-flight queue state was never observed', () => {
+  // Regression for apache/maka#3304: the coalesced canonical refresh can jump
+  // the queue straight from queued to consumed, so the in-flight synthesis
+  // never fires. The forwarded steering_message event must render the message.
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
   const skipped = projector.accept({
     kind: 'subscription.session_projection',
     hostEpoch: 'host-1',
@@ -420,6 +418,31 @@ test('seeds an unrendered in-flight steering message once on rejoin', () => {
   assert.deepEqual(projector.accept(steeringFrame(1)).events, []);
 });
 
+test('suppresses the live echo for a steering message already durable in the bootstrap', () => {
+  // subscription.open can bootstrap the durable steering message and install
+  // the subscriber while the Host's forwarded echo for it is still pending:
+  // the bootstrapped render must stay the only one (apache/maka#3316 review).
+  const inFlight = snapshot({ queue: queue(3, [steeringEntry('in_flight')]) });
+  const projector = new RuntimeHostSessionProjector(
+    inFlight,
+    createRuntimeHostSessionProjectionSeed(
+      [userSteering('steering-message-1', 'steering-event-1')],
+      inFlight,
+    ),
+    () => 10,
+  );
+
+  // Durable and in-flight: no synthesis seed…
+  assert.deepEqual(
+    projector.seedActive(false).map((event) => event.type),
+    ['queue_update'],
+  );
+  // …and the late echo of the same message is the duplicate.
+  assert.deepEqual(projector.accept(steeringFrame(1)).events, []);
+  // A different steering message still renders normally.
+  assert.equal(projector.accept(steeringFrame(2, 'steering-message-2')).events.length, 1);
+});
+
 function steeringEntry(state: 'queued' | 'in_flight'): SteeringMessageSnapshot {
   return {
     entryId: 'entry-1',
@@ -430,14 +453,7 @@ function steeringEntry(state: 'queued' | 'in_flight'): SteeringMessageSnapshot {
   };
 }
 
-function queue(
-  queueRevision: number,
-  steering: readonly SteeringMessageSnapshot[],
-): SessionContinuitySnapshot['queue'] {
-  return { hostEpoch: 'host-1', queueRevision, steering, followup: [] };
-}
-
-function steeringFrame(sequence: number): SubscriptionFrame {
+function steeringFrame(sequence: number, messageId = 'steering-message-1'): SubscriptionFrame {
   return {
     kind: 'subscription.session_event',
     hostEpoch: 'host-1',
@@ -450,13 +466,26 @@ function steeringFrame(sequence: number): SubscriptionFrame {
       id: 'steering-event-1',
       turnId: 'turn-1',
       ts: 10,
-      messageId: 'steering-message-1',
+      messageId,
       content: { text: 'steer the turn' },
     },
   };
 }
 
->>>>>>> 601d23866 (fix(runtime-host): forward the durable steering echo to session subscribers)
+function userSteering(
+  id: string,
+  steeringEventId: string,
+): Extract<StoredMessage, { type: 'user' }> {
+  return {
+    type: 'user',
+    id,
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'steer the turn',
+    steeringEventId,
+  };
+}
+
 function deltaFrame(
   sequence: number,
   startOffset: number,

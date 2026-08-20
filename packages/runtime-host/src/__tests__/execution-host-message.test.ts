@@ -117,7 +117,7 @@ import {
 test('subscribed Clients receive the durable steering echo as a session event', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'tui');
+    const client = await connectClient(fixture.root);
     const subscription = await client.openSessionSubscription({
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },

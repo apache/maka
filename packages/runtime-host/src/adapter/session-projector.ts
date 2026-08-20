@@ -43,6 +43,13 @@ interface AssistantAccumulator {
 
 export interface RuntimeHostSessionProjectionSeed {
   readonly durableInFlightMessageIds: readonly string[];
+  /**
+   * messageIds of steering interjections already durable in the transcript.
+   * `subscription.open` can bootstrap message X and install the subscriber
+   * before the Host's live echo for X arrives; these ids suppress that late
+   * echo so the bootstrapped render stays the only one.
+   */
+  readonly durableSteeringMessageIds: readonly string[];
   readonly activeAssistantMessages: readonly Extract<StoredMessage, { type: 'assistant' }>[];
 }
 
@@ -56,6 +63,9 @@ export function createRuntimeHostSessionProjectionSeed(
   return {
     durableInFlightMessageIds: transcript
       .filter((message) => inFlightMessageIds.has(message.id))
+      .map((message) => message.id),
+    durableSteeringMessageIds: transcript
+      .filter((message) => message.type === 'user' && message.steeringEventId !== undefined)
       .map((message) => message.id),
     activeAssistantMessages:
       snapshot.rootTurn === null
@@ -86,10 +96,11 @@ export class RuntimeHostSessionProjector {
   readonly #transcriptIds: Set<string>;
   /**
    * One render per steering message, whichever authoritative source projects
-   * it first: the durable session-event echo (in stream order) or the queue
-   * in-flight synthesis (which can win the race or cover a rejoin window).
+   * it first: the transcript bootstrap (seeded here), the durable session-event
+   * echo (in stream order), or the queue in-flight synthesis (which can win the
+   * race or cover a rejoin window).
    */
-  readonly #renderedSteeringMessageIds = new Set<string>();
+  readonly #renderedSteeringMessageIds: Set<string>;
   readonly #accumulators = new Map<string, AssistantAccumulator>();
 
   constructor(
@@ -101,6 +112,7 @@ export class RuntimeHostSessionProjector {
     this.#snapshot = structuredClone(snapshot);
     this.#now = now;
     this.#transcriptIds = new Set(seed.durableInFlightMessageIds);
+    this.#renderedSteeringMessageIds = new Set(seed.durableSteeringMessageIds);
     const root = snapshot.rootTurn;
     if (!root) return;
     for (const message of seed.activeAssistantMessages) {
