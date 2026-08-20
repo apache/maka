@@ -60,7 +60,6 @@ describe('Runtime Host Maka Session driver', () => {
         cwd: '/client/workspace',
         llmConnectionSlug: 'openai-main',
         model: 'gpt-5',
-        backend: 'ai-sdk',
         permissionMode: 'ask',
       }),
       /requires an explicit Project/,
@@ -92,7 +91,6 @@ describe('Runtime Host Maka Session driver', () => {
 
     await driver.createSession({
       cwd: '/repo',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       permissionMode: 'ask',
@@ -174,7 +172,6 @@ describe('Runtime Host Maka Session driver', () => {
 
     await driver.createSession({
       cwd: '/repo',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       permissionMode: 'ask',
@@ -304,7 +301,6 @@ describe('Runtime Host Maka Session driver', () => {
       await driver.createSession({
         cwd: candidate.cwd,
         ...('projectId' in candidate ? { projectId: candidate.projectId } : {}),
-        backend: 'ai-sdk',
         llmConnectionSlug: 'openai-main',
         model: 'gpt-5',
         permissionMode: 'ask',
@@ -364,7 +360,6 @@ describe('Runtime Host Maka Session driver', () => {
       cwd: '/repo',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      backend: 'ai-sdk',
       permissionMode: 'ask',
     });
     connection.executionBoundary = { kind: 'bypass', revision: 2 };

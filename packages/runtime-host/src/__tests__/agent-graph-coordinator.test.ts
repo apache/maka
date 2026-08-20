@@ -547,7 +547,6 @@ function context(): ConnectionContext {
   return {
     hostEpoch: 'epoch-1',
     connectionId: 'connection-1',
-    surface: 'tui',
     principal: 'local_os_user',
     acquireResidency: () => ({ release() {} }),
   };

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { BackendKind, SessionHeader, StoredMessage } from '@maka/core/session';
+import type { PersistedBackendKind, SessionHeader, StoredMessage } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type {
   AgentBackend,
@@ -46,7 +46,7 @@ type PendingSandboxBoundary = {
 };
 
 export class FakeBackend implements AgentBackend {
-  readonly kind: BackendKind = 'fake';
+  readonly kind: PersistedBackendKind = 'fake';
   readonly sessionId: string;
   private stopped = false;
   private pendingQuestion: PendingQuestion | undefined;

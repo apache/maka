@@ -135,7 +135,7 @@ async function runCrashChild(): Promise<void> {
   const runtimeEventStore = createCrashRuntimeStore(workspaceRoot);
   const backends = new BackendRegistry();
   backends.register(
-    'fake',
+    'ai-sdk',
     (ctx) =>
       new FakeBackend({
         sessionId: ctx.sessionId,
@@ -173,7 +173,6 @@ async function runCrashChild(): Promise<void> {
   });
   const session = await manager.createSession({
     cwd: workspaceRoot,
-    backend: 'fake',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'execute',
@@ -229,7 +228,7 @@ function createManager(workspaceRoot: string): {
   const runtimeEventStore = createCrashRuntimeStore(workspaceRoot);
   const backends = new BackendRegistry();
   backends.register(
-    'fake',
+    'ai-sdk',
     (ctx) =>
       new FakeBackend({
         sessionId: ctx.sessionId,

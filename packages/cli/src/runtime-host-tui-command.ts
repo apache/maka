@@ -139,7 +139,7 @@ async function runFirstRunOnboarding(
   const connected = await connectRuntimeHostCli({
     clientDataRoot,
     rootPath,
-    surface: 'tui',
+    interactiveSsh: true,
     ...(hostProfileId ? { profileId: hostProfileId } : {}),
   });
   try {

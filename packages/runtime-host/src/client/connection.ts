@@ -19,7 +19,7 @@ import {
   type ClientCapabilityHostFrame,
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
-  type ClientSurface,
+  type ClientHello,
   type ConfigurationChangedFrame,
   type ContextCompactInput,
   type ContextCompactResult,
@@ -99,7 +99,6 @@ const MAX_WEBSOCKET_BUFFERED_CHUNKS = 256;
 
 export interface ConnectRuntimeHostInput {
   rootPath: string;
-  surface: ClientSurface;
   protocol: ProtocolRange;
   compositionId?: string;
   generation?: string;
@@ -168,7 +167,6 @@ export interface ConnectRemoteRuntimeHostInput {
   readonly credential: string;
   readonly expectedRootId: string;
   readonly compositionId: string;
-  readonly surface: ClientSurface;
   readonly protocol: ProtocolRange;
   readonly clientInstanceId?: string;
   readonly connectTimeoutMs?: number;
@@ -1125,7 +1123,6 @@ export async function connectRemoteRuntimeHost(
     try {
       const result = await exchangeRuntimeHostHandshake({
         transport,
-        surface: input.surface,
         protocol: input.protocol,
         clientInstanceId: normalized.clientInstanceId,
         compositionId,
@@ -1296,7 +1293,6 @@ export async function connectResolvedRuntimeHost(
       : input.protocol;
     const result = await exchangeRuntimeHostHandshake({
       transport,
-      surface: input.surface,
       protocol: input.protocol,
       helloProtocol,
       clientInstanceId: input.clientInstanceId,
@@ -1375,7 +1371,6 @@ export async function connectResolvedRuntimeHost(
 
 interface ExchangeRuntimeHostHandshakeInput {
   readonly transport: RuntimeHostMessageTransport;
-  readonly surface: ClientSurface;
   readonly protocol: ProtocolRange;
   readonly helloProtocol?: ProtocolRange;
   readonly hostProtocol?: ProtocolRange;
@@ -1391,6 +1386,17 @@ interface ExchangeRuntimeHostHandshakeInput {
   readonly connectionResource?: RuntimeHostConnectionResource;
 }
 
+interface LegacySurfaceClientHello extends ClientHello {
+  /**
+   * Hosts from compatibility epoch 27 may require this field while decoding
+   * the bootstrap hello. Keep the sentinel private until the minimum supported
+   * compatibility epoch is greater than 27; the removal change must bump the
+   * epoch so old Hosts take the structured incompatibility path. Tracked by
+   * #3297. This is not part of the Client identity seen by new Hosts.
+   */
+  readonly surface: 'desktop';
+}
+
 async function exchangeRuntimeHostHandshake(
   input: ExchangeRuntimeHostHandshakeInput,
 ): Promise<
@@ -1399,10 +1405,10 @@ async function exchangeRuntimeHostHandshake(
   | { kind: 'draining' }
 > {
   const helloProtocol = input.helloProtocol ?? input.protocol;
-  await writeClientFrame(input.transport, {
+  const hello: LegacySurfaceClientHello = {
     kind: 'hello',
     clientInstanceId: input.clientInstanceId,
-    surface: input.surface,
+    surface: 'desktop',
     protocolMin: helloProtocol.min,
     protocolMax: helloProtocol.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
@@ -1411,7 +1417,8 @@ async function exchangeRuntimeHostHandshake(
     ...(input.takeoverHostEpoch === undefined
       ? {}
       : { takeover: { expectedHostEpoch: input.takeoverHostEpoch } }),
-  });
+  };
+  await writeClientFrame(input.transport, hello);
   const handshake = decodeHostFrame(await input.transport.read(0));
   if (!('kind' in handshake)) {
     throw new Error('Runtime Host returned an operation response before handshake');

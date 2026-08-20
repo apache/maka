@@ -60,7 +60,6 @@ function acceptedConnection(connectionId: string) {
     hostEpoch: 'host-epoch',
     connectionId,
     clientInstanceId: 'test-client',
-    surface: 'tui' as const,
     authority: LOCAL_OWNER_CONNECTION_AUTHORITY,
   };
 }
@@ -1085,7 +1084,6 @@ async function withRuntimeHost(
       connectClient: async () => {
         const result = await connectRuntimeHost({
           rootPath: root,
-          surface: 'tui',
           protocol: CURRENT_PROTOCOL,
         });
         assert.equal(result.kind, 'connected');
@@ -1117,7 +1115,6 @@ async function openAcceptedTransport(
   await writeProtocolFrame(transport, {
     kind: 'hello',
     clientInstanceId,
-    surface: 'tui',
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,

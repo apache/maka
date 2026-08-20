@@ -228,7 +228,6 @@ async function verifyRuntimeHostSetupCredential(input: {
     credential: input.credential,
     expectedRootId: input.rootId,
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-    surface: 'run',
     protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
   });
   if (result.kind !== 'connected') {

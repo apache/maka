@@ -232,7 +232,6 @@ function runEvent(sessionId: string): EmittedAgentRunEvent {
 function sessionInput(cwd: string): CreateSessionInput {
   return {
     cwd,
-    backend: 'fake',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',

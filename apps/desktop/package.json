@@ -75,7 +75,7 @@
     "@vitejs/plugin-react": "^6.0.5",
     "electron": "43.2.0",
     "electron-builder": "26.15.3",
-    "esbuild": "^0.27.7",
+    "esbuild": "^0.28.1",
     "linkedom": "^0.18.13",
     "simple-icons": "16.28.0",
     "storybook": "^10.4.6",

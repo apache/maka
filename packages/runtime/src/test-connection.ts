@@ -129,7 +129,7 @@ async function testConnectionStrict(
 ): Promise<ConnectionTestResult> {
   const defaults = PROVIDER_DEFAULTS[connection.providerType];
   // Unknown providerType → can't pick an auth path or fallback model. Return a
-  // clear failure rather than crashing. Mirrors `isFakeBackend`.
+  // clear failure rather than crashing. Mirrors `isRealConnection`.
   if (!defaults) {
     return { ok: false, errorMessage: `Unknown provider type "${connection.providerType}"` };
   }

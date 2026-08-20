@@ -29,6 +29,33 @@ const PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 
+test('emits the legacy desktop surface shim in the raw Client hello', async () => {
+  await withForgedHandshakePeer(
+    async (transport, hostEpoch, rootId) => {
+      const rawHello = await transport.read(2_000);
+      assert.ok(rawHello && typeof rawHello === 'object');
+      assert.equal((rawHello as Record<string, unknown>).surface, 'desktop');
+      const hello = decodeClientFrame(rawHello);
+      assert.ok('kind' in hello && hello.kind === 'hello');
+      await writeProtocolFrame(transport, {
+        kind: 'accepted',
+        rootId,
+        hostEpoch,
+        connectionId: 'forged-current-connection',
+        selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+      });
+      await transport.closed;
+    },
+    async (result) => {
+      assert.equal(result.kind, 'connected');
+    },
+  );
+});
+
 test('rejects an epoch-23 Host before any domain command', async () => {
   let admittedRequest: RequestFrame | undefined;
   await withForgedHandshakePeer(
@@ -126,7 +153,6 @@ async function withForgedHandshakePeer(
       capability,
       controlDirectory,
       clientInstanceId: randomUUID(),
-      surface: 'tui',
       protocol: PROTOCOL,
     });
     if (resolved.kind === 'election_deadline_elapsed') {

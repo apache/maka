@@ -38,7 +38,6 @@ import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation
 const CONNECTION_CONTEXT: ConnectionContext = {
   hostEpoch: 'usage-pricing-protocol-test',
   connectionId: 'usage-pricing-protocol-test-connection',
-  surface: 'tui',
   principal: 'local_os_user',
   acquireResidency: () => ({ release() {} }),
 };

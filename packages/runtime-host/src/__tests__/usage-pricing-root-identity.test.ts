@@ -17,7 +17,6 @@ import { HostUsagePricingCoordinator } from '../server/usage-pricing-coordinator
 const CONNECTION_CONTEXT: ConnectionContext = {
   hostEpoch: 'root-identity-test',
   connectionId: 'root-identity-test-connection',
-  surface: 'tui',
   principal: 'local_os_user',
   acquireResidency: () => ({ release() {} }),
 };

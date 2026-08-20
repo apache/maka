@@ -41,39 +41,23 @@ import {
 } from '@maka/runtime/agent-swarm-status-tool';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { ShellRunProcessManager } from '@maka/runtime/shell-run-manager';
+import {
+  resolveShellPlan,
+  resolveTurnShellPlan,
+  validateShellPreference,
+} from '@maka/runtime/shell-detect';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
-import {
-  openInteractiveProjectCatalogForWrite,
-  type InteractiveProjectCatalogWriter,
-} from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import {
   createArtifactAttachmentResourceReader,
   createReadImageSnapshotter,
-  openInteractiveArtifactStoreForWrite,
 } from '@maka/storage/artifact-stores';
-import { openInteractiveScheduledTaskStoreForWrite } from '@maka/storage/scheduled-task-store';
-import { openInteractiveDeepResearchStoreForWrite } from '@maka/storage/deep-research-authority';
-import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily-review-authority';
-import { openInteractiveGoalAuthorityForWrite } from '@maka/storage/goal-authority';
-import { openInteractivePlanStoreForWrite } from '@maka/storage/plan-authority';
-import {
-  isSessionNotFoundError,
-  openInteractiveExecutionStoresForWrite,
-} from '@maka/storage/execution-stores';
+import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
 import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child-executor';
-import {
-  type InteractiveLongTermMemoryWriter,
-  openInteractiveLongTermMemoryStoreForWrite,
-} from '@maka/storage/long-term-memory-store';
-import { openInteractiveMemoryBundleStoreForWrite } from '@maka/storage/memory-bundle-store';
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
-import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
-import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
-import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
+import { openStorageWriterComposition } from '@maka/storage';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import {
   openManagedWorkspaceOwner,
@@ -209,27 +193,22 @@ export async function createExecutionRuntimeHostComposition(
   options: CreateExecutionRuntimeHostCompositionOptions = {},
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<ExecutionRuntimeHostComposition> {
-  const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
-  await stores.sessionStore.ready();
+  const storage = await openStorageWriterComposition(context.owner.lease, {
+    afterRuntimePolicyOpened: async (stores) => {
+      if (options.bootstrapRuntimePolicy !== false) {
+        await ensureBootstrapRuntimePolicy({
+          workspaceRoot: context.owner.capability.canonicalPath,
+          stores,
+          onDeferredError: (error) =>
+            console.error(
+              `[runtime-host] optional bootstrap target could not be configured: ${generalizedErrorMessage(error)}`,
+            ),
+        });
+      }
+    },
+  });
+  const stores = storage.execution;
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
-  let taskLedgerStore:
-    | Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>
-    | undefined;
-  let usageStores: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>> | undefined;
-  let artifactStore: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>> | undefined;
-  let shellRunStore: Awaited<ReturnType<typeof openInteractiveShellRunStoreForWrite>> | undefined;
-  let longTermMemoryStore: InteractiveLongTermMemoryWriter | undefined;
-  let scheduledTaskStore:
-    | Awaited<ReturnType<typeof openInteractiveScheduledTaskStoreForWrite>>
-    | undefined;
-  let planStore: Awaited<ReturnType<typeof openInteractivePlanStoreForWrite>> | undefined;
-  let deepResearchStore:
-    | Awaited<ReturnType<typeof openInteractiveDeepResearchStoreForWrite>>
-    | undefined;
-  let dailyReviewStore:
-    | Awaited<ReturnType<typeof openInteractiveDailyReviewAuthorityForWrite>>
-    | undefined;
-  let goalStore: Awaited<ReturnType<typeof openInteractiveGoalAuthorityForWrite>> | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
@@ -237,50 +216,22 @@ export async function createExecutionRuntimeHostComposition(
   let unsubscribeTranscriptChanges: (() => void) | undefined;
   let managedWorkspaceOwner: ManagedWorkspaceOwner | undefined;
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
-  let projectCatalog: InteractiveProjectCatalogWriter | undefined;
   let goalExecutions: HostGoalExecutionCoordinator | undefined;
   try {
-    const openedProjectCatalog = await openInteractiveProjectCatalogForWrite(context.owner.lease);
-    projectCatalog = openedProjectCatalog;
-    const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
-      context.owner.lease,
-    );
-    if (options.bootstrapRuntimePolicy !== false) {
-      await ensureBootstrapRuntimePolicy({
-        workspaceRoot: context.owner.capability.canonicalPath,
-        stores: runtimePolicyStores,
-        onDeferredError: (error) =>
-          console.error(
-            `[runtime-host] optional bootstrap target could not be configured: ${generalizedErrorMessage(error)}`,
-          ),
-      });
-    }
+    const openedProjectCatalog = storage.projectCatalog;
+    const runtimePolicyStores = storage.runtimePolicy;
     const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
-    const openedScheduledTaskStore = await openInteractiveScheduledTaskStoreForWrite(
-      context.owner.lease,
-    );
-    scheduledTaskStore = openedScheduledTaskStore;
-    const openedPlanStore = await openInteractivePlanStoreForWrite(context.owner.lease);
-    planStore = openedPlanStore;
-    const openedDeepResearchStore = await openInteractiveDeepResearchStoreForWrite(
-      context.owner.lease,
-    );
-    deepResearchStore = openedDeepResearchStore;
-    const openedDailyReviewStore = await openInteractiveDailyReviewAuthorityForWrite(
-      context.owner.lease,
-    );
-    dailyReviewStore = openedDailyReviewStore;
-    const openedGoalStore = await openInteractiveGoalAuthorityForWrite(context.owner.lease);
-    goalStore = openedGoalStore;
-    const memoryStore = await openInteractiveMemoryBundleStoreForWrite(context.owner.lease);
-    longTermMemoryStore = await openInteractiveLongTermMemoryStoreForWrite(context.owner.lease);
-    taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
-    const openedArtifactStore = await openInteractiveArtifactStoreForWrite(context.owner.lease);
-    artifactStore = openedArtifactStore;
-    const openedUsageStores = await openInteractiveUsageStoresForWrite(context.owner.lease);
-    usageStores = openedUsageStores;
-    const openedShellRunStore = await openInteractiveShellRunStoreForWrite(context.owner.lease);
-    shellRunStore = openedShellRunStore;
+    const openedScheduledTaskStore = storage.scheduledTasks;
+    const openedPlanStore = storage.plan;
+    const openedDeepResearchStore = storage.deepResearch;
+    const openedDailyReviewStore = storage.dailyReview;
+    const openedGoalStore = storage.goal;
+    const memoryStore = storage.memoryBundle;
+    const longTermMemoryStore = storage.longTermMemory;
+    const taskLedgerStore = storage.taskLedger;
+    const openedArtifactStore = storage.artifacts;
+    const openedUsageStores = storage.usage;
+    const openedShellRunStore = storage.shellRuns;
     const worktreeChildExecutor = createGitWorktreeChildExecutor({
       storageRoot: context.owner.capability.canonicalPath,
     });
@@ -303,6 +254,11 @@ export async function createExecutionRuntimeHostComposition(
       runtimePolicyStores,
       runtimePolicyActivation,
       applyRuntimePolicyMutationEffects,
+      async (input) => {
+        if (input.operation.kind === 'set_shell') {
+          await validateShellPreference(input.operation.value);
+        }
+      },
     );
     const sessionAdmission = new SessionAdmissionGate();
     const memoryExtractionLane = new MemoryExtractionSessionLane();
@@ -376,6 +332,8 @@ export async function createExecutionRuntimeHostComposition(
       sessionAdmission,
       acquireResidency: () => context.acquireResidency('runtime-resource'),
       requestDrain: context.requestDrain,
+      resolveShell: async () =>
+        resolveShellPlan((await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.shell),
       onProjectionChanged: (update) =>
         requireContinuity(continuity).enqueueRuntimeResourceChanged(update),
     });
@@ -782,6 +740,7 @@ export async function createExecutionRuntimeHostComposition(
         const runProfile = hostedExecutionRunProfile(header.toolProfile);
         return createInteractiveRunComposer({
           runtimePolicy,
+          shell: resolveTurnShellPlan(runtimePolicy.policy.shell),
           skills,
           memory: requireMemory(memory),
           taskLedger,
@@ -843,6 +802,7 @@ export async function createExecutionRuntimeHostComposition(
           });
           return createInteractiveRunComposer({
             runtimePolicy,
+            shell: resolveTurnShellPlan(runtimePolicy.policy.shell),
             skills,
             memory: requireMemory(memory),
             taskLedger,
@@ -888,15 +848,24 @@ export async function createExecutionRuntimeHostComposition(
       requestDrain: context.requestDrain,
     });
     sessionEffects = sessionEffectCoordinator;
-    const resolveChildTools = async (sessionId: string): Promise<readonly MakaTool[]> => {
+    const resolveChildTools = async (sessionId: string) => {
       const header = await stores.sessionStore.readHeader(sessionId);
+      const shell = resolveTurnShellPlan(
+        (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.shell,
+      );
+      const childTools = createHostChildAgentToolComposition({
+        taskLedger,
+        builtinTools: { ...builtinTools, shell },
+        hostTools,
+        worktreePatchWriteBackAvailable: true,
+      }).childTools;
       const { surface } = await resolveInteractiveToolSurface({
         connectionSlug: header.llmConnectionSlug,
         modelId: header.model,
         hostTools: [],
-        childTools: childAgentTools.childTools,
+        childTools,
       });
-      return surface.childTools ?? [];
+      return { tools: surface.childTools ?? [], shell };
     };
     const subagentCatalog = createConfiguredSubagentCatalog({
       getPresets: async () =>
@@ -961,7 +930,6 @@ export async function createExecutionRuntimeHostComposition(
       canonicalPermissionOutcomes,
       shellRuns,
       planStore: openedPlanStore,
-      childTools: childAgentTools.childTools,
       resolveChildTools,
       worktreeChildExecutor,
       listArtifactsForTurn: (sessionId, turnId) =>
@@ -1345,7 +1313,6 @@ export async function createExecutionRuntimeHostComposition(
       context: {
         hostEpoch: context.hostEpoch,
         connectionId: 'hosted-execution',
-        surface: 'run',
         principal: 'runtime_host',
         acquireResidency: () => context.acquireResidency('hosted-execution'),
       },
@@ -1376,11 +1343,7 @@ export async function createExecutionRuntimeHostComposition(
           state: () => requireMemory(memory).recover(),
         },
         drain: [() => memoryExtraction?.beginDrain(), () => memory?.beginDrain()],
-        close: [
-          () => memoryExtraction?.close(),
-          () => memory?.close(),
-          () => longTermMemoryStore?.close(),
-        ],
+        close: [() => memoryExtraction?.close(), () => memory?.close()],
         releaseConnection: [
           (connectionId) => requireMemory(memory).releaseConnection(connectionId),
         ],
@@ -1388,12 +1351,10 @@ export async function createExecutionRuntimeHostComposition(
       createRuntimeHostDomainModule({
         id: 'plan',
         handlers: [plans.handlers],
-        close: [() => openedPlanStore.close()],
       }),
       createRuntimeHostDomainModule({
         id: 'project-catalog',
         handlers: [projects.handlers],
-        close: [() => openedProjectCatalog.close()],
       }),
       createRuntimeHostDomainModule({
         id: 'session',
@@ -1415,7 +1376,6 @@ export async function createExecutionRuntimeHostComposition(
             }
           },
         },
-        close: [() => stores.sessionStore.close?.()],
       }),
       createRuntimeHostDomainModule({
         id: 'configuration',
@@ -1447,14 +1407,10 @@ export async function createExecutionRuntimeHostComposition(
           () => (backendInvalidationPoisoned ? undefined : manager.refreshIdleBackends()),
           () => skills.close(),
           () => oauth?.close(),
-          () => openedUsageStores.close(),
-          () => openedArtifactStore.close(),
           () => {
             unsubscribeTranscriptChanges?.();
             unsubscribeTaskLedger?.();
-            taskLedgerStore?.close();
           },
-          () => shellRunStore?.close(),
         ],
         releaseConnection: [(connectionId) => artifacts.releaseConnection(connectionId)],
       }),
@@ -1475,7 +1431,7 @@ export async function createExecutionRuntimeHostComposition(
       createRuntimeHostDomainModule({
         id: 'deep-research',
         handlers: [requireDeepResearch(deepResearch).handlers],
-        close: [() => deepResearch?.close(), () => openedDeepResearchStore.close()],
+        close: [() => deepResearch?.close()],
       }),
       createRuntimeHostDomainModule({
         id: 'daily-review',
@@ -1574,7 +1530,7 @@ export async function createExecutionRuntimeHostComposition(
           domains: () => requireGoal(goal).recover(),
         },
         drain: [() => goalExecutions?.beginDrain(), () => goal?.beginDrain()],
-        close: [() => requireGoal(goal).close(), () => openedGoalStore.close()],
+        close: [() => requireGoal(goal).close()],
       }),
       createRuntimeHostDomainModule({
         id: 'session-retirement',
@@ -1608,6 +1564,11 @@ export async function createExecutionRuntimeHostComposition(
         }
         try {
           await closeRuntimeHostDomainModules(domainModules);
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          await storage.close();
         } catch (error) {
           errors.push(error);
         }
@@ -1647,16 +1608,6 @@ export async function createExecutionRuntimeHostComposition(
       errors.push(closeError);
     }
     try {
-      dailyReviewStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      deepResearchStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
       graphClient?.close();
     } catch (closeError) {
       errors.push(closeError);
@@ -1667,24 +1618,8 @@ export async function createExecutionRuntimeHostComposition(
       errors.push(closeError);
     }
     try {
-      await usageStores?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      artifactStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
       unsubscribeTranscriptChanges?.();
       unsubscribeTaskLedger?.();
-      taskLedgerStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      shellRunStore?.close();
     } catch (closeError) {
       errors.push(closeError);
     }
@@ -1694,32 +1629,7 @@ export async function createExecutionRuntimeHostComposition(
       errors.push(closeError);
     }
     try {
-      longTermMemoryStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      scheduledTaskStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      await goalStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      planStore?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      projectCatalog?.close();
-    } catch (closeError) {
-      errors.push(closeError);
-    }
-    try {
-      await stores.sessionStore.close?.();
+      await storage.close();
     } catch (closeError) {
       errors.push(closeError);
     }

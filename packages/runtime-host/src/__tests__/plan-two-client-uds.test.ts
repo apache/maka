@@ -37,7 +37,6 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     const planStore = await openInteractivePlanStoreForWrite(owner.lease);
     const session = await setupStores.sessionStore.create({
       cwd: root,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'explore',
@@ -66,7 +65,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
       composition: defineInteractiveRuntimeHostComposition(deterministicBackendComposition),
     });
     owner = undefined;
-    [desktop, tui] = await Promise.all([connect(root, 'desktop'), connect(root, 'tui')]);
+    [desktop, tui] = await Promise.all([connect(root), connect(root)]);
     const subscription = await desktop.openSessionSubscription({
       sessionId: session.id,
       transcript: { kind: 'none' },
@@ -119,7 +118,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
       composition: defineInteractiveRuntimeHostComposition(deterministicBackendComposition),
     });
     owner = undefined;
-    tui = await connect(root, 'tui');
+    tui = await connect(root);
 
     const replayed = await tui.startPlanTurn(approval);
     assert.equal(replayed.plan.executionId, approved.executionId);
@@ -177,11 +176,8 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
   }
 });
 
-async function connect(
-  rootPath: string,
-  surface: 'desktop' | 'tui',
-): Promise<RuntimeHostConnection> {
-  const result = await connectRuntimeHost({ rootPath, surface, protocol: PROTOCOL });
+async function connect(rootPath: string): Promise<RuntimeHostConnection> {
+  const result = await connectRuntimeHost({ rootPath, protocol: PROTOCOL });
   assert.equal(result.kind, 'connected');
   if (result.kind !== 'connected') throw new Error('Unable to connect to Runtime Host');
   return result.connection;

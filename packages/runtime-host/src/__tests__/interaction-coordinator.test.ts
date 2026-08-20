@@ -105,7 +105,6 @@ describe('HostInteractionCoordinator', () => {
       await mkdir(workspace);
       const session = await stores.sessionStore.create({
         cwd: workspace,
-        backend: 'fake',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -237,7 +236,6 @@ describe('HostInteractionCoordinator', () => {
       await mkdir(workspace);
       const session = await stores.sessionStore.create({
         cwd: workspace,
-        backend: 'fake',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -309,7 +307,6 @@ describe('HostInteractionCoordinator', () => {
       await mkdir(workspace);
       const session = await stores.sessionStore.create({
         cwd: workspace,
-        backend: 'fake',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -485,7 +482,6 @@ describe('HostInteractionCoordinator', () => {
       await mkdir(workspace);
       const session = await stores.sessionStore.create({
         cwd: workspace,
-        backend: 'fake',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -793,7 +789,6 @@ function connection(): ConnectionContext {
   return {
     hostEpoch: 'host_epoch_1',
     connectionId: 'connection_1',
-    surface: 'desktop',
     principal: 'local_os_user',
     acquireResidency: () => ({ release: () => {} }),
   };

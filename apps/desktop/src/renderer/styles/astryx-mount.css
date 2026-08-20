@@ -61,6 +61,8 @@
    with the value beside it. */
 .maka-model-selection-controls,
 .maka-composer-workspace,
+.maka-composer-plus-menu,
+.permissionModeIcon,
 .maka-inspector-panel {
   --color-background-surface: var(--background);
   --color-background-popover: var(--background-elevated);

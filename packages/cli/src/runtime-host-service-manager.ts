@@ -542,7 +542,6 @@ async function waitForManagedRuntimeHostReady(
     const remaining = deadline - Date.now();
     const connected = await connectExistingRuntimeHost({
       rootPath: config.rootPath,
-      surface: 'run',
       protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
       connectTimeoutMs: Math.max(1, Math.min(500, remaining)),
       handshakeTimeoutMs: Math.max(1, Math.min(500, remaining)),

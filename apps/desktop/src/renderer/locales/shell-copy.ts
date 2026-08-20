@@ -436,33 +436,26 @@ type ShellCopy = {
     permissionModeStreaming: string;
     permissionModeRunning: string;
     permissionModeWaiting: string;
-    planModeChanging: string;
-    planModeStreaming: string;
-    planModeRunning: string;
-    planModeWaiting: string;
+    /** The one mode control locks for the same four reasons, worded once. */
+    /** The Session summary has not arrived, so its mode is not known yet. */
+    modeChangeLoading: string;
+    modeChanging: string;
+    modeChangeStreaming: string;
+    modeChangeRunning: string;
+    modeChangeWaiting: string;
     planModeFailedTitle: string;
     planModeFallback: string;
+    orchestrationModeFailedTitle: string;
+    orchestrationModeFallback: string;
     planModeExitPendingTitle: string;
     planModeExitPendingDescription(title: string): string;
     planModeExitConfirm: string;
     planModeExitCancel: string;
     planModeExecutionActiveTitle: string;
     planModeExecutionActiveDescription: string;
-    swarmModeChanging: string;
-    swarmModeStreaming: string;
-    swarmModeRunning: string;
-    swarmModeWaiting: string;
-    swarmModeFailedTitle: string;
-    swarmModeFallback: string;
     swarmModeEnabledTitle: string;
     swarmModeDisabledTitle: string;
     swarmModeStatusDescription: string;
-    graphModeChanging: string;
-    graphModeStreaming: string;
-    graphModeRunning: string;
-    graphModeWaiting: string;
-    graphModeFailedTitle: string;
-    graphModeFallback: string;
     graphModeEnabledTitle: string;
     graphModeDisabledTitle: string;
     graphModeStatusDescription: string;
@@ -1145,12 +1138,15 @@ const SHELL_COPY_BY_LOCALE = {
       permissionModeStreaming: '当前任务正在流式输出，等结束后再切换权限模式。',
       permissionModeRunning: '当前任务正在运行，等结束后再切换权限模式。',
       permissionModeWaiting: '当前有工具调用正在等待确认，处理后再切换权限模式。',
-      planModeChanging: 'Plan Mode 正在切换，完成后再继续操作。',
-      planModeStreaming: '当前任务正在流式输出，等结束后再切换 Plan Mode。',
-      planModeRunning: '当前任务正在运行，等结束后再切换 Plan Mode。',
-      planModeWaiting: '当前有工具调用正在等待确认，处理后再切换 Plan Mode。',
-      planModeFailedTitle: '切换 Plan Mode 失败',
-      planModeFallback: 'Plan Mode 暂时无法切换，请稍后重试。',
+      modeChangeLoading: '会话还在载入，稍候即可切换模式。',
+      modeChanging: '模式正在切换，完成后再继续操作。',
+      modeChangeStreaming: '当前任务正在流式输出，等结束后再切换模式。',
+      modeChangeRunning: '当前任务正在运行，等结束后再切换模式。',
+      modeChangeWaiting: '当前有工具调用正在等待确认，处理后再切换模式。',
+      planModeFailedTitle: '切换 Plan 模式失败',
+      planModeFallback: 'Plan 模式暂时无法切换，请稍后重试。',
+      orchestrationModeFailedTitle: '切换编排模式失败',
+      orchestrationModeFallback: '编排模式暂时无法切换，请稍后重试。',
       planModeExitPendingTitle: '放弃当前方案？',
       planModeExitPendingDescription: (title: string) =>
         `「${title}」尚未审批。退出 Plan Mode 后，该方案会标记为已放弃，但历史记录仍会保留。`,
@@ -1158,21 +1154,9 @@ const SHELL_COPY_BY_LOCALE = {
       planModeExitCancel: '继续规划',
       planModeExecutionActiveTitle: '计划仍在执行',
       planModeExecutionActiveDescription: '请先中断当前执行，再进入 Plan Mode 调整方案。',
-      swarmModeChanging: 'Swarm Mode 正在切换，完成后再继续操作。',
-      swarmModeStreaming: '当前任务正在流式输出，等结束后再切换 Swarm Mode。',
-      swarmModeRunning: '当前任务正在运行，等结束后再切换 Swarm Mode。',
-      swarmModeWaiting: '当前有工具调用正在等待确认，处理后再切换 Swarm Mode。',
-      swarmModeFailedTitle: '切换 Swarm Mode 失败',
-      swarmModeFallback: 'Swarm Mode 暂时无法切换，请稍后重试。',
       swarmModeEnabledTitle: 'Swarm Mode 已开启',
       swarmModeDisabledTitle: 'Swarm Mode 未开启',
       swarmModeStatusDescription: '使用 /swarm on、/swarm off，或 /swarm <任务> 单次运行。',
-      graphModeChanging: 'Graph Mode 正在切换，完成后再继续操作。',
-      graphModeStreaming: '当前任务正在流式输出，等结束后再切换 Graph Mode。',
-      graphModeRunning: '当前任务正在运行，等结束后再切换 Graph Mode。',
-      graphModeWaiting: '当前有工具调用正在等待确认，处理后再切换 Graph Mode。',
-      graphModeFailedTitle: '切换 Graph Mode 失败',
-      graphModeFallback: 'Graph Mode 暂时无法切换，请稍后重试。',
       graphModeEnabledTitle: 'Graph Mode 已开启',
       graphModeDisabledTitle: 'Graph Mode 未开启',
       graphModeStatusDescription: '使用 /graph on、/graph off，或 /graph <任务> 单次运行。',
@@ -1681,12 +1665,15 @@ const SHELL_COPY_BY_LOCALE = {
         'This task is streaming. Wait for it to finish before changing the permission mode.',
       permissionModeRunning: 'This task is running. Wait for it to finish before changing the permission mode.',
       permissionModeWaiting: 'A tool call is waiting for confirmation. Respond before changing the permission mode.',
-      planModeChanging: 'Plan Mode is changing. Wait for it to finish before continuing.',
-      planModeStreaming: 'This task is streaming. Wait for it to finish before changing Plan Mode.',
-      planModeRunning: 'This task is running. Wait for it to finish before changing Plan Mode.',
-      planModeWaiting: 'A tool call is waiting for confirmation. Respond before changing Plan Mode.',
-      planModeFailedTitle: 'Could not change Plan Mode',
-      planModeFallback: 'Plan Mode could not be changed. Try again later.',
+      modeChangeLoading: 'This session is still loading. Its mode can be changed in a moment.',
+      modeChanging: 'The mode is changing. Wait for it to finish before continuing.',
+      modeChangeStreaming: 'This task is streaming. Wait for it to finish before changing the mode.',
+      modeChangeRunning: 'This task is running. Wait for it to finish before changing the mode.',
+      modeChangeWaiting: 'A tool call is waiting for confirmation. Respond before changing the mode.',
+      planModeFailedTitle: 'Could not change Plan mode',
+      planModeFallback: 'Plan mode could not be changed. Try again later.',
+      orchestrationModeFailedTitle: 'Could not change the orchestration mode',
+      orchestrationModeFallback: 'The orchestration mode could not be changed. Try again later.',
       planModeExitPendingTitle: 'Abandon the current plan?',
       planModeExitPendingDescription: (title: string) =>
         `“${title}” has not been approved. Leaving Plan Mode will mark it as abandoned while preserving its history.`,
@@ -1694,21 +1681,9 @@ const SHELL_COPY_BY_LOCALE = {
       planModeExitCancel: 'Keep planning',
       planModeExecutionActiveTitle: 'The plan is still running',
       planModeExecutionActiveDescription: 'Interrupt the active execution before entering Plan Mode to revise it.',
-      swarmModeChanging: 'Swarm Mode is changing. Wait for it to finish before continuing.',
-      swarmModeStreaming: 'This task is streaming. Wait for it to finish before changing Swarm Mode.',
-      swarmModeRunning: 'This task is running. Wait for it to finish before changing Swarm Mode.',
-      swarmModeWaiting: 'A tool call is waiting for confirmation. Respond before changing Swarm Mode.',
-      swarmModeFailedTitle: 'Could not change Swarm Mode',
-      swarmModeFallback: 'Swarm Mode could not be changed. Try again later.',
       swarmModeEnabledTitle: 'Swarm Mode is on',
       swarmModeDisabledTitle: 'Swarm Mode is off',
       swarmModeStatusDescription: 'Use /swarm on, /swarm off, or /swarm <task> for one turn.',
-      graphModeChanging: 'Graph Mode is changing. Wait for it to finish before continuing.',
-      graphModeStreaming: 'This task is streaming. Wait for it to finish before changing Graph Mode.',
-      graphModeRunning: 'This task is running. Wait for it to finish before changing Graph Mode.',
-      graphModeWaiting: 'A tool call is waiting for confirmation. Respond before changing Graph Mode.',
-      graphModeFailedTitle: 'Could not change Graph Mode',
-      graphModeFallback: 'Graph Mode could not be changed. Try again later.',
       graphModeEnabledTitle: 'Graph Mode is on',
       graphModeDisabledTitle: 'Graph Mode is off',
       graphModeStatusDescription: 'Use /graph on, /graph off, or /graph <task> for one turn.',

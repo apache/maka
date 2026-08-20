@@ -212,7 +212,6 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     this.beginDrain();
     await this.#lane;
     this.#closed = true;
-    this.#store.close();
   }
 
   async create(input: {

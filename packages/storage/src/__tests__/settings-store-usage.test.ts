@@ -13,7 +13,6 @@ async function seedSession(workspaceRoot: string, messages: StoredMessage[]): Pr
   try {
     const header = await sessions.create({
       cwd: '/tmp/maka-workspace',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'anthropic',
       model: 'claude-sonnet-4',
       permissionMode: 'ask',
@@ -77,7 +76,6 @@ describe('SettingsStore.usageStats request logs', () => {
     try {
       const header = await sessions.create({
         cwd: '/tmp/maka-workspace',
-        backend: 'ai-sdk',
         llmConnectionSlug: 'sqlite-provider',
         model: 'sqlite-default-model',
         permissionMode: 'ask',

@@ -287,7 +287,6 @@ async function startRemoteDesktopRuntimeHostCandidate(
   const connection = await connectRemoteRuntimeHostProfile({
     profile: remote.profile,
     credential: remote.credential,
-    surface: "desktop",
     clientInstanceId: input.clientInstanceId ?? randomUUID(),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
     ...(input.connectTimeoutMs === undefined
@@ -671,7 +670,6 @@ function connectInput(
 ): ConnectOrSpawnRuntimeHostInput {
   return {
     rootPath: input.rootPath,
-    surface: "desktop",
     protocol: {
       min: RUNTIME_HOST_PROTOCOL_VERSION,
       max: RUNTIME_HOST_PROTOCOL_VERSION,

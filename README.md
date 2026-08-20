@@ -1,6 +1,6 @@
 # Maka
 
-[![CI](https://github.com/Maka-Agent/maka-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Maka-Agent/maka-agent/actions/workflows/ci.yml)
+[![CI](https://github.com/apache/maka/actions/workflows/ci.yml/badge.svg)](https://github.com/apache/maka/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![docs](https://img.shields.io/badge/docs-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue?logo=googletranslate&logoColor=white)](./README.zh-CN.md)
 
@@ -57,7 +57,7 @@ Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 
 ### Download Desktop for macOS
 
-The signed and notarized Desktop app is available from [GitHub Releases](https://github.com/Maka-Agent/maka-agent/releases/latest) for Apple Silicon Macs only (`arm64`).
+The signed and notarized Desktop app is available from [GitHub Releases](https://github.com/apache/maka/releases/latest) for Apple Silicon Macs only (`arm64`).
 
 1. Download `Maka-<version>-mac-arm64.dmg`;
 2. Open the DMG and drag Maka to Applications;
@@ -84,8 +84,8 @@ published with the same release.
 ### Start Desktop
 
 ```sh
-git clone https://github.com/Maka-Agent/maka-agent.git
-cd maka-agent
+git clone https://github.com/apache/maka.git
+cd maka
 npm ci
 npm run dev
 ```

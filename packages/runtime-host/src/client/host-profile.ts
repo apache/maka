@@ -8,7 +8,6 @@ import {
   isCanonicalRuntimeHostWebSocketPath,
   RUNTIME_HOST_PROTOCOL_VERSION,
   requireHostRootId,
-  type ClientSurface,
 } from '../protocol/index.js';
 import {
   connectRemoteRuntimeHost,
@@ -155,7 +154,6 @@ export async function connectRemoteRuntimeHostProfile(
   input: {
     readonly profile: RemoteRuntimeHostProfile;
     readonly credential: string;
-    readonly surface: ClientSurface;
     readonly clientInstanceId: string;
     readonly signal?: AbortSignal;
     readonly connectTimeoutMs?: number;
@@ -189,7 +187,6 @@ export async function connectRemoteRuntimeHostProfile(
     credential: input.credential,
     expectedRootId: input.profile.rootId,
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-    surface: input.surface,
     protocol: {
       min: RUNTIME_HOST_PROTOCOL_VERSION,
       max: RUNTIME_HOST_PROTOCOL_VERSION,

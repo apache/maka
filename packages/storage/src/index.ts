@@ -142,6 +142,7 @@ export * from './operational-state-backup.js';
 export * from './mcp-config-store.js';
 export * from './workspace-identity.js';
 export * from './memory-bundle-store.js';
+export * from './storage-writer-composition.js';
 export * from './long-term-memory-store.js';
 export * from './project-catalog.js';
 export * from './project-catalog-authority.js';

@@ -97,8 +97,8 @@ test('two Clients query and control one Agent graph through Session invalidation
   let tui: RuntimeHostConnection | undefined;
   let subscription: RuntimeHostSessionSubscription | undefined;
   try {
-    desktop = await connect(root, 'desktop');
-    tui = await connect(root, 'tui');
+    desktop = await connect(root);
+    tui = await connect(root);
     subscription = await desktop.openSessionSubscription({
       sessionId: ROOT_SESSION_ID,
       transcript: { kind: 'none' },
@@ -125,7 +125,7 @@ test('two Clients query and control one Agent graph through Session invalidation
       'active',
     );
 
-    tui = await connect(root, 'tui', onLivenessProbe);
+    tui = await connect(root, onLivenessProbe);
     const stopped = await tui.request('agent.graph.stop', {
       rootSessionId: ROOT_SESSION_ID,
       expectedGraphId: GRAPH_ID,
@@ -240,12 +240,10 @@ class FakeAgentGraphAuthority implements GraphAuthority {
 
 async function connect(
   rootPath: string,
-  surface: 'desktop' | 'tui',
   onLivenessProbe?: () => void,
 ): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: PROTOCOL,
     livenessIntervalMs: LIVENESS_INTERVAL_MS,
     onLivenessProbe,

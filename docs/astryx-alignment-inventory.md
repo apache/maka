@@ -70,7 +70,6 @@ exists / broken hierarchy) · **polish** (off-scale px, density).
 - External import source + session pick → `SegmentedControl` / `Item`.
 - Plan execution expand → Astryx `Collapsible`.
 - Workbar tool picker → Astryx `List` + `ListItem`; visible descriptions and native row interaction.
-- `scripts/check-astryx-alignment.mjs` + unit test gate.
 
 ## Remaining polish (non-blocker)
 - Quote chips / prompt-rail ticks stay product-shaped hit targets.

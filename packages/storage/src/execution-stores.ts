@@ -312,6 +312,7 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
   });
   const run = <T>(operation: () => Promise<T>) =>
     runWithStorageRootLease(lease, kind, 'write', operation);
+  let closeTask: Promise<void> | undefined;
 
   const stores: ExecutionStoresWriterBase<K> & E = {
     ...extension,
@@ -421,12 +422,17 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       completeSessionRetirementCleanup: (sessionId) =>
         run(() => sessionStore.completeSessionRetirementCleanup(sessionId)),
       close: () =>
-        closeExecutionStorePersistence(sessionStore, runtimePersistence, {
-          agentRunStore,
-          conversationOperationalStateStore,
-          messageReceiptStore,
-          interactionStore,
-        }),
+        (closeTask ??= (async () => {
+          if (executionStoresWritersByLease.get(lease) === stores) {
+            executionStoresWritersByLease.delete(lease);
+          }
+          await closeExecutionStorePersistence(sessionStore, runtimePersistence, {
+            agentRunStore,
+            conversationOperationalStateStore,
+            messageReceiptStore,
+            interactionStore,
+          });
+        })()),
     },
     agentRunStore: {
       createRun: (header, options) => run(() => agentRunStore.createRun(header, options)),

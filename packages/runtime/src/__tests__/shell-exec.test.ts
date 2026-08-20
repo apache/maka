@@ -52,6 +52,17 @@ function findPwsh(): string | undefined {
 }
 
 describe('runShellWithBoundedTail', () => {
+  test('writes a legacy WSL Bash command through stdin', {
+    skip: process.platform === 'win32' ? 'uses /bin/sh as a portable stdin probe' : false,
+  }, async () => {
+    const result = await runShellWithBoundedTail(
+      "printf 'legacy-stdin-ready\\n'",
+      base({ shell: { kind: 'legacy-wsl-bash', displayName: 'Legacy WSL Bash', exe: '/bin/sh' } }),
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, 'legacy-stdin-ready\n');
+  });
+
   test('keeps only the bounded, line-aligned TAIL of large output (never killed by size)', async () => {
     const r = await runShellWithBoundedTail(
       "printf 'HEADMARK\\n'; seq 1 50; printf 'TAILMARK\\n'",

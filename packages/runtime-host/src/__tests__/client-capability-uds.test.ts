@@ -65,7 +65,6 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
 
     const connected = await connectRuntimeHost({
       rootPath: root,
-      surface: 'desktop',
       clientInstanceId: 'desktop-installation-a',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -234,7 +233,6 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
 
     const reconnected = await connectRuntimeHost({
       rootPath: root,
-      surface: 'desktop',
       clientInstanceId: 'desktop-installation-a',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,

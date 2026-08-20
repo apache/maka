@@ -25,6 +25,27 @@ export function decodeCanonicalRuntimePolicy(value: unknown): RuntimePolicy {
   return decoded;
 }
 
+/** Upgrade the immediately previous canonical document with the new shell default. */
+export function decodeRuntimePolicyV2(value: unknown): RuntimePolicy {
+  const policy = exactRecord(value, 'runtime policy v2', [
+    'networkProxy',
+    'personalization',
+    'memory',
+    'workspaceInstructions',
+    'privacy',
+    'chatDefaults',
+    'webSearch',
+    'subagents',
+  ]);
+  const decoded = normalizeRuntimePolicyFields(
+    policy,
+    normalizeSubagentSettings(policy.subagents),
+    { preference: 'auto', executable: '' },
+  );
+  assertCanonicalValue(value, withoutShell(decoded), 'runtime policy v2');
+  return decoded;
+}
+
 export function normalizeRuntimePolicyMutation(value: unknown): MutateRuntimePolicyInput {
   const input = exactRecord(value, 'runtime policy mutation', ['expectedRevision', 'operation']);
   const operation = exactRecord(input.operation, 'runtime policy operation', ['kind', 'value']);
@@ -44,13 +65,19 @@ function normalizeRuntimePolicy(value: unknown): RuntimePolicy {
     'chatDefaults',
     'webSearch',
     'subagents',
+    'shell',
   ]);
-  return normalizeRuntimePolicyFields(policy, normalizeSubagentSettings(policy.subagents));
+  return normalizeRuntimePolicyFields(
+    policy,
+    normalizeSubagentSettings(policy.subagents),
+    normalizeShell(policy.shell),
+  );
 }
 
 function normalizeRuntimePolicyFields(
   policy: Record<string, unknown>,
   subagents: RuntimePolicy['subagents'],
+  shell: RuntimePolicy['shell'],
 ): RuntimePolicy {
   return {
     networkProxy: normalizeNetworkProxy(policy.networkProxy),
@@ -61,7 +88,13 @@ function normalizeRuntimePolicyFields(
     chatDefaults: normalizeChatDefaults(policy.chatDefaults),
     webSearch: normalizeWebSearch(policy.webSearch),
     subagents,
+    shell,
   };
+}
+
+function withoutShell(policy: RuntimePolicy): Omit<RuntimePolicy, 'shell'> {
+  const { shell: _shell, ...legacy } = policy;
+  return legacy;
 }
 
 function normalizeMutationOperation(operation: Record<string, unknown>): RuntimePolicyMutation {
@@ -82,11 +115,28 @@ function normalizeMutationOperation(operation: Record<string, unknown>): Runtime
       return { kind: operation.kind, value: normalizeWebSearch(operation.value) };
     case 'set_subagents':
       return { kind: operation.kind, value: normalizeSubagentSettings(operation.value) };
+    case 'set_shell':
+      return { kind: operation.kind, value: normalizeShell(operation.value) };
     case 'patch_agent_settings':
       return { kind: operation.kind, value: normalizeAgentRuntimeSettingsPatch(operation.value) };
     default:
       throw domainError(`runtime policy operation '${String(operation.kind)}' is unknown`);
   }
+}
+
+function normalizeShell(value: unknown): RuntimePolicy['shell'] {
+  const item = exactRecord(value, 'shell policy', ['preference', 'executable']);
+  if (item.preference !== 'auto' && item.preference !== 'git_bash') {
+    throw domainError('shell preference is invalid');
+  }
+  const executable = stringValue(item.executable, 'shell executable', 4_096).trim();
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(executable)) {
+    throw domainError('shell executable must not contain control characters');
+  }
+  if (item.preference === 'git_bash' && executable.length === 0) {
+    throw domainError('Git Bash executable must not be empty');
+  }
+  return { preference: item.preference, executable };
 }
 
 function normalizeAgentRuntimeSettingsPatch(value: unknown): AgentRuntimeSettingsPatch {

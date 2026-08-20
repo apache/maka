@@ -103,7 +103,7 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
       turnId,
       text,
     });
-    const observer = await connectClient(fixture.root, 'tui');
+    const observer = await connectClient(fixture.root);
     const committed = await waitForTurn(observer, fixture.sessionId, turnId);
     dropped.abort();
 
@@ -130,7 +130,7 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
 
     await fixture.killHost(host);
     const successorHost = await fixture.startHost();
-    const successorClient = await connectClient(fixture.root, 'run');
+    const successorClient = await connectClient(fixture.root);
     assert.deepEqual(
       requireStartedTurn(
         await successorClient.startTurn({
@@ -167,7 +167,7 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
 test('startup recovery replays an admitted regenerate with its source lineage', async () => {
   await withExecutionRoot(async (fixture) => {
     const firstHost = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
+    const first = await connectClient(fixture.root);
     const sourceTurnId = randomUUID();
     const regeneratedTurnId = randomUUID();
     await first.startTurn({
@@ -184,7 +184,7 @@ test('startup recovery replays an admitted regenerate with its source lineage', 
       regeneratedTurnId,
     );
     const successorHost = await fixture.startHost();
-    const successor = await connectClient(fixture.root, 'tui');
+    const successor = await connectClient(fixture.root);
     const terminal = await waitForTerminalTurn(successor, fixture.sessionId, regeneratedTurnId);
     assert.equal(terminal.runId, admitted.runId);
     await successor.close();
@@ -201,7 +201,7 @@ test('startup recovery replays an admitted regenerate with its source lineage', 
 test('a fresh quoted Turn preserves durable and Runtime handoff content', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'desktop');
+    const client = await connectClient(fixture.root);
     const turnId = randomUUID();
     const content = quotedContent('fresh quoted turn');
 
@@ -223,8 +223,8 @@ test('a fresh quoted Turn preserves durable and Runtime handoff content', async 
 test('same idle Message submit is connection-independent and starts one canonical root', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     const messageId = randomUUID();
     const content = {
       text: '<context>canonical model input</context>',
@@ -283,7 +283,7 @@ test('same idle Message submit is connection-independent and starts one canonica
 test('stale Session operations return not_found across the SQLite-backed UDS Host boundary', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'desktop');
+    const client = await connectClient(fixture.root);
     const staleSessionId = randomUUID();
     try {
       await assert.rejects(

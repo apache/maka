@@ -1036,7 +1036,7 @@ function buildSessionHeader(
     ...(input.revisionIndex !== undefined ? { revisionIndex: input.revisionIndex } : {}),
     ...(input.revisionState ? { revisionState: input.revisionState } : {}),
     hasUnread: false,
-    backend: input.backend,
+    backend: 'ai-sdk',
     llmConnectionSlug: input.llmConnectionSlug,
     connectionLocked: false,
     model: input.model ?? 'default',
@@ -1090,7 +1090,7 @@ export function normalizeSessionHeader(
     isValidSessionExternalOrigin(header.externalOrigin) &&
     (header.lastReadMessageId === undefined || typeof header.lastReadMessageId === 'string') &&
     typeof header.hasUnread === 'boolean' &&
-    isBackendKind(header.backend) &&
+    isPersistedBackendKind(header.backend) &&
     typeof header.llmConnectionSlug === 'string' &&
     typeof header.connectionLocked === 'boolean' &&
     typeof header.model === 'string' &&
@@ -1220,7 +1220,12 @@ function isValidSubagentSessionLineage(header: SessionHeader): boolean {
   );
 }
 
-function isBackendKind(value: unknown): value is SessionHeader['backend'] {
+/**
+ * Decode guard for a durable session header. `'fake'` stays accepted:
+ * narrowing it here would make every session written by a build that shipped
+ * FakeBackend fail `normalizeSessionHeader` and read back as malformed (#3211).
+ */
+function isPersistedBackendKind(value: unknown): value is SessionHeader['backend'] {
   return value === 'ai-sdk' || value === 'fake';
 }
 

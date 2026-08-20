@@ -258,7 +258,7 @@ describe('host-managed agent graph coordinator', () => {
       },
     });
     const backends = new BackendRegistry();
-    backends.register('fake', (context) => new FakeBackend(context));
+    backends.register('ai-sdk', (context) => new FakeBackend(context));
     const manager = new SessionManager({
       store: sessionStore,
       runStore,
@@ -279,7 +279,6 @@ describe('host-managed agent graph coordinator', () => {
     try {
       const rootSession = await manager.createSession({
         cwd: root,
-        backend: 'fake',
         llmConnectionSlug: 'fake',
         permissionMode: 'ask',
         name: 'Graph supervisor',
@@ -1075,7 +1074,7 @@ describe('host-managed agent graph coordinator', () => {
       join(root, OPERATIONAL_STATE_DATABASE_NAME),
     );
     const backends = new BackendRegistry();
-    backends.register('fake', (context) => new FakeBackend(context));
+    backends.register('ai-sdk', (context) => new FakeBackend(context));
     const manager = new SessionManager({
       store: sessionStore,
       runStore,
@@ -1090,7 +1089,6 @@ describe('host-managed agent graph coordinator', () => {
     try {
       const rootSession = await manager.createSession({
         cwd: root,
-        backend: 'fake',
         llmConnectionSlug: 'fake',
         permissionMode: 'ask',
         orchestrationMode: 'swarm',

@@ -5,7 +5,7 @@
 - [Where to start](#where-to-start)
 - [Public decisions](#public-decisions)
 - [Human ownership and AI attribution](#human-ownership-and-ai-attribution)
-- [Review and fast path](#review-and-fast-path)
+- [Review](#review)
 - [Provenance and licensing](#provenance-and-licensing)
 - [Quick start](#quick-start)
 - [Developing Maka](#developing-maka)
@@ -40,7 +40,7 @@ the private flow in [SECURITY.md](./SECURITY.md), never as a public issue.
 
 ## Public decisions
 
-Discuss project direction, governance, and material product decisions publicly before implementation, and record the reasoning. Once an ASF development list is available, project-level decisions should move there. Implementation-level technical decisions may be discussed in the pull request when the reasoning remains public and reviewable.
+Discuss project direction, governance, and material product decisions publicly before implementation, and record the reasoning. Project-level decisions belong on the development list, [`dev@maka.apache.org`](https://lists.apache.org/list.html?dev@maka.apache.org). Implementation-level technical decisions may be discussed in the pull request when the reasoning remains public and reviewable.
 
 ## Human ownership and AI attribution
 
@@ -58,13 +58,11 @@ Generated-by: <tool>
 
 Add the trailer to each pull request commit that contains material AI-authored content, and ensure it survives squash or amend in the final commit.
 
-## Review and fast path
+## Review
 
-Material changes to user-visible behavior, public contracts, security, licensing, releases, or governance require independent review by another human. AI review does not count as independent human review. This requirement is separate from the human contributor of record, who is required for every contribution.
+Every pull request to `main` needs at least one approving review from a committer other than the author, and the required `test` check must pass. Branch protection declared in [`.asf.yaml`](./.asf.yaml) enforces those mechanics, and a new commit dismisses the approvals already given. What GitHub cannot check is that the review is an independent human judgment; that part is project policy, and AI review does not count as independent human review. This is separate from the human contributor of record, who is required for every contribution.
 
-A contribution may use the fast path and be merged without independent human review only when it is low impact, easy to reverse, does not affect a protected area above, and passes the required checks.
-
-When using the fast path, the person merging the pull request must comment on how the final revision meets these criteria. Any later commit requires a fresh determination and comment. A maintainer makes the final determination. Tests, CI, documentation, and mechanical changes may qualify, but their file type does not exempt them from review.
+A maintainer decides whether a change is material to user-visible behavior, public contracts, security, licensing, releases, or governance. Material changes do not merge on the mechanics alone: a maintainer also decides whether the review a change received is enough, and project direction, governance, and material product decisions go through the public decision process above before implementation. For everything else the baseline is enough. Tests, CI, documentation, and mechanical changes are not exempt by file type.
 
 ## Provenance and licensing
 
@@ -152,8 +150,8 @@ npx knip --workspace apps/desktop
 npx knip --workspace packages/ui
 ```
 
-The CI job named `typecheck` runs all of them under `bash -e`, so the first
-failure aborts the rest — read which step failed, not the job name.
+The CI job named `test` runs all of them as separate steps, so read which step
+failed rather than relying on the job name.
 
 ## Branch naming
 

@@ -366,7 +366,6 @@ describe('Runtime Host profiles', () => {
             rootId: ROOT_A,
           },
           credential: 'opaque-token',
-          surface: 'tui',
           clientInstanceId: 'client-1',
         },
         {
@@ -402,7 +401,6 @@ describe('Runtime Host profiles', () => {
           rootId: ROOT_A,
         },
         credential: 'opaque-token',
-        surface: 'run',
         clientInstanceId: 'client-1',
       },
       {
@@ -441,7 +439,6 @@ describe('Runtime Host profiles', () => {
           rootId: ROOT_A,
         },
         credential: 'opaque-token',
-        surface: 'tui',
         clientInstanceId: 'client-1',
         sshInteraction: 'inherit',
       },
@@ -475,7 +472,6 @@ describe('Runtime Host profiles', () => {
               rootId: ROOT_A,
             },
             credential: 'opaque-token',
-            surface: 'run',
             clientInstanceId: 'client-1',
           },
           {
@@ -506,7 +502,6 @@ describe('Runtime Host profiles', () => {
           {
             profile: remoteProfile('office', endpoint, rootId),
             credential,
-            surface: 'run',
             clientInstanceId: 'client-1',
           },
           {
@@ -661,7 +656,6 @@ describe('Runtime Host profiles', () => {
           {
             profile: remoteProfile('office', 'wss://runtime.example.com/', ROOT_A),
             credential: 'revoked-token',
-            surface: 'run',
             clientInstanceId: 'client-1',
           },
           { connect: async () => ({ kind: 'unavailable', reason: 'authentication_failed' }) },
@@ -686,7 +680,6 @@ describe('Runtime Host profiles', () => {
             {
               profile: remoteProfile('office', 'wss://runtime.example.com/', ROOT_A),
               credential: 'opaque-token',
-              surface: 'run',
               clientInstanceId: 'client-1',
             },
             { connect: async () => ({ kind: 'unavailable', reason }) },

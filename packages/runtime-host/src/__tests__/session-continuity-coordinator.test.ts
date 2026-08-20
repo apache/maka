@@ -1777,7 +1777,6 @@ function connectionContext(connectionId: string): ConnectionContext {
   return {
     hostEpoch: HOST_EPOCH,
     connectionId,
-    surface: 'tui',
     principal: 'local_os_user',
     acquireResidency: () => ({ release() {} }),
   };

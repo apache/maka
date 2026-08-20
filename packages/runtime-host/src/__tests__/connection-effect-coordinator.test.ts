@@ -24,7 +24,6 @@ import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation
 const context: ConnectionContext = {
   hostEpoch: 'connection-effect-test-epoch',
   connectionId: 'connection-effect-test-client',
-  surface: 'desktop',
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };

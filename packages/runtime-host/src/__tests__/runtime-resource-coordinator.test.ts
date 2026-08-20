@@ -7,6 +7,7 @@ import {
   type ShellRunUpdate,
 } from '@maka/core/events';
 import type { ShellRunBashInput, ShellRunWriteInput } from '@maka/runtime/shell-run-contract';
+import { ShellPreferenceError } from '@maka/runtime/shell-detect';
 import { SessionNotFoundError } from '@maka/storage';
 import { RUNTIME_RESOURCE_RESULT_MAX_BYTES } from '../protocol/runtime-resource.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
@@ -275,6 +276,131 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.activeResidencies, 0);
   });
 
+  test('starts the interactive terminal with the Host-resolved Git Bash plan', async () => {
+    const shell = {
+      kind: 'git-bash' as const,
+      displayName: 'Git Bash',
+      exe: 'C:\\Program Files\\Git\\bin\\bash.exe',
+    };
+    const harness = createHarness({ resolveShell: async () => shell });
+    const started = await harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'desktop-launch-git-bash' },
+      connection('connection-1'),
+    );
+
+    assert.equal(started.ok, true);
+    assert.deepEqual(harness.lastBackgroundInput?.shell, shell);
+    assert.equal(harness.lastBackgroundInput?.command, 'exec "$SHELL" -l');
+    assert.equal(harness.lastBackgroundInput?.env?.SHELL, shell.exe);
+    assert.equal(harness.lastBackgroundInput?.env?.CHERE_INVOKING, '1');
+    harness.finishBackground({ successful: true });
+  });
+
+  test('starts the legacy WSL shim with a Linux-visible login shell', async () => {
+    const shell = {
+      kind: 'legacy-wsl-bash' as const,
+      displayName: 'Legacy WSL Bash',
+      exe: 'C:\\Windows\\System32\\bash.exe',
+    };
+    const harness = createHarness({ resolveShell: async () => shell });
+    const started = await harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'desktop-launch-wsl' },
+      connection('connection-1'),
+    );
+
+    assert.equal(started.ok, true);
+    assert.deepEqual(harness.lastBackgroundInput?.shell, shell);
+    assert.equal(harness.lastBackgroundInput?.command, 'exec bash -l');
+    assert.notEqual(harness.lastBackgroundInput?.env?.SHELL, shell.exe);
+    harness.finishBackground({ successful: true });
+  });
+
+  test('rejects an unavailable saved shell without draining Runtime Host', async () => {
+    const harness = createHarness({
+      resolveShell: async () => {
+        throw new ShellPreferenceError(
+          'executable_missing',
+          'The configured Git Bash was not found',
+        );
+      },
+    });
+    const started = await harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'desktop-launch-missing-shell' },
+      connection('connection-1'),
+    );
+
+    assert.equal(started.ok, false);
+    assert.equal(!started.ok && started.error.code, 'invalid_request');
+    assert.equal(harness.lastBackgroundInput, undefined);
+    assert.equal(harness.drainCount, 0);
+  });
+
+  test('keeps the caller-supplied turn plan authoritative over the settings snapshot', async () => {
+    // The turn's Bash tool carries the plan resolved at turn admission. A
+    // mid-turn settings change must not split model guidance from execution,
+    // so the coordinator never overwrites a supplied plan — it does not even
+    // consult the settings snapshot when one is present.
+    const callerPlan = { kind: 'cmd' as const, displayName: 'cmd.exe' };
+    let resolveCalls = 0;
+    const harness = createHarness({
+      resolveShell: async () => {
+        resolveCalls += 1;
+        return {
+          kind: 'git-bash' as const,
+          displayName: 'Git Bash',
+          exe: 'C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe',
+        };
+      },
+    });
+
+    await harness.coordinator.runForegroundBash({ ...backgroundInput(), shell: callerPlan });
+    assert.deepEqual(harness.lastForegroundInput?.shell, callerPlan);
+    assert.equal(resolveCalls, 0);
+
+    await harness.coordinator.runBackgroundBash({ ...backgroundInput(), shell: callerPlan });
+    assert.deepEqual(harness.lastBackgroundInput?.shell, callerPlan);
+    assert.equal(resolveCalls, 0);
+    harness.finishBackground({ successful: true });
+  });
+
+  test('falls back to the Host-resolved plan only when the caller carries none', async () => {
+    const shell = {
+      kind: 'git-bash' as const,
+      displayName: 'Git Bash',
+      exe: 'C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe',
+    };
+    const harness = createHarness({ resolveShell: async () => shell });
+    await harness.coordinator.runForegroundBash(backgroundInput());
+
+    assert.deepEqual(harness.lastForegroundInput?.shell, shell);
+  });
+
+  test('does not start a process when draining begins during shell resolution', async () => {
+    let announceResolution!: () => void;
+    const resolving = new Promise<void>((resolve) => {
+      announceResolution = resolve;
+    });
+    let releaseResolution!: () => void;
+    const resolved = new Promise<void>((resolve) => {
+      releaseResolution = resolve;
+    });
+    const harness = createHarness({
+      resolveShell: async () => {
+        announceResolution();
+        await resolved;
+        return { kind: 'posix', displayName: '/bin/sh' };
+      },
+    });
+
+    const foreground = harness.coordinator.runForegroundBash(backgroundInput());
+    await resolving;
+    harness.coordinator.beginDrain();
+    releaseResolution();
+
+    await assert.rejects(foreground, /Runtime resources are draining/);
+    assert.equal(harness.lastForegroundInput, undefined);
+  });
+
   test('lets stop bypass the controller, releases terminal ownership, and keeps control replay safe', async () => {
     const harness = createHarness();
     const firstConnection = connection('connection-1');
@@ -413,7 +539,7 @@ describe('Host Runtime Resource coordinator', () => {
   });
 });
 
-function createHarness() {
+function createHarness(options: Pick<HostRuntimeResourceCoordinatorInput, 'resolveShell'> = {}) {
   let backgroundCompletion: ShellRunBashInput['onCompletion'];
   let currentSnapshot = ptySnapshot();
   const state = {
@@ -428,13 +554,16 @@ function createHarness() {
     stateReadFailure: undefined as Error | undefined,
     activeResidencies: 0,
     lastBackgroundInput: undefined as ShellRunBashInput | undefined,
+    lastForegroundInput: undefined as ShellRunBashInput | undefined,
     foregroundRun: undefined as
       | HostRuntimeResourceCoordinatorInput['manager']['runForegroundBash']
       | undefined,
   };
   const manager: HostRuntimeResourceCoordinatorInput['manager'] = {
-    runForegroundBash: (input) =>
-      state.foregroundRun?.(input) ?? Promise.resolve(foregroundResult()),
+    runForegroundBash: (input) => {
+      state.lastForegroundInput = input;
+      return state.foregroundRun?.(input) ?? Promise.resolve(foregroundResult());
+    },
     runBackgroundBash: async (input) => {
       state.lastBackgroundInput = input;
       backgroundCompletion = input.onCompletion;
@@ -541,6 +670,7 @@ function createHarness() {
     requestDrain: () => {
       state.drainCount += 1;
     },
+    ...options,
   });
   return Object.assign(state, {
     coordinator,
@@ -564,7 +694,6 @@ function connection(connectionId: string): ConnectionContext {
   return {
     hostEpoch: 'host-1',
     connectionId,
-    surface: 'tui',
     principal: 'local_os_user',
     acquireResidency: () => ({ release: () => {} }),
   };

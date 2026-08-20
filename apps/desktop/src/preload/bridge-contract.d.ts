@@ -594,7 +594,16 @@ export interface MakaBridge {
     setFlagged(sessionId: string, isFlagged: boolean, options?: { revisionFamily?: boolean }): Promise<void>;
     rename(sessionId: string, name: string, options?: { revisionFamily?: boolean }): Promise<void>;
     setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionSummary>;
+    /**
+     * Enter or leave Plan — a temporary collaboration excursion Runtime ends
+     * by itself once a proposal is approved or abandoned.
+     */
     setCollaborationMode(sessionId: string, mode: CollaborationMode): Promise<DesktopSessionSummary>;
+    /**
+     * The Session's standing default for how a turn fans out. Independent of
+     * Plan: different field, different lifetime, and Runtime resolves the
+     * overlap by stripping the tools Swarm and Graph need while planning.
+     */
     setOrchestrationMode(sessionId: string, mode: OrchestrationMode): Promise<DesktopSessionSummary>;
     getPlanState(sessionId: string): Promise<PlanSessionState>;
     subscribePlanChanges(sessionId: string, handler: () => void): () => void;

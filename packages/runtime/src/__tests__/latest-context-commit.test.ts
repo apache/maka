@@ -44,7 +44,7 @@ test('a real send seals its row all the way into SQLite, with nothing injected',
     let clock = 1_000;
     const now = () => (clock += 1);
 
-    backends.register('fake', (ctx) =>
+    backends.register('ai-sdk', (ctx) =>
       createTestAiSdkBackend({
         sessionId: ctx.sessionId,
         header: ctx.header,
@@ -79,7 +79,6 @@ test('a real send seals its row all the way into SQLite, with nothing injected',
     });
     const session = await manager.createSession({
       cwd: root,
-      backend: 'fake',
       llmConnectionSlug: 'mock-main',
       permissionMode: 'bypass',
     });

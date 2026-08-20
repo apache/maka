@@ -59,7 +59,7 @@ export function resolveModelRuntime(
   const defaults = PROVIDER_DEFAULTS[connection.providerType];
   // Unknown providerType with no per-model override → can't resolve an adapter.
   // Throw a clear error rather than crashing on `.runtimeAdapter`. Mirrors
-  // `isFakeBackend` in @maka/core/connection-readiness.ts.
+  // `isRealConnection` in @maka/core/connection-readiness.ts.
   if (!override && !defaults) {
     throw new Error(
       `Unknown provider type "${connection.providerType}"; cannot resolve model runtime.`,

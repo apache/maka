@@ -49,7 +49,7 @@ reviews:
     - For each apparent effect, state that material changes in that area require independent human review under the repository policy.
     - If none is identified, state only that no protected-area effect was identified in the current diff.
     - Treat the final status of required checks as unverified unless direct evidence is available.
-    - Do not classify the PR as a fast-path candidate or present the assessment as authorization. State that the person performing the merge reviews the final diff and a maintainer makes the final determination.
+    - Do not present the assessment as authorization to merge. State that the person performing the merge reviews the final diff and a maintainer makes the final determination.
 
   pre_merge_checks:
     docstrings:

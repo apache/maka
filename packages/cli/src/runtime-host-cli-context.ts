@@ -22,7 +22,6 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type HostRegistration,
-  type ClientSurface,
   type HostIncompatible,
 } from '@maka/runtime-host/protocol';
 import { resolveMakaClientDataRoot } from '@maka/storage';
@@ -63,9 +62,9 @@ interface RuntimeHostCliContextDeps {
 export async function connectRuntimeHostCli(
   input: {
     readonly rootPath: string;
-    readonly surface: ClientSurface;
     readonly profileId?: string;
     readonly clientDataRoot?: string;
+    readonly interactiveSsh?: boolean;
   },
   overrides: Partial<RuntimeHostCliContextDeps> = {},
 ): Promise<RuntimeHostCliConnectionContext> {
@@ -89,7 +88,6 @@ export async function connectRuntimeHostCli(
         );
   const connectInput = {
     rootPath: input.rootPath,
-    surface: input.surface,
     protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
     clientInstanceId,
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -103,7 +101,6 @@ export async function connectRuntimeHostCli(
       return deps.connectRemoteProfile({
         profile,
         credential: resolvedProfile.credential!,
-        surface: input.surface,
         clientInstanceId,
         sshInteraction,
         ...(signal ? { signal } : {}),
@@ -128,7 +125,7 @@ export async function connectRuntimeHostCli(
   };
   const initialConnection = await connect(
     undefined,
-    input.surface === 'tui' && process.stdin.isTTY && process.stdout.isTTY ? 'inherit' : 'batch',
+    input.interactiveSsh && process.stdin.isTTY && process.stdout.isTTY ? 'inherit' : 'batch',
   );
   const connection = await createRuntimeHostReconnectingConnection({
     initialConnection,

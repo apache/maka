@@ -66,7 +66,6 @@ export interface MakaRunOutcome {
 }
 
 export interface MakaRunContextInput {
-  surface: 'run' | 'activation';
   workspaceRoot: string;
   cwd: string;
   requestedConnectionSlug?: string;
@@ -266,7 +265,6 @@ export async function runMakaTextCliCore(
   let context: MakaRunContext;
   try {
     context = await deps.createContext({
-      surface: 'run',
       workspaceRoot,
       cwd: selection.cwd,
       ...(selection.kind === 'existing' || parsed.options.connection
@@ -314,7 +312,6 @@ export async function runMakaTextCliCore(
         : await context.runtime.createSession({
             cwd: selection.cwd,
             name: makaRunSessionName(prompt),
-            backend: 'ai-sdk',
             llmConnectionSlug: context.target.connection.slug,
             model: context.target.model,
             permissionMode: parsed.options.yolo ? 'bypass' : 'ask',

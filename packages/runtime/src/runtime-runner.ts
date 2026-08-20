@@ -70,16 +70,15 @@ export interface RuntimeGateDecision {
 
 /**
  * Narrow preflight interface for readiness/blocked/running/waiting policy.
- * Kept injectable so tests can pass a stub and Phase 6 can move desktop
- * main's readiness/rebind checks behind a real implementation.
+ * Kept injectable so tests and composition boundaries can supply policy
+ * without coupling the runtime runner to a product surface.
  */
 export interface RuntimeGate {
   preflight(request: InvocationRequest): Promise<RuntimeGateDecision>;
 }
 
 /**
- * Functional gate from a callback. Convenient for tests; also the shape a
- * future Phase 6 gate will compose from readiness rules.
+ * Functional gate from a callback. Convenient for tests and adapters.
  */
 export function runtimeGateFromCallback(
   preflight: (request: InvocationRequest) => Promise<RuntimeGateDecision> | RuntimeGateDecision,

@@ -1,6 +1,6 @@
 import { Editor } from '@earendil-works/pi-tui';
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import { ansi } from './tui-ansi.js';
-import { SKILL_INVOCATION_TOKEN_SOURCE } from './skill-token.js';
 
 // A `/`-token that begins mid-message (after whitespace). Only `/skill:` has
 // semantic value mid-message (a parseable invocation token); plain commands

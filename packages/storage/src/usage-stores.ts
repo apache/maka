@@ -369,6 +369,8 @@ function createWriterFacade(
   const close = (): Promise<void> => {
     if (closePromise) return closePromise;
     state = 'draining';
+    if (writerByLease.get(lease) === stores) writerByLease.delete(lease);
+    writers.delete(stores);
     const accepted = barrier;
     closePromise = accepted
       .then(async () => {

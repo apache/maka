@@ -364,7 +364,6 @@ export class RuntimeHostKernel {
           hostEpoch: this.hostEpoch,
           connectionId: result.connectionId,
           clientInstanceId: frame.clientInstanceId,
-          surface: frame.surface,
           authority,
         },
         resolveHandlers: () => this.#operationHandlers,

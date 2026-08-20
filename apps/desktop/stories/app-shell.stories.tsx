@@ -1,5 +1,4 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { userEvent } from 'storybook/test';
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
@@ -7,10 +6,8 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import {
   ChatSurfaceLayout,
   ChatView,
-  clearGlobalInputHistory,
   Composer,
   deriveTitlebarProjectName,
-  saveGlobalInputHistoryEntry,
   SessionListPanel,
   TitlebarSessionIdentity,
 } from '@maka/ui';
@@ -225,15 +222,13 @@ const baseComposerProps: ComposerProps = {
   onPermissionModeChange: noop,
   // Fidelity: production app-shell always wires these (app-shell.tsx
   // ~1851-1960), so the daily composer renders the upload button, the
-  // modes menu (Plan / Swarm), and the Skills picker. Omitting them here
-  // understated the persistent element count in every shell story.
+  // mode controls (Plan / orchestration), and the Skills picker. Omitting them
+  // here understated the persistent element count in every shell story.
   onPickAttachments: noop,
   planModeActive: false,
   onPlanModeChange: noop,
-  swarmModeActive: false,
-  onSwarmModeChange: noop,
-  graphModeActive: false,
-  onGraphModeChange: noop,
+  orchestrationMode: 'default',
+  onOrchestrationModeChange: noop,
   // Thinking is a separate right-footer Selector when levels are offered.
   activeThinkingLevels: ['off', 'low', 'medium', 'high', 'xhigh'],
   activeThinkingLevel: 'medium',
@@ -1003,15 +998,16 @@ export const PlanModeOn: Story = {
 // product accent, so the icon is what has to keep the modes distinguishable —
 // this story is where that carries its own weight.
 export const SwarmModeOn: Story = {
-  render: () => <ComposedShell composer={{ swarmModeActive: true }} />,
+  render: () => <ComposedShell composer={{ orchestrationMode: 'swarm' }} />,
 };
 
-// Real path: Plan and Swarm are independent switches (collaborationMode vs
-// orchestrationMode), so both can be on at once. This is the widest the mode
-// tail ever gets next to a real model name.
+// Real path: Plan and orchestration are separate Session fields with separate
+// lifetimes, so both can be on at once — Plan is a temporary excursion, Swarm
+// is the standing default the execution afterwards runs under. This is the
+// widest the mode tail ever gets next to a real model name.
 export const PlanAndSwarmModeOn: Story = {
   render: () => (
-    <ComposedShell composer={{ planModeActive: true, swarmModeActive: true }} />
+    <ComposedShell composer={{ planModeActive: true, orchestrationMode: 'swarm' }} />
   ),
 };
 
@@ -1031,40 +1027,4 @@ export const ModeOnWithPendingAttachments: Story = {
       }}
     />
   ),
-};
-
-const RECALLED_PROMPT = '帮我把 composer 的样式再收紧一点';
-
-// Real path: the user has sent this prompt before and starts retyping it, so
-// the editor offers the rest inside the field.
-//
-// A review driver, not coverage: the render smoke opens stories in embedded
-// mode, which disables autoplay (FIDELITY.md), so nothing below is executed by
-// CI. The active-offer lifecycle — Tab, caret, focus, composition, trigger-menu
-// priority, streaming Escape — is pinned in
-// `apps/desktop/e2e/composer-inline-completion.spec.ts`, which does run.
-export const ComposerInlineSuggestion: Story = {
-  // Seeded through the module's own write path, before the story mounts:
-  // `useComposerHistory` reads storage once at mount and thereafter follows
-  // that module's writes, so poking the key from `play` would seed a list
-  // nobody holds.
-  loaders: [
-    async () => {
-      clearGlobalInputHistory();
-      saveGlobalInputHistoryEntry(RECALLED_PROMPT);
-      return {};
-    },
-  ],
-  render: () => <ComposedShell chat={{ messages: [] }} />,
-  play: async ({ canvasElement }) => {
-    // Scoped to this canvas, not the document: Storybook can have other
-    // stories mounted, and a document-wide lookup would drive whichever
-    // composer happened to be first.
-    const editable = canvasElement.querySelector<HTMLElement>(
-      '.maka-composer-editor [contenteditable="true"]',
-    );
-    if (!editable) return;
-    await userEvent.click(editable);
-    await userEvent.keyboard(RECALLED_PROMPT.slice(0, 3));
-  },
 };

@@ -35,6 +35,7 @@ import {
 } from '@maka/runtime/network/scoped-fetch-transport';
 import { type ScannedSkill } from '@maka/runtime/skills';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
+import { resolveTurnShellPlan, ShellPreferenceError } from '@maka/runtime/shell-detect';
 import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
 import { SESSION_RECAP_INSTRUCTION } from '@maka/runtime/session-recap';
 import { hostedExecutionToolNames } from '../server/hosted-execution-tool-profile.js';
@@ -59,6 +60,7 @@ import {
 import type { TurnSnapshot, UsageQueryResult } from '../protocol/index.js';
 import type { ClientCapabilityHostFrame } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
+import { createHostChildAgentToolComposition } from '../server/child-agent-composition.js';
 import {
   createHostDailyReviewModel,
   createHostGoalEvaluator,
@@ -570,7 +572,6 @@ test('production backend creation continues after a Session Client Capability is
   const context: ConnectionContext = {
     hostEpoch: 'backend-creation-epoch',
     connectionId: 'provider-a',
-    surface: 'desktop',
     principal: 'local_os_user',
     acquireResidency: () => ({ release() {} }),
   };
@@ -658,7 +659,6 @@ test('production backend preserves coordinator Client Capability semantics acros
     const context = {
       hostEpoch: 'client-capability-host-epoch',
       connectionId: 'client-capability-provider',
-      surface: 'tui',
       principal: 'local_os_user',
       acquireResidency: () => ({ release() {} }),
     } satisfies ConnectionContext;
@@ -815,7 +815,6 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
   const context: ConnectionContext = {
     hostEpoch: 'hosted-profile-wire-epoch',
     connectionId: 'hosted-profile-wire-client',
-    surface: 'run',
     principal: 'runtime_host',
     acquireResidency: () => residencies.acquire('hosted-profile-wire-operation'),
   };
@@ -970,7 +969,6 @@ test('production Host executes a canonical ai-sdk Session against a real provide
   const connectionContext: ConnectionContext = {
     hostEpoch: 'real-model-test-epoch',
     connectionId: 'real-model-test-client',
-    surface: 'tui',
     principal: 'local_os_user',
     acquireResidency: () => ({ release() {} }),
   };
@@ -1057,7 +1055,6 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await execution.sessionStore.create({
       cwd: root,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'hosted-real-provider',
       model: MODEL_ID,
       permissionMode: 'ask',
@@ -1318,7 +1315,6 @@ test('production Host executes and durably supervises an Agent Graph over a real
   const context: ConnectionContext = {
     hostEpoch: 'agent-graph-test-epoch',
     connectionId: 'agent-graph-test-client',
-    surface: 'tui',
     principal: 'local_os_user',
     acquireResidency: () => {
       liveResidencies += 1;
@@ -1373,7 +1369,6 @@ test('production Host executes and durably supervises an Agent Graph over a real
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await execution.sessionStore.create({
       cwd: project,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'hosted-graph-provider',
       model: MODEL_ID,
       permissionMode: 'bypass',
@@ -1521,7 +1516,6 @@ test('production Host executes a durable runnable child with an exact tool ceili
   const context: ConnectionContext = {
     hostEpoch: 'child-agent-test-epoch',
     connectionId: 'child-agent-test-client',
-    surface: 'tui',
     principal: 'local_os_user',
     acquireResidency: () => ({ release() {} }),
   };
@@ -1574,7 +1568,6 @@ test('production Host executes a durable runnable child with an exact tool ceili
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const parent = await execution.sessionStore.create({
       cwd: project,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'hosted-child-provider',
       model: MODEL_ID,
       permissionMode: 'bypass',
@@ -1702,7 +1695,6 @@ test('production Host publishes and retires an implementation child patch', asyn
   const context: ConnectionContext = {
     hostEpoch: 'child-agent-test-epoch',
     connectionId: 'child-agent-test-client',
-    surface: 'tui',
     principal: 'local_os_user',
     acquireResidency: () => ({ release() {} }),
   };
@@ -1772,7 +1764,6 @@ test('production Host publishes and retires an implementation child patch', asyn
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const parent = await execution.sessionStore.create({
       cwd: project,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'hosted-child-provider',
       model: MODEL_ID,
       permissionMode: 'bypass',
@@ -2016,7 +2007,6 @@ test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async
     await publishConnectionModel(policy, connection.connectionId, 'deepseek-v4-flash');
     const session = await execution.sessionStore.create({
       cwd: capability.canonicalPath,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'deepseek-auxiliary',
       model: 'deepseek-v4-flash',
       thinkingLevel: 'high',
@@ -2095,7 +2085,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
     const session = await execution.sessionStore.create({
       cwd: capability.canonicalPath,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'goal-evaluator-provider',
       model: MODEL_ID,
       permissionMode: 'ask',
@@ -2681,6 +2670,206 @@ test('one composer freezes Runtime Policy while each Run freezes its remaining p
       { id: 'skill-catalog', revision: 'skills-4' },
     ],
   );
+});
+
+test('backend composition survives a moved saved Git Bash executable while Bash fails closed', async () => {
+  // A previously valid Git Bash path that was moved or uninstalled is a
+  // repairable optional-tool configuration error: it must not fail text-only
+  // backend composition. The turn plan carries the setup error, the tool
+  // description declares the outage, and the Bash boundary rethrows it
+  // instead of silently falling back to another shell.
+  const policy = {
+    ...createDefaultRuntimePolicy(),
+    shell: {
+      preference: 'git_bash' as const,
+      executable: 'C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe',
+    },
+  };
+  const fixture = backendCreationFixture({
+    abortSignal: new AbortController().signal,
+    resolveExecutionConnection: async () => readyExecutionConnection(),
+    readPricing: async () => ({ revision: 0, overrides: [] }),
+  });
+  let shellPolicyResolutions = 0;
+  const factory = createInteractiveRunComposerFactory({
+    skills: {
+      readCanonicalModelInventory: async () => ({
+        revision: 'skills-fixture',
+        projectRoot: '/workspace',
+        inventory: [],
+        diagnostics: [],
+        discoveryDiagnostics: [],
+      }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {
+      readPromptProjection: async () => ({
+        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
+        bundleRevision: null,
+        memoryRevision: null,
+        body: '',
+      }),
+    } as unknown as HostMemoryCoordinator,
+    taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
+    clientCapabilities: {
+      snapshotForSession: () => undefined,
+    } as unknown as HostClientCapabilityCoordinator,
+    resolveTavilyWebSearchReadiness: async () => false,
+    builtinTools: {},
+    resolveTurnShellPlan: (settings) => {
+      shellPolicyResolutions += 1;
+      return resolveTurnShellPlan(settings, {
+        platform: 'win32',
+        fileExists: () => false,
+      });
+    },
+  });
+  const connection = readyExecutionConnection()
+    .connection as unknown as import('@maka/core/llm-connections').RuntimeExecutionConnection;
+
+  const composer = await factory({
+    backendContext: fixture.context,
+    connection,
+    modelId: MODEL_ID,
+    runtimePolicy: { revision: 0, policy },
+    contextWindow: null,
+  });
+
+  const bash = composer.tools.find((tool) => tool.name === 'Bash') as
+    | MakaTool<{ command: string }, unknown>
+    | undefined;
+  assert.ok(bash, 'expected the default tool surface to include Bash');
+  const unavailableShell = resolveTurnShellPlan(policy.shell, {
+    platform: 'win32',
+    fileExists: () => false,
+  });
+  assert.equal(unavailableShell.setupError?.code, 'executable_missing');
+  assert.match(bash.description, /unavailable this turn/);
+  assert.doesNotMatch(bash.description, /write PowerShell syntax/);
+  await assert.rejects(
+    async () => {
+      await bash.impl({ command: 'echo never-runs' }, {
+        sessionId: 'session',
+        turnId: 'turn-1',
+        cwd: '/workspace',
+        toolCallId: 'tool-call',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+      } satisfies MakaToolContext);
+    },
+    (error: unknown) =>
+      error instanceof ShellPreferenceError && error.code === 'executable_missing',
+  );
+
+  // Text-only composition — prompts and the rest of the tool surface — is unaffected.
+  const prompt = await composer.resolveSystemPrompt({
+    sessionId: 'session',
+    turnId: 'turn-1',
+    cwd: '/workspace',
+    workspaceRoot: '/workspace',
+  });
+  assert.ok(prompt.sourceRevisions.length > 0);
+
+  const capturedChildShell = {
+    plan: {
+      kind: 'git-bash' as const,
+      displayName: 'captured child shell',
+      exe: 'C:\\captured\\bash.exe',
+    },
+  };
+  const capturedChildTools = createHostChildAgentToolComposition({
+    taskLedger: {} as TaskLedgerStore,
+    builtinTools: { shell: capturedChildShell },
+    hostTools: [],
+    worktreePatchWriteBackAvailable: true,
+  }).childTools;
+  const childComposer = await factory({
+    backendContext: {
+      ...fixture.context,
+      tools: capturedChildTools,
+      turnShellPlan: capturedChildShell,
+    },
+    connection,
+    modelId: MODEL_ID,
+    runtimePolicy: { revision: 1, policy },
+    contextWindow: null,
+  });
+  assert.equal(
+    shellPolicyResolutions,
+    1,
+    'a child activation must not re-read shell policy after Runtime captured its plan',
+  );
+  const capturedBash = childComposer.tools.find((tool) => tool.name === 'Bash');
+  assert.match(capturedBash?.description ?? '', /captured child shell/);
+  assert.doesNotMatch(capturedBash?.description ?? '', /unavailable this turn/);
+  assert.match(
+    await childComposer.turnTailPrompt({
+      sessionId: 'session',
+      turnId: 'turn-child',
+      cwd: '/workspace',
+      workspaceRoot: '/workspace',
+    }),
+    /captured child shell/,
+  );
+});
+
+test('child execution Bash carries the configured shell guidance and spawn plan', async () => {
+  const calls: unknown[] = [];
+  const shell = {
+    plan: {
+      kind: 'git-bash' as const,
+      displayName: 'Git Bash',
+      exe: 'C:\\Program Files\\Git\\bin\\bash.exe',
+    },
+  };
+  const composition = createHostChildAgentToolComposition({
+    taskLedger: {} as TaskLedgerStore,
+    builtinTools: {
+      shell,
+      shellRuns: {
+        async runForegroundBash(input) {
+          calls.push(input);
+          return {
+            kind: 'terminal' as const,
+            cwd: input.cwd,
+            cmd: input.command,
+            status: 'completed' as const,
+            exitCode: 0,
+            output: {
+              mode: 'pipes' as const,
+              stdout: '',
+              stderr: '',
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              redacted: false,
+            },
+          };
+        },
+        async runBackgroundBash() {
+          throw new Error('background execution was not requested');
+        },
+      },
+    },
+    worktreePatchWriteBackAvailable: true,
+  });
+  const bash = composition.childTools.find((tool) => tool.name === 'Bash') as
+    | MakaTool<{ command: string }, unknown>
+    | undefined;
+  assert.ok(bash);
+  assert.match(bash.description, /Git Bash/);
+  assert.match(bash.description, /POSIX shell syntax/);
+
+  await bash.impl(
+    { command: 'printf child-shell' },
+    {
+      sessionId: 'child-session',
+      turnId: 'child-turn',
+      cwd: '/workspace',
+      toolCallId: 'child-bash',
+      abortSignal: new AbortController().signal,
+      emitOutput: () => {},
+    },
+  );
+  assert.deepEqual((calls[0] as { shell?: unknown }).shell, shell.plan);
 });
 
 test('a bound tool ceiling excludes dynamic Client Capability tools', () => {

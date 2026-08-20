@@ -5,6 +5,7 @@ import {
   MCP_CONFIG_VERSION,
   createDefaultMcpConfig,
   type McpConfigFile,
+  type McpOAuthConfig,
   type McpProtocolPreference,
   type McpRemoteServerConfig,
   type McpServerConfig,
@@ -20,6 +21,11 @@ const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 export interface McpConfigStore {
   get(): Promise<McpConfigFile>;
   set(config: McpConfigFile): Promise<McpConfigFile>;
+  /** One serialized read-transform-write. `apply` sees the CURRENT on-disk
+   * config and returns the next one, inside the store's write queue — the
+   * seam for restore-plus-mutation flows whose separate get()-then-write
+   * would race a concurrent writer and roll a rotated secret back. */
+  transform(apply: (current: McpConfigFile) => McpConfigFile): Promise<McpConfigFile>;
   upsert(serverId: string, config: McpServerConfig): Promise<McpConfigFile>;
   remove(serverId: string): Promise<McpConfigFile>;
 }
@@ -62,6 +68,15 @@ class FileMcpConfigStore implements McpConfigStore {
       await this.assertCurrentVersionCanBeReplaced();
       await this.write(normalized);
       return normalized;
+    });
+  }
+
+  async transform(apply: (current: McpConfigFile) => McpConfigFile): Promise<McpConfigFile> {
+    return this.serial(async () => {
+      const current = await this.readOrCreate();
+      const next = normalizeMcpConfig(apply(current));
+      await this.write(next);
+      return next;
     });
   }
 
@@ -212,6 +227,47 @@ function normalizeServer(
   };
   if (value.headers !== undefined) result.headers = stringMap(value.headers, `${serverId}.headers`);
   if (protocol !== undefined) result.protocol = protocol;
+  if (value.oauth !== undefined) result.oauth = normalizeOAuth(value.oauth, serverId);
+  if (
+    result.oauth &&
+    Object.keys(result.headers ?? {}).some((key) => key.toLowerCase() === 'authorization')
+  ) {
+    // One authority per header: the OAuth bearer owns Authorization. A
+    // config declaring both is a conflict to reject, not to arbitrate at
+    // request time.
+    throw new Error(`${serverId}.headers must not include Authorization when oauth is configured`);
+  }
+  return result;
+}
+
+function normalizeOAuth(value: unknown, serverId: string): McpOAuthConfig {
+  if (!isRecord(value)) throw new Error(`${serverId}.oauth must be an object`);
+  const result: McpOAuthConfig = {};
+  if (value.clientId !== undefined) {
+    result.clientId = nonEmptyString(value.clientId, `${serverId}.oauth.clientId`);
+  }
+  if (value.clientSecret !== undefined) {
+    result.clientSecret = nonEmptyString(value.clientSecret, `${serverId}.oauth.clientSecret`);
+  }
+  if (result.clientSecret !== undefined && result.clientId === undefined) {
+    // A secret with no client id cannot form static client credentials —
+    // authentication would fail later, far from the config mistake.
+    throw new Error(`${serverId}.oauth.clientId is required when clientSecret is configured`);
+  }
+  if (value.scopes !== undefined) {
+    result.scopes = stringArray(value.scopes, `${serverId}.oauth.scopes`);
+  }
+  if (value.callbackPort !== undefined) {
+    if (
+      typeof value.callbackPort !== 'number' ||
+      !Number.isInteger(value.callbackPort) ||
+      value.callbackPort < 1 ||
+      value.callbackPort > 65_535
+    ) {
+      throw new Error(`${serverId}.oauth.callbackPort must be a port number`);
+    }
+    result.callbackPort = value.callbackPort;
+  }
   return result;
 }
 

@@ -70,7 +70,6 @@ test('repairs imported transcript turns into provider-neutral canonical history'
     const session = await sessions.createImportedSession(
       {
         cwd: '/repo',
-        backend: 'fake',
         llmConnectionSlug: 'deepseek',
         model: 'deepseek-v4-flash',
         permissionMode: 'ask',

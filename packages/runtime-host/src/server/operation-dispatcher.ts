@@ -1,6 +1,5 @@
 import {
   HOST_OPERATION_SPECS,
-  type ClientSurface,
   decodeOperationOutcome,
   type HostOperationErrorCode,
   type OperationInput,
@@ -17,7 +16,6 @@ import { ACCESS_AUTHORITY_OPERATION_SPECS } from '../protocol/access-authority.j
 export interface ConnectionContext {
   hostEpoch: string;
   connectionId: string;
-  surface: ClientSurface;
   principal: string;
   acquireResidency(): OperationResidency;
 }

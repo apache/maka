@@ -55,6 +55,7 @@ import {
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import type { AttachmentRef, QuoteRef } from '@maka/core/events';
 import type { PermissionMode } from '@maka/core/permission';
+import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { SessionSummary } from '@maka/core/session';
 import {
@@ -76,8 +77,12 @@ import {
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
+  DropdownMenuDivider,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
 } from '@astryxdesign/core/DropdownMenu';
+import { useIndicator } from '@astryxdesign/core/Indicator';
 import { PermissionModeSelect } from './permission-mode-menu.js';
 import { AttachmentKindIcon } from './attachment-kinds.js';
 import { formatPreviewSize } from './artifact-preview-registry.js';
@@ -333,22 +338,36 @@ export const Composer = forwardRef<
     permissionModeDisabledReason?: string;
     onPermissionModeChange?(mode: PermissionMode): void | Promise<void>;
     /**
-     * Session collaboration mode switch. Agent mode is the implicit default,
-     * so the composer only exposes whether Plan mode is enabled.
+     * Plan mode — a temporary collaboration excursion, and a toggle because
+     * that is what it is. Agent is the implicit default, so the composer only
+     * carries whether Plan is on. Runtime ends the excursion by itself when a
+     * proposal is approved or abandoned, which is why nothing here treats Plan
+     * as a resting mode the user must leave by hand.
      */
     planModeActive?: boolean;
     planModePending?: boolean;
     planModeDisabledReason?: string;
     onPlanModeChange?(active: boolean): void | Promise<void>;
-    /** Session orchestration mode switch. Default mode remains the implicit fallback. */
-    swarmModeActive?: boolean;
-    swarmModePending?: boolean;
-    swarmModeDisabledReason?: string;
-    onSwarmModeChange?(active: boolean): void | Promise<void>;
-    graphModeActive?: boolean;
-    graphModePending?: boolean;
-    graphModeDisabledReason?: string;
-    onGraphModeChange?(active: boolean): void | Promise<void>;
+    /**
+     * The Session's standing orchestration default. Of the field's three
+     * values only Swarm and Graph name a way to fan a turn out; `default` is
+     * the absence of one, so this is an optional choice between two rather
+     * than a choice among three. The two are exclusive — a run carries one
+     * orchestration — which is why the menu offers them as a radio group with
+     * no selection at rest, not as two switches that would silently turn each
+     * other off.
+     *
+     * Independent of Plan on purpose. The two are different fields with
+     * different lifetimes: Plan gates which tools a turn gets, this names how
+     * a turn fans out by default, and Runtime resolves the overlap by
+     * stripping the subagent and agent-graph tools while planning. So "plan
+     * with Swarm armed for afterwards" is a state the Session can hold, and
+     * neither control writes the other's field.
+     */
+    orchestrationMode?: OrchestrationMode;
+    orchestrationModePending?: boolean;
+    orchestrationModeDisabledReason?: string;
+    onOrchestrationModeChange?(mode: OrchestrationMode): void | Promise<void>;
     /**
      * Composer mention popups. Both are optional and the whole feature no-ops
      * when absent (SSR contracts render Composer with minimal props):
@@ -607,7 +626,7 @@ export const Composer = forwardRef<
     onDraftKeyChange: resetPromptHistoryNavigation,
     persistence: props.draftPersistence,
   });
-  const { resetNavigation, rememberSentEntry, handleArrowKey, matchCompletion } = useComposerHistory({
+  const { resetNavigation, rememberSentEntry, handleArrowKey } = useComposerHistory({
     text: textPort,
     saveCurrentDraft,
   });
@@ -1284,75 +1303,118 @@ export const Composer = forwardRef<
     setAttachmentLightbox(null);
   }, [attachmentLightboxOpen, attachmentLightbox]);
   /**
-   * The session modes that are currently on, in the order the ＋ menu lists
-   * them. The menu stays the switch — it turns each mode on *and* off; these
-   * marks are the resting state readout, plus one nearby way out. They sit at
-   * the tail of the footer's left controls, after the model and thinking
-   * pickers, so switching a mode never shifts those two.
+   * The orchestration modes the ＋ menu offers — the field's two real values.
+   *
+   * `default` is not among them and has no row: it is not a third thing to
+   * pick, it is what the Session is when neither of these is chosen. The group
+   * carries that as no selection, which is a state Astryx's radio group takes
+   * (`value: string | undefined`) and screen readers announce as a set with
+   * nothing checked.
+   */
+  const orchestrationOptions: ReadonlyArray<{
+    id: Exclude<OrchestrationMode, 'default'>;
+    icon: ReactNode;
+    label: string;
+    onTitle: string;
+  }> = [
+    {
+      id: 'swarm',
+      icon: <Network size={ICON_SIZE.control} aria-hidden="true" />,
+      label: copy.swarmModeLabel,
+      onTitle: copy.swarmModeOnTitle,
+    },
+    {
+      id: 'graph',
+      icon: <Workflow size={ICON_SIZE.control} aria-hidden="true" />,
+      label: copy.graphModeLabel,
+      onTitle: copy.graphModeOnTitle,
+    },
+  ];
+  /** A host that passes no handler cannot be in a mode this control can leave. */
+  const planModeActive = props.onPlanModeChange !== undefined && props.planModeActive === true;
+  const planModeDisabled =
+    props.disabled === true
+    || props.planModePending === true
+    || Boolean(props.planModeDisabledReason);
+  const orchestrationMode: OrchestrationMode =
+    props.onOrchestrationModeChange ? props.orchestrationMode ?? 'default' : 'default';
+  const orchestrationModeDisabled =
+    props.disabled === true
+    || props.orchestrationModePending === true
+    || Boolean(props.orchestrationModeDisabledReason);
+  /**
+   * The marks at the tail of the footer's left controls are the resting
+   * readout for whatever is on, plus one nearby way out each; the menu stays
+   * the switch. They sit after the model and thinking pickers, so a mode
+   * turning on or off never shifts those two.
+   *
+   * There can be two of them — Plan and an orchestration default are separate
+   * Session state, and a Session holding both should say so rather than have
+   * one of them hidden behind the other.
    *
    * Which mode a mark is comes from its icon, never from a hue. Maka blue is
    * the single product accent (DESIGN.md), so a per-mode colour would be a
    * second and third accent carrying no semantic — and a coloured pill per
    * status is on the same file's Don't list.
    */
-  const modes: ReadonlyArray<{
-    id: 'plan' | 'swarm' | 'graph';
-    active: boolean;
+  const activeModeMarks: ReadonlyArray<{
+    id: string;
     icon: ReactNode;
     label: string;
-    onTitle: string;
+    tooltip: string;
     isDisabled: boolean;
-    disabledReason: string | undefined;
     onDeactivate(): void;
   }> = [
-    {
-      id: 'plan',
-      active: props.planModeActive === true && props.onPlanModeChange !== undefined,
-      icon: <ListTodo size={ICON_SIZE.control} aria-hidden="true" />,
-      label: copy.planModeLabel,
-      onTitle: copy.planModeOnTitle,
-      isDisabled:
-        props.disabled === true
-        || props.planModePending === true
-        || Boolean(props.planModeDisabledReason),
-      disabledReason: props.planModeDisabledReason,
-      onDeactivate: () => { void props.onPlanModeChange?.(false); },
-    },
-    {
-      id: 'swarm',
-      active: props.swarmModeActive === true && props.onSwarmModeChange !== undefined,
-      icon: <Network size={ICON_SIZE.control} aria-hidden="true" />,
-      label: copy.swarmModeLabel,
-      onTitle: copy.swarmModeOnTitle,
-      isDisabled:
-        props.disabled === true
-        || props.swarmModePending === true
-        || Boolean(props.swarmModeDisabledReason),
-      disabledReason: props.swarmModeDisabledReason,
-      onDeactivate: () => { void props.onSwarmModeChange?.(false); },
-    },
-    {
-      id: 'graph',
-      active: props.graphModeActive === true && props.onGraphModeChange !== undefined,
-      icon: <Workflow size={ICON_SIZE.control} aria-hidden="true" />,
-      label: copy.graphModeLabel,
-      onTitle: copy.graphModeOnTitle,
-      isDisabled:
-        props.disabled === true
-        || props.graphModePending === true
-        || Boolean(props.graphModeDisabledReason),
-      disabledReason: props.graphModeDisabledReason,
-      onDeactivate: () => { void props.onGraphModeChange?.(false); },
-    },
+    ...(planModeActive
+      ? [{
+        id: 'plan',
+        icon: <ListTodo size={ICON_SIZE.control} aria-hidden="true" />,
+        label: copy.planModeLabel,
+        tooltip: props.planModeDisabledReason ?? copy.planModeOnTitle,
+        isDisabled: planModeDisabled,
+        onDeactivate: () => { void props.onPlanModeChange?.(false); },
+      }]
+      : []),
+    ...orchestrationOptions
+      .filter((option) => option.id === orchestrationMode)
+      .map((option) => ({
+        id: option.id,
+        icon: option.icon,
+        label: option.label,
+        tooltip: props.orchestrationModeDisabledReason ?? option.onTitle,
+        isDisabled: orchestrationModeDisabled,
+        onDeactivate: () => { void props.onOrchestrationModeChange?.('default'); },
+      })),
   ];
-  const activeModes = modes.filter((mode) => mode.active);
-  const showPlusMenu = Boolean(
-    props.onPickAttachments
-    || props.mentionSkills
-    || props.onPlanModeChange
-    || props.onSwarmModeChange
-    || props.onGraphModeChange,
-  );
+  /**
+   * The mark Astryx draws for a chosen option — a check when chosen, nothing
+   * when not — which is what its own `Selector` puts on a selected option, and
+   * what a menu of otherwise identical rows needs: no column of empty boxes
+   * ahead of the labels, and the mode icons on the same x as the action rows
+   * above. Both selectable item types draw their own control at the row's
+   * start — a box for Plan, a circle for the orchestration options — so the
+   * mark is passed as `endContent` and a rule scoped to this panel suppresses
+   * them. Read through `useIndicator` rather than an icon, so a theme
+   * replacing the `check` indicator reaches these rows too.
+   *
+   * That rule lives in the host, with the rest of `.maka-composer-*` — this
+   * component ships markup and class names, and every composer rule is the
+   * host's (`apps/desktop/src/renderer/styles/composer.css` today). A second
+   * host has to bring composer styling with it; that is the existing split,
+   * not something this control introduced.
+   *
+   * Upstream ask: let a selectable item choose its indicator, and this pair
+   * of workarounds goes away.
+   */
+  const SelectionMark = useIndicator('check');
+  /**
+   * Whether any action row precedes the mode group. The divider separates two
+   * groups, so with nothing above it there is nothing to separate — a host
+   * that wires only the mode controls would open the menu on a rule.
+   */
+  const hasPlusMenuActions = Boolean(props.onPickAttachments || props.mentionSkills);
+  const hasPlusMenuModes = Boolean(props.onPlanModeChange || props.onOrchestrationModeChange);
+  const showPlusMenu = Boolean(hasPlusMenuActions || hasPlusMenuModes);
 
   return (
     <>
@@ -1546,14 +1608,6 @@ export const Composer = forwardRef<
                 // surfaces, and clearable from Settings · 数据 (see
                 // use-composer-history.ts).
                 hasHistory={false}
-                // The rest of the newest past prompt this draft is a prefix
-                // of, offered as dim text after the caret. What is offered is
-                // ours to decide; whether it can be shown — caret at the end,
-                // no trigger menu, not mid-composition — and how it wraps,
-                // scrolls, announces and commits are the input's, which is the
-                // only thing that knows those states.
-                inlineCompletion={matchCompletion(text) ?? undefined}
-                inlineCompletionLabel={copy.inlineCompletionHint}
                 triggers={triggers}
                 pasteAsToken={pasteAsToken}
                 onFiles={onInputFiles}
@@ -1576,7 +1630,7 @@ export const Composer = forwardRef<
                   <DropdownMenu
                     placement="above"
                     hasChevron={false}
-                    className="maka-composer-quiet-menu"
+                    className="maka-composer-quiet-menu maka-composer-plus-panel"
                     button={{
                       label: copy.addContext,
                       icon: <Plus size={ICON_SIZE.control} aria-hidden="true" />,
@@ -1614,56 +1668,66 @@ export const Composer = forwardRef<
                         onClick={openSkillMenu}
                       />
                     ) : null}
-                    {props.onPlanModeChange ? (
-                      <DropdownMenuCheckboxItem
-                        label={copy.planModeLabel}
-                        icon={<ListTodo size={ICON_SIZE.control} aria-hidden="true" />}
-                        value={props.planModeActive === true}
-                        isDisabled={
-                          props.disabled
-                          || props.planModePending === true
-                          || Boolean(props.planModeDisabledReason)
-                        }
-                        onChange={(checked) => {
-                          void props.onPlanModeChange?.(checked);
-                        }}
-                        aria-description={props.planModeDisabledReason
-                          ?? (props.planModeActive ? copy.disablePlanMode : copy.enablePlanMode)}
-                      />
-                    ) : null}
-                    {props.onSwarmModeChange ? (
-                      <DropdownMenuCheckboxItem
-                        label={copy.swarmModeLabel}
-                        icon={<Network size={ICON_SIZE.control} aria-hidden="true" />}
-                        value={props.swarmModeActive === true}
-                        isDisabled={
-                          props.disabled
-                          || props.swarmModePending === true
-                          || Boolean(props.swarmModeDisabledReason)
-                        }
-                        onChange={(checked) => {
-                          void props.onSwarmModeChange?.(checked);
-                        }}
-                        aria-description={props.swarmModeDisabledReason
-                          ?? (props.swarmModeActive ? copy.disableSwarmMode : copy.enableSwarmMode)}
-                      />
-                    ) : null}
-                    {props.onGraphModeChange ? (
-                      <DropdownMenuCheckboxItem
-                        label={copy.graphModeLabel}
-                        icon={<Workflow size={ICON_SIZE.control} aria-hidden="true" />}
-                        value={props.graphModeActive === true}
-                        isDisabled={
-                          props.disabled
-                          || props.graphModePending === true
-                          || Boolean(props.graphModeDisabledReason)
-                        }
-                        onChange={(checked) => {
-                          void props.onGraphModeChange?.(checked);
-                        }}
-                        aria-description={props.graphModeDisabledReason
-                          ?? (props.graphModeActive ? copy.disableGraphMode : copy.enableGraphMode)}
-                      />
+                    {hasPlusMenuModes ? (
+                      <>
+                        {hasPlusMenuActions ? <DropdownMenuDivider /> : null}
+                        {props.onPlanModeChange ? (
+                          <DropdownMenuCheckboxItem
+                            label={copy.planModeLabel}
+                            icon={<ListTodo size={ICON_SIZE.control} aria-hidden="true" />}
+                            value={planModeActive}
+                            isDisabled={planModeDisabled}
+                            onChange={(next) => {
+                              void props.onPlanModeChange?.(next);
+                            }}
+                            endContent={planModeActive ? (
+                              <SelectionMark state="checked" size="sm" />
+                            ) : undefined}
+                            aria-description={
+                              props.planModeDisabledReason
+                              ?? (planModeActive ? copy.disablePlanMode : copy.enablePlanMode)
+                            }
+                          />
+                        ) : null}
+                        {props.onOrchestrationModeChange ? (
+                          <DropdownMenuRadioGroup
+                            label={copy.orchestrationModeAriaLabel}
+                            // No orchestration is no selection, not a value.
+                            value={orchestrationMode === 'default' ? undefined : orchestrationMode}
+                            // Astryx closes a menu on a radio commit. These
+                            // rows sit beside Plan, which stays open, and the
+                            // way back to no orchestration is the selected row
+                            // itself — both need the menu still there.
+                            hasCloseOnSelect={false}
+                            // A radio item reports its own value on every
+                            // activation, including when it is already the
+                            // selected one. That repeat is the user asking for
+                            // the mode they are already in, which is how they
+                            // leave it: the group empties instead of staying
+                            // put. The row they are on announces the change,
+                            // unlike two switches where the other row moved.
+                            onChange={(value) => {
+                              void props.onOrchestrationModeChange?.(
+                                value === orchestrationMode ? 'default' : (value as OrchestrationMode),
+                              );
+                            }}
+                          >
+                            {orchestrationOptions.map((option) => (
+                              <DropdownMenuRadioItem
+                                key={option.id}
+                                value={option.id}
+                                label={option.label}
+                                icon={option.icon}
+                                isDisabled={orchestrationModeDisabled}
+                                endContent={orchestrationMode === option.id ? (
+                                  <SelectionMark state="checked" size="sm" />
+                                ) : undefined}
+                                aria-description={props.orchestrationModeDisabledReason}
+                              />
+                            ))}
+                          </DropdownMenuRadioGroup>
+                        ) : null}
+                      </>
                     ) : null}
                   </DropdownMenu>
                 </span>
@@ -1766,22 +1830,22 @@ export const Composer = forwardRef<
                   which unmounts this button, so focus is handed back to the
                   input exactly as removing a Skill token does; otherwise a
                   keyboard user is dropped on `document.body`. */}
-              {activeModes.map((mode) => (
+              {activeModeMarks.map((mark) => (
                 <IconButton
-                  key={mode.id}
+                  key={mark.id}
                   variant="ghost"
                   type="button"
                   size="sm"
                   className="maka-composer-mode-button"
-                  data-mode={mode.id}
-                  label={mode.label}
-                  tooltip={mode.disabledReason ?? mode.onTitle}
-                  isDisabled={mode.isDisabled}
+                  data-mode={mark.id}
+                  label={mark.label}
+                  tooltip={mark.tooltip}
+                  isDisabled={mark.isDisabled}
                   onClick={() => {
-                    mode.onDeactivate();
+                    mark.onDeactivate();
                     window.requestAnimationFrame(() => focusInput());
                   }}
-                  icon={mode.icon}
+                  icon={mark.icon}
                 />
               ))}
             </div>

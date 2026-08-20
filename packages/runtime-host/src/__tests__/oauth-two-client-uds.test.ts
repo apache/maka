@@ -97,8 +97,8 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
         };
       }),
     });
-    first = await connectClient(root, 'desktop');
-    second = await connectClient(root, 'tui');
+    first = await connectClient(root);
+    second = await connectClient(root);
     const presentations: string[] = [];
     await first.replaceClientCapabilities(
       createOAuthPresentationClientProvider({
@@ -237,7 +237,7 @@ async function assertProviderDisabledOverUds(
         };
       }),
     });
-    client = await connectClient(root, 'desktop');
+    client = await connectClient(root);
     let presentations = 0;
     await client.replaceClientCapabilities(
       createOAuthPresentationClientProvider({
@@ -267,13 +267,9 @@ async function assertProviderDisabledOverUds(
   }
 }
 
-async function connectClient(
-  rootPath: string,
-  surface: 'desktop' | 'tui',
-): Promise<RuntimeHostConnection> {
+async function connectClient(rootPath: string): Promise<RuntimeHostConnection> {
   const connected = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: {
       min: RUNTIME_HOST_PROTOCOL_VERSION,
       max: RUNTIME_HOST_PROTOCOL_VERSION,

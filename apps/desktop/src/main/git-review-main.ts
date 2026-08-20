@@ -1,14 +1,12 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstat, readFile, rm } from 'node:fs/promises';
+import { lstat, readFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { countDiffLineStats } from '@maka/core/unified-diff';
 import {
   type GitReviewFile,
   type GitReviewFileStatus,
-  type GitReviewMutationAction,
-  type GitReviewMutationResult,
   type GitReviewReadResult,
   type GitReviewSource,
 } from '@maka/core/git-review';
@@ -124,78 +122,6 @@ export async function readGitReview(
     if (isUnbornRepositoryError(error)) {
       return { ok: false, reason: 'unborn_repository' };
     }
-    return { ok: false, reason: 'git_failed' };
-  }
-}
-
-export async function mutateGitReview(input: {
-  cwd: string;
-  source: GitReviewSource;
-  revision: string;
-  path: string;
-  action: GitReviewMutationAction;
-  runGit?: GitReviewCommandRunner;
-}): Promise<GitReviewMutationResult> {
-  const runGit = input.runGit ?? runGitCommand;
-  try {
-    const current = await readGitReview(input.cwd, input.source, runGit);
-    if (!current.ok) return { ok: false, reason: 'git_failed' };
-    if (current.snapshot.revision !== input.revision) {
-      return { ok: false, reason: 'stale_snapshot' };
-    }
-    if (!current.snapshot.files.some((file) => file.path === input.path)) {
-      return { ok: false, reason: 'path_not_found' };
-    }
-
-    const file = current.snapshot.files.find(
-      (candidate) => candidate.path === input.path,
-    );
-    if (!file) return { ok: false, reason: 'path_not_found' };
-
-    if (input.action === 'stage') {
-      await runGit(current.snapshot.repositoryRoot, ['add', '--', input.path]);
-    } else if (input.action === 'revert') {
-      if (input.source !== 'unstaged') {
-        return { ok: false, reason: 'git_failed' };
-      }
-      if (file.status === 'untracked') {
-        const target = resolve(current.snapshot.repositoryRoot, input.path);
-        const child = relative(current.snapshot.repositoryRoot, target);
-        if (!child || child.startsWith('..') || isAbsolute(child)) {
-          return { ok: false, reason: 'path_not_found' };
-        }
-        await rm(target, { force: true });
-      } else {
-        await runGit(current.snapshot.repositoryRoot, [
-          'restore',
-          '--worktree',
-          '--',
-          input.path,
-        ]);
-      }
-    } else if (
-      await gitRefExists(current.snapshot.repositoryRoot, 'HEAD', runGit)
-    ) {
-      await runGit(current.snapshot.repositoryRoot, [
-        'restore',
-        '--staged',
-        '--',
-        input.path,
-      ]);
-    } else {
-      await runGit(current.snapshot.repositoryRoot, [
-        'rm',
-        '--cached',
-        '--',
-        input.path,
-      ]);
-    }
-
-    return {
-      ok: true,
-      review: await readGitReview(input.cwd, input.source, runGit),
-    };
-  } catch {
     return { ok: false, reason: 'git_failed' };
   }
 }

@@ -9,7 +9,6 @@ import {
   requireClientInstanceId,
   requireHostCompositionId,
   validateProtocolRange,
-  type ClientSurface,
   type HostIncompatible,
   type ProtocolRange,
 } from '../protocol/index.js';
@@ -42,7 +41,6 @@ const MIN_CANDIDATE_INTERVAL_MS = 250;
 
 export interface ConnectOrSpawnRuntimeHostInput {
   rootPath: string;
-  surface: ClientSurface;
   protocol: ProtocolRange;
   compositionId: string;
   generation?: string;
@@ -195,7 +193,6 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
       const result = await connectResolvedRuntimeHost({
         capability,
         controlDirectory,
-        surface: input.surface,
         protocol: input.protocol,
         compositionId: input.compositionId,
         ...(input.generation === undefined ? {} : { generation: input.generation }),

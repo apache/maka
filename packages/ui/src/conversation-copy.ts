@@ -82,8 +82,6 @@ export interface ConversationCopy {
   composer: {
     placeholder: string;
     textareaAriaLabel: string;
-    /** Instruction announced after an inline completion, for screen readers. */
-    inlineCompletionHint: string;
     pastedQuoteLabel: string;
     selectedSkillsAriaLabel: string;
     removeSkillAriaLabel(name: string): string;
@@ -120,17 +118,14 @@ export interface ConversationCopy {
     thinkingDisabledStreaming: string;
     thinkingDisabledRunning: string;
     thinkingDisabledPermission: string;
+    orchestrationModeAriaLabel: string;
     planModeLabel: string;
     enablePlanMode: string;
     disablePlanMode: string;
     planModeOnTitle: string;
     swarmModeLabel: string;
-    enableSwarmMode: string;
-    disableSwarmMode: string;
     swarmModeOnTitle: string;
     graphModeLabel: string;
-    enableGraphMode: string;
-    disableGraphMode: string;
     graphModeOnTitle: string;
     /** Inline hint shown above the composer when no model connection exists yet. */
     noModelHint: string;
@@ -384,7 +379,7 @@ const CONVERSATION_COPY = {
       startersAriaLabel: '深度研究起手式', starters: DEEP_RESEARCH_STARTER_PROMPTS,
     },
     composer: {
-      placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', inlineCompletionHint: '按 Tab 键补全，按 Esc 键忽略', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
+      placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送', steerLabel: '插入消息', stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
       interruptHint: '或点停止中断', addContext: '添加上下文', stagedContext: '附加内容',
@@ -392,12 +387,11 @@ const CONVERSATION_COPY = {
       chooseSkill: '选择技能', noSkillsAvailable: '当前没有可用技能',
       switchDisabledStreaming: '当前任务正在流式输出，等结束后再切换模型。', switchDisabledRunning: '当前任务正在运行，等结束后再切换模型。', switchDisabledPermission: '当前有工具调用正在等待确认，处理后再切换模型。',
       thinkingDisabledStreaming: '当前任务正在流式输出，等结束后再切换思考级别。', thinkingDisabledRunning: '当前任务正在运行，等结束后再切换思考级别。', thinkingDisabledPermission: '当前有工具调用正在等待确认，处理后再切换思考级别。',
+      orchestrationModeAriaLabel: '编排模式',
       planModeLabel: 'Plan', enablePlanMode: '开启 Plan Mode', disablePlanMode: '退出 Plan Mode',
       planModeOnTitle: 'Plan 模式已启用，点击关闭',
-      swarmModeLabel: 'Swarm', enableSwarmMode: '开启 Swarm Mode', disableSwarmMode: '退出 Swarm Mode',
-      swarmModeOnTitle: 'Swarm 模式已启用，点击关闭',
-      graphModeLabel: 'Graph', enableGraphMode: '开启 Graph Mode', disableGraphMode: '退出 Graph Mode',
-      graphModeOnTitle: 'Graph 模式已启用，点击关闭',
+      swarmModeLabel: 'Swarm', swarmModeOnTitle: 'Swarm 模式已启用，点击关闭',
+      graphModeLabel: 'Graph', graphModeOnTitle: 'Graph 模式已启用，点击关闭',
       noModelHint: '还没有可用的模型连接，无法发送。', noModelAction: '前往模型设置', noModelSendTitle: '先添加一个模型连接才能发送。',
     },
     model: {
@@ -525,7 +519,7 @@ const CONVERSATION_COPY = {
       ],
     },
     composer: {
-      placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', inlineCompletionHint: 'Press Tab to complete, Esc to dismiss', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
+      placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send', steerLabel: 'Steer', stopLabel: 'Stop', stopping: 'Stopping…',
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
       interruptHint: 'or click Stop to interrupt', addContext: 'Add context', stagedContext: 'staged items',
@@ -533,12 +527,11 @@ const CONVERSATION_COPY = {
       chooseSkill: 'Choose skills', noSkillsAvailable: 'No skills available',
       switchDisabledStreaming: 'Wait for the current response to finish before switching models.', switchDisabledRunning: 'Wait for the current run to finish before switching models.', switchDisabledPermission: 'Resolve the pending tool permission before switching models.',
       thinkingDisabledStreaming: 'Wait for the current response to finish before changing the thinking level.', thinkingDisabledRunning: 'Wait for the current run to finish before changing the thinking level.', thinkingDisabledPermission: 'Resolve the pending tool permission before changing the thinking level.',
+      orchestrationModeAriaLabel: 'Orchestration mode',
       planModeLabel: 'Plan', enablePlanMode: 'Enable Plan Mode', disablePlanMode: 'Disable Plan Mode',
       planModeOnTitle: 'Plan mode is on — click to turn off',
-      swarmModeLabel: 'Swarm', enableSwarmMode: 'Enable Swarm Mode', disableSwarmMode: 'Disable Swarm Mode',
-      swarmModeOnTitle: 'Swarm mode is on — click to turn off',
-      graphModeLabel: 'Graph', enableGraphMode: 'Enable Graph Mode', disableGraphMode: 'Disable Graph Mode',
-      graphModeOnTitle: 'Graph mode is on — click to turn off',
+      swarmModeLabel: 'Swarm', swarmModeOnTitle: 'Swarm mode is on — click to turn off',
+      graphModeLabel: 'Graph', graphModeOnTitle: 'Graph mode is on — click to turn off',
       noModelHint: 'No model connection yet, so sending is unavailable.', noModelAction: 'Go to model settings', noModelSendTitle: 'Add a model connection before sending.',
     },
     model: {

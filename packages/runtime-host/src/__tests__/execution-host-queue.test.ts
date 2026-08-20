@@ -98,8 +98,8 @@ import {
 test('subscribed Clients share one canonical queue and ordered root handoff', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const desktop = await connectClient(fixture.root, 'desktop');
-    const tui = await connectClient(fixture.root, 'tui');
+    const desktop = await connectClient(fixture.root);
+    const tui = await connectClient(fixture.root);
     const desktopSubscription = await desktop.openSessionSubscription({
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
@@ -199,8 +199,8 @@ test('subscribed Clients share one canonical queue and ordered root handoff', as
 test('concurrent root admission for one Session has a single winner', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     const turnIds = [randomUUID(), randomUUID()] as const;
 
     const outcomes = await Promise.allSettled([
@@ -250,7 +250,7 @@ test('an archived Session rejects a new Turn before durable admission', async ()
   await withExecutionRoot(async (fixture) => {
     await fixture.archiveSession();
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'desktop');
+    const client = await connectClient(fixture.root);
     const turnId = randomUUID();
 
     await assert.rejects(
@@ -277,7 +277,7 @@ test('an archived Session rejects a new Turn before durable admission', async ()
 test('a killed Host is recovered exactly once before its successor becomes ready', async () => {
   await withExecutionRoot(async (fixture) => {
     const firstHost = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
+    const first = await connectClient(fixture.root);
     const firstSubscription = await first.openSessionSubscription({
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
@@ -309,7 +309,7 @@ test('a killed Host is recovered exactly once before its successor becomes ready
     await first.closed;
     await firstProbe.waitForFailure('connection_closed');
     const secondHost = await fixture.startHost();
-    const second = await connectClient(fixture.root, 'tui');
+    const second = await connectClient(fixture.root);
     const recoveredSubscription = await second.openSessionSubscription({
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
@@ -353,7 +353,7 @@ test('a killed Host is recovered exactly once before its successor becomes ready
     await fixture.stopHost(secondHost);
 
     const thirdHost = await fixture.startHost();
-    const third = await connectClient(fixture.root, 'run');
+    const third = await connectClient(fixture.root);
     const stable = await third.queryTurn({
       sessionId: fixture.sessionId,
       turnId,
@@ -382,7 +382,7 @@ test('a killed Host is recovered exactly once before its successor becomes ready
 test('graceful Host shutdown stops and drains an active Turn before releasing ownership', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'desktop');
+    const client = await connectClient(fixture.root);
     const turnId = randomUUID();
     const started = requireStartedTurn(
       await client.startTurn({
@@ -397,7 +397,7 @@ test('graceful Host shutdown stops and drains an active Turn before releasing ow
     await client.closed;
 
     const successor = await fixture.startHost();
-    const observer = await connectClient(fixture.root, 'tui');
+    const observer = await connectClient(fixture.root);
     const stable = await observer.queryTurn({
       sessionId: fixture.sessionId,
       turnId,
@@ -423,7 +423,7 @@ test('a durable admission without a Run resumes before the Host becomes ready', 
     const quotes = quotedContent('recover pending admission');
     const { runId } = await fixture.seedAdmission(turnId, quotes);
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'tui');
+    const client = await connectClient(fixture.root);
 
     const recovered = await client.queryTurn({
       sessionId: fixture.sessionId,
@@ -471,7 +471,7 @@ test('startup recovery compares an existing quoted UserMessage canonically', asy
     const content = quotedContent('recover existing message');
     const { runId, userMessageId } = await fixture.seedRunWithUserMessage(turnId, content);
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'tui');
+    const client = await connectClient(fixture.root);
 
     const recovered = await client.queryTurn({
       sessionId: fixture.sessionId,
@@ -498,7 +498,7 @@ test('startup recovery restores the admitted UserMessage before terminalizing it
       'recover the admitted message',
     );
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'tui');
+    const client = await connectClient(fixture.root);
 
     const recovered = await client.queryTurn({
       sessionId: fixture.sessionId,

@@ -78,8 +78,8 @@ test('two Clients share one durable Session recap effect', async () => {
   let desktop: RuntimeHostConnection | undefined;
   let tui: RuntimeHostConnection | undefined;
   try {
-    desktop = await connect(root, 'desktop');
-    tui = await connect(root, 'tui');
+    desktop = await connect(root);
+    tui = await connect(root);
     const input = { sessionId: 'session-1', effectId: 'effect-1', reason: 'manual' as const };
     const desktopResult = desktop.generateSessionRecap(input);
     await modelStarted.promise;
@@ -110,11 +110,8 @@ function gate(): { promise: Promise<void>; release(): void } {
   return { promise, release };
 }
 
-async function connect(
-  rootPath: string,
-  surface: 'desktop' | 'tui',
-): Promise<RuntimeHostConnection> {
-  const result = await connectRuntimeHost({ rootPath, surface, protocol: PROTOCOL });
+async function connect(rootPath: string): Promise<RuntimeHostConnection> {
+  const result = await connectRuntimeHost({ rootPath, protocol: PROTOCOL });
   assert.equal(result.kind, 'connected');
   if (result.kind !== 'connected') throw new Error('Unable to connect to Runtime Host');
   return result.connection;

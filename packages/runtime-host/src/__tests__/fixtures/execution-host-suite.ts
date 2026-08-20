@@ -125,7 +125,6 @@ export class ExecutionFixture {
       stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const session = await stores.sessionStore.create({
         cwd: this.root,
-        backend: 'ai-sdk',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -475,7 +474,6 @@ export class ExecutionFixture {
       const child = await stores.sessionStore.createSubagent({
         cwd: this.root,
         name: `${agentName} ${kind}`,
-        backend: 'ai-sdk',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'explore',
@@ -1025,7 +1023,6 @@ export async function withExecutionRoot(
     stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: root,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -1043,13 +1040,9 @@ export async function withExecutionRoot(
   }
 }
 
-export async function connectClient(
-  rootPath: string,
-  surface: 'desktop' | 'tui' | 'run',
-): Promise<RuntimeHostConnection> {
+export async function connectClient(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: CURRENT_PROTOCOL,
   });
   assert.equal(result.kind, 'connected');
@@ -1127,7 +1120,6 @@ export async function sendStartWithoutReadingResponse(
   await writeClientFrame(transport, {
     kind: 'hello',
     clientInstanceId: randomUUID(),
-    surface: 'desktop',
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,

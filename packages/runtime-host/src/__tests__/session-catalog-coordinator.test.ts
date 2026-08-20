@@ -41,7 +41,6 @@ type SessionContinuity = HostSessionCatalogCoordinatorOptions['continuity'];
 const context: ConnectionContext = {
   hostEpoch: 'session-catalog-test-epoch',
   connectionId: 'session-catalog-test-client',
-  surface: 'desktop',
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };

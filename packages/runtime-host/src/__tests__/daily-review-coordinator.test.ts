@@ -13,7 +13,6 @@ import { HostDailyReviewCoordinator } from '../server/daily-review-coordinator.j
 const CONTEXT: ConnectionContext = {
   hostEpoch: 'host-epoch',
   connectionId: 'connection-id',
-  surface: 'tui',
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };

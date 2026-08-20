@@ -148,7 +148,6 @@ export async function runRuntimeHostAccessRevokeCli(
 async function connectLocalOwner(rootPath: string) {
   const result = await connectExistingRuntimeHost({
     rootPath,
-    surface: 'run',
     protocol: PROTOCOL,
   });
   if (result.kind !== 'connected') {

@@ -40,6 +40,34 @@ import {
 } from '../protocol/turn.js';
 
 describe('Runtime Host bootstrap protocol', () => {
+  test('decodes a Client hello without a surface identity', () => {
+    const hello = {
+      kind: 'hello',
+      clientInstanceId: 'client-without-surface',
+      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+    } as const;
+
+    assert.deepEqual(decodeClientFrame(hello), hello);
+  });
+
+  test('ignores a legacy surface identity while decoding a Client hello', () => {
+    const hello = {
+      kind: 'hello',
+      clientInstanceId: 'legacy-surface-client',
+      surface: 'tui',
+      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+    } as const;
+
+    const { surface: _legacySurface, ...expected } = hello;
+    assert.deepEqual(decodeClientFrame(hello), expected);
+  });
+
   test('publishes a new compatibility epoch for Session catalog live-run state', () => {
     // Epoch 22 predates the live-run projection and rejects its added catalog
     // field, so mixed-version peers must fail during the handshake instead.

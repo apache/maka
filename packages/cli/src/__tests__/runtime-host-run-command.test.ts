@@ -205,7 +205,6 @@ describe('Runtime Host maka run adapter', () => {
     const fixture = runFixture({ observed, graph: true, graphProjectionRace: true });
     const session = await fixture.context.runtime.createSession({
       cwd: '/workspace',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       permissionMode: 'ask',
@@ -229,7 +228,6 @@ describe('Runtime Host maka run adapter', () => {
     const fixture = runFixture({ observed, graph: true });
     const session = await fixture.context.runtime.createSession({
       cwd: '/workspace',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       permissionMode: 'ask',
@@ -253,7 +251,6 @@ describe('Runtime Host maka run adapter', () => {
     const fixture = runFixture({ observed, graph: true, graphMultiWakeRace: true });
     const session = await fixture.context.runtime.createSession({
       cwd: '/workspace',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       permissionMode: 'ask',
@@ -282,7 +279,6 @@ describe('Runtime Host maka run adapter', () => {
     const context = fixture.context;
     const session = await context.runtime.createSession({
       cwd: '/workspace',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       permissionMode: 'ask',
@@ -315,7 +311,6 @@ describe('Runtime Host maka run adapter', () => {
     });
     const session = await fixture.context.runtime.createSession({
       cwd: '/workspace',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       permissionMode: 'ask',
@@ -338,7 +333,6 @@ describe('Runtime Host maka run adapter', () => {
     const fixture = runFixture({ maxSteps: 3 });
     const session = await fixture.context.runtime.createSession({
       cwd: '/workspace',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       permissionMode: 'ask',
@@ -390,7 +384,6 @@ describe('Runtime Host maka run adapter', () => {
     const fixture = runFixture({ graph: true });
     const session = await fixture.context.runtime.createSession({
       cwd: '/workspace',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       permissionMode: 'ask',
@@ -412,7 +405,6 @@ describe('Runtime Host maka run adapter', () => {
     });
     const session = await fixture.context.runtime.createSession({
       cwd: '/workspace',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       permissionMode: 'ask',
@@ -444,7 +436,6 @@ describe('Runtime Host maka run adapter', () => {
     });
     const session = await fixture.context.runtime.createSession({
       cwd: '/workspace',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       permissionMode: 'ask',
@@ -471,7 +462,6 @@ describe('Runtime Host maka run adapter', () => {
     });
     const session = await fixture.context.runtime.createSession({
       cwd: '/workspace',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       permissionMode: 'ask',
@@ -499,7 +489,6 @@ describe('Runtime Host maka run adapter', () => {
     });
     const session = await fixture.context.runtime.createSession({
       cwd: '/workspace',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       permissionMode: 'ask',
@@ -545,7 +534,6 @@ describe('Runtime Host maka run adapter', () => {
     });
     const session = await fixture.context.runtime.createSession({
       cwd: '/workspace',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       permissionMode: 'ask',
@@ -753,7 +741,6 @@ function runFixture(input: {
       connection,
       connectionCatalog(),
       {
-        surface: 'run',
         workspaceRoot: '/data',
         cwd: '/workspace',
         ...(input.graph ? { enableAgentGraph: true } : {}),

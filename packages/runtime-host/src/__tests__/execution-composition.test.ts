@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import type {
   AgentGraphIntentClaim,
@@ -81,7 +82,6 @@ test('production composition closes long-term memory after a later startup failu
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: root,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -121,14 +121,12 @@ test('production recovery preserves legacy Automation history and closes an orph
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const historical = await stores.sessionStore.create({
       cwd: root,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
     });
     const pending = await stores.sessionStore.create({
       cwd: root,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -264,7 +262,6 @@ test('hosted execution settles while its tracked environment resource remains ve
     const operationContext = {
       hostEpoch: 'hosted-environment-test',
       connectionId: 'hosted-environment-test',
-      surface: 'run' as const,
       principal: 'runtime_host' as const,
       acquireResidency: () => ({ release() {} }),
     };
@@ -349,7 +346,6 @@ test('production composition commits automatic titles through Host-owned Session
     try {
       const session = await manager.createSession({
         cwd: root,
-        backend: 'ai-sdk',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -363,7 +359,6 @@ test('production composition commits automatic titles through Host-owned Session
         {
           hostEpoch: 'execution-composition-test',
           connectionId: 'title-client',
-          surface: 'tui',
           principal: 'local_os_user',
           acquireResidency: () => ({ release() {} }),
         },
@@ -381,27 +376,22 @@ test('production composition commits automatic titles through Host-owned Session
 
 test('a legacy fake-backend session is refused with the product reason, not a registry error', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
-    const { composition, manager } = await createCapturedExecutionComposition(owner);
+    // Written by an older build: no creation path here can produce `fake`, so
+    // the row is seeded under the writer — which is the only way it was ever
+    // produced — and then read back by a Host that starts up against it, since
+    // activation dispatches straight off the durable header.
+    const legacyId = await seedLegacyFakeBackendSession(root, owner);
+    const { composition } = await createCapturedExecutionComposition(owner);
     try {
-      // Written by an older build: this one never produces `fake`, but the
-      // durable header survives and activation dispatches straight off it.
-      const legacy = await manager.createSession({
-        cwd: root,
-        backend: 'fake',
-        llmConnectionSlug: 'fake',
-        model: 'fake-model',
-        permissionMode: 'ask',
-      });
       const failure = await composition.handlers['turn.start'](
         {
-          sessionId: legacy.id,
+          sessionId: legacyId,
           turnId: 'turn-legacy-fake',
           content: { text: 'resume a retired local simulation' },
         },
         {
           hostEpoch: 'execution-composition-test',
           connectionId: 'legacy-fake-client',
-          surface: 'tui',
           principal: 'local_os_user',
           acquireResidency: () => ({ release() {} }),
         },
@@ -423,7 +413,6 @@ test('production composition orphans ownerless ShellRuns before serving Resource
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: root,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -440,7 +429,6 @@ test('production composition orphans ownerless ShellRuns before serving Resource
         {
           hostEpoch: 'execution-composition-test',
           connectionId: 'recovery-client',
-          surface: 'tui',
           principal: 'local_os_user',
           acquireResidency: () => ({ release() {} }),
         },
@@ -471,7 +459,6 @@ test('production Skill catalog resolves a Graph child durable tool surface', asy
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const parent = await stores.sessionStore.create({
       cwd: root,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -494,7 +481,6 @@ test('production Skill catalog resolves a Graph child durable tool surface', asy
         {
           hostEpoch: 'execution-composition-test',
           connectionId: 'graph-child-skill-client',
-          surface: 'desktop',
           principal: 'local_os_user',
           acquireResidency: () => ({ release() {} }),
         },
@@ -530,7 +516,6 @@ test('new Full Access Plan Skill previews use the mutating tool surface', async 
       const connection = {
         hostEpoch: 'execution-composition-test',
         connectionId: 'new-session-skill-client',
-        surface: 'desktop' as const,
         principal: 'local_os_user' as const,
         acquireResidency: () => ({ release() {} }),
       };
@@ -639,7 +624,6 @@ test('Skill capability previews omit unavailable Tavily search surfaces', async 
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: root,
-      backend: 'ai-sdk',
       llmConnectionSlug: connection.slug,
       model: 'fake-model',
       permissionMode: 'bypass',
@@ -652,7 +636,6 @@ test('Skill capability previews omit unavailable Tavily search surfaces', async 
       const connectionContext = {
         hostEpoch: 'execution-composition-test',
         connectionId: 'web-search-skill-preview-client',
-        surface: 'desktop' as const,
         principal: 'local_os_user' as const,
         acquireResidency: () => ({ release() {} }),
       };
@@ -696,7 +679,6 @@ test('production composition validates graph stop before aborting a claimed chil
     const claims = createAgentGraphControlStore(root);
     const parent = await stores.sessionStore.create({
       cwd: root,
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -790,7 +772,6 @@ test('production composition validates graph stop before aborting a claimed chil
       const clientContext = {
         hostEpoch: 'execution-composition-test',
         connectionId: 'graph-stop-client',
-        surface: 'tui' as const,
         principal: 'local_os_user' as const,
         acquireResidency: () => ({ release() {} }),
       };
@@ -900,6 +881,43 @@ function shellRunRecord(
   };
 }
 
+/**
+ * Writes one session whose durable header says `backend: 'fake'`.
+ *
+ * Nothing in this build can write that value, so the row goes in underneath the
+ * session writer: create a normal row through the real store, then rewrite the
+ * persisted backend the way an older build left it on disk. The database
+ * filename is `OPERATIONAL_STATE_DATABASE_NAME` in `@maka/storage`, which the
+ * package does not export.
+ */
+async function seedLegacyFakeBackendSession(
+  root: string,
+  owner: InteractiveRootOwner,
+): Promise<string> {
+  const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  const { id: sessionId } = await stores.sessionStore.create({
+    cwd: root,
+    llmConnectionSlug: 'fake',
+    model: 'fake-model',
+    permissionMode: 'ask',
+  });
+
+  const legacy = new DatabaseSync(join(root, 'runtime.sqlite'));
+  try {
+    const row = legacy
+      .prepare(`SELECT payload_json FROM session_metadata WHERE session_id = ?`)
+      .get(sessionId) as { payload_json: string };
+    const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+    payload.backend = 'fake';
+    legacy
+      .prepare(`UPDATE session_metadata SET payload_json = ?, backend = ? WHERE session_id = ?`)
+      .run(JSON.stringify(payload), 'fake', sessionId);
+  } finally {
+    legacy.close();
+  }
+  return sessionId;
+}
+
 async function createCapturedExecutionComposition(owner: InteractiveRootOwner): Promise<{
   composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>;
   manager: SessionManager;
@@ -939,7 +957,6 @@ async function createClaimedGraphChild(input: {
   const child = await input.stores.sessionStore.createSubagent({
     cwd: input.root,
     name: `Graph operator ${input.suffix}`,
-    backend: 'ai-sdk',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'explore',

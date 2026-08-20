@@ -48,9 +48,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
   let local: RuntimeHostConnection | undefined;
   let remote: RuntimeHostConnection | undefined;
   try {
-    local = requireConnection(
-      await connectRuntimeHost({ rootPath: root, surface: 'desktop', protocol: PROTOCOL }),
-    );
+    local = requireConnection(await connectRuntimeHost({ rootPath: root, protocol: PROTOCOL }));
     const issued = await local.request('access.credential.issue', {
       principalKind: 'remote_owner',
       principalId: 'remote-device',
@@ -79,7 +77,6 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
         credential,
         expectedRootId: capability.rootId,
         compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-        surface: 'tui',
         protocol: PROTOCOL,
       }),
       /must not contain credentials, a query, or a fragment/u,
@@ -90,7 +87,6 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       credential,
       expectedRootId: 'f'.repeat(64),
       compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-      surface: 'tui',
       protocol: PROTOCOL,
     });
     assert.deepEqual(wrongRoot, { kind: 'unavailable', reason: 'root_mismatch' });
@@ -100,7 +96,6 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       credential,
       expectedRootId: capability.rootId,
       compositionId: 'test.other',
-      surface: 'tui',
       protocol: PROTOCOL,
     });
     assert.equal(wrongComposition.kind, 'incompatible');
@@ -122,7 +117,6 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       credential,
       expectedRootId: capability.rootId,
       compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-      surface: 'tui',
       protocol: PROTOCOL,
     });
     assert.equal(connected.kind, 'connected');
@@ -280,7 +274,6 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       url,
       credential: providerCredential,
       expectedRootId: capability.rootId,
-      surface: 'capability-provider',
       protocol: PROTOCOL,
       compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
       clientInstanceId: 'remote-provider-instance',
@@ -361,7 +354,6 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
         credential,
         expectedRootId: capability.rootId,
         compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-        surface: 'tui',
         protocol: PROTOCOL,
       }),
       { kind: 'unavailable', reason: 'authentication_failed' },
@@ -371,7 +363,6 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       credential: replacementCredential,
       expectedRootId: capability.rootId,
       compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-      surface: 'tui',
       protocol: PROTOCOL,
     });
     assert.equal(replacementConnection.kind, 'connected');
@@ -426,9 +417,7 @@ test('an authenticated WebSocket Client reconnects after service restart to cano
   let local: RuntimeHostConnection | undefined;
   let remote: Awaited<ReturnType<typeof createRuntimeHostReconnectingConnection>> | undefined;
   try {
-    local = requireConnection(
-      await connectRuntimeHost({ rootPath: root, surface: 'desktop', protocol: PROTOCOL }),
-    );
+    local = requireConnection(await connectRuntimeHost({ rootPath: root, protocol: PROTOCOL }));
     const issued = await local.request('access.credential.issue', {
       principalKind: 'remote_owner',
       principalId: 'restart-client',
@@ -467,7 +456,6 @@ test('an authenticated WebSocket Client reconnects after service restart to cano
       connectRemoteRuntimeHostProfile({
         profile,
         credential,
-        surface: 'tui',
         clientInstanceId: 'restart-client-instance',
         ...(signal ? { signal } : {}),
         connectTimeoutMs: 1_000,

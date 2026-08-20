@@ -141,7 +141,6 @@ test('retains only the selected Session partial stream segments', async () => {
 function input(name: string): CreateSessionInput {
   return {
     cwd: '/tmp/cwd',
-    backend: 'fake',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask' as const,

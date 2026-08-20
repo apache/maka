@@ -1,6 +1,6 @@
 # Maka
 
-[![CI](https://github.com/Maka-Agent/maka-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Maka-Agent/maka-agent/actions/workflows/ci.yml)
+[![CI](https://github.com/apache/maka/actions/workflows/ci.yml/badge.svg)](https://github.com/apache/maka/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![docs](https://img.shields.io/badge/docs-English-blue?logo=googletranslate&logoColor=white)](./README.md)
 
@@ -57,7 +57,7 @@ Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具
 
 ### 下载 macOS 桌面版
 
-已签名并完成 Apple 公证的桌面应用可从 [GitHub Releases](https://github.com/Maka-Agent/maka-agent/releases/latest) 下载，目前仅支持 Apple Silicon Mac（`arm64`）。
+已签名并完成 Apple 公证的桌面应用可从 [GitHub Releases](https://github.com/apache/maka/releases/latest) 下载，目前仅支持 Apple Silicon Mac（`arm64`）。
 
 1. 下载 `Maka-<version>-mac-arm64.dmg`；
 2. 打开 DMG，将 Maka 拖入“应用程序”；
@@ -83,8 +83,8 @@ Windows 目前仍是未签名预览版，不属于正式支持的平台。当某
 ### 启动 Desktop
 
 ```sh
-git clone https://github.com/Maka-Agent/maka-agent.git
-cd maka-agent
+git clone https://github.com/apache/maka.git
+cd maka
 npm ci
 npm run dev
 ```

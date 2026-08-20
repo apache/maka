@@ -16,7 +16,7 @@ import {
   readRuntimeHostSessions,
   type RuntimeHostConnection,
 } from '../client/index.js';
-import { RUNTIME_HOST_PROTOCOL_VERSION, type ClientSurface } from '../protocol/index.js';
+import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import { RuntimeHostKernel } from '../server/index.js';
@@ -49,10 +49,7 @@ test('two UDS clients converge on one Host-owned Project Catalog', {
       idleGraceMs: 30_000,
       composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
     });
-    const [desktop, tui] = await Promise.all([
-      connectClient(dataRoot, 'desktop'),
-      connectClient(dataRoot, 'tui'),
-    ]);
+    const [desktop, tui] = await Promise.all([connectClient(dataRoot), connectClient(dataRoot)]);
     connections.push(desktop, tui);
     assert.deepEqual(await readRuntimeHostProjects(desktop), await readRuntimeHostProjects(tui));
 
@@ -154,13 +151,9 @@ function sessionInput(cwd: string, projectId: string) {
   };
 }
 
-async function connectClient(
-  rootPath: string,
-  surface: ClientSurface,
-): Promise<RuntimeHostConnection> {
+async function connectClient(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: PROTOCOL,
     connectTimeoutMs: REQUEST_TIMEOUT_MS,
     handshakeTimeoutMs: REQUEST_TIMEOUT_MS,

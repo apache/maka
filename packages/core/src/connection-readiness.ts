@@ -1,7 +1,7 @@
 /**
- * Connection readiness — pure, sync judgment shared between the
- * send-path (chat-readiness.ts) and the onboarding state machine
- * (onboarding.ts). PR110a.
+ * Connection readiness — pure, sync judgment shared by task-submission
+ * readiness, the onboarding state machine, and legacy-session health
+ * projection.
  *
  * Source of truth for "is this LlmConnection ready to send a message
  * right now?". Caller is responsible for resolving async inputs
@@ -9,7 +9,7 @@
  * touches the credential store, filesystem, or IPC.
  *
  * The single helper here is the only place these criteria live:
- *   - real backend (not `fake`)
+ *   - the provider is one this build knows
  *   - `enabled === true`
  *   - has usable secret OR provider's `authKind === 'none'`
  *   - effective model exists (caller's `requestedModel` if provided,
@@ -18,8 +18,8 @@
  *   - effective model is in `connection.models` (when that list is
  *     enumerated)
  *
- * @kenji + @xuan PR110a review gate: send-path / onboarding / quick
- * chat must call this helper rather than reimplementing the criteria.
+ * Product readiness projections must call this helper rather than
+ * reimplementing the criteria.
  */
 
 import {
@@ -27,6 +27,7 @@ import {
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
   providerAuthRequiresSecret,
+  providerDefaultsOf,
   type LlmConnection,
 } from './llm-connections.js';
 import { isModelExplicitlyUnsupportedForChat } from './model-catalog.js';
@@ -34,8 +35,8 @@ import { isModelExplicitlyUnsupportedForChat } from './model-catalog.js';
 /**
  * Canonical reasons why an LlmConnection is not ready to send.
  *
- * Moved from `apps/desktop/src/main/chat-readiness.ts` to keep the
- * taxonomy stable across the send path and onboarding surfaces.
+ * Kept in core so the taxonomy stays stable across readiness and onboarding
+ * surfaces.
  * Adding a new reason MUST update both this enum AND the matching
  * `OnboardingState` mapping in `onboarding.ts`.
  */
@@ -84,7 +85,7 @@ export interface IsConnectionReadyInput {
  * contract change.
  *
  * Order:
- *   1. backend is `fake` → `fake_backend`
+ *   1. `providerType` is not in the registry → `fake_backend`
  *   2. `enabled === false` → `connection_disabled`
  *   3. `authKind !== 'none' && !hasSecret` → `missing_api_key`
  *   4. effective model is empty/missing → `missing_model`
@@ -99,7 +100,7 @@ export interface IsConnectionReadyInput {
 export function isConnectionReady(input: IsConnectionReadyInput): IsConnectionReadyResult {
   const { connection, hasSecret, requestedModel } = input;
 
-  if (isFakeBackend(connection)) {
+  if (!isKnownProvider(connection)) {
     return { ready: false, reason: 'fake_backend' };
   }
   if (!connection.enabled) {
@@ -145,8 +146,8 @@ export function isConnectionReady(input: IsConnectionReadyInput): IsConnectionRe
  * the enabled list and the default falls back to the first servable
  * model, so the readiness gate below judges the models that would
  * actually be used. Pure; returns the input unchanged for non-Codex
- * providers. Moved from the desktop send path (#1038) so the send gate
- * and the session send projection share one normalization.
+ * providers. Moved from the former desktop send gate (#1038) so onboarding
+ * and the session compatibility projection share one normalization.
  */
 export function normalizeOpenAiCodexConnection(connection: LlmConnection): LlmConnection {
   if (connection.providerType !== 'openai-codex') return connection;
@@ -167,23 +168,22 @@ export function normalizeOpenAiCodexConnection(connection: LlmConnection): LlmCo
 }
 
 /**
- * Whether a connection is backed by a real LLM provider (anything
- * whose `backendKind === 'ai-sdk'`), as opposed to the in-process
- * `fake` backend or an unrecognized legacy provider type.
+ * Whether a connection is backed by a real LLM provider.
+ *
+ * Since the in-process `fake` backend was retired (#3211) every registered
+ * provider runs on `ai-sdk`, so this is exactly "is this `providerType` one
+ * the build knows". An unknown one (legacy seed, future provider not yet in
+ * PROVIDER_DEFAULTS) is treated as non-real — onboarding then routes the user
+ * to the add-provider flow which will rebuild a real connection.
  *
  * @kenji PR110a review gate: telemetry / lastTestStatus must NOT
- * influence this judgment. A `fake` connection that happens to have
- * `lastTestStatus: 'verified'` is still fake. An unknown providerType
- * (legacy seed, future provider not yet in PROVIDER_DEFAULTS) is also
- * treated as non-real — onboarding then routes the user to the
- * add-provider flow which will rebuild a real connection.
+ * influence this judgment. A connection that cannot describe its provider is
+ * still unusable when it happens to carry `lastTestStatus: 'verified'`.
  */
 export function isRealConnection(connection: Pick<LlmConnection, 'providerType'>): boolean {
-  return !isFakeBackend(connection);
+  return isKnownProvider(connection);
 }
 
-function isFakeBackend(connection: Pick<LlmConnection, 'providerType'>): boolean {
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
-  if (!defaults) return true; // unknown providerType → treat as non-real
-  return defaults.backendKind === 'fake';
+function isKnownProvider(connection: Pick<LlmConnection, 'providerType'>): boolean {
+  return providerDefaultsOf(connection.providerType) !== undefined;
 }

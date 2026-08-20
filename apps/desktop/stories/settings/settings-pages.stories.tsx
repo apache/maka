@@ -918,6 +918,24 @@ function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedT
     },
   };
 }
+const gitBashSettings = mergeSettings(createDefaultSettings(), {
+  shell: {
+    preference: 'git_bash',
+    executable: 'C:\\Program Files\\Git\\bin\\bash.exe',
+  },
+});
+const withGitBashSettingsBridge = withScopedMakaBridge({
+  ...makaBridge,
+  settings: {
+    ...makaBridge.settings,
+    get: async () => gitBashSettings,
+    update: async (
+      patch: Parameters<typeof window.maka.settings.update>[0],
+    ): Promise<UpdateAppSettingsResult> => ({
+      settings: mergeSettings(gitBashSettings, patch),
+    }),
+  },
+} satisfies Record<string, unknown>);
 
 // #1364: list-page variants — empty vs populated vs long-content, per the
 // tracking issue's expected deliverables.
@@ -1241,6 +1259,11 @@ export const SubagentEditor: Story = {
 // Real path: 设置 → 通用.
 export const General: Story = {
   decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="general" />,
+};
+// Real path: 设置 → 通用, after selecting Git Bash for the current Runtime Host.
+export const GeneralGitBash: Story = {
+  decorators: [withGitBashSettingsBridge],
   render: () => <SettingsStory section="general" />,
 };
 // Real path: 设置 → 外观.

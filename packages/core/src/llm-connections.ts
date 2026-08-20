@@ -349,6 +349,22 @@ export interface ConnectionTestResult {
 
 export const PROVIDER_DEFAULTS = PROVIDER_REGISTRY;
 
+/**
+ * The registry entry for a provider, or `undefined` when this build does not
+ * register one.
+ *
+ * Sole owner of the question "is this `providerType` one we know". Plain
+ * indexing cannot answer it: `PROVIDER_DEFAULTS` is an object literal, so
+ * `PROVIDER_DEFAULTS['__proto__']` and `['toString']` resolve to inherited
+ * members and read as registered providers. Every recognition site goes
+ * through here rather than repeating the own-property check.
+ */
+export function providerDefaultsOf(providerType: string): ProviderDefaults | undefined {
+  return Object.hasOwn(PROVIDER_DEFAULTS, providerType)
+    ? PROVIDER_DEFAULTS[providerType as ProviderType]
+    : undefined;
+}
+
 export function defaultEnabledModelIdsWhenOmitted(
   providerType: ProviderType,
 ): readonly string[] | undefined {
@@ -370,11 +386,21 @@ export function providerSupportsModelDiscovery(providerType: ProviderType): bool
   return discovery !== undefined && discovery.kind !== 'fallback';
 }
 
+/**
+ * The backend that runs a connection.
+ *
+ * Throws for an unknown `providerType` (a legacy seed, or a connection
+ * persisted on a branch that registers a provider this build doesn't know).
+ * It used to answer `'fake'` there, which was the last live producer of that
+ * value (#3211); there is no honest backend to name for a provider this build
+ * cannot describe. Callers that need a non-throwing answer are asking whether
+ * the connection is usable, not which backend runs it — use `isRealConnection`
+ * / `isConnectionReady` from `connection-readiness.ts`.
+ */
 export function backendKindOf(c: Pick<LlmConnection, 'providerType'>): BackendKind {
-  // Unknown providerType (legacy seed, or a connection persisted on a branch
-  // that registers a provider this build doesn't know) → treat as non-real,
-  // matching `isFakeBackend` in connection-readiness.ts.
-  return PROVIDER_DEFAULTS[c.providerType]?.backendKind ?? 'fake';
+  const defaults = providerDefaultsOf(c.providerType);
+  if (!defaults) throw new Error(`Unknown providerType: ${c.providerType}`);
+  return defaults.backendKind;
 }
 
 export function effectiveBaseUrl(c: Pick<LlmConnection, 'providerType' | 'baseUrl'>): string {

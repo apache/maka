@@ -65,7 +65,7 @@ export async function createRuntimeHostTuiContext(
   const connected = await connectRuntimeHostCli({
     clientDataRoot: input.clientDataRoot,
     rootPath: input.rootPath,
-    surface: 'tui',
+    interactiveSsh: true,
     ...(input.hostProfileId ? { profileId: input.hostProfileId } : {}),
   });
   const connection = connected.connection;

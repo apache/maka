@@ -103,7 +103,7 @@ test('a Host-owned PTY survives Desktop disconnect and transfers control to TUI'
     });
     assert.equal(started.status, 'running');
 
-    [desktop, tui] = await Promise.all([connect(root, 'desktop'), connect(root, 'tui')]);
+    [desktop, tui] = await Promise.all([connect(root), connect(root)]);
     const desktopList = await desktop.request('runtime.resource.query', {
       kind: 'list_start',
       sessionId: SESSION_ID,
@@ -177,11 +177,8 @@ test('a Host-owned PTY survives Desktop disconnect and transfers control to TUI'
   }
 });
 
-async function connect(
-  rootPath: string,
-  surface: 'desktop' | 'tui',
-): Promise<RuntimeHostConnection> {
-  const result = await connectRuntimeHost({ rootPath, surface, protocol: PROTOCOL });
+async function connect(rootPath: string): Promise<RuntimeHostConnection> {
+  const result = await connectRuntimeHost({ rootPath, protocol: PROTOCOL });
   assert.equal(result.kind, 'connected');
   if (result.kind !== 'connected') throw new Error('Runtime Host Client did not connect');
   return result.connection;

@@ -83,9 +83,8 @@
   .maka-composer-astryx {
   --_chat-composer-radius: var(--radius-surface);
 
-  overflow: hidden;
-  border-radius: var(--radius-surface);
-  /* Leave elevation to ChatComposer; product shadow overrode hover/focus lift. */
+  /* Let ChatComposer paint its own radius and elevation. Clipping this wrapper
+     hides the body's hover/focus shadow against the white side panel. */
 }
 
 .maka-session-workbar-panel[data-placement="right"]

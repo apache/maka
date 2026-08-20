@@ -16,7 +16,6 @@ test('owned connection keeps a fresh Host alive for its full election window', a
   const result = await connectOwnedRuntimeHostWithDependencies(
     {
       rootPath,
-      surface: 'run',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
         max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -52,7 +51,6 @@ test('owned Host exits promptly after its first connection closes', async () => 
   const result = await connectOwnedRuntimeHostWithDependencies(
     {
       rootPath,
-      surface: 'run',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
         max: RUNTIME_HOST_PROTOCOL_VERSION,
