@@ -351,6 +351,31 @@ test('seeds an unrendered in-flight steering message once on rejoin', () => {
   assert.deepEqual(projector.accept(steeringFrame(1)).events, []);
 });
 
+test('suppresses the live echo for a steering message already durable in the bootstrap', () => {
+  // subscription.open can bootstrap the durable steering message and install
+  // the subscriber while the Host's forwarded echo for it is still pending:
+  // the bootstrapped render must stay the only one (apache/maka#3316 review).
+  const inFlight = snapshot({ queue: queue(3, [steeringEntry('in_flight')]) });
+  const projector = new RuntimeHostSessionProjector(
+    inFlight,
+    createRuntimeHostSessionProjectionSeed(
+      [userSteering('steering-message-1', 'steering-event-1')],
+      inFlight,
+    ),
+    () => 10,
+  );
+
+  // Durable and in-flight: no synthesis seed…
+  assert.deepEqual(
+    projector.seedActive(false).map((event) => event.type),
+    ['queue_update'],
+  );
+  // …and the late echo of the same message is the duplicate.
+  assert.deepEqual(projector.accept(steeringFrame(1)).events, []);
+  // A different steering message still renders normally.
+  assert.equal(projector.accept(steeringFrame(2, 'steering-message-2')).events.length, 1);
+});
+
 function steeringEntry(state: 'queued' | 'in_flight'): SteeringMessageSnapshot {
   return {
     entryId: 'entry-1',
@@ -368,7 +393,7 @@ function queue(
   return { hostEpoch: 'host-1', queueRevision, steering, followup: [] };
 }
 
-function steeringFrame(sequence: number): SubscriptionFrame {
+function steeringFrame(sequence: number, messageId = 'steering-message-1'): SubscriptionFrame {
   return {
     kind: 'subscription.session_event',
     hostEpoch: 'host-1',
@@ -381,9 +406,23 @@ function steeringFrame(sequence: number): SubscriptionFrame {
       id: 'steering-event-1',
       turnId: 'turn-1',
       ts: 10,
-      messageId: 'steering-message-1',
+      messageId,
       content: { text: 'steer the turn' },
     },
+  };
+}
+
+function userSteering(
+  id: string,
+  steeringEventId: string,
+): Extract<StoredMessage, { type: 'user' }> {
+  return {
+    type: 'user',
+    id,
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'steer the turn',
+    steeringEventId,
   };
 }
 
