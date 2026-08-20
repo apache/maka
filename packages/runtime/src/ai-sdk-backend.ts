@@ -89,7 +89,11 @@ import type {
   ToolInvocationRecord,
 } from '@maka/core/usage-stats/types';
 import type { ContextBudgetDiagnostic, PromptSegmentEstimate } from '@maka/core/usage-stats/types';
-import { DEFAULT_CODE_MODE_EXECUTION_POLICY, executeCodeCell } from '@maka/code-mode';
+import {
+  type CodeModeExecutionResult,
+  DEFAULT_CODE_MODE_EXECUTION_POLICY,
+  executeCodeCell,
+} from '@maka/code-mode';
 import type {
   JSONValue,
   ModelFinishReason,
@@ -111,6 +115,7 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import { z } from 'zod';
 
 import { AsyncEventQueue } from './async-queue.js';
+import { CodeCellAdmission } from './code-cell-admission.js';
 import {
   StreamWatchdog,
   formatStreamWatchdogError,
@@ -1057,6 +1062,9 @@ export class AiSdkBackend implements AgentBackend {
    * teardown cleared the run identity a *different* turn's tool execution then
    * read back as absent.
    */
+  /** Bounds outstanding Code Mode cells for this session. */
+  private readonly codeCellAdmission = new CodeCellAdmission();
+
   private readonly activeTurns = new Set<TurnScope>();
   /**
    * Request-shape baseline for change attribution. Session-scoped on purpose:
@@ -3090,38 +3098,50 @@ export class AiSdkBackend implements AgentBackend {
       },
       pushAndWaitUntilConsumed: (event) => eventSink.pushAndWaitUntilConsumed(event),
     };
-    return executeCodeCell({
-      code,
-      signal: context.abortSignal,
-      tools: [...snapshot.values()].map((tool) => ({
-        name: tool.name,
-      })),
-      isFatalToolError: isRuntimeCommitBoundaryError,
-      callTool: async (name, input, signal) => {
-        const tool = snapshot.get(name);
-        if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
-        const parsedInput = await validateCodeModeToolInput(tool, input);
-        const settlement = await scope.toolRuntime.settleToolCallRaw({
-          tool,
-          turnId: context.turnId,
-          toolCallId: `${context.toolCallId}:nested:${this.newId()}`,
-          input: parsedInput,
-          abortSignal: signal,
-          eventSink: nestedEventSink,
-          origin: 'code_mode',
-          parentToolCallId: context.toolCallId,
-          ...(context.operationId ? { parentOperationId: context.operationId } : {}),
-          maxResultBytes: DEFAULT_CODE_MODE_EXECUTION_POLICY.maxToolOutputBytes,
-        });
-        if (settlement.providerError !== undefined) {
-          throw new Error(settlement.providerError);
-        }
-        if (nestedOutputLimitExceeded) {
-          throw new Error('Code Mode nested output byte limit exceeded');
-        }
-        return settlement.result;
-      },
-    });
+    const admission = await this.codeCellAdmission.acquire(context.abortSignal);
+    if (admission === 'queue_full') {
+      return {
+        ok: false,
+        error: { kind: 'limit_exceeded', message: 'Code Mode execution queue is full' },
+        toolCalls: [],
+      } satisfies CodeModeExecutionResult;
+    }
+    try {
+      return await executeCodeCell({
+        code,
+        signal: context.abortSignal,
+        tools: [...snapshot.values()].map((tool) => ({
+          name: tool.name,
+        })),
+        isFatalToolError: isRuntimeCommitBoundaryError,
+        callTool: async (name, input, signal) => {
+          const tool = snapshot.get(name);
+          if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
+          const parsedInput = await validateCodeModeToolInput(tool, input);
+          const settlement = await scope.toolRuntime.settleToolCallRaw({
+            tool,
+            turnId: context.turnId,
+            toolCallId: `${context.toolCallId}:nested:${this.newId()}`,
+            input: parsedInput,
+            abortSignal: signal,
+            eventSink: nestedEventSink,
+            origin: 'code_mode',
+            parentToolCallId: context.toolCallId,
+            ...(context.operationId ? { parentOperationId: context.operationId } : {}),
+            maxResultBytes: DEFAULT_CODE_MODE_EXECUTION_POLICY.maxToolOutputBytes,
+          });
+          if (settlement.providerError !== undefined) {
+            throw new Error(settlement.providerError);
+          }
+          if (nestedOutputLimitExceeded) {
+            throw new Error('Code Mode nested output byte limit exceeded');
+          }
+          return settlement.result;
+        },
+      });
+    } finally {
+      this.codeCellAdmission.release();
+    }
   }
 
   private handlePlanToolResult(

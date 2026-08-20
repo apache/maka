@@ -13,7 +13,20 @@ import type {
 } from './index.js';
 import { DEFAULT_CODE_MODE_EXECUTION_POLICY } from './index.js';
 
-export async function executeCodeCellImpl(
+/**
+ * Runs one Code Mode cell to quiescence.
+ *
+ * The returned promise settles only after every host operation the cell started
+ * has settled, on both the success and the failure path. Callers rely on that:
+ * it is what lets an admission bound taken around this call cover the cell's
+ * complete lifecycle. The sandbox worker cap cannot serve that purpose —
+ * `runCodeMode` releases its worker and rejects at once on cancellation, while
+ * host operations may still be running with durable side effects.
+ *
+ * This module holds no cross-cell state. Bounding how many cells run at once
+ * belongs to whoever owns execution, not to this adapter.
+ */
+export async function executeCodeCell(
   input: ExecuteCodeCellInput,
 ): Promise<CodeModeExecutionResult> {
   // Overrides are admitted only for known fields and only as positive integers.
