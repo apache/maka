@@ -65,7 +65,7 @@ describe('browser logic', () => {
   });
 
   it('deriveBrowserState computes hasPage and secure', () => {
-    const base = { title: '', canGoBack: false, canGoForward: false, loading: false, favicon: null };
+    const base = { title: '', canGoBack: false, canGoForward: false, loading: false };
     assert.equal(deriveBrowserState({ ...base, url: '' }).hasPage, false);
     assert.equal(deriveBrowserState({ ...base, url: 'about:blank' }).hasPage, false);
     const loaded = deriveBrowserState({ ...base, url: 'https://x.com/' });

@@ -11,6 +11,10 @@ import {
   SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
   type SubscriptionFrame,
 } from '../protocol/index.js';
+import {
+  decodeSubscriptionFrame,
+  SESSION_LIVE_DELTA_MAX_BYTES,
+} from '../protocol/session-continuity.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import {
   type CanonicalSessionProjection,
@@ -625,8 +629,14 @@ test('slow subscriber receives a terminal eviction without delaying another subs
   const fast = await open(coordinator, 'connection-fast');
   fastConnection.activate(fast.subscriptionId);
 
+  // Alternate streams so queued deltas cannot coalesce: this exercises the
+  // eviction path for a genuinely undrainable backlog.
   for (let index = 1; index <= 32; index += 1) {
-    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(index));
+    await coordinator.acceptRuntimeEvent(
+      SESSION_ID,
+      'run-1',
+      textEvent(index, `message-${index % 2}`),
+    );
   }
   slowConnection.activate(slow.subscriptionId);
   await waitFor(() => slowSink.frames.length === 1 && fastSink.frames.length === 32);
@@ -642,6 +652,161 @@ test('slow subscriber receives a terminal eviction without delaying another subs
     fastSink.frames.map((frame) => frame.sequence),
     Array.from({ length: 32 }, (_, index) => index + 1),
   );
+  coordinator.close();
+});
+
+test('coalesces queued assistant deltas instead of evicting a slow subscriber', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const slowSink = new RecordingSink();
+  const fastSink = new RecordingSink();
+  const slowConnection = coordinator.attachConnection('connection-slow', slowSink);
+  const fastConnection = coordinator.attachConnection('connection-fast', fastSink);
+  const slow = await open(coordinator, 'connection-slow');
+  const fast = await open(coordinator, 'connection-fast');
+  fastConnection.activate(fast.subscriptionId);
+
+  // A same-stream delta flood that used to overflow the 32-frame budget and
+  // evict the subscriber before it ever activated.
+  for (let index = 1; index <= 64; index += 1) {
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(index));
+  }
+  slowConnection.activate(slow.subscriptionId);
+  await waitFor(() => slowSink.frames.length === 1 && fastSink.frames.length === 64);
+
+  // The lagging subscriber receives one merged, content-identical delta: no
+  // eviction, absolute offsets preserved, no sequence spent on absorbed
+  // frames.
+  const merged = slowSink.frames[0];
+  assert.equal(merged?.kind, 'subscription.session_delta');
+  if (merged?.kind !== 'subscription.session_delta') return;
+  assert.equal(merged.sequence, 1);
+  assert.equal(merged.delta.startOffset, 0);
+  assert.equal(
+    merged.delta.text,
+    Array.from({ length: 64 }, (_, index) => `chunk-${index + 1}`).join(''),
+  );
+
+  // The next enqueue continues the sequence exactly where the merged frame
+  // left it, and the absolute offset continues the stream.
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(65));
+  await waitFor(() => slowSink.frames.length === 2);
+  const next = slowSink.frames[1];
+  assert.equal(next?.kind, 'subscription.session_delta');
+  if (next?.kind !== 'subscription.session_delta') return;
+  assert.equal(next.sequence, 2);
+  assert.equal(next.delta.startOffset, merged.delta.text.length);
+  assert.equal(next.delta.text, 'chunk-65');
+  coordinator.close();
+});
+
+test('keeps stream, kind, and completion boundaries when coalescing deltas', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1, 'message-1'));
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(2, 'message-1'));
+  // A thinking delta on the same message is a different delta kind: no merge.
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_delta', 'thinking-1', 'think'),
+  );
+  // A different message stream: no merge.
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(3, 'message-2'));
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(4, 'message-2'));
+  // Completion closes the stream and must land as its own frame.
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-1', 'chunk-1chunk-2'),
+  );
+
+  connection.activate(opened.subscriptionId);
+  await waitFor(() => sink.frames.length === 4);
+  assert.deepEqual(
+    sink.frames.map((frame) =>
+      frame.kind === 'subscription.session_delta'
+        ? {
+            sequence: frame.sequence,
+            kind: frame.delta.kind,
+            messageId: frame.delta.messageId,
+            text: frame.delta.text,
+            complete: frame.delta.complete === true,
+          }
+        : frame.kind,
+    ),
+    [
+      {
+        sequence: 1,
+        kind: 'text',
+        messageId: 'message-1',
+        text: 'chunk-1chunk-2',
+        complete: false,
+      },
+      { sequence: 2, kind: 'thinking', messageId: 'thinking-1', text: 'think', complete: false },
+      {
+        sequence: 3,
+        kind: 'text',
+        messageId: 'message-2',
+        text: 'chunk-3chunk-4',
+        complete: false,
+      },
+      { sequence: 4, kind: 'text', messageId: 'message-1', text: '', complete: true },
+    ],
+  );
+  coordinator.close();
+});
+
+test('keeps coalesced deltas within the protocol text and frame limits', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+
+  // Each delta is individually protocol-valid, but merging the two would
+  // push the text past SESSION_LIVE_DELTA_MAX_BYTES: the second must stay
+  // its own frame so the receiver-side decoder does not reject it.
+  const firstText = 'a'.repeat(SESSION_LIVE_DELTA_MAX_BYTES - 1024);
+  const secondText = 'b'.repeat(SESSION_LIVE_DELTA_MAX_BYTES - 1024);
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(1), text: firstText });
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(2), text: secondText });
+  // A small continuation still merges into the new tail.
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(3));
+
+  connection.activate(opened.subscriptionId);
+  await waitFor(() => sink.frames.length === 2);
+
+  const first = sink.frames[0];
+  assert.equal(first?.kind, 'subscription.session_delta');
+  if (first?.kind !== 'subscription.session_delta') return;
+  assert.equal(first.sequence, 1);
+  assert.equal(first.delta.startOffset, 0);
+  assert.equal(first.delta.text, firstText);
+
+  const second = sink.frames[1];
+  assert.equal(second?.kind, 'subscription.session_delta');
+  if (second?.kind !== 'subscription.session_delta') return;
+  assert.equal(second.sequence, 2);
+  assert.equal(second.delta.startOffset, firstText.length);
+  assert.equal(second.delta.text, secondText + 'chunk-3');
+
+  // Every emitted frame passes the receiver-side decoder, including its
+  // 16 KiB delta-text and 64 KiB frame limits.
+  for (const frame of sink.frames) decodeSubscriptionFrame(frame);
   coordinator.close();
 });
 
@@ -1881,13 +2046,13 @@ function pendingInteraction() {
   };
 }
 
-function textEvent(index: number) {
+function textEvent(index: number, messageId = 'message-1') {
   return {
     type: 'text_delta' as const,
     id: `event-${index}`,
     turnId: 'turn-1',
     ts: index,
-    messageId: 'message-1',
+    messageId,
     text: `chunk-${index}`,
   };
 }

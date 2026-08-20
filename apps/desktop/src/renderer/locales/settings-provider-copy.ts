@@ -23,6 +23,10 @@ const zhCapabilitiesCopy = {
   contextWindow: '上下文窗口（tokens）',
   contextWindowHelp: '声明后压缩与预算按此值计算；留空跟随内置元数据。',
   saveCapabilities: '保存能力声明',
+  fastMode: 'Fast 模式',
+  fastModeHelp: '使用 OpenAI 的 fast service tier；留空跟随服务商默认值。',
+  fastAuto: '自动',
+  fastEnabled: 'Fast',
 };
 const enCapabilitiesCopy = {
   capabilities: 'Capabilities',
@@ -38,6 +42,10 @@ const enCapabilitiesCopy = {
   contextWindow: 'Context window (tokens)',
   contextWindowHelp: 'When set, compaction and budgets use this value; when empty, built-in metadata decides.',
   saveCapabilities: 'Save capability declarations',
+  fastMode: 'Fast mode',
+  fastModeHelp: "Use OpenAI's fast service tier; empty follows the provider default.",
+  fastAuto: 'Auto',
+  fastEnabled: 'Fast',
 };
 
 const zhCopy = {

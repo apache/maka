@@ -69,7 +69,7 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a new compatibility epoch for proxy discovery and OAuth failures', () => {
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 27);
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 28);
   });
 
   test('publishes a new compatibility epoch for Session catalog live-run state', () => {

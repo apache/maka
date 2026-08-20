@@ -930,12 +930,11 @@
   border-bottom: var(--border-width-hairline) solid var(--border);
 }
 
-.maka-browser-toolbar-start {
-  display: flex;
-  min-width: 0;
+/* Astryx sizes its toolbar slots to content; only the product knows the address
+   field, not the nav buttons, should eat the free width. */
+.maka-browser-toolbar div:has(> .maka-browser-address-field) {
   flex: 1 1 auto;
-  align-items: center;
-  gap: var(--space-1);
+  min-width: 0;
 }
 
 .maka-browser-address-field {
@@ -944,20 +943,9 @@
 }
 
 .maka-browser-strip {
-  position: relative;
   flex: 1 1 auto;
   min-height: 0;
-}
-
-.maka-browser-empty {
-  position: absolute;
-  inset: 0;
-  padding-block: 32px;
-  color: var(--muted-foreground);
-}
-
-@media (min-width: 768px) {
-  .maka-browser-empty { padding-block: 39px; }
+  display: grid;
 }
 
 .maka-artifact-pane {

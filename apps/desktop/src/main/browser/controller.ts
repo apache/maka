@@ -35,7 +35,6 @@ const VIEWPORT_RESTORE_POLL_MS = 16;
 export class BrowserViewController {
   private readonly view: WebContentsView;
   private destroyed = false;
-  private favicon: string | null = null;
   /** True while the view holds real on-screen bounds (last setViewport painted it). */
   private shownWithBounds = false;
   private automation: CdpBridge | null = null;
@@ -60,16 +59,9 @@ export class BrowserViewController {
     const wc = this.wc;
     wc.on('did-start-loading', () => this.emitState());
     wc.on('did-stop-loading', () => this.emitState());
-    wc.on('did-navigate', () => {
-      this.favicon = null;
-      this.emitState();
-    });
+    wc.on('did-navigate', () => this.emitState());
     wc.on('did-navigate-in-page', () => this.emitState());
     wc.on('page-title-updated', () => this.emitState());
-    wc.on('page-favicon-updated', (_event, favicons: string[]) => {
-      this.favicon = favicons[0] ?? null;
-      this.emitState();
-    });
     wc.on('did-fail-load', () => this.emitState());
 
     // Single-view browser: keep http(s) "open in new window" links in-place and
@@ -123,7 +115,7 @@ export class BrowserViewController {
 
   state(): BrowserState {
     if (this.destroyed || this.wc.isDestroyed()) {
-      return deriveBrowserState({ url: '', title: '', canGoBack: false, canGoForward: false, loading: false, favicon: null });
+      return deriveBrowserState({ url: '', title: '', canGoBack: false, canGoForward: false, loading: false });
     }
     const wc = this.wc;
     return deriveBrowserState({
@@ -132,7 +124,6 @@ export class BrowserViewController {
       canGoBack: wc.navigationHistory.canGoBack(),
       canGoForward: wc.navigationHistory.canGoForward(),
       loading: wc.isLoading(),
-      favicon: this.favicon,
     });
   }
 
@@ -256,7 +247,7 @@ export class BrowserViewController {
     // this it would keep showing stale hasPage/url for a page that is gone.
     this.onState(
       this.sessionId,
-      deriveBrowserState({ url: '', title: '', canGoBack: false, canGoForward: false, loading: false, favicon: null }),
+      deriveBrowserState({ url: '', title: '', canGoBack: false, canGoForward: false, loading: false }),
     );
     // Tear down the ws bridge; the debugger detaches with the wc.close() below.
     // Each step guarded so a half-gone window (during quit) can't strand the rest.

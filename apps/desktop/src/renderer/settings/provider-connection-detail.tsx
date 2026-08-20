@@ -11,10 +11,11 @@ import {
   Text,
   VStack,
 } from '@astryxdesign/core';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { isRelayProviderType, PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   THINKING_LEVELS,
+  supportsRelayFastServiceTier,
   type RelayModelProfile,
   type ThinkingLevel,
 } from '@maka/core/model-thinking';
@@ -152,18 +153,19 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     setDraftThinkingLevels,
     setDraftVision,
     setDraftContextWindow,
+    setDraftServiceTier,
     saveRelayProfiles,
     runTest,
     refreshModels,
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
-  // Capability switches only exist for openai-compatible relays: built-in
+  // Capability switches only exist for custom OpenAI relays: built-in
   // providers declare their thinking support in model metadata, a custom
   // relay's backing model is unknown until the user says what it can do. The
   // declaration is per model — a relay can front both a reasoner and a plain
   // instruct model.
-  const showsCapabilities = connection.providerType === 'openai-compatible';
+  const showsCapabilities = isRelayProviderType(connection.providerType);
   // Rows are the enabled models, exactly — the store prunes a model's profile
   // the moment it is disabled, so no declaration can ever belong to a row
   // this list does not show. The editor edits the per-model draft; 保存
@@ -526,6 +528,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                       ? 'disabled'
                       : 'auto';
                 const draftLevels = declared?.thinkingLevels ?? [];
+                const serviceTierValue = declared?.serviceTier ?? 'auto';
+                const showsFastMode = supportsRelayFastServiceTier(
+                  connection.providerType,
+                  modelId,
+                );
                 // The menu offers the five declarable levels PLUS anything
                 // the stored table already claims — a level saved while it
                 // was still declarable (or hand-written into the document)
@@ -617,6 +624,25 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                         }
                       />
                     </CapabilityRow>
+                    {showsFastMode && (
+                      <CapabilityRow label={copy.fastMode} description={copy.fastModeHelp}>
+                        <Selector
+                          label={`${copy.fastMode} — ${modelId}`}
+                          isLabelHidden
+                          size="sm"
+                          width={132}
+                          options={[
+                            { value: 'auto', label: copy.fastAuto },
+                            { value: 'fast', label: copy.fastEnabled },
+                          ]}
+                          value={serviceTierValue}
+                          onChange={(value) =>
+                            setDraftServiceTier(modelId, value === 'fast' ? 'fast' : undefined)
+                          }
+                          isDisabled={allActionsBusy}
+                        />
+                      </CapabilityRow>
+                    )}
                   </VStack>
                 );
               })}

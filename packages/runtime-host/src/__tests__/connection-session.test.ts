@@ -988,11 +988,13 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
   };
 
   try {
+    // Alternate message streams so the queued deltas cannot coalesce: this
+    // exercises eviction for a genuinely undrainable backlog.
     for (let index = 1; index <= 32; index += 1) {
       await coordinator.acceptRuntimeEvent(
         'slow-session',
         'run-slow-session',
-        connectionTextEvent('slow-session', index),
+        connectionTextEvent('slow-session', index, `message-slow-${index % 2}`),
       );
     }
     await withTimeout(writeBlocked.promise, 1_000, 'slow subscription never blocked in-flight');
@@ -1419,13 +1421,13 @@ function canonicalProjection(sessionId: string): CanonicalSessionProjection {
   };
 }
 
-function connectionTextEvent(sessionId: string, index: number) {
+function connectionTextEvent(sessionId: string, index: number, messageId?: string) {
   return {
     type: 'text_delta' as const,
     id: `event-${sessionId}-${index}`,
     turnId: `turn-${sessionId}`,
     ts: index,
-    messageId: `message-${sessionId}`,
+    messageId: messageId ?? `message-${sessionId}`,
     text: `chunk-${index}`,
   };
 }

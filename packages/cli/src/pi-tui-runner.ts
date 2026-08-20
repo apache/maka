@@ -1084,13 +1084,34 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         }
         return;
       }
-      // Read-only status commands answer locally even mid-turn instead of
-      // steering into the model as prompt text: an autonomous goal loop keeps
-      // a turn running almost by definition, and that is exactly when the
-      // user reaches for `/goal` (review finding on turnRunning routing).
-      if (prompt.trim().split(/\s+/, 1)[0] === '/goal') {
+      // Known slash commands typed mid-turn must not steer into the model as
+      // prompt text (review finding on turnRunning routing). `/goal` and
+      // `/recap` answer locally: both are independent of the running turn —
+      // `/goal` is read-only status, and `/recap` uses the separate
+      // session.recap.generate call behind its own in-flight lock. Every other
+      // known command either mutates session state behind the turn's back or
+      // opens a picker the turn would race (and would silently no-op on the
+      // runControl busy gate even if it ran), so refuse it with a clear
+      // message. Unknown slash-prefixed text still steers: it may be intended
+      // prompt text (a skill invocation such as `/skill:<name>`, or a path).
+      const commandToken = prompt.trim().split(/\s+/, 1)[0] ?? '';
+      const knownCommand = slashCommands.find(
+        (candidate) =>
+          `/${candidate.name}` === commandToken ||
+          candidate.aliases?.some((alias) => `/${alias}` === commandToken),
+      );
+      if (knownCommand) {
         editor.addToHistory(prompt);
-        handleSlashCommand(prompt, 0);
+        if (knownCommand.name === 'goal' || knownCommand.name === 'recap') {
+          handleSlashCommand(prompt, 0);
+        } else {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: `Cannot run /${knownCommand.name} while a turn is running — interrupt it (Esc) or wait for it to finish.`,
+          });
+          requestRender();
+        }
         return;
       }
       steerRunningTurn(prompt);

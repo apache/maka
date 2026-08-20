@@ -4930,6 +4930,159 @@ describe('Maka Pi TUI runner', () => {
     });
   });
 
+  describe('slash commands during a running turn', () => {
+    test('/recap answers locally instead of steering into the model', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SteeringTurnDriver();
+      driver.rewindTargets = [{ turnId: 'turn-1', label: 'first' }];
+      let calls = 0;
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+        recap: {
+          generate: async () => {
+            calls += 1;
+            return { ok: true, text: 'mid-turn recap', raw: 'mid-turn recap' };
+          },
+        },
+      });
+
+      terminal.input('start the work');
+      terminal.input('\r');
+      await waitFor(() => terminal.progressStates.at(-1) === true);
+
+      // The recap uses the independent session.recap.generate call behind its
+      // own in-flight lock, so it can answer while the turn is running;
+      // steering "/recap" into the model would read as a confused instruction.
+      terminal.input('/recap');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Recap: mid-turn recap'));
+      assert.equal(calls, 1);
+      assert.deepEqual(driver.steered, []);
+
+      terminal.input('\x1b');
+      terminal.input('\x1b');
+      await waitFor(() => terminal.progressStates.at(-1) === false);
+      // Interrupt refills the editor with the cleared queue; clear it before /exit.
+      terminal.input('\x03');
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    test('/resume refuses with a clear message instead of steering into the model', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SteeringTurnDriver();
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('start the work');
+      terminal.input('\r');
+      await waitFor(() => terminal.progressStates.at(-1) === true);
+
+      // A safe-boundary resume mutates the session behind the turn's back; it
+      // must be refused loudly, never steered into the model as "/resume".
+      terminal.input('/resume');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes(
+          'Cannot run /resume while a turn is running',
+        ),
+      );
+      assert.deepEqual(driver.steered, []);
+
+      terminal.input('\x1b');
+      terminal.input('\x1b');
+      await waitFor(() => terminal.progressStates.at(-1) === false);
+      terminal.input('\x03');
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    test('/model refuses instead of opening the picker behind the running turn', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SteeringTurnDriver();
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('start the work');
+      terminal.input('\r');
+      await waitFor(() => terminal.progressStates.at(-1) === true);
+
+      terminal.input('/model');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes(
+          'Cannot run /model while a turn is running',
+        ),
+      );
+      assert.deepEqual(driver.steered, []);
+
+      terminal.input('\x1b');
+      terminal.input('\x1b');
+      await waitFor(() => terminal.progressStates.at(-1) === false);
+      terminal.input('\x03');
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    test('unknown slash-prefixed text still steers into the running turn', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SteeringTurnDriver();
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('start the work');
+      terminal.input('\r');
+      await waitFor(() => terminal.progressStates.at(-1) === true);
+
+      // `/skill:<name>` is not a catalog command; mid-turn it stays prompt
+      // text for the running turn, exactly like any other steered message.
+      terminal.input('/skill:review');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.screenOutput()).includes('Steering: /skill:review'),
+      );
+      assert.deepEqual(driver.steered, ['/skill:review']);
+
+      terminal.input('\x1b');
+      terminal.input('\x1b');
+      await waitFor(() => terminal.progressStates.at(-1) === false);
+      terminal.input('\x03');
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+  });
+
   describe('/goal command', () => {
     const armedGoal: GoalProjection = {
       goalId: 'goal-1',
@@ -5817,6 +5970,7 @@ class SteeringTurnDriver implements MakaSessionDriver {
   readonly queuedMessages: string[] = [];
   readonly turnOrchestrations: Array<MakaPreparePromptOptions['turnOrchestration']> = [];
   retractCalls = 0;
+  rewindTargets: RewindTarget[] = [];
   private steering: string[] = [];
   private followup: string[] = [];
   private pendingEvents: SessionEvent[] = [];
@@ -5932,7 +6086,7 @@ class SteeringTurnDriver implements MakaSessionDriver {
     return switchResult(fakeSessionSummary(sessionId));
   }
   async listRewindTargets(): Promise<RewindTarget[]> {
-    return [];
+    return this.rewindTargets;
   }
   async rewindToTurn(): Promise<MakaSessionRewindResult> {
     throw new Error('rewind not supported in this fake');
