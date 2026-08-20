@@ -186,6 +186,12 @@ export class GoalManager {
       maxIterations?: number;
       blockCap?: number;
       tokenBudget?: number;
+      /**
+       * Whether this Goal is being armed from outside a Turn rather than set
+       * by the model inside one. Recorded on the Goal because nothing else
+       * survives a restart to say which of the two it was.
+       */
+      armed?: boolean;
     },
   ): GoalCreateResult {
     // Every caller reaches the Goal through here, so the stored condition is
@@ -205,13 +211,15 @@ export class GoalManager {
     // from. Both start at zero and `settleTurn` writes the real baseline when
     // the first Turn carrying the Goal settles: the budget bounds what the
     // Goal goes on to drive, not the Turn it was born beside.
+    const setAt = this.deps.now();
     const goal: GoalState = Object.freeze({
       id: this.deps.generateId(),
       revision: 0,
       sessionId,
       condition: trimmed,
       status: 'active',
-      setAt: this.deps.now(),
+      setAt,
+      ...(opts?.armed ? { armedAt: setAt } : {}),
       iterations: 0,
       maxIterations: opts?.maxIterations ?? DEFAULT_MAX_ITERATIONS,
       consecutiveNoProgress: 0,

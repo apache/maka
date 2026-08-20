@@ -41,19 +41,32 @@ export interface GoalState {
   readonly lastReason?: string;
   readonly achievedAt?: number;
   readonly pausedAt?: number;
+  /**
+   * When `goal.arm` created this Goal, and absent when the model did.
+   *
+   * A Goal is born into one of two situations and nothing else records which.
+   * The model sets a Goal from inside a Turn, so that Turn is already bound to
+   * it and will settle into the Goal's first continuation. Arming happens
+   * outside every Turn and deliberately starts nothing, so the Goal waits for
+   * a Turn to take hold of it. Both look identical at `iterations: 0`, and a
+   * restart or a resume has to tell them apart. Stamped once at birth and
+   * never cleared: it says how the Goal began, not where it is now.
+   */
+  readonly armedAt?: number;
 }
 
 /**
- * Whether any Turn has ever carried this Goal to a settlement.
+ * Whether this Goal is in a continuation loop that a restart or a resume
+ * should put back.
  *
- * `iterations` is only ever raised by a Turn that settled while bound to the
- * Goal, so it doubles as the record of that having happened — a Goal at zero
- * exists but has never driven, or been driven by, a Turn. Recovery reads this
- * rather than `status`, because `active` alone cannot tell a Goal waiting for
- * its first Turn from one waiting between continuations.
+ * A Goal the model set is in one from the moment it exists. An armed Goal is
+ * not, until a Turn settles while bound to it — which is the only event that
+ * raises `iterations`. Reading `status` cannot answer this: `active` covers
+ * both a Goal waiting for its first Turn and one waiting between
+ * continuations.
  */
-export function hasCarriedTurn(goal: Pick<GoalState, 'iterations'>): boolean {
-  return goal.iterations > 0;
+export function isDrivingGoal(goal: Pick<GoalState, 'iterations' | 'armedAt'>): boolean {
+  return goal.armedAt === undefined || goal.iterations > 0;
 }
 
 export interface GoalCheckpoint {
@@ -109,7 +122,7 @@ const GOAL_STATE_SHAPE = defineObjectShape<GoalState>()(
     'tokensNow',
     'tokensBaselinePending',
   ],
-  ['tokenBudget', 'lastReason', 'achievedAt', 'pausedAt'],
+  ['tokenBudget', 'lastReason', 'achievedAt', 'pausedAt', 'armedAt'],
 );
 const GOAL_CONTROL_LEASE_SHAPE = defineObjectShape<GoalControlLease>()(
   ['goalId', 'generation'],
@@ -175,7 +188,8 @@ function decodeGoalState(value: unknown): GoalState {
     typeof value.tokensBaselinePending !== 'boolean' ||
     !isOptionalBoundedReason(value.lastReason) ||
     !isOptionalNonnegativeInteger(value.achievedAt) ||
-    !isOptionalNonnegativeInteger(value.pausedAt)
+    !isOptionalNonnegativeInteger(value.pausedAt) ||
+    !isOptionalNonnegativeInteger(value.armedAt)
   ) {
     throw new TypeError('Invalid Goal state');
   }

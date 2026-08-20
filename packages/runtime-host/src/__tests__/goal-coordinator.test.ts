@@ -742,6 +742,136 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
   }
 });
 
+test('resuming a Goal no Turn has carried leaves it for the next Turn, not for a loop', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-armed-resume-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'root'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
+  try {
+    const session = await stores.sessionStore.create({
+      cwd: capability.canonicalPath,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    let admitted = false;
+    let evaluated = false;
+    const host = new HostGoalCoordinator({
+      store: goalStore,
+      stores,
+      executions: {
+        reconcile: async () => assert.fail('Arming alone has no execution to recover'),
+        subscribe: () => () => undefined,
+      },
+      sessionAdmission: new SessionAdmissionGate(),
+      evaluator: {
+        evaluate: async () => {
+          evaluated = true;
+          return '{"met":false,"impossible":false,"progress":true,"waiting":false,"reason":"x"}';
+        },
+        close: async () => {},
+      },
+      admitTurn: () => {
+        admitted = true;
+        return { kind: 'unavailable', reason: 'Resume assertion only' };
+      },
+      listActionableTaskKeys: async () => [],
+      acquireResidency: () => ({ release: () => {} }),
+      onProjectionChanged: () => {},
+      requestDrain: () => {},
+      newId: () => 'goal-armed-and-resumed',
+    });
+    await host.prepareRecovery();
+    const armed = await host.handlers['goal.arm'](
+      {
+        sessionId: session.id,
+        condition: 'All tests pass',
+        maxIterations: null,
+        tokenBudget: null,
+      },
+      operationContext('connection-1'),
+    );
+    assert.ok(armed.ok);
+    if (!armed.ok) return;
+
+    const paused = await host.handlers['goal.control'](
+      {
+        sessionId: session.id,
+        goalId: armed.result.goal.goalId,
+        expectedRevision: armed.result.goal.revision,
+        action: 'pause',
+      },
+      operationContext('connection-1'),
+    );
+    assert.ok(paused.ok && paused.result.goal.status === 'paused');
+    if (!paused.ok) return;
+
+    // Pause stopped nothing, so resume starts nothing. A Goal no Turn has
+    // carried has no loop to put back: it goes on waiting for the Turn that
+    // arming left it to, exactly as it was before the pause.
+    const resumed = await host.handlers['goal.control'](
+      {
+        sessionId: session.id,
+        goalId: paused.result.goal.goalId,
+        expectedRevision: paused.result.goal.revision,
+        action: 'resume',
+      },
+      operationContext('connection-1'),
+    );
+    assert.ok(resumed.ok && resumed.result.goal.status === 'active');
+    for (let tick = 0; tick < 20; tick += 1) await new Promise((r) => setImmediate(r));
+    assert.equal(admitted, false, 'resume admitted a Turn for a Goal no Turn had carried');
+    assert.equal(evaluated, false, 'resume evaluated a Goal no Turn had carried');
+    await waitForAsync(async () => (await goalStore.read(session.id)) !== null);
+    await host.close();
+
+    // And because resume promised nothing, a restart has nothing to lose: the
+    // Goal comes back active and still waiting for its first Turn.
+    let admittedAfterRestart = false;
+    const restarted = new HostGoalCoordinator({
+      store: goalStore,
+      stores,
+      executions: {
+        reconcile: async () => assert.fail('An armed Goal has no execution to recover'),
+        subscribe: () => () => undefined,
+      },
+      sessionAdmission: new SessionAdmissionGate(),
+      evaluator: {
+        evaluate: async () => assert.fail('A resumed but never carried Goal must not evaluate'),
+        close: async () => {},
+      },
+      admitTurn: () => {
+        admittedAfterRestart = true;
+        return { kind: 'unavailable', reason: 'Recovery assertion only' };
+      },
+      listActionableTaskKeys: async () => [],
+      acquireResidency: () => ({ release: () => {} }),
+      onProjectionChanged: () => {},
+      requestDrain: () => {},
+    });
+    await restarted.prepareRecovery();
+    await restarted.recover();
+    for (let tick = 0; tick < 20; tick += 1) await new Promise((r) => setImmediate(r));
+    assert.equal(admittedAfterRestart, false, 'the restart drove a Goal no Turn had carried');
+    const goal = restarted.readProjection(session.id);
+    assert.equal(goal?.status, 'active');
+    assert.equal(goal?.iterations, 0);
+    await restarted.close();
+  } finally {
+    await goalStore.close();
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 function operationContext(connectionId: string) {
   return {
     hostEpoch: 'epoch-1',

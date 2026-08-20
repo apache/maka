@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import {
-  hasCarriedTurn,
   sameGoalControlLease,
   type GoalAuthorityRecord,
   type GoalControlLease as DurableGoalControlLease,
@@ -199,18 +198,20 @@ export class HostGoalCoordinator {
    * A durable Goal with no execution of its own is either between
    * continuations or has never run at all, and `status` cannot tell those
    * apart: `goal.arm` persists an `active` Goal that takes hold on the user's
-   * next Turn, and arming alone starts nothing. Recovery therefore asks
-   * whether a Turn has ever carried the Goal, and leaves the ones that have
-   * not for `beginObservedTurn` to bind exactly as it would have before the
-   * restart. An execution that was in flight is its own proof of carrying, so
-   * that branch keeps recovering unconditionally.
+   * next Turn, and arming alone starts nothing. Telling them apart is the
+   * continuation's own rule — only a settled Turn ever starts a Goal driving,
+   * so only a Goal a Turn has carried has a drive to restore — and
+   * `recoverActiveGoal` holds it for every caller. Recovery hands it each
+   * Goal and lets it decide, rather than keeping a second copy of the rule
+   * here that a later change could contradict. An execution that was in
+   * flight is its own proof of carrying, so that branch recovers directly.
    */
   async recover(): Promise<void> {
     if (!this.#prepared) throw new Error('Goal recovery was not prepared');
     for (const snapshot of this.#authorityBySession.values()) {
       if (snapshot.record.currentExecution) {
         await this.#recoverCurrentExecution(snapshot.record.currentExecution);
-      } else if (hasCarriedTurn(snapshot.record.goal)) {
+      } else {
         this.continuation.recoverActiveGoal(snapshot.record.goal.sessionId);
       }
     }
@@ -358,6 +359,7 @@ export class HostGoalCoordinator {
         return sessionArchived('Archived Session cannot be given a Goal');
       }
       const created = this.manager.create(input.sessionId, input.condition, {
+        armed: true,
         ...(input.maxIterations === null ? {} : { maxIterations: input.maxIterations }),
         ...(input.tokenBudget === null ? {} : { tokenBudget: input.tokenBudget }),
       });

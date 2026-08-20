@@ -27,6 +27,7 @@ import {
 import { GoalTaskGatePolicy, type GoalTaskGateDeps } from './goal-task-gate-policy.js';
 import type { GoalTurnOutcome } from './goal-turn-lifecycle.js';
 import {
+  isDrivingGoal,
   sameGoalControlLease,
   type GoalCurrentExecution,
   type GoalExecutionRef,
@@ -402,6 +403,26 @@ export class GoalContinuationCoordinator {
     };
   }
 
+  /**
+   * Put back a loop this Goal is already in, and only that.
+   *
+   * Recovery and resume both restore a continuation rather than start one, so
+   * both must refuse a Goal that is not in a loop to begin with — an armed
+   * Goal no Turn has taken hold of, which `goal.arm` deliberately left for the
+   * user's next Turn. Two callers must obey that and a third would inherit it,
+   * so the rule is stated once here rather than at each door.
+   */
+  private restoreDrive(
+    lane: SessionLane,
+    goal: GoalState,
+    controlLease: GoalControlLease,
+    evaluation: GoalEvaluation,
+  ): void {
+    if (!isDrivingGoal(goal)) return;
+    lane.intent = { checkpoint: goalCheckpoint(goal), controlLease, evaluation };
+    this.scheduleDrain(lane);
+  }
+
   recoverActiveGoal(sessionId: string): void {
     if (this.disposed || this.sessionCloseFence.isClosed(sessionId)) return;
     const goal = this.deps.goalManager.get(sessionId);
@@ -409,19 +430,14 @@ export class GoalContinuationCoordinator {
     if (!goal || !controlLease || (goal.status !== 'active' && goal.status !== 'waiting')) return;
     const lane = this.laneFor(sessionId);
     if (lane.intent || lane.turns.size > 0) return;
-    lane.intent = {
-      checkpoint: goalCheckpoint(goal),
-      controlLease,
-      evaluation: {
-        met: false,
-        impossible: false,
-        progress: false,
-        waiting: goal.status === 'waiting',
-        evaluatorFailed: true,
-        reason: goal.lastReason ?? 'Goal continuation recovered after Host restart.',
-      },
-    };
-    this.scheduleDrain(lane);
+    this.restoreDrive(lane, goal, controlLease, {
+      met: false,
+      impossible: false,
+      progress: false,
+      waiting: goal.status === 'waiting',
+      evaluatorFailed: true,
+      reason: goal.lastReason ?? 'Goal continuation recovered after Host restart.',
+    });
   }
 
   /** Resume an exact paused Goal generation from Host control without a model-owned Turn. */
@@ -432,22 +448,17 @@ export class GoalContinuationCoordinator {
     const controlLease = this.deps.goalManager.getControlLease(sessionId);
     if (!controlLease) return undefined;
     const lane = this.laneFor(sessionId);
-    lane.intent = {
-      checkpoint: goalCheckpoint(resumed),
-      controlLease,
-      evaluation: {
-        met: false,
-        impossible: false,
-        progress: false,
-        waiting: false,
-        evaluatorFailed: false,
-        reason: 'Goal resumed by a connected client.',
-      },
-    };
     lane.busyWake = undefined;
     this.clearWaitingTimer(lane);
     this.resetWaitingBackoff(lane);
-    this.scheduleDrain(lane);
+    this.restoreDrive(lane, resumed, controlLease, {
+      met: false,
+      impossible: false,
+      progress: false,
+      waiting: false,
+      evaluatorFailed: false,
+      reason: 'Goal resumed by a connected client.',
+    });
     return resumed;
   }
 
