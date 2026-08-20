@@ -80,7 +80,7 @@ const MAX_SUBSCRIBER_QUEUED_BYTES = 256 * 1024;
 
 export type { CanonicalSessionProjection } from './canonical-session-projection.js';
 
-export type RuntimeSessionTransientEvent = Extract<
+export type RuntimeSessionForwardedEvent = Extract<
   SessionEvent,
   {
     type:
@@ -115,7 +115,7 @@ interface SessionProjectionState {
    */
   toolResultPreviews: Map<
     string,
-    Extract<RuntimeSessionTransientEvent, { type: 'tool_result_preview' }>
+    Extract<RuntimeSessionForwardedEvent, { type: 'tool_result_preview' }>
   >;
   terminalPublicationFence?: TerminalPublicationFence;
 }
@@ -618,7 +618,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   async acceptRuntimeEvent(
     sessionId: string,
     runId: string,
-    event: RuntimeSessionTransientEvent,
+    event: RuntimeSessionForwardedEvent,
   ): Promise<void> {
     if (
       (event.type === 'text_delta' || event.type === 'thinking_delta') &&
@@ -1451,7 +1451,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     subscriber: Subscriber,
     sessionId: string,
     runId: string,
-    event: Extract<RuntimeSessionTransientEvent, { type: 'text_delta' | 'thinking_delta' }>,
+    event: Extract<RuntimeSessionForwardedEvent, { type: 'text_delta' | 'thinking_delta' }>,
     kind: SessionAssistantDelta['kind'],
     startOffset: number,
   ): void {
@@ -1922,7 +1922,7 @@ function jsonStringContentBytes(value: string): number {
 
 function projectSessionEvent(
   event: Exclude<
-    RuntimeSessionTransientEvent,
+    RuntimeSessionForwardedEvent,
     {
       type:
         | 'text_delta'

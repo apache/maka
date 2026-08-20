@@ -347,7 +347,7 @@ export class RuntimeHostSessionProjector {
       return emptyUpdate(events);
     }
     if (frame.kind === 'subscription.session_event') {
-      const event = projectToolEvent(frame);
+      const event = projectSessionEvent(frame);
       if (event) {
         if (event.type === 'steering_message') {
           if (this.#renderedSteeringMessageIds.has(event.messageId)) {
@@ -495,7 +495,7 @@ export function projectRuntimeHostInteractionRequest(
   return [];
 }
 
-function projectToolEvent(
+function projectSessionEvent(
   frame: Extract<SubscriptionFrame, { kind: 'subscription.session_event' }>,
 ): SessionEvent | undefined {
   const event = frame.event;

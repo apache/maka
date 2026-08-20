@@ -92,7 +92,7 @@ import type { ConnectionContext, TurnOperationHandlerMap } from './operation-dis
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import {
-  type RuntimeSessionTransientEvent,
+  type RuntimeSessionForwardedEvent,
   SessionContinuityCoordinator,
 } from './session-continuity-coordinator.js';
 import type {
@@ -2115,7 +2115,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             // Presentation observers do not participate in execution authority.
           }
         }
-        if (isRuntimeSessionTransientEvent(event)) {
+        if (isRuntimeSessionForwardedEvent(event)) {
           await this.continuity.acceptRuntimeEvent(input.sessionId, active.runId, event);
         } else if (isInteractionAnswerAck(event)) {
           await this.continuity.refreshCanonical(input.sessionId);
@@ -2793,9 +2793,13 @@ function isStoppedInteractionAdmission(
   );
 }
 
-function isRuntimeSessionTransientEvent(
+// Membership answers one question: forward this event live to subscribers via
+// the continuity coordinator instead of letting the canonical refresh carry
+// it. Persistence is orthogonal — it happens upstream in the run's own event
+// stream, which is why the durable steering_message belongs here.
+function isRuntimeSessionForwardedEvent(
   event: SessionEvent,
-): event is RuntimeSessionTransientEvent {
+): event is RuntimeSessionForwardedEvent {
   return (
     event.type === 'text_delta' ||
     event.type === 'text_complete' ||
