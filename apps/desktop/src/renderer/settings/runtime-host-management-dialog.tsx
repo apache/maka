@@ -6,7 +6,7 @@ import { Banner, Button, Spinner, useToast, useUiLocale } from '@maka/ui';
 import type { RemoteRuntimeHostProfile } from '@maka/runtime-host/client';
 import type {
   DesktopRuntimeHostManagementAction,
-  DesktopRuntimeHostManagementSnapshot,
+  DesktopRuntimeHostManagementResult,
 } from '../../preload/bridge-contract.js';
 import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
@@ -19,24 +19,24 @@ export function RuntimeHostManagementDialog(props: {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
   const toast = useToast();
-  const [snapshot, setSnapshot] = useState<DesktopRuntimeHostManagementSnapshot>();
+  const [result, setResult] = useState<DesktopRuntimeHostManagementResult>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
-  const [logs, setLogs] = useState<string>();
   const [confirmingUninstall, setConfirmingUninstall] = useState(false);
 
   const profile = props.profile;
   useEffect(() => {
     if (!profile) return;
     let disposed = false;
-    setSnapshot(undefined);
+    setResult(undefined);
     setError(undefined);
-    setLogs(undefined);
     setConfirmingUninstall(false);
     setLoading(true);
-    void window.maka.runtimeHostManagement.getStatus(profile.id).then(
-      (next) => {
-        if (!disposed) setSnapshot(next);
+    void window.maka.runtimeHostManagement.run(profile.id, 'status').then(
+      (response) => {
+        if (disposed) return;
+        if (response.kind === 'result') setResult(response);
+        else setError(response.error.message);
       },
       (failure) => {
         if (!disposed) setError(settingsActionErrorMessage(failure, locale));
@@ -60,14 +60,7 @@ export function RuntimeHostManagementDialog(props: {
         toast.error(copy.managementActionFailed, response.error.message);
         return;
       }
-      const result = response;
-      setSnapshot({
-        kind: 'available',
-        profileId: profile.id,
-        profileName: profile.name,
-        result,
-      });
-      if (action === 'logs') setLogs(result.logs ?? '');
+      setResult(response);
     } catch (failure) {
       const message = settingsActionErrorMessage(failure, locale);
       setError(message);
@@ -77,7 +70,6 @@ export function RuntimeHostManagementDialog(props: {
     }
   }
 
-  const result = snapshot?.kind === 'available' ? snapshot.result : undefined;
   const service = result?.service;
   return (
     <Dialog
@@ -102,18 +94,12 @@ export function RuntimeHostManagementDialog(props: {
         content={(
           <LayoutContent padding={4}>
             <div className="settingsRuntimeHostManagement">
-              {loading && !snapshot ? (
+              {loading && !result ? (
                 <div className="settingsRuntimeHostSetupProgress" role="status">
                   <Spinner size="sm" />
                 </div>
               ) : null}
               {error ? <Banner status="error" title={error} /> : null}
-              {snapshot?.kind === 'failed' ? (
-                <Banner status="error" title={snapshot.error.message} />
-              ) : null}
-              {snapshot?.kind === 'unavailable' ? (
-                <Banner status="info" title={copy.managementUnavailable} />
-              ) : null}
               {confirmingUninstall ? (
                 <Banner
                   status="warning"
@@ -160,9 +146,9 @@ export function RuntimeHostManagementDialog(props: {
                       <Text type="supporting" color="secondary">{copy.noDirectoryRoots}</Text>
                     )}
                   </div>
-                  {logs !== undefined ? (
+                  {result.action === 'logs' ? (
                     <pre className="settingsRuntimeHostManagementLogs">
-                      {logs || copy.noLogs}
+                      {result.logs || copy.noLogs}
                     </pre>
                   ) : null}
                 </>
@@ -207,7 +193,7 @@ export function RuntimeHostManagementDialog(props: {
                       onClick={() => props.onRepair(profile)}
                     />
                   ) : null}
-                  {snapshot?.kind === 'available' && profile ? (
+                  {result && profile ? (
                     <>
                       <Button
                         variant="secondary"

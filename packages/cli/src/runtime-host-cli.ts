@@ -33,6 +33,9 @@ export type RuntimeHostCliCommand =
       projectDirectoryRoots?: { label: string; path: string }[];
       websocketPort?: number;
       websocketPath?: string;
+      expectedServiceId?: string;
+      expectedRootPath?: string;
+      expectedRootId?: string;
     }
   | {
       kind: 'runtime-host-service-manage';
@@ -43,6 +46,9 @@ export type RuntimeHostCliCommand =
       projectDirectoryRoots?: { label: string; path: string }[];
       websocketPort?: number;
       websocketPath?: string;
+      expectedServiceId?: string;
+      expectedRootPath?: string;
+      expectedRootId?: string;
     }
   | {
       kind: 'runtime-host-access-issue';
@@ -181,6 +187,9 @@ interface ManagedServiceOptions {
   readonly projectDirectoryRoots?: { readonly label: string; readonly path: string }[];
   readonly websocketPort?: number;
   readonly websocketPath?: string;
+  readonly expectedServiceId?: string;
+  readonly expectedRootPath?: string;
+  readonly expectedRootId?: string;
 }
 
 function parseManagedServiceOptions(
@@ -197,6 +206,9 @@ function parseManagedServiceOptions(
   let rootPath: string | undefined;
   let websocketPort: number | undefined;
   let websocketPath: string | undefined;
+  let expectedServiceId: string | undefined;
+  let expectedRootPath: string | undefined;
+  let expectedRootId: string | undefined;
   const projectDirectoryRoots: { label: string; path: string }[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -218,7 +230,11 @@ function parseManagedServiceOptions(
       if (optionError) return optionError;
       continue;
     }
-    if (input.allowConfiguration === false) {
+    const isTargetOption =
+      argument === '--expected-service-id' ||
+      argument === '--expected-root-path' ||
+      argument === '--expected-root-id';
+    if (input.allowConfiguration === false && !isTargetOption) {
       return error(`Unexpected argument: ${argument ?? ''}`);
     }
     if (
@@ -226,6 +242,9 @@ function parseManagedServiceOptions(
       argument === '--websocket-port' ||
       argument === '--websocket-path' ||
       argument === '--project-root' ||
+      argument === '--expected-service-id' ||
+      argument === '--expected-root-path' ||
+      argument === '--expected-root-id' ||
       Object.hasOwn(input.valueOptions ?? {}, argument ?? '')
     ) {
       const parsed = optionValue(argv, index, argument ?? '');
@@ -233,6 +252,9 @@ function parseManagedServiceOptions(
       if (argument === '--root') rootPath = parsed;
       else if (argument === '--websocket-port') websocketPort = Number(parsed);
       else if (argument === '--websocket-path') websocketPath = parsed;
+      else if (argument === '--expected-service-id') expectedServiceId = parsed;
+      else if (argument === '--expected-root-path') expectedRootPath = parsed;
+      else if (argument === '--expected-root-id') expectedRootId = parsed;
       else if (argument === '--project-root') {
         const root = parseProjectRoot(parsed);
         if ('kind' in root) return root;
@@ -263,6 +285,29 @@ function parseManagedServiceOptions(
   if (websocketPath !== undefined && !isCanonicalRuntimeHostWebSocketPath(websocketPath)) {
     return error('--websocket-path must be a canonical absolute URL path');
   }
+  if (expectedServiceId !== undefined && !/^[a-f0-9]{64}$/u.test(expectedServiceId)) {
+    return error('--expected-service-id must be a Runtime Host managed service identity');
+  }
+  if (expectedRootId !== undefined && !/^[a-f0-9]{64}$/u.test(expectedRootId)) {
+    return error('--expected-root-id must be a Runtime Host State Root identity');
+  }
+  if (
+    expectedRootPath !== undefined &&
+    (expectedRootPath.length === 0 ||
+      Buffer.byteLength(expectedRootPath, 'utf8') > 4 * 1024 ||
+      /[\u0000-\u001f\u007f]/u.test(expectedRootPath))
+  ) {
+    return error('--expected-root-path is invalid');
+  }
+  const hasExpectedTarget =
+    expectedServiceId !== undefined ||
+    expectedRootPath !== undefined ||
+    expectedRootId !== undefined;
+  if (hasExpectedTarget && (!expectedServiceId || !expectedRootPath || !expectedRootId)) {
+    return error(
+      '--expected-service-id, --expected-root-path, and --expected-root-id must be provided together',
+    );
+  }
   return {
     json,
     ...(framed ? { framed: true as const } : {}),
@@ -270,6 +315,9 @@ function parseManagedServiceOptions(
     ...(projectDirectoryRoots.length > 0 ? { projectDirectoryRoots } : {}),
     ...(websocketPort === undefined ? {} : { websocketPort }),
     ...(websocketPath === undefined ? {} : { websocketPath }),
+    ...(expectedServiceId === undefined ? {} : { expectedServiceId }),
+    ...(expectedRootPath === undefined ? {} : { expectedRootPath }),
+    ...(expectedRootId === undefined ? {} : { expectedRootId }),
   };
 }
 

@@ -46,6 +46,10 @@ export interface RemoteRuntimeHostProfile {
   readonly kind: 'remote';
   readonly transport: RuntimeHostRemoteTransport;
   readonly rootId: string;
+  readonly managedService?: {
+    readonly id: string;
+    readonly rootPath: string;
+  };
 }
 
 export type RuntimeHostRemoteTransport =
@@ -548,21 +552,36 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
 }
 
 export function decodeRemoteRuntimeHostProfile(value: unknown): RemoteRuntimeHostProfile {
-  const record = requireExactRecord(value, 'Remote Runtime Host profile', [
-    'id',
-    'name',
-    'kind',
-    'transport',
-    'rootId',
-  ]);
+  const record = requireExactRecord(
+    value,
+    'Remote Runtime Host profile',
+    ['id', 'name', 'kind', 'transport', 'rootId'],
+    ['managedService'],
+  );
   if (record.kind !== 'remote') throw new Error('Runtime Host profile kind must be remote');
+  const transport = decodeRuntimeHostRemoteTransport(record.transport);
+  const managedService = decodeManagedService(record.managedService);
+  if (managedService && transport.kind !== 'ssh') {
+    throw new Error('A managed Runtime Host service requires an SSH transport');
+  }
   return Object.freeze({
     id: requireProfileId(record.id),
     name: requireProfileName(record.name),
     kind: 'remote',
-    transport: decodeRuntimeHostRemoteTransport(record.transport),
+    transport,
     rootId: requireHostRootId(record.rootId),
+    ...(managedService ? { managedService } : {}),
   });
+}
+
+function decodeManagedService(value: unknown): RemoteRuntimeHostProfile['managedService'] {
+  if (value === undefined) return undefined;
+  const record = requireExactRecord(value, 'Managed Runtime Host service', ['id', 'rootPath']);
+  const rootPath = requireString(record.rootPath, 'Managed Runtime Host State Root');
+  if (Buffer.byteLength(rootPath, 'utf8') > 4 * 1024 || /[\u0000-\u001f\u007f]/u.test(rootPath)) {
+    throw new Error('Managed Runtime Host State Root is invalid');
+  }
+  return Object.freeze({ id: requireHostRootId(record.id), rootPath });
 }
 
 function decodeRuntimeHostRemoteTransport(value: unknown): RuntimeHostRemoteTransport {
@@ -654,13 +673,15 @@ function transportCredentialBinding(transport: RuntimeHostRemoteTransport): stri
   }
 }
 
-function sameRemoteRuntimeHostProfile(
+export function sameRemoteRuntimeHostProfile(
   left: RemoteRuntimeHostProfile,
   right: RemoteRuntimeHostProfile,
 ): boolean {
   return (
     left.id === right.id &&
     left.name === right.name &&
+    left.managedService?.id === right.managedService?.id &&
+    left.managedService?.rootPath === right.managedService?.rootPath &&
     profileCredentialBinding(left) === profileCredentialBinding(right)
   );
 }

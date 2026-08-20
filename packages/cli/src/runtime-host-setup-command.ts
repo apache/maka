@@ -1,5 +1,5 @@
-import { mkdir, readFile, realpath } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   connectRemoteRuntimeHost,
@@ -49,6 +49,9 @@ export interface RuntimeHostSetupCliOptions {
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly websocketPort?: number;
   readonly websocketPath?: string;
+  readonly expectedServiceId?: string;
+  readonly expectedRootPath?: string;
+  readonly expectedRootId?: string;
 }
 
 interface RuntimeHostSetupDeps {
@@ -119,6 +122,9 @@ async function runRuntimeHostSetupLocked(
     defaultRootPath: options.defaultRootPath,
     nodePath: process.execPath,
     cliPath: join(options.sourcePackageRoot, 'dist', 'cli.js'),
+    ...(options.expectedServiceId ? { expectedServiceId: options.expectedServiceId } : {}),
+    ...(options.expectedRootPath ? { expectedRootPath: options.expectedRootPath } : {}),
+    ...(options.expectedRootId ? { expectedRootId: options.expectedRootId } : {}),
   } as const;
   const status = await deps.manageService({ ...common, action: 'status' }, backend);
   await assertCompatibleExistingVersion(status, options.version);
@@ -195,6 +201,8 @@ async function runRuntimeHostSetupLocked(
     emit({
       kind: 'complete',
       version: deployment.version,
+      serviceId,
+      rootPath: config.rootPath,
       rootId: paired.rootId,
       endpoint,
       credentialId: paired.credentialId,
@@ -222,21 +230,12 @@ async function assertCompatibleExistingVersion(
   status: RuntimeHostManagedServiceResult,
   version: string,
 ): Promise<void> {
-  const cliPath = status.service.config?.launch.cliPath;
-  if (!cliPath) return;
-  let existingVersion: unknown;
-  try {
-    const packageRoot = dirname(dirname(await realpath(cliPath)));
-    existingVersion = (
-      JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')) as {
-        version?: unknown;
-      }
-    ).version;
-  } catch (error) {
+  if (!status.service.config) return;
+  const existingVersion = status.service.installedVersion;
+  if (!existingVersion) {
     throw new RuntimeHostSetupError(
       'existing_installation_unknown',
       'The installed Runtime Host version could not be identified; repair it before setup',
-      { cause: error },
     );
   }
   if (

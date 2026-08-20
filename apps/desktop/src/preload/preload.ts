@@ -25,7 +25,6 @@ import type {
   DesktopRuntimeHostOnboardingInput,
   DesktopRuntimeHostOnboardingSnapshot,
   DesktopRuntimeHostManagementAction,
-  DesktopRuntimeHostManagementSnapshot,
   DesktopRuntimeHostManagementResponse,
   DesktopNewTaskCatalog,
   DesktopNewTaskHost,
@@ -1184,9 +1183,6 @@ const makaBridge = {
     },
   },
   runtimeHostManagement: {
-    getStatus(profileId: string): Promise<DesktopRuntimeHostManagementSnapshot> {
-      return ipcRenderer.invoke('runtime-host-management:getStatus', profileId);
-    },
     run(
       profileId: string,
       action: DesktopRuntimeHostManagementAction,

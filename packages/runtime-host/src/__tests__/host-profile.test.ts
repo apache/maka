@@ -40,6 +40,48 @@ describe('Runtime Host profiles', () => {
     await assert.rejects(() => catalog.remove('local'), /cannot be removed/);
   });
 
+  test('persists managed service identity only for SSH profiles', async () => {
+    const managed = decodeRuntimeHostProfileDocument({
+      schemaVersion: 1,
+      profiles: [
+        {
+          id: 'office',
+          name: 'Office',
+          kind: 'remote',
+          transport: {
+            kind: 'ssh',
+            destination: 'operator@example.com',
+            remotePort: 7443,
+            websocketPath: '/runtime-host',
+          },
+          rootId: ROOT_A,
+          managedService: { id: ROOT_B, rootPath: '/srv/maka' },
+        },
+      ],
+    });
+    assert.deepEqual(managed.profiles[0]?.managedService, {
+      id: ROOT_B,
+      rootPath: '/srv/maka',
+    });
+    assert.throws(
+      () =>
+        decodeRuntimeHostProfileDocument({
+          schemaVersion: 1,
+          profiles: [
+            {
+              id: 'office',
+              name: 'Office',
+              kind: 'remote',
+              transport: { kind: 'tls', url: 'wss://runtime.example.com' },
+              rootId: ROOT_A,
+              managedService: { id: ROOT_B, rootPath: '/srv/maka' },
+            },
+          ],
+        }),
+      /requires an SSH transport/u,
+    );
+  });
+
   test('normalizes, serializes, updates, and removes remote profiles', async () => {
     const path = await profilePath();
     const catalog = createFileRuntimeHostProfileCatalog(path, memoryCredentials());

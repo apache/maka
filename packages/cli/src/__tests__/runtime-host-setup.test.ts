@@ -58,7 +58,7 @@ test('managed setup converges on one exact package and verified Client pairing',
       readonly cliPath: string;
       readonly managedDeploymentRoot?: string;
     }) => {
-      if (input.action === 'status') return serviceResult('status', config);
+      if (input.action === 'status') return serviceResult('status', config, '0.2.0');
       installCount += 1;
       installedCliPath = input.cliPath;
       config = {
@@ -71,7 +71,7 @@ test('managed setup converges on one exact package and verified Client pairing',
         websocket: { host: '127.0.0.1', port: 42_111, path: '/runtime-host' },
         launch: { nodePath: process.execPath, cliPath: input.cliPath },
       };
-      return serviceResult('install', config);
+      return serviceResult('install', config, '0.2.0');
     },
     prepareDeployment: (input: Parameters<typeof prepareRuntimeHostManagedPackageDeployment>[0]) =>
       prepareRuntimeHostManagedPackageDeployment(input, deploymentPathOptions),
@@ -213,12 +213,18 @@ test('managed setup replaces one exact development package with another', async 
     {
       createBackend: () => unusedBackend(),
       manageService: async (input: { readonly action: string; readonly cliPath: string }) => {
-        if (input.action === 'status') return serviceResult('status', previousConfig);
+        if (input.action === 'status') {
+          return serviceResult('status', previousConfig, previousVersion);
+        }
         installedCliPath = input.cliPath;
-        return serviceResult('install', {
-          ...previousConfig,
-          launch: { ...previousConfig.launch, cliPath: input.cliPath },
-        });
+        return serviceResult(
+          'install',
+          {
+            ...previousConfig,
+            launch: { ...previousConfig.launch, cliPath: input.cliPath },
+          },
+          nextVersion,
+        );
       },
       prepareDeployment: (input) =>
         prepareRuntimeHostManagedPackageDeployment(input, deploymentPathOptions),
@@ -267,7 +273,7 @@ test('managed setup removes a newly copied package when service installation fai
     {
       createBackend: () => unusedBackend(),
       manageService: async (input: { readonly action: string }) => {
-        if (input.action === 'status') return serviceResult('status', null);
+        if (input.action === 'status') return serviceResult('status', null, null);
         throw new RuntimeHostServiceManagerError(
           'service_manager_operation_failed',
           `Injected service failure ${'x'.repeat(2_000)}`,
@@ -312,6 +318,7 @@ async function createReleasePackage(base: string, version: string): Promise<stri
 function serviceResult(
   action: RuntimeHostManagedServiceResult['action'],
   config: RuntimeHostManagedServiceConfig | null,
+  installedVersion: string | null,
 ): RuntimeHostManagedServiceResult {
   return {
     schemaVersion: 1,
@@ -324,7 +331,7 @@ function serviceResult(
       state: config ? 'running' : 'not_installed',
       pid: config ? 42 : null,
       lastExitCode: null,
-      installedVersion: config ? '0.1.0' : null,
+      installedVersion,
       config,
     },
   };

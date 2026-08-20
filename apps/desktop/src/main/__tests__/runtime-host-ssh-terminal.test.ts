@@ -94,6 +94,8 @@ test('keeps setup credentials out of the interactive terminal projection', async
     sequence: 1,
     kind: 'complete',
     version: '0.1.0-beta.1',
+    serviceId: 'b'.repeat(64),
+    rootPath: '/home/operator/.config/Maka/workspaces/default',
     rootId: 'a'.repeat(64),
     endpoint: 'ws://127.0.0.1:7443/runtime-host',
     credentialId: 'credential-1',
@@ -201,6 +203,9 @@ test('reads a framed service result without projecting it into the SSH terminal'
     setupPackage: { kind: 'npm', specifier: 'maka-agent@1.2.3' },
     principalId: 'desktop:stable-client',
     action: 'status',
+    expectedServiceId: 'b'.repeat(64),
+    expectedRootPath: '/home/operator/.config/Maka/workspaces/default',
+    expectedRootId: 'a'.repeat(64),
   });
   await waitFor(() => harness.pty.hasDataListener());
   harness.pty.emitData('Password: ');
@@ -235,6 +240,35 @@ test('reads a framed service result without projecting it into the SSH terminal'
   assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_SERVICE/u);
   assert.match(JSON.stringify(harness.events), /Password/u);
   await harness.terminal.close();
+});
+
+test('does not launch a management process after the terminal owner closes', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-runtime-host-closed-management-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const archive = join(directory, 'maka-agent-development.tgz');
+  await writeFile(archive, 'development package');
+  const launches: unknown[] = [];
+  const terminal = createDesktopRuntimeHostSshTerminal({
+    ipcMain: { handle: () => undefined, removeHandler: () => undefined },
+    send: () => undefined,
+    spawnPty: ((...args: unknown[]) => {
+      launches.push(args);
+      return new FakePty() as unknown as IPty;
+    }) as typeof import('node-pty').spawn,
+  });
+  const management = terminal.runServiceManagement({
+    destination: 'operator@example.com',
+    setupPackage: { kind: 'development_archive', path: archive },
+    principalId: 'desktop:stable-client',
+    action: 'status',
+    expectedServiceId: 'b'.repeat(64),
+    expectedRootPath: '/srv/maka',
+    expectedRootId: 'a'.repeat(64),
+  });
+
+  await terminal.close();
+  await assert.rejects(management, /terminal is closed/u);
+  assert.equal(launches.length, 0);
 });
 
 test('uploads a development release archive before running the same remote setup', async (t) => {

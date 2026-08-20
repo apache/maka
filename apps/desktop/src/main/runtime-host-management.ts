@@ -2,7 +2,6 @@ import type { IpcMain } from 'electron';
 import type { RuntimeHostServiceManagementFrame } from '@maka/runtime-host/client';
 import type {
   DesktopRuntimeHostManagementAction,
-  DesktopRuntimeHostManagementSnapshot,
 } from '../preload/bridge-contract.js';
 import type { DesktopRuntimeHostProfileService } from './runtime-host-profile-service.js';
 import type {
@@ -13,7 +12,6 @@ import type {
 const MANAGEMENT_ACTIONS = new Set<DesktopRuntimeHostManagementAction>([
   'status',
   'start',
-  'stop',
   'restart',
   'logs',
   'uninstall',
@@ -45,8 +43,8 @@ export function createDesktopRuntimeHostManagement(input: {
       throw new Error('Runtime Host service management action is invalid');
     }
     const profile = await resolveProfile(profileId);
-    if (profile.transport.kind !== 'ssh') {
-      throw new Error('This Runtime Host profile does not have an SSH management channel');
+    if (profile.transport.kind !== 'ssh' || !profile.managedService) {
+      throw new Error('This Runtime Host profile is not bound to a managed service');
     }
     return input.runServiceManagement({
       destination: profile.transport.destination,
@@ -54,44 +52,19 @@ export function createDesktopRuntimeHostManagement(input: {
       setupPackage: input.setupPackage,
       principalId: `desktop:${input.clientInstanceId}`,
       action: action as DesktopRuntimeHostManagementAction,
+      expectedServiceId: profile.managedService.id,
+      expectedRootPath: profile.managedService.rootPath,
+      expectedRootId: profile.rootId,
     });
   };
 
-  const channels = [
-    'runtime-host-management:getStatus',
-    'runtime-host-management:run',
-  ] as const;
-  input.ipcMain.handle(channels[0], async (_event, profileId: unknown) => {
-    const profile = await resolveProfile(profileId);
-    if (profile.transport.kind !== 'ssh') {
-      return {
-        kind: 'unavailable',
-        profileId: profile.id,
-        profileName: profile.name,
-        reason: 'ssh_required',
-      } satisfies DesktopRuntimeHostManagementSnapshot;
-    }
-    const response = await run(profile.id, 'status');
-    return response.kind === 'result'
-      ? {
-          kind: 'available',
-          profileId: profile.id,
-          profileName: profile.name,
-          result: response,
-        }
-      : {
-          kind: 'failed',
-          profileId: profile.id,
-          profileName: profile.name,
-          error: response.error,
-        } satisfies DesktopRuntimeHostManagementSnapshot;
-  });
-  input.ipcMain.handle(channels[1], (_event, profileId: unknown, action: unknown) =>
+  const channel = 'runtime-host-management:run';
+  input.ipcMain.handle(channel, (_event, profileId: unknown, action: unknown) =>
     run(profileId, action));
 
   return {
     close() {
-      for (const channel of channels) input.ipcMain.removeHandler(channel);
+      input.ipcMain.removeHandler(channel);
     },
   };
 }

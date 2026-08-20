@@ -59,7 +59,6 @@ export type SettingsProjectsCopy = {
     unavailable: string;
     manage: string;
     managementTitle(name: string): string;
-    managementUnavailable: string;
     serviceStatus: string;
     serviceState: Record<import('../../preload/bridge-contract.js').DesktopRuntimeHostManagementResult['service']['state'], string>;
     installedVersion: string;
@@ -197,7 +196,6 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       unavailable: '无法连接',
       manage: '管理',
       managementTitle: (name: string) => `管理 ${name}`,
-      managementUnavailable: '此连接没有 SSH 管理通道。它仍可正常使用，但需要在 Host 机器上管理服务。',
       serviceStatus: '服务状态',
       serviceState: {
         not_installed: '未安装',
@@ -339,7 +337,6 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       unavailable: 'Unavailable',
       manage: 'Manage',
       managementTitle: (name: string) => `Manage ${name}`,
-      managementUnavailable: 'This connection has no SSH management channel. It remains usable, but the service must be managed on the Host machine.',
       serviceStatus: 'Service status',
       serviceState: {
         not_installed: 'Not installed',

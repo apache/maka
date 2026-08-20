@@ -15,6 +15,8 @@ test('persists a verified SSH profile without projecting its credential', async 
     runSetup: async (_input, onProgress) => {
       onProgress({ phase: 'installing_service' });
       return {
+        serviceId: 'b'.repeat(64),
+        rootPath: '/home/operator/.config/Maka/workspaces/default',
         rootId: 'a'.repeat(64),
         endpoint: 'ws://127.0.0.1:7443/runtime-host',
         credential: 'secret-access-token',
@@ -35,10 +37,85 @@ test('persists a verified SSH profile without projecting its credential', async 
     remotePort: 7443,
     websocketPath: '/runtime-host',
   });
+  assert.deepEqual(saved?.profile.managedService, {
+    id: 'b'.repeat(64),
+    rootPath: '/home/operator/.config/Maka/workspaces/default',
+  });
   assert.equal(saved?.credential, 'secret-access-token');
   assert.doesNotMatch(JSON.stringify(harness.events), /secret-access-token/u);
   await harness.onboarding.close();
   assert.equal(harness.handlers.size, 0);
+});
+
+test('repairs only the selected managed service identity', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const profile = {
+    id: 'office',
+    name: 'Office',
+    kind: 'remote' as const,
+    rootId: 'a'.repeat(64),
+    managedService: {
+      id: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+    },
+    transport: {
+      kind: 'ssh' as const,
+      destination: 'operator@example.com',
+      remotePort: 7443,
+      websocketPath: '/runtime-host',
+    },
+  };
+  let setupInput: Parameters<Parameters<typeof createDesktopRuntimeHostOnboarding>[0]['runSetup']>[0] | undefined;
+  let savedExpectedProfileId: string | undefined;
+  const onboarding = createDesktopRuntimeHostOnboarding({
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    clientInstanceId: 'stable-client',
+    profiles: {
+      getSnapshot: async () => ({
+        defaultProfileId: 'office',
+        entries: [{ profile, enabled: true, isDefault: true, readiness: 'ready' }],
+      }),
+      addAndEnableVerified: async (input) => {
+        savedExpectedProfileId = input.expectedProfile?.id;
+        return { profileId: input.profile.id };
+      },
+    },
+    resolveSetupPackage: () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    runSetup: async (input) => {
+      setupInput = input;
+      return {
+        serviceId: profile.managedService.id,
+        rootPath: profile.managedService.rootPath,
+        rootId: profile.rootId,
+        endpoint: 'ws://127.0.0.1:7443/runtime-host',
+        credential: 'rotated-token',
+      };
+    },
+    send: () => undefined,
+  });
+
+  const result = await handlers.get('runtime-host-onboarding:start')?.({}, {
+    destination: 'ignored.example.com',
+    repairProfileId: profile.id,
+  });
+
+  assert.equal((result as { kind?: string }).kind, 'complete');
+  assert.deepEqual(setupInput && {
+    destination: setupInput.destination,
+    expectedServiceId: setupInput.expectedServiceId,
+    expectedRootPath: setupInput.expectedRootPath,
+    expectedRootId: setupInput.expectedRootId,
+  }, {
+    destination: profile.transport.destination,
+    expectedServiceId: profile.managedService.id,
+    expectedRootPath: profile.managedService.rootPath,
+    expectedRootId: profile.rootId,
+  });
+  assert.equal(savedExpectedProfileId, profile.id);
+  await onboarding.close();
 });
 
 test('projects invalid setup input as a recoverable failure', async () => {
@@ -68,11 +145,15 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
   let pairingStarted = false;
   let completeReceived = false;
   let finishSetup!: (value: {
+    serviceId: string;
+    rootPath: string;
     rootId: string;
     endpoint: string;
     credential: string;
   }) => void;
   const setupDrain = new Promise<{
+    serviceId: string;
+    rootPath: string;
     rootId: string;
     endpoint: string;
     credential: string;
@@ -100,6 +181,8 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
   assert.equal(await harness.invoke('runtime-host-onboarding:cancel'), false);
 
   finishSetup({
+    serviceId: 'b'.repeat(64),
+    rootPath: '/home/operator/.config/Maka/workspaces/default',
     rootId: 'a'.repeat(64),
     endpoint: 'ws://127.0.0.1:7443/runtime-host',
     credential: 'candidate-token',
@@ -146,12 +229,17 @@ function createHarness(
 ) {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const events: unknown[] = [];
+  const { profiles, ...rest } = overrides;
   const onboarding = createDesktopRuntimeHostOnboarding({
     clientInstanceId: 'stable-client',
-    profiles: { addAndEnableVerified: async () => assert.fail('profile must not be saved') },
+    profiles: {
+      getSnapshot: async () => ({ defaultProfileId: 'local', entries: [] }),
+      addAndEnableVerified: async () => assert.fail('profile must not be saved'),
+      ...profiles,
+    },
     resolveSetupPackage: () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
     runSetup: async () => assert.fail('SSH must not start'),
-    ...overrides,
+    ...rest,
     ipcMain: {
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
       removeHandler: (channel) => handlers.delete(channel),

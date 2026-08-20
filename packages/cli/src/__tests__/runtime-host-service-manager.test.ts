@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { decodeRuntimeHostServiceManagementFrame } from '@maka/runtime-host/client';
+import { resolveStorageRoot } from '@maka/storage/root-authority';
 import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
 import {
   removeRuntimeHostManagedDeployment,
@@ -63,6 +64,28 @@ describe('managed Runtime Host service', () => {
       json: false,
       framed: true,
     });
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'service',
+        'status',
+        '--framed',
+        '--expected-service-id',
+        'b'.repeat(64),
+        '--expected-root-path',
+        '/srv/maka',
+        '--expected-root-id',
+        'a'.repeat(64),
+      ]),
+      {
+        kind: 'runtime-host-service-manage',
+        action: 'status',
+        json: false,
+        framed: true,
+        expectedServiceId: 'b'.repeat(64),
+        expectedRootPath: '/srv/maka',
+        expectedRootId: 'a'.repeat(64),
+      },
+    );
     assert.deepEqual(parseRuntimeHostCommand(['service', 'uninstall', '--json']), {
       kind: 'runtime-host-service-manage',
       action: 'uninstall',
@@ -410,6 +433,96 @@ describe('managed Runtime Host service', () => {
     assert.equal(frame.service.installedVersion, '1.2.3');
     assert.equal(frame.service.stateRoot, '/srv/maka');
     assert.doesNotMatch(JSON.stringify(frame), /secret/u);
+  });
+
+  it('reads service logs when an interrupted install left no config', async (t) => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-service-logs-'));
+    t.after(() => rm(base, { recursive: true, force: true }));
+    let logsCalled = 0;
+    const backend: RuntimeHostServiceBackend = {
+      ...createReadyBackend(),
+      logs: async () => {
+        logsCalled += 1;
+        return 'failed before config commit';
+      },
+    };
+
+    const result = await manageRuntimeHostService(
+      {
+        action: 'logs',
+        clientDataRoot: join(base, 'config'),
+        defaultRootPath: join(base, 'state'),
+        nodePath: process.execPath,
+        cliPath: join(base, 'cli.js'),
+      },
+      backend,
+    );
+
+    assert.equal(result.logs, 'failed before config commit');
+    assert.equal(result.service.config, null);
+    assert.equal(logsCalled, 1);
+  });
+
+  it('verifies the bound service and State Root before management mutations', async (t) => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-service-binding-'));
+    t.after(() => rm(base, { recursive: true, force: true }));
+    const clientDataRoot = join(base, 'config');
+    const root = await resolveStorageRoot({ path: join(base, 'state'), kind: 'interactive' });
+    const cliPath = join(base, 'cli.js');
+    await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
+    let starts = 0;
+    const backend: RuntimeHostServiceBackend = {
+      ...createReadyBackend(),
+      start: async () => {
+        starts += 1;
+      },
+    };
+    const common = {
+      clientDataRoot,
+      defaultRootPath: root.canonicalPath,
+      nodePath: process.execPath,
+      cliPath,
+    } as const;
+    await manageRuntimeHostService({ ...common, action: 'install' }, backend, {
+      waitForReady: async () => undefined,
+    });
+    const binding = {
+      expectedServiceId: resolveRuntimeHostManagedServiceId(clientDataRoot),
+      expectedRootPath: root.canonicalPath,
+      expectedRootId: root.rootId,
+    } as const;
+
+    await manageRuntimeHostService({ ...common, ...binding, action: 'start' }, backend, {
+      waitForReady: async () => undefined,
+    });
+    assert.equal(starts, 1);
+    await assert.rejects(
+      manageRuntimeHostService(
+        {
+          ...common,
+          ...binding,
+          expectedRootId: 'f'.repeat(64),
+          action: 'start',
+        },
+        backend,
+      ),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError && error.code === 'target_mismatch',
+    );
+    assert.equal(starts, 1);
+
+    await rm(resolveRuntimeHostManagedServiceConfigPath(clientDataRoot));
+    const repaired = await manageRuntimeHostService(
+      {
+        ...common,
+        ...binding,
+        defaultRootPath: join(base, 'different-default'),
+        action: 'install',
+      },
+      backend,
+      { waitForReady: async () => undefined },
+    );
+    assert.equal(repaired.service.config?.rootPath, root.canonicalPath);
   });
 
   it('restores the deployed service when the replacement never becomes ready', async (t) => {

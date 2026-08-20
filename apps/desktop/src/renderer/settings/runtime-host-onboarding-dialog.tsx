@@ -26,6 +26,7 @@ export function RuntimeHostOnboardingDialog(props: {
   const [name, setName] = useState('');
   const [destination, setDestination] = useState('');
   const [sshPort, setSshPort] = useState('');
+  const isRepair = props.initialInput?.repairProfileId !== undefined;
 
   useEffect(() => {
     if (props.isOpen && !wasOpen.current) {
@@ -60,6 +61,9 @@ export function RuntimeHostOnboardingDialog(props: {
       destination: destination.trim(),
       ...(name.trim() ? { name: name.trim() } : {}),
       ...(sshPort.trim() ? { sshPort: Number(sshPort) } : {}),
+      ...(props.initialInput?.repairProfileId
+        ? { repairProfileId: props.initialInput.repairProfileId }
+        : {}),
     });
     if (next.revision > revision.current) {
       revision.current = next.revision;
@@ -121,21 +125,21 @@ export function RuntimeHostOnboardingDialog(props: {
                   <TextInput
                     label={copy.setupName}
                     value={name}
-                    isDisabled={running}
+                    isDisabled={running || isRepair}
                     onChange={setName}
                   />
                   <TextInput
                     label={copy.sshDestination}
                     value={destination}
                     placeholder="user@host.example"
-                    isDisabled={running}
+                    isDisabled={running || isRepair}
                     onChange={setDestination}
                   />
                   <TextInput
                     label={copy.setupSshPort}
                     value={sshPort}
                     placeholder="22"
-                    isDisabled={running}
+                    isDisabled={running || isRepair}
                     onChange={setSshPort}
                   />
                 </>
@@ -186,7 +190,7 @@ export function RuntimeHostOnboardingDialog(props: {
                   <Button variant="secondary" label={copy.setupCancel} onClick={close} />
                   <Button
                     variant="primary"
-                    label={copy.setupConnect}
+                    label={isRepair ? copy.repairService : copy.setupConnect}
                     isDisabled={!canStart}
                     clickAction={start}
                   />
