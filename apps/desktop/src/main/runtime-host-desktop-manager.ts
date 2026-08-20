@@ -233,7 +233,11 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     await candidate.botIncoming.handleBotIncomingMessage(message);
   }
 
-  async finalizePairing(profileId: string): Promise<void> {
+  finalizePairing(profileId: string): Promise<void> {
+    return this.#mutateTarget(profileId, () => this.#finalizePairing(profileId));
+  }
+
+  async #finalizePairing(profileId: string): Promise<void> {
     const target = this.#requireTarget(profileId);
     if (target.target.profile.kind !== 'remote') {
       throw new Error('Only remote Runtime Host profiles can finalize pairing');

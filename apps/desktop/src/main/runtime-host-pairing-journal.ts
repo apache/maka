@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import {
   decodeRemoteRuntimeHostProfile,
@@ -15,7 +14,6 @@ const PAIRING_JOURNAL_MAX_BYTES = 512 * 1024;
 const PAIRING_JOURNAL_MAX_ENTRIES = 32;
 
 export interface DesktopRuntimeHostPairingIntent {
-  readonly id: string;
   readonly target: {
     readonly profile: RemoteRuntimeHostProfile;
     readonly credential: string;
@@ -33,7 +31,6 @@ export function createDesktopRuntimeHostPairingIntent(input: {
   readonly wasEnabled: boolean;
 }): DesktopRuntimeHostPairingIntent {
   return {
-    id: randomUUID(),
     target: requireRemoteTarget(input.target, 'pairing target'),
     ...(input.previous
       ? { previous: requireRemoteTarget(input.previous, 'previous pairing target') }
@@ -109,12 +106,9 @@ function decodePairingJournal(value: unknown): readonly DesktopRuntimeHostPairin
 }
 
 function decodePairingIntent(value: unknown): DesktopRuntimeHostPairingIntent {
-  const record = requireExactRecord(value, ['id', 'target', 'previous', 'wasEnabled'], [
+  const record = requireExactRecord(value, ['target', 'previous', 'wasEnabled'], [
     'previous',
   ]);
-  if (typeof record.id !== 'string' || !/^[0-9a-f-]{36}$/u.test(record.id)) {
-    throw new Error('Invalid Runtime Host pairing recovery identity');
-  }
   if (typeof record.wasEnabled !== 'boolean') {
     throw new Error('Invalid Runtime Host pairing recovery enablement');
   }
@@ -129,7 +123,6 @@ function decodePairingIntent(value: unknown): DesktopRuntimeHostPairingIntent {
     throw new Error('Runtime Host pairing recovery target changed Host identity');
   }
   return {
-    id: record.id,
     target,
     ...(previous ? { previous } : {}),
     wasEnabled: record.wasEnabled,

@@ -244,6 +244,39 @@ test('does not replay a pairing command rejected before dispatch', async () => {
   await manager.close();
 });
 
+test('waits for in-flight pairing finalization before closing its target', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  let releaseFinalize!: () => void;
+  const finalizeGate = new Promise<void>((resolve) => {
+    releaseFinalize = resolve;
+  });
+  let finalizeStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    finalizeStarted = resolve;
+  });
+  const remote = candidateHarness({
+    hostId: 'a'.repeat(64),
+    finalizeGate,
+    finalizeStarted,
+  });
+  const queue = [local.candidate, remote.candidate];
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    { startCandidate: async () => ready(queue.shift()!) },
+  );
+  await manager.enable(remoteTarget('office'));
+
+  const finalization = manager.finalizePairing('office');
+  await started;
+  const closing = manager.close();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(remote.closeCalls, 0);
+
+  releaseFinalize();
+  await Promise.all([finalization, closing]);
+  assert.equal(remote.closeCalls, 1);
+});
+
 test('coalesces concurrent enable requests for one remote profile', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
   const remote = candidateHarness({ hostId: 'host-b', lifecycleMode: 'remote' });
@@ -564,6 +597,8 @@ function candidateHarness(
     hostId?: string;
     finalizeFailures?: Error[];
     disconnectOnFinalizeFailure?: boolean;
+    finalizeGate?: Promise<void>;
+    finalizeStarted?: () => void;
   } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
@@ -599,6 +634,8 @@ function candidateHarness(
       },
       async finalizeAccessCredential() {
         finalizeCalls += 1;
+        options.finalizeStarted?.();
+        await options.finalizeGate;
         const failure = options.finalizeFailures?.shift();
         if (failure) {
           if (options.disconnectOnFinalizeFailure) {
