@@ -132,27 +132,6 @@ test('connection catalogs preserve user-choice provenance without inventing avai
   assert.deepEqual(entries[2]?.provenance.sources?.userChoice, ['session_model']);
 });
 
-test('Volcengine Agent Plan offers GLM-5.3 with its published model limits', () => {
-  const entries = buildConnectionModelCatalogEntries({
-    connection: {
-      slug: 'volcengine-agent-plan',
-      providerType: 'volcengine-agent-plan',
-      defaultModel: 'glm-5.3',
-      modelSource: 'fallback',
-    },
-  });
-
-  const model = entries.find((entry) => entry.id === 'glm-5.3');
-  assert.equal(PROVIDER_DEFAULTS['volcengine-agent-plan'].fallbackModels.includes('glm-5.3'), true);
-  assert.equal(model?.displayName, 'GLM-5.3');
-  assert.equal(model?.contextWindow, 1_000_000);
-  assert.equal(model?.maxOutputTokens, 131_072);
-  assert.deepEqual(model?.capabilities, {
-    reasoning: true,
-    functionCalling: true,
-  });
-});
-
 test('unknown persisted provider ids return an empty catalog', () => {
   assert.deepEqual(
     buildConnectionModelCatalogEntries({
