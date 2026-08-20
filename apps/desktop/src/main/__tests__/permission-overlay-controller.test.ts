@@ -314,7 +314,16 @@ describe('app bundle resolution for the drag', () => {
     });
     assert.equal(icon, null);
     assert.equal(calls, 0, 'unpackaged development must not call app.getFileIcon()');
-    assert.equal(await loadNativeBundleIcon(true, async () => 'icon'), 'icon');
+  });
+
+  it('uses the macOS-supported normal icon size for a packaged app', async () => {
+    let received: unknown;
+    const icon = await loadNativeBundleIcon(true, async (options) => {
+      received = options;
+      return 'icon';
+    });
+    assert.equal(icon, 'icon');
+    assert.deepEqual(received, { size: 'normal' });
   });
 
   it('walks three levels up from the executable to the .app', () => {

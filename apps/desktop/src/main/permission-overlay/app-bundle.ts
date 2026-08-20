@@ -34,6 +34,15 @@ export interface ResolveAppBundleDeps {
   exists(path: string): boolean;
 }
 
+interface NativeBundleIconOptions {
+  size: 'normal';
+}
+
+// Electron's `large` file-icon size is unsupported on macOS and can terminate
+// the packaged process before the promise settles. Both packaged icon reads
+// must use `normal`; callers may resize the decorative image afterwards.
+const NATIVE_BUNDLE_ICON_OPTIONS: NativeBundleIconOptions = { size: 'normal' };
+
 /**
  * Reading a bundle icon is presentation-only. The original unpackaged npm
  * Electron runtime could terminate natively while macOS resolved its bundle
@@ -43,11 +52,11 @@ export interface ResolveAppBundleDeps {
  */
 export async function loadNativeBundleIcon<T>(
   isPackaged: boolean,
-  load: () => Promise<T>,
+  load: (options: NativeBundleIconOptions) => Promise<T>,
 ): Promise<T | null> {
   if (!isPackaged) return null;
   try {
-    return await load();
+    return await load(NATIVE_BUNDLE_ICON_OPTIONS);
   } catch {
     return null;
   }

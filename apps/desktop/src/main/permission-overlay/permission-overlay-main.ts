@@ -76,8 +76,8 @@ export function createPermissionOverlayMain(
 
   async function resolveAppIconDataUrl(bundlePath: string | null): Promise<string | null> {
     if (!bundlePath) return null;
-    const icon = await loadNativeBundleIcon(app.isPackaged, () =>
-      app.getFileIcon(bundlePath, { size: 'large' }),
+    const icon = await loadNativeBundleIcon(app.isPackaged, (options) =>
+      app.getFileIcon(bundlePath, options),
     );
     if (!icon || icon.isEmpty()) return null;
     // nativeImage.createFromPath does not decode .icns reliably. Asking
@@ -273,8 +273,8 @@ function attachCardGestures(win: import('electron').BrowserWindow): void {
       if (!fromRenderer.isEmpty()) icon = fromRenderer;
     }
     if (icon.isEmpty()) {
-      const fallback = await loadNativeBundleIcon(app.isPackaged, () =>
-        app.getFileIcon(resolved.bundlePath, { size: 'large' }),
+      const fallback = await loadNativeBundleIcon(app.isPackaged, (options) =>
+        app.getFileIcon(resolved.bundlePath, options),
       );
       if (fallback && !fallback.isEmpty()) icon = fallback.resize({ width: 64, height: 64 });
       // The file drag still works without a decorative drag image.
