@@ -250,7 +250,7 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('keeps the subscription queue Epoch correlated', () => {
-    assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 4);
+    assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 5);
     const opened = {
       requestId: 'open-1',
       operation: 'subscription.open',
@@ -467,6 +467,37 @@ describe('Runtime Host bootstrap protocol', () => {
     ]) {
       assert.throws(() => decodeHostFrame({ ...envelope, event }), isInvalidFrame);
     }
+
+    // The durable steering echo shares the session-event frame without a
+    // toolUseId; unknown keys stay rejected.
+    const steering = {
+      type: 'steering_message' as const,
+      id: 'steering-event-1',
+      turnId: 'turn-1',
+      ts: 7,
+      messageId: 'steering-message-1',
+      content: { text: 'steer the turn' },
+    };
+    const decodedSteering = decodeHostFrame({ ...envelope, event: steering });
+    assert.ok('kind' in decodedSteering);
+    if ('kind' in decodedSteering) {
+      assert.equal(decodedSteering.kind, 'subscription.session_event');
+      if (decodedSteering.kind === 'subscription.session_event') {
+        assert.deepEqual(decodedSteering.event, steering);
+      }
+    }
+    assert.throws(
+      () => decodeHostFrame({ ...envelope, event: { ...steering, toolUseId: 'tool-1' } }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...envelope,
+          event: { ...steering, content: { text: 'x'.repeat(49 * 1024) } },
+        }),
+      isInvalidFrame,
+    );
     assert.throws(
       () =>
         decodeHostFrame({
