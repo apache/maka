@@ -95,6 +95,13 @@ export class RuntimeHostUpgradeCancelledError extends RuntimeHostPermanentReconn
   }
 }
 
+export class RuntimeHostPairingFinalizationInterruptedError extends Error {
+  constructor() {
+    super('Runtime Host pairing finalization was deferred until the next startup');
+    this.name = 'RuntimeHostPairingFinalizationInterruptedError';
+  }
+}
+
 export type RuntimeHostRestartableConflict = Extract<
   DesktopRuntimeHostCandidateStartResult,
   { kind: 'upgrade_required'; restartable: true }
@@ -169,6 +176,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   readonly #targets = new Map<string, DesktopRuntimeHostTargetGeneration>();
   readonly #targetMutations = new Map<string, Promise<void>>();
   readonly #baseInput: DesktopRuntimeHostCandidateStartInput;
+  readonly #pairingFinalizationShutdown = new AbortController();
   #defaultProfileId: string = LOCAL_RUNTIME_HOST_PROFILE.id;
   #closed = false;
   #closeTask: Promise<void> | undefined;
@@ -243,8 +251,10 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       throw new Error('Only remote Runtime Host profiles can finalize pairing');
     }
     const lifecycle = this.#requireLifecycle(target);
-    let candidate = await this.#waitForReadyCandidate(lifecycle);
+    const signal = this.#pairingFinalizationShutdown.signal;
+    let candidate = await this.#waitForReadyCandidate(lifecycle, undefined, signal);
     while (true) {
+      signal.throwIfAborted();
       if (!target.valid || candidate.client.hostId !== target.target.profile.rootId) {
         throw new Error('Runtime Host target changed before pairing was finalized');
       }
@@ -254,7 +264,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       } catch (error) {
         const retry = pairingFinalizeRetry(error);
         if (!retry) throw error;
-        candidate = await this.#waitForReadyCandidate(lifecycle, candidate);
+        candidate = await this.#waitForReadyCandidate(lifecycle, candidate, signal);
       }
     }
   }
@@ -455,6 +465,9 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
 
   async #close(): Promise<void> {
     this.#closed = true;
+    this.#pairingFinalizationShutdown.abort(
+      new RuntimeHostPairingFinalizationInterruptedError(),
+    );
     await Promise.allSettled([...this.#targetMutations.values()]);
     const results = await Promise.allSettled(
       [...this.#targets.values()].map((target) => this.#removeTarget(target)),
@@ -591,10 +604,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   async #waitForReadyCandidate(
     lifecycle: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>,
     previous?: DesktopRuntimeHostCandidate,
+    signal?: AbortSignal,
   ): Promise<DesktopRuntimeHostCandidate> {
-    let candidate = await lifecycle.waitForCurrent(previous);
+    signal?.throwIfAborted();
+    let candidate = await lifecycle.waitForCurrent(previous, signal);
     while (candidate.client.lifecycleState !== 'ready') {
-      candidate = await lifecycle.waitForCurrent(candidate);
+      candidate = await lifecycle.waitForCurrent(candidate, signal);
     }
     return candidate;
   }

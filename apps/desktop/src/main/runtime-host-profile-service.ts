@@ -19,7 +19,10 @@ import type {
   DesktopRuntimeHostProfileEntry,
   DesktopRuntimeHostProfileSnapshot,
 } from "../preload/bridge-contract.js";
-import type { RuntimeHostDesktopTargetState } from "./runtime-host-desktop-manager.js";
+import {
+  RuntimeHostPairingFinalizationInterruptedError,
+  type RuntimeHostDesktopTargetState,
+} from "./runtime-host-desktop-manager.js";
 import {
   createDesktopRuntimeHostPairingIntent,
   pairingIntentMatchesTarget,
@@ -501,6 +504,7 @@ export function createDesktopRuntimeHostProfileService(input: {
           await finishPairingIntent(intent);
           return { profileId: profile.id };
         } catch (failure) {
+          if (failure instanceof RuntimeHostPairingFinalizationInterruptedError) throw failure;
           await rollbackPairingIntent(intent, failure);
           throw failure;
         }

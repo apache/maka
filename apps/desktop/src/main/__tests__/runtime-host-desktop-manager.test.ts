@@ -13,6 +13,7 @@ import type {
   DesktopRuntimeHostCandidateStartResult,
 } from '../runtime-host-desktop-candidate.js';
 import {
+  RuntimeHostPairingFinalizationInterruptedError,
   RuntimeHostUpgradeCancelledError,
   startRuntimeHostDesktopManager,
 } from '../runtime-host-desktop-manager.js';
@@ -275,6 +276,56 @@ test('waits for in-flight pairing finalization before closing its target', async
   releaseFinalize();
   await Promise.all([finalization, closing]);
   assert.equal(remote.closeCalls, 1);
+});
+
+test('defers reconnecting pairing finalization when the manager closes', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remoteHostId = 'a'.repeat(64);
+  const remote = candidateHarness({
+    hostId: remoteHostId,
+    finalizeFailures: [
+      new RuntimeHostOperationError(
+        'access.credential.finalize',
+        'commit_outcome_unknown',
+        'finalization outcome is unknown',
+      ),
+    ],
+    disconnectOnFinalizeFailure: true,
+  });
+  let reconnectStarted!: () => void;
+  const reconnecting = new Promise<void>((resolve) => {
+    reconnectStarted = resolve;
+  });
+  let starts = 0;
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async (input) => {
+        starts += 1;
+        if (starts === 1) return ready(local.candidate);
+        if (starts === 2) return ready(remote.candidate);
+        reconnectStarted();
+        const signal = input.signal;
+        assert.ok(signal);
+        return await new Promise<DesktopRuntimeHostCandidateStartResult>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+      reconnectBackoff: { minMs: 0, maxMs: 0 },
+    },
+  );
+  await manager.enable(remoteTarget('office'));
+
+  const finalization = assert.rejects(
+    () => manager.finalizePairing('office'),
+    RuntimeHostPairingFinalizationInterruptedError,
+  );
+  await reconnecting;
+  await manager.close();
+  await finalization;
+
+  assert.equal(remote.finalizeCalls, 1);
+  assert.equal(starts, 3);
 });
 
 test('coalesces concurrent enable requests for one remote profile', async () => {

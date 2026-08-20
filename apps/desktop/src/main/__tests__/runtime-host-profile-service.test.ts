@@ -16,10 +16,13 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from "@maka/runtime-host/protocol";
 import {
+  RuntimeHostPairingFinalizationInterruptedError,
+  type RuntimeHostDesktopTargetState,
+} from "../runtime-host-desktop-manager.js";
+import {
   createDesktopRuntimeHostProfileService,
   resolveDesktopRuntimeHostStartup,
 } from "../runtime-host-profile-service.js";
-import type { RuntimeHostDesktopTargetState } from "../runtime-host-desktop-manager.js";
 
 const ROOT_ID = "a".repeat(64);
 const PROFILE = {
@@ -402,6 +405,34 @@ test("finishes a persisted pairing after Desktop restarts before finalization", 
   assert.deepEqual(finalized, [PROFILE.id]);
   assert.equal((await catalog.resolve(PROFILE.id)).credential, "new-token");
   assert.equal((await resolveDesktopRuntimeHostStartup(root, { catalog })).pairingIntents.length, 0);
+});
+
+test("preserves pairing recovery when shutdown interrupts finalization", async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => {
+      throw new RuntimeHostPairingFinalizationInterruptedError();
+    },
+  });
+
+  await assert.rejects(
+    () => service.addAndEnableVerified({ profile: PROFILE, credential: "new-token" }),
+    RuntimeHostPairingFinalizationInterruptedError,
+  );
+
+  assert.equal((await catalog.resolve(PROFILE.id)).credential, "new-token");
+  const recovered = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  assert.equal(recovered.pairingIntents.length, 1);
+  assert.deepEqual(recovered.preferences.enabledRemoteProfileIds, [PROFILE.id]);
 });
 
 test("restores the previous credential when an interrupted pairing can no longer authenticate", async () => {
