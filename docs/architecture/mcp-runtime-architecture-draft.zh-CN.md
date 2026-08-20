@@ -2,7 +2,7 @@
 
 状态：remote dual-era V2 implemented（2026-08-11）
 
-跟踪：[MCP 2026-07-28 dual-era rollout #1650](https://github.com/Maka-Agent/maka-agent/issues/1650)
+跟踪：[MCP 2026-07-28 dual-era rollout #1650](https://github.com/apache/maka/issues/1650)
 
 ## 1. 目标与边界
 
