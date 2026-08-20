@@ -547,6 +547,53 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     );
   });
 
+  test('custom Responses relays use per-model declared levels on the Responses wire', () => {
+    const declared: LlmConnection = {
+      ...conn('openai-responses-compatible', 'my-responses-relay'),
+      baseUrl: 'https://relay.example/v1',
+      models: [{ id: 'custom-reasoner', apiProtocol: 'openai-responses' }],
+      relayModelProfiles: {
+        'custom-reasoner': { thinkingLevels: ['minimal', 'low', 'medium', 'high', 'max'] },
+      },
+    };
+    assert.deepEqual(buildProviderOptions(declared, 'custom-reasoner', 'high'), {
+      openai: { store: false, forceReasoning: true, reasoningEffort: 'high' },
+    });
+    assert.deepEqual(buildProviderOptions(declared, 'custom-reasoner', 'max'), {
+      openai: { store: false, forceReasoning: true, reasoningEffort: 'max' },
+    });
+    assert.deepEqual(buildProviderOptions(declared, 'custom-reasoner', 'xhigh'), {
+      openai: { store: false, forceReasoning: true },
+    });
+  });
+
+  test('custom relays send the declared fast service tier independently of reasoning', () => {
+    const chat: LlmConnection = {
+      ...conn('openai-compatible', 'my-relay'),
+      baseUrl: 'https://relay.example/v1',
+      relayModelProfiles: { 'fast-model': { serviceTier: 'fast' } },
+    };
+    assert.deepEqual(buildProviderOptions(chat, 'fast-model'), {
+      myRelay: { serviceTier: 'fast' },
+    });
+    const responses: LlmConnection = {
+      ...conn('openai-responses-compatible', 'my-responses-relay'),
+      baseUrl: 'https://relay.example/v1',
+      models: [{ id: 'fast-model', apiProtocol: 'openai-responses' }],
+      relayModelProfiles: { 'fast-model': { serviceTier: 'fast' } },
+    };
+    assert.deepEqual(buildProviderOptions(responses, 'fast-model'), {
+      openai: { store: false, forceReasoning: true, serviceTier: 'fast' },
+    });
+    assert.deepEqual(
+      buildProviderOptions(
+        { ...conn('openai-compatible', 'my-relay'), baseUrl: 'https://relay.example/v1' },
+        'fast-model',
+      ),
+      {},
+    );
+  });
+
   test('declared relay levels reach the actual chat-completions request body', async () => {
     // Intermediate providerOptions objects matching does not prove the wire
     // carries the effort — this capture asserts the SDK's camelCase slug key

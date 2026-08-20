@@ -222,6 +222,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
       thinkingLevels: ['minimal', 'low'],
       vision: true,
       contextWindow: 128_000,
+      serviceTier: 'fast',
     },
   };
   const draft = normalizeCreateCatalogConnectionInput({
@@ -237,6 +238,19 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     },
   });
   assert.deepEqual(draft.connection.relayModelProfiles, table);
+  const responsesDraft = normalizeCreateCatalogConnectionInput({
+    expectedCatalogRevision: 0,
+    connection: {
+      slug: 'responses-relay',
+      name: 'Responses Relay',
+      providerType: 'openai-responses-compatible',
+      baseUrl: 'https://responses.example/v1',
+      enabled: true,
+      enabledModelIds: ['relay-reasoner'],
+      relayModelProfiles: table,
+    },
+  });
+  assert.deepEqual(responsesDraft.connection.relayModelProfiles, table);
   // The canonical path re-decodes the same table (entry = draft + identity).
   const entry = decodeCanonicalConnectionCatalogEntry({
     ...draft.connection,
