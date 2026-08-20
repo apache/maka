@@ -37,6 +37,7 @@ import type {
   QuoteCompanionPanelState,
 } from '../tools/side-chat/quote-companion-panel-state';
 import type { CompanionForkVisibilityEvent } from '../tools/side-chat/quote-companion-visibility';
+import { SideChatCloseConfirmation } from './side-chat-close-confirmation.js';
 
 const WorkbarSurface = lazy(() =>
   import('./workbar-surface').then((module) => ({
@@ -66,8 +67,8 @@ function SessionWorkbarFallback() {
   );
 }
 
-interface WorkbarHostProps {
-  activeId: string;
+export interface WorkbarHostModel {
+  activeId?: string;
   rightCollapsed: boolean;
   bottomOpen: boolean;
   hidden: boolean;
@@ -117,9 +118,16 @@ interface WorkbarHostProps {
   mentionSkillsUnavailable?: ComponentProps<typeof Composer>['mentionSkillsUnavailable'];
   mentionSkillsLoading?: ComponentProps<typeof Composer>['mentionSkillsLoading'];
   onSearchMentionFiles?: ComponentProps<typeof Composer>['onSearchMentionFiles'];
+  closeConfirmation: {
+    key: string;
+    open: boolean;
+    sideChatCount: number;
+    onCancel(): void;
+    onConfirm(skipFutureConfirmations: boolean): void;
+  };
 }
 
-export function WorkbarHost(props: WorkbarHostProps) {
+export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
   const copy = getShellCopy(useUiLocale()).app;
   const style = {
     '--maka-session-workbar-width': `${props.rightWidth}px`,
@@ -128,7 +136,7 @@ export function WorkbarHost(props: WorkbarHostProps) {
 
   return (
     <>
-      {!props.rightCollapsed && (
+      {props.activeId && !props.rightCollapsed && (
         <ResizeHandle
           className="maka-workbar-resize-handle maka-workbar-resize-handle-right"
           resizable={props.rightResizable}
@@ -139,7 +147,7 @@ export function WorkbarHost(props: WorkbarHostProps) {
           label={copy.resizeWorkbar}
         />
       )}
-      {props.bottomOpen && (
+      {props.activeId && props.bottomOpen && (
         <ResizeHandle
           className="maka-workbar-resize-handle maka-workbar-resize-handle-bottom"
           resizable={props.bottomResizable}
@@ -150,45 +158,54 @@ export function WorkbarHost(props: WorkbarHostProps) {
           label={copy.resizeWorkbar}
         />
       )}
-      <div className="maka-workbar-layout-vars" style={style}>
-        <Suspense fallback={<SessionWorkbarFallback />}>
-          <WorkbarSurface
-            key={props.activeId}
-            sessionId={props.activeId}
-            hidden={props.hidden}
-            onDismissPanel={props.onDismissPanel}
-            panelsState={props.panelsState}
-            rightCollapsed={props.rightCollapsed}
-            bottomOpen={props.bottomOpen}
-            onActivateTab={props.onActivateTab}
-            onCloseTab={props.onCloseTab}
-            onCloseTabs={props.onCloseTabs}
-            onReorderTab={props.onReorderTab}
-            onMoveTab={props.onMoveTab}
-            onMoveTabToPanel={props.onMoveTabToPanel}
-            onPinTab={props.onPinTab}
-            onOpenLauncher={props.onOpenLauncher}
-            onRequestOpenTab={props.onRequestOpenTab}
-            quotes={props.quotes}
-            onQuotesConsumed={props.onQuotesConsumed}
-            onRemoveQuote={props.onRemoveQuote}
-            onForkVisibilityChange={props.onForkVisibilityChange}
-            onContentStateChange={props.onContentStateChange}
-            onPreparingStateChange={props.onPreparingStateChange}
-            onInitialPromptStarted={props.onInitialPromptStarted}
-            onPromptAccepted={props.onPromptAccepted}
-            onActivityStateChange={props.onActivityStateChange}
-            preparingSideChatPanelIds={props.preparingSideChatPanelIds}
-            activeSideChatPanelIds={props.activeSideChatPanelIds}
-            sourceSession={props.sourceSession}
-            modelChoices={props.modelChoices}
-            mentionSkills={props.mentionSkills}
-            mentionSkillsUnavailable={props.mentionSkillsUnavailable}
-            mentionSkillsLoading={props.mentionSkillsLoading}
-            onSearchMentionFiles={props.onSearchMentionFiles}
-          />
-        </Suspense>
-      </div>
+      {props.activeId && (
+        <div className="maka-workbar-layout-vars" style={style}>
+          <Suspense fallback={<SessionWorkbarFallback />}>
+            <WorkbarSurface
+              key={props.activeId}
+              sessionId={props.activeId}
+              hidden={props.hidden}
+              onDismissPanel={props.onDismissPanel}
+              panelsState={props.panelsState}
+              rightCollapsed={props.rightCollapsed}
+              bottomOpen={props.bottomOpen}
+              onActivateTab={props.onActivateTab}
+              onCloseTab={props.onCloseTab}
+              onCloseTabs={props.onCloseTabs}
+              onReorderTab={props.onReorderTab}
+              onMoveTab={props.onMoveTab}
+              onMoveTabToPanel={props.onMoveTabToPanel}
+              onPinTab={props.onPinTab}
+              onOpenLauncher={props.onOpenLauncher}
+              onRequestOpenTab={props.onRequestOpenTab}
+              quotes={props.quotes}
+              onQuotesConsumed={props.onQuotesConsumed}
+              onRemoveQuote={props.onRemoveQuote}
+              onForkVisibilityChange={props.onForkVisibilityChange}
+              onContentStateChange={props.onContentStateChange}
+              onPreparingStateChange={props.onPreparingStateChange}
+              onInitialPromptStarted={props.onInitialPromptStarted}
+              onPromptAccepted={props.onPromptAccepted}
+              onActivityStateChange={props.onActivityStateChange}
+              preparingSideChatPanelIds={props.preparingSideChatPanelIds}
+              activeSideChatPanelIds={props.activeSideChatPanelIds}
+              sourceSession={props.sourceSession}
+              modelChoices={props.modelChoices}
+              mentionSkills={props.mentionSkills}
+              mentionSkillsUnavailable={props.mentionSkillsUnavailable}
+              mentionSkillsLoading={props.mentionSkillsLoading}
+              onSearchMentionFiles={props.onSearchMentionFiles}
+            />
+          </Suspense>
+        </div>
+      )}
+      <SideChatCloseConfirmation
+        key={props.closeConfirmation.key}
+        open={props.closeConfirmation.open}
+        sideChatCount={props.closeConfirmation.sideChatCount}
+        onCancel={props.closeConfirmation.onCancel}
+        onConfirm={props.closeConfirmation.onConfirm}
+      />
     </>
   );
 }

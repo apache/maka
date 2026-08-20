@@ -91,28 +91,11 @@ import { ChatComposerRegion } from './chat-composer-region';
 import {
   WorkbarHost,
   WorkbarTitlebarActions,
-  applyCompanionForkVisibilityEvent,
-  consumeCompanionInitialPrompt,
-  consumeCompanionQuoteSnapshot,
-  findPreferredSideChatWorkbarTab,
-  openCompanionPanel,
-  reconcileCompanionForkVisibility,
-  recoverOrphanedCompanionCopies,
-  removeStagedCompanionQuote,
-  stageCompanionQuote,
-  terminalRefFromWorkbarTab,
-  terminalSessionWorkbarTabId,
-  useSideConversationWorkspace,
-  useWorkbarLayoutState,
-  useWorkbarServices,
-  type SessionWorkbarPlacement,
-  type SessionWorkbarTab,
-  type SessionWorkbarTabKind,
+  useWorkbarController,
 } from './features/workbar';
 import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from './new-task-reload-intent';
 import { useNewTaskChoice } from './use-new-task-choice';
-import { NEW_TASK_PENDING_KEY } from './app-shell-pending-attachments';
-import { sideChatTitleFromPrompt } from './side-chat-command';
+import { NEW_TASK_PENDING_KEY } from './pending-items';
 import { parseDesktopSlashCommand } from './desktop-slash-command';
 import {
   hasActiveTurnAtSubmit,
@@ -141,11 +124,6 @@ import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
-import {
-  SideChatCloseConfirmation,
-  SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY,
-} from './side-chat-close-confirmation';
-import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
 import { useShellSearch } from './use-shell-search';
@@ -346,30 +324,6 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
   );
 }
 
-function nextSideChatOrdinal(tabs: readonly SessionWorkbarTab[]): number {
-  return (
-    tabs.reduce(
-      (highest, tab, index) =>
-        tab.kind === 'side-chat'
-          ? Math.max(highest, tab.ordinal ?? index + 1)
-          : highest,
-      0,
-    ) + 1
-  );
-}
-
-function nextTerminalOrdinal(tabs: readonly SessionWorkbarTab[]): number {
-  return (
-    tabs.reduce(
-      (highest, tab, index) =>
-        tab.kind === 'terminal'
-          ? Math.max(highest, tab.ordinal ?? index + 1)
-          : highest,
-      0,
-    ) + 1
-  );
-}
-
 function AppShellContent({
   initialOnboardingSnapshot = null,
   uiLocale,
@@ -383,7 +337,6 @@ function AppShellContent({
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
   setUiLocalePreference: Dispatch<SetStateAction<UiLocalePreference>>;
 }) {
-  const { sideChat: sideChatService } = useWorkbarServices();
   const toastApi = useToast();
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
   const updateInstallInFlightRef = useRef(false);
@@ -483,9 +436,6 @@ function AppShellContent({
     turns: readonly { turnId: string; sequence: number; label: string }[];
   }>();
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
-  // P3: session ids with a live embedded-browser view. The right-side
-  // BrowserPanel mounts only for these, so ordinary chats reserve no space.
-  const [, setLiveBrowserSessionIds] = useState<string[]>([]);
   const [navigationState, setNavigationState] = useState(() => readNavigationState());
   const navSelection = navigationState.selection;
   const setNavSelection = useCallback<Dispatch<SetStateAction<NavSelection>>>((nextSelection) => {
@@ -613,8 +563,6 @@ function AppShellContent({
   const shellCopy = getShellCopy(uiLocale).app;
   const projectActionsCopy = getShellCopy(uiLocale).projectActions;
   const desktopConversationCopy = getDesktopConversationCopy(uiLocale);
-  const terminalPanelCopy = desktopConversationCopy.terminalPanel;
-  const workbarCopy = desktopConversationCopy.workbar;
   /**
    * What this draft would start in: the user's choice for it if they made one,
    * otherwise the Host default it will inherit by omission.
@@ -749,46 +697,6 @@ function AppShellContent({
   // boolean — see the prop's note on SessionListPanel. The sidenav is mounted
   // for the whole shell, so the handle is always live by the time it is called.
   const sessionSideNavHandleRef = useRef<SideNavImperativeCollapseHandle | null>(null);
-  // Codex-style side conversations: each workbar tab owns a separate transient
-  // fork, composer draft, quote queue, and cleanup lifecycle.
-  const sideConversations = useSideConversationWorkspace();
-  const quotePanels = sideConversations.panels;
-  const sideChatContentPanelIds = sideConversations.contentPanelIds;
-  const sideChatPreparingPanelIds = sideConversations.preparingPanelIds;
-  const sideChatActivePanelIds = sideConversations.activePanelIds;
-  const [pendingSideChatClose, setPendingSideChatClose] =
-    useState<Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>>(
-      [],
-    );
-  const [skipSideChatCloseConfirmation, setSkipSideChatCloseConfirmation] =
-    useState(
-      () => safeLocalStorageGet(SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY) === 'true',
-    );
-  // Created companion forks stay hidden until authoritative cleanup succeeds or
-  // a later authoritative session list confirms they are gone. A set preserves
-  // earlier failed cleanups when another companion opens.
-  const [hiddenCompanionForkIds, setHiddenCompanionForkIds] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
-  const companionRecoveryStartedRef = useRef(false);
-  useLayoutEffect(() => {
-    if (companionRecoveryStartedRef.current) return;
-    companionRecoveryStartedRef.current = true;
-    void recoverOrphanedCompanionCopies(sideChatService);
-  }, [sideChatService]);
-  const onCompanionForkVisibilityChange = useCallback(
-    (event: Parameters<typeof applyCompanionForkVisibilityEvent>[1]) =>
-      setHiddenCompanionForkIds((current) =>
-        applyCompanionForkVisibilityEvent(current, event),
-      ),
-    [],
-  );
-  useEffect(() => {
-    if (!authoritativeSessionIds) return;
-    setHiddenCompanionForkIds((current) =>
-      reconcileCompanionForkVisibility(current, authoritativeSessionIds),
-    );
-  }, [authoritativeSessionIds]);
   const [revisionDraft, setRevisionDraft] = useState<TurnRevisionDraft | null>(null);
   const revisionDraftRef = useRef<TurnRevisionDraft | null>(null);
   const commitRevisionDraft = useCallback((draft: TurnRevisionDraft | null) => {
@@ -852,25 +760,6 @@ function AppShellContent({
         sendOutcomes: onboarding.snapshot?.sessionSendOutcomes ?? {},
       }),
     [sessions, onboarding.snapshot?.sessionSendOutcomes],
-  );
-  // Status-grouped sidebar. The `chats`
-  // filter shows sessions grouped by SessionStatus (Pinned →
-  // Running → Waiting → Blocked → Active → Review → Done → Archived);
-  // `aborted` is dropped. Pinned (flagged) sessions float to the top
-  // in their own group, preserving the PR48 pin-floats behavior.
-  // One projection owns rail membership, active highlight, and titlebar parent:
-  // revision-tree roots (orphans stay; linked children with a live parent leave),
-  // flat nav / companion filter — never promote children past ancestors.
-  const {
-    sessions: visibleSessions,
-    activeRowId: sidebarActiveId,
-    activeParentSession: railParentSession,
-  } = useMemo(
-    () =>
-      deriveSessionRail(sessions, activeId, (session) =>
-        !hiddenCompanionForkIds.has(session.id) && sessionMatchesRail(session),
-      ),
-    [sessions, activeId, hiddenCompanionForkIds],
   );
   // PR-DAILY-REVIEW-MVP-0: bridge for the main Daily Review module.
   // Memoized so the panel's `useEffect` cleanup keys
@@ -1389,16 +1278,6 @@ function AppShellContent({
     openSessionInChat(parentSessionId);
   }
 
-  // Same revision-aware parent row the rail uses — not a second physical-id walk.
-  const titlebarParentSession = useMemo(() => {
-    if (!railParentSession) return undefined;
-    const parentId = railParentSession.id;
-    return {
-      name: railParentSession.name,
-      onOpen: () => openSessionInChatRef.current(parentId),
-    };
-  }, [railParentSession]);
-
   // Transient placeholder while the real SessionSummary loads, so the composer
   // does not flash a value the session never had.
   const activeSessionForView: SessionSummary | undefined =
@@ -1612,65 +1491,6 @@ function AppShellContent({
     sessionListCollapsed,
     setSessionListCollapsed,
   } = useShellLayout();
-  const {
-    workbarCollapsed,
-    setWorkbarCollapsed,
-    bottomPanelOpen,
-    setBottomPanelOpen,
-    workbarWidth,
-    workbarResizable,
-    bottomPanelHeight,
-    bottomPanelResizable,
-    workbarPanelsState,
-    openWorkbarTab,
-    openDynamicWorkbarTab,
-    activateWorkbarTab,
-    closeWorkbarTab,
-    closeWorkbarTabs,
-    reorderWorkbarTab,
-    moveWorkbarTab,
-    moveWorkbarTabToPanel,
-    titleWorkbarTab,
-    pinWorkbarTab,
-    openWorkbarLauncher,
-  } = useWorkbarLayoutState();
-  const openNewSideConversation = useCallback(
-    (placement: SessionWorkbarPlacement, initialPrompt?: string) => {
-      const sourceSessionId = activeIdRef.current;
-      if (!sourceSessionId) return;
-      const panel = openCompanionPanel(null, {
-        sourceSessionId,
-        initialPrompt,
-        newId: () => crypto.randomUUID(),
-      });
-      sideConversations.upsertPanel(panel, true);
-      openDynamicWorkbarTab(
-        {
-          id: `side-chat:${panel.id}`,
-          kind: 'side-chat',
-          title: sideChatTitleFromPrompt(initialPrompt ?? ''),
-          ordinal: nextSideChatOrdinal([
-            ...workbarPanelsState.right.tabs,
-            ...workbarPanelsState.bottom.tabs,
-          ]),
-        },
-        placement,
-      );
-      if (placement === 'right') setWorkbarCollapsed(false);
-      else setBottomPanelOpen(true);
-    },
-    [
-      openDynamicWorkbarTab,
-      setBottomPanelOpen,
-      setWorkbarCollapsed,
-      sideConversations,
-      workbarPanelsState,
-    ],
-  );
-  const openSideConversation = useCallback(
-    (initialPrompt?: string) => openNewSideConversation('right', initialPrompt),
-    [openNewSideConversation],
-  );
   const desktopSlashCommands = useMemo<readonly ComposerSlashCommandOption[]>(
     () => {
       const streaming = turnActive || activeStreamingLive;
@@ -1708,232 +1528,6 @@ function AppShellContent({
     },
     [activeId, activeStreamingLive, shellCopy.slashCommands, turnActive],
   );
-  const openSideConversationWithQuote = useCallback(
-    (quote: QuoteRef) => {
-      if (!activeId) return;
-      const activeSideChat = findPreferredSideChatWorkbarTab(workbarPanelsState);
-      const activeSideChatTab = activeSideChat?.tab;
-      const activePanelId = activeSideChatTab?.id.slice('side-chat:'.length);
-      const activePanel = quotePanels.find(
-        (panel) =>
-          panel.id === activePanelId && panel.sourceSessionId === activeId,
-      );
-      const panel = stageCompanionQuote(
-        activePanel ?? null,
-        {
-          sourceSessionId: activeId,
-          quote,
-          newId: () => crypto.randomUUID(),
-        },
-      );
-      sideConversations.upsertPanel(panel, !activePanel);
-      const targetPlacement =
-        activeSideChat?.placement ?? 'right';
-      openDynamicWorkbarTab(
-        {
-          id: `side-chat:${panel.id}`,
-          kind: 'side-chat',
-          ordinal:
-            activeSideChatTab?.ordinal ??
-            nextSideChatOrdinal([
-              ...workbarPanelsState.right.tabs,
-              ...workbarPanelsState.bottom.tabs,
-            ]),
-        },
-        targetPlacement,
-      );
-      if (targetPlacement === 'right') setWorkbarCollapsed(false);
-      else setBottomPanelOpen(true);
-    },
-    [
-      activeId,
-      openDynamicWorkbarTab,
-      quotePanels,
-      setBottomPanelOpen,
-      setWorkbarCollapsed,
-      sideConversations,
-      workbarPanelsState,
-    ],
-  );
-
-  const requestOpenWorkbarTab = useCallback(
-    (placement: SessionWorkbarPlacement, kind: SessionWorkbarTabKind) => {
-      if (kind === 'terminal') {
-        if (!activeId) return;
-        const ownerSessionId = activeId;
-        const tabs = [
-          ...workbarPanelsState.right.tabs,
-          ...workbarPanelsState.bottom.tabs,
-        ];
-        void window.maka.shellRuns
-          .start(ownerSessionId)
-          .then((update) => {
-            const ref = update.result.ref;
-            openDynamicWorkbarTab(
-              {
-                id: terminalSessionWorkbarTabId(ref),
-                kind: 'terminal',
-                ordinal: nextTerminalOrdinal(tabs),
-                resourceRef: ref,
-                ownerSessionId,
-              },
-              placement,
-            );
-            if (placement === 'right') setWorkbarCollapsed(false);
-            else setBottomPanelOpen(true);
-          })
-          .catch((error) => {
-            showSessionError(
-              ownerSessionId,
-              terminalPanelCopy.startFailed,
-              localizedShellErrorMessage(
-                error,
-                terminalPanelCopy.startFailed,
-                uiLocale,
-              ),
-            );
-          });
-        return;
-      }
-      if (kind === 'side-chat') {
-        openNewSideConversation(placement);
-        return;
-      }
-      openWorkbarTab(kind, placement);
-      if (placement === 'right') setWorkbarCollapsed(false);
-      else setBottomPanelOpen(true);
-    },
-    [
-      activeId,
-      openDynamicWorkbarTab,
-      openNewSideConversation,
-      openWorkbarTab,
-      setBottomPanelOpen,
-      setWorkbarCollapsed,
-      terminalPanelCopy,
-      toastApi,
-      uiLocale,
-      workbarPanelsState,
-    ],
-  );
-
-  const closeWorkbarTabsImmediately = useCallback(
-    (
-      placement: SessionWorkbarPlacement,
-      tabs: readonly SessionWorkbarTab[],
-    ) => {
-      if (tabs.length === 0) return;
-      for (const tab of tabs) {
-        const ref = terminalRefFromWorkbarTab(tab);
-        if (!ref || !tab.ownerSessionId) continue;
-        void window.maka.shellRuns
-          .stop({ sessionId: tab.ownerSessionId, ref })
-          .catch(() => {});
-      }
-      closeWorkbarTabs(placement, tabs.map((tab) => tab.id));
-      const panelIds = new Set(
-        tabs
-          .filter((tab) => tab.kind === 'side-chat')
-          .map((tab) => tab.id.slice('side-chat:'.length)),
-      );
-      if (panelIds.size === 0) return;
-      sideConversations.removePanels(panelIds);
-    },
-    [closeWorkbarTabs, sideConversations],
-  );
-
-  useEffect(() => {
-    const stale = (['right', 'bottom'] as const).flatMap((placement) =>
-      workbarPanelsState[placement].tabs
-        .filter(
-          (tab) =>
-            tab.kind === 'terminal' &&
-            tab.ownerSessionId !== activeId,
-        )
-        .map((tab) => ({ placement, tab })),
-    );
-    for (const placement of ['right', 'bottom'] as const) {
-      const tabs = stale
-        .filter((candidate) => candidate.placement === placement)
-        .map((candidate) => candidate.tab);
-      closeWorkbarTabsImmediately(placement, tabs);
-    }
-  }, [activeId, closeWorkbarTabsImmediately, workbarPanelsState]);
-
-  const closeWorkbarTabsAndSurfaces = useCallback(
-    (
-      placement: SessionWorkbarPlacement,
-      tabs: readonly SessionWorkbarTab[],
-    ) => {
-      const closableTabs = tabs.filter(
-        (tab) =>
-          tab.kind !== 'side-chat' ||
-          !sideChatPreparingPanelIds.has(tab.id.slice('side-chat:'.length)),
-      );
-      if (closableTabs.length === 0) return;
-      const needsConfirmation =
-        !skipSideChatCloseConfirmation &&
-        closableTabs.some(
-          (tab) =>
-            tab.kind === 'side-chat' &&
-            sideChatContentPanelIds.has(tab.id.slice('side-chat:'.length)),
-        );
-      if (needsConfirmation) {
-        setPendingSideChatClose(
-          closableTabs.map((tab) => ({ placement, tab })),
-        );
-        return;
-      }
-      closeWorkbarTabsImmediately(placement, closableTabs);
-    },
-    [
-      closeWorkbarTabsImmediately,
-      sideChatContentPanelIds,
-      sideChatPreparingPanelIds,
-      skipSideChatCloseConfirmation,
-    ],
-  );
-
-  const closeWorkbarTabAndSurface = useCallback(
-    (placement: SessionWorkbarPlacement, tab: SessionWorkbarTab) =>
-      closeWorkbarTabsAndSurfaces(placement, [tab]),
-    [closeWorkbarTabsAndSurfaces],
-  );
-
-  const toggleWorkbar = useCallback(() => {
-    if (workbarCollapsed) {
-      setWorkbarCollapsed(false);
-      if (workbarPanelsState.right.activeTabId) {
-        activateWorkbarTab('right', workbarPanelsState.right.activeTabId);
-      }
-      return;
-    }
-    setWorkbarCollapsed(true);
-  }, [
-    activateWorkbarTab,
-    setWorkbarCollapsed,
-    workbarCollapsed,
-    workbarPanelsState.right.activeTabId,
-  ]);
-
-  // Side chats survive a panel collapse. They are cleaned up only when their
-  // tab closes or when navigation leaves the owning source session.
-  useEffect(() => {
-    const stalePanels = quotePanels.filter(
-      (panel) => panel.sourceSessionId !== activeId,
-    );
-    if (stalePanels.length === 0) return;
-    const staleIds = new Set(stalePanels.map((panel) => panel.id));
-    for (const panel of stalePanels) {
-      const tabId = `side-chat:${panel.id}`;
-      const placement = workbarPanelsState.right.tabs.some((tab) => tab.id === tabId)
-        ? 'right'
-        : 'bottom';
-      closeWorkbarTab(placement, tabId);
-    }
-    sideConversations.removePanels(staleIds);
-  }, [quotePanels, activeId, closeWorkbarTab, sideConversations, workbarPanelsState]);
-
   function isScheduledTasksSurfaceActive(): boolean {
     return navSelectionRef.current.section === 'automations' && navSelectionRef.current.module === 'scheduled-tasks';
   }
@@ -2110,31 +1704,6 @@ function AppShellContent({
     projectName: currentProject?.name,
     projectPath: projectInfo?.projectPath,
   });
-  const sessionProjectGroups = useMemo(
-    () => deriveDesktopSessionGroups(visibleSessions, localProjects, uiLocale),
-    [visibleSessions, localProjects, uiLocale],
-  );
-  const worktreeSessionIds = useMemo(
-    () => deriveWorktreeSessionIds(
-      visibleSessions.filter(
-        (session) => session.profileKind !== 'remote',
-      ),
-      localProjects,
-    ),
-    [visibleSessions, localProjects],
-  );
-  // Archived Local tasks use the Local Host catalog; remote rows identify
-  // their Host instead of resolving Project ids across unrelated catalogs.
-  const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
-    () => ({
-      sessions,
-      projects: localProjects,
-      onRestore: (sessionId) => void sessionRowActionHandlers.unarchiveSession(sessionId),
-      onDelete: (sessionId) => void sessionRowActionHandlers.deleteSession(sessionId),
-      onPurge: (sessionIds) => sessionRowActionHandlers.purgeSessions(sessionIds),
-    }),
-    [sessions, localProjects],
-  );
   const { startModeSession } = useStableActions(createAppShellSessionStartActions, {
     uiLocale,
     activeIdRef,
@@ -2182,6 +1751,78 @@ function AppShellContent({
     newSessionPermissionMode: newTaskPermissionMode,
   });
 
+  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen;
+  const shellObscured = hasModalOpen || settingsOpen;
+  const reportWorkbarError = useCallback(
+    (title: string, description: string, sessionId: string) =>
+      toastApi.error(title, description, undefined, { sessionId }),
+    [toastApi],
+  );
+  const workbarAvailable =
+    navSelection.section === 'sessions' && Boolean(activeId);
+  const workbar = useWorkbarController({
+    available: workbarAvailable,
+    activeSession: activeSessionForView,
+    authoritativeSessionIds: authoritativeSessionIds ?? undefined,
+    shellObscured,
+    modelChoices: chatModelChoices,
+    mentionSkills,
+    mentionSkillsUnavailable,
+    mentionSkillsLoading,
+    searchMentionFiles,
+    reportError: reportWorkbarError,
+  });
+
+  // One projection owns rail membership, active highlight, and titlebar parent.
+  // Companion forks remain hidden until their authoritative cleanup completes.
+  const {
+    sessions: visibleSessions,
+    activeRowId: sidebarActiveId,
+    activeParentSession: railParentSession,
+  } = useMemo(
+    () =>
+      deriveSessionRail(sessions, activeId, (session) =>
+        !workbar.selectors.hiddenSessionIds.has(session.id) &&
+        sessionMatchesRail(session),
+      ),
+    [sessions, activeId, workbar.selectors.hiddenSessionIds],
+  );
+  const titlebarParentSession = useMemo(() => {
+    if (!railParentSession) return undefined;
+    const parentId = railParentSession.id;
+    return {
+      name: railParentSession.name,
+      onOpen: () => openSessionInChatRef.current(parentId),
+    };
+  }, [railParentSession]);
+  const sessionProjectGroups = useMemo(
+    () => deriveDesktopSessionGroups(visibleSessions, localProjects, uiLocale),
+    [visibleSessions, localProjects, uiLocale],
+  );
+  const worktreeSessionIds = useMemo(
+    () =>
+      deriveWorktreeSessionIds(
+        visibleSessions.filter(
+          (session) => session.profileKind !== 'remote',
+        ),
+        localProjects,
+      ),
+    [visibleSessions, localProjects],
+  );
+  const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
+    () => ({
+      sessions,
+      projects: localProjects,
+      onRestore: (sessionId) =>
+        void sessionRowActionHandlers.unarchiveSession(sessionId),
+      onDelete: (sessionId) =>
+        void sessionRowActionHandlers.deleteSession(sessionId),
+      onPurge: (sessionIds) =>
+        sessionRowActionHandlers.purgeSessions(sessionIds),
+    }),
+    [sessions, localProjects],
+  );
+
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {
     openSettingsSection,
     refreshSessions,
@@ -2189,8 +1830,11 @@ function AppShellContent({
     setNavSelection,
     setSearchModalOpen,
     setSessionListCollapsed,
-    setWorkbarCollapsed,
-    openWorkbarTab,
+    workbar: {
+      rightCollapsed: workbar.selectors.rightCollapsed,
+      toggleRight: workbar.commands.toggleRight,
+      openTool: workbar.commands.openTool,
+    },
     setThemePref,
     setUiLocaleOverride,
   });
@@ -2439,7 +2083,11 @@ function AppShellContent({
         );
         return false;
       }
-      openSideConversation(slashCommand.command.prompt || undefined);
+      workbar.commands.openTool('side-chat', 'right', {
+        ...(slashCommand.command.prompt
+          ? { initialPrompt: slashCommand.command.prompt }
+          : {}),
+      });
       return true;
     }
     if (slashCommand?.kind === 'swarm') {
@@ -2654,56 +2302,11 @@ function AppShellContent({
     return () => window.clearTimeout(timer);
   }, [activeId, activeStreamingMessageId, messages, settleAssistantStreaming]);
 
-  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen;
-  const shellObscured = hasModalOpen || settingsOpen;
-
-  useEffect(() => {
-    const handleWorkbarShortcut = (event: KeyboardEvent) => {
-      if (
-        shellObscured ||
-        navSelectionRef.current.section !== 'sessions' ||
-        !activeId
-      ) {
-        return;
-      }
-      const primary = navigator.platform.toLowerCase().includes('mac')
-        ? event.metaKey
-        : event.ctrlKey;
-      const key = event.key.toLowerCase();
-      if (event.ctrlKey && event.shiftKey && !event.altKey && key === 'g') {
-        event.preventDefault();
-        requestOpenWorkbarTab('right', 'review');
-      } else if (
-        event.ctrlKey &&
-        !event.altKey &&
-        !event.shiftKey &&
-        (key === '`' || event.code === 'Backquote')
-      ) {
-        event.preventDefault();
-        requestOpenWorkbarTab('right', 'terminal');
-      } else if (primary && !event.altKey && !event.shiftKey && key === 't') {
-        event.preventDefault();
-        requestOpenWorkbarTab('right', 'browser');
-      } else if (primary && !event.altKey && !event.shiftKey && key === 'p') {
-        event.preventDefault();
-        requestOpenWorkbarTab('right', 'files');
-      } else if (primary && event.altKey && !event.shiftKey && key === 's') {
-        event.preventDefault();
-        requestOpenWorkbarTab('right', 'side-chat');
-      }
-    };
-    window.addEventListener('keydown', handleWorkbarShortcut, true);
-    return () => window.removeEventListener('keydown', handleWorkbarShortcut, true);
-  }, [activeId, requestOpenWorkbarTab, shellObscured]);
-
   useAppShellNavRefSync({
     navSelection,
     navSelectionRef,
   });
-  useAppShellHostEffects({
-    activeId,
-    setLiveBrowserSessionIds,
-  });
+  useAppShellHostEffects();
   useAppShellBootstrapSubscriptions({
     uiLocale,
     activeIdRef,
@@ -3100,7 +2703,7 @@ function AppShellContent({
     openScheduledTaskForm,
     openProjectFolder,
     openSessionInChat,
-    openSideConversation,
+    openSideConversation: () => workbar.commands.openTool('side-chat'),
     openSettings,
     openSettingsSection,
     openSkillsFolder,
@@ -3214,9 +2817,9 @@ function AppShellContent({
             )}
             {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
               <WorkbarTitlebarActions
-                available={navSelection.section === 'sessions' && Boolean(activeId)}
-                collapsed={workbarCollapsed}
-                onToggle={toggleWorkbar}
+                available={workbarAvailable}
+                collapsed={workbar.selectors.rightCollapsed}
+                onToggle={workbar.commands.toggleRight}
               />
             )}
           </>
@@ -3678,7 +3281,7 @@ function AppShellContent({
                           text: input.text,
                           sourceTurnId: input.turnId,
                         };
-                        openSideConversationWithQuote(quote);
+                        workbar.commands.openSideChatWithQuote(quote);
                       }
                     : undefined
                 }
@@ -3744,76 +3347,9 @@ function AppShellContent({
                 ) : null}
               </ChatSurfaceLayout>
             </div>
-            {/* Rendered collapsed too: WorkbarHost's own box is what the
-                collapse animates, and it has to be in the tree on both sides of
-                the toggle for there to be an animation at all. The column
-                inside it still unmounts. */}
-            {navSelection.section === 'sessions' && activeId && (
-              <WorkbarHost
-                activeId={activeId}
-                rightCollapsed={workbarCollapsed}
-                bottomOpen={bottomPanelOpen}
-                hidden={shellObscured}
-                rightWidth={workbarWidth}
-                bottomHeight={bottomPanelHeight}
-                onDismissPanel={(placement) => {
-                  if (placement === 'right') setWorkbarCollapsed(true);
-                  else setBottomPanelOpen(false);
-                }}
-                panelsState={workbarPanelsState}
-                onActivateTab={activateWorkbarTab}
-                onCloseTab={closeWorkbarTabAndSurface}
-                onCloseTabs={closeWorkbarTabsAndSurfaces}
-                onReorderTab={reorderWorkbarTab}
-                onMoveTab={moveWorkbarTab}
-                onMoveTabToPanel={moveWorkbarTabToPanel}
-                onPinTab={pinWorkbarTab}
-                onOpenLauncher={(placement) => {
-                  openWorkbarLauncher(placement);
-                  if (placement === 'right') setWorkbarCollapsed(false);
-                  else setBottomPanelOpen(true);
-                }}
-                onRequestOpenTab={requestOpenWorkbarTab}
-                rightResizable={workbarResizable}
-                bottomResizable={bottomPanelResizable}
-                quotes={quotePanels.filter(
-                  (panel) => panel.sourceSessionId === activeId,
-                )}
-                onQuotesConsumed={(snapshot) =>
-                  sideConversations.updatePanel(snapshot.panelId, (panel) =>
-                    consumeCompanionQuoteSnapshot(panel, snapshot) ?? panel,
-                  )
-                }
-                onRemoveQuote={(target) =>
-                  sideConversations.updatePanel(target.panelId, (panel) =>
-                    removeStagedCompanionQuote(panel, target) ?? panel,
-                  )
-                }
-                onForkVisibilityChange={onCompanionForkVisibilityChange}
-                onContentStateChange={sideConversations.setContent}
-                preparingSideChatPanelIds={sideChatPreparingPanelIds}
-                activeSideChatPanelIds={sideChatActivePanelIds}
-                onPreparingStateChange={sideConversations.setPreparing}
-                onInitialPromptStarted={(panelId) =>
-                  sideConversations.updatePanel(panelId, (panel) =>
-                    consumeCompanionInitialPrompt(panel, panelId) ?? panel,
-                  )
-                }
-                onPromptAccepted={(panelId, prompt) => {
-                  const title = sideChatTitleFromPrompt(prompt);
-                  if (title) {
-                    titleWorkbarTab(`side-chat:${panelId}`, title);
-                  }
-                }}
-                onActivityStateChange={sideConversations.setActive}
-                sourceSession={activeSessionForView}
-                modelChoices={chatModelChoices}
-                mentionSkills={mentionSkills}
-                mentionSkillsUnavailable={mentionSkillsUnavailable}
-                mentionSkillsLoading={mentionSkillsLoading}
-                onSearchMentionFiles={searchMentionFiles}
-              />
-            )}
+            {/* Collapse hides the Workbar surface without unmounting its tools;
+                dynamic resources therefore keep their existing lifecycle. */}
+            <WorkbarHost model={workbar.host} />
           </div>
           </MakaUriContext.Provider>
         </AppShellDetailPanel>
@@ -3825,34 +3361,6 @@ function AppShellContent({
           contextKey={activeId}
         />
       )}
-      <SideChatCloseConfirmation
-        key={pendingSideChatClose.map(({ tab }) => tab.id).join(':') || 'closed'}
-        open={pendingSideChatClose.length > 0}
-        sideChatCount={
-          pendingSideChatClose.filter(({ tab }) => tab.kind === 'side-chat').length
-        }
-        onCancel={() => setPendingSideChatClose([])}
-        onConfirm={(skipFutureConfirmations) => {
-          const pending = pendingSideChatClose;
-          if (pending.length === 0) return;
-          if (skipFutureConfirmations) {
-            setSkipSideChatCloseConfirmation(true);
-            safeLocalStorageSet(SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY, 'true');
-          }
-          setPendingSideChatClose([]);
-          const byPlacement = {
-            right: pending
-              .filter(({ placement }) => placement === 'right')
-              .map(({ tab }) => tab),
-            bottom: pending
-              .filter(({ placement }) => placement === 'bottom')
-              .map(({ tab }) => tab),
-          };
-          closeWorkbarTabsImmediately('right', byPlacement.right);
-          closeWorkbarTabsImmediately('bottom', byPlacement.bottom);
-        }}
-      />
-
       <GoalDialog
         {...(goalDialogSessionId ? { sessionId: goalDialogSessionId } : {})}
         onClose={() => setGoalDialogSessionId(undefined)}

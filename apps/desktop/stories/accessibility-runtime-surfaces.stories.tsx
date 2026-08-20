@@ -23,7 +23,6 @@ import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactDescriptor } from '@maka/core/artifacts';
 import { ToastProvider } from '@maka/ui';
 import {
-  terminalSessionWorkbarTabId,
   WorkbarSurface,
 } from '../src/renderer/features/workbar';
 import {
@@ -31,6 +30,7 @@ import {
   createSessionWorkbarPanelsState,
   createSessionWorkbarTabsState,
   openStaticSessionWorkbarTab,
+  terminalSessionWorkbarTabId,
   WorkbarServicesProvider,
   type WorkbarServices,
 } from '../src/renderer/features/workbar/testing';

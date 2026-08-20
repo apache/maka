@@ -10,6 +10,7 @@ apps/desktop/src/renderer/chat-message-surface.tsx
 apps/desktop/src/renderer/command-palette.tsx
 apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
+apps/desktop/src/renderer/features/workbar/services-context.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-pane.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview-registry-shell.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview.tsx
@@ -18,8 +19,10 @@ apps/desktop/src/renderer/features/workbar/tools/inspector/session-inspector-pan
 apps/desktop/src/renderer/features/workbar/tools/review/session-review-panel.tsx
 apps/desktop/src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx
 apps/desktop/src/renderer/features/workbar/tools/terminal/session-terminal-panel.tsx
+apps/desktop/src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-surface.tsx
+apps/desktop/src/renderer/features/workbar/ui/workbar-toggle.tsx
 apps/desktop/src/renderer/goal-dialog.tsx
 apps/desktop/src/renderer/keyboard-help.tsx
 apps/desktop/src/renderer/live-turn-reconciler.tsx
@@ -78,7 +81,6 @@ apps/desktop/src/renderer/settings/subagent-settings-page.tsx
 apps/desktop/src/renderer/settings/tasks-settings-page.tsx
 apps/desktop/src/renderer/settings/usage-settings-page.tsx
 apps/desktop/src/renderer/settings/web-search-settings-page.tsx
-apps/desktop/src/renderer/side-chat-close-confirmation.tsx
 apps/desktop/src/renderer/styles.css
 apps/desktop/src/renderer/styles/agent-graph.css
 apps/desktop/src/renderer/styles/astryx-mount.css

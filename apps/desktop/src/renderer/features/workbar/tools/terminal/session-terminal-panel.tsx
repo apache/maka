@@ -31,6 +31,7 @@ import { Terminal } from '@xterm/xterm';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy';
 import { SessionTerminalHydration } from './session-terminal-hydration';
 import { suppressTerminalQueryReplies } from './session-terminal-query';
+import { scheduleTerminalFrame } from './session-terminal-frame';
 import { useWorkbarServices } from '../../services-context.js';
 
 function terminalTheme(element: HTMLElement) {
@@ -67,7 +68,7 @@ export function SessionTerminalPanel(props: {
     const terminal = terminalRef.current;
     const fit = fitRef.current;
     if (!terminal || !fit) return;
-    requestAnimationFrame(() => {
+    return scheduleTerminalFrame(() => {
       if (!activeRef.current) return;
       fit.fit();
       terminal.focus();
@@ -80,6 +81,7 @@ export function SessionTerminalPanel(props: {
 
     lastSizeRef.current = '';
     let disposed = false;
+    let cancelHydrationFrame: (() => void) | null = null;
     const hydration = new SessionTerminalHydration();
     const terminal = new Terminal({
       allowTransparency: true,
@@ -134,7 +136,10 @@ export function SessionTerminalPanel(props: {
           if (committed.snapshot.buffer) terminal.write(committed.snapshot.buffer);
           for (const event of committed.replay) terminal.write(event.data);
           setError(null);
-          requestAnimationFrame(() => {
+          cancelHydrationFrame?.();
+          cancelHydrationFrame = scheduleTerminalFrame(() => {
+            cancelHydrationFrame = null;
+            if (disposed) return;
             resize();
             if (activeRef.current) terminal.focus();
           });
@@ -193,6 +198,8 @@ export function SessionTerminalPanel(props: {
 
     return () => {
       disposed = true;
+      cancelHydrationFrame?.();
+      cancelHydrationFrame = null;
       observer.disconnect();
       unsubscribe();
       unsubscribeResync();

@@ -33,6 +33,37 @@ async function openGitChanges(page: Page) {
   return page.getByRole('region', { name: 'Git 变更' });
 }
 
+async function createSession(page: Page, prompt: string) {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill(prompt);
+  await composer.press('Enter');
+  await expect(page.getByText(`Fake backend received: ${prompt}`)).toBeVisible();
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+    timeout: 20_000,
+  });
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  const expandSidebar = page.getByRole('button', { name: '展开侧边栏' });
+  if (await expandSidebar.isVisible()) await expandSidebar.click();
+  const sessionId = await sidebar
+    .locator('[data-session-id]:has([aria-current="page"])')
+    .getAttribute('data-session-id');
+  expect(sessionId).toBeTruthy();
+  return { composer, sessionId: sessionId!, sidebar };
+}
+
+async function waitForCompanionForkId(page: Page, sourceSessionId: string) {
+  let forkId: string | undefined;
+  await expect
+    .poll(async () => {
+      forkId = (await page.evaluate(() => window.maka.sessions.list())).find(
+        (session) => session.id !== sourceSessionId,
+      )?.id;
+      return forkId;
+    })
+    .not.toBeUndefined();
+  return forkId!;
+}
+
 async function setRightWorkbarWidth(page: Page, width: number) {
   const workbar = page.locator('.maka-session-workbar[data-placement="right"]');
   await expect(workbar).toBeVisible();
@@ -240,4 +271,121 @@ test('Git changes re-read the workspace after the app regains focus', async ({
   await gitReviewWindow.page.evaluate(() => window.dispatchEvent(new Event('focus')));
 
   await expect(panel.getByText('新增 5 行')).toBeVisible();
+});
+
+test('Terminal ownership follows the active Session and stops the old resource', async ({
+  window: page,
+}) => {
+  const { composer, sessionId, sidebar } = await createSession(
+    page,
+    'create terminal owner session',
+  );
+  await page.getByRole('button', { name: '展开任务工作栏' }).click();
+  await page
+    .getByRole('button', { name: /终端.*查看当前任务的终端运行和实时输出/ })
+    .click();
+
+  const terminal = page.getByRole('region', { name: '任务终端' });
+  await expect(terminal).toBeVisible();
+  const terminalRef = await terminal.getAttribute('data-terminal-ref');
+  expect(terminalRef).toBeTruthy();
+  await expect
+    .poll(async () =>
+      (await page.evaluate((id) => window.maka.shellRuns.list(id), sessionId))
+        .find((update) => update.result.ref === terminalRef)
+        ?.result.status,
+    )
+    .toBe('running');
+
+  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
+  await expect(terminal).toHaveCount(0);
+  await expect
+    .poll(async () =>
+      (await page.evaluate((id) => window.maka.shellRuns.list(id), sessionId))
+        .find((update) => update.result.ref === terminalRef)
+        ?.result.status,
+    )
+    .not.toBe('running');
+
+  await composer.fill('create replacement session');
+  await composer.press('Enter');
+  await expect(page.getByText('Fake backend received: create replacement session')).toBeVisible();
+  await page.getByRole('button', { name: '展开任务工作栏' }).click();
+  await expect(page.getByRole('list', { name: '打开工具' })).toBeVisible();
+});
+
+test('Side Chat survives collapse, confirms close, and cleans up on source switch', async ({
+  window: page,
+}) => {
+  const { composer, sessionId, sidebar } = await createSession(
+    page,
+    'create side chat source session',
+  );
+  await page.getByRole('button', { name: '展开任务工作栏' }).click();
+  const openSideChat = page.getByRole('button', {
+    name: /侧边对话.*在不打断主任务的情况下追问和只读探索/,
+  });
+  await openSideChat.click();
+
+  const companion = page.locator('.maka-quote-companion');
+  await expect(companion).toBeVisible();
+  const firstForkId = await waitForCompanionForkId(page, sessionId);
+  await expect(sidebar.locator(`[data-session-id=${JSON.stringify(firstForkId)}]`)).toHaveCount(0);
+
+  await page.getByRole('button', { name: '收起任务工作栏' }).click();
+  await expect(companion).toBeAttached();
+  await expect(companion).not.toBeVisible();
+  await expect
+    .poll(async () =>
+      (await page.evaluate(() => window.maka.sessions.list()))
+        .some((session) => session.id === firstForkId),
+    )
+    .toBe(true);
+  await page.getByRole('button', { name: '展开任务工作栏' }).click();
+  await expect(companion).toBeVisible();
+
+  const sideComposer = companion.locator(COMPOSER_INPUT);
+  await sideComposer.fill('inspect this source without changing it');
+  await sideComposer.press('Enter');
+  await expect(companion).toContainText(
+    'Fake backend received: inspect this source without changing it',
+  );
+
+  const workbarToolbar = page.getByRole('toolbar', { name: '任务工作栏标签' }).first();
+  const closeActiveSideChat = () =>
+    workbarToolbar
+      .getByRole('tab', { selected: true })
+      .locator('..')
+      .getByRole('button', { name: /^关闭/ });
+  await closeActiveSideChat().click();
+  const confirmation = page.getByRole('dialog');
+  await expect(confirmation).toContainText('这个临时侧边对话会被永久删除');
+  await confirmation.getByRole('button', { name: '取消' }).click();
+  await expect(companion).toBeVisible();
+
+  await closeActiveSideChat().click();
+  await confirmation.getByRole('button', { name: '关闭侧边对话' }).click();
+  await expect(companion).toHaveCount(0);
+  await expect
+    .poll(async () =>
+      (await page.evaluate(() => window.maka.sessions.list()))
+        .some((session) => session.id === firstForkId),
+    )
+    .toBe(false);
+
+  await page.getByRole('button', { name: '展开任务工作栏' }).click();
+  await expect(page.getByRole('list', { name: '打开工具' })).toBeVisible();
+  await openSideChat.click();
+  await expect(companion).toBeVisible();
+  const secondForkId = await waitForCompanionForkId(page, sessionId);
+
+  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
+  await expect(companion).toHaveCount(0);
+  await expect
+    .poll(async () =>
+      (await page.evaluate(() => window.maka.sessions.list()))
+        .some((session) => session.id === secondForkId),
+    )
+    .toBe(false);
+  await expect(composer).toHaveText('');
 });

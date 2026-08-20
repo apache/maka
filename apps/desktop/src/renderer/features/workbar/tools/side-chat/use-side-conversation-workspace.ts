@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useMemo, useReducer } from 'react';
-import type { QuoteCompanionPanelState } from './quote-companion-panel-state';
+import type { QuoteCompanionPanelState } from './quote-companion-panel-state.js';
 
 interface SideConversationRecord {
   panel: QuoteCompanionPanelState;

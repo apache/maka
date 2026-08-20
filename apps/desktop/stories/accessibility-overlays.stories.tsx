@@ -21,9 +21,9 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import { useState } from 'react';
 import type { BotOnboardingSnapshot } from '@maka/core/bot-onboarding';
+import { SideChatCloseConfirmation } from '../src/renderer/features/workbar/testing';
 import { BotOnboardingModal } from '../src/renderer/settings/bot-onboarding-modal';
 import { WechatQrLoginModal } from '../src/renderer/settings/bot-wechat-login';
-import { SideChatCloseConfirmation } from '../src/renderer/side-chat-close-confirmation';
 import { withScopedMakaBridge } from './maka-bridge';
 
 const meta = {

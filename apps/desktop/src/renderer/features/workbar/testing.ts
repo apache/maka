@@ -34,10 +34,14 @@ export * from './tools/artifacts/artifact-visibility.js';
 export * from './tools/inspector/session-inspector-panel-model.js';
 export * from './tools/inspector/session-inspector-overview-model.js';
 export * from './tools/side-chat/quote-companion-panel-state.js';
+export * from './tools/side-chat/quote-companion-core.js';
 export * from './tools/side-chat/quote-companion-visibility.js';
 export * from './tools/terminal/session-terminal-hydration.js';
 export * from './tools/terminal/session-terminal-query.js';
+export * from './tools/terminal/session-terminal-frame.js';
 export * from './tools/inspector/use-session-trace.js';
+export * from './controller/use-workbar-controller.js';
+export { SideChatCloseConfirmation } from './ui/side-chat-close-confirmation.js';
 
 const noopSubscription = (): (() => void) => () => undefined;
 

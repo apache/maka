@@ -35,12 +35,14 @@ export function createAppShellE2eFixtureActions(options: {
   setNavSelection: Dispatch<SetStateAction<NavSelection>>;
   setSearchModalOpen: Dispatch<SetStateAction<boolean>>;
   setSessionListCollapsed: Dispatch<SetStateAction<boolean>>;
-  setWorkbarCollapsed: Dispatch<SetStateAction<boolean>>;
-  openWorkbarTab: (
-    kind: Exclude<SessionWorkbarTabKind, 'side-chat'>,
-    placement?: 'right' | 'bottom',
-    options?: { preview?: boolean },
-  ) => void;
+  workbar: {
+    rightCollapsed: boolean;
+    toggleRight(): void;
+    openTool(
+      kind: SessionWorkbarTabKind,
+      placement?: 'right' | 'bottom',
+    ): void;
+  };
   setThemePref: Dispatch<SetStateAction<ThemePreference>>;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
 }): AppShellE2eFixtureActions {
@@ -51,8 +53,7 @@ export function createAppShellE2eFixtureActions(options: {
     setNavSelection,
     setSearchModalOpen,
     setSessionListCollapsed,
-    setWorkbarCollapsed,
-    openWorkbarTab,
+    workbar,
     setThemePref,
     setUiLocaleOverride,
   } = options;
@@ -122,7 +123,12 @@ export function createAppShellE2eFixtureActions(options: {
     if (state.sidebarCollapsed !== undefined) {
       setSessionListCollapsed(state.sidebarCollapsed);
     }
-    if (state.workbarCollapsed !== undefined) setWorkbarCollapsed(state.workbarCollapsed);
+    if (
+      state.workbarCollapsed !== undefined &&
+      state.workbarCollapsed !== workbar.rightCollapsed
+    ) {
+      workbar.toggleRight();
+    }
     if (
       state.workbarTab === 'review' ||
       state.workbarTab === 'terminal' ||
@@ -131,7 +137,7 @@ export function createAppShellE2eFixtureActions(options: {
       state.workbarTab === 'files' ||
       state.workbarTab === 'inspector'
     ) {
-      openWorkbarTab(state.workbarTab, 'right');
+      workbar.openTool(state.workbarTab, 'right');
     }
     if (state.openSettingsSection) {
       openSettingsSection(state.openSettingsSection);

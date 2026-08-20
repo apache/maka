@@ -90,10 +90,7 @@ export function useAppShellNavRefSync(options: { navSelection: NavSelection; nav
   }, [options.navSelection]);
 }
 
-export function useAppShellHostEffects(options: {
-  activeId: string | undefined;
-  setLiveBrowserSessionIds: (sessionIds: string[]) => void;
-}) {
+export function useAppShellHostEffects() {
   // Tag the document with the host OS so glass-material CSS rules
   // (sidebar vibrancy passthrough)
   // can light up only on macOS, where `BrowserWindow({ vibrancy: 'sidebar' })`
@@ -114,18 +111,6 @@ export function useAppShellHostEffects(options: {
       cancelled = true;
     };
   }, []);
-
-  // P3 embedded browser: track which sessions have a live view (panel mounts
-  // only for those) and tell main which session this window shows (so it can
-  // validate browser:* IPC targets).
-  useEffect(() => {
-    const off = window.maka.browser.onLive((payload) => options.setLiveBrowserSessionIds(payload.sessionIds));
-    return off;
-  }, []);
-
-  useEffect(() => {
-    window.maka.browser.setActiveSession(options.activeId ?? null);
-  }, [options.activeId]);
 
   // Modal-open titlebar dimming/hiding is driven by observing the top layer
   // (`dialog:modal`) rather than the shell's own modal state, so dialogs

@@ -202,6 +202,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         if (mountedRef.current) setError(copyRef.current.errors.settlementFailed);
       });
     unsubscribeRef.current = sideChat.subscribeEvents(forkId, (event: SessionEvent) => {
+      if (!mountedRef.current) return;
       const effect = companionRunEventEffect(
         event,
         activeTurnIdRef.current,
@@ -354,7 +355,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       attachmentItems?: WorkbarIngestInput[],
     ): Promise<boolean> => {
       const trimmed = text.trim();
-      if (!trimmed || turnInFlightRef.current || !sourceSession) return false;
+      if (!mountedRef.current || !trimmed || turnInFlightRef.current || !sourceSession) {
+        return false;
+      }
       // Close the same-frame double-submit window before the first await. The
       // visible in-flight state still begins only when the run is armed.
       turnInFlightRef.current = true;
@@ -463,17 +466,18 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const steer = useCallback(async (text: string): Promise<boolean> => {
     const id = companionIdRef.current;
     const trimmed = text.trim();
-    if (!id || !trimmed || !turnInFlight) return false;
+    if (!mountedRef.current || !id || !trimmed || !turnInFlight) return false;
     try {
       const outcome = await sideChat.steer(id, trimmed);
+      if (!mountedRef.current) return false;
       if (outcome.kind !== 'queued') return false;
       setError(null);
       return true;
     } catch {
-      setError(copyRef.current.errors.sendFailed);
+      if (mountedRef.current) setError(copyRef.current.errors.sendFailed);
       return false;
     }
-  }, [sideChat, turnInFlight]);
+  }, [mountedRef, sideChat, turnInFlight]);
 
   const setPermissionMode = useCallback(
     async (mode: PermissionMode): Promise<boolean> => {
@@ -535,28 +539,28 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
 
   const respondToSandboxBoundary = useCallback(
     async (response: SandboxBoundaryResponse): Promise<void> => {
-    const id = companionIdRef.current;
-    if (!id) return;
-    try {
-      await sideChat.respondToSandboxBoundary(id, response);
-    } catch {
-      setError(copyRef.current.errors.respondFailed);
-    }
+      const id = companionIdRef.current;
+      if (!mountedRef.current || !id) return;
+      try {
+        await sideChat.respondToSandboxBoundary(id, response);
+      } catch {
+        if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
+      }
     },
-    [sideChat],
+    [mountedRef, sideChat],
   );
 
   const respondToUserQuestion = useCallback(
     async (response: UserQuestionResponse): Promise<void> => {
       const id = companionIdRef.current;
-      if (!id) return;
+      if (!mountedRef.current || !id) return;
       try {
         await sideChat.respondToUserQuestion(id, response);
       } catch {
-        setError(copyRef.current.errors.respondFailed);
+        if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
       }
     },
-    [sideChat],
+    [mountedRef, sideChat],
   );
 
   // Only the companion's own turns render; the forked parent history stays as

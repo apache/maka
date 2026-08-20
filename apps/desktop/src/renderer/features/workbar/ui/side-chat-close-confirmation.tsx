@@ -25,7 +25,7 @@ import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
 import { useUiLocale } from '@maka/ui';
-import { getDesktopConversationCopy } from './locales/conversation-copy';
+import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 
 export const SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY =
   'maka-skip-side-chat-close-confirmation-v1';

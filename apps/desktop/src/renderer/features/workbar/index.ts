@@ -19,43 +19,13 @@
 
 export { WorkbarHost } from './ui/workbar-host';
 export { WorkbarSurface } from './ui/workbar-surface';
-export { WorkbarTitlebarActions, WorkbarToggle } from './ui/workbar-toggle';
-export { WorkbarServicesProvider, useWorkbarServices } from './services-context';
-export { useWorkbarLayoutState } from './controller/use-workbar-layout-state';
+export { WorkbarTitlebarActions } from './ui/workbar-toggle';
+export { WorkbarServicesProvider } from './services-context';
 export {
-  consumeCompanionInitialPrompt,
-  consumeCompanionQuoteSnapshot,
-  openCompanionPanel,
-  removeStagedCompanionQuote,
-  stageCompanionQuote,
-} from './tools/side-chat/quote-companion-panel-state';
-export {
-  applyCompanionForkVisibilityEvent,
-  reconcileCompanionForkVisibility,
-} from './tools/side-chat/quote-companion-visibility';
-export { recoverOrphanedCompanionCopies } from './tools/side-chat/quote-companion-core';
-export { useSideConversationWorkspace } from './tools/side-chat/use-side-conversation-workspace';
-export {
-  findPreferredSideChatWorkbarTab,
-  terminalRefFromWorkbarTab,
-  terminalSessionWorkbarTabId,
-} from './model/workbar-tabs';
-export type {
-  CompanionQuoteSnapshot,
-  CompanionQuoteTarget,
-  QuoteCompanionPanelState,
-} from './tools/side-chat/quote-companion-panel-state';
-export type { CompanionForkVisibilityEvent } from './tools/side-chat/quote-companion-visibility';
-export type {
-  SessionWorkbarPanelsState,
-  SessionWorkbarPlacement,
-  SessionWorkbarTab,
-  SessionWorkbarTabKind,
-} from './model/workbar-tabs';
-export type {
-  SideChatSessionPort,
-  WorkbarIngestInput,
-  WorkbarSessionTracePage,
-  WorkbarSessionUsageSummary,
-  WorkbarServices,
-} from './ports';
+  useWorkbarController,
+  type WorkbarController,
+  type WorkbarControllerCommands,
+  type WorkbarControllerSelectors,
+} from './controller/use-workbar-controller';
+export type { SessionWorkbarTabKind } from './model/workbar-tabs';
+export type { WorkbarServices } from './ports';

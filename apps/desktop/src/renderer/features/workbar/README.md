@@ -32,6 +32,18 @@ remounted when the active session changes.
 - Workbar must not import shell composition, Desktop bridge, or main-process implementation.
 - Desktop I/O enters through `WorkbarServices`; tool code does not read
   the Desktop global bridge directly.
+- `useWorkbarController` is the application boundary for topology, shortcuts,
+  dynamic resources and Side Chat visibility. `AppShell` supplies only the
+  active Session, workspace availability, authoritative Session ids, shell visibility and composer
+  mention/model context.
+
+## Public surface
+
+- `host` is passed intact to `<WorkbarHost model={workbar.host} />`.
+- `commands.openTool`, `commands.openSideChatWithQuote` and
+  `commands.toggleRight` are the only shell actions.
+- `selectors.rightCollapsed` drives the titlebar restore affordance and
+  `selectors.hiddenSessionIds` filters ephemeral companion forks from the rail.
 
 ## Lifecycle invariants
 
@@ -42,10 +54,22 @@ remounted when the active session changes.
   behavior and default placement; storage and controller code consume it
   rather than maintaining parallel kind lists.
 - Closing or leaving the owner session stops Terminal resources.
+- A Terminal start is tagged with its source generation. If it resolves after
+  a Session switch or controller disposal, the returned resource is stopped
+  immediately and never enters the tab topology.
+- Terminal ownership is registered as soon as `start` returns, before the tab
+  state commits. Host projection excludes resources owned by another Session,
+  so a Session switch cannot briefly reattach an old Terminal.
 - Side Chat survives panel collapse and is cleaned only when its tab closes or
   when navigation leaves its source session.
+- Disposed Side Chat operations are fenced at every fork/send boundary; a late
+  fork is cleaned and a late send cannot write back into an abandoned panel.
 - Inactive tabs stay mounted; their hooks receive the existing active/hidden
   signal and decide whether to subscribe.
+- Inspector keeps two authorities separate: Session events refresh its paged
+  timeline/context window, while usage-change events refresh the complete
+  Session usage summary. Re-activation and head refresh preserve the requested
+  trace page depth.
 
 ## Adding a tool
 

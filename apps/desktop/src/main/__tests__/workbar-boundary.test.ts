@@ -49,6 +49,9 @@ describe('Workbar feature boundary', () => {
       const source = readFileSync(path, 'utf8');
       const name = relative(desktopRoot, path);
       if (source.includes('window.maka')) violations.push(`${name}: Desktop global`);
+      if (source.includes('session-message-settlement')) {
+        violations.push(`${name}: Desktop transcript settlement`);
+      }
       for (const match of source.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
         const imported = match[1] ?? '';
         if (
@@ -89,5 +92,25 @@ describe('Workbar feature boundary', () => {
     const productionEntry = readFileSync(join(featureRoot, 'index.ts'), 'utf8');
     assert.equal(productionEntry.includes('createFakeWorkbarServices'), false);
     assert.equal(productionEntry.includes("from './testing"), false);
+  });
+
+  it('keeps Workbar topology and resource lifecycle out of AppShell', () => {
+    const appShell = readFileSync(
+      join(desktopRoot, 'src', 'renderer', 'app-shell.tsx'),
+      'utf8',
+    );
+    for (const forbidden of [
+      'useWorkbarLayoutState',
+      'terminalSessionWorkbarTabId',
+      'pendingSideChatClose',
+      'sideConversations',
+      'window.maka.shellRuns.start',
+    ]) {
+      assert.equal(appShell.includes(forbidden), false, forbidden);
+    }
+    assert.equal(
+      appShell.includes('<WorkbarHost model={workbar.host} />'),
+      true,
+    );
   });
 });

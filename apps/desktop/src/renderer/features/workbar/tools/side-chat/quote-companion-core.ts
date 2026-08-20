@@ -303,14 +303,28 @@ export async function performCompanionTurn(
   deps: PerformCompanionTurnDeps,
 ): Promise<CompanionTurnResult> {
   let forkId = deps.existingForkId;
+  let createdForkId: string | null = null;
   if (forkId === null) {
     const fork = await ensureCompanionFork(deps);
     if (fork.status !== 'ready') return fork;
     forkId = fork.session.id;
+    createdForkId = forkId;
+    if (deps.isDisposed()) {
+      scheduleCompanionCleanup(deps, forkId);
+      return { status: 'disposed' };
+    }
     deps.onForkCommitted(fork.session);
   }
 
+  if (deps.isDisposed()) {
+    if (createdForkId) scheduleCompanionCleanup(deps, createdForkId);
+    return { status: 'disposed' };
+  }
   deps.onBeforeSend(forkId);
+  if (deps.isDisposed()) {
+    if (createdForkId) scheduleCompanionCleanup(deps, createdForkId);
+    return { status: 'disposed' };
+  }
   let result: { ok: true } | { ok: false; reason?: string };
   try {
     result = await deps.api.send(forkId, {
@@ -321,8 +335,10 @@ export async function performCompanionTurn(
       ...(deps.attachmentItems ? { attachmentItems: deps.attachmentItems } : {}),
     });
   } catch {
+    if (deps.isDisposed()) return { status: 'disposed' };
     return { status: 'error', code: 'send_failed' };
   }
+  if (deps.isDisposed()) return { status: 'disposed' };
   // `send` can RESOLVE with `{ ok: false }` (e.g. an unresolved /skill:...) — no
   // run was started, so surface the error and keep the quotes for retry rather
   // than reporting success and hanging in the processing state.
