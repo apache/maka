@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { access, readFile, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { resolveXdgConfigHome } from '@maka/storage';
+import { resolveXdgConfigHome } from '@maka/storage/workspace-root';
 import {
   removeRuntimeHostServiceFile,
   RuntimeHostServiceManagerError,

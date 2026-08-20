@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { ConfigCategory } from '@maka/storage';
+import type { ConfigCategory } from '@maka/storage/config-transfer';
 import {
   Button,
   Selector,

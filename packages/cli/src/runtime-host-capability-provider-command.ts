@@ -9,7 +9,7 @@ import type {
   McpToolDescriptor,
 } from '@maka/core/mcp';
 import { McpClientManager } from '@maka/mcp';
-import { normalizeMcpConfig } from '@maka/storage';
+import { normalizeMcpConfig } from '@maka/storage/mcp-config-store';
 import {
   connectRemoteRuntimeHost,
   loadOrCreateRuntimeHostClientInstanceId,

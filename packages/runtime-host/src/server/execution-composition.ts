@@ -57,7 +57,7 @@ import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
 import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child-executor';
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
-import { openStorageWriterComposition } from '@maka/storage';
+import { openStorageWriterComposition } from '@maka/storage/storage-writer-composition';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import {
   openManagedWorkspaceOwner,

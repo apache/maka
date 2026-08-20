@@ -12,7 +12,7 @@ import {
   SessionConfigurationTransitionError,
   headerToSummary,
 } from '@maka/runtime/session-manager';
-import { type ProjectCatalog, ProjectUnavailableError } from '@maka/storage';
+import { type ProjectCatalog, ProjectUnavailableError } from '@maka/storage/project-catalog';
 import {
   SessionMetadataVersionConflictError,
   type SessionCatalogRecord,

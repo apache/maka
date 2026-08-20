@@ -23,7 +23,6 @@ import { afterEach, before, test } from 'node:test';
 import { openManagedWorkspaceOwner } from '../managed-workspace-owner.js';
 import { managedWorkspaceExecutionAuthorityTestSupport } from '../managed-workspace-execution-authority-internal.js';
 import { createGitWorkspaceService } from '../git-workspace-service.js';
-import * as publicStorage from '../index.js';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
 import {
   adoptStorageRootOnImport,
@@ -61,11 +60,18 @@ test('does not expose baseline receipt issuance on the public Git workspace serv
 });
 
 test('does not expose artifact-only workspace creation through the public storage API', async () => {
-  assert.equal('createGitWorkspaceService' in publicStorage, false);
-  assert.equal('issueManagedWorkspaceExecutionHandleInternal' in publicStorage, false);
-  assert.equal('inspectManagedWorkspaceExecutionHandleInternal' in publicStorage, false);
-  assert.equal('issueManagedWorkspaceExecutionScopeInternal' in publicStorage, false);
-  assert.equal('inspectManagedWorkspaceExecutionScopeInternal' in publicStorage, false);
+  // The package has no barrel: reachability is decided by the `exports` map.
+  // These internals live in modules it does not publish, so no consumer can
+  // import them at all.
+  const { readFile } = await import('node:fs/promises');
+  const manifest = JSON.parse(
+    await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+  ) as { exports: Record<string, string> };
+  const published = new Set(Object.values(manifest.exports));
+  assert.equal(published.has('./dist/git-workspace-service.js'), false);
+  assert.equal(published.has('./dist/managed-workspace-execution-authority-internal.js'), false);
+  assert.equal(published.has('./dist/managed-workspace-worker-bridge-internal.js'), false);
+  assert.equal(published.has('./dist/index.js'), false);
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });

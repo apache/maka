@@ -11,10 +11,7 @@ import {
   type HistoryCompactBlock,
 } from '@maka/runtime/context-budget';
 import { type HistoryCompactWriteInput } from '@maka/runtime/ai-sdk-compaction-contract';
-import {
-  createSqliteArtifactStore,
-  type ArtifactStore,
-} from '@maka/storage';
+import { createSqliteArtifactStore, type ArtifactStore } from '@maka/storage/artifact-store';
 import {
   loadHistoryCompactBlocksFromArtifacts,
   persistHistoryCompactBlocksToArtifacts,

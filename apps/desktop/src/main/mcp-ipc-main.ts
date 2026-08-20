@@ -1,7 +1,7 @@
 import type { IpcMain } from 'electron';
 import type { McpConfigFile, McpServerConfig, McpServerStatus } from '@maka/core/mcp';
 import type { McpClientManager } from '@maka/mcp';
-import type { McpConfigStore } from '@maka/storage';
+import type { McpConfigStore } from '@maka/storage/mcp-config-store';
 import {
   redactMcpConfigSecrets,
   restoreMcpConfigSecrets,

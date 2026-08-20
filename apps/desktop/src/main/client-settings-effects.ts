@@ -1,5 +1,5 @@
 import type { AppSettings } from '@maka/core/settings';
-import type { SettingsStore } from '@maka/storage';
+import type { SettingsStore } from '@maka/storage/settings-store';
 
 export interface ClientSettingsEffects {
   apply(settings: AppSettings, notifyRenderer: boolean): Promise<boolean>;
