@@ -38,6 +38,35 @@ const PROVIDER_UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Closed vocabulary check for provider codes that may feed Maka's
+ * terminal-state taxonomy (`ErrorEvent.code` → `failureClass`). A provider's
+ * free-form code string is display metadata; an arbitrary token such as
+ * `tool_choice_invalid` must never steer the Host-owned taxonomy or the
+ * Desktop label/recovery matching that reads it (#2521).
+ */
+export function taxonomySafeProviderCode(code: string | undefined): string | undefined {
+  if (code === undefined) return undefined;
+  const lower = code.toLowerCase();
+  if (
+    // Maka-owned sentinels are deterministic, not provider free-form wording.
+    RUNTIME_RETRYABLE_ERROR_CODES.has(code) ||
+    // ContinuationReplayEmptyError.code (ai-sdk-backend): a Maka-owned class.
+    lower === 'continuation_replay_empty' ||
+    PROVIDER_AUTH_CODES.has(lower) ||
+    PROVIDER_BILLING_CODES.has(lower) ||
+    PROVIDER_PERMISSION_CODES.has(lower) ||
+    PROVIDER_USAGE_LIMIT_CODES.has(lower) ||
+    PROVIDER_RATE_LIMIT_CODES.has(lower) ||
+    PROVIDER_UNAVAILABLE_CODES.has(lower) ||
+    CONTEXT_OVERFLOW_PROVIDER_CODES.has(lower) ||
+    /^[1-5]\d{2}$/.test(lower)
+  ) {
+    return code;
+  }
+  return undefined;
+}
+
+/**
  * A provider failure normalized into classification evidence. classifyError's
  * real input domain is NOT just Error instances: a request-level failure is
  * an AI SDK `APICallError` (provider JSON parsed in `data`, raw in
@@ -66,6 +95,9 @@ interface ProviderErrorFacts {
   messageSources?: ProviderFailureSources;
   boundedProviderMessageSource?: boolean;
   bareMessage?: string;
+  /** The chain link the projected message was selected from; its code/status
+   * are the only ones that may be presented alongside that message. */
+  messageLink?: ProviderErrorFacts;
   responseHeaders?: Record<string, string>;
 }
 
@@ -150,8 +182,12 @@ function providerRetryMetadataFromFacts(facts: ProviderErrorFacts): ProviderRetr
   const status = Number(evidence.statusCode || evidence.code);
   const errorClass = classifyProviderFacts(facts);
   // Account state cannot be repaired by immediately repeating the same
-  // physical request, even when a provider reports it through HTTP 429.
+  // physical request, even when a provider reports it through HTTP 429. An
+  // Abort is by definition not repairable by repeating the request either —
+  // the RetryError early return already says so, and a text-derived Abort
+  // must not fall through to the 5xx retryable rule with the opposite answer.
   if (
+    errorClass === 'Abort' ||
     errorClass === 'Auth' ||
     errorClass === 'ProviderBilling' ||
     errorClass === 'ProviderPermission' ||
@@ -321,9 +357,10 @@ export function providerFailureSummary(error: unknown): ProviderFailureSummary |
 function providerFailureSummaryFromFacts(
   facts: ProviderErrorFacts,
 ): ProviderFailureSummaryEvidence | undefined {
-  const sources = facts.summarySources;
-  const message = firstProviderMessage(facts);
-  const code = strongestProviderCode(facts);
+  const link = facts.messageLink;
+  const sources = link ? link.summarySources : facts.summarySources;
+  const message = link ? firstProviderMessage(link) : undefined;
+  const code = strongestProviderCode(link ?? facts);
   const statusCode = firstProviderField(sources, ['statusCode', 'status']);
   const requestId =
     firstProviderField(sources, ['requestId', 'request_id']) ??
@@ -394,7 +431,10 @@ export function providerFailureResult(error: unknown): ProviderFailureResult {
       : classified,
     httpStatus,
   );
-  const providerCode = strongestProviderCode(facts);
+  // When a provider message is projected, its code must come from the same
+  // chain link — never an outer link's code paired with an inner link's
+  // message (#2521).
+  const providerCode = strongestProviderCode(facts.messageLink ?? facts);
   const providerRequestId =
     firstProviderField(sources, ['requestId', 'request_id']) ??
     boundedProviderField(facts.responseHeaders?.['x-request-id']);
@@ -477,12 +517,17 @@ function providerFailureDiagnosticFacts(error: unknown): ProviderErrorFacts | un
   // status and retry hints remain available as fallback evidence.
   const providerFirst = [...chain].reverse();
   const messageFacts = providerFirst.filter((facts) => hasProviderMessageSource(facts));
+  // The message and its paired code/status must come from the SAME chain
+  // link: an inner link's transport message stamped with an outer link's
+  // provider code presents a sentence the provider never said (#2521).
+  const messageLink = messageFacts.find((facts) => firstProviderMessage(facts) !== undefined);
   const responseHeaders = Object.assign({}, ...chain.map((facts) => facts.responseHeaders ?? {})) as
     | Record<string, string>
     | undefined;
   const bareMessage = messageFacts.find((facts) => facts.bareMessage)?.bareMessage;
   return {
     target: chain[0]!.target,
+    ...(messageLink ? { messageLink } : {}),
     evidence: {
       text: chain.map((facts) => facts.evidence.text).join(' '),
       statusCode: chain.find((facts) => facts.evidence.statusCode)?.evidence.statusCode ?? '',
@@ -548,7 +593,12 @@ function hasProviderMessageSource(facts: ProviderErrorFacts): boolean {
   if (facts.boundedProviderMessageSource !== undefined) {
     return facts.boundedProviderMessageSource;
   }
-  if (!(facts.target instanceof Error)) return true;
+  // Positive provider provenance is required for every link shape: the link's
+  // own `.message` — Error or plain object alike — is internal text until a
+  // nested provider source (data/error/responseBody payloads) or a string
+  // error carries provider wording. A bare `{ message }` cause from our own
+  // code or a transport shim must not be certified as a bounded provider
+  // message (#2521).
   const targetRecord = objectRecord(facts.target);
   return (
     facts.summarySources.records.some(
@@ -729,13 +779,15 @@ export function isContextOverflowErrorText(text: string): boolean {
  * Classifies a provider error by DESCENDING evidence strength over the
  * normalized evidence (Error, string, or plain stream-error-part object):
  * abort wrapper → structured account state → the provider's structured
- * overflow code → text/status fallbacks (abort, 402, 429, 401; numeric fields,
+ * overflow code → numeric status fallbacks (402, 429, 401; numeric fields,
  * never substrings) → bare 413
  * (HTTP: request entity too large — itself input-side evidence, Cerebras sends it with no body) →
- * vetoable free-text overflow relations → generic 5xx → weak word
+ * vetoable free-text overflow relations → generic 5xx → free-text abort → weak word
  * heuristics. Specific overflow evidence outranks a generic 5xx because
  * proxies (LiteLLM) wrap provider overflows in 503s; the weak heuristics
- * rank last so "generate" can never become a rate limit.
+ * rank last so "generate" can never become a rate limit. Numeric status
+ * outranks free text because the text spans the whole chain, JSON key names
+ * included.
  */
 export function classifyError(error: unknown): string {
   if (RetryError.isInstance(error) && error.reason === 'abort') return 'Abort';
@@ -758,7 +810,11 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   // The provider's structured context code is unconditional input-overflow
   // evidence. It outranks outer transport status and message fallbacks.
   if (structuredCodes.some((c) => CONTEXT_OVERFLOW_PROVIDER_CODES.has(c))) return 'ContextLength';
-  if (text.includes('abort')) return 'Abort';
+  // Numeric status outranks free text: the text spans the whole cause chain
+  // including JSON key names, so a 429 whose body reads "request aborted:
+  // too many requests" must keep its rate-limit class and retry-after
+  // handling, and a 500 carrying an `aborted` key stays ProviderUnavailable
+  // (#2521).
   if (statusCode === '402' || code === '402') return 'ProviderBilling';
   if (statusCode === '429' || code === '429') return 'RateLimit';
   if (statusCode === '401' || code === '401') return 'Auth';
@@ -769,6 +825,7 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   // Free-text overflow relations on the composite text, veto-first inside.
   if (isContextOverflowErrorText(text)) return 'ContextLength';
   if (/^5\d\d$/.test(statusCode) || /^5\d\d$/.test(code)) return 'ProviderUnavailable';
+  if (text.includes('abort')) return 'Abort';
   // Weak word heuristics remain as compatibility fallbacks after all stronger
   // provider facts. They must not override a structured account state.
   if (/\brate\b|rate[_-]?limit/.test(text)) return 'RateLimit';

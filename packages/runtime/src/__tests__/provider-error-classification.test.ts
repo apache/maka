@@ -11,6 +11,7 @@ import {
   errorPresentationFromClass,
   providerFailureSummary,
   providerRetryMetadata,
+  taxonomySafeProviderCode,
 } from '../provider-error-classification.js';
 
 describe('Provider error classification', () => {
@@ -562,6 +563,67 @@ describe('Provider error classification', () => {
       httpStatus: 403,
       retryable: false,
     });
+  });
+
+  test('requires positive provider provenance before certifying a cause message (#2521)', () => {
+    // A plain-object cause whose only message is its own `.message` is
+    // internal text, not a bounded provider message.
+    const result = providerFailureResult(
+      new Error('Request failed', {
+        cause: { message: 'internal maka path /Users/x/.maka/keys.json missing' },
+      }),
+    );
+    assert.equal(result.boundedProviderMessage, undefined);
+    assert.equal(result.message, undefined);
+  });
+
+  test('numeric status outranks abort wording anywhere in the chain text (#2521)', () => {
+    const rateLimited = Object.assign(new Error('request aborted: too many requests'), {
+      name: 'AI_APICallError',
+      statusCode: 429,
+      data: { error: { message: 'request aborted: too many requests' } },
+    });
+    assert.equal(classifyError(rateLimited), 'RateLimit');
+    const unavailable = Object.assign(new Error('request aborted by gateway'), {
+      name: 'AI_APICallError',
+      statusCode: 500,
+      data: { error: { message: 'request aborted by gateway' } },
+    });
+    assert.equal(classifyError(unavailable), 'ProviderUnavailable');
+    // Even a JSON key name carrying "aborted" must not reclassify a 5xx.
+    assert.equal(classifyError({ statusCode: 500, aborted: false }), 'ProviderUnavailable');
+  });
+
+  test('never reports a text-derived Abort as retryable (#2521)', () => {
+    const result = providerFailureResult(new Error('The operation was aborted'));
+    assert.equal(result.errorClass, 'Abort');
+    assert.equal(result.retryable, false);
+  });
+
+  test('selects the message and the provider code from the same chain link (#2521)', () => {
+    const error = Object.assign(new Error('Request failed'), {
+      name: 'AI_APICallError',
+      statusCode: 429,
+      data: { error: { code: 'rate_limit_exceeded' } },
+      cause: { error: { message: 'transport detail: socket hang up' } },
+    });
+    const result = providerFailureResult(error);
+    // Classification still sees the aggregated structured code...
+    assert.equal(result.errorClass, 'RateLimit');
+    // ...but the projected message is never stamped with a code from a
+    // different link.
+    assert.equal(result.providerCode, undefined);
+    assert.match(result.message ?? '', /socket hang up/);
+    assert.doesNotMatch(result.message ?? '', /rate_limit/i);
+  });
+
+  test('admits only closed-vocabulary provider codes into the taxonomy input (#2521)', () => {
+    assert.equal(taxonomySafeProviderCode('rate_limit_exceeded'), 'rate_limit_exceeded');
+    assert.equal(taxonomySafeProviderCode('429'), '429');
+    // Free-form tokens containing taxonomy-matched substrings are refused.
+    assert.equal(taxonomySafeProviderCode('tool_choice_invalid'), undefined);
+    assert.equal(taxonomySafeProviderCode('auth_custom_scheme'), undefined);
+    assert.equal(taxonomySafeProviderCode(undefined), undefined);
   });
 
   test('maps provider classes to stable user-safe presentations', () => {
