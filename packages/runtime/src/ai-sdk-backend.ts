@@ -2400,7 +2400,18 @@ export class AiSdkBackend implements AgentBackend {
                     part.providerOptions = event.providerOptions;
                   }
                 } else if (stepResponsesThinkingParts.length > 0) {
-                  stepResponsesThinkingParts.at(-1)!.text += event.text;
+                  const lastPart = stepResponsesThinkingParts.at(-1)!;
+                  const lastState = decodePlaintextResponsesReasoningState(
+                    lastPart.providerOptions,
+                  );
+                  if (lastState.kind === 'valid' && lastState.state.carrier === 'summary') {
+                    // An invalid next item has no usable stream id. Do not
+                    // append its deltas to the finalized item: partial-error
+                    // flush must keep that item's durable boundaries valid.
+                    stepResponsesThinkingParts.push({ text: event.text });
+                  } else {
+                    lastPart.text += event.text;
+                  }
                 }
                 queue.push({
                   type: 'thinking_delta',

@@ -13150,6 +13150,133 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.ok(compactPrompt(recoveryModel));
   });
 
+  test('Alibaba Responses keeps a finalized item valid when the next item id is unsafe', async () => {
+    const invalidItemId = 'invalid\nreasoning-item';
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            { type: 'reasoning-start', id: 'reasoning-item-a' },
+            { type: 'reasoning-delta', id: 'reasoning-item-a', delta: 'valid summary' },
+            {
+              type: 'reasoning-end',
+              id: 'reasoning-item-a',
+              providerMetadata: {
+                'alibaba-token-plan-cn': {
+                  itemId: 'reasoning-item-a',
+                  reasoningSummary: [{ type: 'summary_text', text: 'valid summary' }],
+                  reasoningContent: null,
+                },
+              },
+            },
+            { type: 'reasoning-start', id: invalidItemId },
+            { type: 'reasoning-delta', id: invalidItemId, delta: 'unsafe item summary' },
+            {
+              type: 'reasoning-end',
+              id: invalidItemId,
+              providerMetadata: {
+                'alibaba-token-plan-cn': {
+                  itemId: invalidItemId,
+                  reasoningSummary: [{ type: 'summary_text', text: 'unsafe item summary' }],
+                  reasoningContent: null,
+                },
+              },
+            },
+          ] as LanguageModelV4StreamPart[],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      },
+    });
+    const appended: AssistantMessage[] = [];
+    const connection = {
+      slug: 'alibaba-token-plan-cn',
+      providerType: 'alibaba-token-plan-cn',
+      defaultModel: 'qwen3.8-max',
+    } as const;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') appended.push(message);
+      },
+      connection,
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'question', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    const parts = appended[0]?.thinking?.parts;
+    assert.deepEqual(
+      parts?.map((part) => [
+        part.text,
+        (part.providerOptions?.makaResponses as { itemId?: unknown } | undefined)?.itemId,
+      ]),
+      [
+        ['valid summary', 'reasoning-item-a'],
+        ['unsafe item summary', undefined],
+      ],
+    );
+
+    const ctx = {
+      sessionId: 'session-1',
+      invocationId: 'inv-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      now: () => 7,
+      newId: idGenerator(),
+    } as unknown as InvocationContext;
+    const memory = createSessionEventMapMemory();
+    const runtimeContext = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
+    const recoveryModel = completionModel();
+    const recoveryBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection,
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => recoveryModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      recoveryBackend.send({
+        turnId: 'turn-2',
+        text: 'recover',
+        context: [],
+        runtimeContext,
+      }),
+    );
+
+    const prompt = compactPrompt(recoveryModel) as ModelMessage[];
+    const assistant = prompt.find(
+      (message) => message.role === 'assistant' && Array.isArray(message.content),
+    );
+    assert.ok(assistant && Array.isArray(assistant.content));
+    assert.deepEqual(
+      assistant.content
+        .filter((part) => part.type === 'reasoning')
+        .map((part) => [
+          part.text,
+          (part.providerOptions?.['alibaba-token-plan-cn'] as { itemId?: unknown } | undefined)
+            ?.itemId,
+        ]),
+      [['valid summary', 'reasoning-item-a']],
+    );
+  });
+
   test('Alibaba Responses skips legacy reasoning without durable item state', async () => {
     const foreignSummary = 'summary issued by a different provider profile';
     const model = completionModel();
