@@ -76,7 +76,6 @@ test('owned connect returns a missed election without waiting for a late candida
     const result = await connectOwnedRuntimeHostWithDependencies(
       {
         rootPath,
-        surface: 'run',
         protocol: {
           min: RUNTIME_HOST_PROTOCOL_VERSION,
           max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -132,7 +131,6 @@ test('a late owned candidate stays alive after another client adopts it', {
     const missed = await connectOwnedRuntimeHostWithDependencies(
       {
         rootPath,
-        surface: 'run',
         protocol: {
           min: RUNTIME_HOST_PROTOCOL_VERSION,
           max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -165,7 +163,6 @@ test('a late owned candidate stays alive after another client adopts it', {
     const adopted = await connectOrSpawnRuntimeHostWithDependencies(
       {
         rootPath,
-        surface: 'run',
         protocol: {
           min: RUNTIME_HOST_PROTOCOL_VERSION,
           max: RUNTIME_HOST_PROTOCOL_VERSION,
