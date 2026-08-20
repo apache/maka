@@ -30,7 +30,47 @@ test('registers pure Connection reads for replacement-Host retry', () => {
     'connections:hasSecret',
   ]);
   assert.ok(effects.has('connections:create'));
+  assert.ok(effects.has('connections:previewModels'));
   assert.ok(effects.has('connections:test'));
+});
+
+test('previews unsaved custom relay models without mutating the Connection catalog', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let previewInput: unknown;
+  let listChanges = 0;
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      previewConnectionModels: async (input: unknown) => {
+        previewInput = input;
+        return { kind: 'verified', models: [{ id: 'relay-model' }] };
+      },
+    } as never,
+    emitConnectionListChanged() {
+      listChanges += 1;
+    },
+  });
+
+  assert.deepEqual(
+    await handlers.get('connections:previewModels')?.({}, {
+      providerType: 'openai-compatible',
+      baseUrl: ' https://relay.example/v1 ',
+      apiKey: 'preview-secret',
+      requestHeaders: { 'X-Tenant': 'tenant-a' },
+    }),
+    [{ id: 'relay-model' }],
+  );
+  assert.deepEqual(previewInput, {
+    providerType: 'openai-compatible',
+    baseUrl: 'https://relay.example/v1',
+    apiKey: 'preview-secret',
+    requestHeaders: { 'X-Tenant': 'tenant-a' },
+  });
+  assert.equal(listChanges, 0);
 });
 
 test('retries connection delete after a stale revision instead of failing permanently', async () => {

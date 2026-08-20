@@ -9,6 +9,39 @@ const EXPECTED = {
 };
 
 describe('Runtime Host connection effects protocol', () => {
+  test('bounds transient custom onboarding overrides and returns only model metadata', () => {
+    const preview = request('connection.onboarding.verify', {
+      providerType: 'openai-compatible',
+      baseUrl: 'https://relay.example/v1',
+      apiKey: 'transient-secret',
+      requestHeaders: { 'X-Tenant': 'tenant-a' },
+    });
+    assert.deepEqual(decodeClientFrame(preview), preview);
+    assert.deepEqual(
+      decodeHostFrame(
+        response('connection.onboarding.verify', {
+          kind: 'verified',
+          models: [{ id: 'relay-model', contextWindow: 128_000 }],
+        }),
+      ),
+      response('connection.onboarding.verify', {
+        kind: 'verified',
+        models: [{ id: 'relay-model', contextWindow: 128_000 }],
+      }),
+    );
+    assertInvalidRequest('connection.onboarding.verify', {
+      providerType: 'openai-compatible',
+      baseUrl: 'file:///tmp/models',
+      apiKey: 'transient-secret',
+      requestHeaders: {},
+    });
+    assertInvalidResponse('connection.onboarding.verify', {
+      kind: 'verified',
+      models: [{ id: 'relay-model' }],
+      apiKey: 'forbidden',
+    });
+  });
+
   test('bounds transient onboarding secrets, models, and save selections', () => {
     const verify = request('connection.onboarding.verify', {
       providerType: 'openrouter',

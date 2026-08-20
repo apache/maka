@@ -375,6 +375,12 @@ export class DesktopRuntimeHostClient {
     return this.request("connection.models.fetch", { connectionId });
   }
 
+  previewConnectionModels(
+    input: OperationInput<"connection.onboarding.verify">,
+  ): Promise<OperationOutput<"connection.onboarding.verify">> {
+    return this.request("connection.onboarding.verify", input);
+  }
+
   testConnection(
     connectionId: string,
     modelId?: string,

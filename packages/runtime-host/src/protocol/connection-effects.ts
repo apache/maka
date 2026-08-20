@@ -5,11 +5,16 @@ import {
   decodeProviderType,
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
+  normalizeRequestHeaders,
   RuntimePolicyDomainDecodeError,
   type ConnectionVersionBasis,
   type ModelDiscoverySource,
 } from '@maka/core/runtime-policy';
-import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
+import {
+  normalizeConnectionBaseUrl,
+  type ModelInfo,
+  type ProviderType,
+} from '@maka/core/llm-connections';
 import {
   requireCount,
   requireEntityId,
@@ -67,9 +72,13 @@ export interface ConnectionTestRunInput {
 export interface ConnectionOnboardingVerifyInput {
   readonly providerType: ProviderType;
   readonly apiKey: string | null;
+  readonly baseUrl?: string;
+  readonly requestHeaders?: Readonly<Record<string, string>>;
 }
 
-export interface ConnectionOnboardingSaveInput extends ConnectionOnboardingVerifyInput {
+export interface ConnectionOnboardingSaveInput {
+  readonly providerType: ProviderType;
+  readonly apiKey: string | null;
   readonly enabledModelIds: readonly string[];
 }
 
@@ -254,16 +263,41 @@ export function decodeConnectionOnboardingSaveResult(
 export function decodeConnectionOnboardingVerifyInput(
   value: unknown,
 ): ConnectionOnboardingVerifyInput {
+  const fields = requireRecord(value, 'connection onboarding verification input');
   const input = requireExactRecord(value, 'connection onboarding verification input', [
     'providerType',
     'apiKey',
+    ...('baseUrl' in fields ? ['baseUrl'] : []),
+    ...('requestHeaders' in fields ? ['requestHeaders'] : []),
   ]);
+  let baseUrl: string | undefined;
+  if (input.baseUrl !== undefined) {
+    const normalized = normalizeConnectionBaseUrl(input.baseUrl);
+    if (!normalized.ok || normalized.value.length === 0) {
+      throw invalidProtocolFrame(
+        normalized.ok ? 'Connection onboarding base URL is empty' : normalized.error,
+      );
+    }
+    baseUrl = normalized.value;
+  }
+  let requestHeaders: Readonly<Record<string, string>> | undefined;
+  if (input.requestHeaders !== undefined) {
+    try {
+      requestHeaders = normalizeRequestHeaders(input.requestHeaders);
+    } catch (error) {
+      throw invalidProtocolFrame(
+        error instanceof Error ? error.message : 'Invalid request headers',
+      );
+    }
+  }
   return {
     providerType: decodeDomain(() => decodeProviderType(input.providerType)),
     apiKey:
       input.apiKey === null
         ? null
         : requireString(input.apiKey, 'connection onboarding API key', 64 * 1024),
+    ...(baseUrl === undefined ? {} : { baseUrl }),
+    ...(requestHeaders === undefined ? {} : { requestHeaders }),
   };
 }
 

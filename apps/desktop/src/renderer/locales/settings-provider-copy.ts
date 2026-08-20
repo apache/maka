@@ -174,6 +174,7 @@ const zhCopy = {
     saving: '保存中…', save: '保存供应商', keyRequired: (name: string) => `请填写 ${name} API Key`,
     apiKeyLabel: 'API Key', accountIdLabel: 'Cloudflare Account ID', endpointLabel: '服务地址',
     defaultModel: '默认模型', defaultModelPlaceholder: '留空即可，保存后自动拉取', defaultModelHelp: '保存后 Maka 会向该端点拉取模型目录。只有当端点不提供目录时，才需要在这里手填一个模型 ID。',
+    fetchModels: '获取模型', fetchingModels: '正在获取模型…', modelsFetchFailed: '未能获取模型', modelsFetchFallback: '你仍可在下方手动填写模型 ID。',
     ...zhCapabilitiesCopy,
   },
   oauthFlow: {
@@ -319,6 +320,7 @@ const enCopy: ProviderSettingsCopy = {
     saving: 'Saving…', save: 'Save provider', keyRequired: (name: string) => `Enter the ${name} API key`,
     apiKeyLabel: 'API key', accountIdLabel: 'Cloudflare Account ID', endpointLabel: 'Service URL',
     defaultModel: 'Default model', defaultModelPlaceholder: 'Leave empty — fetched after saving', defaultModelHelp: 'Maka fetches the model catalog from this endpoint after saving. Type a model id here only if the endpoint serves no catalog.',
+    fetchModels: 'Fetch models', fetchingModels: 'Fetching models…', modelsFetchFailed: 'Could not fetch models', modelsFetchFallback: 'You can still enter a model ID manually below.',
     ...enCapabilitiesCopy,
   },
   oauthFlow: {
