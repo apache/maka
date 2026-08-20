@@ -822,7 +822,7 @@ const providerRegistry = {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     authKind: 'api_key',
     backendKind: 'ai-sdk',
-    fallbackModels: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'],
+    fallbackModels: ['gemini-2.5-flash'],
     status: 'ready',
     protocol: 'google',
     runtimeAdapter: { kind: 'google' },
