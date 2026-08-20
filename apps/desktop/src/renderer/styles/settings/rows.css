@@ -177,10 +177,20 @@
   min-width: 0;
 }
 
+/* The remove control centres on the FIELD, not on the cell. The row is
+   `align-items: start` because the value input can grow an inline error under
+   itself and the trash must not ride down with it — so this cell states the
+   height it centres against, the same move `.settingsCapabilityGroup`'s
+   chevron makes against its title line. That height is the input's own box:
+   `--h-control-lg` IS Astryx's `--size-element-md`, which is what TextInput
+   renders at (measured 32px). The bare 2.5rem here was 40px — off the control
+   ruler entirely, per the `--h-control-*` scale's own note that 40 is the
+   toolbar tier — and centring the 28px `sm` IconButton in that 40px box
+   parked the icon 4px below the field's centre line. */
 .requestHeaderRemove {
   display: flex;
   align-items: center;
-  min-height: 2.5rem;
+  min-height: var(--h-control-lg);
 }
 
 @container settings-rows (max-width: 460px) {

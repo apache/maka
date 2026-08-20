@@ -404,6 +404,7 @@ export const test = base.extend<{
   parentRemovalWindow: Page;
   promptRailWindow: Page;
   promptRailMotionWindow: Page;
+  requestHeaderRowWindow: Page;
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
@@ -496,6 +497,19 @@ export const test = base.extend<{
       e2eFixtureScenario: 'chat-prompt-rail',
       showWindow: true,
       scrollMotion: 'smooth',
+    }, use);
+  },
+  // Settings → 模型, where `no-models` is the seeded openai-compatible relay —
+  // the connection type whose detail page owns the custom request headers
+  // editor. Shown, because what this window is for is a rendered box
+  // measurement and a throttled compositor is not a layout the user has.
+  requestHeaderRowWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '.settingsSurface',
+      e2eFixtureScenario: 'settings-models',
+      locale: 'zh',
+      showWindow: true,
     }, use);
   },
 });
