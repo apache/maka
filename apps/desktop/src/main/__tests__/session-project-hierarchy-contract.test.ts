@@ -12,16 +12,19 @@ if (!sidebarCssUrl) throw new Error('Could not locate renderer/styles/sidebar.cs
 const sidebarCss = readFileSync(sidebarCssUrl, 'utf8');
 
 describe('project-grouped session hierarchy', () => {
-  it('visually indents session rows beneath their project', () => {
+  it('aligns session titles with the project name', () => {
     const projectChildrenRule = sidebarCss.match(
       /\.maka-project-row\s*>\s*div\s*>\s*\[role=["']group["']\]\s*>\s*div\s*\{([^}]*)\}/,
     );
 
     assert.ok(projectChildrenRule, 'project children must have an explicit hierarchy rule');
+    // Astryx nests icon-less children by spacing-6 (24px) so their text meets a
+    // parent title after a 16px icon + 8px gap. Session rows already spend 8px
+    // on StatusDot in that slot, so the remaining nest is spacing-2.
     assert.match(
       projectChildrenRule[1] ?? '',
-      /padding-inline-start:\s*var\(--spacing-6\)\s*!important;/,
-      'project sessions must keep one SideNav nesting step (24px)',
+      /padding-inline-start:\s*var\(--spacing-2\)\s*!important;/,
+      'project sessions must nest by the unused 8px of the SideNav icon column',
     );
   });
 });

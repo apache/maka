@@ -42,7 +42,10 @@ test('project navigation and actions follow their visual keyboard order', async 
   ]);
   expect(projectNavigationBox).not.toBeNull();
   expect(firstSessionBox).not.toBeNull();
-  expect(firstSessionBox!.x - projectNavigationBox!.x).toBeGreaterThanOrEqual(20);
+  // Remaining nest after StatusDot occupies 8px of Astryx's 24px icon column.
+  const sessionInset = firstSessionBox!.x - projectNavigationBox!.x;
+  expect(sessionInset).toBeGreaterThanOrEqual(6);
+  expect(sessionInset).toBeLessThan(16);
 
   await expect(projectRow.locator('button button')).toHaveCount(0);
   await expect(navigation).toHaveAttribute('aria-expanded', 'true');
