@@ -25,6 +25,11 @@ import type { MakaPreparedSessionTurn } from './session-driver.js';
 
 const MAX_PENDING_FRAMES = 512;
 const MAX_PENDING_EVENTS_PER_TURN = 1_024;
+const LAG_REARM_PENDING_EVENTS = MAX_PENDING_EVENTS_PER_TURN / 2;
+const MAX_RECOVERY_ATTEMPTS_WITHOUT_LIVE_FRAME = 8;
+const RECOVERY_BACKOFF_INITIAL_MS = 25;
+const RECOVERY_BACKOFF_MAX_MS = 500;
+const RECOVERY_STABLE_AFTER_MS = 1_000;
 
 export interface RuntimeHostSessionChannelOpenResult {
   channel: RuntimeHostSessionChannel;
@@ -74,6 +79,7 @@ export class RuntimeHostSessionChannel {
   readonly #pendingResolvedInteractions: InteractionPendingSnapshot[] = [];
   readonly #pendingTerminalTurns: TerminalTurnSnapshot[] = [];
   readonly #failedSubscriptions = new WeakSet<RuntimeHostSessionSubscription>();
+  readonly #retiringSubscriptions = new WeakSet<RuntimeHostSessionSubscription>();
   #projector: RuntimeHostSessionProjector | undefined;
   #ready = false;
   #activated = false;
@@ -81,6 +87,9 @@ export class RuntimeHostSessionChannel {
   #closing = false;
   #failure: Error | undefined;
   #recoveryTask: Promise<void> | undefined;
+  #recoveryAttemptsWithoutLiveFrame = 0;
+  #recoveryAwaitingLiveFrame: RuntimeHostSessionSubscription | undefined;
+  #recoveryStableTimer: ReturnType<typeof setTimeout> | undefined;
 
   private constructor(
     subscription: RuntimeHostSessionSubscription,
@@ -156,7 +165,17 @@ export class RuntimeHostSessionChannel {
     );
     for (const event of this.#projector.seedActive(false)) this.#emit(event);
     this.#ready = true;
-    for (const frame of this.#pendingFrames.splice(0)) this.#accept(frame);
+    try {
+      for (const frame of this.#pendingFrames.splice(0)) this.#accept(frame);
+    } catch (error) {
+      if (!this.#canRecover(error)) throw error;
+      this.#failedSubscriptions.add(subscription);
+      await this.#recover(subscription);
+      if (!this.#ready) {
+        throw this.#failure ?? new Error('Runtime Host Session recovery ended before hydration');
+      }
+      return true;
+    }
     return false;
   }
 
@@ -251,6 +270,8 @@ export class RuntimeHostSessionChannel {
   async close(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
+    this.#clearRecoveryStableTimer();
+    this.#recoveryAwaitingLiveFrame = undefined;
     this.#pendingStartedTurns.clear();
     for (const queue of this.#turns.values()) queue.finish();
     await this.#subscription.close();
@@ -270,11 +291,28 @@ export class RuntimeHostSessionChannel {
           this.#pendingFrames.push(frame);
         } else {
           this.#accept(frame);
+          if (frame.kind !== 'subscription.closed') this.#observeRecoveryLiveFrame(subscription);
         }
       }
-      if (!this.#closing) throw new Error('Runtime Host Session subscription ended unexpectedly');
+      // A stream that ends without a subscription.closed frame is a broken
+      // live channel, not a terminal state: the Host may have torn the
+      // subscription down mid-recovery (e.g. slow_consumer eviction while the
+      // transcript reload was still buffering). Route it through the same
+      // resync recovery as an explicit close instead of killing the channel.
+      if (!this.#closing)
+        throw new RuntimeHostSubscriptionError(
+          'connection_closed',
+          'Runtime Host Session subscription ended unexpectedly',
+        );
     } catch (error) {
       if (this.#closing || this.#subscription !== subscription) return;
+      // A subscription retired because a turn consumer fell behind is closed
+      // deliberately; its pump must not turn that expected close into a
+      // channel failure. The guard also drops a genuine error racing the
+      // deliberate close on this pump; that is safe because the replacement
+      // subscription's own pump and recovery path re-surface any real
+      // failure through #fail.
+      if (this.#retiringSubscriptions.has(subscription)) return;
       if (this.#canRecover(error)) {
         this.#failedSubscriptions.add(subscription);
         if (!this.#ready) return;
@@ -297,6 +335,7 @@ export class RuntimeHostSessionChannel {
   #scheduleRecovery(failed: RuntimeHostSessionSubscription): void {
     if (this.#closing || this.#failure || this.#subscription !== failed || this.#recoveryTask)
       return;
+    this.#clearRecoveryStableTimer();
     const task = this.#recover(failed);
     this.#recoveryTask = task;
     void task
@@ -311,7 +350,12 @@ export class RuntimeHostSessionChannel {
   async #recover(failed: RuntimeHostSessionSubscription): Promise<void> {
     let previous = failed;
     while (!this.#closing && !this.#failure && this.#subscription === previous) {
+      if (this.#recoveryAwaitingLiveFrame === previous) {
+        this.#recoveryAwaitingLiveFrame = undefined;
+      }
       await previous.close().catch(() => undefined);
+      await this.#waitForRecoveryAttempt();
+      if (this.#closing || this.#failure || this.#subscription !== previous) return;
       let replacement: RuntimeHostSessionSubscription;
       try {
         replacement = await this.#connection.openSessionSubscription({
@@ -343,6 +387,7 @@ export class RuntimeHostSessionChannel {
         }
         if (this.#closing || this.#failure || this.#subscription !== replacement) return;
         const replacedLiveState = this.#acceptCanonicalReplacement(messages);
+        this.#recoveryAwaitingLiveFrame = replacement;
         this.#ready = true;
         for (const frame of this.#pendingFrames.splice(0)) this.#accept(frame);
         if (replacedLiveState) this.#onRecovered();
@@ -373,6 +418,11 @@ export class RuntimeHostSessionChannel {
       this.#now,
       this.#subscription.activeAssistantStreams,
     );
+    // A canonical replacement is a sequence cut. No queued event from the
+    // retired subscription may replay after the transcript/snapshot has
+    // established newer state; active, terminal, and interaction state is
+    // seeded again below from the replacement authority.
+    for (const queue of this.#turns.values()) queue.cutBacklog();
     if (!replacedLiveState) {
       for (const event of this.#projector.seedActive(false)) this.#emit(event);
       return false;
@@ -441,6 +491,46 @@ export class RuntimeHostSessionChannel {
       else this.#pendingTerminalTurns.push(root);
     }
     return true;
+  }
+
+  async #waitForRecoveryAttempt(): Promise<void> {
+    if (this.#recoveryAttemptsWithoutLiveFrame >= MAX_RECOVERY_ATTEMPTS_WITHOUT_LIVE_FRAME) {
+      throw new RuntimeHostSubscriptionError(
+        'connection_closed',
+        'Runtime Host Session subscription recovery exhausted its retry budget',
+      );
+    }
+    if (this.#recoveryAttemptsWithoutLiveFrame > 0) {
+      const delayMs = Math.min(
+        RECOVERY_BACKOFF_INITIAL_MS * 2 ** (this.#recoveryAttemptsWithoutLiveFrame - 1),
+        RECOVERY_BACKOFF_MAX_MS,
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    }
+    this.#recoveryAttemptsWithoutLiveFrame += 1;
+  }
+
+  #scheduleRecoveryStable(subscription: RuntimeHostSessionSubscription): void {
+    this.#clearRecoveryStableTimer();
+    const timer = setTimeout(() => {
+      if (!this.#closing && this.#subscription === subscription && this.#ready) {
+        this.#recoveryAttemptsWithoutLiveFrame = 0;
+      }
+      if (this.#recoveryStableTimer === timer) this.#recoveryStableTimer = undefined;
+    }, RECOVERY_STABLE_AFTER_MS);
+    timer.unref?.();
+    this.#recoveryStableTimer = timer;
+  }
+
+  #observeRecoveryLiveFrame(subscription: RuntimeHostSessionSubscription): void {
+    if (this.#recoveryAwaitingLiveFrame !== subscription) return;
+    this.#recoveryAwaitingLiveFrame = undefined;
+    this.#scheduleRecoveryStable(subscription);
+  }
+
+  #clearRecoveryStableTimer(): void {
+    if (this.#recoveryStableTimer !== undefined) clearTimeout(this.#recoveryStableTimer);
+    this.#recoveryStableTimer = undefined;
   }
 
   #canRecover(error: unknown): boolean {
@@ -525,11 +615,29 @@ export class RuntimeHostSessionChannel {
   #queue(turnId: string): SessionEventQueue {
     let queue = this.#turns.get(turnId);
     if (!queue) {
-      queue = new SessionEventQueue();
+      queue = new SessionEventQueue(() => this.#noteTurnConsumerLagging());
       this.#turns.set(turnId, queue);
       if (this.#failure) queue.fail(this.#failure);
     }
     return queue;
+  }
+
+  /**
+   * A turn consumer that cannot keep up is a slow client: retire the healthy
+   * subscription through the same recovery path a Host eviction would take so
+   * the session re-syncs from canonical state instead of dying mid-turn.
+   *
+   * Note this escalates a single lagging queue to a session-wide recovery.
+   * That is a benign superset even when the lagging queue belongs to an
+   * abandoned old turn: the resync heals every turn's state, and the
+   * per-queue lag latch plus hysteresis keep a wedged consumer from looping
+   * resubscribes.
+   */
+  #noteTurnConsumerLagging(): void {
+    if (this.#closing || this.#failure || !this.#ready) return;
+    const subscription = this.#subscription;
+    this.#retiringSubscriptions.add(subscription);
+    this.#scheduleRecovery(subscription);
   }
 
   #fail(error: unknown): void {
@@ -541,6 +649,7 @@ export class RuntimeHostSessionChannel {
 
 class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<SessionEvent> {
   readonly #items: SessionEvent[] = [];
+  readonly #onLag: () => void;
   #waiting:
     | {
         resolve(value: IteratorResult<SessionEvent>): void;
@@ -550,6 +659,11 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
   #done = false;
   #finishAfterItems = false;
   #error: unknown;
+  #lagging = false;
+
+  constructor(onLag: () => void) {
+    this.#onLag = onLag;
+  }
 
   [Symbol.asyncIterator](): AsyncIterator<SessionEvent> {
     return this;
@@ -557,7 +671,13 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
 
   next(): Promise<IteratorResult<SessionEvent>> {
     const item = this.#items.shift();
-    if (item) return Promise.resolve({ done: false, value: item });
+    if (item) {
+      // Re-arm with hysteresis: a consumer that has drained half the backlog
+      // is making progress, so a later lag episode may trigger another
+      // recovery; a wedged consumer never drains and cannot loop resubscribes.
+      if (this.#items.length <= LAG_REARM_PENDING_EVENTS) this.#lagging = false;
+      return Promise.resolve({ done: false, value: item });
+    }
     if (this.#error !== undefined) return Promise.reject(this.#error);
     if (this.#done || this.#finishAfterItems) {
       this.#done = true;
@@ -565,6 +685,9 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
     }
     if (this.#waiting)
       return Promise.reject(new Error('Session event stream already has a reader'));
+    // A canonical cut can empty a lagged queue before its consumer resumes.
+    // Waiting again proves the consumer caught up and may arm a later episode.
+    this.#lagging = false;
     return new Promise((resolve, reject) => {
       this.#waiting = { resolve, reject };
     });
@@ -579,10 +702,51 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
       return;
     }
     if (this.#items.length >= MAX_PENDING_EVENTS_PER_TURN) {
-      this.fail(new Error('Runtime Host Session event consumer is too slow'));
-      return;
+      // A consumer that falls behind must not kill the stream. Shed deltas
+      // (text/thinking ranges are healed by the next canonical resync or
+      // completion; tool_output_delta chunks are seq-deduped transient UI
+      // updates healed by the terminal tool_result and the durable
+      // transcript) and make room for every other event; the channel
+      // resubscribes to re-sync state, like the Desktop subscription owner
+      // does (#2630).
+      if (isSheddableDelta(event)) {
+        this.#noteLag();
+        return;
+      }
+      const shedIndex = this.#items.findIndex(isSheddableDelta);
+      if (shedIndex !== -1) {
+        this.#items.splice(shedIndex, 1);
+      } else if (isGuaranteedOutcome(event)) {
+        // Turn-terminal outcomes and tool results always land, even when the
+        // backlog holds no delta to evict: without a turn outcome the
+        // consumer reaches end-of-stream without a result, and without a
+        // tool_result the live tool card stays running until the durable
+        // transcript heals it. The oldest queued event is sacrificed.
+        this.#items.shift();
+      } else {
+        // A non-delta, non-outcome event with nothing sheddable to evict
+        // (e.g. a tool_call begin behind an all-control backlog) is dropped;
+        // the durable transcript heals the final state. Documented boundary
+        // for v1.
+        this.#noteLag();
+        return;
+      }
+      this.#noteLag();
     }
     this.#items.push(event);
+  }
+
+  /** Drop unseen pre-cut work, retaining an unconsumed terminal guarantee. */
+  cutBacklog(): void {
+    const terminal = this.#finishAfterItems ? this.#items.find(isTurnTerminalOutcome) : undefined;
+    this.#items.length = 0;
+    if (terminal) this.#items.push(terminal);
+  }
+
+  #noteLag(): void {
+    if (this.#lagging) return;
+    this.#lagging = true;
+    this.#onLag();
   }
 
   finish(): void {
@@ -602,6 +766,35 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
     this.#waiting?.reject(error);
     this.#waiting = undefined;
   }
+}
+
+function isSheddableDelta(event: SessionEvent): boolean {
+  // tool_output_delta is sheddable by design: its chunks are transient UI
+  // updates with a monotonic per-tool `seq` (renderers de-dupe and order by
+  // it, so a shed range leaves a gap, never corruption), and the terminal
+  // tool_result plus the durable transcript heal the tool's final output.
+  return (
+    event.type === 'text_delta' ||
+    event.type === 'thinking_delta' ||
+    event.type === 'tool_output_delta'
+  );
+}
+
+function isGuaranteedOutcome(event: SessionEvent): boolean {
+  // complete/abort/error close the turn; text/thinking completion carries the
+  // authoritative assistant accumulator; tool_result is the authoritative
+  // terminal result for its tool. Losing any of them leaves a consumer with
+  // an incomplete outcome even though the projector has already settled it.
+  return (
+    isTurnTerminalOutcome(event) ||
+    event.type === 'text_complete' ||
+    event.type === 'thinking_complete' ||
+    event.type === 'tool_result'
+  );
+}
+
+function isTurnTerminalOutcome(event: SessionEvent): boolean {
+  return event.type === 'complete' || event.type === 'abort' || event.type === 'error';
 }
 
 function sameTerminalTurn(

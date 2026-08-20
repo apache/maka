@@ -254,6 +254,9 @@ const VOLCENGINE_CODING_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
 };
 const VOLCENGINE_AGENT_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
   'ark-code-latest': agentPlanModel('Ark Code Latest', 256_000, 32_000, { vision: true }),
+  // Agent Plan currently exposes GLM-5.3 in its ark-code-latest routing catalog.
+  // The underlying model's published limits are 1M context and 128K output.
+  'glm-5.3': agentPlanModel('GLM-5.3', 1_000_000, 131_072),
   'doubao-seed-2.0-mini': agentPlanModel('Doubao Seed 2.0 Mini', 256_000, 128_000, {
     vision: true,
   }),

@@ -129,11 +129,17 @@ export async function connectOwnedRuntimeHostWithDependencies(
         random: Math.random,
       },
     );
-    const host = await launch?.spawned;
-    if (result.kind !== 'connected' || !host) {
-      if (result.kind === 'connected') await result.connection.close();
-      await host?.settle(1_000);
-      return result.kind === 'connected' ? { kind: 'failed', reason: 'existing_host' } : result;
+    if (result.kind !== 'connected') {
+      releaseOwnedLaunch(launch);
+      return result;
+    }
+    const host = await launch?.spawned.catch(() => undefined);
+    if (!host) {
+      await result.connection.close();
+      return {
+        kind: 'failed',
+        reason: launch ? 'host_unresponsive' : 'existing_host',
+      };
     }
     const ownedConnection = result.connection;
     connection = ownedConnection;
@@ -147,10 +153,20 @@ export async function connectOwnedRuntimeHostWithDependencies(
     return { kind: 'connected', connection: ownedConnection, host };
   } catch {
     await connection?.close().catch(() => undefined);
-    const host = await launch?.spawned.catch(() => undefined);
-    await host?.settle(1_000);
+    releaseOwnedLaunch(launch);
     return { kind: 'failed', reason: 'host_unresponsive' };
   }
+}
+
+function releaseOwnedLaunch(
+  launch: ReturnType<typeof launchOwnedRuntimeHostCandidate> | undefined,
+): void {
+  if (!launch) return;
+  void launch.spawned
+    .then((host) => {
+      host.releaseToEnvironment();
+    })
+    .catch(() => undefined);
 }
 
 export async function connectOrSpawnRuntimeHostWithDependencies(

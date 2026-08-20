@@ -1,4 +1,5 @@
 import {
+  isRelayProviderType,
   PROVIDER_DEFAULTS,
   providerDefaultsOf,
   validateSlug,
@@ -208,12 +209,12 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
   };
 }
 
-// Relay profiles are an openai-compatible feature: on any other provider the
+// Relay profiles are a custom OpenAI relay feature: on any other provider the
 // metadata chain is the truth, and a table here would either sit as dead
 // state or silently shadow metadata for the ungated read seams.
 function rejectForeignProfiles(providerType: ProviderType): void {
-  if (providerType !== 'openai-compatible') {
-    throw domainError('relay model profiles are only supported for openai-compatible connections');
+  if (!isRelayProviderType(providerType)) {
+    throw domainError('relay model profiles are only supported for OpenAI-compatible connections');
   }
 }
 
@@ -247,13 +248,14 @@ export function decodeRelayModelProfilesTable(
     const entry = exactRecord(
       rawEntry,
       `relay model profile for ${modelId}`,
-      ['thinkingLevels', 'vision', 'contextWindow'],
+      ['thinkingLevels', 'vision', 'contextWindow', 'serviceTier'],
       [],
     );
     const declared: {
       thinkingLevels?: readonly ThinkingLevel[];
       vision?: boolean;
       contextWindow?: number;
+      serviceTier?: 'fast';
     } = {};
     if (entry.thinkingLevels !== undefined) {
       if (!Array.isArray(entry.thinkingLevels) || entry.thinkingLevels.length === 0) {
@@ -285,6 +287,12 @@ export function decodeRelayModelProfilesTable(
         1,
         Number.MAX_SAFE_INTEGER,
       );
+    }
+    if (entry.serviceTier !== undefined) {
+      if (entry.serviceTier !== 'fast') {
+        throw domainError(`declared service tier for ${modelId} must be fast`);
+      }
+      declared.serviceTier = 'fast';
     }
     if (Object.keys(declared).length === 0) {
       throw domainError(`relay model profile for ${modelId} declares nothing`);

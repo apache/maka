@@ -547,6 +547,107 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     );
   });
 
+  test('custom Responses relays use per-model declared levels on the Responses wire', () => {
+    const declared: LlmConnection = {
+      ...conn('openai-responses-compatible', 'my-responses-relay'),
+      baseUrl: 'https://relay.example/v1',
+      models: [{ id: 'custom-reasoner', apiProtocol: 'openai-responses' }],
+      relayModelProfiles: {
+        'custom-reasoner': { thinkingLevels: ['minimal', 'low', 'medium', 'high', 'max'] },
+      },
+    };
+    assert.deepEqual(buildProviderOptions(declared, 'custom-reasoner', 'high'), {
+      openai: { store: false, forceReasoning: true, reasoningEffort: 'high' },
+    });
+    assert.deepEqual(buildProviderOptions(declared, 'custom-reasoner', 'max'), {
+      openai: { store: false, forceReasoning: true, reasoningEffort: 'max' },
+    });
+    assert.deepEqual(buildProviderOptions(declared, 'custom-reasoner', 'xhigh'), {
+      openai: { store: false, forceReasoning: true },
+    });
+  });
+
+  test('custom relays send the declared fast service tier independently of reasoning', () => {
+    const chat: LlmConnection = {
+      ...conn('openai-compatible', 'my-relay'),
+      baseUrl: 'https://relay.example/v1',
+      relayModelProfiles: { 'fast-model': { serviceTier: 'fast' } },
+    };
+    assert.deepEqual(buildProviderOptions(chat, 'fast-model'), {});
+    const responses: LlmConnection = {
+      ...conn('openai-responses-compatible', 'my-responses-relay'),
+      baseUrl: 'https://relay.example/v1',
+      models: [{ id: 'gpt-5-relay', apiProtocol: 'openai-responses' }],
+      relayModelProfiles: { 'gpt-5-relay': { serviceTier: 'fast' } },
+    };
+    assert.deepEqual(buildProviderOptions(responses, 'gpt-5-relay'), {
+      openai: { store: false, forceReasoning: true, serviceTier: 'fast' },
+    });
+    assert.deepEqual(
+      buildProviderOptions(
+        { ...conn('openai-compatible', 'my-relay'), baseUrl: 'https://relay.example/v1' },
+        'fast-model',
+      ),
+      {},
+    );
+  });
+
+  test('Fast provider options mirror the pinned OpenAI SDK model gate', () => {
+    const cases = [
+      ['gpt-4o', true],
+      ['gpt-4.1', true],
+      ['gpt-5', true],
+      ['gpt-5.1', true],
+      ['gpt-5-nano', false],
+      ['gpt-5-chat-latest', false],
+      ['o3-mini', true],
+      ['o4-mini', true],
+      ['plain-relay-id', false],
+    ] as const;
+    for (const [modelId, supported] of cases) {
+      const connection: LlmConnection = {
+        ...conn('openai-responses-compatible', 'my-responses-relay'),
+        baseUrl: 'https://relay.example/v1',
+        models: [{ id: modelId, apiProtocol: 'openai-responses' }],
+        relayModelProfiles: { [modelId]: { serviceTier: 'fast' } },
+      };
+      assert.deepEqual(buildProviderOptions(connection, modelId), {
+        openai: {
+          store: false,
+          forceReasoning: true,
+          ...(supported ? { serviceTier: 'fast' } : {}),
+        },
+      });
+    }
+  });
+
+  test('Fast reaches the Responses request body for an OpenAI-named relay model', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const modelConnection: LlmConnection = {
+      ...conn('openai-responses-compatible', 'my-responses-relay'),
+      baseUrl: 'https://relay.example/v1',
+      models: [{ id: 'gpt-5-relay', apiProtocol: 'openai-responses' }],
+      relayModelProfiles: { 'gpt-5-relay': { serviceTier: 'fast' } },
+    };
+    const model = getAIModel({
+      connection: modelConnection,
+      apiKey: 'relay-key',
+      modelId: 'gpt-5-relay',
+      fetch: async (_input, init) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(
+          JSON.stringify({ id: 'resp-1', object: 'response', model: 'gpt-5-relay', output: [] }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      },
+    });
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      providerOptions: buildProviderOptions(modelConnection, 'gpt-5-relay'),
+    });
+    assert.equal(bodies[0]?.service_tier, 'fast');
+  });
+
   test('declared relay levels reach the actual chat-completions request body', async () => {
     // Intermediate providerOptions objects matching does not prove the wire
     // carries the effort — this capture asserts the SDK's camelCase slug key

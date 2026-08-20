@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { formatGitHubOutputs, planTests } from './ci-test-plan.mjs';
@@ -159,15 +159,22 @@ test('core CI uses the Windows inventory package-script authority', () => {
   assert.doesNotMatch(workflow, /run: node scripts\/windows-test-inventory\.mjs --check/u);
 });
 
-test('CI planner contracts run before dependency setup on every change', () => {
+test('contract checks run before dependency setup and can fail the job', () => {
   const workflow = readWorkflow('ci.yml');
-  const testStepStart = workflow.indexOf('      - name: Test CI planner\n');
   const setupNodeStart = workflow.indexOf('      - uses: actions/setup-node@');
-  const testStepEnd = workflow.indexOf('\n      - ', testStepStart + 1);
 
-  assert.ok(testStepStart >= 0);
-  assert.ok(testStepStart < setupNodeStart);
-  assert.doesNotMatch(workflow.slice(testStepStart, testStepEnd), /\n\s+if:/u);
+  // Both contracts need nothing but the checkout, so they run on every change
+  // rather than behind a surface flag — and a gate that cannot fail the job is
+  // not a gate.
+  for (const name of ['Test CI planner', 'Check Windows test inventory']) {
+    const start = workflow.indexOf(`      - name: ${name}\n`);
+    assert.ok(start >= 0, name);
+    assert.ok(start < setupNodeStart, name);
+
+    const step = workflow.slice(start, workflow.indexOf('\n      - ', start + 1));
+    assert.doesNotMatch(step, /\n\s+if:/u, name);
+    assert.doesNotMatch(step, /continue-on-error/u, name);
+  }
 });
 
 test('core CI validates affected installed CLI packages on its existing runner', () => {
@@ -183,19 +190,77 @@ test('core CI validates affected installed CLI packages on its existing runner',
   assert.match(workflow, /run: npm run release:cli:smoke/u);
 });
 
-test('specialized platform workflows never create pull request jobs', () => {
+test('pull request triggers stay on an explicit allowlist', () => {
+  // Naming the lanes that must not run on pull requests only covers the ones
+  // someone remembered to name; W0 kept an unbounded trigger that way.
+  const onPullRequests = readdirSync(WORKFLOW_DIR).filter(hasPullRequestTrigger).sort();
+
+  assert.deepEqual(onPullRequests, [
+    'ci.yml',
+    'copilot-auto-review.yml',
+    'dependency-audit.yml',
+    'release-windows-check.yml',
+    'windows-sandbox-w0.yml',
+  ]);
+});
+
+test('the sandbox lane pairs its path filter with a nightly run', () => {
+  const workflow = readWorkflow('windows-sandbox-w0.yml');
+
+  // The filter is a pre-filter, not the lane's import closure, so dropping the
+  // schedule would silently lose every transitive edit it cannot match, and
+  // dropping the filter would put the whole runtime back on pull requests.
+  assert.match(workflow, /\n {2}pull_request:\n {4}paths:/u);
+  assert.match(workflow, /\n {2}schedule:/u);
+});
+
+test('specialized platform workflows stay reachable without pull requests', () => {
   const cli = readWorkflow('cli-package-validation.yml');
   const baseline = readWorkflow('windows-baseline.yml');
   const recovery = readWorkflow('windows-recovery.yml');
 
   for (const workflow of [cli, baseline, recovery]) {
-    assert.doesNotMatch(workflow, /\n  pull_request:/u);
     assert.match(workflow, /\n  workflow_dispatch:/u);
   }
   assert.match(cli, /\n  workflow_call:/u);
   assert.match(baseline, /\n  schedule:/u);
 });
 
+test('workflows never persist the job credential into the checkout', () => {
+  for (const name of readdirSync(WORKFLOW_DIR)) {
+    for (const step of checkoutSteps(name)) {
+      assert.match(step, /persist-credentials: false/u, `${name}: ${step.trim()}`);
+    }
+  }
+});
+
+const WORKFLOW_DIR = new URL('../.github/workflows/', import.meta.url);
+
 function readWorkflow(name) {
-  return readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8');
+  return readFileSync(new URL(name, WORKFLOW_DIR), 'utf8');
+}
+
+/**
+ * Reads the `on:` block only, so a workflow cannot escape a trigger contract by
+ * writing `on: [pull_request]`, and prose elsewhere in the file cannot fake one.
+ */
+function hasPullRequestTrigger(name) {
+  const withoutComments = readWorkflow(name).replaceAll(/^[ \t]*#.*$/gmu, '');
+  const triggers = withoutComments.match(/^on:(.*(?:\n(?![^\s#]).*)*)/mu)?.[1] ?? '';
+
+  return /\bpull_request(_target)?\b/u.test(triggers);
+}
+
+/**
+ * Slices each checkout step from its `uses:` line to the next step, so the
+ * assertion is per checkout: a bare one cannot be balanced out by a sibling
+ * step that opts out, or by the string appearing in a comment.
+ */
+function checkoutSteps(name) {
+  const withoutComments = readWorkflow(name).replaceAll(/^[ \t]*#.*$/gmu, '');
+
+  return (
+    withoutComments.match(/^[ \t]*- uses: actions\/checkout@.*\n(?:(?![ \t]*- )[ \t]+.*\n)*/gmu) ??
+    []
+  );
 }

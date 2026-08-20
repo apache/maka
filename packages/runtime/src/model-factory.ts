@@ -16,6 +16,7 @@ import { type RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
   resolveThinkingLevel,
+  supportsRelayFastServiceTier,
   thinkingOptionsForModel,
   thinkingVariantsForConnection,
   type ThinkingOptions,
@@ -534,6 +535,13 @@ function buildFamilyWire(
 ): SharedV4ProviderOptions {
   const { adapter, wire, reasoningReplay } = resolveModelRuntime(connection, modelId);
   const reasoningEffort = level ? (level === 'off' ? 'none' : level) : undefined;
+  const serviceTier =
+    wire === 'openai-responses' &&
+    reasoningReplay.kind === 'responses' &&
+    reasoningReplay.contract.adapter === 'openai' &&
+    supportsRelayFastServiceTier(connection.providerType, modelId)
+      ? connection.relayModelProfiles?.[modelId]?.serviceTier
+      : undefined;
   // Provider selection and reasoning continuation are independent. The OpenAI
   // provider reads its provider-options namespace; the Open Responses provider
   // consumes a provider-native reasoningEffort through the same namespace,
@@ -551,8 +559,13 @@ function buildFamilyWire(
       // sends `xhigh` to high, not max). The SDK resolves providerOptions
       // under the raw provider `name` — no camelCase alias, unlike
       // openai-compatible — so key by the same name getAIModel passes.
-      return reasoningEffort
-        ? { [runtimeProviderName(adapter, connection)]: { reasoningEffort } }
+      return reasoningEffort || serviceTier
+        ? {
+            [runtimeProviderName(adapter, connection)]: {
+              ...(reasoningEffort ? { reasoningEffort } : {}),
+              ...(serviceTier ? { serviceTier } : {}),
+            },
+          }
         : {};
     }
     return {
@@ -562,17 +575,24 @@ function buildFamilyWire(
           ? { forceReasoning: true }
           : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(serviceTier ? { serviceTier } : {}),
       },
     };
   }
-  if (!reasoningEffort) return {};
+  if (!reasoningEffort && !serviceTier) return {};
   switch (adapter.kind) {
     case 'openai-compatible':
       return {
-        [openAiCompatibleProviderOptionsKey(adapter, connection)]: { reasoningEffort },
+        [openAiCompatibleProviderOptionsKey(adapter, connection)]: {
+          ...(reasoningEffort ? { reasoningEffort } : {}),
+        },
       };
     case 'openai':
-      return { openai: { reasoningEffort } };
+      return {
+        openai: {
+          ...(reasoningEffort ? { reasoningEffort } : {}),
+        },
+      };
     case 'anthropic':
       // Anthropic-protocol models declare no `none` effort, so an off
       // choice only exists where an explicit case wires it.
