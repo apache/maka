@@ -19,6 +19,7 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 
 import {
   canonicalizeToolSet,
@@ -182,6 +183,40 @@ describe('prepared provider request capture', () => {
     assert.equal(result.requestBytes, Buffer.byteLength(result.serializedRequest, 'utf8'));
     assert.ok(result.segments.every((segment) => segment.bytes > 0));
     assert.ok(result.segments.every((segment) => /^sha256:[a-f0-9]{64}$/.test(segment.hash)));
+  });
+
+  test('summarizes file bytes before request telemetry serializes them', () => {
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]);
+    const result = requestShape.capturePreparedProviderRequest({
+      providerId: 'openai',
+      modelId: 'gpt-test',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'read this file' },
+            {
+              type: 'file',
+              data: { type: 'data', data: bytes },
+              mediaType: 'application/pdf',
+              filename: 'brief.pdf',
+            },
+          ],
+        },
+      ],
+    });
+
+    const serialized = JSON.parse(result.serializedRequest) as {
+      messages: Array<{
+        content: Array<{ data?: { data?: unknown } }>;
+      }>;
+    };
+    assert.deepEqual(serialized.messages[0]?.content[1]?.data?.data, {
+      byteLength: bytes.byteLength,
+      sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    });
+    assert.equal(result.serializedRequest.includes('"0":37'), false);
+    assert.equal(result.requestBytes, Buffer.byteLength(result.serializedRequest, 'utf8'));
   });
 
   test('names a tool schema from the payload, and only that segment kind', () => {

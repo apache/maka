@@ -102,14 +102,16 @@ import {
 } from './provider-image-overflow-recovery.js';
 
 /**
- * Image byte allowance for one turn, accumulated across its provider steps.
+ * Binary attachment allowance for one turn, accumulated across its provider
+ * steps. Decisions are cached by durable occurrence so rebuilding a request
+ * neither spends the allowance twice nor changes which attachments are sent.
  *
  * Charged while a request's content is materialized, so it belongs to the turn
  * issuing that request — never to the backend, which serves several turns.
  */
-export interface ProviderImageBudget {
-  used: number;
-  decisions: Map<string, boolean>;
+export interface ProviderAttachmentBudget {
+  used: { image: number; pdf: number; total: number };
+  decisions: Map<string, 'keep' | 'image_limit' | 'pdf_limit' | 'combined_limit'>;
 }
 
 /**
@@ -124,7 +126,7 @@ export interface ProviderImageBudget {
  */
 export interface ProviderRequestOrigin {
   runId: string | undefined;
-  imageBudget: ProviderImageBudget;
+  attachmentBudget: ProviderAttachmentBudget;
 }
 
 export interface AutomaticMemoryCompactionDispatch {
@@ -164,7 +166,7 @@ export interface AiSdkCompactionDeps {
    */
   materializeRuntimeReplayPlan: (
     plan: RuntimeEventModelReplayPlan,
-    imageBudget: ProviderImageBudget,
+    attachmentBudget: ProviderAttachmentBudget,
     checkpoint?: HistoryCompactCheckpoint,
   ) => Promise<ModelMessage[]>;
   canReplayProviderNative: (plan: RuntimeEventModelReplayPlan) => boolean;
@@ -188,7 +190,7 @@ export class AiSdkCompaction {
   }) => ProviderRequestTracker | undefined;
   private readonly materializeRuntimeReplayPlan: (
     plan: RuntimeEventModelReplayPlan,
-    imageBudget: ProviderImageBudget,
+    attachmentBudget: ProviderAttachmentBudget,
     checkpoint?: HistoryCompactCheckpoint,
   ) => Promise<ModelMessage[]>;
   private readonly canReplayProviderNative: (plan: RuntimeEventModelReplayPlan) => boolean;
@@ -997,7 +999,7 @@ export class AiSdkCompaction {
     );
     const replacementMessages = await this.materializeRuntimeReplayPlan(
       { ...replayPlan, items: replayItemsWithAnchorTail },
-      input.origin.imageBudget,
+      input.origin.attachmentBudget,
       plan.checkpoint,
     );
     // Apply the shape only when it actually shrinks the request versus the

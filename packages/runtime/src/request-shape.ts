@@ -222,9 +222,10 @@ export function capturePreparedProviderRequest(
     tools: input.tools ?? [],
     providerOptions: input.providerOptions ?? {},
   };
-  // This is the evidence body, not the hash canonicalizer: preserve the exact
-  // JSON ordering and values presented at the model-call seam.
-  const serializedRequest = JSON.stringify(payload);
+  // Persist diagnostic evidence, never a raw binary request body. `stableStringify`
+  // preserves the complete JSON-safe shape while summarizing typed bytes by
+  // length and digest before either telemetry or an artifact can observe them.
+  const serializedRequest = stableStringify(payload);
   const segments: PreparedRequestSegment[] = [];
 
   for (const [index, tool] of (input.tools ?? []).entries()) {
@@ -696,6 +697,12 @@ function canonicalize(value: unknown, parentKey?: string): unknown {
       : items;
   }
   if (value instanceof Date) return value.toISOString();
+  if (value instanceof Uint8Array) {
+    return {
+      byteLength: value.byteLength,
+      sha256: `sha256:${createHash('sha256').update(value).digest('hex')}`,
+    };
+  }
   if (!isObjectLike(value)) return String(value);
 
   const out: Record<string, unknown> = {};
