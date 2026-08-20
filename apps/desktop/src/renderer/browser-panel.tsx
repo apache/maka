@@ -34,7 +34,6 @@ const EMPTY_STATE: BrowserState = {
   canGoBack: false,
   canGoForward: false,
   loading: false,
-  favicon: null,
   secure: false,
   hasPage: false,
 };
@@ -145,13 +144,17 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
   }, [address, copy, isBrowserPanelSessionCurrent, sessionId, toast]);
 
   return (
-    <div className="maka-browser-panel" role="region" aria-label={copy.panelAria}>
+    <div
+      className="maka-browser-panel"
+      role="region"
+      aria-label={state.title ? copy.panelAriaWithTitle(state.title) : copy.panelAria}
+    >
       <Toolbar
         className="maka-browser-toolbar"
         label={copy.panelAria}
         size="sm"
         startContent={(
-          <div className="maka-browser-toolbar-start">
+          <>
             <Tooltip content={copy.back}>
               <IconButton
                 label={copy.backAria}
@@ -191,6 +194,8 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
                 isLabelHidden
                 width="100%"
                 placeholder={copy.addressPlaceholder}
+                status={state.hasPage && !state.secure ? { type: 'warning', message: copy.insecure } : undefined}
+                statusVariant="tooltip"
                 value={address}
                 onChange={setAddress}
                 onFocus={() => {
@@ -208,7 +213,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
                 }}
               />
             </div>
-          </div>
+          </>
         )}
         endContent={(
           <Tooltip content={copy.close}>
@@ -225,7 +230,6 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
       <div className="maka-browser-strip" ref={stripRef}>
         {!state.hasPage && (
           <EmptyState
-            className="maka-browser-empty"
             icon={<Globe size={ICON_SIZE.empty} aria-hidden="true" />}
             title={copy.title}
             description={copy.description}
