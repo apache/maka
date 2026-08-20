@@ -245,3 +245,27 @@ test('Alibaba Token Plan catalogs the formal Qwen3.8 model instead of its retire
     assert.equal(model?.canUseAsChatDefault, true, providerType);
   }
 });
+
+test('Alibaba (China) catalogs Qwen3.8 Max as the default model on the China endpoint', () => {
+  const providerType = 'alibaba-cn';
+  const defaults = PROVIDER_DEFAULTS[providerType];
+  assert.equal(defaults.baseUrl, 'https://dashscope.aliyuncs.com/compatible-mode/v1');
+  assert.equal(defaults.fallbackModels[0], 'qwen3.8-max');
+
+  const entries = buildConnectionModelCatalogEntries({
+    connection: {
+      slug: providerType,
+      providerType,
+      defaultModel: 'qwen3.8-max',
+      modelSource: 'fallback',
+    },
+  });
+  const model = entries.find((entry) => entry.id === 'qwen3.8-max');
+  assert.equal(model?.displayName, 'Qwen3.8 Max');
+  assert.equal(model?.contextWindow, 1_000_000);
+  assert.equal(model?.maxOutputTokens, 131_072);
+  assert.equal(model?.structuredOutput, true);
+  assert.deepEqual(model?.capabilities, { vision: true, reasoning: true, functionCalling: true });
+  assert.deepEqual(model?.modalities, { input: ['text', 'image', 'pdf'], output: ['text'] });
+  assert.equal(model?.canUseAsChatDefault, true);
+});
