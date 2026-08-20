@@ -20,7 +20,7 @@
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';
-import type { AttachmentRef, InlineReference, QuoteRef } from '@maka/core/events';
+import type { InlineReference, QuoteRef } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { StoredMessage } from '@maka/core/session';
@@ -37,7 +37,6 @@ import {
   type LiveTurnProjection,
   type NavSelection,
 } from '@maka/ui';
-import type { RendererIngestInput } from '../preload/bridge-contract.js';
 import { messageRefreshErrorMessage } from './app-shell-copy.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 import { preflightAttachmentItems } from './attachment-preflight.js';
@@ -50,37 +49,11 @@ import {
   skillInvocationDisplayText,
 } from './skill-invocation-feedback.js';
 import type { DesktopTranscriptRangeController } from './desktop-transcript-range-store.js';
-
-export type PendingAttachment = {
-  /** Unique per staged item; keys the preview cache and its cleanup, so a
-   *  preview resolving after its item left the list can never strand an
-   *  orphan entry. */
-  stagingKey: string;
-  displayName: string;
-  mimeType?: string;
-  kind: import('@maka/core/events').AttachmentRef['kind'];
-  size: number;
-  /** Composer drawer thumbnail source for image attachments. Merged in from
-   *  the preview cache only after the URL has actually decoded as an image,
-   *  so a set previewUrl always means "renderable" — anything else keeps the
-   *  named file card. */
-  previewUrl?: string;
-  source:
-    | { type: 'approval'; approvalId: string; name: string }
-    | { type: 'file'; file: File }
-    | { type: 'retained'; attachment: AttachmentRef };
-};
-
-/** Stable identity for a staged attachment across preview-URL merges. The
- *  drawer list is re-derived when a preview lands, so submitted items must
- *  be matched by their source — never by object reference. */
-export function pendingAttachmentSourceKey(attachment: PendingAttachment): unknown {
-  if (attachment.source.type === 'approval') {
-    return `approval:${attachment.source.approvalId}`;
-  }
-  if (attachment.source.type === 'file') return attachment.source.file;
-  return `retained:${JSON.stringify(attachment.source.attachment)}`;
-}
+import {
+  retainedAttachmentRefs,
+  toComposerIngestItems,
+  type PendingAttachment,
+} from './composer-attachments.js';
 
 export interface WorkspaceFileReferencePosition {
   value: string;
@@ -143,33 +116,6 @@ export interface AppShellChatActions {
   respondToUserQuestion(response: UserQuestionResponse): Promise<void>;
   refreshMessages(sessionId: string, options?: RefreshMessagesOptions): Promise<boolean>;
   retryMessages(sessionId: string): Promise<void>;
-}
-
-export function toRendererIngestItems(
-  pending: readonly PendingAttachment[],
-): RendererIngestInput[] {
-  return pending.flatMap((p) => {
-    if (p.source.type === 'retained') return [];
-    return [
-      p.source.type === 'approval'
-        ? {
-            approvalId: p.source.approvalId,
-            name: p.source.name,
-            ...(p.mimeType ? { mimeType: p.mimeType } : {}),
-          }
-        : { file: p.source.file },
-    ];
-  });
-}
-
-export function retainedAttachmentRefs(
-  pending: readonly PendingAttachment[],
-): AttachmentRef[] {
-  return pending.flatMap((item) =>
-    item.source.type === 'retained'
-      ? [structuredClone(item.source.attachment)]
-      : [],
-  );
 }
 
 export function createAppShellChatActions(deps: {
@@ -462,7 +408,7 @@ export function createAppShellChatActions(deps: {
         armTurnActive(session.id, turnId);
         const attachmentItems =
           pending && pending.length > 0
-            ? toRendererIngestItems(pending)
+            ? toComposerIngestItems(pending)
             : undefined;
         const retainedAttachments =
           pending && pending.length > 0
@@ -552,7 +498,7 @@ export function createAppShellChatActions(deps: {
       armTurnActive(sessionId, turnId);
       const attachmentItems =
         pending && pending.length > 0
-          ? toRendererIngestItems(pending)
+          ? toComposerIngestItems(pending)
           : undefined;
       const retainedAttachments =
         pending && pending.length > 0

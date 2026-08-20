@@ -31,7 +31,8 @@ import {
   TitlebarSessionIdentity,
 } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode, TurnViewModel } from '@maka/ui';
-import { AppShellTopbarActions, AppShellWorkspaceTopActions } from '../src/renderer/app-shell-chrome-actions';
+import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions';
+import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { deriveAppShellTurnPresentation } from '../src/renderer/app-shell-turn-view-model';
 import { deriveBranchBanner } from '../src/renderer/branch-banner';
@@ -399,10 +400,10 @@ function ComposedShell(props: {
             })()}
           />
         )}
-        <AppShellWorkspaceTopActions
-          workbarAvailable
-          workbarCollapsed={false}
-          onToggleWorkbar={noop}
+        <WorkbarTitlebarActions
+          available
+          collapsed={false}
+          onToggle={noop}
         />
       </header>
       <AstryxAppShell

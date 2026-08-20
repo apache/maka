@@ -25,7 +25,7 @@ import {
   removePending,
   selectPending,
   type PendingByKey,
-} from './app-shell-pending-attachments.js';
+} from './pending-items.js';
 
 /**
  * Excerpts longer than this are truncated before staging. Kept equal to the

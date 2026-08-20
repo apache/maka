@@ -18,7 +18,7 @@
  */
 
 import type { CSSProperties } from 'react';
-import type { Meta, StoryObj } from '@storybook/react-vite';
+import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { BrowserState } from '@maka/core/browser';
 import type { GitReviewSnapshot } from '@maka/core/git-review';
@@ -27,17 +27,21 @@ import type { Task } from '@maka/core/task-ledger';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
-import type {
-  DesktopSessionUsageSummary,
-  MakaBridge,
-} from '../src/preload/bridge-contract';
-import { WorkbarSurface } from '../src/renderer/features/workbar';
 import {
+  WorkbarServicesProvider,
+  WorkbarSurface,
+} from '../src/renderer/features/workbar';
+import {
+  createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
   createSessionWorkbarTabsState,
   openStaticSessionWorkbarTab,
+  terminalSessionWorkbarTabId,
+  type QuoteCompanionPanelState,
+  type SessionWorkbarTab,
+  type SessionWorkbarTabKind,
+  type WorkbarSessionUsageSummary,
 } from '../src/renderer/features/workbar/testing';
-import { withScopedMakaBridge } from './maka-bridge';
 
 // Fidelity convention (#1433): every story below names the real app path
 // that reaches it. See apps/desktop/stories/FIDELITY.md.
@@ -102,6 +106,13 @@ const TOOL_PICKER_SOURCE_SESSION: SessionSummary = {
   model: 'claude-sonnet-4-5',
   permissionMode: 'ask',
 };
+const SIDE_CHAT_SESSION: SessionSummary = {
+  ...TOOL_PICKER_SOURCE_SESSION,
+  id: 'session-workbar-side-chat',
+  name: '侧边对话',
+};
+const TERMINAL_REF = 'shell-run:storybook-terminal';
+const SIDE_CHAT_PANEL_ID = 'storybook-side-chat';
 
 // The record-file row reads `app:info`'s operationalStateDatabasePath (the
 // exact path main resolves). The short one is what a default workspace looks
@@ -514,7 +525,7 @@ const olderTrace: SessionTrace = {
   ],
 };
 
-const emptyUsageSummary: DesktopSessionUsageSummary = {
+const emptyUsageSummary: WorkbarSessionUsageSummary = {
   range: { from: NOW, to: NOW },
   totalRequests: 0,
   totalCostUsd: 0,
@@ -545,7 +556,7 @@ const emptyUsageSummary: DesktopSessionUsageSummary = {
   },
 };
 
-const populatedUsageSummary: DesktopSessionUsageSummary = {
+const populatedUsageSummary: WorkbarSessionUsageSummary = {
   range: { from: NOW, to: NOW + 43_600 },
   totalRequests: 3,
   totalCostUsd: 0.0243,
@@ -576,13 +587,13 @@ const populatedUsageSummary: DesktopSessionUsageSummary = {
   },
 };
 
-// ---- bridge --------------------------------------------------------------
+// ---- services ------------------------------------------------------------
 
 const noop = () => undefined;
 const unsubscribe = () => () => undefined;
 
 /**
- * The four bridges the workbar reads at once. Needing all of them together is
+ * The four service groups the workbar reads at once. Needing all of them together is
  * why the shell had no story before; each option below is the one fact a story
  * varies, and everything else stays on the populated default.
  */
@@ -596,9 +607,9 @@ function bridge(options: {
   context?: ContextDiagnosticsResult;
   recordFilePath?: string;
   browserState?: BrowserState;
-} = {}) {
+} = {}): Decorator {
   const browserState = options.browserState ?? EMPTY_BROWSER_STATE;
-  return withScopedMakaBridge({
+  const services = createFakeWorkbarServices({
     tasks: {
       list: async () => {
         if (options.tasksFail) throw new Error('读取任务失败');
@@ -608,21 +619,12 @@ function bridge(options: {
     },
     artifacts: {
       list: async () => artifacts,
-      get: async (id: string) => artifacts.find((record) => record.id === id) ?? null,
-      readText: async (id: string) => ({ ok: true, text: artifactText[id] ?? '' }),
+      readText: async (_sessionId: string, id: string) => ({ ok: true, text: artifactText[id] ?? '' }),
       readBinary: async () => ({ ok: false, reason: 'unsupported_mime' }),
       delete: async () => undefined,
       subscribeChanges: unsubscribe,
-    },
-    app: {
-      // The record-file row reads only operationalStateDatabasePath; the rest
-      // of AppInfo is real-IPC data no story needs, so the mock carries just
-      // the seam.
-      info: async () => ({
-        operationalStateDatabasePath: options.recordFilePath ?? DEFAULT_RECORD_FILE_PATH,
-      }),
-      openArtifactPath: async () => ({ ok: true, opened: 'artifact-patch' }),
-      saveArtifactAs: async () => ({ ok: true, saved: 'slice-9-conversation.diff' }),
+      openPath: async () => ({ ok: true, opened: 'artifact-patch' }),
+      saveAs: async () => ({ ok: true, saved: 'slice-9-conversation.diff' }),
     },
     inspector: {
       trace: async (_sessionId, cursor) =>
@@ -652,16 +654,35 @@ function bridge(options: {
         ok: true,
         data: options.context ?? { status: 'unavailable', reason: 'no_completed_request' },
       }),
-    } satisfies MakaBridge['inspector'],
-    gitReview: {
+      subscribeSessionEvents: unsubscribe,
+      getRecordFile: async () => options.recordFilePath ?? DEFAULT_RECORD_FILE_PATH,
+    },
+    review: {
       read: async () => ({
         ok: true,
         snapshot: gitReviewSnapshot,
       }),
+      subscribeSessionEvents: unsubscribe,
+    },
+    terminal: {
+      start: async () => {
+        throw new Error('Terminal stories mount an existing resource');
+      },
+      stop: async () => null,
+      attach: async () => ({
+        sessionId: SESSION_ID,
+        ref: TERMINAL_REF,
+        sequence: 1,
+        buffer: '$ npm test\r\n✓ workbar controller\r\n',
+        size: { cols: 80, rows: 24 },
+      }),
+      detach: async () => undefined,
+      write: async () => null,
+      subscribePtyData: unsubscribe,
+      subscribeResync: unsubscribe,
     },
     browser: {
-      getState: async () => browserState,
-      onState: unsubscribe,
+      setActiveSession: noop,
       setViewport: noop,
       navigate: async () => undefined,
       back: async () => undefined,
@@ -669,9 +690,41 @@ function bridge(options: {
       reload: async () => undefined,
       stop: async () => undefined,
       close: async () => undefined,
+      getState: async () => browserState,
+      subscribeState: unsubscribe,
+      subscribeLive: unsubscribe,
     },
-    sessions: { subscribeEvents: unsubscribe },
+    sideChat: {
+      listSessions: async () => [TOOL_PICKER_SOURCE_SESSION, SIDE_CHAT_SESSION],
+      listTurns: async () => [
+        {
+          turnId: 'source-turn',
+          status: 'completed',
+          partialOutputRetained: false,
+        },
+      ],
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+      branchFromTurn: async () => SIDE_CHAT_SESSION,
+      cleanupSessionCopy: async () => undefined,
+      abandonSessionCopy: async () => undefined,
+      send: async () => ({ ok: true }),
+      stop: async () => undefined,
+      steer: async () => ({ kind: 'queued' }),
+      setPermissionMode: async (_sessionId, mode) => ({
+        ...SIDE_CHAT_SESSION,
+        permissionMode: mode,
+      }),
+      regenerateTurn: async () => undefined,
+      respondToSandboxBoundary: async () => undefined,
+      respondToUserQuestion: async () => undefined,
+      subscribeEvents: unsubscribe,
+    },
   });
+  return (Story) => (
+    <WorkbarServicesProvider services={services}>
+      <Story />
+    </WorkbarServicesProvider>
+  );
 }
 
 /**
@@ -679,15 +732,41 @@ function bridge(options: {
  * column. Its 990px media query is what stacks the column in narrow windows.
  */
 function Workbar(props: {
-  tab?: 'review' | 'tasks' | 'browser' | 'files' | 'inspector';
+  tab?: SessionWorkbarTabKind;
   sourceSession?: SessionSummary;
   /** Overrides the restored column width, the way the resize handle does. */
   width?: number;
 }) {
   const emptyTabsState = createSessionWorkbarTabsState();
-  const tabsState = props.tab
-    ? openStaticSessionWorkbarTab(emptyTabsState, props.tab)
-    : emptyTabsState;
+  let tab: SessionWorkbarTab | undefined;
+  let quotes: QuoteCompanionPanelState[] | undefined;
+  if (props.tab === 'terminal') {
+    tab = {
+      id: terminalSessionWorkbarTabId(TERMINAL_REF),
+      kind: 'terminal',
+      ordinal: 1,
+      resourceRef: TERMINAL_REF,
+      ownerSessionId: SESSION_ID,
+    };
+  } else if (props.tab === 'side-chat') {
+    tab = {
+      id: `side-chat:${SIDE_CHAT_PANEL_ID}`,
+      kind: 'side-chat',
+      ordinal: 1,
+    };
+    quotes = [
+      {
+        id: SIDE_CHAT_PANEL_ID,
+        sourceSessionId: SESSION_ID,
+        quotes: [],
+      },
+    ];
+  }
+  const tabsState = tab
+    ? createSessionWorkbarTabsState([tab], tab.id)
+    : props.tab && props.tab !== 'side-chat'
+      ? openStaticSessionWorkbarTab(emptyTabsState, props.tab)
+      : emptyTabsState;
   return (
     <ToastProvider>
       <div
@@ -716,7 +795,11 @@ function Workbar(props: {
           onPinTab={noop}
           onOpenLauncher={noop}
           onRequestOpenTab={noop}
-          sourceSession={props.sourceSession}
+          quotes={quotes}
+          sourceSession={
+            props.sourceSession ??
+            (props.tab === 'side-chat' ? TOOL_PICKER_SOURCE_SESSION : undefined)
+          }
         />
       </div>
     </ToastProvider>
@@ -745,6 +828,13 @@ export const ToolPicker: Story = {
 export const Changes: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="review" />,
+};
+
+// Real path: 任务工作栏 → 终端 after Desktop has created a PTY resource. The
+// service fake hydrates the real xterm surface without an Electron bridge.
+export const Terminal: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar tab="terminal" />,
 };
 
 // Real path: sidebar → a session → 展开任务工作栏, landing on the tab the app
@@ -817,7 +907,6 @@ export const BrowserStacked: Story = {
   decorators: [bridge({ browserState: LOADED_BROWSER_STATE })],
   render: () => <Workbar tab="browser" />,
 };
-
 // Real path: 任务工作栏 → 文件, on a session whose agent wrote artifacts. The
 // count in the tab is the pane's own filtered total, reported upward.
 // The pane's empty state renders the same EmptyState as TraceEmpty below, so it
@@ -825,6 +914,13 @@ export const BrowserStacked: Story = {
 export const Files: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="files" />,
+};
+
+// Real path: 任务工作栏 → 侧边对话. The fork and transcript boundary are both
+// supplied by WorkbarServices, so the real Composer mounts without window.maka.
+export const SideChat: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar tab="side-chat" />,
 };
 
 // Real path: 任务工作栏 → 追踪, on a session that has run turns — the overview

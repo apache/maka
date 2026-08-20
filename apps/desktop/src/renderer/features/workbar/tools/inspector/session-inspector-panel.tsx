@@ -46,6 +46,7 @@ import {
   type InspectorTurnRow,
 } from './session-inspector-panel-model.js';
 import { useSessionTrace } from './use-session-trace.js';
+import { useWorkbarServices } from '../../services-context.js';
 
 /**
  * The record file is the workspace's operational-state database — the file
@@ -86,6 +87,7 @@ function splitRecordFileDisplayPath(path: string): { dir: string; name: string }
  * paragraph.
  */
 export function SessionInspectorPanel(props: { sessionId: string; active: boolean }) {
+  const { inspector } = useWorkbarServices();
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).inspector;
   const toast = useToast();
@@ -112,18 +114,18 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
   useEffect(() => {
     if (recordFile !== undefined) return;
     let mounted = true;
-    void window.maka.app
-      .info()
-      .then((info) => {
+    void inspector
+      .getRecordFile()
+      .then((path) => {
         if (mounted) {
-          setRecordFile(info.operationalStateDatabasePath);
+          setRecordFile(path);
         }
       })
       .catch(() => {});
     return () => {
       mounted = false;
     };
-  }, [recordFile]);
+  }, [inspector, recordFile]);
 
   async function copyRecordFile() {
     if (!recordFile) return;

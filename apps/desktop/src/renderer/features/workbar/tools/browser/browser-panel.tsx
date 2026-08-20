@@ -46,6 +46,7 @@ import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { getBrowserCopy, type BrowserCopy } from '../../../../locales/browser-copy';
+import { useWorkbarServices } from '../../services-context.js';
 
 const EMPTY_STATE: BrowserState = {
   url: '',
@@ -67,6 +68,7 @@ function browserAddressFailureCopy(reason: 'unsupported_scheme' | 'invalid_url',
 }
 
 export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
+  const { browser } = useWorkbarServices();
   const { sessionId, hidden } = props;
   const toast = useToast();
   const copy = getBrowserCopy(useUiLocale());
@@ -97,18 +99,18 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
       setState(next);
       if (!editingRef.current) setAddress(next.url);
     };
-    void window.maka.browser
+    void browser
       .getState(sessionId)
       .then((s) => apply(s ?? EMPTY_STATE))
       .catch(() => apply(EMPTY_STATE));
-    const off = window.maka.browser.onState((payload) => {
+    const off = browser.subscribeState((payload) => {
       if (payload.sessionId === sessionId) apply(payload.state);
     });
     return () => {
       alive = false;
       off();
     };
-  }, [sessionId]);
+  }, [browser, sessionId]);
 
   // Mirror the strip's on-screen rect to main every animation frame while it is
   // showable. Position shifts on window resize and sidebar drags even when the
@@ -116,9 +118,8 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
   // per frame is negligible and the IPC only fires when the rect changes.
   const showView = !hidden && state.hasPage;
   useEffect(() => {
-    // Captured because this passive cleanup can run after a bridge host
-    // (Storybook's scoped decorator) has already torn `window.maka` down.
-    const { browser } = window.maka;
+    // Capture the injected capability because this passive cleanup may run
+    // after its provider has started tearing down the host composition.
     if (!showView) {
       browser.setViewport({ sessionId, rect: null });
       return;
@@ -147,7 +148,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
       cancelAnimationFrame(raf);
       browser.setViewport({ sessionId, rect: null });
     };
-  }, [sessionId, showView]);
+  }, [browser, sessionId, showView]);
 
   const go = useCallback(() => {
     const result = normalizeBrowserAddressInput(address);
@@ -158,7 +159,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
       return;
     }
     const ownerSessionId = sessionId;
-    void window.maka.browser.navigate(ownerSessionId, result.url).catch(() => {
+    void browser.navigate(ownerSessionId, result.url).catch(() => {
       if (isBrowserPanelSessionCurrent(ownerSessionId)) {
         toast.error(
           copy.navigationFailed,
@@ -189,7 +190,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
                 variant="ghost"
                 size="sm"
                 isDisabled={!state.canGoBack}
-                onClick={() => void window.maka.browser.back(sessionId)}
+                onClick={() => void browser.back(sessionId)}
               />
             </Tooltip>
             <Tooltip content={copy.forward}>
@@ -199,7 +200,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
                 variant="ghost"
                 size="sm"
                 isDisabled={!state.canGoForward}
-                onClick={() => void window.maka.browser.forward(sessionId)}
+                onClick={() => void browser.forward(sessionId)}
               />
             </Tooltip>
             <Tooltip content={state.loading ? copy.stop : copy.refresh}>
@@ -210,7 +211,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
                 size="sm"
                 isDisabled={!state.hasPage && !state.loading}
                 onClick={() =>
-                  state.loading ? void window.maka.browser.stop(sessionId) : void window.maka.browser.reload(sessionId)
+                  state.loading ? void browser.stop(sessionId) : void browser.reload(sessionId)
                 }
               />
             </Tooltip>
@@ -249,7 +250,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
               icon={<X size={ICON_SIZE.chrome} aria-hidden />}
               variant="ghost"
               size="sm"
-              onClick={() => void window.maka.browser.close(sessionId)}
+              onClick={() => void browser.close(sessionId)}
             />
           </Tooltip>
         )}

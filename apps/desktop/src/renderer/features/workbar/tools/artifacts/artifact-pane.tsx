@@ -23,8 +23,7 @@
  * Responsibilities — and the five review gates that drive them:
  *
  *  1. **Path-safety boundary**: this component never assembles absolute
- *     paths. It only calls `window.maka.artifacts.{list,readText,readBinary,
- *     delete,subscribeChanges}` and `window.maka.app.openArtifactPath`. The
+ *     paths. It only calls the injected Artifacts service. The
  *     renderer doesn't even *see* `{workspaceRoot}/artifacts/…` — main
  *     does the realpath prefix check before exposing anything.
  *
@@ -81,6 +80,7 @@ import { nextArtifactListAction } from './artifact-list-keyboard';
 import { filterUserVisibleArtifacts } from './artifact-visibility';
 import { openPathFailureCopy } from '../../../../open-path';
 import { getArtifactCopy, type ArtifactCopy } from '../../../../locales/artifact-copy';
+import { useWorkbarServices } from '../../services-context.js';
 
 export function ArtifactPane(props: {
   sessionId: string;
@@ -88,6 +88,7 @@ export function ArtifactPane(props: {
   onDismiss?: () => void;
 }) {
   const { sessionId } = props;
+  const { artifacts } = useWorkbarServices();
   const toast = useToast();
   const locale = useUiLocale();
   const copy = getArtifactCopy(locale);
@@ -142,7 +143,7 @@ export function ArtifactPane(props: {
       return;
     }
     try {
-      const next = await window.maka.artifacts.list(sessionId, {
+      const next = await artifacts.list(sessionId, {
         includeDeleted: true,
       });
       if (artifactPaneMountedRef.current && requestSeq === artifactListRequestSeqRef.current) {
@@ -164,7 +165,7 @@ export function ArtifactPane(props: {
         }
       }
     }
-  }, [copy, locale, sessionId, toast]);
+  }, [artifacts, copy, locale, sessionId, toast]);
 
   useEffect(() => {
     void refresh();
@@ -173,7 +174,7 @@ export function ArtifactPane(props: {
     // backend emits `{ reason: 'created' | 'deleted' | 'purged' }` on the
     // `artifacts:changed` channel; we just re-list since the list is bounded
     // (one session's worth) and the metadata is already in memory on main.
-    const unsubscribe = window.maka.artifacts.subscribeChanges((event) => {
+    const unsubscribe = artifacts.subscribeChanges((event) => {
       if (event.sessionId === sessionId) {
         void refresh();
       }
@@ -182,7 +183,7 @@ export function ArtifactPane(props: {
       artifactListRequestSeqRef.current += 1;
       unsubscribe();
     };
-  }, [sessionId, refresh]);
+  }, [artifacts, sessionId, refresh]);
 
   const activeRecords = useMemo(
     () => (recordsSessionId === sessionId ? filterUserVisibleArtifacts(records) : []),
@@ -263,7 +264,7 @@ export function ArtifactPane(props: {
   async function openInFinder(artifactId: string) {
     const actionSessionId = sessionId;
     try {
-      const result = await window.maka.app.openArtifactPath(sessionId, artifactId);
+      const result = await artifacts.openPath(sessionId, artifactId);
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
       if (!result.ok) {
         toast.error(
@@ -291,9 +292,9 @@ export function ArtifactPane(props: {
     const record = activeRecords.find((entry) => entry.id === artifactId);
     if (!record || !isTextKind(record.kind)) return;
     const actionSessionId = sessionId;
-    let result: Awaited<ReturnType<typeof window.maka.artifacts.readText>>;
+    let result: Awaited<ReturnType<typeof artifacts.readText>>;
     try {
-      result = await window.maka.artifacts.readText(sessionId, artifactId);
+      result = await artifacts.readText(sessionId, artifactId);
     } catch (error) {
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
       toast.error(
@@ -327,7 +328,7 @@ export function ArtifactPane(props: {
   async function saveAs(artifactId: string) {
     const actionSessionId = sessionId;
     try {
-      const result = await window.maka.app.saveArtifactAs(sessionId, artifactId);
+      const result = await artifacts.saveAs(sessionId, artifactId);
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
       if (result.ok) {
         const record = activeRecords.find((entry) => entry.id === artifactId);
@@ -366,7 +367,7 @@ export function ArtifactPane(props: {
     if (!ok) return;
     if (!isArtifactActionSurfaceActive(actionSessionId)) return;
     try {
-      await window.maka.artifacts.delete(sessionId, artifactId);
+      await artifacts.delete(sessionId, artifactId);
       await refresh();
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
       toast.success(copy.pane.deleted(name));

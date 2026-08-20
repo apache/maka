@@ -90,6 +90,7 @@ import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion } from './chat-composer-region';
 import {
   WorkbarHost,
+  WorkbarTitlebarActions,
   applyCompanionForkVisibilityEvent,
   consumeCompanionInitialPrompt,
   consumeCompanionQuoteSnapshot,
@@ -103,6 +104,7 @@ import {
   terminalSessionWorkbarTabId,
   useSideConversationWorkspace,
   useWorkbarLayoutState,
+  useWorkbarServices,
   type SessionWorkbarPlacement,
   type SessionWorkbarTab,
   type SessionWorkbarTabKind,
@@ -167,7 +169,7 @@ import {
 } from './session-list-layout';
 import { modelSetupToastCopy } from './model-connection-errors';
 import type { AppShellCommandListOptions } from './app-shell-command-actions';
-import { AppShellTopbarActions, AppShellWorkspaceTopActions } from './app-shell-chrome-actions';
+import { AppShellTopbarActions } from './app-shell-chrome-actions';
 import { updateReminderFromStatus } from './app-shell-app-update';
 import { useBuildStamp } from './app-shell-build-stamp';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
@@ -190,10 +192,12 @@ import {
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
 import {
   createAppShellChatActions,
-  retainedAttachmentRefs,
-  toRendererIngestItems,
   type WorkspaceFileReferencePosition,
 } from './app-shell-chat-actions';
+import {
+  retainedAttachmentRefs,
+  toComposerIngestItems,
+} from './composer-attachments';
 import { createAppShellTurnActions } from './app-shell-turn-actions';
 import {
   abandonTurnRevisionCopyAttempt,
@@ -225,7 +229,7 @@ import {
 } from './live-content-seed';
 import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults';
 import { useKeyedPendingRegistry } from './use-pending-action-registry';
-import { useAppShellComposerAttachments } from './use-app-shell-composer-attachments';
+import { useComposerAttachments } from './use-composer-attachments';
 import { useAppShellComposerQuotes } from './use-app-shell-composer-quotes';
 import { useComposerMentions } from './use-composer-mentions';
 import { useAppShellSessionWorkspace } from './use-app-shell-session-workspace';
@@ -379,6 +383,7 @@ function AppShellContent({
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
   setUiLocalePreference: Dispatch<SetStateAction<UiLocalePreference>>;
 }) {
+  const { sideChat: sideChatService } = useWorkbarServices();
   const toastApi = useToast();
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
   const updateInstallInFlightRef = useRef(false);
@@ -440,9 +445,10 @@ function AppShellContent({
     restoreAttachments,
     removeAttachment,
     clearSubmittedAttachments,
-  } = useAppShellComposerAttachments({
+  } = useComposerAttachments({
     draftKey: attachmentDraftKey,
     toastApi,
+    service: window.maka.attachments,
   });
   const {
     pendingQuotes,
@@ -768,8 +774,8 @@ function AppShellContent({
   useLayoutEffect(() => {
     if (companionRecoveryStartedRef.current) return;
     companionRecoveryStartedRef.current = true;
-    void recoverOrphanedCompanionCopies(window.maka.sessions);
-  }, []);
+    void recoverOrphanedCompanionCopies(sideChatService);
+  }, [sideChatService]);
   const onCompanionForkVisibilityChange = useCallback(
     (event: Parameters<typeof applyCompanionForkVisibilityEvent>[1]) =>
       setHiddenCompanionForkIds((current) =>
@@ -2298,7 +2304,7 @@ function AppShellContent({
   ): Promise<boolean> {
     const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
     const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
-    const attachmentItems = pending ? toRendererIngestItems(pending) : [];
+    const attachmentItems = pending ? toComposerIngestItems(pending) : [];
     const retainedAttachments = pending ? retainedAttachmentRefs(pending) : [];
     try {
       const result = await window.maka.sessions.enqueue(
@@ -3207,10 +3213,10 @@ function AppShellContent({
               />
             )}
             {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
-              <AppShellWorkspaceTopActions
-                workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
-                workbarCollapsed={workbarCollapsed}
-                onToggleWorkbar={toggleWorkbar}
+              <WorkbarTitlebarActions
+                available={navSelection.section === 'sessions' && Boolean(activeId)}
+                collapsed={workbarCollapsed}
+                onToggle={toggleWorkbar}
               />
             )}
           </>

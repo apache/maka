@@ -33,9 +33,9 @@ import {
 } from '@maka/ui';
 import type { SessionSummary } from '@maka/core/session';
 import { useQuoteCompanion } from './use-quote-companion';
-import { useAppShellComposerAttachments } from '../../../../use-app-shell-composer-attachments';
+import { useComposerAttachments } from '../../../../use-composer-attachments';
 import { preflightAttachmentItems } from '../../../../attachment-preflight';
-import { toRendererIngestItems } from '../../../../app-shell-chat-actions';
+import { toComposerIngestItems } from '../../../../composer-attachments';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
 import { deriveTurnFooterActions } from '../../../../turn-footer-actions';
 import type {
@@ -45,6 +45,7 @@ import type {
 } from './quote-companion-panel-state';
 import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
 import { readScrollMotionBehavior } from '../../../../scroll-motion-policy';
+import { useWorkbarServices } from '../../services-context.js';
 
 /**
  * The side-conversation workbar tab: a transient read-only fork of the main session.
@@ -78,6 +79,7 @@ export function QuoteCompanionPanel(props: {
   onPromptAccepted?: (panelId: string, prompt: string) => void;
   onActivityStateChange?: (panelId: string, active: boolean) => void;
 }) {
+  const { attachments } = useWorkbarServices();
   const locale = useUiLocale();
   const toast = useToast();
   const copy = getDesktopConversationCopy(locale).quoteCompanion;
@@ -90,7 +92,11 @@ export function QuoteCompanionPanel(props: {
     attachFilePaths,
     removeAttachment,
     clearSubmittedAttachments,
-  } = useAppShellComposerAttachments({ draftKey, toastApi: toast });
+  } = useComposerAttachments({
+    draftKey,
+    toastApi: toast,
+    service: attachments,
+  });
   const companion = useQuoteCompanion({
     panelId: props.panelId,
     pendingQuotes: props.quotes,
@@ -242,7 +248,7 @@ export function QuoteCompanionPanel(props: {
                 const accepted = await companion.send(
                   text,
                   pendingAttachments.length > 0
-                    ? toRendererIngestItems(pendingAttachments)
+                    ? toComposerIngestItems(pendingAttachments)
                     : undefined,
                 );
                 if (accepted) {

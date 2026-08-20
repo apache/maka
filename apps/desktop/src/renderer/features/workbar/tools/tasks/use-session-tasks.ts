@@ -22,6 +22,7 @@ import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/c
 import { type Task } from '@maka/core/task-ledger';
 import { useUiLocale } from '@maka/ui';
 import { getShellRemainingCopy } from '../../../../locales/shell-remaining-copy.js';
+import { useWorkbarServices } from '../../services-context.js';
 
 interface SessionTaskSnapshot {
   sessionId?: string;
@@ -36,6 +37,7 @@ const EMPTY_SNAPSHOT: SessionTaskSnapshot = {
 };
 
 export function useSessionTasks(sessionId: string | undefined): SessionTaskSnapshot & { retry: () => void } {
+  const { tasks: tasksService } = useWorkbarServices();
   const locale = useUiLocale();
   const copy = getShellRemainingCopy(locale).tasks;
   const revisionRef = useRef(0);
@@ -48,7 +50,7 @@ export function useSessionTasks(sessionId: string | undefined): SessionTaskSnaps
       tasks: preserveTasks && current.sessionId === targetSessionId ? current.tasks : [],
       loading: true,
     }));
-    void window.maka.tasks.list(targetSessionId).then(
+    void tasksService.list(targetSessionId).then(
       (tasks) => {
         if (revision !== revisionRef.current) return;
         setSnapshot({ sessionId: targetSessionId, tasks, loading: false });
@@ -65,7 +67,7 @@ export function useSessionTasks(sessionId: string | undefined): SessionTaskSnaps
         }));
       },
     );
-  }, [copy.loadFailed, locale]);
+  }, [copy.loadFailed, locale, tasksService]);
 
   useEffect(() => {
     revisionRef.current += 1;
@@ -73,7 +75,7 @@ export function useSessionTasks(sessionId: string | undefined): SessionTaskSnaps
       setSnapshot(EMPTY_SNAPSHOT);
       return;
     }
-    const unsubscribe = window.maka.tasks.subscribeChanges((event) => {
+    const unsubscribe = tasksService.subscribeChanges((event) => {
       if (event.sessionId === sessionId) load(sessionId, true);
     });
     load(sessionId, false);
@@ -81,7 +83,7 @@ export function useSessionTasks(sessionId: string | undefined): SessionTaskSnaps
       revisionRef.current += 1;
       unsubscribe();
     };
-  }, [load, sessionId]);
+  }, [load, sessionId, tasksService]);
 
   const retry = useCallback(() => {
     if (sessionId) load(sessionId, true);

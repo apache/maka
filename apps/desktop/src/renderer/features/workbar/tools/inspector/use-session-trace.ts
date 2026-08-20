@@ -26,17 +26,19 @@ import {
 } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type {
-  DesktopSessionTracePage,
-  DesktopSessionUsageSummary,
-} from '../../../../../preload/bridge-contract.js';
+  WorkbarInspectorService,
+  WorkbarSessionTracePage,
+  WorkbarSessionUsageSummary,
+} from '../../ports.js';
 import {
   createRefreshCoalescer,
   createTraceRefreshCoalescer,
 } from '../../../../session-trace-refresh.js';
+import { useWorkbarServices } from '../../services-context.js';
 
 interface SessionTraceState {
   sessionId?: string;
-  tracePages?: readonly DesktopSessionTracePage[];
+  tracePages?: readonly WorkbarSessionTracePage[];
   /**
    * What the context is made of right now, from the Host operation that owns
    * that question (#2323). Read on the same signal as the trace but kept
@@ -44,7 +46,7 @@ interface SessionTraceState {
    * answer it must not blank the causal record beside it.
    */
   context?: ContextDiagnosticsResult;
-  summary?: DesktopSessionUsageSummary;
+  summary?: WorkbarSessionUsageSummary;
   loading: boolean;
   summaryLoading?: boolean;
   summaryError?: boolean;
@@ -83,12 +85,13 @@ export function useSessionTrace(
   // UI package behind it.
   copy: { loadFailed: string; locale: UiLocale },
 ): SessionTraceSnapshot & { retry: () => void; loadEarlier: () => void } {
+  const { inspector } = useWorkbarServices();
   const traceRevisionRef = useRef(0);
   const summaryRevisionRef = useRef(0);
   const contextRevisionRef = useRef(0);
   const desiredPageCountRef = useRef<{ sessionId: string; count: number } | undefined>(undefined);
   const traceWindowRef = useRef<
-    { sessionId: string; pages: readonly DesktopSessionTracePage[] } | undefined
+    { sessionId: string; pages: readonly WorkbarSessionTracePage[] } | undefined
   >(undefined);
   const [state, setState] = useState<SessionTraceState>(EMPTY_STATE);
 
@@ -110,6 +113,7 @@ export function useSessionTrace(
             },
       );
       void readTracePageWindow(
+        inspector,
         targetSessionId,
         pageCount,
         copy.loadFailed,
@@ -147,7 +151,7 @@ export function useSessionTrace(
         },
       );
     },
-    [copy.loadFailed, copy.locale],
+    [copy.loadFailed, copy.locale, inspector],
   );
 
   const readEarlierPage = useCallback(
@@ -160,7 +164,7 @@ export function useSessionTrace(
       );
       void (async () => {
         try {
-          const result = await window.maka.inspector.trace(targetSessionId, requestCursor);
+          const result = await inspector.trace(targetSessionId, requestCursor);
           if (revision !== traceRevisionRef.current) return;
           const loaded = traceWindowRef.current;
           if (loaded?.sessionId !== targetSessionId) return;
@@ -204,7 +208,7 @@ export function useSessionTrace(
         }
       })();
     },
-    [copy.loadFailed, copy.locale],
+    [copy.loadFailed, copy.locale, inspector],
   );
 
   const readSummary = useCallback((targetSessionId: string) => {
@@ -214,7 +218,7 @@ export function useSessionTrace(
           ? { ...current, summaryLoading: true, summaryError: undefined }
           : { sessionId: targetSessionId, loading: false, summaryLoading: true },
       );
-      void window.maka.inspector.summary(targetSessionId).then(
+      void inspector.summary(targetSessionId).then(
         (result) => {
           if (summaryRevision !== summaryRevisionRef.current) return;
           setState((current) =>
@@ -243,14 +247,14 @@ export function useSessionTrace(
           );
         },
       );
-    }, []);
+    }, [inspector]);
 
   const readContext = useCallback((targetSessionId: string) => {
       const contextRevision = ++contextRevisionRef.current;
       // Enrichment, and read as such: the context snapshot has its own owner
       // and its own failure modes, so it lands when it lands and its absence
       // costs the composition block, never the trace.
-      void window.maka.inspector.context(targetSessionId).then(
+      void inspector.context(targetSessionId).then(
         (result) => {
           if (contextRevision !== contextRevisionRef.current) return;
           setState((current) =>
@@ -265,7 +269,7 @@ export function useSessionTrace(
           // would report "no composition" for a read that simply failed.
         },
       );
-    }, []);
+    }, [inspector]);
 
   const load = useCallback(
     (targetSessionId: string) => {
@@ -306,10 +310,10 @@ export function useSessionTrace(
       schedule: (callback, delayMs) => setTimeout(callback, delayMs),
       cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
     });
-    const unsubscribe = window.maka.sessions.subscribeEvents(sessionId, (event) => {
+    const unsubscribe = inspector.subscribeSessionEvents(sessionId, (event) => {
       traceCoalescer.observe(event);
     });
-    const unsubscribeUsage = window.maka.inspector.subscribeUsageChanges(sessionId, () =>
+    const unsubscribeUsage = inspector.subscribeUsageChanges(sessionId, () =>
       summaryCoalescer.request(),
     );
     load(sessionId);
@@ -322,7 +326,7 @@ export function useSessionTrace(
       unsubscribe();
       unsubscribeUsage();
     };
-  }, [active, load, readContext, readSummary, readTraceWindow, sessionId]);
+  }, [active, inspector, load, readContext, readSummary, readTraceWindow, sessionId]);
 
   const retry = useCallback(() => {
     if (sessionId) load(sessionId);
@@ -352,16 +356,17 @@ export function useSessionTrace(
 }
 
 async function readTracePageWindow(
+  inspector: WorkbarInspectorService,
   sessionId: string,
   pageCount: number,
   loadFailed: string,
   isCurrent: () => boolean,
-): Promise<DesktopSessionTracePage[]> {
-  const pages: DesktopSessionTracePage[] = [];
+): Promise<WorkbarSessionTracePage[]> {
+  const pages: WorkbarSessionTracePage[] = [];
   const seen = new Set<string>();
   let requestCursor: string | null = null;
   while (pages.length < pageCount) {
-    const result = await window.maka.inspector.trace(
+    const result = await inspector.trace(
       sessionId,
       requestCursor === null ? undefined : requestCursor,
     );
@@ -377,6 +382,6 @@ async function readTracePageWindow(
   return pages;
 }
 
-function mergeSessionTracePages(pages: readonly DesktopSessionTracePage[]): SessionTrace {
+function mergeSessionTracePages(pages: readonly WorkbarSessionTracePage[]): SessionTrace {
   return mergeSessionTraces(pages.map((page) => page.trace));
 }

@@ -32,6 +32,7 @@ import { type GitReviewReadResult } from '@maka/core/git-review';
 import { DiffCodePreview, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, GitBranch } from '@maka/ui/icons';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy';
+import { useWorkbarServices } from '../../services-context.js';
 
 const REVIEW_FILE_PAGE_SIZE = 20;
 const REVIEW_DIFF_LINE_CAP = 500;
@@ -52,6 +53,7 @@ export function SessionReviewPanel(props: {
   sessionId: string;
   active: boolean;
 }) {
+  const { review } = useWorkbarServices();
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).reviewPanel;
   const [gitResult, setGitResult] = useState<GitReviewReadResult | null>(null);
@@ -65,7 +67,7 @@ export function SessionReviewPanel(props: {
     setLoading(true);
     setError(null);
     try {
-      const nextGit = await window.maka.gitReview.read({
+      const nextGit = await review.read({
         sessionId: props.sessionId,
         source: 'branch',
       });
@@ -82,12 +84,12 @@ export function SessionReviewPanel(props: {
     } finally {
       if (revision === revisionRef.current) setLoading(false);
     }
-  }, [copy.loadFailed, locale, props.sessionId]);
+  }, [copy.loadFailed, locale, props.sessionId, review]);
 
   useEffect(() => {
     if (!props.active) return;
     let timer: number | undefined;
-    const unsubscribe = window.maka.sessions.subscribeEvents(
+    const unsubscribe = review.subscribeSessionEvents(
       props.sessionId,
       (event) => {
         if (event.type !== 'tool_result' && event.type !== 'complete') return;
@@ -109,7 +111,7 @@ export function SessionReviewPanel(props: {
       document.removeEventListener('visibilitychange', refreshAfterExternalChange);
       unsubscribe();
     };
-  }, [load, props.active, props.sessionId]);
+  }, [load, props.active, props.sessionId, review]);
 
   const gitSnapshot = gitResult?.ok ? gitResult.snapshot : null;
   const gitFiles = gitSnapshot?.files ?? [];

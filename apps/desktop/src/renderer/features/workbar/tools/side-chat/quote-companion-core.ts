@@ -29,7 +29,10 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { QuoteRef, SessionEvent } from '@maka/core/events';
 import type { SessionSummary, TurnRecord } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { RendererIngestInput } from '../../../../../preload/bridge-contract.js';
+import type {
+  SideChatSessionPort,
+  WorkbarIngestInput,
+} from '../../ports.js';
 import {
   acquireSessionCopyAttempt,
   abandonSessionCopyAttempt,
@@ -40,41 +43,6 @@ import {
   type SessionCopyAttemptKey,
 } from '../../../../session-copy-attempt.js';
 import { sessionEventErrorMessage } from '../../../../model-connection-errors.js';
-
-/** `sessions.send` resolves (does not throw) with this shape when the run was
- *  not actually started — e.g. an unresolved `/skill:...` invocation. */
-type CompanionSendResult = { ok: true } | { ok: false; reason?: string };
-
-/**
- * The subset of the sessions bridge the quote companion drives. Extracted so the
- * fork-creation / guard / send orchestration can be unit-tested with a fake in
- * place of `window.maka.sessions` (the React hook stays a thin shell).
- */
-export interface CompanionSessionApi {
-  listTurns(sessionId: string): Promise<TurnRecord[]>;
-  branchFromTurn(
-    sessionId: string,
-    input: {
-      sourceTurnId: string;
-      name?: string;
-      copyId: string;
-      sideConversation?: boolean;
-    },
-  ): Promise<SessionSummary>;
-  cleanupSessionCopy(sessionId: string): Promise<void>;
-  abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
-  stop(sessionId: string): Promise<void>;
-  send(
-    sessionId: string,
-    command: {
-      type: 'send';
-      turnId: string;
-      text: string;
-      quotes?: QuoteRef[];
-      attachmentItems?: RendererIngestInput[];
-    },
-  ): Promise<CompanionSendResult>;
-}
 
 /** Structured failure reasons the renderer localizes (no user-facing strings in
  *  core). `fork_setup_failed`: reading the source boundary or creating the fork
@@ -105,7 +73,7 @@ export function createCompanionDismissalGuard(): CompanionDismissalGuard {
 }
 
 export interface EnsureCompanionForkDeps {
-  api: CompanionSessionApi;
+  api: SideChatSessionPort;
   sourceSession: SessionSummary;
   panelId: string;
   name: string;
@@ -134,7 +102,7 @@ function companionCopyAttemptKey(
 }
 
 export async function abandonPendingCompanionCopy(
-  api: CompanionSessionApi,
+  api: SideChatSessionPort,
   sourceSessionId: string,
   panelId: string,
 ): Promise<boolean> {
@@ -152,7 +120,7 @@ export async function abandonPendingCompanionCopy(
 }
 
 export async function recoverOrphanedCompanionCopies(
-  api: CompanionSessionApi,
+  api: SideChatSessionPort,
 ): Promise<void> {
   const attempts = listSessionCopyAttempts('quote-companion:');
   await Promise.all(
@@ -169,7 +137,7 @@ export async function recoverOrphanedCompanionCopies(
 }
 
 export async function cleanupCompanionCopy(
-  api: CompanionSessionApi,
+  api: SideChatSessionPort,
   sourceSessionId: string,
   panelId: string,
   companionSessionId: string,
@@ -187,7 +155,7 @@ export async function cleanupCompanionCopy(
 }
 
 export async function dismissCompanionCopy(
-  api: CompanionSessionApi,
+  api: SideChatSessionPort,
   sourceSessionId: string,
   panelId: string,
   companionSessionId: string,
@@ -315,7 +283,7 @@ export interface PerformCompanionTurnDeps extends EnsureCompanionForkDeps {
   turnId: string;
   text: string;
   quotes: QuoteRef[] | undefined;
-  attachmentItems?: RendererIngestInput[];
+  attachmentItems?: WorkbarIngestInput[];
   /** Fired once a fork is ready, so the caller can commit it. */
   onForkCommitted: (session: SessionSummary) => void;
   /** Fired right before the send — the caller arms the optimistic live turn here. */

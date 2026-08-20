@@ -28,10 +28,10 @@ import { useUiLocale } from '@maka/ui';
 import { ICON_SIZE, Terminal as TerminalIcon } from '@maka/ui/icons';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
-import '@xterm/xterm/css/xterm.css';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy';
 import { SessionTerminalHydration } from './session-terminal-hydration';
 import { suppressTerminalQueryReplies } from './session-terminal-query';
+import { useWorkbarServices } from '../../services-context.js';
 
 function terminalTheme(element: HTMLElement) {
   const styles = getComputedStyle(element);
@@ -51,6 +51,7 @@ export function SessionTerminalPanel(props: {
   terminalRef: string | null;
   active: boolean;
 }) {
+  const { terminal: terminalService } = useWorkbarServices();
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).terminalPanel;
   const hostRef = useRef<HTMLDivElement>(null);
@@ -108,7 +109,7 @@ export function SessionTerminalPanel(props: {
       const live = hydration.accept(event);
       if (live) terminal.write(live.data);
     };
-    const unsubscribe = window.maka.shellRuns.subscribePtyData((event) => {
+    const unsubscribe = terminalService.subscribePtyData((event) => {
       if (
         event.sessionId !== props.sessionId ||
         event.ref !== props.terminalRef ||
@@ -119,7 +120,7 @@ export function SessionTerminalPanel(props: {
       writeEvent(event);
     });
     const hydrate = (epoch: number) => {
-      void window.maka.shellRuns
+      void terminalService
         .attach({ sessionId: props.sessionId, ref: props.terminalRef! })
         .then((snapshot) => {
           if (disposed || !hydration.isCurrent(epoch)) return;
@@ -147,13 +148,13 @@ export function SessionTerminalPanel(props: {
           );
         });
     };
-    const unsubscribeResync = window.maka.shellRuns.subscribeResync((event) => {
+    const unsubscribeResync = terminalService.subscribeResync((event) => {
       if (disposed || event.sessionId !== props.sessionId) return;
       hydrate(hydration.begin());
     });
     const inputSubscription = terminal.onData((input) => {
       if (!input || disposed) return;
-      void window.maka.shellRuns
+      void terminalService
         .write({
           sessionId: props.sessionId,
           ref: props.terminalRef!,
@@ -176,7 +177,7 @@ export function SessionTerminalPanel(props: {
       const key = `${terminal.cols}:${terminal.rows}`;
       if (lastSizeRef.current === key) return;
       lastSizeRef.current = key;
-      void window.maka.shellRuns
+      void terminalService
         .write({
           sessionId: props.sessionId,
           ref: props.terminalRef!,
@@ -197,7 +198,7 @@ export function SessionTerminalPanel(props: {
       unsubscribeResync();
       inputSubscription.dispose();
       terminalQueryReplies.dispose();
-      void window.maka.shellRuns
+      void terminalService
         .detach({ sessionId: props.sessionId, ref: props.terminalRef! })
         .catch(() => {});
       fitRef.current = null;
@@ -210,6 +211,7 @@ export function SessionTerminalPanel(props: {
     locale,
     props.sessionId,
     props.terminalRef,
+    terminalService,
   ]);
 
   if (!props.terminalRef) {

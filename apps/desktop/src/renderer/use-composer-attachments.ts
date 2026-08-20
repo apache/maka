@@ -21,7 +21,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { attachmentKindFromMimeType, guessMimeFromName } from '@maka/core/attachments';
 import type { AttachmentRef } from '@maka/core/events';
 import { useUiLocale } from '@maka/ui';
-import { pendingAttachmentSourceKey, type PendingAttachment } from './app-shell-chat-actions.js';
+import {
+  pendingAttachmentSourceKey,
+  type PendingAttachment,
+} from './composer-attachments.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
@@ -30,7 +33,26 @@ import {
   removePendingItems,
   selectPending,
   type PendingByKey,
-} from './app-shell-pending-attachments.js';
+} from './pending-items.js';
+
+export interface ComposerAttachmentService {
+  pickFiles(): Promise<
+    | {
+        ok: true;
+        files: Array<{
+          approvalId: string;
+          name: string;
+          mimeType?: string;
+          size: number;
+        }>;
+      }
+    | { ok: false; reason: 'cancelled' }
+  >;
+  previewApproval(approvalId: string): Promise<
+    | { ok: true; base64: string; mimeType: string }
+    | { ok: false; reason: string }
+  >;
+}
 
 type ToastApi = {
   error(title: string, description?: string): void;
@@ -95,9 +117,10 @@ function releasePreviewUrl(url: string | undefined): void {
   if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
 }
 
-export function useAppShellComposerAttachments(options: {
+export function useComposerAttachments(options: {
   draftKey: string;
   toastApi: ToastApi;
+  service: ComposerAttachmentService;
 }) {
   const uiLocale = useUiLocale();
   const copy = getDesktopConversationCopy(uiLocale).actions;
@@ -174,7 +197,7 @@ export function useAppShellComposerAttachments(options: {
           continue;
         }
         if (item.source.type === 'retained') continue;
-        const preview = await window.maka.attachments.previewApproval(item.source.approvalId);
+        const preview = await options.service.previewApproval(item.source.approvalId);
         if (!preview.ok) continue;
         const url = `data:${preview.mimeType};base64,${preview.base64}`;
         if (await probeImageUrl(url)) commitPreview(item.stagingKey, url);
@@ -186,7 +209,7 @@ export function useAppShellComposerAttachments(options: {
 
   async function pickAttachments(): Promise<void> {
     try {
-      const result = await window.maka.attachments.pickFiles();
+      const result = await options.service.pickFiles();
       if (!result.ok) return;
       // Resolved after the dialog closes, never captured before it opens: the
       // surface can change while a native dialog is up, and files the user just

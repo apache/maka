@@ -29,9 +29,9 @@ remounted when the active session changes.
 - Consumers import production APIs from `features/workbar`.
 - Tests and stories may additionally import `features/workbar/testing`.
 - Workbar may use shared renderer primitives, core types and Maka UI.
-- Workbar must not import AppShell, preload, or main-process implementation.
+- Workbar must not import shell composition, Desktop bridge, or main-process implementation.
 - Desktop I/O enters through `WorkbarServices`; tool code does not read
-  `window.maka` directly.
+  the Desktop global bridge directly.
 
 ## Lifecycle invariants
 

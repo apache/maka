@@ -24,6 +24,7 @@
 @import "@astryxdesign/core/astryx.css" layer(astryx-components);
 @import "./astryx-theme/maka.css" layer(astryx-tokens);
 @import "@maka/ui/styles.css" layer(components);
+@import "@xterm/xterm/css/xterm.css";
 
 /* Bundled Geist fallbacks; maka-tokens.css owns the product font stacks. */
 @import "@fontsource-variable/geist";

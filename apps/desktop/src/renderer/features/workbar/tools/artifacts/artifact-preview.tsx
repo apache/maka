@@ -47,7 +47,7 @@
  *   - `unsupported_mime`          → info, binary only
  *
  * No component in this file ever assembles an absolute path: every read
- * goes through `window.maka.artifacts.readText` / `readBinary`.
+ * goes through the injected Artifacts service.
  */
 import { useEffect, useState } from 'react';
 import type {
@@ -68,6 +68,7 @@ import { CodeBlock } from '@astryxdesign/core/CodeBlock';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { RegistryArtifactPreview } from './artifact-preview-registry-shell';
 import { getArtifactCopy, type ArtifactCopy } from '../../../../locales/artifact-copy';
+import { useWorkbarServices } from '../../services-context.js';
 
 export function ArtifactPreview(props: { record: ArtifactDescriptor; onShowInFolder?: () => void }) {
   const { record, onShowInFolder } = props;
@@ -428,20 +429,21 @@ function useTextRead(
   sessionId: string,
   artifactId: string,
 ): AsyncReadState<ArtifactTextReadResult> {
+  const { artifacts } = useWorkbarServices();
   const [state, setState] = useState<AsyncReadState<ArtifactTextReadResult>>({
     state: 'loading',
   });
   useEffect(() => {
     let disposed = false;
     setState({ state: 'loading' });
-    window.maka.artifacts
+    artifacts
       .readText(sessionId, artifactId)
       .then((value) => {
         if (!disposed) setState({ state: 'ready', value });
       })
       .catch((error: unknown) => {
         if (disposed) return;
-        // Map IPC-level failures (preload throw, channel closed) onto the
+        // Map Desktop transport failures (bridge throw, channel closed) onto the
         // contract enum so the FailureCard can render a consistent message
         // instead of leaking an Electron error string to the user.
         const message = error instanceof Error ? error.message : String(error);
@@ -453,7 +455,7 @@ function useTextRead(
     return () => {
       disposed = true;
     };
-  }, [artifactId, sessionId]);
+  }, [artifactId, artifacts, sessionId]);
   return state;
 }
 
@@ -461,13 +463,14 @@ function useBinaryRead(
   sessionId: string,
   artifactId: string,
 ): AsyncReadState<ArtifactBinaryReadResult> {
+  const { artifacts } = useWorkbarServices();
   const [state, setState] = useState<AsyncReadState<ArtifactBinaryReadResult>>({
     state: 'loading',
   });
   useEffect(() => {
     let disposed = false;
     setState({ state: 'loading' });
-    window.maka.artifacts
+    artifacts
       .readBinary(sessionId, artifactId)
       .then((value) => {
         if (!disposed) setState({ state: 'ready', value });
@@ -483,6 +486,6 @@ function useBinaryRead(
     return () => {
       disposed = true;
     };
-  }, [artifactId, sessionId]);
+  }, [artifactId, artifacts, sessionId]);
   return state;
 }

@@ -32,6 +32,7 @@ import {
   resolvePreviewKind,
 } from '@maka/ui/artifact-preview-registry';
 import { getArtifactCopy, type ArtifactCopy } from '../../../../locales/artifact-copy';
+import { useWorkbarServices } from '../../services-context.js';
 
 /**
  * Top-level dispatcher: classifies the record and renders the
@@ -237,13 +238,14 @@ function useImagePreviewLoad(
   sessionId: string,
   artifactId: string,
 ): ImagePreviewLoadState {
+  const { artifacts } = useWorkbarServices();
   const [state, setState] = useState<ImagePreviewLoadState>({ state: 'loading' });
   useEffect(() => {
     let cancelled = false;
     setState({ state: 'loading' });
     void (async () => {
       try {
-        const raw = await window.maka.artifacts.readBinary(sessionId, artifactId);
+        const raw = await artifacts.readBinary(sessionId, artifactId);
         if (cancelled) return;
         // L2 decision happens HERE, before `setState`. The pure helper
         // returns `{ kind: 'image', safeMime, base64 }` only when both
@@ -265,6 +267,6 @@ function useImagePreviewLoad(
     return () => {
       cancelled = true;
     };
-  }, [artifactId, sessionId]);
+  }, [artifactId, artifacts, sessionId]);
   return state;
 }

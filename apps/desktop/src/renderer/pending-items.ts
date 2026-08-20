@@ -17,6 +17,7 @@
  * under the License.
  */
 
+/** Generic keyed staging registry shared by composer surfaces. */
 export type PendingByKey<T> = Record<string, T[]>;
 
 /**

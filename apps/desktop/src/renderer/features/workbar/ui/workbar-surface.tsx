@@ -86,7 +86,7 @@ import {
   terminalRefFromWorkbarTab,
 } from '../model/workbar-tabs';
 import { useSessionTasks } from '../tools/tasks/use-session-tasks';
-import { WorkbarToggle } from '../../../app-shell-chrome-actions';
+import { WorkbarToggle } from './workbar-toggle';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 import type {
   CompanionQuoteTarget,

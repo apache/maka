@@ -23,8 +23,11 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { LocaleProvider } from '@maka/ui';
-import { NEW_TASK_PENDING_KEY } from '../../renderer/app-shell-pending-attachments.js';
-import { useAppShellComposerAttachments } from '../../renderer/use-app-shell-composer-attachments.js';
+import { NEW_TASK_PENDING_KEY } from '../../renderer/pending-items.js';
+import {
+  useComposerAttachments,
+  type ComposerAttachmentService,
+} from '../../renderer/use-composer-attachments.js';
 import { useAppShellComposerQuotes } from '../../renderer/use-app-shell-composer-quotes.js';
 
 /**
@@ -99,17 +102,33 @@ async function mountProbe<T>(useHook: (options: { draftKey: string }) => T): Pro
   };
 }
 
+type PickedFile = {
+  approvalId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+};
+
+const idleAttachmentService: ComposerAttachmentService = {
+  pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
+  previewApproval: async () => ({ ok: false, reason: 'not used' }),
+};
+
 function stubFilePicker(): {
-  resolve(files: { approvalId: string; name: string; mimeType: string; size: number }[]): void;
+  service: ComposerAttachmentService;
+  resolve(files: PickedFile[]): void;
 } {
-  let release: (files: never[]) => void = () => {};
-  const chosen = new Promise<{ ok: true; files: unknown[] }>((resolveChosen) => {
+  let release: (files: PickedFile[]) => void = () => {};
+  const chosen = new Promise<{ ok: true; files: PickedFile[] }>((resolveChosen) => {
     release = (files) => resolveChosen({ ok: true, files });
   });
-  Object.assign(globalThis.window as unknown as Record<string, unknown>, {
-    maka: { attachments: { pickFiles: () => chosen } },
-  });
-  return { resolve: (files) => release(files as never[]) };
+  return {
+    service: {
+      pickFiles: () => chosen,
+      previewApproval: async () => ({ ok: false, reason: 'not used' }),
+    },
+    resolve: release,
+  };
 }
 
 function textFile(name: string): File {
@@ -139,7 +158,11 @@ test('a Session keeps its own staged quotes, and the new-task bucket keeps its o
 
 test('a completing send clears the attachments it submitted', async () => {
   const probe = await mountProbe((options) =>
-    useAppShellComposerAttachments({ ...options, toastApi: { error() {} } }),
+    useComposerAttachments({
+      ...options,
+      toastApi: { error() {} },
+      service: idleAttachmentService,
+    }),
   );
 
   await probe.render(NEW_TASK_PENDING_KEY);
@@ -160,7 +183,11 @@ test('a completing send clears the attachments it submitted', async () => {
 
 test('retracted queue attachments can be restored and submitted without re-ingest', async () => {
   const probe = await mountProbe((options) =>
-    useAppShellComposerAttachments({ ...options, toastApi: { error() {} } }),
+    useComposerAttachments({
+      ...options,
+      toastApi: { error() {} },
+      service: idleAttachmentService,
+    }),
   );
 
   await probe.render('session-1');
@@ -184,11 +211,15 @@ test('retracted queue attachments can be restored and submitted without re-inges
 });
 
 test('files chosen in the native dialog land in the composer now on screen', async () => {
+  const picker = stubFilePicker();
   const probe = await mountProbe((options) =>
-    useAppShellComposerAttachments({ ...options, toastApi: { error() {} } }),
+    useComposerAttachments({
+      ...options,
+      toastApi: { error() {} },
+      service: picker.service,
+    }),
   );
   await probe.render(NEW_TASK_PENDING_KEY);
-  const picker = stubFilePicker();
 
   const picking = probe.latest().pickAttachments();
   // The dialog is modal to its own window, not to the app: the surface behind

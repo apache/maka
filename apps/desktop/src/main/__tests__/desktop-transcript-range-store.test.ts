@@ -30,10 +30,8 @@ import {
   createDesktopTranscriptRangeController,
   DesktopTranscriptRangeStore,
 } from '../../renderer/desktop-transcript-range-store.js';
-import {
-  mergeSettledMessages,
-  readSettledMessages,
-} from '../../renderer/session-message-settlement.js';
+import { mergeSettledMessages } from '../../renderer/settled-message-merge.js';
+import { readSettledMessages } from '../../renderer/session-message-settlement.js';
 import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
 import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
 

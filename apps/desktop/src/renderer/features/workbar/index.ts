@@ -19,6 +19,8 @@
 
 export { WorkbarHost } from './ui/workbar-host';
 export { WorkbarSurface } from './ui/workbar-surface';
+export { WorkbarTitlebarActions, WorkbarToggle } from './ui/workbar-toggle';
+export { WorkbarServicesProvider, useWorkbarServices } from './services-context';
 export { useWorkbarLayoutState } from './controller/use-workbar-layout-state';
 export {
   consumeCompanionInitialPrompt,
@@ -50,3 +52,10 @@ export type {
   SessionWorkbarTab,
   SessionWorkbarTabKind,
 } from './model/workbar-tabs';
+export type {
+  SideChatSessionPort,
+  WorkbarIngestInput,
+  WorkbarSessionTracePage,
+  WorkbarSessionUsageSummary,
+  WorkbarServices,
+} from './ports';

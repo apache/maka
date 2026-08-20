@@ -38,7 +38,8 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { UserQuestionResponse } from '@maka/core/user-question';
-import type { RendererIngestInput } from '../../../../../preload/bridge-contract.js';
+import { useWorkbarServices } from '../../services-context.js';
+import type { WorkbarIngestInput } from '../../ports.js';
 import {
   abandonPendingCompanionCopy,
   applyCompanionInteractionEvent,
@@ -51,7 +52,7 @@ import {
   type CompanionErrorCode,
   type EnsureCompanionForkResult,
 } from './quote-companion-core';
-import { mergeSettledMessages, readSettledMessages } from '../../../../session-message-settlement';
+import { mergeSettledMessages } from '../../../../settled-message-merge.js';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
 import {
   snapshotCompanionQuotes,
@@ -102,7 +103,7 @@ export interface UseQuoteCompanionResult {
   activeQuestion: UserQuestionRequestEvent | undefined;
   /** Returns whether the send was accepted; false leaves the draft + staged
    *  quotes in place so the user can retry. */
-  send: (text: string, attachmentItems?: RendererIngestInput[]) => Promise<boolean>;
+  send: (text: string, attachmentItems?: WorkbarIngestInput[]) => Promise<boolean>;
   /** Insert text into the active companion turn at the next model step. */
   steer: (text: string) => Promise<boolean>;
   setPermissionMode: (mode: PermissionMode) => Promise<boolean>;
@@ -134,6 +135,7 @@ function requiredAssistantMessageId(projection: LiveTurnProjection | undefined):
  * collapse and New Tab navigation keep the panel mounted.
  */
 export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompanionResult {
+  const { sideChat } = useWorkbarServices();
   const {
     panelId,
     locale,
@@ -190,7 +192,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   // synchronously the moment the fork is committed, BEFORE the run starts, so
   // no boundary request / complete can be missed (the stream has no replay).
   const subscribeToFork = useCallback((forkId: string) => {
-    void readSettledMessages(forkId)
+    void sideChat.readSettledMessages(forkId)
       .then(({ messages }) => {
         if (mountedRef.current) {
           setAllMessages((current) => mergeSettledMessages(current, messages));
@@ -199,7 +201,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       .catch(() => {
         if (mountedRef.current) setError(copyRef.current.errors.settlementFailed);
       });
-    unsubscribeRef.current = window.maka.sessions.subscribeEvents(forkId, (event: SessionEvent) => {
+    unsubscribeRef.current = sideChat.subscribeEvents(forkId, (event: SessionEvent) => {
       const effect = companionRunEventEffect(
         event,
         activeTurnIdRef.current,
@@ -218,7 +220,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         // Settlement: wait for the assistant message to persist before handing
         // off from the live projection, then reconcile (shared with the main chat)
         // so the finished exchange never flickers away.
-        void readSettledMessages(forkId, {
+        void sideChat.readSettledMessages(forkId, {
           ...(requiredAssistantMessageId(liveTurnRef.current)
                 ? {
                     requiredAssistantMessageId: requiredAssistantMessageId(liveTurnRef.current),
@@ -247,7 +249,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           });
       }
     });
-  }, [mountedRef]);
+  }, [mountedRef, sideChat]);
 
   const commitFork = useCallback(
     (session: SessionSummary) => {
@@ -271,7 +273,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
 
       setPreparing(true);
       const promise = ensureCompanionFork({
-        api: window.maka.sessions,
+        api: sideChat,
         sourceSession,
         panelId,
         name,
@@ -308,7 +310,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       forkSetupPromiseRef.current = promise;
       return promise;
     },
-    [commitFork, mountedRef, panelId, sourceSession],
+    [commitFork, mountedRef, panelId, sideChat, sourceSession],
   );
 
   useEffect(() => {
@@ -316,8 +318,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   }, [ensureFork, sourceSession]);
 
   // The fork is ephemeral (用完即弃): when the panel is dismissed — 退出,
-  // switching source session, or collapsing the workbar — unsubscribe and remove
-  // the fork so it never lingers in the session list. Runs only on unmount.
+  // switching source session — unsubscribe and remove the fork so it never
+  // lingers in the session list. Collapsing keeps the panel mounted and alive.
   useEffect(() => {
     const shouldDismiss = dismissalGuardRef.current.beginMount();
     return () => {
@@ -329,7 +331,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         const sourceSessionId = sourceSessionIdRef.current;
         const id = companionIdRef.current ?? pendingForkIdRef.current;
         if (id && sourceSessionId) {
-          void dismissCompanionCopy(window.maka.sessions, sourceSessionId, panelId, id).then(
+          void dismissCompanionCopy(sideChat, sourceSessionId, panelId, id).then(
             (cleaned) => {
               if (cleaned) {
                 onForkVisibilityChangeRef.current?.({
@@ -340,16 +342,16 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
             },
           );
         } else if (sourceSessionId) {
-          void abandonPendingCompanionCopy(window.maka.sessions, sourceSessionId, panelId);
+          void abandonPendingCompanionCopy(sideChat, sourceSessionId, panelId);
         }
       });
     };
-  }, []);
+  }, [panelId, sideChat]);
 
   const send = useCallback(
     async (
       text: string,
-      attachmentItems?: RendererIngestInput[],
+      attachmentItems?: WorkbarIngestInput[],
     ): Promise<boolean> => {
       const trimmed = text.trim();
       if (!trimmed || turnInFlightRef.current || !sourceSession) return false;
@@ -366,7 +368,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         return false;
       }
       const result = await performCompanionTurn({
-        api: window.maka.sessions,
+        api: sideChat,
         sourceSession,
         panelId,
         name: `${copyRef.current.namePrefix}${label}`,
@@ -399,15 +401,15 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         setHasContent(true);
         // Surface the just-sent user message immediately, and reflect any
         // automatic connection/model rebound in the read-only model label.
-        void readSettledMessages(result.forkId)
+        void sideChat.readSettledMessages(result.forkId)
           .then(({ messages: next }) => {
             if (mountedRef.current) {
               setAllMessages((current) => mergeSettledMessages(current, next));
             }
           })
           .catch(() => {});
-        void window.maka.sessions
-          .list()
+        void sideChat
+          .listSessions()
           .then((sessions) => {
             const updated = sessions.find((session) => session.id === result.forkId);
             if (updated && mountedRef.current) {
@@ -442,6 +444,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       onQuotesConsumed,
       ensureFork,
       mountedRef,
+      sideChat,
     ],
   );
 
@@ -450,19 +453,19 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     if (!id) return;
     stopRequestedRef.current = true;
     try {
-      await window.maka.sessions.stop(id);
+      await sideChat.stop(id);
     } catch {
       stopRequestedRef.current = false;
       // best-effort; the terminal event still reconciles state
     }
-  }, []);
+  }, [sideChat]);
 
   const steer = useCallback(async (text: string): Promise<boolean> => {
     const id = companionIdRef.current;
     const trimmed = text.trim();
     if (!id || !trimmed || !turnInFlight) return false;
     try {
-      const outcome = await window.maka.sessions.steer(id, trimmed);
+      const outcome = await sideChat.steer(id, trimmed);
       if (outcome.kind !== 'queued') return false;
       setError(null);
       return true;
@@ -470,7 +473,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       setError(copyRef.current.errors.sendFailed);
       return false;
     }
-  }, [turnInFlight]);
+  }, [sideChat, turnInFlight]);
 
   const setPermissionMode = useCallback(
     async (mode: PermissionMode): Promise<boolean> => {
@@ -478,7 +481,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       if (!id || turnInFlight || permissionModePending) return false;
       setPermissionModePending(true);
       try {
-        const next = await window.maka.sessions.setPermissionMode(id, mode);
+        const next = await sideChat.setPermissionMode(id, mode);
         if (!mountedRef.current) return false;
         companionRef.current = next;
         setCompanion(next);
@@ -491,7 +494,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         if (mountedRef.current) setPermissionModePending(false);
       }
     },
-    [mountedRef, permissionModePending, turnInFlight],
+    [mountedRef, permissionModePending, sideChat, turnInFlight],
   );
 
   const regenerate = useCallback(
@@ -509,7 +512,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       ownTurnIdsRef.current.add(regenerationTurnId);
       setOwnTurnTick((tick) => tick + 1);
       try {
-        await window.maka.sessions.regenerateTurn(id, {
+        await sideChat.regenerateTurn(id, {
           sourceTurnId: turnId,
           turnId: regenerationTurnId,
         });
@@ -527,7 +530,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         if (mountedRef.current) setRegeneratePendingTurnId(null);
       }
     },
-    [mountedRef, regeneratePendingTurnId, turnInFlight],
+    [mountedRef, regeneratePendingTurnId, sideChat, turnInFlight],
   );
 
   const respondToSandboxBoundary = useCallback(
@@ -535,12 +538,12 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     const id = companionIdRef.current;
     if (!id) return;
     try {
-      await window.maka.sessions.respondToSandboxBoundary(id, response);
+      await sideChat.respondToSandboxBoundary(id, response);
     } catch {
       setError(copyRef.current.errors.respondFailed);
     }
     },
-    [],
+    [sideChat],
   );
 
   const respondToUserQuestion = useCallback(
@@ -548,12 +551,12 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       const id = companionIdRef.current;
       if (!id) return;
       try {
-        await window.maka.sessions.respondToUserQuestion(id, response);
+        await sideChat.respondToUserQuestion(id, response);
       } catch {
         setError(copyRef.current.errors.respondFailed);
       }
     },
-    [],
+    [sideChat],
   );
 
   // Only the companion's own turns render; the forked parent history stays as

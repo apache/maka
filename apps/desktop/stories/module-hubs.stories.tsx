@@ -34,7 +34,7 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { type ComponentProps, type ReactNode, useState } from 'react';
-import { AppShellWorkspaceTopActions } from '../src/renderer/app-shell-chrome-actions';
+import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { McpPage } from '../src/renderer/mcp-page';
 import { withScopedMakaBridge } from './maka-bridge';
@@ -606,10 +606,10 @@ function ModuleSurface(props: {
       }}
     >
       <AppShellDetailPanel agentsView={props.agentsView}>
-        <AppShellWorkspaceTopActions
-          workbarAvailable={false}
-          workbarCollapsed
-          onToggleWorkbar={noop}
+        <WorkbarTitlebarActions
+          available={false}
+          collapsed
+          onToggle={noop}
         />
         <ToastProvider>{props.children}</ToastProvider>
       </AppShellDetailPanel>

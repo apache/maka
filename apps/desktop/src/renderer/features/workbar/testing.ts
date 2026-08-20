@@ -17,6 +17,15 @@
  * under the License.
  */
 
+import type { WorkbarServices } from './ports.js';
+
+export { WorkbarServicesProvider } from './services-context.js';
+export type {
+  WorkbarServices,
+  WorkbarSessionTracePage,
+  WorkbarSessionUsageSummary,
+} from './ports.js';
+
 export * from './model/workbar-tabs.js';
 export * from './model/workbar-layout.js';
 export * from './model/workbar-tool-definitions.js';
@@ -29,3 +38,101 @@ export * from './tools/side-chat/quote-companion-visibility.js';
 export * from './tools/terminal/session-terminal-hydration.js';
 export * from './tools/terminal/session-terminal-query.js';
 export * from './tools/inspector/use-session-trace.js';
+
+const noopSubscription = (): (() => void) => () => undefined;
+
+/**
+ * Environment-free Workbar service defaults for unit tests and Storybook.
+ * Tests override complete capability groups so adding a method cannot silently
+ * fall through to the Desktop bridge.
+ */
+export function createFakeWorkbarServices(
+  overrides: Partial<WorkbarServices> = {},
+): WorkbarServices {
+  return {
+    review: {
+      read: async () => {
+        throw new Error('Fake review.read is not configured');
+      },
+      subscribeSessionEvents: noopSubscription,
+    },
+    terminal: {
+      start: async () => {
+        throw new Error('Fake terminal.start is not configured');
+      },
+      stop: async () => null,
+      attach: async () => null,
+      detach: async () => undefined,
+      write: async () => null,
+      subscribePtyData: noopSubscription,
+      subscribeResync: noopSubscription,
+    },
+    tasks: {
+      list: async () => [],
+      subscribeChanges: noopSubscription,
+    },
+    browser: {
+      setActiveSession: () => undefined,
+      setViewport: () => undefined,
+      navigate: async () => undefined,
+      back: async () => undefined,
+      forward: async () => undefined,
+      reload: async () => undefined,
+      stop: async () => undefined,
+      close: async () => undefined,
+      getState: async () => null,
+      subscribeState: noopSubscription,
+      subscribeLive: noopSubscription,
+    },
+    artifacts: {
+      list: async () => [],
+      readText: async () => ({ ok: false, reason: 'not_found' }),
+      readBinary: async () => ({ ok: false, reason: 'not_found' }),
+      delete: async () => undefined,
+      subscribeChanges: noopSubscription,
+      openPath: async () => ({ ok: false, reason: 'missing' }),
+      saveAs: async () => ({ ok: false, reason: 'canceled' }),
+    },
+    inspector: {
+      trace: async () => {
+        throw new Error('Fake inspector.trace is not configured');
+      },
+      summary: async () => {
+        throw new Error('Fake inspector.summary is not configured');
+      },
+      context: async () => {
+        throw new Error('Fake inspector.context is not configured');
+      },
+      subscribeSessionEvents: noopSubscription,
+      subscribeUsageChanges: noopSubscription,
+      getRecordFile: async () => '',
+    },
+    attachments: {
+      pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
+      previewApproval: async () => ({ ok: false, reason: 'not configured' }),
+    },
+    sideChat: {
+      listSessions: async () => [],
+      listTurns: async () => [],
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+      branchFromTurn: async () => {
+        throw new Error('Fake sideChat.branchFromTurn is not configured');
+      },
+      cleanupSessionCopy: async () => undefined,
+      abandonSessionCopy: async () => undefined,
+      send: async () => ({ ok: false, reason: 'not configured' }),
+      stop: async () => undefined,
+      steer: async () => {
+        throw new Error('Fake sideChat.steer is not configured');
+      },
+      setPermissionMode: async () => {
+        throw new Error('Fake sideChat.setPermissionMode is not configured');
+      },
+      regenerateTurn: async () => undefined,
+      respondToSandboxBoundary: async () => undefined,
+      respondToUserQuestion: async () => undefined,
+      subscribeEvents: noopSubscription,
+    },
+    ...overrides,
+  };
+}

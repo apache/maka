@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { appendPending, clearPending, removePending, removePendingItems, selectPending } from '../../renderer/app-shell-pending-attachments.js';
+import { appendPending, clearPending, removePending, removePendingItems, selectPending } from '../../renderer/pending-items.js';
 
 describe('pending attachments by draft key', () => {
   test('selecting another key never leaks pending from a different session', () => {

@@ -20,8 +20,6 @@
 import {
   PanelLeftClose,
   PanelLeftOpen,
-  PanelRightClose,
-  PanelRightOpen,
   Search,
 } from '@maka/ui/icons';
 import {
@@ -120,26 +118,6 @@ export function AppShellTopbarActions(props: {
   );
 }
 
-export function WorkbarToggle(props: {
-  collapsed: boolean;
-  className?: string;
-  onToggle(): void;
-}) {
-  const locale = useUiLocale();
-  const copy = getShellCopy(locale).chrome;
-  return (
-    <ChromeColumnToggle
-      collapsed={props.collapsed}
-      expandLabel={copy.expandWorkbar}
-      collapseLabel={copy.collapseWorkbar}
-      expandIcon={PanelRightOpen}
-      collapseIcon={PanelRightClose}
-      className={props.className}
-      onToggle={props.onToggle}
-    />
-  );
-}
-
 /**
  * The titlebar's right edge.
  *
@@ -161,21 +139,3 @@ export function WorkbarToggle(props: {
  * lights and the Windows caption strip without either platform being named
  * here. A toggle parked anywhere else would have to restate that.
  */
-export function AppShellWorkspaceTopActions(props: {
-  workbarAvailable: boolean;
-  workbarCollapsed: boolean;
-  onToggleWorkbar(): void;
-}) {
-  const locale = useUiLocale();
-  const copy = getShellCopy(locale).chrome;
-  // Nothing to toggle outside a session or while the panel-local control is
-  // mounted; an empty no-drag rectangle would only subtract from the window's
-  // drag surface.
-  if (!props.workbarAvailable || !props.workbarCollapsed) return null;
-
-  return (
-    <div className="maka-workspace-top-actions" role="toolbar" aria-label={copy.workspaceActions}>
-      <WorkbarToggle collapsed onToggle={props.onToggleWorkbar} />
-    </div>
-  );
-}
