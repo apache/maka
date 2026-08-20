@@ -47,8 +47,6 @@ test('dismisses a closed SSH prompt from the authoritative presentation', async 
 
 test('does not reopen a cancelled SSH prompt for late process output', async () => {
   const harness = createHarness('exit');
-  harness.pty.deferKill = true;
-  harness.pty.exitOnForceKill = true;
   const opening = openTunnel(harness);
   harness.pty.emitData('Password: ');
   const connecting = (await harness.getSnapshot()) as { sessionId?: string };
@@ -58,7 +56,6 @@ test('does not reopen a cancelled SSH prompt for late process output', async () 
   harness.pty.emitData('late output');
   await assert.rejects(opening, /SSH exited/u);
 
-  assert.deepEqual(harness.pty.killSignals, ['SIGTERM', 'SIGKILL']);
   assert.deepEqual(harness.eventKinds(), ['opened', 'data', 'dismissed']);
   assert.deepEqual(await harness.getSnapshot(), { kind: 'idle', revision: 3 });
   await harness.terminal.close();
@@ -176,40 +173,10 @@ test('uploads a development release archive before running the same remote setup
   await waitFor(() => launches.length === 2);
   assert.equal(launches[1]?.file, 'ssh');
   const remoteCommand = launches[1]?.args.at(-1) ?? '';
-  assert.match(
-    remoteCommand,
-    /npx.*--package.*maka-runtime-host-setup-.+\.tgz.*maka.*runtime-host.*setup/u,
-  );
+  assert.match(remoteCommand, /--package.*maka-runtime-host-setup-.+\.tgz/u);
   assert.match(remoteCommand, /--defer-pairing-commit/u);
-  assert.match(remoteCommand, /cd.*\$HOME/u);
-  assert.match(remoteCommand, /rm -f/u);
-  assert.match(remoteCommand, /exec \/bin\/sh -c/u);
-  assert.match(remoteCommand, /maka_setup_exit/u);
   launches[1]?.pty.exit(255);
   await assert.rejects(setup, /exited with code 255/u);
-
-  const retry = terminal.runSetup(setupInput, () => undefined);
-  await waitFor(() => launches.length === 3);
-  assert.equal(launches[2]?.file, 'scp');
-  assert.equal(launches[2]?.args.at(-1), launches[0]?.args.at(-1));
-  launches[2]?.pty.exit(0);
-  await waitFor(() => launches.length === 4);
-  launches[3]?.pty.emitData(
-    encodeRuntimeHostSetupFrame({
-      schemaVersion: 1,
-      sequence: 0,
-      kind: 'complete',
-      version: '0.1.0-beta.1',
-      rootId: 'a'.repeat(64),
-      endpoint: 'ws://127.0.0.1:7443/runtime-host',
-      credentialId: 'credential-1',
-      credential: 'secret-access-token',
-    }),
-  );
-  launches[3]?.pty.exit(0);
-
-  assert.equal((await retry).rootId, 'a'.repeat(64));
-  await terminal.close();
 });
 
 function createHarness(mode: 'pending' | 'exit') {

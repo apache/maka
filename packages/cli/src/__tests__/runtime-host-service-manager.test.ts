@@ -312,6 +312,8 @@ describe('managed Runtime Host service', () => {
     assert.match(unit, /"\/srv\/Maka 100%%"/u);
     assert.match(unit, /"Cash\$\$=\/home\/ada\/My Projects"/u);
     assert.match(unit, /^Restart=always$/mu);
+    assert.match(unit, /^StartLimitIntervalSec=60s$/mu);
+    assert.match(unit, /^StartLimitBurst=5$/mu);
   });
 
   it('emits one stable machine error for an unmet service prerequisite', async () => {

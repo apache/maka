@@ -63,6 +63,10 @@ export type SettingsProjectsCopy = {
     selectFailed: string;
     saveFailed: string;
     removeFailed: string;
+    pairingRecoveryTitle: string;
+    pairingRecoveryDescription: string;
+    discardPairingRecovery: string;
+    discardPairingRecoveryFailed: string;
     moreActions(name: string): string;
   };
   section: string;
@@ -173,6 +177,10 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       selectFailed: '无法更新 Runtime Host',
       saveFailed: '无法保存 Runtime Host profile',
       removeFailed: '无法移除 Runtime Host profile',
+      pairingRecoveryTitle: '配对恢复需要处理',
+      pairingRecoveryDescription: '现有 Host 仍可使用；修改 Host 前需要丢弃已损坏的恢复数据。',
+      discardPairingRecovery: '丢弃恢复数据',
+      discardPairingRecoveryFailed: '无法丢弃配对恢复数据',
       moreActions: (name: string) => `更多操作：${name}`,
     },
     section: '工作区',
@@ -281,6 +289,11 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       selectFailed: 'Could not update the Runtime Host',
       saveFailed: 'Could not save the Runtime Host profile',
       removeFailed: 'Could not remove the Runtime Host profile',
+      pairingRecoveryTitle: 'Pairing recovery needs attention',
+      pairingRecoveryDescription:
+        'Existing Hosts remain available. Discard the unreadable recovery data before changing Hosts.',
+      discardPairingRecovery: 'Discard recovery data',
+      discardPairingRecoveryFailed: 'Could not discard pairing recovery data',
       moreActions: (name: string) => `More actions for ${name}`,
     },
     section: 'Workspace',

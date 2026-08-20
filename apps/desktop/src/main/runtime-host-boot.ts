@@ -19,6 +19,8 @@ import {
 } from '@maka/runtime/scheduled-task-tools';
 import { buildMcpTools } from '@maka/runtime/mcp-tools';
 import {
+  createClientRuntimeHostCredentialStore,
+  createClientRuntimeHostProfileCatalog,
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
 } from "@maka/runtime-host/client";
@@ -166,7 +168,15 @@ const userDataDir = app.getPath("userData");
 const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
   join(userDataDir, "runtime-host-client.json"),
 );
-const runtimeHostStartup = await resolveDesktopRuntimeHostStartup(userDataDir);
+const runtimeHostCredentialStore = createClientRuntimeHostCredentialStore(userDataDir);
+const runtimeHostProfileCatalog = createClientRuntimeHostProfileCatalog(
+  userDataDir,
+  runtimeHostCredentialStore,
+);
+const runtimeHostStartup = await resolveDesktopRuntimeHostStartup(userDataDir, {
+  catalog: runtimeHostProfileCatalog,
+  credentialStore: runtimeHostCredentialStore,
+});
 let runtimeHostManager: RuntimeHostDesktopManager | undefined;
 function activeRuntimeHostRef(): DesktopTargetScope | undefined {
   const current = runtimeHostManager?.current();
@@ -277,8 +287,10 @@ const oauthPresentation = new RuntimeHostOAuthPresentation((url) => shell.openEx
 const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   clientDataRoot: userDataDir,
   startup: runtimeHostStartup,
+  catalog: runtimeHostProfileCatalog,
+  credentialStore: runtimeHostCredentialStore,
   states: () => runtimeHostManager?.entries() ?? [],
-  enable: async (target) => {
+  enable: async (target, sshInteraction) => {
     if (target.profile.kind !== "remote" || !target.credential) {
       throw new Error("A resolved remote Runtime Host profile is required");
     }
@@ -286,9 +298,7 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
     await runtimeHostManager.enable({
       profile: target.profile,
       credential: target.credential,
-      ...(target.profile.transport.kind === "ssh"
-        ? { sshInteraction: "terminal" as const }
-        : {}),
+      ...(target.profile.transport.kind === "ssh" ? { sshInteraction } : {}),
     });
   },
   disable: async (profileId) => {
@@ -309,7 +319,7 @@ const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
   clientInstanceId: runtimeHostClientInstanceId,
   profiles: runtimeHostProfileService,
   runSetup: runtimeHostSshTerminal.runSetup,
-  setupPackage: runtimeHostSetupPackage(),
+  resolveSetupPackage: runtimeHostSetupPackage,
   send: (snapshot) =>
     mainWindowController.send("runtime-host-onboarding:changed", snapshot),
 });
@@ -715,12 +725,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
 });
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
-const pendingPairingProfileIds = new Set(
-  runtimeHostStartup.pairingIntents.map((intent) => intent.target.profile.id),
-);
-void runtimeHostProfileService
-  .recoverPendingPairings()
-  .catch((error) => console.error("[runtime-host] pairing recovery failed:", error));
+void runtimeHostProfileService.startEnabledProfiles();
 const unavailableDefault = runtimeHostStartup.unavailable.get(
   runtimeHostStartup.preferences.defaultProfileId,
 );
@@ -740,25 +745,6 @@ if (unavailableDefault) {
       console.error("[runtime-host] failed to resolve unavailable default Host:", error),
     );
 }
-// Startup may present one interactive SSH prompt without serializing every
-// enabled Host behind it. Other SSH targets fail batch-mode and remain retryable.
-for (const target of runtimeHostStartup.remotes) {
-  if (target.profile.kind !== "remote" || !target.credential) continue;
-  if (pendingPairingProfileIds.has(target.profile.id)) continue;
-  void runtimeHostManager
-    .enable({
-      profile: target.profile,
-      credential: target.credential,
-      ...(target.profile.transport.kind === "ssh" &&
-      target.profile.id === runtimeHostStartup.preferences.defaultProfileId
-        ? { sshInteraction: "terminal" as const }
-        : {}),
-    })
-    .catch((error) =>
-      console.error(`[runtime-host] ${target.profile.name} is unavailable:`, error),
-    );
-}
-
 const stopComputerUseSession = (sessionId: string): void => {
   const ref = parseDesktopSessionResourceKey(sessionId);
   void runtimeHostManager

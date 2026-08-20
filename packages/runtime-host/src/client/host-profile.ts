@@ -85,6 +85,13 @@ export function sameResolvedRuntimeHostProfileTarget(
   );
 }
 
+export function sameRemoteRuntimeHostProfileTarget(
+  left: RemoteRuntimeHostProfile,
+  right: RemoteRuntimeHostProfile,
+): boolean {
+  return profileCredentialBinding(left) === profileCredentialBinding(right);
+}
+
 export interface RuntimeHostProfileCatalog {
   read(): Promise<RuntimeHostProfileDocument>;
   resolve(profileId?: string): Promise<ResolvedRuntimeHostProfile>;
@@ -123,13 +130,16 @@ export function createFileRuntimeHostProfileCatalog(
 
 export function createClientRuntimeHostProfileCatalog(
   clientDataRoot: string,
+  credentialStore: CredentialStore = createClientRuntimeHostCredentialStore(clientDataRoot),
 ): RuntimeHostProfileCatalog {
   return createFileRuntimeHostProfileCatalog(
     join(clientDataRoot, 'runtime-host-profiles.json'),
-    createRuntimeHostProfileCredentialStore(
-      createFileCredentialStore(join(clientDataRoot, 'runtime-host-client')),
-    ),
+    createRuntimeHostProfileCredentialStore(credentialStore),
   );
+}
+
+export function createClientRuntimeHostCredentialStore(clientDataRoot: string): CredentialStore {
+  return createFileCredentialStore(join(clientDataRoot, 'runtime-host-client'));
 }
 
 export function createRuntimeHostProfileCredentialStore(

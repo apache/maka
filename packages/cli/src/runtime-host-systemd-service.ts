@@ -167,10 +167,13 @@ export function renderSystemdUnit(config: RuntimeHostManagedServiceConfig): stri
     '[Unit]',
     'Description=Maka Runtime Host',
     'After=network.target',
+    'StartLimitIntervalSec=60s',
+    'StartLimitBurst=5',
     '',
     '[Service]',
     'Type=simple',
     `ExecStart=${args.map(quoteSystemdArgument).join(' ')}`,
+    // A clean idle exit must not silently remove a configured remote Host.
     'Restart=always',
     'RestartSec=2s',
     'KillMode=mixed',

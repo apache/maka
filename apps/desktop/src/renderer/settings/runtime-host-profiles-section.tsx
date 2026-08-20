@@ -156,6 +156,23 @@ export function RuntimeHostProfilesSection(props: {
     }
   }
 
+  async function discardPairingRecovery() {
+    setSwitching(true);
+    try {
+      const next = await window.maka.runtimeHostProfiles.discardPairingRecovery();
+      if (mountedRef.current) setSnapshot(next);
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(
+          copy.discardPairingRecoveryFailed,
+          settingsActionErrorMessage(error, locale),
+        );
+      }
+    } finally {
+      if (mountedRef.current) setSwitching(false);
+    }
+  }
+
   const remoteEntries = snapshot?.entries.filter((entry) => entry.profile.kind === "remote") ?? [];
   const profileOptions = (snapshot?.entries ?? [])
     .filter((entry) => entry.enabled)
@@ -205,6 +222,21 @@ export function RuntimeHostProfilesSection(props: {
           </HStack>
         }
       >
+        {snapshot?.pairingRecoveryBlocked ? (
+          <SettingsRow
+            label={copy.pairingRecoveryTitle}
+            description={copy.pairingRecoveryDescription}
+            end={(
+              <Button
+                variant="secondary"
+                size="sm"
+                label={copy.discardPairingRecovery}
+                isDisabled={switching}
+                onClick={() => void discardPairingRecovery()}
+              />
+            )}
+          />
+        ) : null}
         {showAdd ? (
           <>
             <SettingsRow

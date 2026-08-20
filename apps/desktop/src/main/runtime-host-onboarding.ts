@@ -31,7 +31,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
     readonly credential: string;
   }>;
   readonly send: (snapshot: DesktopRuntimeHostOnboardingSnapshot) => void;
-  readonly setupPackage: DesktopRuntimeHostSetupPackage;
+  readonly resolveSetupPackage: () => DesktopRuntimeHostSetupPackage;
 }): { close(): Promise<void> } {
   let revision = 0;
   let snapshot: DesktopRuntimeHostOnboardingSnapshot = { kind: 'idle', revision };
@@ -91,7 +91,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
         {
           destination: request.destination,
           ...(request.sshPort === undefined ? {} : { sshPort: request.sshPort }),
-          setupPackage: input.setupPackage,
+          setupPackage: input.resolveSetupPackage(),
           principalId: `desktop:${input.clientInstanceId}`,
           signal,
         },

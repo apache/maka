@@ -1,4 +1,3 @@
-import { join } from 'node:path';
 import {
   decodeRemoteRuntimeHostProfile,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
@@ -6,12 +5,11 @@ import {
   type RemoteRuntimeHostProfile,
   type ResolvedRuntimeHostProfile,
 } from '@maka/runtime-host/client';
-import { createFileCredentialStore } from '@maka/storage';
+import type { CredentialStore } from '@maka/storage';
 
 const PAIRING_JOURNAL_SCHEMA_VERSION = 1;
 const PAIRING_JOURNAL_CREDENTIAL_SLOT = 'runtime-host-pairing-recovery';
 const PAIRING_JOURNAL_MAX_BYTES = 512 * 1024;
-const PAIRING_JOURNAL_MAX_ENTRIES = 32;
 
 export interface DesktopRuntimeHostPairingIntent {
   readonly target: {
@@ -46,14 +44,14 @@ export function pairingIntentMatchesTarget(
   return sameResolvedRuntimeHostProfileTarget(intentTarget, target);
 }
 
-export async function readDesktopRuntimeHostPairingIntents(
-  clientDataRoot: string,
-): Promise<readonly DesktopRuntimeHostPairingIntent[]> {
-  const contents = await pairingCredentialStore(clientDataRoot).getSecret(
+export async function readDesktopRuntimeHostPairingIntent(
+  credentials: Pick<CredentialStore, 'getSecret'>,
+): Promise<DesktopRuntimeHostPairingIntent | undefined> {
+  const contents = await credentials.getSecret(
     PAIRING_JOURNAL_CREDENTIAL_SLOT,
     'runtime_host_access',
   );
-  if (contents === null) return [];
+  if (contents === null) return undefined;
   if (Buffer.byteLength(contents, 'utf8') > PAIRING_JOURNAL_MAX_BYTES) {
     throw new Error('Runtime Host pairing recovery journal exceeds its size limit');
   }
@@ -64,12 +62,11 @@ export async function readDesktopRuntimeHostPairingIntents(
   }
 }
 
-export async function writeDesktopRuntimeHostPairingIntents(
-  clientDataRoot: string,
-  intents: readonly DesktopRuntimeHostPairingIntent[],
+export async function writeDesktopRuntimeHostPairingIntent(
+  credentials: Pick<CredentialStore, 'setSecret' | 'deleteSecret'>,
+  intent: DesktopRuntimeHostPairingIntent | undefined,
 ): Promise<void> {
-  const credentials = pairingCredentialStore(clientDataRoot);
-  if (intents.length === 0) {
+  if (!intent) {
     await credentials.deleteSecret(
       PAIRING_JOURNAL_CREDENTIAL_SLOT,
       'runtime_host_access',
@@ -78,7 +75,7 @@ export async function writeDesktopRuntimeHostPairingIntents(
   }
   const contents = JSON.stringify({
     schemaVersion: PAIRING_JOURNAL_SCHEMA_VERSION,
-    intents,
+    intent,
   });
   if (Buffer.byteLength(contents) > PAIRING_JOURNAL_MAX_BYTES) {
     throw new Error('Runtime Host pairing recovery journal exceeds its size limit');
@@ -90,19 +87,12 @@ export async function writeDesktopRuntimeHostPairingIntents(
   );
 }
 
-function decodePairingJournal(value: unknown): readonly DesktopRuntimeHostPairingIntent[] {
-  const journal = requireExactRecord(value, ['schemaVersion', 'intents']);
-  if (journal.schemaVersion !== PAIRING_JOURNAL_SCHEMA_VERSION || !Array.isArray(journal.intents)) {
+function decodePairingJournal(value: unknown): DesktopRuntimeHostPairingIntent {
+  const journal = requireExactRecord(value, ['schemaVersion', 'intent']);
+  if (journal.schemaVersion !== PAIRING_JOURNAL_SCHEMA_VERSION) {
     throw new Error('Unsupported Runtime Host pairing recovery journal');
   }
-  if (journal.intents.length > PAIRING_JOURNAL_MAX_ENTRIES) {
-    throw new Error('Runtime Host pairing recovery journal contains too many entries');
-  }
-  const intents = journal.intents.map(decodePairingIntent);
-  if (new Set(intents.map((intent) => intent.target.profile.id)).size !== intents.length) {
-    throw new Error('Duplicate Runtime Host pairing recovery profile');
-  }
-  return intents;
+  return decodePairingIntent(journal.intent);
 }
 
 function decodePairingIntent(value: unknown): DesktopRuntimeHostPairingIntent {
@@ -150,10 +140,6 @@ function requireRemoteTarget(
     profile: decodeRemoteRuntimeHostProfile(target.profile),
     credential: requireCredential(target.credential),
   };
-}
-
-function pairingCredentialStore(clientDataRoot: string) {
-  return createFileCredentialStore(join(clientDataRoot, 'runtime-host-client'));
 }
 
 function requireCredential(value: unknown): string {
