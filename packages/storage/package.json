@@ -4,8 +4,6 @@
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
     "./activation-secret-injector": "./dist/activation-secret-injector.js",
     "./agent-graph-control-store": "./dist/agent-graph-control-store.js",

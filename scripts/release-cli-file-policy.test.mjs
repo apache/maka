@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   isMakaDevelopmentArtifact,
@@ -52,5 +54,39 @@ describe('CLI release file policy', () => {
 
   test('leaves a third-party test-only directory alone', () => {
     assert.equal(isThirdPartyDevelopmentArtifact('dist/test-only/index.js'), false);
+  });
+});
+
+describe('CLI release smoke script imports', () => {
+  // importInstalled() loads built files by path, so neither the export maps
+  // nor the typechecker notice when a target module stops being emitted. The
+  // dist trees this asserts against are kept fresh by check:stale, which runs
+  // ahead of this suite in check:release.
+  test('every workspace module the smoke script imports by path still exists', () => {
+    const repoRoot = resolve(import.meta.dirname, '..');
+    const smokeScript = readFileSync(
+      join(repoRoot, 'scripts/smoke-release-cli-package.mjs'),
+      'utf8',
+    );
+    const workspaceDirByPackageName = new Map(
+      readdirSync(join(repoRoot, 'packages')).flatMap((directory) => {
+        const manifestPath = join(repoRoot, 'packages', directory, 'package.json');
+        if (!existsSync(manifestPath)) return [];
+        return [[JSON.parse(readFileSync(manifestPath, 'utf8')).name, directory]];
+      }),
+    );
+    const literals = [
+      ...smokeScript.matchAll(/'node_modules\/(@maka\/[^/']+)\/(dist\/[^']+\.js)'/gu),
+    ];
+    assert.ok(literals.length > 0, 'expected the smoke script to import workspace dist files');
+    for (const [literal, packageName, distPath] of literals) {
+      const workspaceDir = workspaceDirByPackageName.get(packageName);
+      assert.ok(workspaceDir, `${literal} names an unknown workspace package`);
+      const builtPath = join(repoRoot, 'packages', workspaceDir, distPath);
+      assert.ok(
+        existsSync(builtPath),
+        `${literal} imports a module the build no longer emits: ${builtPath}`,
+      );
+    }
   });
 });

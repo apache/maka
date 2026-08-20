@@ -61,17 +61,34 @@ test('does not expose baseline receipt issuance on the public Git workspace serv
 
 test('does not expose artifact-only workspace creation through the public storage API', async () => {
   // The package has no barrel: reachability is decided by the `exports` map.
-  // These internals live in modules it does not publish, so no consumer can
-  // import them at all.
-  const { readFile } = await import('node:fs/promises');
+  // Asserting on the map's targets alone would miss a published entrypoint
+  // re-exporting an internal module, so this loads every published entrypoint
+  // and checks the union of the symbols a consumer can actually reach.
   const manifest = JSON.parse(
     await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
   ) as { exports: Record<string, string> };
-  const published = new Set(Object.values(manifest.exports));
-  assert.equal(published.has('./dist/git-workspace-service.js'), false);
-  assert.equal(published.has('./dist/managed-workspace-execution-authority-internal.js'), false);
-  assert.equal(published.has('./dist/managed-workspace-worker-bridge-internal.js'), false);
-  assert.equal(published.has('./dist/index.js'), false);
+  const reachable = new Set<string>();
+  await Promise.all(
+    Object.values(manifest.exports).map(async (target) => {
+      const entrypoint = (await import(new URL(`../../${target}`, import.meta.url).href)) as object;
+      for (const name of Object.keys(entrypoint)) reachable.add(name);
+    }),
+  );
+  for (const internalSymbol of [
+    'createGitWorkspaceService',
+    'GitWorkspaceServiceError',
+    'createManagedWorkspaceWorkerBridgeInternal',
+    'ManagedWorkspaceWorkerBridgeError',
+    'ManagedWorkspaceExecutionAuthorityError',
+    'issueManagedWorkspaceExecutionHandleInternal',
+    'requireManagedWorkspaceExecutionHandleInternal',
+    'issueManagedWorkspaceExecutionScopeInternal',
+    'revokeManagedWorkspaceExecutionScopeInternal',
+    'requireManagedWorkspaceExecutionScopeInternal',
+    'managedWorkspaceExecutionAuthorityTestSupport',
+  ]) {
+    assert.equal(reachable.has(internalSymbol), false, internalSymbol);
+  }
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
