@@ -68,7 +68,7 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.deepEqual(decodeClientFrame(hello), expected);
   });
 
-  test('publishes a new compatibility epoch for proxy discovery and OAuth failures', () => {
+  test('publishes a new compatibility epoch for actionable OAuth failures', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 28);
   });
 

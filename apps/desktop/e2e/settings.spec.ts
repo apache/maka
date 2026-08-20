@@ -48,58 +48,16 @@ test('settings hides expanded workbar chrome and restores it on close', async ({
   await expect(taskTab).toBeVisible();
 });
 
-test('network settings presents a detected proxy and restores its defaults', async ({
-  proxySettingsWindow: page,
-}, testInfo) => {
-  const detectedProxy = page.getByText(
-    '检测到环境变量代理：http://127.0.0.1:17897',
-  );
-  await expect(detectedProxy).toBeVisible();
-  await expect(page.getByRole('button', { name: '测试并采用' })).toBeVisible();
+test('settings section jump opens the network recovery target', async ({ window: page }) => {
+  await page.getByRole('button', { name: '设置' }).click();
+  const networkTitle = page.locator('#network-settings-section-title');
+  await expect(networkTitle).toHaveCount(0);
 
-  await page.evaluate(async () => {
-    await window.maka.settings.update({
-      network: {
-        proxy: {
-          enabled: true,
-          protocol: 'socks5',
-          host: '127.0.0.2',
-          port: 1088,
-          authEnabled: true,
-          username: 'proxy-user',
-          password: 'proxy-password',
-          bypassList: ['custom.test'],
-          autoBypassDomains: [],
-        },
-      },
-    });
-  });
-  await page.reload();
-
-  await page.getByRole('button', { name: '恢复默认设置' }).click();
-  await expect(page.getByText('恢复代理默认设置？')).toBeVisible();
-  await page.getByRole('button', { name: '恢复默认', exact: true }).click();
-  await expect(page.getByText('已恢复代理默认设置')).toBeVisible();
-  await expect(detectedProxy).toBeVisible();
-
-  const restoredProxy = await page.evaluate(async () =>
-    (await window.maka.settings.get()).network.proxy,
-  );
-  expect(restoredProxy).toEqual({
-    enabled: false,
-    protocol: 'http',
-    host: '127.0.0.1',
-    port: 7890,
-    authEnabled: false,
-    username: '',
-    password: '',
-    bypassList: ['metaso.cn', 'baidu.com'],
-    autoBypassDomains: ['localhost', '127.0.0.1', '::1', '192.168.*', '10.*', '*.local'],
+  await page.evaluate(() => {
+    window.dispatchEvent(new CustomEvent('maka:jumpToSettingsSection', {
+      detail: { section: 'general', focusId: 'network-settings-section-title' },
+    }));
   });
 
-  await detectedProxy.scrollIntoViewIfNeeded();
-  await page.screenshot({
-    path: testInfo.outputPath('proxy-detection.png'),
-    fullPage: true,
-  });
+  await expect(networkTitle).toBeVisible();
 });

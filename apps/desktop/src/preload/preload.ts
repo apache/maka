@@ -146,7 +146,6 @@ import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpd
 import type { ConfigCategory } from '@maka/storage';
 import {
   SENSITIVE_PLACEHOLDER,
-  type DetectNetworkProxyResult,
   type TestProxyInput,
 } from '@maka/core/settings/network-settings';
 import type { Result } from '@maka/core/result';
@@ -2341,9 +2340,6 @@ const makaBridge = {
     },
     subscribeExternalChanged(handler: () => void, host?: DesktopRuntimeHostRef): () => void {
       return subscribeSelectedRuntimeHostEvent('settings:externalChanged', host, handler);
-    },
-    detectNetworkProxy(host?: DesktopRuntimeHostRef): Promise<DetectNetworkProxyResult> {
-      return invokeSelectedRuntimeHost(host, 'settings:detectNetworkProxy');
     },
     testNetworkProxy(input?: TestProxyInput, host?: DesktopRuntimeHostRef): Promise<SettingsTestResult> {
       return invokeSelectedRuntimeHost(host, 'settings:testNetworkProxy', input);

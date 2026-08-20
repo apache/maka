@@ -1069,10 +1069,6 @@ export class DesktopRuntimeHostClient {
     return this.request("interaction.query", input);
   }
 
-  detectNetworkProxy(): Promise<OperationOutput<"network-proxy.detect">> {
-    return this.request("network-proxy.detect", {});
-  }
-
   testNetworkProxy(
     input: OperationInput<"network-proxy.test">,
   ): Promise<OperationOutput<"network-proxy.test">> {

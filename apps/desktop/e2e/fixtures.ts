@@ -400,7 +400,6 @@ export const test = base.extend<{
   gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;
   linkColorWindow: Page;
-  proxySettingsWindow: Page;
   projectSidebarWindow: Page;
   parentRemovalWindow: Page;
   promptRailWindow: Page;
@@ -449,21 +448,6 @@ export const test = base.extend<{
       readinessSelector: '.settingsBotConfigDocLink',
       e2eFixtureScenario: 'settings-bots-onboarding',
     }, use);
-  },
-  proxySettingsWindow: async ({}, use) => {
-    const inheritedProxy = process.env.HTTPS_PROXY;
-    process.env.HTTPS_PROXY = 'http://127.0.0.1:17897';
-    try {
-      await withE2eWindow({
-        seed: false,
-        readinessSelector: '[aria-labelledby="network-settings-section-title"]',
-        e2eFixtureScenario: 'settings-general',
-        locale: 'zh',
-      }, use);
-    } finally {
-      if (inheritedProxy === undefined) delete process.env.HTTPS_PROXY;
-      else process.env.HTTPS_PROXY = inheritedProxy;
-    }
   },
   // A real project with several sessions. Shown because the contract under
   // test is native focus order across independently interactive row controls.

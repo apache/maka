@@ -175,7 +175,8 @@ export function SettingsSurface(props: {
   // PR-MODEL-OAUTH-SECTION-0: ProvidersPanel's OAuth cards dispatch a
   // `maka:jumpToSettingsSection` window event to navigate between
   // Settings sections without threading another prop through. The event
-  // payload is the destination SettingsSection id.
+  // payload names the destination SettingsSection and may name a target
+  // inside it for recovery guidance.
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<{
@@ -879,9 +880,6 @@ function SettingsPageBody(props: {
           defaultSlug={props.defaultSlug}
           connectionsBridge={props.connectionsBridge}
           runtimeHostStatus={props.runtimeHostStatus}
-          detectNetworkProxy={props.runtimeHost
-            ? () => window.maka.settings.detectNetworkProxy(props.runtimeHost)
-            : undefined}
           testNetworkProxy={props.runtimeHost
             ? (input) => window.maka.settings.testNetworkProxy(input, props.runtimeHost)
             : undefined}

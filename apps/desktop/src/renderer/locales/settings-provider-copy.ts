@@ -159,7 +159,7 @@ const zhCopy = {
     incomplete: '登录未完成', incompleteRetry: '登录未完成，请重新打开浏览器授权。', loginFailed: '登录失败',
     logoutDescription: '将删除本机保存的订阅凭据，之后需要重新登录才能继续使用这些 OAuth 模型。', logout: '退出登录', cancel: '取消',
     loggedOut: '已退出登录', credentialsCleared: '本地凭据已清除。', logoutFailed: '退出失败', logoutFailedRetry: '退出登录失败，请稍后重试。',
-    reverifyFailedRetry: '重新验证失败，请稍后重试。', serviceUnavailable: '登录服务暂时不可用，请检查网络后重试。', networkUnavailable: '无法连接登录服务，请检查网络或代理设置并测试连接后重试。', unsupportedRegion: '当前网络出口所在地区不受登录服务支持，请配置可用代理并测试连接后重试。', openNetworkSettings: '网络设置',
+    reverifyFailedRetry: '重新验证失败，请稍后重试。', serviceUnavailable: '登录服务暂时不可用，请检查网络后重试。', networkUnavailable: '无法连接登录服务，请在网络设置中检查代理配置，然后重试登录。', unsupportedRegion: '当前网络出口所在地区不受登录服务支持，请在网络设置中配置可用代理，然后重试登录。', openNetworkSettings: '网络设置',
     logoutTitle: (name: string) => `退出 ${name} 登录？`,
   },
   oauthSection: {
@@ -307,7 +307,7 @@ const enCopy: ProviderSettingsCopy = {
     incomplete: 'Sign-in incomplete', incompleteRetry: 'Sign-in did not finish. Reopen the browser authorization and try again.', loginFailed: 'Sign-in failed',
     logoutDescription: 'This removes the locally stored subscription credentials. You must sign in again to use these OAuth models.', logout: 'Sign out', cancel: 'Cancel',
     loggedOut: 'Signed out', credentialsCleared: 'Local credentials cleared.', logoutFailed: 'Sign-out failed', logoutFailedRetry: 'Sign-out failed. Try again later.',
-    reverifyFailedRetry: 'Verification failed. Try again later.', serviceUnavailable: 'The sign-in service is temporarily unavailable. Check the network and try again.', networkUnavailable: 'Could not reach the sign-in service. Check the network or proxy settings, test the connection, and try again.', unsupportedRegion: 'The sign-in service does not support the current network region. Configure and test an available proxy, then try again.', openNetworkSettings: 'Network settings',
+    reverifyFailedRetry: 'Verification failed. Try again later.', serviceUnavailable: 'The sign-in service is temporarily unavailable. Check the network and try again.', networkUnavailable: 'Could not reach the sign-in service. Check the proxy configuration in Network settings, then retry sign-in.', unsupportedRegion: 'The sign-in service does not support the current network region. Configure an available proxy in Network settings, then retry sign-in.', openNetworkSettings: 'Network settings',
     logoutTitle: (name: string) => `Sign out of ${name}?`,
   },
   oauthSection: {

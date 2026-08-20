@@ -7,21 +7,16 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settings-section";
-import {
-  createDefaultSettings,
-  type AppSettings,
-  type ChatDefaultPermissionMode,
-  type NetworkProxySettings,
-  type ShellPreference,
-  type UpdateAppSettingsResult,
+import type {
+  AppSettings,
+  ChatDefaultPermissionMode,
+  ShellPreference,
+  NetworkProxySettings,
+  UpdateAppSettingsResult,
 } from '@maka/core/settings';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { LlmConnection } from '@maka/core/llm-connections';
-import type {
-  DetectNetworkProxyResult,
-  NetworkProxyCandidate,
-  TestProxyInput,
-} from "@maka/core/settings/network-settings";
+import type { TestProxyInput } from "@maka/core/settings/network-settings";
 import { buildChatModelChoices } from "@maka/core/chat-model-choice";
 import {
   Button,
@@ -58,7 +53,6 @@ export function GeneralSettingsPage(props: {
   defaultSlug: string | null;
   connectionsBridge: Pick<RuntimeHostSettingsConnectionsBridge, 'setDefaultModel'> | undefined;
   runtimeHostStatus: 'loading' | 'ready' | 'unavailable' | 'error';
-  detectNetworkProxy?(): Promise<DetectNetworkProxyResult>;
   testNetworkProxy?(input: TestProxyInput): Promise<import('@maka/core/settings').SettingsTestResult>;
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
@@ -189,7 +183,6 @@ export function GeneralSettingsPage(props: {
             <NetworkProxySection
               settings={props.settings}
               onUpdate={props.onUpdate}
-              detectNetworkProxy={props.detectNetworkProxy}
               testNetworkProxy={props.testNetworkProxy!}
             />
           </SettingsSection>
@@ -547,7 +540,6 @@ function GeneralDefaultsCard(props: {
 
 function NetworkProxySection(props: {
   settings: AppSettings;
-  detectNetworkProxy?(): Promise<DetectNetworkProxyResult>;
   testNetworkProxy(input: TestProxyInput): Promise<import('@maka/core/settings').SettingsTestResult>;
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
@@ -556,13 +548,8 @@ function NetworkProxySection(props: {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).general;
   const persistedProxy = props.settings.network.proxy;
-  const [detection, setDetection] = useState<
-    { status: 'loading' | 'none' } | { status: 'found'; candidate: NetworkProxyCandidate }
-  >({ status: props.detectNetworkProxy && !persistedProxy.enabled ? 'loading' : 'none' });
   const [testing, setTesting] = useState(false);
-  const [adopting, setAdopting] = useState(false);
-  const [resetting, setResetting] = useState(false);
-  const proxyTestGuard = useActionGuard<'test' | 'adopt' | 'reset'>();
+  const proxyTestGuard = useActionGuard<"test">();
   const toast = useToast();
   const {
     draft: proxyDraft,
@@ -586,62 +573,6 @@ function NetworkProxySection(props: {
 
   function updateProxy(patch: Partial<NetworkProxySettings>) {
     return update(patch);
-  }
-
-  async function detectProxy() {
-    if (!props.detectNetworkProxy) return;
-    setDetection({ status: 'loading' });
-    try {
-      const result = await props.detectNetworkProxy();
-      if (!networkPageMountedRef.current) return;
-      setDetection(result.candidate
-        ? { status: 'found', candidate: result.candidate }
-        : { status: 'none' });
-    } catch {
-      if (networkPageMountedRef.current) setDetection({ status: 'none' });
-    }
-  }
-
-  useEffect(() => {
-    if (!persistedProxy.enabled) void detectProxy();
-    // Detect once when this Host's network section mounts. The callback prop
-    // is recreated by SettingsSurface and must not restart discovery.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function adoptDetectedProxy(candidate: NetworkProxyCandidate) {
-    if (candidate.requiresAuthentication || !proxyTestGuard.begin('adopt')) return;
-    setAdopting(true);
-    try {
-      const result = await props.testNetworkProxy({ proxy: candidate.proxy });
-      if (!networkPageMountedRef.current) return;
-      if (!result.ok) {
-        toast.error(copy.proxyTestFailed, settingsTestResultMessage(result, locale));
-        return;
-      }
-      const saved = await updateProxy({
-        enabled: true,
-        protocol: candidate.proxy.type,
-        host: candidate.proxy.host,
-        port: candidate.proxy.port,
-        authEnabled: false,
-        username: '',
-        password: '',
-        bypassList: candidate.proxy.bypassList.length > 0
-          ? candidate.proxy.bypassList
-          : proxyDraftRef.current.bypassList,
-      });
-      if (saved && networkPageMountedRef.current) {
-        toast.success(copy.detectedProxyEnabled, copy.proxyReachable);
-      }
-    } catch (error) {
-      if (networkPageMountedRef.current) {
-        toast.error(copy.proxyTestError, settingsActionErrorMessage(error, locale));
-      }
-    } finally {
-      proxyTestGuard.finish();
-      if (networkPageMountedRef.current) setAdopting(false);
-    }
   }
 
   async function testProxy() {
@@ -672,38 +603,6 @@ function NetworkProxySection(props: {
     }
   }
 
-  async function resetProxy() {
-    if (!proxyTestGuard.begin('reset')) return;
-    try {
-      const confirmed = await toast.confirm({
-        title: copy.resetProxyConfirmTitle,
-        description: copy.resetProxyConfirmDescription,
-        confirmLabel: copy.resetProxyConfirm,
-        cancelLabel: copy.resetProxyCancel,
-        destructive: true,
-      });
-      if (!confirmed || !networkPageMountedRef.current) return;
-      setResetting(true);
-      const defaults = createDefaultSettings().network.proxy;
-      const saved = await updateProxy({
-        ...defaults,
-        bypassList: [...defaults.bypassList],
-        autoBypassDomains: [...defaults.autoBypassDomains],
-      });
-      if (saved && networkPageMountedRef.current) {
-        toast.success(copy.resetProxyComplete);
-        void detectProxy();
-      }
-    } catch (error) {
-      if (networkPageMountedRef.current) {
-        toast.error(copy.resetProxyFailed, settingsActionErrorMessage(error, locale));
-      }
-    } finally {
-      proxyTestGuard.finish();
-      if (networkPageMountedRef.current) setResetting(false);
-    }
-  }
-
   return (
     <>
       <SettingsRow
@@ -718,49 +617,6 @@ function NetworkProxySection(props: {
           />
         }
       />
-      {!proxyDraft.enabled && props.detectNetworkProxy && (
-        <SettingsField>
-          {detection.status === 'found' ? (
-            <Banner
-              status="info"
-              title={copy.detectedProxy(
-                detection.candidate.source === 'system'
-                  ? copy.systemProxy
-                  : copy.environmentProxy,
-                `${detection.candidate.proxy.type}://${detection.candidate.proxy.host}:${detection.candidate.proxy.port}`,
-              )}
-              description={detection.candidate.requiresAuthentication
-                ? copy.detectedProxyAuthHelp
-                : copy.detectedProxyHelp}
-              endContent={!detection.candidate.requiresAuthentication ? (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  isLoading={adopting}
-                  onClick={() => void adoptDetectedProxy(detection.candidate)}
-                  label={copy.testAndUseDetected}
-                />
-              ) : undefined}
-            />
-          ) : (
-            <Banner
-              status="info"
-              title={detection.status === 'loading'
-                ? copy.detectingProxy
-                : copy.noProxyDetected}
-              description={detection.status === 'none' ? copy.noProxyDetectedHelp : undefined}
-              endContent={detection.status === 'none' ? (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => void detectProxy()}
-                  label={copy.detectAgain}
-                />
-              ) : undefined}
-            />
-          )}
-        </SettingsField>
-      )}
       {proxyDraft.enabled && (
         <>
           <SettingsField>
@@ -846,26 +702,16 @@ function NetworkProxySection(props: {
             />
           </SettingsField>
 
+          <SettingsActions>
+            <Button
+              variant="primary"
+              isLoading={testing}
+              onClick={() => void testProxy()}
+              label={copy.testCurrent}
+            />
+          </SettingsActions>
         </>
       )}
-      <SettingsActions>
-        <Button
-          variant="secondary"
-          isLoading={resetting}
-          isDisabled={testing || adopting}
-          onClick={() => void resetProxy()}
-          label={copy.resetProxy}
-        />
-        {proxyDraft.enabled && (
-          <Button
-            variant="primary"
-            isLoading={testing}
-            isDisabled={resetting}
-            onClick={() => void testProxy()}
-            label={copy.testCurrent}
-          />
-        )}
-      </SettingsActions>
     </>
   );
 }

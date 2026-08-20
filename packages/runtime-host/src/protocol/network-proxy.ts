@@ -1,9 +1,5 @@
 import type { RuntimePolicy } from '@maka/core/runtime-policy';
-import type {
-  DetectNetworkProxyResult,
-  NetworkProxyCandidate,
-  TestProxyResult,
-} from '@maka/core/settings/network-settings';
+import type { TestProxyResult } from '@maka/core/settings/network-settings';
 import {
   requireEncodedByteLimit,
   requireExactRecord,
@@ -32,20 +28,8 @@ export interface NetworkProxyTestInput {
 }
 
 export type NetworkProxyTestResult = TestProxyResult;
-export type NetworkProxyDetectResult = DetectNetworkProxyResult;
 
 export const NETWORK_PROXY_OPERATION_SPECS = {
-  'network-proxy.detect': defineOperation<
-    Record<string, never>,
-    NetworkProxyDetectResult,
-    (typeof ERRORS)[number]
-  >({
-    mode: 'query',
-    availability: 'ready',
-    errors: ERRORS,
-    decodeInput: decodeNetworkProxyDetectInput,
-    decodeOutput: decodeNetworkProxyDetectResult,
-  }),
   'network-proxy.test': defineOperation<
     NetworkProxyTestInput,
     NetworkProxyTestResult,
@@ -58,58 +42,6 @@ export const NETWORK_PROXY_OPERATION_SPECS = {
     decodeOutput: decodeNetworkProxyTestResult,
   }),
 } as const;
-
-function decodeNetworkProxyDetectInput(value: unknown): Record<string, never> {
-  requireExactRecord(value, 'network proxy detection input', []);
-  return {};
-}
-
-function decodeNetworkProxyDetectResult(value: unknown): NetworkProxyDetectResult {
-  const result = requireShapedRecord(value, 'network proxy detection result', [], ['candidate']);
-  return result.candidate === undefined
-    ? {}
-    : { candidate: decodeNetworkProxyCandidate(result.candidate) };
-}
-
-function decodeNetworkProxyCandidate(value: unknown): NetworkProxyCandidate {
-  const candidate = requireExactRecord(value, 'network proxy candidate', [
-    'source',
-    'proxy',
-    'requiresAuthentication',
-  ]);
-  if (candidate.source !== 'environment' && candidate.source !== 'system') {
-    throw invalidProtocolFrame('Invalid network proxy candidate source');
-  }
-  if (typeof candidate.requiresAuthentication !== 'boolean') {
-    throw invalidProtocolFrame('Invalid network proxy authentication requirement');
-  }
-  const proxy = requireShapedRecord(
-    candidate.proxy,
-    'network proxy candidate configuration',
-    ['enabled', 'type', 'host', 'port', 'bypassList'],
-    [],
-  );
-  if (
-    proxy.enabled !== true ||
-    (proxy.type !== 'http' && proxy.type !== 'https' && proxy.type !== 'socks5') ||
-    typeof proxy.host !== 'string' ||
-    proxy.host.length === 0 ||
-    proxy.host.length > 255
-  ) {
-    throw invalidProtocolFrame('Invalid network proxy candidate configuration');
-  }
-  return {
-    source: candidate.source,
-    proxy: {
-      enabled: true,
-      type: proxy.type,
-      host: proxy.host,
-      port: boundedInteger(proxy.port, 1, 65_535, 'network proxy candidate port'),
-      bypassList: stringList(proxy.bypassList, 'network proxy candidate bypass list'),
-    },
-    requiresAuthentication: candidate.requiresAuthentication,
-  };
-}
 
 function decodeNetworkProxyTestInput(value: unknown): NetworkProxyTestInput {
   const input = requireShapedRecord(
