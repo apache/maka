@@ -2,7 +2,7 @@
 
 Inventory of cryptographic functionality and dependencies in the Maka source tree, prepared to support the ASF export-control review tracked in [#3273](https://github.com/apache/maka/issues/3273) (G6 of #2974).
 
-**Outcome: mentor guidance is that no BIS notification and no exports-matrix entry are required for Maka**, on the basis that it develops no cryptographic algorithm of its own. See §K. This document is the supporting evidence for that determination, not the determination itself — it records what is in the tree and what the determination rests on, so a later reviewer can check it rather than take it on trust. Progress tracking and the remaining exit criteria live in #3273.
+**Outcome: mentor guidance is that no BIS notification and no exports-matrix entry are required for Maka**, on the basis that it develops no cryptographic algorithm of its own. See §K. This document is the record of that determination and of the evidence behind it, so a later reviewer can check the reasoning rather than take it on trust. Progress tracking and the remaining exit criteria live in #3273.
 
 ## Scope and method
 
@@ -144,7 +144,7 @@ Sections §A–§H are exhaustive for the tracked source. **§J is not exhaustiv
 
 **Mentor guidance: no BIS notification and no exports-matrix entry are required for Maka.** The basis given is that Maka develops no cryptographic algorithm of its own and uses existing third-party dependencies, so the ASF notification process does not apply to it.
 
-This guidance was given privately. **Exit criteria 4 and 5 of #3273 need it recorded publicly by an appropriate party** — the issue's own wording allows closing on "the authoritative determination that no entry is needed" rather than on a filed notification. Until that public record exists, this document is supporting evidence for a determination, not the determination itself.
+#3273 allows closing on "the authoritative determination that no entry is needed" rather than on a filed notification. **This document, once reviewed and merged, is that determination on the public record**, and the sections below are the evidence it rests on.
 
 **The observed practice supports it.** Recent ASF projects that use standard cryptography through their language runtime are absent from the exports matrix — OpenDAL, Doris, Iceberg, Pekko, Kvrocks, Celeborn, StreamPark, and Answer are all unlisted, and OpenDAL carries no crypto notice in its repository. Projects that do appear either implement cryptography or bundle a cryptographic library: Apache Impala's entry reads "2.7.0 and later / 5D002 / ASF, The OpenSSL Project" because it bundles OpenSSL. Podling status is not a barrier either way; Hop, Impala, and Milagro all have incubating-era entries.
 
