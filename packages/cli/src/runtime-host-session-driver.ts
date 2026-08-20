@@ -568,6 +568,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       summary = runtimeHostSessionSummary(session);
       await assertSessionResumeAvailable(summary, this.#executionLocation);
     }
+    // Leaving the current Session must not orphan its live user commands:
+    // the switch replaces the transcript, so their cards and the Ctrl+C stop
+    // affordance would disappear while the commands keep running. Await the
+    // start-barrier-aware stop path before changing Session identity so an
+    // in-flight start cannot land after the switch (#3210).
+    await this.stopUserCommands();
     const expectedChannelGeneration = this.#channelGeneration;
     const nextSessionGeneration = this.#sessionGeneration + 1;
     const opened = await this.#openSessionChannel(sessionId, nextSessionGeneration);
@@ -660,6 +666,13 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   }
 
   startNewSession(): void {
+    // `/new` replaces the transcript without preserving user-command cards,
+    // so a still-running command would lose both its projection and its
+    // Ctrl+C stop affordance. Stop tracked commands before the identity
+    // change; the generation/pending bump is synchronous, so an in-flight
+    // start self-stops when it resolves even though this method stays sync
+    // (#3210).
+    void this.stopUserCommands().catch(() => undefined);
     this.#sessionGeneration += 1;
     this.#channelGeneration += 1;
     this.#sessionId = null;
