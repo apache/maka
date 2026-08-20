@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
@@ -115,12 +115,46 @@ test('every published entrypoint target is emitted by the build', async () => {
   }
 });
 
-test('no source file imports the retired bare specifier', { timeout: 60_000 }, async () => {
+/**
+ * Published entrypoints no file outside this package imports today. They
+ * predate the barrel removal, so retiring them is a separate compatibility
+ * decision; this list may only shrink. The assertion is exact in both
+ * directions — gaining a consumer means removing the entry, and publishing a
+ * new consumer-less entrypoint fails outright.
+ */
+const PREEXISTING_UNCONSUMED_ENTRYPOINTS = [
+  './activation-secret-injector',
+  './encrypted-file-managed-secret-store',
+  './managed-secret-store',
+  './work-board-store',
+  './write-queue',
+];
+
+interface StorageImportScan {
+  bareImporters: string[];
+  subpathImporters: Map<string, string[]>;
+  externalSubpaths: Set<string>;
+}
+
+let storageImportScan: Promise<StorageImportScan> | undefined;
+
+/** Collects every `@maka/storage` import specifier in the repository's sources, once. */
+function scanStorageImports(): Promise<StorageImportScan> {
+  storageImportScan ??= runStorageImportScan();
+  return storageImportScan;
+}
+
+async function runStorageImportScan(): Promise<StorageImportScan> {
   const repoRoot = resolve(packageRoot, '../..');
-  const barePattern = /(?:from\s*|import\s*\(\s*|require\s*\(\s*)['"]@maka\/storage['"]/u;
+  const specifierPattern =
+    /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)['"]@maka\/storage(\/[^'"]*)?['"]/gu;
   const sourceExtensions = /\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/u;
   const skipped = new Set(['node_modules', 'dist', '.git']);
-  const offenders: string[] = [];
+  const scan: StorageImportScan = {
+    bareImporters: [],
+    subpathImporters: new Map(),
+    externalSubpaths: new Set(),
+  };
   async function walk(directory: string): Promise<void> {
     const entries = await readdir(directory, { withFileTypes: true });
     await Promise.all(
@@ -129,27 +163,78 @@ test('no source file imports the retired bare specifier', { timeout: 60_000 }, a
         const path = join(directory, entry.name);
         if (entry.isDirectory()) return walk(path);
         if (!sourceExtensions.test(entry.name)) return;
-        if (barePattern.test(await readFile(path, 'utf8'))) offenders.push(path);
+        const source = await readFile(path, 'utf8');
+        for (const match of source.matchAll(specifierPattern)) {
+          if (!match[1]) {
+            scan.bareImporters.push(path);
+            continue;
+          }
+          const subpath = `.${match[1]}`;
+          const importers = scan.subpathImporters.get(subpath) ?? [];
+          importers.push(path);
+          scan.subpathImporters.set(subpath, importers);
+          if (relative(packageRoot, path).startsWith('..')) scan.externalSubpaths.add(subpath);
+        }
       }),
     );
   }
   await Promise.all(
     ['packages', 'apps', 'scripts'].map((directory) => walk(join(repoRoot, directory))),
   );
+  return scan;
+}
+
+test('no source file imports the retired bare specifier', { timeout: 60_000 }, async () => {
+  const { bareImporters } = await scanStorageImports();
   assert.deepEqual(
-    offenders,
+    bareImporters,
     [],
     'bare `@maka/storage` imports resolve to the removed `.` entrypoint and fail at runtime',
   );
 });
 
+test('published entrypoints and their consumers match exactly', { timeout: 60_000 }, async () => {
+  const exports = await publishedEntrypoints();
+  const { subpathImporters, externalSubpaths } = await scanStorageImports();
+  const unpublished = [...subpathImporters.keys()].filter((subpath) => !(subpath in exports));
+  assert.deepEqual(unpublished.sort(), [], 'imported subpaths missing from the exports map');
+  const unconsumed = Object.keys(exports).filter((subpath) => !externalSubpaths.has(subpath));
+  assert.deepEqual(
+    unconsumed.sort(),
+    PREEXISTING_UNCONSUMED_ENTRYPOINTS,
+    'each published subpath is a compatibility promise — publish it when a consumer exists',
+  );
+});
+
+/** Caps concurrent probe children at `limit`; the outer test runner is already concurrent. */
+async function mapWithConcurrency<Item, Result>(
+  items: Item[],
+  limit: number,
+  task: (item: Item) => Promise<Result>,
+): Promise<Result[]> {
+  const results: Result[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const index = next;
+        next += 1;
+        results[index] = await task(items[index]);
+      }
+    }),
+  );
+  return results;
+}
+
 test('only the declared entrypoints load node:sqlite', { timeout: 120_000 }, async () => {
   const exports = await publishedEntrypoints();
-  const results = await Promise.all(
-    Object.entries(exports).map(async ([subpath, target]) => ({
+  const results = await mapWithConcurrency(
+    Object.entries(exports),
+    4,
+    async ([subpath, target]) => ({
       subpath,
       sqlite: await loadsSqlite(target),
-    })),
+    }),
   );
   const actual = results
     .filter((entry) => entry.sqlite)

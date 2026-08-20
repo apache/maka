@@ -57,17 +57,15 @@ describe('CLI release file policy', () => {
   });
 });
 
-describe('CLI release smoke script imports', () => {
-  // importInstalled() loads built files by path, so neither the export maps
-  // nor the typechecker notice when a target module stops being emitted. The
-  // dist trees this asserts against are kept fresh by check:stale, which runs
+describe('script imports of workspace build output', () => {
+  // Scripts load built files by path — installed under node_modules or straight
+  // out of packages/*/dist — so neither the export maps nor the typechecker
+  // notice when a target module stops being emitted. This walks every script
+  // and asserts each such literal names a file the build still produces. The
+  // dist trees it asserts against are kept fresh by check:stale, which runs
   // ahead of this suite in check:release.
-  test('every workspace module the smoke script imports by path still exists', () => {
+  test('every workspace dist module a script references by path still exists', () => {
     const repoRoot = resolve(import.meta.dirname, '..');
-    const smokeScript = readFileSync(
-      join(repoRoot, 'scripts/smoke-release-cli-package.mjs'),
-      'utf8',
-    );
     const workspaceDirByPackageName = new Map(
       readdirSync(join(repoRoot, 'packages')).flatMap((directory) => {
         const manifestPath = join(repoRoot, 'packages', directory, 'package.json');
@@ -75,18 +73,44 @@ describe('CLI release smoke script imports', () => {
         return [[JSON.parse(readFileSync(manifestPath, 'utf8')).name, directory]];
       }),
     );
-    const literals = [
-      ...smokeScript.matchAll(/'node_modules\/(@maka\/[^/']+)\/(dist\/[^']+\.js)'/gu),
-    ];
-    assert.ok(literals.length > 0, 'expected the smoke script to import workspace dist files');
-    for (const [literal, packageName, distPath] of literals) {
-      const workspaceDir = workspaceDirByPackageName.get(packageName);
-      assert.ok(workspaceDir, `${literal} names an unknown workspace package`);
-      const builtPath = join(repoRoot, 'packages', workspaceDir, distPath);
-      assert.ok(
-        existsSync(builtPath),
-        `${literal} imports a module the build no longer emits: ${builtPath}`,
-      );
+    const scriptPaths = [];
+    const collectScripts = (directory) => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) collectScripts(path);
+        else if (/\.(?:mjs|cjs|js)$/u.test(entry.name)) scriptPaths.push(path);
+      }
+    };
+    collectScripts(join(repoRoot, 'scripts'));
+    const targets = new Map();
+    for (const scriptPath of scriptPaths) {
+      const source = readFileSync(scriptPath, 'utf8');
+      for (const [literal, packageName, distPath] of source.matchAll(
+        /['"`]node_modules\/(@maka\/[^/'"`]+)\/(dist\/[^'"`]+\.js)['"`]/gu,
+      )) {
+        const workspaceDir = workspaceDirByPackageName.get(packageName);
+        assert.ok(workspaceDir, `${literal} in ${scriptPath} names an unknown workspace package`);
+        targets.set(
+          join(repoRoot, 'packages', workspaceDir, distPath),
+          `${scriptPath}: ${literal}`,
+        );
+      }
+      for (const [literal, workspaceDir, distPath] of source.matchAll(
+        /['"`](?:\.\.\/)*packages\/([^/'"`]+)\/(dist\/[^'"`]+\.js)['"`]/gu,
+      )) {
+        assert.ok(
+          existsSync(join(repoRoot, 'packages', workspaceDir)),
+          `${literal} in ${scriptPath} names an unknown workspace directory`,
+        );
+        targets.set(
+          join(repoRoot, 'packages', workspaceDir, distPath),
+          `${scriptPath}: ${literal}`,
+        );
+      }
+    }
+    assert.ok(targets.size > 0, 'expected scripts to reference workspace dist files');
+    for (const [builtPath, reference] of targets) {
+      assert.ok(existsSync(builtPath), `${reference} names a module the build no longer emits`);
     }
   });
 });

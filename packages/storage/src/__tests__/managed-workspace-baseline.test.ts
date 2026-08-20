@@ -86,6 +86,11 @@ test('does not expose artifact-only workspace creation through the public storag
     'revokeManagedWorkspaceExecutionScopeInternal',
     'requireManagedWorkspaceExecutionScopeInternal',
     'managedWorkspaceExecutionAuthorityTestSupport',
+    'createSqliteArtifactStoreWriteAuthority',
+    'migrateOperationalStateDatabaseInternal',
+    'inspectOperationalStateSchema',
+    'OperationalStateMigrationBlockedError',
+    'withCredentialFileLock',
   ]) {
     assert.equal(reachable.has(internalSymbol), false, internalSymbol);
   }
