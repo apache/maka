@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const defaultRepoRoot = resolve(import.meta.dirname, '..');
@@ -23,6 +23,18 @@ const requiredRootFiles = [...requiredReleaseDocuments, 'package.json', 'package
 const forbiddenSegments = new Set(['.agents', '.claude', '.git', '.maka-shots', 'node_modules']);
 const forbiddenRootFiles = new Set(['maka-proposal-zh-review.txt']);
 const maxCommandBuffer = 64 * 1024 * 1024;
+const rejectedGpgStatuses = new Set([
+  'BADSIG',
+  'ERRSIG',
+  'EXPKEYSIG',
+  'EXPSIG',
+  'FAILURE',
+  'KEYEXPIRED',
+  'KEYREVOKED',
+  'NODATA',
+  'NO_PUBKEY',
+  'REVKEYSIG',
+]);
 
 export function sourceCandidateIdentity(version) {
   if (!versionPattern.test(version) || version.includes('incubating')) {
@@ -94,11 +106,8 @@ export async function createSourceCandidate({
   const identity = sourceCandidateIdentity(version);
   const commit = git(repositoryRoot, ['rev-parse', '--verify', `${revision}^{commit}`]).trim();
   const packageJson = JSON.parse(git(repositoryRoot, ['show', `${commit}:package.json`]));
-  if (packageJson.version !== version) {
-    throw new Error(
-      `Version ${version} does not match package.json at ${commit}: ${packageJson.version}`,
-    );
-  }
+  const packageLock = JSON.parse(git(repositoryRoot, ['show', `${commit}:package-lock.json`]));
+  validatePackageVersions({ packageJson, packageLock, version, source: `commit ${commit}` });
 
   validateTrackedNames(repositoryRoot, commit);
   mkdirSync(outputDirectory, { recursive: true, mode: 0o755 });
@@ -139,7 +148,6 @@ export async function createSourceCandidate({
 export async function verifySourceCandidate({
   archivePath,
   keysPath,
-  requireSignature = false,
   signaturePath = `${archivePath}.asc`,
 }) {
   const archiveName = basename(archivePath);
@@ -156,15 +164,14 @@ export async function verifySourceCandidate({
     throw new Error(`SHA-512 mismatch for ${archiveName}`);
   }
 
-  const entries = execFileSync('tar', ['-tzf', archivePath], {
+  const entries = execTar(archivePath, ['-tzf'], {
     encoding: 'utf8',
     maxBuffer: maxCommandBuffer,
   }).split(/\r?\n/);
   validateArchiveEntries(entries, identity.rootDirectory);
   validateArchiveContents(archivePath, identity);
 
-  if (requireSignature || keysPath) {
-    if (!keysPath) throw new Error('--keys is required when verifying a signature');
+  if (keysPath) {
     if (!existsSync(signaturePath)) {
       throw new Error(`Detached signature does not exist: ${signaturePath}`);
     }
@@ -174,31 +181,73 @@ export async function verifySourceCandidate({
   return { ...identity, archivePath, checksumPath, digest: actualDigest, signaturePath };
 }
 
-export async function signSourceCandidate({ archivePath, keyFingerprint }) {
-  if (!/^[0-9a-fA-F]{16,64}$/.test(keyFingerprint)) {
-    throw new Error('A full or long-form hexadecimal PGP key fingerprint is required');
+export async function reproduceSourceCandidate({
+  archivePath,
+  repositoryRoot = defaultRepoRoot,
+  revision,
+}) {
+  if (!revision) throw new Error('An immutable revision is required to reproduce a candidate');
+  const candidate = await verifySourceCandidate({ archivePath });
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-asf-reproduce-'));
+  try {
+    const reproduced = await createSourceCandidate({
+      outputDirectory: temporaryRoot,
+      repositoryRoot,
+      revision,
+      version: candidate.version,
+    });
+    if (!readFileSync(archivePath).equals(readFileSync(reproduced.archivePath))) {
+      throw new Error(`Candidate bytes do not match ${reproduced.commit} rebuilt on this machine`);
+    }
+    return { ...candidate, commit: reproduced.commit };
+  } finally {
+    rmSync(temporaryRoot, { force: true, recursive: true });
   }
-  await verifySourceCandidate({ archivePath });
+}
+
+export async function signSourceCandidate({
+  archivePath,
+  gpgHome,
+  keyFingerprint,
+  repositoryRoot = defaultRepoRoot,
+  revision,
+}) {
+  if (!/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/.test(keyFingerprint)) {
+    throw new Error('A complete hexadecimal PGP key fingerprint is required');
+  }
+  const normalizedFingerprint = keyFingerprint.toUpperCase();
+  const selectedFingerprint = resolveSigningKeyFingerprint(normalizedFingerprint, gpgHome);
+  if (selectedFingerprint !== normalizedFingerprint) {
+    throw new Error(
+      `Selected signing key ${selectedFingerprint} does not match ${normalizedFingerprint}`,
+    );
+  }
+  const reproduced = await reproduceSourceCandidate({ archivePath, repositoryRoot, revision });
   const signaturePath = `${archivePath}.asc`;
   if (existsSync(signaturePath)) {
     throw new Error(`Refusing to overwrite existing detached signature: ${signaturePath}`);
   }
-  execFileSync(
-    'gpg',
-    [
-      '--armor',
-      '--detach-sign',
-      '--local-user',
-      keyFingerprint,
-      '--output',
-      signaturePath,
-      archivePath,
-    ],
-    { stdio: 'inherit' },
-  );
-  chmodSync(signaturePath, 0o644);
-  execFileSync('gpg', ['--verify', signaturePath, archivePath], { stdio: 'inherit' });
-  return signaturePath;
+  try {
+    execFileSync(
+      'gpg',
+      [
+        '--armor',
+        '--detach-sign',
+        '--local-user',
+        normalizedFingerprint,
+        '--output',
+        signaturePath,
+        archivePath,
+      ],
+      { stdio: 'inherit', ...gpgHomeOption(gpgHome) },
+    );
+    chmodSync(signaturePath, 0o644);
+    verifyGpgSignature({ archivePath, gpgHome, signaturePath });
+  } catch (error) {
+    rmSync(signaturePath, { force: true });
+    throw error;
+  }
+  return { commit: reproduced.commit, signaturePath };
 }
 
 function git(repositoryRoot, arguments_, options = {}) {
@@ -221,6 +270,21 @@ function validateTrackedNames(repositoryRoot, commit) {
   }
 }
 
+export function validatePackageVersions({ packageJson, packageLock, source, version }) {
+  const versions = [
+    ['package.json', packageJson.version],
+    ['package-lock.json', packageLock.version],
+    ['package-lock.json packages[""]', packageLock.packages?.['']?.version],
+  ];
+  for (const [name, actualVersion] of versions) {
+    if (actualVersion !== version) {
+      throw new Error(
+        `Version ${version} does not match ${name} in ${source}: ${String(actualVersion)}`,
+      );
+    }
+  }
+}
+
 async function writeSha512File(archivePath, checksumPath) {
   const digest = await sha512(archivePath);
   writeFileSync(checksumPath, `${digest}  ${basename(archivePath)}\n`, {
@@ -237,33 +301,38 @@ async function sha512(path) {
 
 function validateArchiveContents(archivePath, identity) {
   for (const requiredFile of requiredReleaseDocuments) {
-    const contents = execFileSync(
-      'tar',
-      ['-xOzf', archivePath, `${identity.rootDirectory}/${requiredFile}`],
-      { encoding: 'utf8', maxBuffer: maxCommandBuffer },
-    );
+    const contents = execTar(archivePath, ['-xOzf', `${identity.rootDirectory}/${requiredFile}`], {
+      encoding: 'utf8',
+      maxBuffer: maxCommandBuffer,
+    });
     if (!contents.trim()) throw new Error(`${requiredFile} is empty`);
   }
-  const disclaimer = execFileSync(
-    'tar',
-    ['-xOzf', archivePath, `${identity.rootDirectory}/DISCLAIMER-WIP`],
-    { encoding: 'utf8', maxBuffer: maxCommandBuffer },
-  );
+  const disclaimer = execTar(archivePath, ['-xOzf', `${identity.rootDirectory}/DISCLAIMER-WIP`], {
+    encoding: 'utf8',
+    maxBuffer: maxCommandBuffer,
+  });
   if (!disclaimer.includes('Apache Maka') || !disclaimer.includes('incubation')) {
     throw new Error('DISCLAIMER-WIP does not identify Apache Maka as an incubating project');
   }
 
   const packageJson = JSON.parse(
-    execFileSync('tar', ['-xOzf', archivePath, `${identity.rootDirectory}/package.json`], {
+    execTar(archivePath, ['-xOzf', `${identity.rootDirectory}/package.json`], {
       encoding: 'utf8',
       maxBuffer: maxCommandBuffer,
     }),
   );
-  if (packageJson.version !== identity.version) {
-    throw new Error(
-      `Archive version ${identity.version} does not match package.json: ${packageJson.version}`,
-    );
-  }
+  const packageLock = JSON.parse(
+    execTar(archivePath, ['-xOzf', `${identity.rootDirectory}/package-lock.json`], {
+      encoding: 'utf8',
+      maxBuffer: maxCommandBuffer,
+    }),
+  );
+  validatePackageVersions({
+    packageJson,
+    packageLock,
+    source: basename(archivePath),
+    version: identity.version,
+  });
 }
 
 function verifyDetachedSignature({ archivePath, keysPath, signaturePath }) {
@@ -274,14 +343,82 @@ function verifyDetachedSignature({ archivePath, keysPath, signaturePath }) {
     execFileSync('gpg', ['--batch', '--homedir', temporaryHome, '--import', keysPath], {
       stdio: 'inherit',
     });
-    execFileSync(
-      'gpg',
-      ['--batch', '--homedir', temporaryHome, '--verify', signaturePath, archivePath],
-      { stdio: 'inherit' },
-    );
+    verifyGpgSignature({ archivePath, gpgHome: temporaryHome, signaturePath });
   } finally {
     rmSync(temporaryHome, { force: true, recursive: true });
   }
+}
+
+function execTar(archivePath, arguments_, options) {
+  return execFileSync('tar', [arguments_[0], basename(archivePath), ...arguments_.slice(1)], {
+    cwd: dirname(archivePath),
+    ...options,
+  });
+}
+
+function gpgHomeOption(gpgHome) {
+  return gpgHome ? { env: { ...process.env, GNUPGHOME: gpgHome } } : {};
+}
+
+function resolveSigningKeyFingerprint(keyFingerprint, gpgHome) {
+  const output = execFileSync(
+    'gpg',
+    ['--batch', '--with-colons', '--fingerprint', '--list-secret-keys', keyFingerprint],
+    { encoding: 'utf8', maxBuffer: maxCommandBuffer, ...gpgHomeOption(gpgHome) },
+  );
+  let expectsPrimaryFingerprint = false;
+  const primaryFingerprints = [];
+  for (const line of output.split(/\r?\n/)) {
+    const fields = line.split(':');
+    if (fields[0] === 'sec') {
+      expectsPrimaryFingerprint = true;
+      continue;
+    }
+    if (fields[0] === 'fpr' && expectsPrimaryFingerprint) {
+      primaryFingerprints.push(fields[9]?.toUpperCase());
+      expectsPrimaryFingerprint = false;
+    }
+  }
+  if (primaryFingerprints.length !== 1 || !primaryFingerprints[0]) {
+    throw new Error(`Expected exactly one secret key for fingerprint ${keyFingerprint}`);
+  }
+  return primaryFingerprints[0];
+}
+
+export function validateGpgVerificationStatus(statusOutput) {
+  const statuses = statusOutput
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('[GNUPG:] '))
+    .map((line) => line.slice('[GNUPG:] '.length).split(' '));
+  const rejected = statuses.find(([status]) => rejectedGpgStatuses.has(status));
+  if (rejected) throw new Error(`GPG rejected the signature with status ${rejected[0]}`);
+  const goodSignatures = statuses.filter(([status]) => status === 'GOODSIG');
+  const validSignatures = statuses.filter(([status]) => status === 'VALIDSIG');
+  if (goodSignatures.length !== 1 || validSignatures.length !== 1) {
+    throw new Error('GPG did not report exactly one good, valid signature');
+  }
+  return {
+    fingerprint: validSignatures[0][1],
+    primaryFingerprint: validSignatures[0][10] ?? validSignatures[0][1],
+  };
+}
+
+function verifyGpgSignature({ archivePath, gpgHome, signaturePath }) {
+  const result = spawnSync(
+    'gpg',
+    ['--batch', '--status-fd', '1', '--verify', signaturePath, archivePath],
+    {
+      encoding: 'utf8',
+      maxBuffer: maxCommandBuffer,
+      ...gpgHomeOption(gpgHome),
+    },
+  );
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.error) throw result.error;
+  const signature = validateGpgVerificationStatus(result.stdout);
+  if (result.status !== 0)
+    throw new Error(`GPG verification failed with exit code ${result.status}`);
+  return signature;
 }
 
 function parseCommandLine(arguments_) {
@@ -290,11 +427,6 @@ function parseCommandLine(arguments_) {
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
     if (!token.startsWith('--')) throw new Error(`Unexpected argument: ${token}`);
-    if (token === '--require-signature') {
-      if (options.has('require-signature')) throw new Error(`Duplicate option: ${token}`);
-      options.set('require-signature', true);
-      continue;
-    }
     const value = tokens[index + 1];
     if (!value || value.startsWith('--')) throw new Error(`Missing value for ${token}`);
     const name = token.slice(2);
@@ -333,23 +465,24 @@ async function main() {
     return;
   }
   if (command === 'verify') {
-    validateOptions(options, new Set(['artifact', 'keys', 'require-signature']));
+    validateOptions(options, new Set(['artifact', 'keys']));
     const result = await verifySourceCandidate({
       archivePath: resolve(requireOption(options, 'artifact')),
       keysPath: options.get('keys') ? resolve(options.get('keys')) : undefined,
-      requireSignature: options.get('require-signature') === true,
     });
     console.log(`Verified ${result.archivePath}`);
     console.log(`SHA-512 ${result.digest}`);
     return;
   }
   if (command === 'sign') {
-    validateOptions(options, new Set(['artifact', 'key']));
-    const signaturePath = await signSourceCandidate({
+    validateOptions(options, new Set(['artifact', 'key', 'revision']));
+    const result = await signSourceCandidate({
       archivePath: resolve(requireOption(options, 'artifact')),
       keyFingerprint: requireOption(options, 'key'),
+      revision: requireOption(options, 'revision'),
     });
-    console.log(`Created ${signaturePath}`);
+    console.log(`Reproduced commit ${result.commit}`);
+    console.log(`Created ${result.signaturePath}`);
     return;
   }
   throw new Error('Usage: asf-source-release.mjs <create|verify|sign> [options]');

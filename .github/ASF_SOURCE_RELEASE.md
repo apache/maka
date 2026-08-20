@@ -66,7 +66,8 @@ and publish it through the normal reviewed Git process:
 
 ```sh
 git tag -s v<version>-incubating-rc<rc> <full-commit-sha>
-git show v<version>-incubating-rc<rc>
+git verify-tag v<version>-incubating-rc<rc>
+git show --no-patch --format=fuller v<version>-incubating-rc<rc>^{commit}
 ```
 
 Pushing the tag is a separate authenticated maintainer action. Confirm its
@@ -75,14 +76,23 @@ target and signature before publishing it; the automation does not push tags.
 ## Sign locally
 
 Never place a Release Manager's private PGP key in GitHub Actions or the
-repository. Download the unsigned workflow artifact, compare its SHA-512 with
-the workflow output, and sign it on the Release Manager's machine:
+repository. Download the unsigned workflow artifact and its SHA-512 file onto
+the Release Manager's machine. In a clean, trusted checkout containing the
+verified candidate tag, run:
 
 ```sh
 npm run release:asf:sign -- \
   --artifact <candidate-dir>/apache-maka-<version>-incubating-src.tar.gz \
-  --key <full-pgp-fingerprint>
+  --key <full-pgp-fingerprint> \
+  --revision v<version>-incubating-rc<rc>
 ```
+
+The signing command first validates the downloaded SHA-512 and archive, rebuilds
+the archive from the specified revision on the Release Manager's hardware, and
+requires the rebuilt and downloaded archives to be byte-for-byte identical. It
+then resolves the selected secret key to the exact full fingerprint before
+creating the detached signature. A workflow-produced digest alone is not an
+independent trust check and is insufficient for signing.
 
 Export the matching public key for the podling `KEYS` file when needed:
 
@@ -100,9 +110,11 @@ from the reviewed `KEYS` file:
 ```sh
 npm run release:asf:verify -- \
   --artifact <candidate-dir>/apache-maka-<version>-incubating-src.tar.gz \
-  --require-signature \
   --keys <path-to-reviewed-KEYS>
 ```
+
+Supplying `--keys` requires a detached signature. Verification rejects expired
+or revoked keys and signatures as well as bad or missing signatures.
 
 ## Stage on Apache dist/dev
 
@@ -125,10 +137,12 @@ the vote email.
 
 ## Independent verification
 
-At least one voter other than the Release Manager should download all candidate
-files and the published `KEYS` over HTTPS, run the repository verifier, inspect
-the archive, and build/test from the extracted source. Voters should record the
-commit, SHA-512, signing-key fingerprint, platform, and commands used.
+Before casting a binding `+1`, every voter must download all signed source
+packages and the published `KEYS` over HTTPS onto their own hardware, validate
+ASF release-policy compliance and all cryptographic signatures, inspect the
+archive, and compile/test the extracted source. Non-binding voters are strongly
+encouraged to perform the same checks. Voters should record the commit, SHA-512,
+signing-key fingerprint, platform, and commands used.
 
 ## Podling vote template
 

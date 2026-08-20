@@ -24,12 +24,15 @@ jobs:
     name: Build and test source archive
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      CANDIDATE_PATH: release/asf/apache-maka-${{ inputs.version }}-incubating-src.tar.gz
+      RC_NUMBER: ${{ inputs.rc_number }}
+      RELEASE_SHA: ${{ github.sha }}
+      RELEASE_VERSION: ${{ inputs.version }}
     steps:
       - name: Require main and valid release identity
         env:
-          RC_NUMBER: ${{ inputs.rc_number }}
           RELEASE_REF: ${{ github.ref }}
-          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           if [[ "$RELEASE_REF" != "refs/heads/main" ]]; then
             echo "ASF source candidates must be dispatched from main; found $RELEASE_REF" >&2
@@ -47,7 +50,7 @@ jobs:
       - name: Check out the candidate commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -72,27 +75,20 @@ jobs:
           fi
 
       - name: Create the unsigned source candidate
-        env:
-          RELEASE_SHA: ${{ github.sha }}
-          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           npm run release:asf:source -- \
             --version "$RELEASE_VERSION" \
             --revision "$RELEASE_SHA"
 
       - name: Verify archive structure and SHA-512
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           npm run release:asf:verify -- \
-            --artifact "release/asf/apache-maka-${RELEASE_VERSION}-incubating-src.tar.gz"
+            --artifact "$CANDIDATE_PATH"
 
       - name: Extract the exact candidate
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           mkdir candidate-source
-          tar -xzf "release/asf/apache-maka-${RELEASE_VERSION}-incubating-src.tar.gz" \
+          tar -xzf "$CANDIDATE_PATH" \
             --strip-components=1 \
             -C candidate-source
 
@@ -116,9 +112,9 @@ jobs:
           npm run build
           npm run typecheck
 
-      - name: Run release checks from the extracted source
+      - name: Run ASF source checks from the extracted source
         working-directory: candidate-source
-        run: npm run check:release
+        run: npm run check:asf-source
 
       - name: Test the extracted source
         working-directory: candidate-source
@@ -130,8 +126,8 @@ jobs:
         with:
           name: apache-maka-${{ inputs.version }}-incubating-rc${{ inputs.rc_number }}-unsigned
           path: |
-            release/asf/apache-maka-${{ inputs.version }}-incubating-src.tar.gz
-            release/asf/apache-maka-${{ inputs.version }}-incubating-src.tar.gz.sha512
+            ${{ env.CANDIDATE_PATH }}
+            ${{ env.CANDIDATE_PATH }}.sha512
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
@@ -139,9 +135,6 @@ jobs:
       - name: Record Release Manager handoff
         env:
           ARTIFACT_URL: ${{ steps.candidate.outputs.artifact-url }}
-          RC_NUMBER: ${{ inputs.rc_number }}
-          RELEASE_SHA: ${{ github.sha }}
-          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           {
             echo "## Unsigned ASF source candidate"
@@ -152,6 +145,7 @@ jobs:
             echo "- Artifact: $ARTIFACT_URL"
             echo
             echo "This workflow does not create an ASF release candidate by itself."
-            echo "A Release Manager must sign the archive locally, verify it against KEYS,"
+            echo "A Release Manager must reproduce these exact bytes from the recorded commit,"
+            echo "sign the archive locally, verify it against KEYS,"
             echo "and stage the immutable archive, .sha512, and .asc files on Apache dist/dev."
           } >> "$GITHUB_STEP_SUMMARY"

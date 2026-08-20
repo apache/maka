@@ -1,14 +1,26 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   createSourceCandidate,
   parseSha512File,
+  reproduceSourceCandidate,
+  signSourceCandidate,
   sourceCandidateIdentity,
   validateArchiveEntries,
+  validateGpgVerificationStatus,
+  validatePackageVersions,
   verifySourceCandidate,
 } from './asf-source-release.mjs';
 
@@ -62,6 +74,43 @@ describe('ASF source release verification', () => {
           root,
         ),
       /Forbidden archive entry/,
+    );
+  });
+
+  test('requires one current valid GPG signature status', () => {
+    const fingerprint = 'A'.repeat(40);
+    assert.deepEqual(
+      validateGpgVerificationStatus(
+        `[GNUPG:] GOODSIG ABCDEF0123456789 Release Test\n[GNUPG:] VALIDSIG ${fingerprint} 2026-08-20 1787193600 0 4 0 1 10 00 ${fingerprint}\n`,
+      ),
+      { fingerprint, primaryFingerprint: fingerprint },
+    );
+    for (const status of ['EXPKEYSIG', 'EXPSIG', 'KEYEXPIRED', 'KEYREVOKED', 'REVKEYSIG']) {
+      assert.throws(
+        () =>
+          validateGpgVerificationStatus(
+            `[GNUPG:] ${status} ABCDEF0123456789 Release Test\n[GNUPG:] GOODSIG ABCDEF0123456789 Release Test\n[GNUPG:] VALIDSIG ${fingerprint} 2026-08-20 1787193600 0 4 0 1 10 00 ${fingerprint}\n`,
+          ),
+        new RegExp(status),
+      );
+    }
+  });
+
+  test('requires package and lockfile versions to share one identity', () => {
+    const packageJson = { version: '0.1.12' };
+    const packageLock = { packages: { '': { version: '0.1.12' } }, version: '0.1.12' };
+    assert.doesNotThrow(() =>
+      validatePackageVersions({ packageJson, packageLock, source: 'fixture', version: '0.1.12' }),
+    );
+    assert.throws(
+      () =>
+        validatePackageVersions({
+          packageJson,
+          packageLock: { ...packageLock, version: '9.9.9' },
+          source: 'fixture',
+          version: '0.1.12',
+        }),
+      /package-lock\.json.*9\.9\.9/,
     );
   });
 
@@ -138,9 +187,72 @@ describe('ASF source release verification', () => {
       assert.deepEqual(readFileSync(first.checksumPath), readFileSync(second.checksumPath));
       await assert.doesNotReject(() => verifySourceCandidate({ archivePath: first.archivePath }));
 
-      const entries = execFileSync('tar', ['-tzf', first.archivePath], { encoding: 'utf8' });
+      const entries = execFileSync('tar', ['-tzf', basename(first.archivePath)], {
+        cwd: dirname(first.archivePath),
+        encoding: 'utf8',
+      });
       assert.doesNotMatch(entries, /untracked\.txt/);
       assert.doesNotMatch(entries, /\.claude|\.maka-shots|maka-proposal-zh-review/);
+
+      const gpgHome = join(temporaryRoot, 'gnupg');
+      const keysPath = join(temporaryRoot, 'KEYS');
+      mkdirSync(gpgHome, { mode: 0o700 });
+      chmodSync(gpgHome, 0o700);
+      execFileSync(
+        'gpg',
+        [
+          '--batch',
+          '--homedir',
+          gpgHome,
+          '--pinentry-mode',
+          'loopback',
+          '--passphrase',
+          '',
+          '--quick-generate-key',
+          'ASF Release Test <release-test@example.invalid>',
+          'rsa2048',
+          'sign',
+          '1d',
+        ],
+        { stdio: 'ignore' },
+      );
+      const fingerprint = execFileSync(
+        'gpg',
+        ['--batch', '--homedir', gpgHome, '--with-colons', '--fingerprint', '--list-secret-keys'],
+        { encoding: 'utf8' },
+      )
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('fpr:'))
+        ?.split(':')[9];
+      assert.match(fingerprint, /^[0-9A-F]{40}$/);
+      await assert.rejects(
+        () =>
+          signSourceCandidate({
+            archivePath: first.archivePath,
+            gpgHome,
+            keyFingerprint: fingerprint.slice(-16),
+            repositoryRoot,
+            revision: first.commit,
+          }),
+        /complete hexadecimal PGP key fingerprint/,
+      );
+      await assert.doesNotReject(() =>
+        signSourceCandidate({
+          archivePath: first.archivePath,
+          gpgHome,
+          keyFingerprint: fingerprint,
+          repositoryRoot,
+          revision: first.commit,
+        }),
+      );
+      execFileSync(
+        'gpg',
+        ['--batch', '--homedir', gpgHome, '--armor', '--output', keysPath, '--export', fingerprint],
+        { stdio: 'ignore' },
+      );
+      await assert.doesNotReject(() =>
+        verifySourceCandidate({ archivePath: first.archivePath, keysPath }),
+      );
 
       symlinkSync(repositoryRoot, repositoryLink, 'dir');
       const linkedScript = join(repositoryLink, 'scripts/asf-source-release.mjs');
@@ -159,6 +271,15 @@ describe('ASF source release verification', () => {
         '-m',
         'add release script',
       ]);
+      await assert.rejects(
+        () =>
+          reproduceSourceCandidate({
+            archivePath: first.archivePath,
+            repositoryRoot,
+            revision: 'HEAD',
+          }),
+        /Candidate bytes do not match/,
+      );
       execFileSync(
         process.execPath,
         [
@@ -177,6 +298,32 @@ describe('ASF source release verification', () => {
         verifySourceCandidate({
           archivePath: join(linkedOutput, 'apache-maka-0.1.12-incubating-src.tar.gz'),
         }),
+      );
+
+      const mismatchedLock = JSON.parse(readFileSync(join(repositoryRoot, 'package-lock.json')));
+      mismatchedLock.version = '9.9.9';
+      writeFileSync(
+        join(repositoryRoot, 'package-lock.json'),
+        `${JSON.stringify(mismatchedLock, null, 2)}\n`,
+      );
+      git(repositoryRoot, ['add', 'package-lock.json']);
+      git(repositoryRoot, [
+        '-c',
+        'user.name=ASF Release Test',
+        '-c',
+        'user.email=release-test@example.invalid',
+        'commit',
+        '-m',
+        'mismatch lock version',
+      ]);
+      await assert.rejects(
+        () =>
+          createSourceCandidate({
+            outputDirectory: join(temporaryRoot, 'mismatched'),
+            repositoryRoot,
+            version: '0.1.12',
+          }),
+        /package-lock\.json.*9\.9\.9/,
       );
     } finally {
       rmSync(temporaryRoot, { force: true, recursive: true });
