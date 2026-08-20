@@ -13,6 +13,8 @@ import {
   waitForUsableRenderer,
 } from './verify-packaged-app.mjs';
 import {
+  terminateInstalledProcesses,
+  waitForInstalledProcessAppearance,
   waitForInstalledProcessesToExit,
   waitForUninstallRegistrationToClear,
 } from './verify-windows-installer-lifecycle.mjs';
@@ -236,6 +238,97 @@ describe('waitForInstalledProcessesToExit', () => {
           pollIntervalMs: 10,
         }),
       /Could not enumerate installed Maka processes within 200ms: wmi stalled/,
+    );
+  });
+});
+
+describe('waitForInstalledProcessAppearance', () => {
+  it('survives a failed probe and returns the later successful match', async () => {
+    // The regression run 32340493254 rejected on the first wedged
+    // enumeration; the contract is failure-then-success within the deadline.
+    const probes = [
+      () => Promise.reject(new Error('wmi stalled')),
+      () =>
+        Promise.resolve([
+          { processId: 7, name: 'Maka.exe', path: 'C:/nowhere/installed/Maka.exe' },
+        ]),
+    ];
+    const matched = await waitForInstalledProcessAppearance('C:/nowhere/installed', 'Maka.exe', {
+      listProcesses: () => probes.shift()(),
+      timeoutMs: 2_000,
+      pollIntervalMs: 10,
+    });
+    assert.deepEqual(
+      matched.map((processInfo) => processInfo.processId),
+      [7],
+    );
+  });
+
+  it('matches by executable basename, case-insensitively', async () => {
+    const matched = await waitForInstalledProcessAppearance('C:/nowhere/installed', 'Maka.exe', {
+      listProcesses: async () => [
+        { processId: 1, name: 'other.exe', path: 'C:/nowhere/installed/other.exe' },
+        { processId: 2, name: 'MAKA.EXE', path: 'C:/nowhere/installed/MAKA.EXE' },
+      ],
+      timeoutMs: 2_000,
+      pollIntervalMs: 10,
+    });
+    assert.deepEqual(
+      matched.map((processInfo) => processInfo.processId),
+      [2],
+    );
+  });
+
+  it('reports the last probe error only when no later enumeration succeeds', async () => {
+    await assert.rejects(
+      () =>
+        waitForInstalledProcessAppearance('C:/nowhere/installed', 'Maka.exe', {
+          listProcesses: async () => {
+            throw new Error('wmi stalled');
+          },
+          timeoutMs: 150,
+          pollIntervalMs: 10,
+        }),
+      /did not appear among installed processes within 150ms\.\nlast probe error: wmi stalled/,
+    );
+  });
+});
+
+describe('terminateInstalledProcesses', () => {
+  const process7 = { processId: 7, name: 'Maka.exe', path: 'C:/nowhere/installed/Maka.exe' };
+
+  it('tolerates exit 128 and an overrun kill, then proves exit', async () => {
+    const events = [];
+    const failures = [
+      new Error('taskkill /PID 7 /T /F failed with exit code 128'),
+      new Error('taskkill /PID 8 /T /F did not finish within 30000ms'),
+    ];
+    await terminateInstalledProcesses('C:/nowhere/installed', {
+      listProcesses: async () => [process7, { ...process7, processId: 8 }],
+      run: async (command, args) => {
+        events.push(`${command}:${args[1]}`);
+        throw failures.shift();
+      },
+      waitForExit: async () => {
+        events.push('wait');
+      },
+    });
+    // Both mechanism failures were tolerated and the authoritative exit
+    // wait still ran.
+    assert.deepEqual(events, ['taskkill:7', 'taskkill:8', 'wait']);
+  });
+
+  it('rethrows a kill failure that is not a benign mechanism shape', async () => {
+    await assert.rejects(
+      () =>
+        terminateInstalledProcesses('C:/nowhere/installed', {
+          listProcesses: async () => [process7],
+          run: async () => {
+            throw new Error('taskkill /PID 7 /T /F failed with exit code 1');
+          },
+          waitForExit: async () => assert.fail('must not reach the exit wait'),
+        }),
+      /exit code 1/,
     );
   });
 });

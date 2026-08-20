@@ -92,6 +92,82 @@ export async function waitForInstalledProcessesToExit(
   }
 }
 
+/**
+ * Wait for a named executable to appear among the installation's processes.
+ * The same probe-tolerance contract as the exit wait above, in the opposite
+ * direction: one transient WMI failure is one bad probe, not a verdict (run
+ * 32340493254 failed the relaunch wait on a single wedged enumeration while
+ * the upgraded app may already have been running). The deadline is the
+ * authority; the last probe error is evidence only when no later enumeration
+ * succeeds.
+ */
+export async function waitForInstalledProcessAppearance(
+  installDirectory,
+  executableName,
+  {
+    listProcesses = listInstalledProcesses,
+    timeoutMs = 120_000,
+    pollIntervalMs = 1_000,
+    sleep = delay,
+  } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  let lastProbeError;
+  for (;;) {
+    try {
+      const matched = (await listProcesses(installDirectory)).filter(
+        (processInfo) => basename(processInfo.path).toLowerCase() === executableName.toLowerCase(),
+      );
+      lastProbeError = undefined;
+      if (matched.length > 0) return matched;
+    } catch (error) {
+      lastProbeError = error;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `${executableName} did not appear among installed processes within ${timeoutMs}ms.` +
+          `${lastProbeError ? `\nlast probe error: ${lastProbeError.message}` : ''}`,
+        lastProbeError ? { cause: lastProbeError } : undefined,
+      );
+    }
+    await sleep(pollIntervalMs);
+  }
+}
+
+/**
+ * Stop every process running from the installation directory and prove they
+ * are gone. The kill is the mechanism, not the assertion: exit 128 (the tree
+ * was already gone) and a taskkill that overruns its own bound (observed on
+ * wedged runners, run 32378497920, while the target still died) are
+ * tolerated, because the authoritative check is the exit wait, which fails
+ * with the live process list if anything from the install tree still runs.
+ * One policy for the main path and cleanup — run 32378497920's cleanup hit
+ * the same stale-PID exit 128 through a second, stricter copy of this loop.
+ */
+export async function terminateInstalledProcesses(
+  installDirectory,
+  {
+    run = runCommand,
+    listProcesses = listInstalledProcesses,
+    waitForExit = waitForInstalledProcessesToExit,
+  } = {},
+) {
+  const processes = await listProcesses(installDirectory);
+  for (const processInfo of processes) {
+    try {
+      await run('taskkill', ['/PID', String(processInfo.processId), '/T', '/F'], {
+        timeoutMs: 30_000,
+      });
+    } catch (error) {
+      const message = String(error?.message);
+      if (!/exit code 128/.test(message) && !/did not finish within/.test(message)) {
+        throw error;
+      }
+    }
+  }
+  await waitForExit(installDirectory, { listProcesses });
+}
+
 export async function waitUntilMissing(
   path,
   { probe = access, timeoutMs = 30_000, pollIntervalMs = 250 } = {},

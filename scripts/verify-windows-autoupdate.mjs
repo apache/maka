@@ -16,8 +16,9 @@ import {
 } from './verify-packaged-app.mjs';
 import {
   installerVersion,
-  listInstalledProcesses,
   readUninstallDisplayVersions,
+  terminateInstalledProcesses,
+  waitForInstalledProcessAppearance,
   waitForInstalledProcessesToExit,
   waitForUninstallRegistrationToClear,
   waitUntilMissing,
@@ -404,18 +405,9 @@ export async function verifyWindowsAutoupdate(
     });
 
     step('waiting for the upgraded app to relaunch automatically');
-    const relaunchDeadline = Date.now() + 120_000;
-    let relaunched = [];
-    for (;;) {
-      relaunched = (await listInstalledProcesses(installDirectory)).filter(
-        (processInfo) => basename(processInfo.path).toLowerCase() === executableName.toLowerCase(),
-      );
-      if (relaunched.length > 0) break;
-      if (Date.now() >= relaunchDeadline) {
-        throw new Error('The installer did not relaunch the upgraded app within 120s.');
-      }
-      await delay(1_000);
-    }
+    const relaunched = await waitForInstalledProcessAppearance(installDirectory, executableName, {
+      timeoutMs: 120_000,
+    });
     const productVersion = await readInstalledProductVersion(installedExecutable, { run });
     try {
       assertWindowsProductVersion(productVersion, nextVersion);
@@ -475,27 +467,10 @@ export async function verifyWindowsAutoupdate(
     // isForceRunAfter relaunches without our CDP/user-data arguments, so the
     // instance is observed (it exists, and the image on disk is the new
     // version) and then stopped before it can touch further state; the
-    // environment it inherited still points at the isolated home.
-    for (const processInfo of relaunched) {
-      try {
-        await run('taskkill', ['/PID', String(processInfo.processId), '/T', '/F'], {
-          timeoutMs: 30_000,
-        });
-      } catch (error) {
-        // The kill is the mechanism, not the assertion. Exit 128 means the
-        // tree was already gone (the relaunched instance can exit on its own
-        // between the enumeration and the kill); a taskkill that exceeds its
-        // own bound has been observed on wedged runners (run 32378497920)
-        // while the target still dies. Either way the authoritative check is
-        // waitForInstalledProcessesToExit below, which fails with the live
-        // process list if anything from the install tree still runs.
-        const message = String(error?.message);
-        if (!/exit code 128/.test(message) && !/did not finish within/.test(message)) {
-          throw error;
-        }
-      }
-    }
-    await waitForInstalledProcessesToExit(installDirectory);
+    // environment it inherited still points at the isolated home. The
+    // tolerant kill-then-prove policy lives in terminateInstalledProcesses,
+    // shared with the cleanup path below.
+    await terminateInstalledProcesses(installDirectory, { run });
 
     step('running the full packaged smoke against the upgraded install');
     // The sandbox probe writes its manifest into workingDirectory before the
@@ -604,13 +579,10 @@ export async function verifyWindowsAutoupdate(
     if (installationStarted && !uninstallCompleted) {
       let exited = false;
       try {
-        const leftover = await listInstalledProcesses(installDirectory);
-        for (const processInfo of leftover) {
-          await run('taskkill', ['/PID', String(processInfo.processId), '/T', '/F'], {
-            timeoutMs: 30_000,
-          });
-        }
-        await waitForInstalledProcessesToExit(installDirectory);
+        // Same stop-and-prove policy as the main path: a stale-PID exit 128
+        // from cleanup's own taskkill (run 32378497920) must not skip the
+        // authoritative exit wait and the uninstall/registration barrier.
+        await terminateInstalledProcesses(installDirectory, { run });
         exited = true;
       } catch (error) {
         cleanupErrors.push(error);
