@@ -17,24 +17,15 @@
  * under the License.
  */
 
-import { useState } from 'react';
-import {
-  readSessionListCollapsed,
-  readSessionListWidth,
-} from './session-list-layout';
-
-/** Owns only the navigation rail portion of the application shell layout. */
-export function useShellLayout() {
-  const [sessionListWidth, setSessionListWidth] = useState(() =>
-    readSessionListWidth(),
-  );
-  const [sessionListCollapsed, setSessionListCollapsed] = useState(() =>
-    readSessionListCollapsed(),
-  );
-  return {
-    sessionListWidth,
-    setSessionListWidth,
-    sessionListCollapsed,
-    setSessionListCollapsed,
-  };
-}
+export * from './model/workbar-tabs.js';
+export * from './model/workbar-layout.js';
+export * from './model/workbar-tool-definitions.js';
+export * from './tools/artifacts/artifact-list-keyboard.js';
+export * from './tools/artifacts/artifact-visibility.js';
+export * from './tools/inspector/session-inspector-panel-model.js';
+export * from './tools/inspector/session-inspector-overview-model.js';
+export * from './tools/side-chat/quote-companion-panel-state.js';
+export * from './tools/side-chat/quote-companion-visibility.js';
+export * from './tools/terminal/session-terminal-hydration.js';
+export * from './tools/terminal/session-terminal-query.js';
+export * from './tools/inspector/use-session-trace.js';

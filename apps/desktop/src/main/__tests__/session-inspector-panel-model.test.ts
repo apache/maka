@@ -26,12 +26,12 @@ import {
   type TraceModelCallStep,
   type TraceStep,
 } from '@maka/core/session-trace';
-import { deriveInspectorPanelModel } from '../../renderer/session-inspector-panel-model.js';
 import {
+  deriveInspectorPanelModel,
   deriveInspectorOverviewModel,
   estimatedSessionCost,
   hasUnavailableSessionUsage,
-} from '../../renderer/session-inspector-overview-model.js';
+} from '../../renderer/features/workbar/testing.js';
 
 test('does not render legacy zero cost as a known free Session', () => {
   const summary = {
@@ -138,7 +138,6 @@ test('does not estimate a cache-hit ratio from partial usage', () => {
 
   assert.equal(overview.cacheHitRate, undefined);
 });
-
 test('derives per-turn cost only from priced model-call step totals', () => {
   const cases: readonly {
     name: string;

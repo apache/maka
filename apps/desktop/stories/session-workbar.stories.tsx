@@ -31,12 +31,12 @@ import type {
   DesktopSessionUsageSummary,
   MakaBridge,
 } from '../src/preload/bridge-contract';
-import { SessionWorkbar } from '../src/renderer/session-workbar';
+import { WorkbarSurface } from '../src/renderer/features/workbar';
 import {
   createSessionWorkbarPanelsState,
   createSessionWorkbarTabsState,
   openStaticSessionWorkbarTab,
-} from '../src/renderer/session-workbar-tabs';
+} from '../src/renderer/features/workbar/testing';
 import { withScopedMakaBridge } from './maka-bridge';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -700,7 +700,7 @@ function Workbar(props: {
         } as CSSProperties}
       >
         <div className="mainColumn" />
-        <SessionWorkbar
+        <WorkbarSurface
           sessionId={SESSION_ID}
           hidden={false}
           onDismissPanel={noop}

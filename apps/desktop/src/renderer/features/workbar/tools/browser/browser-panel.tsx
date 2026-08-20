@@ -45,7 +45,7 @@ import {
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
-import { getBrowserCopy, type BrowserCopy } from './locales/browser-copy';
+import { getBrowserCopy, type BrowserCopy } from '../../../../locales/browser-copy';
 
 const EMPTY_STATE: BrowserState = {
   url: '',

@@ -38,7 +38,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { UserQuestionResponse } from '@maka/core/user-question';
-import type { RendererIngestInput } from '../preload/bridge-contract.js';
+import type { RendererIngestInput } from '../../../../../preload/bridge-contract.js';
 import {
   abandonPendingCompanionCopy,
   applyCompanionInteractionEvent,
@@ -51,8 +51,8 @@ import {
   type CompanionErrorCode,
   type EnsureCompanionForkResult,
 } from './quote-companion-core';
-import { mergeSettledMessages, readSettledMessages } from './session-message-settlement';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { mergeSettledMessages, readSettledMessages } from '../../../../session-message-settlement';
+import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
 import {
   snapshotCompanionQuotes,
   type CompanionQuoteSnapshot,

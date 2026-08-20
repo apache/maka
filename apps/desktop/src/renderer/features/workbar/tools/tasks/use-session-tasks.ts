@@ -21,7 +21,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
 import { type Task } from '@maka/core/task-ledger';
 import { useUiLocale } from '@maka/ui';
-import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
+import { getShellRemainingCopy } from '../../../../locales/shell-remaining-copy.js';
 
 interface SessionTaskSnapshot {
   sessionId?: string;

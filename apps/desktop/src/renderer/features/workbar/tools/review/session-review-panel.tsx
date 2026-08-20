@@ -31,7 +31,7 @@ import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/c
 import { type GitReviewReadResult } from '@maka/core/git-review';
 import { DiffCodePreview, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, GitBranch } from '@maka/ui/icons';
-import { getDesktopConversationCopy } from './locales/conversation-copy';
+import { getDesktopConversationCopy } from '../../../../locales/conversation-copy';
 
 const REVIEW_FILE_PAGE_SIZE = 20;
 const REVIEW_DIFF_LINE_CAP = 500;

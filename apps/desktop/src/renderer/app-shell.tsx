@@ -88,24 +88,25 @@ import { LiveTurnReconciler } from './live-turn-reconciler';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion } from './chat-composer-region';
-import { ChatWorkbar } from './chat-workbar';
-import type {
-  SessionWorkbarPlacement,
-  SessionWorkbarTab,
-  SessionWorkbarTabKind,
-} from './session-workbar-tabs';
 import {
-  findPreferredSideChatWorkbarTab,
-  terminalRefFromWorkbarTab,
-  terminalSessionWorkbarTabId,
-} from './session-workbar-tabs';
-import {
+  WorkbarHost,
+  applyCompanionForkVisibilityEvent,
   consumeCompanionInitialPrompt,
   consumeCompanionQuoteSnapshot,
+  findPreferredSideChatWorkbarTab,
   openCompanionPanel,
+  reconcileCompanionForkVisibility,
+  recoverOrphanedCompanionCopies,
   removeStagedCompanionQuote,
   stageCompanionQuote,
-} from './quote-companion-panel-state';
+  terminalRefFromWorkbarTab,
+  terminalSessionWorkbarTabId,
+  useSideConversationWorkspace,
+  useWorkbarLayoutState,
+  type SessionWorkbarPlacement,
+  type SessionWorkbarTab,
+  type SessionWorkbarTabKind,
+} from './features/workbar';
 import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from './new-task-reload-intent';
 import { useNewTaskChoice } from './use-new-task-choice';
 import { NEW_TASK_PENDING_KEY } from './app-shell-pending-attachments';
@@ -116,10 +117,6 @@ import {
   mergeWorkspaceReferences,
   resolveFollowUpModeAtSubmit,
 } from './follow-up-submit-routing';
-import {
-  applyCompanionForkVisibilityEvent,
-  reconcileCompanionForkVisibility,
-} from './quote-companion-visibility';
 import {
   PlanExecutionPanel,
   PlanProposalCard,
@@ -239,8 +236,6 @@ import { useShellChatModel } from './use-shell-chat-model';
 import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellLayout } from './use-shell-layout';
 import { useShellResume } from './use-shell-resume';
-import { recoverOrphanedCompanionCopies } from './quote-companion-core';
-import { useSideConversationWorkspace } from './use-side-conversation-workspace';
 
 function rebaseWorkspaceFileReferences(
   sourceText: string,
@@ -1610,6 +1605,8 @@ function AppShellContent({
     setSessionListWidth,
     sessionListCollapsed,
     setSessionListCollapsed,
+  } = useShellLayout();
+  const {
     workbarCollapsed,
     setWorkbarCollapsed,
     bottomPanelOpen,
@@ -1630,7 +1627,7 @@ function AppShellContent({
     titleWorkbarTab,
     pinWorkbarTab,
     openWorkbarLauncher,
-  } = useShellLayout();
+  } = useWorkbarLayoutState();
   const openNewSideConversation = useCallback(
     (placement: SessionWorkbarPlacement, initialPrompt?: string) => {
       const sourceSessionId = activeIdRef.current;
@@ -2741,11 +2738,6 @@ function AppShellContent({
     sessionListCollapsed,
     sessionListWidth,
     sessionListViewMode: viewMode,
-    workbarCollapsed,
-    workbarWidth,
-    bottomPanelOpen,
-    bottomPanelHeight,
-    workbarPanelsState,
     themePalette,
     themePref,
   });
@@ -3746,12 +3738,12 @@ function AppShellContent({
                 ) : null}
               </ChatSurfaceLayout>
             </div>
-            {/* Rendered collapsed too: ChatWorkbar's own box is what the
+            {/* Rendered collapsed too: WorkbarHost's own box is what the
                 collapse animates, and it has to be in the tree on both sides of
                 the toggle for there to be an animation at all. The column
                 inside it still unmounts. */}
             {navSelection.section === 'sessions' && activeId && (
-              <ChatWorkbar
+              <WorkbarHost
                 activeId={activeId}
                 rightCollapsed={workbarCollapsed}
                 bottomOpen={bottomPanelOpen}

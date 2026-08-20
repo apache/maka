@@ -67,7 +67,7 @@ import { Banner } from '@astryxdesign/core/Banner';
 import { CodeBlock } from '@astryxdesign/core/CodeBlock';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { RegistryArtifactPreview } from './artifact-preview-registry-shell';
-import { getArtifactCopy, type ArtifactCopy } from './locales/artifact-copy';
+import { getArtifactCopy, type ArtifactCopy } from '../../../../locales/artifact-copy';
 
 export function ArtifactPreview(props: { record: ArtifactDescriptor; onShowInFolder?: () => void }) {
   const { record, onShowInFolder } = props;

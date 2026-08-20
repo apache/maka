@@ -43,10 +43,6 @@ import {
   recordSessionEventStreamChange,
   recordSessionEventStreamEvent,
 } from './session-event-health';
-import {
-  persistableSessionWorkbarPanels,
-  type SessionWorkbarPanelsState,
-} from './session-workbar-tabs.js';
 import type {
   DesktopRuntimeHostProfileChangedEvent,
   WindowCommand,
@@ -143,11 +139,6 @@ export function useAppShellPersistenceEffects(options: {
   sessionListCollapsed: boolean;
   sessionListWidth: number;
   sessionListViewMode: SessionViewMode;
-  workbarCollapsed: boolean;
-  workbarWidth: number;
-  bottomPanelOpen: boolean;
-  bottomPanelHeight: number;
-  workbarPanelsState: SessionWorkbarPanelsState;
   themePalette: ThemePalette;
   themePref: ThemePreference;
 }) {
@@ -189,41 +180,6 @@ export function useAppShellPersistenceEffects(options: {
   useEffect(() => {
     writeSessionListViewMode(options.sessionListViewMode);
   }, [options.sessionListViewMode]);
-
-  useEffect(() => {
-    const handle = window.setTimeout(() => {
-      safeLocalStorageSet('maka-session-workbar-width-v1', String(options.workbarWidth));
-    }, LAYOUT_PERSIST_DEBOUNCE_MS);
-    return () => window.clearTimeout(handle);
-  }, [options.workbarWidth]);
-
-  useEffect(() => {
-    safeLocalStorageSet('maka-session-workbar-collapsed-v1', options.workbarCollapsed ? 'true' : 'false');
-  }, [options.workbarCollapsed]);
-
-  useEffect(() => {
-    const handle = window.setTimeout(() => {
-      safeLocalStorageSet(
-        'maka-session-bottom-panel-height-v1',
-        String(options.bottomPanelHeight),
-      );
-    }, LAYOUT_PERSIST_DEBOUNCE_MS);
-    return () => window.clearTimeout(handle);
-  }, [options.bottomPanelHeight]);
-
-  useEffect(() => {
-    safeLocalStorageSet(
-      'maka-session-bottom-panel-open-v1',
-      options.bottomPanelOpen ? 'true' : 'false',
-    );
-  }, [options.bottomPanelOpen]);
-
-  useEffect(() => {
-    safeLocalStorageSet(
-      'maka-session-workbar-panels-v3',
-      JSON.stringify(persistableSessionWorkbarPanels(options.workbarPanelsState)),
-    );
-  }, [options.workbarPanelsState]);
 
   // Persist the active destination and each hub's last selected module.
   // Strict localStorage availability check — Vite dev sometimes runs through

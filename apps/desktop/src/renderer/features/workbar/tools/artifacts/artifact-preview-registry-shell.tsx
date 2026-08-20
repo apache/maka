@@ -31,7 +31,7 @@ import {
   formatPreviewSize,
   resolvePreviewKind,
 } from '@maka/ui/artifact-preview-registry';
-import { getArtifactCopy, type ArtifactCopy } from './locales/artifact-copy';
+import { getArtifactCopy, type ArtifactCopy } from '../../../../locales/artifact-copy';
 
 /**
  * Top-level dispatcher: classifies the record and renders the

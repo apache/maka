@@ -34,7 +34,7 @@ import {
   getDesktopConversationCopy,
   type InspectorCopy,
   inspectorStepKindLabel,
-} from './locales/conversation-copy.js';
+} from '../../../../locales/conversation-copy.js';
 import {
   deriveInspectorOverviewModel,
   estimatedSessionCost,

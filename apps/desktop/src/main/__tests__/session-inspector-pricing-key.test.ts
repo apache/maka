@@ -24,7 +24,7 @@ import {
   type SessionTrace,
   type TraceModelAttempt,
 } from '@maka/core/session-trace';
-import { deriveInspectorPanelModel } from '../../renderer/session-inspector-panel-model.js';
+import { deriveInspectorPanelModel } from '../../renderer/features/workbar/testing.js';
 
 describe('Session Inspector Pricing key', () => {
   test('uses the canonical provider rather than the connection slug for an unpriced call', () => {

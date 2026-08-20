@@ -1,0 +1,125 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type {
+  SessionWorkbarPlacement,
+  SessionWorkbarTabKind,
+} from './workbar-tabs.js';
+
+export interface WorkbarToolDefinition {
+  readonly kind: SessionWorkbarTabKind;
+  readonly labelKey: SessionWorkbarTabKind;
+  readonly icon:
+    | 'activity'
+    | 'folder'
+    | 'git-branch'
+    | 'globe'
+    | 'list-todo'
+    | 'message-circle-question'
+    | 'terminal';
+  readonly shortcut?: string;
+  readonly persisted: boolean;
+  readonly singleton: boolean;
+  readonly defaultPlacement: SessionWorkbarPlacement;
+}
+
+export const WORKBAR_TOOL_DEFINITIONS = [
+  {
+    kind: 'side-chat',
+    labelKey: 'side-chat',
+    icon: 'message-circle-question',
+    shortcut: 'mod+alt+s',
+    persisted: false,
+    singleton: false,
+    defaultPlacement: 'right',
+  },
+  {
+    kind: 'review',
+    labelKey: 'review',
+    icon: 'git-branch',
+    shortcut: 'ctrl+shift+g',
+    persisted: true,
+    singleton: true,
+    defaultPlacement: 'right',
+  },
+  {
+    kind: 'terminal',
+    labelKey: 'terminal',
+    icon: 'terminal',
+    shortcut: 'ctrl+`',
+    persisted: false,
+    singleton: false,
+    defaultPlacement: 'right',
+  },
+  {
+    kind: 'browser',
+    labelKey: 'browser',
+    icon: 'globe',
+    shortcut: 'mod+t',
+    persisted: true,
+    singleton: true,
+    defaultPlacement: 'right',
+  },
+  {
+    kind: 'files',
+    labelKey: 'files',
+    icon: 'folder',
+    shortcut: 'mod+p',
+    persisted: true,
+    singleton: true,
+    defaultPlacement: 'right',
+  },
+  {
+    kind: 'tasks',
+    labelKey: 'tasks',
+    icon: 'list-todo',
+    persisted: true,
+    singleton: true,
+    defaultPlacement: 'right',
+  },
+  {
+    kind: 'inspector',
+    labelKey: 'inspector',
+    icon: 'activity',
+    persisted: true,
+    singleton: true,
+    defaultPlacement: 'right',
+  },
+] as const satisfies readonly WorkbarToolDefinition[];
+
+export type RegisteredWorkbarToolDefinition =
+  (typeof WORKBAR_TOOL_DEFINITIONS)[number];
+
+const WORKBAR_TOOL_DEFINITION_BY_KIND = Object.fromEntries(
+  WORKBAR_TOOL_DEFINITIONS.map((definition) => [definition.kind, definition]),
+) as Readonly<
+  Record<SessionWorkbarTabKind, RegisteredWorkbarToolDefinition>
+>;
+
+export function workbarToolDefinition(
+  kind: SessionWorkbarTabKind,
+): RegisteredWorkbarToolDefinition {
+  return WORKBAR_TOOL_DEFINITION_BY_KIND[kind];
+}
+
+export function isPersistedWorkbarTool(
+  kind: SessionWorkbarTabKind,
+): boolean {
+  return workbarToolDefinition(kind).persisted;
+}

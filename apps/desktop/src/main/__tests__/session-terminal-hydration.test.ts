@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { SessionTerminalHydration } from '../../renderer/session-terminal-hydration.js';
+import { SessionTerminalHydration } from '../../renderer/features/workbar/testing.js';
 
 test('terminal hydration ignores an old snapshot and replays only post-resync PTY data', () => {
   const hydration = new SessionTerminalHydration();

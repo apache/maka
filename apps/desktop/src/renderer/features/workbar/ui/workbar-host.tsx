@@ -24,23 +24,23 @@ import { Spinner } from '@astryxdesign/core/Spinner';
 import { useUiLocale, type Composer } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionSummary } from '@maka/core/session';
-import { getShellCopy } from './locales/shell-copy';
+import { getShellCopy } from '../../../locales/shell-copy';
 import type {
   SessionWorkbarPanelsState,
   SessionWorkbarPlacement,
   SessionWorkbarTab,
   SessionWorkbarTabKind,
-} from './session-workbar-tabs';
+} from '../model/workbar-tabs';
 import type {
   CompanionQuoteTarget,
   CompanionQuoteSnapshot,
   QuoteCompanionPanelState,
-} from './quote-companion-panel-state';
-import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
+} from '../tools/side-chat/quote-companion-panel-state';
+import type { CompanionForkVisibilityEvent } from '../tools/side-chat/quote-companion-visibility';
 
-const SessionWorkbar = lazy(() =>
-  import('./session-workbar').then((module) => ({
-    default: module.SessionWorkbar,
+const WorkbarSurface = lazy(() =>
+  import('./workbar-surface').then((module) => ({
+    default: module.WorkbarSurface,
   })),
 );
 
@@ -66,7 +66,7 @@ function SessionWorkbarFallback() {
   );
 }
 
-interface ChatWorkbarProps {
+interface WorkbarHostProps {
   activeId: string;
   rightCollapsed: boolean;
   bottomOpen: boolean;
@@ -119,7 +119,7 @@ interface ChatWorkbarProps {
   onSearchMentionFiles?: ComponentProps<typeof Composer>['onSearchMentionFiles'];
 }
 
-export function ChatWorkbar(props: ChatWorkbarProps) {
+export function WorkbarHost(props: WorkbarHostProps) {
   const copy = getShellCopy(useUiLocale()).app;
   const style = {
     '--maka-session-workbar-width': `${props.rightWidth}px`,
@@ -152,7 +152,7 @@ export function ChatWorkbar(props: ChatWorkbarProps) {
       )}
       <div className="maka-workbar-layout-vars" style={style}>
         <Suspense fallback={<SessionWorkbarFallback />}>
-          <SessionWorkbar
+          <WorkbarSurface
             key={props.activeId}
             sessionId={props.activeId}
             hidden={props.hidden}

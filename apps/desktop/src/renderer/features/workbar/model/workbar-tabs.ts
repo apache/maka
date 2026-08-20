@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { safeLocalStorageGet } from './browser-storage.js';
+import { safeLocalStorageGet } from '../../../browser-storage.js';
+import { isPersistedWorkbarTool } from './workbar-tool-definitions.js';
 
 export type SessionWorkbarTabKind =
   | 'review'
@@ -57,6 +58,64 @@ export interface SessionWorkbarPanelsState {
   focusedPanel: SessionWorkbarPlacement;
 }
 
+export type WorkbarPanelsAction =
+  | { type: 'open'; placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }
+  | { type: 'activate'; placement: SessionWorkbarPlacement; tabId: string }
+  | { type: 'close'; placement: SessionWorkbarPlacement; tabIds: readonly string[] }
+  | {
+      type: 'reorder';
+      placement: SessionWorkbarPlacement;
+      tabId: string;
+      targetTabId: string;
+    }
+  | {
+      type: 'move';
+      placement: SessionWorkbarPlacement;
+      tabId: string;
+      direction: 'left' | 'right';
+    }
+  | { type: 'move-to-panel'; tabId: string; target: SessionWorkbarPlacement }
+  | { type: 'title'; tabId: string; title: string }
+  | { type: 'pin'; tabId: string }
+  | { type: 'open-launcher'; placement: SessionWorkbarPlacement };
+
+/** The single topology transition boundary used by the Workbar controller. */
+export function reduceWorkbarPanels(
+  state: SessionWorkbarPanelsState,
+  action: WorkbarPanelsAction,
+): SessionWorkbarPanelsState {
+  switch (action.type) {
+    case 'open':
+      return openSessionWorkbarPanelTab(state, action.placement, action.tab);
+    case 'activate':
+      return activateSessionWorkbarPanelTab(state, action.placement, action.tabId);
+    case 'close':
+      return closeSessionWorkbarPanelTabs(state, action.placement, action.tabIds);
+    case 'reorder':
+      return reorderSessionWorkbarPanelTab(
+        state,
+        action.placement,
+        action.tabId,
+        action.targetTabId,
+      );
+    case 'move':
+      return moveSessionWorkbarPanelTab(
+        state,
+        action.placement,
+        action.tabId,
+        action.direction,
+      );
+    case 'move-to-panel':
+      return moveSessionWorkbarTabToPanel(state, action.tabId, action.target);
+    case 'title':
+      return titleSessionWorkbarPanelTab(state, action.tabId, action.title);
+    case 'pin':
+      return pinSessionWorkbarPanelTab(state, action.tabId);
+    case 'open-launcher':
+      return openSessionWorkbarPanelLauncher(state, action.placement);
+  }
+}
+
 export interface PersistedSessionWorkbarTabs {
   version: 2;
   tabs: Array<Pick<SessionWorkbarTab, 'id' | 'kind'>>;
@@ -69,14 +128,6 @@ export interface PersistedSessionWorkbarPanels {
   bottom: PersistedSessionWorkbarTabs;
   focusedPanel: SessionWorkbarPlacement;
 }
-
-const PERSISTED_KINDS = new Set<SessionWorkbarTabKind>([
-  'review',
-  'tasks',
-  'browser',
-  'files',
-  'inspector',
-]);
 
 const STATIC_TAB_IDS: Record<Exclude<SessionWorkbarTabKind, 'side-chat'>, string> = {
   review: 'workbar:review',
@@ -496,7 +547,7 @@ export function persistableSessionWorkbarTabs(
   state: SessionWorkbarTabsState,
 ): PersistedSessionWorkbarTabs {
   const tabs = state.tabs
-    .filter((tab) => PERSISTED_KINDS.has(tab.kind) && tab.preview !== true)
+    .filter((tab) => isPersistedWorkbarTool(tab.kind) && tab.preview !== true)
     .map(({ id, kind }) => ({ id, kind }));
   return {
     version: 2,
@@ -548,7 +599,7 @@ function readLegacySessionWorkbarTabs(): SessionWorkbarTabsState {
             !candidate ||
             typeof candidate.id !== 'string' ||
             !isSessionWorkbarTabKind(candidate.kind) ||
-            !PERSISTED_KINDS.has(candidate.kind)
+            !isPersistedWorkbarTool(candidate.kind)
           ) {
             return [];
           }
@@ -589,7 +640,7 @@ function readPersistedPanel(
       !candidate ||
       typeof candidate.id !== 'string' ||
       !isSessionWorkbarTabKind(candidate.kind) ||
-      !PERSISTED_KINDS.has(candidate.kind)
+      !isPersistedWorkbarTool(candidate.kind)
     ) {
       return [];
     }

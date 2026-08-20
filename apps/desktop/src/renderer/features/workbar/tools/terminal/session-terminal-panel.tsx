@@ -29,7 +29,7 @@ import { ICON_SIZE, Terminal as TerminalIcon } from '@maka/ui/icons';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
-import { getDesktopConversationCopy } from './locales/conversation-copy';
+import { getDesktopConversationCopy } from '../../../../locales/conversation-copy';
 import { SessionTerminalHydration } from './session-terminal-hydration';
 import { suppressTerminalQueryReplies } from './session-terminal-query';
 

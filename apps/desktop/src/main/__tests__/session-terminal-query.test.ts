@@ -27,7 +27,7 @@ import {
   isWindowReportQuery,
   isXtVersionQuery,
   suppressTerminalQueryReplies,
-} from '../../renderer/session-terminal-query.js';
+} from '../../renderer/features/workbar/testing.js';
 
 test('recognizes pure and mixed OSC color queries', () => {
   assert.equal(isColorQuery(10, '?'), true);

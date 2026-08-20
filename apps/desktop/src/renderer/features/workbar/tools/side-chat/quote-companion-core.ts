@@ -29,7 +29,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { QuoteRef, SessionEvent } from '@maka/core/events';
 import type { SessionSummary, TurnRecord } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { RendererIngestInput } from '../preload/bridge-contract.js';
+import type { RendererIngestInput } from '../../../../../preload/bridge-contract.js';
 import {
   acquireSessionCopyAttempt,
   abandonSessionCopyAttempt,
@@ -38,8 +38,8 @@ import {
   readSessionCopyAttempt,
   startSessionCopyAttempt,
   type SessionCopyAttemptKey,
-} from './session-copy-attempt.js';
-import { sessionEventErrorMessage } from './model-connection-errors.js';
+} from '../../../../session-copy-attempt.js';
+import { sessionEventErrorMessage } from '../../../../model-connection-errors.js';
 
 /** `sessions.send` resolves (does not throw) with this shape when the run was
  *  not actually started — e.g. an unresolved `/skill:...` invocation. */

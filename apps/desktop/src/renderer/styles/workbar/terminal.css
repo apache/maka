@@ -17,24 +17,33 @@
  * under the License.
  */
 
-import { useState } from 'react';
-import {
-  readSessionListCollapsed,
-  readSessionListWidth,
-} from './session-list-layout';
+.maka-session-terminal-panel {
+  position: relative;
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--foreground);
+  background: var(--agents-content-area-bg);
+}
 
-/** Owns only the navigation rail portion of the application shell layout. */
-export function useShellLayout() {
-  const [sessionListWidth, setSessionListWidth] = useState(() =>
-    readSessionListWidth(),
-  );
-  const [sessionListCollapsed, setSessionListCollapsed] = useState(() =>
-    readSessionListCollapsed(),
-  );
-  return {
-    sessionListWidth,
-    setSessionListWidth,
-    sessionListCollapsed,
-    setSessionListCollapsed,
-  };
+.maka-session-terminal-panel > .astryx-banner {
+  flex: none;
+  margin: var(--space-2);
+}
+
+.maka-session-terminal-xterm {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+}
+
+.maka-session-terminal-xterm .xterm {
+  height: 100%;
+}
+
+.maka-session-terminal-xterm .xterm-viewport {
+  scrollbar-width: thin;
 }

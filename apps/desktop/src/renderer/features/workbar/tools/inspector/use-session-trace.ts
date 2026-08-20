@@ -28,11 +28,11 @@ import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type {
   DesktopSessionTracePage,
   DesktopSessionUsageSummary,
-} from '../preload/bridge-contract.js';
+} from '../../../../../preload/bridge-contract.js';
 import {
   createRefreshCoalescer,
   createTraceRefreshCoalescer,
-} from './session-trace-refresh.js';
+} from '../../../../session-trace-refresh.js';
 
 interface SessionTraceState {
   sessionId?: string;

@@ -28,7 +28,7 @@ import {
   snapshotCompanionQuotes,
   stageCompanionQuote,
   type QuoteCompanionPanelState,
-} from '../../renderer/quote-companion-panel-state.js';
+} from '../../renderer/features/workbar/testing.js';
 
 function ids(...values: string[]): () => string {
   let index = 0;

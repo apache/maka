@@ -79,8 +79,8 @@ import { EmptyState as AstryxEmptyState } from '@astryxdesign/core';
 import { ArtifactPreview } from './artifact-preview';
 import { nextArtifactListAction } from './artifact-list-keyboard';
 import { filterUserVisibleArtifacts } from './artifact-visibility';
-import { openPathFailureCopy } from './open-path';
-import { getArtifactCopy, type ArtifactCopy } from './locales/artifact-copy';
+import { openPathFailureCopy } from '../../../../open-path';
+import { getArtifactCopy, type ArtifactCopy } from '../../../../locales/artifact-copy';
 
 export function ArtifactPane(props: {
   sessionId: string;

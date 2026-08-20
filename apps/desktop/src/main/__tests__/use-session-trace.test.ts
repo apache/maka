@@ -34,7 +34,7 @@ import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   TRACE_REFRESH_DEBOUNCE_MS,
   useSessionTrace,
-} from '../../renderer/use-session-trace.js';
+} from '../../renderer/features/workbar/testing.js';
 
 /**
  * The hook whose doc comment once described a subscription it did not have.

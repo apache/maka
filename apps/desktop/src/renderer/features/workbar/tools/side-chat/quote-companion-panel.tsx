@@ -33,18 +33,18 @@ import {
 } from '@maka/ui';
 import type { SessionSummary } from '@maka/core/session';
 import { useQuoteCompanion } from './use-quote-companion';
-import { useAppShellComposerAttachments } from './use-app-shell-composer-attachments';
-import { preflightAttachmentItems } from './attachment-preflight';
-import { toRendererIngestItems } from './app-shell-chat-actions';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
-import { deriveTurnFooterActions } from './turn-footer-actions';
+import { useAppShellComposerAttachments } from '../../../../use-app-shell-composer-attachments';
+import { preflightAttachmentItems } from '../../../../attachment-preflight';
+import { toRendererIngestItems } from '../../../../app-shell-chat-actions';
+import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
+import { deriveTurnFooterActions } from '../../../../turn-footer-actions';
 import type {
   CompanionQuoteTarget,
   CompanionQuoteSnapshot,
   StagedCompanionQuote,
 } from './quote-companion-panel-state';
 import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
-import { readScrollMotionBehavior } from './scroll-motion-policy';
+import { readScrollMotionBehavior } from '../../../../scroll-motion-policy';
 
 /**
  * The side-conversation workbar tab: a transient read-only fork of the main session.
