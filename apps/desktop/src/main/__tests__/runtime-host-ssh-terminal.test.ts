@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { IPty } from 'node-pty';
 import {
+  encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   type RuntimeHostSshProcessFactory,
@@ -193,6 +194,49 @@ test('force-stops a cancelled setup when SSH ignores graceful termination', asyn
   await harness.terminal.close();
 });
 
+test('reads a framed service result without projecting it into the SSH terminal', async () => {
+  const harness = createHarness('pending');
+  const management = harness.terminal.runServiceManagement({
+    destination: 'operator@example.com',
+    setupPackage: { kind: 'npm', specifier: 'maka-agent@1.2.3' },
+    principalId: 'desktop:stable-client',
+    action: 'status',
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  harness.pty.emitData('Password: ');
+  harness.pty.emitData(
+    encodeRuntimeHostServiceManagementFrame({
+      schemaVersion: 1,
+      kind: 'result',
+      action: 'status',
+      service: {
+        manager: 'systemd_user',
+        platform: 'linux',
+        arch: 'x64',
+        osRelease: '6.8.0',
+        installed: true,
+        enabled: true,
+        active: true,
+        state: 'running',
+        pid: 42,
+        lastExitCode: 0,
+        installedVersion: '1.2.3',
+        stateRoot: '/home/operator/.config/Maka/workspaces/default',
+        projectDirectoryRoots: [],
+      },
+    }),
+  );
+  harness.pty.exit(0);
+
+  const result = await management;
+  assert.equal(result.kind, 'result');
+  if (result.kind !== 'result') assert.fail('expected service management result');
+  assert.equal(result.service.installedVersion, '1.2.3');
+  assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_SERVICE/u);
+  assert.match(JSON.stringify(harness.events), /Password/u);
+  await harness.terminal.close();
+});
+
 test('uploads a development release archive before running the same remote setup', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-runtime-host-development-package-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -234,6 +278,9 @@ test('uploads a development release archive before running the same remote setup
   const remoteCommand = launches[1]?.args.at(-1) ?? '';
   assert.match(remoteCommand, /--package.*maka-runtime-host-setup-.+\.tgz/u);
   assert.match(remoteCommand, /--defer-pairing-commit/u);
+  assert.match(remoteCommand, /cd.*\$HOME/u);
+  assert.match(remoteCommand, /rm -f/u);
+  assert.match(remoteCommand, /exec \/bin\/sh -c/u);
   launches[1]?.pty.exit(255);
   await assert.rejects(setup, /exited with code 255/u);
 });

@@ -83,7 +83,12 @@ import type {
   OperationInput,
   OperationOutput,
 } from '@maka/runtime-host/protocol';
-import type { AgentGraphEpochDirectory, RuntimeHostSetupPhase } from '@maka/runtime-host/client';
+import type {
+  AgentGraphEpochDirectory,
+  RuntimeHostServiceManagementAction,
+  RuntimeHostServiceManagementFrame,
+  RuntimeHostSetupPhase,
+} from '@maka/runtime-host/client';
 import type {
   RendererRuntimeHostCommandOperation,
   RendererRuntimeHostQueryOperation,
@@ -357,6 +362,38 @@ export type DesktopRuntimeHostOnboardingSnapshot =
       readonly profileId: string;
     };
 
+export type DesktopRuntimeHostManagementAction = Exclude<
+  RuntimeHostServiceManagementAction,
+  'install'
+>;
+
+export type DesktopRuntimeHostManagementResult = Extract<
+  RuntimeHostServiceManagementFrame,
+  { kind: 'result' }
+>;
+
+export type DesktopRuntimeHostManagementResponse = RuntimeHostServiceManagementFrame;
+
+export type DesktopRuntimeHostManagementSnapshot =
+  | {
+      readonly kind: 'unavailable';
+      readonly profileId: string;
+      readonly profileName: string;
+      readonly reason: 'ssh_required';
+    }
+  | {
+      readonly kind: 'failed';
+      readonly profileId: string;
+      readonly profileName: string;
+      readonly error: Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }>['error'];
+    }
+  | {
+      readonly kind: 'available';
+      readonly profileId: string;
+      readonly profileName: string;
+      readonly result: DesktopRuntimeHostManagementResult;
+    };
+
 export interface DesktopProjectCapabilities {
   readonly chooseClientDirectory: boolean;
   readonly chooseHostDirectory: boolean;
@@ -462,6 +499,14 @@ export interface MakaBridge {
     cancel(): Promise<boolean>;
     reset(): Promise<void>;
     subscribe(handler: (snapshot: DesktopRuntimeHostOnboardingSnapshot) => void): () => void;
+  };
+
+  runtimeHostManagement: {
+    getStatus(profileId: string): Promise<DesktopRuntimeHostManagementSnapshot>;
+    run(
+      profileId: string,
+      action: DesktopRuntimeHostManagementAction,
+    ): Promise<DesktopRuntimeHostManagementResponse>;
   };
 
   newTasks: {

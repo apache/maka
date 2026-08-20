@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
+import { decodeRuntimeHostServiceManagementFrame } from '@maka/runtime-host/client';
 import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
 import {
   removeRuntimeHostManagedDeployment,
@@ -56,6 +57,12 @@ describe('managed Runtime Host service', () => {
         websocketPort: 7443,
       },
     );
+    assert.deepEqual(parseRuntimeHostCommand(['service', 'status', '--framed']), {
+      kind: 'runtime-host-service-manage',
+      action: 'status',
+      json: false,
+      framed: true,
+    });
     assert.deepEqual(parseRuntimeHostCommand(['service', 'uninstall', '--json']), {
       kind: 'runtime-host-service-manage',
       action: 'uninstall',
@@ -355,6 +362,56 @@ describe('managed Runtime Host service', () => {
     });
   });
 
+  it('projects a framed service summary without launch configuration', async () => {
+    let output = '';
+    const exitCode = await runManagedRuntimeHostServiceCli(
+      {
+        action: 'status',
+        json: false,
+        framed: true,
+        clientDataRoot: '/config/Maka',
+        defaultRootPath: '/config/Maka/workspaces/default',
+        nodePath: '/usr/bin/node',
+        cliPath: '/opt/maka/cli.js',
+      },
+      {
+        manage: async () => ({
+          schemaVersion: 1,
+          action: 'status',
+          service: {
+            manager: 'systemd_user',
+            installed: true,
+            enabled: true,
+            active: true,
+            state: 'running',
+            pid: 42,
+            lastExitCode: 0,
+            installedVersion: '1.2.3',
+            config: {
+              schemaVersion: 1,
+              rootPath: '/srv/maka',
+              projectDirectoryRoots: [{ label: 'Home', path: '/home/ada' }],
+              websocket: { host: '127.0.0.1', port: 7443, path: '/runtime-host' },
+              launch: { nodePath: '/secret/node', cliPath: '/secret/cli.js' },
+            },
+          },
+        }),
+        createBackend: createUnusedBackend,
+        writeOutput: (value) => {
+          output += value;
+        },
+      },
+    );
+
+    assert.equal(exitCode, 0);
+    const frame = decodeRuntimeHostServiceManagementFrame(output);
+    assert.equal(frame?.kind, 'result');
+    if (frame?.kind !== 'result') assert.fail('Expected a service result frame');
+    assert.equal(frame.service.installedVersion, '1.2.3');
+    assert.equal(frame.service.stateRoot, '/srv/maka');
+    assert.doesNotMatch(JSON.stringify(frame), /secret/u);
+  });
+
   it('restores the deployed service when the replacement never becomes ready', async (t) => {
     const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-service-rollback-'));
     t.after(() => rm(base, { recursive: true, force: true }));
@@ -631,6 +688,7 @@ function createUnusedBackend(): RuntimeHostServiceBackend {
     start: unexpected,
     stop: unexpected,
     restart: unexpected,
+    logs: unexpected,
     uninstall: unexpected,
   };
 }
@@ -659,6 +717,7 @@ function createReadyBackend(): RuntimeHostServiceBackend {
     start: async () => undefined,
     stop: async () => undefined,
     restart: async () => undefined,
+    logs: async () => '',
     uninstall: async () => undefined,
   };
 }

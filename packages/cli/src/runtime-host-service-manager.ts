@@ -3,13 +3,17 @@ import { createServer } from 'node:net';
 import { mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   isCanonicalRuntimeHostWebSocketPath,
   PROJECT_DIRECTORY_MAX_ROOTS,
   PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
-import { connectExistingRuntimeHost } from '@maka/runtime-host/client';
+import {
+  connectExistingRuntimeHost,
+  RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,
+} from '@maka/runtime-host/client';
 import { withFileUpdateLock } from '@maka/storage/file-update-lock';
 import {
   isRuntimeHostManagedDeploymentCli,
@@ -65,6 +69,7 @@ export interface RuntimeHostServiceBackend {
   start(): Promise<void>;
   stop(): Promise<void>;
   restart(): Promise<void>;
+  logs(): Promise<string>;
   uninstall(): Promise<void>;
 }
 
@@ -74,6 +79,7 @@ export interface RuntimeHostServiceDeployment {
 
 export interface RuntimeHostManagedServiceStatus extends RuntimeHostServiceBackendStatus {
   readonly config: RuntimeHostManagedServiceConfig | null;
+  readonly installedVersion: string | null;
 }
 
 export type RuntimeHostManagedServiceAction =
@@ -82,6 +88,7 @@ export type RuntimeHostManagedServiceAction =
   | 'start'
   | 'stop'
   | 'restart'
+  | 'logs'
   | 'uninstall';
 
 export interface RuntimeHostManagedServiceResult {
@@ -89,6 +96,7 @@ export interface RuntimeHostManagedServiceResult {
   readonly action: RuntimeHostManagedServiceAction;
   readonly service: RuntimeHostManagedServiceStatus;
   readonly retainedStateRoot?: string;
+  readonly logs?: string;
 }
 
 export interface RuntimeHostManagedServiceInput {
@@ -223,6 +231,10 @@ async function manageRuntimeHostServiceLocked(
       'not_installed',
       'Runtime Host service is not installed',
     );
+  }
+  if (input.action === 'logs') {
+    const logs = truncateUtf8(await backend.logs(), RUNTIME_HOST_SERVICE_LOG_MAX_BYTES);
+    return result(input.action, await readServiceStatus(configPath, backend), undefined, logs);
   }
   await backend[input.action]();
   if (input.action === 'start' || input.action === 'restart') {
@@ -365,7 +377,30 @@ async function readServiceStatus(
     readServiceConfig(configPath),
     backend.status(),
   ]);
-  return { ...backendStatus, config };
+  return {
+    ...backendStatus,
+    config,
+    installedVersion: config ? await readInstalledVersion(config.launch.cliPath) : null,
+  };
+}
+
+async function readInstalledVersion(cliPath: string): Promise<string | null> {
+  try {
+    const packageRoot = dirname(dirname(await realpath(cliPath)));
+    const manifest: unknown = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'));
+    if (
+      !isRecord(manifest) ||
+      manifest.name !== 'maka-agent' ||
+      typeof manifest.version !== 'string' ||
+      manifest.version.length === 0 ||
+      Buffer.byteLength(manifest.version, 'utf8') > 512
+    ) {
+      return null;
+    }
+    return manifest.version;
+  } catch {
+    return null;
+  }
 }
 
 async function readServiceConfig(path: string): Promise<RuntimeHostManagedServiceConfig | null> {
@@ -638,12 +673,14 @@ function result(
   action: RuntimeHostManagedServiceAction,
   service: RuntimeHostManagedServiceStatus,
   retainedStateRoot?: string,
+  logs?: string,
 ): RuntimeHostManagedServiceResult {
   return {
     schemaVersion: 1,
     action,
     service,
     ...(retainedStateRoot ? { retainedStateRoot } : {}),
+    ...(logs !== undefined ? { logs } : {}),
   };
 }
 

@@ -3,17 +3,22 @@ import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Text } from '@astryxdesign/core/Text';
 import { Banner, Button, FormLayout, Spinner, TextInput, useUiLocale } from '@maka/ui';
-import type { DesktopRuntimeHostOnboardingSnapshot } from '../../preload/bridge-contract.js';
+import type {
+  DesktopRuntimeHostOnboardingInput,
+  DesktopRuntimeHostOnboardingSnapshot,
+} from '../../preload/bridge-contract.js';
 import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
 
 export function RuntimeHostOnboardingDialog(props: {
   readonly isOpen: boolean;
+  readonly initialInput?: DesktopRuntimeHostOnboardingInput;
   readonly onClose: () => void;
   readonly onRemoteHostAdded: (profileId: string) => void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
   const revision = useRef(-1);
+  const wasOpen = useRef(false);
   const [snapshot, setSnapshot] = useState<DesktopRuntimeHostOnboardingSnapshot>({
     kind: 'idle',
     revision: 0,
@@ -21,6 +26,15 @@ export function RuntimeHostOnboardingDialog(props: {
   const [name, setName] = useState('');
   const [destination, setDestination] = useState('');
   const [sshPort, setSshPort] = useState('');
+
+  useEffect(() => {
+    if (props.isOpen && !wasOpen.current) {
+      setName(props.initialInput?.name ?? '');
+      setDestination(props.initialInput?.destination ?? '');
+      setSshPort(props.initialInput?.sshPort?.toString() ?? '');
+    }
+    wasOpen.current = props.isOpen;
+  }, [props.initialInput, props.isOpen]);
 
   useEffect(() => {
     if (!props.isOpen) return;

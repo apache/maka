@@ -57,6 +57,30 @@ export type SettingsProjectsCopy = {
     defaultBadge: string;
     defaultDisableHelp: string;
     unavailable: string;
+    manage: string;
+    managementTitle(name: string): string;
+    managementUnavailable: string;
+    serviceStatus: string;
+    serviceState: Record<import('../../preload/bridge-contract.js').DesktopRuntimeHostManagementResult['service']['state'], string>;
+    installedVersion: string;
+    operatingSystem: string;
+    processId: string;
+    lastExitCode: string;
+    stateRoot: string;
+    directoryRoots: string;
+    noDirectoryRoots: string;
+    refresh: string;
+    startService: string;
+    restartService: string;
+    repairService: string;
+    showLogs: string;
+    noLogs: string;
+    uninstallService: string;
+    uninstallConfirmTitle: string;
+    uninstallConfirmBody: string;
+    uninstallConfirm: string;
+    uninstallRetained(path: string): string;
+    managementActionFailed: string;
     remove: string;
     empty: string;
     loadFailed: string;
@@ -171,6 +195,36 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       defaultBadge: '默认',
       defaultDisableHelp: '先选择另一个默认 Host，才能停用此 Host',
       unavailable: '无法连接',
+      manage: '管理',
+      managementTitle: (name: string) => `管理 ${name}`,
+      managementUnavailable: '此连接没有 SSH 管理通道。它仍可正常使用，但需要在 Host 机器上管理服务。',
+      serviceStatus: '服务状态',
+      serviceState: {
+        not_installed: '未安装',
+        stopped: '已停止',
+        starting: '正在启动',
+        running: '运行中',
+        failed: '启动失败',
+      },
+      installedVersion: '版本',
+      operatingSystem: '系统',
+      processId: '进程 ID',
+      lastExitCode: '上次退出码',
+      stateRoot: 'State Root',
+      directoryRoots: '可用目录',
+      noDirectoryRoots: '未配置额外目录',
+      refresh: '刷新',
+      startService: '启动',
+      restartService: '重启',
+      repairService: '修复',
+      showLogs: '查看日志',
+      noLogs: '没有服务日志',
+      uninstallService: '卸载服务',
+      uninstallConfirmTitle: '卸载远程 Runtime Host？',
+      uninstallConfirmBody: '这会停止并移除 Maka 管理的服务与程序，但保留 State Root、项目和任务数据。当前 Desktop Profile 不会被删除。',
+      uninstallConfirm: '卸载服务',
+      uninstallRetained: (path: string) => `服务已卸载，数据保留在 ${path}`,
+      managementActionFailed: '无法管理 Runtime Host 服务',
       remove: '移除',
       empty: '还没有远程 Host',
       loadFailed: '无法读取 Runtime Host profiles',
@@ -283,6 +337,36 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       defaultBadge: 'Default',
       defaultDisableHelp: 'Choose another default Host before disabling this Host',
       unavailable: 'Unavailable',
+      manage: 'Manage',
+      managementTitle: (name: string) => `Manage ${name}`,
+      managementUnavailable: 'This connection has no SSH management channel. It remains usable, but the service must be managed on the Host machine.',
+      serviceStatus: 'Service status',
+      serviceState: {
+        not_installed: 'Not installed',
+        stopped: 'Stopped',
+        starting: 'Starting',
+        running: 'Running',
+        failed: 'Failed',
+      },
+      installedVersion: 'Version',
+      operatingSystem: 'System',
+      processId: 'Process ID',
+      lastExitCode: 'Last exit code',
+      stateRoot: 'State Root',
+      directoryRoots: 'Available directories',
+      noDirectoryRoots: 'No additional directories configured',
+      refresh: 'Refresh',
+      startService: 'Start',
+      restartService: 'Restart',
+      repairService: 'Repair',
+      showLogs: 'View logs',
+      noLogs: 'No service logs were found',
+      uninstallService: 'Uninstall service',
+      uninstallConfirmTitle: 'Uninstall the remote Runtime Host?',
+      uninstallConfirmBody: 'This stops and removes the Maka-managed service and program, while preserving the State Root, projects, and task data. The Desktop profile is not removed.',
+      uninstallConfirm: 'Uninstall service',
+      uninstallRetained: (path: string) => `Service uninstalled. Data was retained at ${path}`,
+      managementActionFailed: 'Unable to manage the Runtime Host service',
       remove: 'Remove',
       empty: 'No remote Hosts yet',
       loadFailed: 'Could not load Runtime Host profiles',

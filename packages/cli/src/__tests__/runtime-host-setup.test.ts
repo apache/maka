@@ -324,6 +324,7 @@ function serviceResult(
       state: config ? 'running' : 'not_installed',
       pid: config ? 42 : null,
       lastExitCode: null,
+      installedVersion: config ? '0.1.0' : null,
       config,
     },
   };
@@ -337,6 +338,7 @@ function unusedBackend(): RuntimeHostServiceBackend {
     start: async () => assert.fail('Backend is not expected'),
     stop: async () => assert.fail('Backend is not expected'),
     restart: async () => assert.fail('Backend is not expected'),
+    logs: async () => assert.fail('Backend is not expected'),
     uninstall: async () => assert.fail('Backend is not expected'),
   };
 }

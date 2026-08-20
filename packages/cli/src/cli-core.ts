@@ -101,7 +101,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host serve [options]  Run a Runtime Host service`,
     `  ${cliCommand} runtime-host setup --principal <id> --preset <desktop-client|terminal-client> [options]`,
     `  ${cliCommand} runtime-host service install [options]`,
-    `  ${cliCommand} runtime-host service status|start|stop|restart|uninstall [--json]`,
+    `  ${cliCommand} runtime-host service status|start|stop|restart|logs|uninstall [--json]`,
     `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
     `  ${cliCommand} runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>`,
     `  ${cliCommand} runtime-host access issue --kind capability-provider --principal <id>`,
@@ -234,6 +234,7 @@ export async function runMakaCli(
       return runManagedRuntimeHostServiceCli({
         action: command.action,
         json: command.json,
+        framed: command.framed ?? false,
         clientDataRoot: dataRoots.clientDataRoot,
         defaultRootPath: dataRoots.workspaceRoot,
         nodePath: process.execPath,

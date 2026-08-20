@@ -133,6 +133,8 @@ The credential is stored separately from the Profile. Desktop keeps Local and ev
 
 During guided pairing, the delivered credential has the selected Client grants and expires after 15 minutes unless Desktop explicitly finalizes it after saving the local binding.
 
+For an SSH-managed computer, open its **Manage** action to inspect the installed release, service state, published directory roots, and recent logs, or to start, restart, repair, or uninstall the service. Uninstalling preserves the remote State Root and does not remove the Desktop Profile; removing a Profile does not uninstall the remote service. Manually configured direct connections remain usable but must be managed on the Host machine.
+
 ## Connect TUI or CLI
 
 Store the target as a shared Profile. Supply the credential through an environment variable only while creating or updating it:

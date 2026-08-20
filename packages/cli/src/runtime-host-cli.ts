@@ -36,8 +36,9 @@ export type RuntimeHostCliCommand =
     }
   | {
       kind: 'runtime-host-service-manage';
-      action: 'install' | 'status' | 'start' | 'stop' | 'restart' | 'uninstall';
+      action: 'install' | 'status' | 'start' | 'stop' | 'restart' | 'logs' | 'uninstall';
       json: boolean;
+      framed?: true;
       rootPath?: string;
       projectDirectoryRoots?: { label: string; path: string }[];
       websocketPort?: number;
@@ -151,17 +152,19 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     action !== 'start' &&
     action !== 'stop' &&
     action !== 'restart' &&
+    action !== 'logs' &&
     action !== 'uninstall'
   ) {
     return error(
       action
         ? `Unexpected runtime-host service command: ${action}`
-        : 'runtime-host service requires install, status, start, stop, restart, or uninstall',
+        : 'runtime-host service requires install, status, start, stop, restart, logs, or uninstall',
     );
   }
 
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: action === 'install',
+    allowFramed: true,
   });
   if ('kind' in options) return options;
   return {
@@ -173,6 +176,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
 
 interface ManagedServiceOptions {
   readonly json: boolean;
+  readonly framed?: true;
   readonly rootPath?: string;
   readonly projectDirectoryRoots?: { readonly label: string; readonly path: string }[];
   readonly websocketPort?: number;
@@ -185,9 +189,11 @@ function parseManagedServiceOptions(
     readonly valueOptions?: Readonly<Record<string, (value: string) => RuntimeHostCliError | void>>;
     readonly flagOptions?: Readonly<Record<string, () => RuntimeHostCliError | void>>;
     readonly allowConfiguration?: boolean;
+    readonly allowFramed?: boolean;
   } = {},
 ): ManagedServiceOptions | RuntimeHostCliError {
   let json = false;
+  let framed = false;
   let rootPath: string | undefined;
   let websocketPort: number | undefined;
   let websocketPath: string | undefined;
@@ -195,7 +201,16 @@ function parseManagedServiceOptions(
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--json') {
+      if (json) return error('Duplicate --json');
+      if (framed) return error('--json and --framed cannot be used together');
       json = true;
+      continue;
+    }
+    if (argument === '--framed') {
+      if (!input.allowFramed) return error(`Unexpected argument: ${argument}`);
+      if (framed) return error('Duplicate --framed');
+      if (json) return error('--json and --framed cannot be used together');
+      framed = true;
       continue;
     }
     if (Object.hasOwn(input.flagOptions ?? {}, argument ?? '')) {
@@ -250,6 +265,7 @@ function parseManagedServiceOptions(
   }
   return {
     json,
+    ...(framed ? { framed: true as const } : {}),
     ...(rootPath ? { rootPath } : {}),
     ...(projectDirectoryRoots.length > 0 ? { projectDirectoryRoots } : {}),
     ...(websocketPort === undefined ? {} : { websocketPort }),

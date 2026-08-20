@@ -34,6 +34,7 @@ export interface SystemdUserServiceOptions {
   readonly uid?: number;
   readonly runSystemctl?: (args: readonly string[]) => Promise<CommandResult>;
   readonly runLoginctl?: (args: readonly string[]) => Promise<CommandResult>;
+  readonly runJournalctl?: (args: readonly string[]) => Promise<CommandResult>;
 }
 
 export function createSystemdUserRuntimeHostService(
@@ -49,6 +50,7 @@ export function createSystemdUserRuntimeHostService(
     runSystemctl,
   };
   const runLoginctl = options.runLoginctl ?? defaultRunLoginctl;
+  const runJournalctl = options.runJournalctl ?? defaultRunJournalctl;
   const uid = options.uid ?? process.getuid?.();
 
   const readStatus = async (): Promise<RuntimeHostServiceBackendStatus> => {
@@ -90,6 +92,25 @@ export function createSystemdUserRuntimeHostService(
     start: () => runLifecycleAction(context, 'start'),
     stop: () => runLifecycleAction(context, 'stop'),
     restart: () => runLifecycleAction(context, 'restart'),
+    logs: async () => {
+      const result = await runJournalctl([
+        '--user-unit',
+        context.unitName,
+        '--no-pager',
+        '--lines=200',
+        '--output=short-iso',
+      ]).catch((error) => {
+        throw new RuntimeHostServiceManagerError(
+          'service_manager_unavailable',
+          'Unable to read Runtime Host service logs',
+          { cause: error },
+        );
+      });
+      if (result.exitCode !== 0) {
+        throw managerError('Reading Runtime Host service logs failed', result);
+      }
+      return result.stdout;
+    },
     uninstall: async () => {
       const before = await readSystemdStatus(context);
       if (before.loadState !== 'not-found') {
@@ -439,6 +460,10 @@ async function defaultRunSystemctl(args: readonly string[]): Promise<CommandResu
 
 async function defaultRunLoginctl(args: readonly string[]): Promise<CommandResult> {
   return runCommand('loginctl', args);
+}
+
+async function defaultRunJournalctl(args: readonly string[]): Promise<CommandResult> {
+  return runCommand('journalctl', args);
 }
 
 async function runCommand(command: string, args: readonly string[]): Promise<CommandResult> {
