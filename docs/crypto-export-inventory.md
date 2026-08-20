@@ -158,6 +158,7 @@ Read together, the gap between the historical entries and the recent absences is
 
 - Maka implements no cryptographic primitive. Every algorithm resolves to OpenSSL, BoringSSL, mitmproxy/OpenSSL, Windows CNG, a public Rust crate, or the user's OpenSSH (§A–§J).
 - Maka's own source does perform AES-256-GCM encryption (§A) and generate an RSA-2048 CA (§B1), both past the 5D002 thresholds. The determination turns on who implemented the cryptography, not on whether Maka invokes it.
+- The basis above speaks to who implemented the cryptography. On what each artifact contains: the source artifact carries no third-party cryptographic implementation, while the desktop convenience binary bundles a Git distribution including OpenSSL native libraries (§J).
 - Every algorithm found is a published standard. §772.1 also reaches proprietary or unpublished *protocols*, and three constructions touch that boundary: `@jackwener/opencli`'s vendor-private API signing with hardcoded key material (§J), Tencent's undocumented QQ Bot bind-task protocol (§A2), and Maka's own Managed Secret envelope construction (§A1, published in this source). The guidance above treats none of these as disqualifying.
 
 **Not required, therefore:** the BIS notification email, the exports-matrix `.yaml` entry, and the ASF README crypto notice. No such notice exists today in `README.md`, `README.zh-CN.md`, `NOTICE`, `LICENSE`, or `DISCLAIMER-WIP`, and on this determination none is needed.
