@@ -213,4 +213,3 @@ export const SearchModalResults: Story = {
     await enterQuery(canvasElement, '[data-maka-contract="search-modal"] input', 'benchmark');
   },
 };
-

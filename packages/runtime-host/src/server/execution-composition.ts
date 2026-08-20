@@ -18,6 +18,7 @@ import {
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
 import { buildHostCapabilitiesFromBinding } from '@maka/runtime/tool-catalog-derive';
+import { buildHistoryTools } from '@maka/runtime/history-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
 import {
@@ -413,15 +414,30 @@ export async function createExecutionRuntimeHostComposition(
     const webFetchService = createHostWebFetchService({
       policy: runtimePolicyStores.operations,
     });
-    const hostTools = [
+    const historyTools = buildHistoryTools({
+      listSessions: () => requireSessionManager(manager).listSessions(),
+      readMessages: async (sessionId, abortSignal) => {
+        if (abortSignal?.aborted) return null;
+        const messages = await requireSessionManager(manager)
+          .getMessages(sessionId)
+          .catch(() => null);
+        return abortSignal?.aborted ? null : messages;
+      },
+      getPrivacyContext: async () => ({
+        incognitoActive: (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy
+          .incognitoActive,
+      }),
+    });
+    const childHostTools = [
       createHostWebSearchToolFromService(webSearchService),
       createHostWebFetchToolFromService(webFetchService),
       ...runtimePolicy.modelTools,
     ];
+    const hostTools = [...childHostTools, ...historyTools];
     const childAgentTools = createHostChildAgentToolComposition({
       taskLedger,
       builtinTools,
-      hostTools,
+      hostTools: childHostTools,
       worktreePatchWriteBackAvailable: true,
     });
     const openedGraphControlStore = createAgentGraphControlStore(
