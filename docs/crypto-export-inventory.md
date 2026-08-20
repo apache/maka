@@ -2,7 +2,7 @@
 
 Inventory of cryptographic functionality and dependencies in the Maka source tree, prepared to support the ASF export-control review tracked in [#3273](https://github.com/apache/maka/issues/3273) (G6 of #2974).
 
-This document records facts and identifies who owns each unresolved determination. **It does not make the export determination**, and it does not establish which side of the "standard cryptography" line Maka falls on. Both belong to the ASF VP of Legal Affairs, the PPMC, and the mentors. Progress tracking and the remaining exit criteria live in #3273.
+**Outcome: mentor guidance is that no BIS notification and no exports-matrix entry are required for Maka**, on the basis that it develops no cryptographic algorithm of its own. See §K. This document is the supporting evidence for that determination, not the determination itself — it records what is in the tree and what the determination rests on, so a later reviewer can check it rather than take it on trust. Progress tracking and the remaining exit criteria live in #3273.
 
 ## Scope and method
 
@@ -21,7 +21,7 @@ An earlier revision collapsed the first two, and a filing must not:
 2. **Which crypto *item* does a given artifact contain?** Decided per artifact — the source tarball, the CLI npm tarball, the macOS and Windows apps, and the eval container each contain different third-party crypto.
 3. **Who *built* that item?** This is the `MANUFACTURER(S)` field. ASF's wording is who "built the crypto item included in the ASF product" — which follows the artifact's contents, not the authorship of the underlying algorithm.
 
-Sections A and B list paths that perform cryptography. Sections C, D, and F record surfaces that were examined and found exempt, integrity-only, or unencrypted — they are not controlled paths. Sections E and B3–B5 are unresolved between (1) and (3). Section J addresses (2) and (3).
+These distinctions did not end up deciding the outcome (§K), but they are what a filing would have turned on, and they are recorded so a revisit does not have to rederive them. Sections A and B list paths that perform cryptography. Sections C, D, and F record surfaces that were examined and found exempt, integrity-only, or unencrypted — they are not controlled paths. Sections E and B3–B5 are unresolved between (1) and (3). Section J addresses (2) and (3).
 
 ## Governing criteria, and a conflict between them
 
@@ -140,27 +140,25 @@ Electron `safeStorage` is not used; pre-existing `safeStorage` files are deliber
 
 Sections §A–§H are exhaustive for the tracked source. **§J is not exhaustive for transitive dependencies.** It covers all three lockfiles' direct and notable transitive crypto plus a scan for common crypto-implementing package names. Two revisions of this document each missed a shipped dependency that a name-based scan does not surface — `dugite`, whose crypto is a bundled binary payload rather than JavaScript, and `@jackwener/opencli`, whose crypto is inline vendor protocol code. **A closed manufacturer set must be generated per artifact from a frozen install and from the actual packaged output, not taken from this list.**
 
-## K. What follows, and who owns it
+## K. Determination
 
-**Established:** Maka's own committed source performs AES-256-GCM encryption (§A) and generates an RSA-2048 CA to terminate and re-originate TLS (§B1). Both are past the 5D002 thresholds. Maka implements no cryptographic *primitive* of its own — every algorithm resolves to OpenSSL, BoringSSL, mitmproxy/OpenSSL, Windows CNG, a public Rust crate, or the user's OpenSSH. What Maka contributes is composition: envelope formats, IV and AAD construction, key lifecycle, MAC protocols, and CA orchestration.
+**Mentor guidance: no BIS notification and no exports-matrix entry are required for Maka.** The basis given is that Maka develops no cryptographic algorithm of its own and uses existing third-party dependencies, so the ASF notification process does not apply to it.
 
-**Explicitly NOT established: whether Maka is entirely "standard cryptography" under §772.1.** An earlier revision asserted this, and it was wrong to assert. §772.1 reaches proprietary or unpublished cryptographic *protocols*, so enumerating standard algorithm names does not answer it. At least three constructions need a protocol-level determination:
+This guidance was given privately. **Exit criteria 4 and 5 of #3273 need it recorded publicly by an appropriate party** — the issue's own wording allows closing on "the authoritative determination that no entry is needed" rather than on a filed notification. Until that public record exists, this document is supporting evidence for a determination, not the determination itself.
 
-- **`@jackwener/opencli`** ships vendor-private API signing with hardcoded key material against undocumented endpoints (§J). Whether authentication-only scope, public availability of the implementation, or absence from a given artifact excludes it is exactly the §772.1 question.
-- **Tencent's QQ Bot bind-task protocol** (§A2) is proprietary and undocumented; Maka participates in its key exchange.
-- **The Managed Secret envelope and AAD construction** (§A1) is Maka's own, though published in this source — which likely places it on the "published" side, but that is an argument, not a fact.
+**The observed practice supports it.** Recent ASF projects that use standard cryptography through their language runtime are absent from the exports matrix — OpenDAL, Doris, Iceberg, Pekko, Kvrocks, Celeborn, StreamPark, and Answer are all unlisted, and OpenDAL carries no crypto notice in its repository. Projects that do appear either implement cryptography or bundle a cryptographic library: Apache Impala's entry reads "2.7.0 and later / 5D002 / ASF, The OpenSSL Project" because it bundles OpenSSL. Podling status is not a barrier either way; Hop, Impala, and Milagro all have incubating-era entries.
 
-**Unresolved, with owners:**
+**The facts this rests on, restated for a later reviewer:**
 
-1. **Whether a BIS notification is required at all.** ASF's published process says yes for 5D002 software. Current §742.15(b)(2) limits notification to source providing or performing non-standard cryptography, and the question above is open. ASF's page is dated May 24, 2019 and directs projects to follow it "until the Apache VP Legal Affairs approves an updated version." **Owner: VP Legal Affairs, via the PPMC and mentors.** Until answered, the accurate statement is "ASF's currently published process directs a notification," not "the EAR requires one" — and not "the EAR does not."
-2. **The §772.1 protocol classification** of the three constructions above. **Owner: VP Legal Affairs**, on facts supplied by contributors and release/packaging.
-3. **The manufacturer set per artifact** — source tarball, CLI npm tarball, macOS app, Windows app, eval container. Candidates include ASF, the OpenSSL Project, Google (BoringSSL), the mitmproxy project, and Git/Git for Windows via `dugite`. **Owner: release/packaging, then Legal.** Must be derived from actual packaged output, not from §J.
-4. **Whether §B3–B5 and §E are controlled paths** under ASF's designed-to-use language. **Owner: Legal.**
-5. **Podling filing mechanics** — who files, and whether the matrix entry names Maka or Apache Incubator. **Owner: mentors.**
+- Maka implements no cryptographic primitive. Every algorithm resolves to OpenSSL, BoringSSL, mitmproxy/OpenSSL, Windows CNG, a public Rust crate, or the user's OpenSSH (§A–§J).
+- Maka's own source does perform AES-256-GCM encryption (§A) and generate an RSA-2048 CA (§B1), both past the 5D002 thresholds. The determination turns on who implemented the cryptography, not on whether Maka invokes it.
+- Every algorithm found is a published standard. §772.1 also reaches proprietary or unpublished *protocols*, and three constructions touch that boundary: `@jackwener/opencli`'s vendor-private API signing with hardcoded key material (§J), Tencent's undocumented QQ Bot bind-task protocol (§A2), and Maka's own Managed Secret envelope construction (§A1, published in this source). The guidance above treats none of these as disqualifying.
 
-**If a filing proceeds**, ASF supplies a `bisnotice.xsl` transform with `bisnotice.sh`/`bisnotice.cmd` helpers that generate the BIS notification from the product name, and a `.yaml` behind `https://www.apache.org/licenses/exports/` editable by anyone with site-dev karma. ASF also prescribes verbatim README wording; **no such notice exists today** in `README.md`, `README.zh-CN.md`, `NOTICE`, `LICENSE`, or `DISCLAIMER-WIP`. The prescribed wording describes 5D002 as covering "asymmetric algorithms" — §B1's CA generation fits, §A's AES does not — so ask whether the boilerplate is used as-is. For the manufacturer field, the exports page shows both patterns: Accumulo lists ASF and Bouncy Castle; ActiveMQ's entry reads "designed for use with encryption library."
+**One fact that should not be lost if this is revisited.** `dugite` (§J) currently bundles a complete Git distribution — including OpenSSL native libraries and the .NET cryptography stack — into the desktop convenience binary. That is the pattern behind Impala's OpenSSL manufacturer entry, and it is the one respect in which Maka is not merely a consumer of runtime-supplied cryptography. **It is expected to be removed independently**, because Git is GPLv2 and ASF policy states that "Apache projects may not distribute Category X licensed components, in source or binary form; in ASF source code or in convenience binaries." If that removal does not happen before the first release, the bundling question should be put to the mentors explicitly rather than assumed to be covered.
 
-**On timing.** ASF's rule is notification before code reaches an ASF server, and §A and §B code is already in `apache/maka`. If item 1 resolves toward filing, it is overdue rather than upcoming.
+**Not required, therefore:** the BIS notification email, the exports-matrix `.yaml` entry, and the ASF README crypto notice. No such notice exists today in `README.md`, `README.zh-CN.md`, `NOTICE`, `LICENSE`, or `DISCLAIMER-WIP`, and on this determination none is needed.
+
+**Still open, and unaffected by the above:** whether `dugite` is removed before the first release (release management and licensing, not export control), and whether a closed manufacturer set would ever be needed — if it is, it must be generated per artifact from a frozen install and the actual packaged output, not taken from §J.
 
 ---
 
