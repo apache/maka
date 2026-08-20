@@ -61,6 +61,7 @@ import {
   errorPresentationFromClass,
   providerFailureResult,
   providerRetryMetadata,
+  taxonomySafeProviderCode,
 } from './provider-error-classification.js';
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
 import type { ContextDiagnosticsCompaction } from './context-diagnostics.js';
@@ -905,12 +906,16 @@ function normalizeProviderFailure(error: unknown): ModelFailure {
   // presence of a code (Error.code and provider codes both exist here).
   const kind = modelFailureKind(errorClass);
   const boundedProviderMessage = kind === 'unknown' && result.boundedProviderMessage === true;
+  // Only a closed vocabulary of provider codes may enter `code`: this field
+  // falls back into the Host's terminal-state taxonomy (`failureClass`), so a
+  // provider's free-form token must never steer it (#2521).
+  const code = taxonomySafeProviderCode(result.providerCode);
   return {
     type: 'model_failure',
     kind,
     retryable: result.retryable,
     ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {}),
-    ...(result.providerCode !== undefined ? { code: result.providerCode } : {}),
+    ...(code !== undefined ? { code } : {}),
     message:
       boundedProviderMessage && result.message
         ? result.message

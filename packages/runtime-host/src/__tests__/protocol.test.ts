@@ -163,12 +163,12 @@ describe('Runtime Host bootstrap protocol', () => {
     // frame, so the capability must be negotiated at a newer epoch.
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 38);
 
-  test('publishes a new compatibility epoch for structured provider failures', () => {
-    // Epoch 40 carries the structured provider failure code and bounded
-    // provider message on Turn snapshots; mixed-version peers must fail the
-    // handshake instead of failing on the first classified failure.
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 39);
-  });
+    test('publishes a new compatibility epoch for structured provider failures', () => {
+      // Epoch 40 carries the structured provider failure code and bounded
+      // provider message on Turn snapshots; mixed-version peers must fail the
+      // handshake instead of failing on the first classified failure.
+      assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 39);
+    });
   });
 
   test('publishes a new compatibility epoch for onboarding endpoint overrides', () => {
