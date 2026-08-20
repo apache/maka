@@ -135,6 +135,7 @@ jobs:
       - name: Record Release Manager handoff
         env:
           ARTIFACT_URL: ${{ steps.candidate.outputs.artifact-url }}
+          RUNBOOK_URL: ${{ github.server_url }}/${{ github.repository }}/blob/${{ github.sha }}/.github/ASF_SOURCE_RELEASE.md
         run: |
           {
             echo "## Unsigned ASF source candidate"
@@ -143,9 +144,7 @@ jobs:
             echo "- RC: \`$RC_NUMBER\`"
             echo "- Commit: \`$RELEASE_SHA\`"
             echo "- Artifact: $ARTIFACT_URL"
+            echo "- Release Manager runbook: $RUNBOOK_URL"
             echo
             echo "This workflow does not create an ASF release candidate by itself."
-            echo "A Release Manager must reproduce these exact bytes from the recorded commit,"
-            echo "sign the archive locally, verify it against KEYS,"
-            echo "and stage the immutable archive, .sha512, and .asc files on Apache dist/dev."
           } >> "$GITHUB_STEP_SUMMARY"

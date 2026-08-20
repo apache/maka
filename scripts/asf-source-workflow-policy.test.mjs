@@ -15,6 +15,11 @@ describe('ASF source workflow policy', () => {
     assert.match(workflow, /tar -xzf "\$CANDIDATE_PATH"/);
     assert.match(workflow, /\$\{\{ env\.CANDIDATE_PATH \}\}\.sha512/);
     assert.match(workflow, /run: npm run check:asf-source/);
+    assert.match(
+      workflow,
+      /RUNBOOK_URL: .*\/blob\/\$\{\{ github\.sha \}\}\/\.github\/ASF_SOURCE_RELEASE\.md/,
+    );
+    assert.doesNotMatch(workflow, /reproduce these exact bytes/);
 
     const orderedSteps = [
       'Create the unsigned source candidate',

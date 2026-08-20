@@ -123,6 +123,9 @@ describe('ASF source release verification', () => {
     const firstOutput = join(temporaryRoot, 'first');
     const secondOutput = join(temporaryRoot, 'second');
     const configuredOutput = join(temporaryRoot, 'configured');
+    const redirectedOutput = join(temporaryRoot, 'redirected');
+    const templatedOutput = join(temporaryRoot, 'templated');
+    const gzipConfiguredOutput = join(temporaryRoot, 'gzip-configured');
     const linkedOutput = join(temporaryRoot, 'linked');
     mkdirSync(repositoryRoot, { recursive: true });
     try {
@@ -195,9 +198,46 @@ describe('ASF source release verification', () => {
         repositoryRoot,
         version: '0.1.12',
       });
+      const createWithEnvironment = (name, value, outputDirectory) =>
+        withEnvironmentVariable(name, value, () =>
+          createSourceCandidate({ outputDirectory, repositoryRoot, version: '0.1.12' }),
+        );
+
+      const ambientTemplate = join(temporaryRoot, 'ambient-template');
+      mkdirSync(join(ambientTemplate, 'info'), { recursive: true });
+      writeFileSync(join(ambientTemplate, 'info/attributes'), 'README.md export-ignore\n');
+      const templated = await createWithEnvironment(
+        'GIT_TEMPLATE_DIR',
+        ambientTemplate,
+        templatedOutput,
+      );
+
+      const ambientRepository = join(temporaryRoot, 'ambient-repository');
+      git(temporaryRoot, ['clone', '--quiet', repositoryRoot, ambientRepository]);
+      writeFileSync(join(ambientRepository, 'README.md'), 'ambient repository\n');
+      git(ambientRepository, ['add', 'README.md']);
+      git(ambientRepository, [
+        '-c',
+        'user.name=ASF Release Test',
+        '-c',
+        'user.email=release-test@example.invalid',
+        'commit',
+        '-m',
+        'change ambient repository',
+      ]);
+      const redirected = await createWithEnvironment(
+        'GIT_DIR',
+        join(ambientRepository, '.git'),
+        redirectedOutput,
+      );
+      const gzipConfigured = await createWithEnvironment('GZIP', '-1', gzipConfiguredOutput);
       git(repositoryRoot, ['config', '--unset', 'tar.umask']);
       assert.deepEqual(readFileSync(first.archivePath), readFileSync(second.archivePath));
       assert.deepEqual(readFileSync(first.archivePath), readFileSync(configured.archivePath));
+      assert.deepEqual(readFileSync(first.archivePath), readFileSync(templated.archivePath));
+      assert.deepEqual(readFileSync(first.archivePath), readFileSync(redirected.archivePath));
+      assert.deepEqual(readFileSync(first.archivePath), readFileSync(gzipConfigured.archivePath));
+      assert.equal(redirected.commit, first.commit);
       assert.deepEqual(readFileSync(first.checksumPath), readFileSync(second.checksumPath));
       await assert.doesNotReject(() => verifySourceCandidate({ archivePath: first.archivePath }));
 
@@ -435,10 +475,61 @@ describe('ASF source release verification', () => {
       rmSync(temporaryRoot, { force: true, recursive: true });
     }
   });
+
+  test('does not let ambient tar options hide forbidden entries', async () => {
+    const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-asf-tar-options-test-'));
+    const identity = sourceCandidateIdentity('0.1.12');
+    const sourceRoot = join(temporaryRoot, identity.rootDirectory);
+    const archivePath = join(temporaryRoot, identity.archiveName);
+    try {
+      mkdirSync(join(sourceRoot, '.agents'), { recursive: true });
+      writeFileSync(
+        join(sourceRoot, 'package.json'),
+        `${JSON.stringify({ name: 'maka', version: identity.version })}\n`,
+      );
+      writeFileSync(
+        join(sourceRoot, 'package-lock.json'),
+        `${JSON.stringify({ lockfileVersion: 3, name: 'maka', packages: { '': { name: 'maka', version: identity.version } }, version: identity.version })}\n`,
+      );
+      writeFileSync(
+        join(sourceRoot, 'DISCLAIMER-WIP'),
+        'Apache Maka is undergoing incubation at The Apache Software Foundation.\n',
+      );
+      writeFileSync(join(sourceRoot, 'LICENSE'), 'Apache License, Version 2.0\n');
+      writeFileSync(join(sourceRoot, 'NOTICE'), 'Apache Maka\n');
+      writeFileSync(join(sourceRoot, '.agents/secret.txt'), 'must not be released\n');
+      execFileSync('tar', ['-czf', archivePath, identity.rootDirectory], {
+        cwd: temporaryRoot,
+        stdio: 'ignore',
+      });
+      const digest = createHash('sha512').update(readFileSync(archivePath)).digest('hex');
+      writeFileSync(`${archivePath}.sha512`, `${digest}  ${identity.archiveName}\n`);
+
+      await withEnvironmentVariable(
+        'TAR_OPTIONS',
+        `--exclude=${identity.rootDirectory}/.agents`,
+        () =>
+          assert.rejects(() => verifySourceCandidate({ archivePath }), /Forbidden archive entry/),
+      );
+    } finally {
+      rmSync(temporaryRoot, { force: true, recursive: true });
+    }
+  });
 });
 
 function git(repositoryRoot, arguments_) {
   execFileSync('git', arguments_, { cwd: repositoryRoot, stdio: 'ignore' });
+}
+
+async function withEnvironmentVariable(name, value, callback) {
+  const previous = process.env[name];
+  process.env[name] = value;
+  try {
+    return await callback();
+  } finally {
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+  }
 }
 
 function rewriteArchiveCompression(archivePath, level) {

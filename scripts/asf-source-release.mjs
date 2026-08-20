@@ -122,7 +122,10 @@ export async function createSourceCandidate({
   try {
     const tarPath = join(temporaryRoot, 'source.tar');
     writeSourceTar({ commit, identity, repositoryRoot, tarPath, temporaryRoot });
-    execFileSync('gzip', ['-n', '-9', tarPath], { stdio: 'inherit' });
+    execFileSync('gzip', ['-n', '-9', tarPath], {
+      env: controlledProcessEnvironment({ excludedNames: ['GZIP'] }),
+      stdio: 'inherit',
+    });
     copyFileSync(`${tarPath}.gz`, archivePath);
     chmodSync(archivePath, 0o644);
     await writeSha512File(archivePath, checksumPath);
@@ -255,11 +258,16 @@ export async function signSourceCandidate({
 }
 
 function git(repositoryRoot, arguments_, options = {}) {
+  const { env, ...execOptions } = options;
   return execFileSync('git', arguments_, {
     cwd: repositoryRoot,
     encoding: 'utf8',
     maxBuffer: maxCommandBuffer,
-    ...options,
+    ...execOptions,
+    env: controlledProcessEnvironment({
+      excludedPrefixes: ['GIT_'],
+      overrides: env,
+    }),
   });
 }
 
@@ -282,21 +290,13 @@ function writeSourceTar({ commit, identity, repositoryRoot, tarPath, temporaryRo
   writeFileSync(emptyGlobalConfig, '');
 
   const isolatedEnvironment = {
-    ...process.env,
     GIT_ATTR_NOSYSTEM: '1',
     GIT_CONFIG_GLOBAL: emptyGlobalConfig,
     GIT_CONFIG_NOSYSTEM: '1',
   };
   git(
     repositoryRoot,
-    [
-      '-c',
-      `init.templateDir=${emptyGitTemplate}`,
-      'init',
-      '--quiet',
-      '--bare',
-      isolatedGitDirectory,
-    ],
+    ['init', '--quiet', '--bare', `--template=${emptyGitTemplate}`, isolatedGitDirectory],
     { env: isolatedEnvironment },
   );
 
@@ -331,6 +331,7 @@ function decompressSourceArchive(archivePath, tarPath) {
     try {
       execFileSync('gzip', ['-dc', basename(archivePath)], {
         cwd: dirname(archivePath),
+        env: controlledProcessEnvironment({ excludedNames: ['GZIP'] }),
         stdio: ['ignore', output, 'inherit'],
       });
     } finally {
@@ -440,7 +441,22 @@ function execTar(archivePath, arguments_, options) {
   return execFileSync('tar', [arguments_[0], basename(archivePath), ...arguments_.slice(1)], {
     cwd: dirname(archivePath),
     ...options,
+    env: controlledProcessEnvironment({ excludedNames: ['TAR_OPTIONS'] }),
   });
+}
+
+function controlledProcessEnvironment({
+  excludedNames = [],
+  excludedPrefixes = [],
+  overrides = {},
+} = {}) {
+  const environment = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (excludedNames.includes(name)) continue;
+    if (excludedPrefixes.some((prefix) => name.startsWith(prefix))) continue;
+    environment[name] = value;
+  }
+  return { ...environment, ...overrides };
 }
 
 function gpgHomeOption(gpgHome) {
