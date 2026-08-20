@@ -269,7 +269,9 @@ describe('Host Runtime Resource coordinator', () => {
         sessionId: SESSION_ID,
         sourceTurnId: 'desktop-launch-1',
         sourceToolCallId: 'desktop-launch-1',
-        visibility: 'user',
+        // The interactive login shell carries no `command`, so it keeps its
+        // prior model-visible visibility (#3210).
+        visibility: undefined,
         cwd: '/workspace',
         pty: true,
       },

@@ -361,10 +361,36 @@ export function replaceTranscriptWithStoredMessages(
       )
     : [];
   const view = materializeSession(messages);
-  state.entries = [
-    ...foldStoredShellRunChildren(view.items.flatMap(chatItemToTranscriptEntries)),
-    ...userCommands,
-  ];
+  if (userCommands.length === 0) {
+    state.entries = foldStoredShellRunChildren(view.items.flatMap(chatItemToTranscriptEntries));
+  } else {
+    // Re-insert each preserved card at its chronological position: comparing
+    // the shell run's startedAt against item timestamps keeps a `!` command
+    // that ran before later model turns ahead of them, so a same-session
+    // reconnect does not reorder the transcript (#3210).
+    const cards = [...userCommands].sort(
+      (a, b) => userCommandCardStartedAt(a) - userCommandCardStartedAt(b),
+    );
+    const interleaved: MakaPiTranscriptEntry[] = [];
+    let cardIndex = 0;
+    for (const item of view.items) {
+      while (
+        cardIndex < cards.length &&
+        userCommandCardStartedAt(cards[cardIndex]!) <= chatItemTimestamp(item)
+      ) {
+        interleaved.push(cards[cardIndex]!);
+        cardIndex += 1;
+      }
+      interleaved.push(...chatItemToTranscriptEntries(item));
+    }
+    while (cardIndex < cards.length) {
+      interleaved.push(cards[cardIndex]!);
+      cardIndex += 1;
+    }
+    // Cards survive the fold untouched: folding only merges a stored shell-run
+    // child into a Bash parent sharing its ref, which a user command never is.
+    state.entries = foldStoredShellRunChildren(interleaved);
+  }
   clearPendingInteractions(state);
   state.pendingShellRunPolls.clear();
   state.expandAllTools = false;
@@ -391,6 +417,16 @@ export function hasRunningUserCommand(state: MakaPiTranscriptState): boolean {
   return state.entries.some(
     (entry) => entry.kind === 'tool' && entry.userOwned === true && isLiveShellRunCard(entry),
   );
+}
+
+/** Chronological key for a preserved user-command card; unknown times sort last. */
+function userCommandCardStartedAt(entry: MakaPiToolEntry): number {
+  return entry.result?.kind === 'shell_run' ? entry.result.startedAt : Number.POSITIVE_INFINITY;
+}
+
+/** Chronological key for a materialized view item. */
+function chatItemTimestamp(item: ChatItem): number {
+  return item.kind === 'tool' ? item.item.ts : item.message.ts;
 }
 
 /**

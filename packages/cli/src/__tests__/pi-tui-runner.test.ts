@@ -301,6 +301,47 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('a rejected user-command stop hands Ctrl-C back to the exit chord (#3210)', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RejectingUserCommandStopDriver();
+    const processExitCodes: number[] = [];
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      onProcessExit: (exitCode) => processExitCodes.push(exitCode),
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!sleep 3600');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+
+    // The first Ctrl+C is captured to stop the command, but the stop rejects:
+    // no terminal update is published, so the card still reads running.
+    terminal.input('\x03');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('host_draining'));
+    assert.equal(driver.stopUserCommandCalls, 1);
+    assert.equal(terminal.stopCalls, 0);
+
+    // The capture must disarm: the next press shows the exit prompt and the
+    // one after exits.
+    terminal.input('\x03');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Press Ctrl+C again to exit.'),
+    );
+    assert.equal(driver.stopUserCommandCalls, 1);
+    assert.equal(terminal.stopCalls, 0);
+
+    terminal.input('\x03');
+    await run;
+    assert.deepEqual(processExitCodes, [0]);
+  });
+
   test('same-session reconnect keeps a user-command card for its terminal update', async () => {
     const terminal = new FakeTerminal();
     const driver = new RunningUserCommandDriver();
@@ -7033,6 +7074,13 @@ class RunningUserCommandDriver extends SlashCommandDriver {
     for (const listener of this.#transcriptListeners) {
       listener('session-1', 'turn-1', [], 'reconnect');
     }
+  }
+}
+
+class RejectingUserCommandStopDriver extends RunningUserCommandDriver {
+  override async stopUserCommands(): Promise<void> {
+    this.stopUserCommandCalls += 1;
+    throw new Error('host_draining');
   }
 }
 

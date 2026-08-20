@@ -370,7 +370,10 @@ export class HostRuntimeResourceCoordinator
         sessionId: input.sessionId,
         sourceTurnId: input.launchId,
         sourceToolCallId: input.launchId,
-        visibility: 'user',
+        // Only the one-shot `!<command>` resources this Client owns are hidden
+        // from the model; the Desktop interactive login shell (no `command`)
+        // keeps its prior model-visible visibility (#3210).
+        ...(input.command === undefined ? {} : { visibility: 'user' as const }),
         cwd: header.cwd,
         command,
         env,

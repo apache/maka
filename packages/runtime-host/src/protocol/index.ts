@@ -72,11 +72,16 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 28 as const;
-// 28: Relay model profiles carry the Fast service-tier declaration. Older
-// peers cannot safely preserve that Runtime Policy field.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 29 as const;
 // 27: Runtime Policy carries the Host-owned shell preference used by tool,
 // PTY, and prompt composition. Older peers cannot safely preserve that field.
+// 28: Relay model profiles carry the Fast service-tier declaration. Older
+// peers cannot safely preserve that Runtime Policy field.
+// 29: `runtime.resource.start` accepts an optional one-shot `command`, and the
+// durable Shell Run record carries a `visibility` field. An epoch-28 Host
+// decodes the start input with exact keys and rejects `command` as unknown;
+// an epoch-28 binary rejects the widened record on read. Peers must agree on
+// both before either is exercised.
 // Transcript pages amortize storage and network round trips with a 512 KiB raw
 // payload. Base64 expansion plus the bounded fragment envelope must still fit in
 // one transport message; narrower domains retain their own encoded limits.

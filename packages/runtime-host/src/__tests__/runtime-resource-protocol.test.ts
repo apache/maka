@@ -3,6 +3,8 @@ import { describe, test } from 'node:test';
 import { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from '@maka/core/shell-run';
 import { type ShellRunSnapshotResult, type ShellRunUpdate } from '@maka/core/events';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
+import { requireExactRecord } from '../protocol/codec.js';
+import { RUNTIME_HOST_COMPATIBILITY_EPOCH } from '../protocol/index.js';
 import {
   decodeSubscriptionFrame,
   SESSION_RUNTIME_RESOURCE_CHANGES_MAX,
@@ -73,6 +75,26 @@ describe('Runtime Resource protocol', () => {
     ]) {
       assertInvalid(() => decodeRuntimeResourceStopResult({ resource: invalid }));
     }
+  });
+
+  test('the current epoch gates the widened runtime.resource.start input (#3210)', () => {
+    // The one-shot `command` field widens the start input at epoch 29. A
+    // pre-widening Host decodes it with exact keys and rejects `command` as
+    // unknown, so the epoch — not the decoder — is what keeps a pre-widening
+    // peer from being admitted and then failing on the first `!` command.
+    // Pinned relative so the next epoch advance does not silently pass.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH >= 29);
+    assertInvalid(() =>
+      requireExactRecord(
+        { sessionId: 'session-1', launchId: 'user-command-1', command: 'pwd' },
+        'Runtime Resource start input',
+        ['sessionId', 'launchId'],
+      ),
+    );
+    assert.deepEqual(
+      decodeRuntimeResourceStartInput({ sessionId: 'session-1', launchId: 'launch-1' }),
+      { sessionId: 'session-1', launchId: 'launch-1' },
+    );
   });
 
   test('enforces cursor, sequence, PTY control, item, and encoded result bounds', () => {

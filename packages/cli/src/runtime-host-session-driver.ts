@@ -549,6 +549,14 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         `Cannot resume externally isolated session ${sessionId} outside its owning harness.`,
       );
     }
+    // Leaving the current Session must not orphan its live user commands:
+    // the switch replaces the transcript, so their cards and the Ctrl+C stop
+    // affordance would disappear while the commands keep running. Await the
+    // start-barrier-aware stop path before changing Session identity so an
+    // in-flight start cannot land after the switch (#3210). This runs before
+    // the durable cwd relocation below: if a stop rejects, the switch aborts
+    // with nothing committed rather than stranding a half-switched Session.
+    await this.stopUserCommands();
     let relocation: MakaSessionMoveResult | undefined;
     if (options.relocateCwd !== undefined) {
       const nextCwd = await resolveMoveCwd(options.relocateCwd, this.#workspace.hostCwd);
@@ -568,12 +576,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       summary = runtimeHostSessionSummary(session);
       await assertSessionResumeAvailable(summary, this.#executionLocation);
     }
-    // Leaving the current Session must not orphan its live user commands:
-    // the switch replaces the transcript, so their cards and the Ctrl+C stop
-    // affordance would disappear while the commands keep running. Await the
-    // start-barrier-aware stop path before changing Session identity so an
-    // in-flight start cannot land after the switch (#3210).
-    await this.stopUserCommands();
     const expectedChannelGeneration = this.#channelGeneration;
     const nextSessionGeneration = this.#sessionGeneration + 1;
     const opened = await this.#openSessionChannel(sessionId, nextSessionGeneration);
@@ -728,7 +730,14 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   async stop(): Promise<void> {
     const turn = this.#channel?.snapshot.rootTurn;
-    const stops: Promise<unknown>[] = [this.stopUserCommands()];
+    // A user command is not part of the turn, so its stop must never be
+    // reported as a failed turn interrupt: a rejecting runtime.resource.stop
+    // (host draining, transport failure) would otherwise reset the caller's
+    // interrupt affordance even though turn.stop succeeded. Stop the commands
+    // best-effort here — this is also the close authority — while the callers
+    // that own their lifecycle (Ctrl+C, Session switch) await
+    // stopUserCommands() directly and surface its errors themselves (#3210).
+    const stops: Promise<unknown>[] = [this.stopUserCommands().catch(() => undefined)];
     if (turn && !isTerminalTurn(turn)) {
       stops.push(
         this.#request('turn.stop', {

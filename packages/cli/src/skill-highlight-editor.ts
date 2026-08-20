@@ -53,6 +53,13 @@ export class MakaSkillHighlightEditor extends Editor {
       );
     if (this.getText() !== '!' || !this.userCommandHint) return lines;
 
+    // NOTE: this cursor glyph is a private rendering detail of
+    // @earendil-works/pi-tui — `Editor.render` emits `\x1b[7m \x1b[0m` (reverse
+    // space) only when the cursor sits at end-of-line, which a bare `!`
+    // always produces (read from pi-tui 0.83.0, components/editor.js:442).
+    // A dependency bump that changes the glyph makes findIndex return -1 and
+    // the hint silently disappears; the covering test asserts the rendered
+    // string, so such a bump fails loudly there.
     const cursor = '\x1b[7m \x1b[0m';
     const contentLine = lines.findIndex((line) => line.includes(cursor));
     if (contentLine === -1) return lines;

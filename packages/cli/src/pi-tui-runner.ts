@@ -337,6 +337,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let lastTurnEscapeAt = 0;
   let lastIdleEscapeAt = 0;
   let lastIdleCtrlCAt = 0;
+  // Set once a user-command stop rejects: a rejected stop publishes no
+  // terminal update, so the card would read running for the rest of the
+  // session and the branch below would capture every later Ctrl+C, hiding
+  // the exit chord. After a failure the capture disarms and Ctrl+C falls
+  // through to the normal idle handling (#3210).
+  let userCommandStopRejected = false;
   type AttachedTurnContext =
     | { readonly kind: 'adopted'; readonly turn: MakaPreparedSessionTurn }
     | { readonly kind: 'external'; readonly turn: MakaAttachedSessionTurn };
@@ -3105,11 +3111,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (
       !turnRunning &&
       matchesKey(data, Key.ctrl('c')) &&
+      !userCommandStopRejected &&
       hasRunningUserCommand(state) &&
       input.driver.stopUserCommands
     ) {
       lastIdleCtrlCAt = 0;
-      void runControl(() => input.driver.stopUserCommands!());
+      void runControl(async () => {
+        try {
+          await input.driver.stopUserCommands!();
+        } catch (error) {
+          userCommandStopRejected = true;
+          reportError(error);
+        }
+      });
       return { consume: true };
     }
     // Double Escape interrupts the running turn. This must sit below the

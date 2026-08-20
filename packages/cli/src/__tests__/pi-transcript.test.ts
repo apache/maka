@@ -1872,6 +1872,52 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('reconnect re-inserts preserved user-command cards at their chronological position (#3210)', () => {
+    const state = createMakaPiTranscriptState();
+    // The command ran before the model turns that followed it.
+    appendUserCommandToTranscript(state, {
+      commandId: 'user-command-1',
+      command: 'pwd',
+      result: shellRun({
+        ref: 'maka://runtime/background-tasks/user-command-1',
+        status: 'completed',
+        stdout: '/repo\n',
+        startedAt: 1_000,
+      }) as ShellRunSnapshotResult,
+    });
+
+    replaceTranscriptWithStoredMessages(
+      state,
+      [
+        { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 2_000, text: 'later prompt' },
+        {
+          type: 'assistant',
+          id: 'message-2',
+          turnId: 'turn-1',
+          ts: 3_000,
+          text: 'later answer',
+          modelId: 'model-1',
+        },
+      ],
+      { preserveUserCommands: true },
+    );
+
+    const cardIndex = state.entries.findIndex(
+      (entry) => entry.kind === 'tool' && entry.userOwned === true,
+    );
+    const promptIndex = state.entries.findIndex((entry) =>
+      JSON.stringify(entry).includes('later prompt'),
+    );
+    const answerIndex = state.entries.findIndex((entry) =>
+      JSON.stringify(entry).includes('later answer'),
+    );
+    assert.notEqual(cardIndex, -1);
+    assert.notEqual(promptIndex, -1);
+    assert.notEqual(answerIndex, -1);
+    assert.ok(cardIndex < promptIndex, 'card must stay ahead of the later turn');
+    assert.ok(promptIndex < answerIndex);
+  });
+
   test('notifies a settle exactly once across a folded poll and the live update', () => {
     const state = createMakaPiTranscriptState();
     const ref = 'maka://runtime/background-tasks/bg-1';
