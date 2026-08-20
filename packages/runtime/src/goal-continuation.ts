@@ -404,13 +404,15 @@ export class GoalContinuationCoordinator {
   }
 
   /**
-   * Put back a loop this Goal is already in, and only that.
+   * Put back the drive this Goal already has, and only that.
    *
-   * Recovery and resume both restore a continuation rather than start one, so
-   * both must refuse a Goal that is not in a loop to begin with — an armed
-   * Goal no Turn has taken hold of, which `goal.arm` deliberately left for the
-   * user's next Turn. Two callers must obey that and a third would inherit it,
-   * so the rule is stated once here rather than at each door.
+   * Neither caller may start a loop the Goal is not in: a restart would
+   * otherwise begin one for an armed Goal that `goal.arm` deliberately left
+   * for the user's next Turn. Resume is not an exception to that rule but a
+   * satisfier of it — resuming is the user asking for continuation, so the
+   * Goal is already driving by the time it arrives here. Two callers must obey
+   * this and a third would inherit it, so it is stated once here rather than
+   * at each door.
    */
   private restoreDrive(
     lane: SessionLane,

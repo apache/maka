@@ -370,6 +370,9 @@ export class GoalManager {
         tokensNow,
         tokensBaselinePending,
         lastReason,
+        // A Turn carried this Goal all the way into a continuation, so
+        // whatever it was armed to wait for has happened.
+        armedAt: undefined,
       };
     }
 
@@ -399,7 +402,10 @@ export class GoalManager {
     if (checkpoint && !this.matches(sessionId, checkpoint)) return undefined;
     return this.commit(
       record,
-      { status: 'active', pausedAt: undefined },
+      // Resume is a request for continuation, not a return to whatever the
+      // Goal was doing before. A Goal armed and never carried has been waiting
+      // for a Turn to take hold of it; this is one.
+      { status: 'active', pausedAt: undefined, armedAt: undefined },
       { renewControlLease: true },
     );
   }

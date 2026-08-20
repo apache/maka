@@ -1,5 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { isDrivingGoal } from '@maka/core/goal';
 import { GoalManager, goalCheckpoint, type GoalState } from '../goal-state.js';
 
 const SESSION = 'sess-1';
@@ -223,6 +224,31 @@ describe('GoalManager token budget baseline', () => {
 
     const third = settle(mgr, { madeProgress: true, tokensNow: 41_000 });
     assert.equal(third?.status, 'budget_limited');
+  });
+});
+
+describe('GoalManager arming', () => {
+  test('a Goal the model set drives from the moment it exists', () => {
+    const { mgr } = createManager();
+    assert.equal(isDrivingGoal(createGoal(mgr, 'x')), true);
+  });
+
+  test('an armed Goal drives once a carried Turn settles it into a continuation', () => {
+    const { mgr } = createManager();
+    assert.equal(isDrivingGoal(createGoal(mgr, 'x', { armed: true })), false);
+    const settled = settle(mgr);
+    assert.ok(settled);
+    assert.equal(isDrivingGoal(settled), true);
+  });
+
+  test('resume drives an armed Goal no Turn ever carried', () => {
+    const { mgr } = createManager();
+    const armed = createGoal(mgr, 'x', { armed: true });
+    const paused = mgr.pause(SESSION, { checkpoint: goalCheckpoint(armed) });
+    assert.ok(paused);
+    const resumed = mgr.resume(SESSION, goalCheckpoint(paused));
+    assert.ok(resumed);
+    assert.equal(isDrivingGoal(resumed), true);
   });
 });
 

@@ -42,31 +42,32 @@ export interface GoalState {
   readonly achievedAt?: number;
   readonly pausedAt?: number;
   /**
-   * When `goal.arm` created this Goal, and absent when the model did.
+   * When `goal.arm` created this Goal, and absent once the Goal drives itself.
    *
-   * A Goal is born into one of two situations and nothing else records which.
-   * The model sets a Goal from inside a Turn, so that Turn is already bound to
-   * it and will settle into the Goal's first continuation. Arming happens
-   * outside every Turn and deliberately starts nothing, so the Goal waits for
-   * a Turn to take hold of it. Both look identical at `iterations: 0`, and a
-   * restart or a resume has to tell them apart. Stamped once at birth and
-   * never cleared: it says how the Goal began, not where it is now.
+   * A Goal the model sets drives from the moment it exists: the Turn that set
+   * it is already bound to it and settles into its first continuation. Arming
+   * happens outside every Turn and deliberately starts nothing, so an armed
+   * Goal waits — for a Turn to carry it into a continuation, or for the user
+   * to resume it — and this records that wait. Both events clear it, so its
+   * absence is the whole fact `isDrivingGoal` reads. Absence is also what
+   * every Goal written before arming existed carries, which is what those
+   * Goals mean.
    */
   readonly armedAt?: number;
 }
 
 /**
- * Whether this Goal is in a continuation loop that a restart or a resume
- * should put back.
+ * Whether this Goal admits its own continuation Turns, which a restart or a
+ * resume has to put back.
  *
- * A Goal the model set is in one from the moment it exists. An armed Goal is
- * not, until a Turn settles while bound to it — which is the only event that
- * raises `iterations`. Reading `status` cannot answer this: `active` covers
- * both a Goal waiting for its first Turn and one waiting between
- * continuations.
+ * `status` cannot answer this: `active` covers both a Goal between
+ * continuations and an armed one still waiting for its first Turn. Neither
+ * can `iterations`, which only rises once a carried Turn settles into an
+ * evaluation — leaving the whole first Turn, and any pause taken during it,
+ * indistinguishable from a Goal nothing ever took hold of.
  */
-export function isDrivingGoal(goal: Pick<GoalState, 'iterations' | 'armedAt'>): boolean {
-  return goal.armedAt === undefined || goal.iterations > 0;
+export function isDrivingGoal(goal: Pick<GoalState, 'armedAt'>): boolean {
+  return goal.armedAt === undefined;
 }
 
 export interface GoalCheckpoint {

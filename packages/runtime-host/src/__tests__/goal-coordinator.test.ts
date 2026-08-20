@@ -740,7 +740,7 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
   }
 });
 
-test('resuming a Goal no Turn has carried leaves it for the next Turn, not for a loop', async () => {
+test('resuming an armed Goal drives it, and a restart puts that drive back', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-armed-resume-'));
   const capability = await resolveStorageRoot({
     path: join(base, 'root'),
@@ -759,8 +759,8 @@ test('resuming a Goal no Turn has carried leaves it for the next Turn, not for a
       model: 'fake-model',
       permissionMode: 'ask',
     });
-    let admitted = false;
-    let evaluated = false;
+    let admitted = 0;
+    let evaluated = 0;
     const host = new HostGoalCoordinator({
       store: goalStore,
       stores,
@@ -771,14 +771,17 @@ test('resuming a Goal no Turn has carried leaves it for the next Turn, not for a
       sessionAdmission: new SessionAdmissionGate(),
       evaluator: {
         evaluate: async () => {
-          evaluated = true;
+          evaluated += 1;
           return '{"met":false,"impossible":false,"progress":true,"waiting":false,"reason":"x"}';
         },
         close: async () => {},
       },
+      // Busy leaves the Goal exactly where resume put it: driving, with no
+      // execution recorded. Any other admission would write durable state and
+      // hide what the restart below has to rebuild from the Goal alone.
       admitTurn: () => {
-        admitted = true;
-        return { kind: 'unavailable', reason: 'Resume assertion only' };
+        admitted += 1;
+        return { kind: 'busy', whenIdle: new Promise<void>(() => {}) };
       },
       listActionableTaskKeys: async () => [],
       acquireResidency: () => ({ release: () => {} }),
@@ -798,6 +801,8 @@ test('resuming a Goal no Turn has carried leaves it for the next Turn, not for a
     );
     assert.ok(armed.ok);
     if (!armed.ok) return;
+    for (let tick = 0; tick < 20; tick += 1) await new Promise((r) => setImmediate(r));
+    assert.equal(admitted, 0, 'arming alone must start nothing');
 
     const paused = await host.handlers['goal.control'](
       {
@@ -811,9 +816,9 @@ test('resuming a Goal no Turn has carried leaves it for the next Turn, not for a
     assert.ok(paused.ok && paused.result.goal.status === 'paused');
     if (!paused.ok) return;
 
-    // Pause stopped nothing, so resume starts nothing. A Goal no Turn has
-    // carried has no loop to put back: it goes on waiting for the Turn that
-    // arming left it to, exactly as it was before the pause.
+    // Resume is the user saying go, and the control that sends it promises
+    // continuation starts immediately. From here the Goal drives itself,
+    // whether or not a Turn ever carried it.
     const resumed = await host.handlers['goal.control'](
       {
         sessionId: session.id,
@@ -824,30 +829,43 @@ test('resuming a Goal no Turn has carried leaves it for the next Turn, not for a
       operationContext('connection-1'),
     );
     assert.ok(resumed.ok && resumed.result.goal.status === 'active');
+    if (!resumed.ok) return;
     for (let tick = 0; tick < 20; tick += 1) await new Promise((r) => setImmediate(r));
-    assert.equal(admitted, false, 'resume admitted a Turn for a Goal no Turn had carried');
-    assert.equal(evaluated, false, 'resume evaluated a Goal no Turn had carried');
-    await waitForAsync(async () => (await goalStore.read(session.id)) !== null);
+    assert.equal(admitted, 1, 'resume promised continuation and started none');
+    assert.equal(evaluated, 0, 'resume drives the next Turn without evaluating one');
+    await waitForAsync(
+      async () =>
+        (await goalStore.read(session.id))?.record.goal.revision === resumed.result.goal.revision,
+    );
+    assert.equal(
+      (await goalStore.read(session.id))?.record.currentExecution,
+      null,
+      'a busy admission records no execution, so only the Goal carries the drive',
+    );
     await host.close();
 
-    // And because resume promised nothing, a restart has nothing to lose: the
-    // Goal comes back active and still waiting for its first Turn.
-    let admittedAfterRestart = false;
+    // The resume outlived the process that took it: nothing else is left to
+    // say the user asked for continuation.
+    let admittedAfterRestart = 0;
+    let evaluatedAfterRestart = 0;
     const restarted = new HostGoalCoordinator({
       store: goalStore,
       stores,
       executions: {
-        reconcile: async () => assert.fail('An armed Goal has no execution to recover'),
+        reconcile: async () => assert.fail('A busy admission left no execution to recover'),
         subscribe: () => () => undefined,
       },
       sessionAdmission: new SessionAdmissionGate(),
       evaluator: {
-        evaluate: async () => assert.fail('A resumed but never carried Goal must not evaluate'),
+        evaluate: async () => {
+          evaluatedAfterRestart += 1;
+          return '{"met":false,"impossible":false,"progress":true,"waiting":false,"reason":"x"}';
+        },
         close: async () => {},
       },
       admitTurn: () => {
-        admittedAfterRestart = true;
-        return { kind: 'unavailable', reason: 'Recovery assertion only' };
+        admittedAfterRestart += 1;
+        return { kind: 'busy', whenIdle: new Promise<void>(() => {}) };
       },
       listActionableTaskKeys: async () => [],
       acquireResidency: () => ({ release: () => {} }),
@@ -857,10 +875,8 @@ test('resuming a Goal no Turn has carried leaves it for the next Turn, not for a
     await restarted.prepareRecovery();
     await restarted.recover();
     for (let tick = 0; tick < 20; tick += 1) await new Promise((r) => setImmediate(r));
-    assert.equal(admittedAfterRestart, false, 'the restart drove a Goal no Turn had carried');
-    const goal = restarted.readProjection(session.id);
-    assert.equal(goal?.status, 'active');
-    assert.equal(goal?.iterations, 0);
+    assert.equal(admittedAfterRestart, 1, 'the restart dropped a resume the user had already made');
+    assert.equal(evaluatedAfterRestart, 0, 'recovery drives the next Turn without evaluating one');
     await restarted.close();
   } finally {
     await goalStore.close();
