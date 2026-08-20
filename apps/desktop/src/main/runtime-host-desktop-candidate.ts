@@ -14,6 +14,7 @@ import {
   type ConnectOrSpawnRuntimeHostResult,
   type RuntimeHostConnection,
   type RemoteRuntimeHostProfile,
+  type CandidateExitDetails,
 } from "@maka/runtime-host/client";
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -138,6 +139,8 @@ export interface DesktopRuntimeHostCandidateStartInput
   readonly generation?: string;
   readonly takeoverHostEpoch?: string;
   readonly signal?: AbortSignal;
+  /** Candidate-exit sink forwarded to the launcher; the Desktop owns the sink. */
+  readonly onExit?: (details: CandidateExitDetails) => void;
   readonly remote?: {
     readonly profile: RemoteRuntimeHostProfile;
     readonly credential: string;
@@ -693,6 +696,7 @@ function connectInput(
       ? {}
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
+    ...(input.onExit === undefined ? {} : { onExit: input.onExit }),
   };
 }
 

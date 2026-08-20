@@ -1302,10 +1302,20 @@ export class RuntimeHostSessionObserver {
     if (targetId !== undefined && consumer.target.id !== targetId) {
       throw new Error('Desktop transcript consumer belongs to another renderer');
     }
-    // Durable transcript sequence identities belong to the Session, not to a
-    // Desktop replica generation. Recovery may install a replacement after
-    // the renderer dispatches a range request; continue that read against the
-    // current replica so the user's navigation completes across reconnect.
+    // Durable transcript sequence identities belong to the Session and the
+    // Runtime Host epoch, not to a Desktop replica generation. Recovery may
+    // install a replacement replica (new generation, same session and host
+    // epoch) after the renderer dispatches a range request; continue that
+    // read against the current replica so navigation completes across
+    // reconnect. When the Host itself is replaced, sequence identity is not
+    // preserved, so reject the stale request instead of silently reading a
+    // different slice.
+    if (state.sessionId !== request.sessionId) {
+      throw new Error('Desktop transcript consumer belongs to another session');
+    }
+    if (replica.hostEpoch !== request.hostEpoch) {
+      throw new Error('Desktop transcript host epoch changed; reopen the transcript');
+    }
     return { state, replica, consumer };
   }
 

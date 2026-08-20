@@ -7,6 +7,12 @@ import {
   type CandidateStartupFailureReport,
 } from '../candidate-startup-failure.js';
 
+export interface CandidateExitDetails {
+  readonly pid: number | undefined;
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+}
+
 export interface DetachedCandidateInput {
   rootPath: string;
   expectedRootId: string;
@@ -17,6 +23,8 @@ export interface DetachedCandidateInput {
   executable?: string;
   entrypoint: string | URL;
   env?: NodeJS.ProcessEnv;
+  /** Called with the candidate's exit details; the embedder owns the sink. */
+  readonly onExit?: (details: CandidateExitDetails) => void;
 }
 
 export interface DetachedCandidateAttempt {
@@ -40,7 +48,7 @@ export function launchDetachedRuntimeHostCandidate(
 ): DetachedCandidateLaunch {
   const startupAttemptId = randomUUID();
   const child = spawnCandidate(input, true, startupAttemptId);
-  observeCandidateExit(child);
+  observeCandidateExit(child, input.onExit);
   const startupFailure = readStartupFailure(child, startupAttemptId);
   const spawned = spawnedPid(child).then(({ pid }) => {
     child.unref();
@@ -54,7 +62,7 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
 } {
   const startupAttemptId = randomUUID();
   const child = spawnCandidate(input, false, startupAttemptId);
-  observeCandidateExit(child);
+  observeCandidateExit(child, input.onExit);
   const startupFailure = readStartupFailure(child, startupAttemptId);
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     child.once('exit', (code, signal) => resolve({ code, signal }));
@@ -132,14 +140,13 @@ function spawnedPid(child: ReturnType<typeof spawn>): Promise<{ pid: number }> {
   });
 }
 
-function observeCandidateExit(child: ReturnType<typeof spawn>): void {
+function observeCandidateExit(
+  child: ReturnType<typeof spawn>,
+  onExit: DetachedCandidateInput['onExit'],
+): void {
+  if (!onExit) return;
   child.once('exit', (code, signal) => {
-    const details = { pid: child.pid, code, signal };
-    if (code === 0 && signal === null) {
-      console.info('[runtime-host] candidate exited cleanly', details);
-      return;
-    }
-    console.error('[runtime-host] candidate exited unexpectedly', details);
+    onExit({ pid: child.pid, code, signal });
   });
 }
 

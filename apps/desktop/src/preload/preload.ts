@@ -1666,7 +1666,8 @@ const makaBridge = {
       ): Promise<void> =>
         ipcRenderer.invoke(operation, consumerScope, {
           consumerId,
-          generation,
+          sessionId,
+          hostEpoch: opened.hostEpoch,
           anchorSequence,
           maxBytes,
         }) as Promise<void>;

@@ -659,6 +659,7 @@ test('finishes transcript open and replays a stale range request after replaceme
   };
   let opens = 0;
   let rangeLoads = 0;
+  const requestedAnchors: Array<number | null> = [];
   const observer = new RuntimeHostSessionObserver({
     client: {
       openSession: async () => {
@@ -699,6 +700,7 @@ test('finishes transcript open and replays a stale range request after replaceme
           }),
           loadTranscriptPage: async (input) => {
             rangeLoads += 1;
+            requestedAnchors.push(input.anchorSequence);
             return {
               kind: 'page',
               sessionId: 'session-1',
@@ -779,12 +781,17 @@ test('finishes transcript open and replays a stale range request after replaceme
   assert.equal(opened.value?.generation, batches.at(-1)?.generation);
   assert.notEqual(opened.value?.generation, staleGeneration);
   rangeLoads = 0;
+  requestedAnchors.length = 0;
   autoAcknowledge = true;
+  // The renderer dispatched this range request before the replacement replica
+  // was installed; the same Session and Host epoch continue the read against
+  // the current replica, and the requested slice is what the replica loads.
   await assert.doesNotReject(() =>
     observer.loadTranscriptBefore(
       {
         consumerId: 'consumer-recovery',
-        generation: staleGeneration,
+        sessionId: 'session-1',
+        hostEpoch: 'host-1',
         anchorSequence: 0,
         maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
       },
@@ -792,6 +799,38 @@ test('finishes transcript open and replays a stale range request after replaceme
     ),
   );
   assert.equal(rangeLoads, 1);
+  assert.deepEqual(requestedAnchors, [0]);
+  // Durable sequence identity is Session- and Host-epoch-scoped: a request
+  // for a different Session or Host epoch must reject instead of silently
+  // reading a different slice of the transcript.
+  await assert.rejects(
+    () =>
+      observer.loadTranscriptBefore(
+        {
+          consumerId: 'consumer-recovery',
+          sessionId: 'session-1',
+          hostEpoch: 'other-host',
+          anchorSequence: 0,
+          maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+        },
+        22,
+      ),
+    /Desktop transcript host epoch changed/,
+  );
+  await assert.rejects(
+    () =>
+      observer.loadTranscriptBefore(
+        {
+          consumerId: 'consumer-recovery',
+          sessionId: 'other-session',
+          hostEpoch: 'host-1',
+          anchorSequence: 0,
+          maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+        },
+        22,
+      ),
+    /Desktop transcript consumer belongs to another session/,
+  );
   await observer.close();
 });
 

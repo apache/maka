@@ -1,3 +1,4 @@
+import { generalizedErrorMessage } from '@maka/core/redaction';
 import {
   candidateStartupFailureExitCode,
   classifyCandidateStartupFailure,
@@ -68,7 +69,11 @@ export async function runExecutionCandidateEntry(
   try {
     await runRuntimeHostProcessLifecycle(result.host);
   } catch (error) {
-    console.error('[runtime-host] lifecycle failed:', error);
+    // Log the redacted, generalized message only: a full error object can
+    // carry paths and spawn arguments in its message or stack.
+    console.error(
+      `[runtime-host] lifecycle failed: ${generalizedErrorMessage(error, 'Runtime Host lifecycle failed')}`,
+    );
     process.exitCode = 1;
   } finally {
     stopWatch?.();
