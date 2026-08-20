@@ -11,6 +11,7 @@ import type {
 } from "@maka/core/runtime-policy";
 import { SENSITIVE_PLACEHOLDER } from "@maka/core/settings/network-settings";
 import type {
+  DetectNetworkProxyResult,
   ProxySettings,
   TestProxyInput,
 } from "@maka/core/settings/network-settings";
@@ -29,10 +30,12 @@ import {
   clientOwnedSettingsPatch,
   hasSettingsPatch,
 } from "../shared/settings-ownership.js";
+import { parseSystemProxyRules } from './system-network-proxy.js';
 
 type RuntimeHostSettingsClient = Pick<
   DesktopRuntimeHostClient,
   | "deleteCredential"
+  | "detectNetworkProxy"
   | "queryCredential"
   | "queryRuntimePolicy"
   | "setCredential"
@@ -55,6 +58,7 @@ export interface RuntimeHostSettingsIpcDeps {
   readonly client: RuntimeHostSettingsClient;
   readonly settingsStore: SettingsStore;
   readonly applyClientSettings: (settings: AppSettings) => Promise<void>;
+  readonly resolveSystemProxy?: () => Promise<string>;
 }
 
 export function registerRuntimeHostSettingsIpc(
@@ -62,6 +66,25 @@ export function registerRuntimeHostSettingsIpc(
 ): void {
   handleReconnectableRead(deps.ipcMain, "settings:get", async () =>
     maskAppSettings(await loadRuntimeHostSettings(deps)),
+  );
+  deps.ipcMain.handle(
+    'settings:detectNetworkProxy',
+    async (): Promise<DetectNetworkProxyResult> => {
+      try {
+        const detected = await deps.client.detectNetworkProxy();
+        if (detected.candidate) return detected;
+      } catch {
+        // Detection is best-effort. A local system proxy can still provide a
+        // candidate when the Host has no proxy environment or is unavailable.
+      }
+      if (!deps.resolveSystemProxy) return {};
+      try {
+        const candidate = parseSystemProxyRules(await deps.resolveSystemProxy());
+        return candidate ? { candidate } : {};
+      } catch {
+        return {};
+      }
+    },
   );
   deps.ipcMain.handle(
     "settings:testNetworkProxy",

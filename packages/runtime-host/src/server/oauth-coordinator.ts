@@ -661,9 +661,16 @@ function loginFailureCode(error: unknown): OAuthLoginFailureCode {
   // a provider rejection of the account.
   if (error instanceof OAuthDeviceAuthorizationExpiredError) return 'authorization_failed';
   if (error instanceof OAuthTokenEndpointError) {
-    return error.category === 'invalid_grant' || error.category === 'invalid_token'
-      ? 'provider_rejected'
-      : 'authorization_failed';
+    if (error.category === 'unsupported_region') return 'unsupported_region';
+    if (error.category === 'outcome_unknown') return 'network_unavailable';
+    if (
+      error.category === 'invalid_grant' ||
+      error.category === 'invalid_token' ||
+      error.category === 'provider_rejected'
+    ) {
+      return 'provider_rejected';
+    }
+    return 'authorization_failed';
   }
   return 'internal_failure';
 }

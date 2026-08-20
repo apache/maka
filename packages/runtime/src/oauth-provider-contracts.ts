@@ -3,6 +3,7 @@ export type OAuthEnrollmentProvider = 'claude-subscription' | 'openai-codex' | '
 export type OAuthTokenEndpointErrorCategory =
   | 'invalid_grant'
   | 'invalid_token'
+  | 'unsupported_region'
   | 'provider_rejected'
   | 'invalid_response'
   | 'response_too_large'

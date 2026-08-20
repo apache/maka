@@ -178,7 +178,10 @@ export function SettingsSurface(props: {
   // payload is the destination SettingsSection id.
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ section?: SettingsSection }>).detail;
+      const detail = (event as CustomEvent<{
+        section?: SettingsSection;
+        focusId?: string;
+      }>).detail;
       // PR-OAUTH-CARD-LIVE-STATE-0: validate against SETTINGS_NAV so
       // a dispatched section id that doesn't match any nav item falls
       // through to the default fallback page silently. Previously
@@ -189,6 +192,12 @@ export function SettingsSurface(props: {
         SETTINGS_NAV.some((item) => item.id === detail.section)
       ) {
         setSection(detail.section);
+        const focusId = detail.focusId;
+        if (focusId) {
+          window.requestAnimationFrame(() => {
+            document.getElementById(focusId)?.scrollIntoView({ block: 'start' });
+          });
+        }
       }
     };
     window.addEventListener('maka:jumpToSettingsSection', handler);
@@ -870,6 +879,9 @@ function SettingsPageBody(props: {
           defaultSlug={props.defaultSlug}
           connectionsBridge={props.connectionsBridge}
           runtimeHostStatus={props.runtimeHostStatus}
+          detectNetworkProxy={props.runtimeHost
+            ? () => window.maka.settings.detectNetworkProxy(props.runtimeHost)
+            : undefined}
           testNetworkProxy={props.runtimeHost
             ? (input) => window.maka.settings.testNetworkProxy(input, props.runtimeHost)
             : undefined}

@@ -64,3 +64,15 @@ export interface TestProxyResult {
   countryFlag?: string;
   error?: string;
 }
+
+export type NetworkProxyCandidateSource = 'environment' | 'system';
+
+export interface NetworkProxyCandidate {
+  source: NetworkProxyCandidateSource;
+  proxy: Omit<ProxySettings, 'username' | 'password'>;
+  requiresAuthentication: boolean;
+}
+
+export interface DetectNetworkProxyResult {
+  candidate?: NetworkProxyCandidate;
+}

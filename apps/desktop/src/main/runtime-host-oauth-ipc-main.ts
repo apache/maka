@@ -64,6 +64,13 @@ interface ActiveOAuthAttempt {
   readonly presentationMethod: OAuthExternalPresentation['method'];
 }
 
+class TerminalOAuthLoginError extends Error {
+  constructor(readonly projection: OAuthLoginProjection) {
+    super(describeTerminal(projection));
+    this.name = 'TerminalOAuthLoginError';
+  }
+}
+
 /** Adapts the existing Desktop OAuth UI to the Host's provider-neutral OAuth operations. */
 export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void {
   const activeAttempts = new Map<string, ActiveOAuthAttempt>();
@@ -88,7 +95,7 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
       const expectation = deps.presentation.expect(attemptId);
       try {
         const started = await deps.client.startOAuthLogin(attemptId, connection.connectionId);
-        if (isTerminal(started)) throw new Error(describeTerminal(started));
+        if (isTerminal(started)) throw new TerminalOAuthLoginError(started);
         const presented = await waitForPresentation(deps.client, attemptId, expectation.presented);
         activeAttempts.set(attemptId, {
           provider,
@@ -104,7 +111,12 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
           error instanceof Error && error.message.trim().length > 0
             ? error.message
             : 'Unable to start OAuth authorization';
-        return actionFailure(detail);
+        return actionFailure(
+          detail,
+          error instanceof TerminalOAuthLoginError
+            ? terminalFailureReason(error.projection)
+            : 'unknown',
+        );
       }
     });
     deps.ipcMain.handle(channel('open-auth-url'), (_event, attemptId: unknown) => {
@@ -233,7 +245,7 @@ async function waitForPresentation(
     ]);
     if (outcome.kind === 'presented') return outcome.value;
     const projection = await client.queryOAuthLogin(attemptId);
-    if (isTerminal(projection)) throw new Error(describeTerminal(projection));
+    if (isTerminal(projection)) throw new TerminalOAuthLoginError(projection);
   }
 }
 
@@ -278,8 +290,15 @@ function describeTerminal(projection: OAuthLoginProjection): string {
 
 function terminalFailureReason(
   projection: OAuthLoginProjection,
-): 'authorization_cancelled' | 'authorization_denied' | 'unknown' {
+):
+  | 'authorization_cancelled'
+  | 'authorization_denied'
+  | 'network_unavailable'
+  | 'unsupported_region'
+  | 'unknown' {
   if (projection.phase === 'cancelled') return 'authorization_cancelled';
+  if (projection.failure === 'network_unavailable') return 'network_unavailable';
+  if (projection.failure === 'unsupported_region') return 'unsupported_region';
   return projection.failure === 'provider_rejected' ? 'authorization_denied' : 'unknown';
 }
 
@@ -320,6 +339,8 @@ function actionFailure(
     | 'authorization_pending'
     | 'authorization_cancelled'
     | 'authorization_denied'
+    | 'network_unavailable'
+    | 'unsupported_region'
     | 'refresh_failed'
     | 'experimental_disabled'
     | 'unknown' = 'unknown',

@@ -506,6 +506,72 @@ test('Codex device login fails when approval never arrives before expiry', async
   });
 });
 
+test('Codex device login preserves unsupported-region failures', async () => {
+  await withFixture('openai-codex', async (fixture) => {
+    const client = await attachPresentation(fixture.capabilities, 'client-codex-region', []);
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => undefined,
+      onFatal: (error) => {
+        throw error;
+      },
+      startCodexAuthorization: async () => {
+        throw new OAuthTokenEndpointError('unsupported_region', 403);
+      },
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      { attemptId: 'attempt-codex-region', connectionId: fixture.connection.connectionId },
+      operationContext('client-codex-region', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    assert.equal(
+      (await waitForTerminal(coordinator, 'attempt-codex-region')).failure,
+      'unsupported_region',
+    );
+    await coordinator.close();
+    assert.equal(fixture.activeResidencies, 0);
+    client.close();
+  });
+});
+
+test('OAuth transport ambiguity is reported as a network failure', async () => {
+  await withFixture('openai-codex', async (fixture) => {
+    const client = await attachPresentation(fixture.capabilities, 'client-codex-network', []);
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => undefined,
+      onFatal: (error) => {
+        throw error;
+      },
+      startCodexAuthorization: async () => {
+        throw new OAuthTokenEndpointError('outcome_unknown');
+      },
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      { attemptId: 'attempt-codex-network', connectionId: fixture.connection.connectionId },
+      operationContext('client-codex-network', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    assert.equal(
+      (await waitForTerminal(coordinator, 'attempt-codex-network')).failure,
+      'network_unavailable',
+    );
+    await coordinator.close();
+    assert.equal(fixture.activeResidencies, 0);
+    client.close();
+  });
+});
+
 test('Codex device login cancels between polls but commits an admitted poll result', async () => {
   await withFixture('openai-codex', async (fixture) => {
     const client = await attachPresentation(fixture.capabilities, 'client-codex-cut', []);

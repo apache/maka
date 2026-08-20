@@ -1,4 +1,4 @@
-import { app, clipboard, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
+import { app, clipboard, dialog, ipcMain, powerSaveBlocker, session, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { arch as osArch, homedir, release as osRelease } from "node:os";
 import { basename, join } from "node:path";
@@ -879,6 +879,12 @@ function registerHostClientIpc(
     ipcMain: scopedIpc,
     client,
     settingsStore,
+    ...(target.kind === 'local'
+      ? {
+          resolveSystemProxy: () =>
+            session.defaultSession.resolveProxy('https://auth.openai.com'),
+        }
+      : {}),
     applyClientSettings: async (settings) => {
       await clientSettingsEffects.apply(settings, true);
     },

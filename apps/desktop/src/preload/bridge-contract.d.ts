@@ -91,7 +91,10 @@ import type {
 } from './runtime-host-renderer-operations.js';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
-import type { TestProxyInput } from '@maka/core/settings/network-settings';
+import type {
+  DetectNetworkProxyResult,
+  TestProxyInput,
+} from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
 export type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
@@ -767,6 +770,7 @@ export interface MakaBridge {
     update(patch: UpdateAppSettingsInput, host?: DesktopRuntimeHostRef): Promise<UpdateAppSettingsResult>;
     subscribeClientChanged(handler: () => void): () => void;
     subscribeExternalChanged(handler: () => void, host?: DesktopRuntimeHostRef): () => void;
+    detectNetworkProxy(host?: DesktopRuntimeHostRef): Promise<DetectNetworkProxyResult>;
     testNetworkProxy(input?: TestProxyInput, host?: DesktopRuntimeHostRef): Promise<SettingsTestResult>;
     testBotChannel(provider: BotProvider): Promise<SettingsTestResult>;
     usageStats(range?: UsageRange): Promise<UsageStats>;

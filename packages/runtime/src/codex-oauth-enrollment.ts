@@ -76,7 +76,12 @@ export async function startCodexDeviceAuthorization(
     signal: input.signal,
     timeoutMs: input.timeoutMs,
   });
-  if (!response.ok) throw new OAuthTokenEndpointError('provider_rejected', response.status);
+  if (!response.ok) {
+    const category = isUnsupportedRegionResponse(response.payload)
+      ? 'unsupported_region'
+      : 'provider_rejected';
+    throw new OAuthTokenEndpointError(category, response.status);
+  }
   const payload = requireOAuthDataRecord(response.payload);
   const deviceAuthId = requireOAuthBoundedString(payload.device_auth_id, 1_024);
   // The official CLI decoder accepts both `user_code` and `usercode`
@@ -91,6 +96,13 @@ export async function startCodexDeviceAuthorization(
     expiresAt: deviceExpiry(payload.expires_at, now),
     intervalMs: intervalSeconds * 1_000,
   };
+}
+
+function isUnsupportedRegionResponse(payload: unknown): boolean {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const error = (payload as Record<string, unknown>).error;
+  if (error === null || typeof error !== 'object' || Array.isArray(error)) return false;
+  return (error as Record<string, unknown>).code === 'unsupported_country_region_territory';
 }
 
 /**

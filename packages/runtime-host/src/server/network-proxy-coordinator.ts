@@ -4,9 +4,11 @@ import { testProxyConnection } from '@maka/runtime/network/proxy-test';
 import type { RuntimePolicyOperationCoordinator } from '@maka/storage/runtime-policy-stores';
 import type { NetworkProxyTestInput, OperationOutcome } from '../protocol/index.js';
 import type { NetworkProxyOperationHandlerMap } from './operation-dispatcher.js';
+import { detectEnvironmentProxy } from './network-proxy-discovery.js';
 
 export class HostNetworkProxyCoordinator {
   readonly handlers: NetworkProxyOperationHandlerMap = {
+    'network-proxy.detect': () => this.#detect(),
     'network-proxy.test': (input) => this.#test(input),
   };
 
@@ -15,7 +17,13 @@ export class HostNetworkProxyCoordinator {
       RuntimePolicyOperationCoordinator,
       'resolveNetworkProxyExecution'
     >,
+    private readonly environment: Readonly<Record<string, string | undefined>> = process.env,
   ) {}
+
+  async #detect(): Promise<OperationOutcome<'network-proxy.detect'>> {
+    const candidate = detectEnvironmentProxy(this.environment);
+    return { ok: true, result: candidate ? { candidate } : {} };
+  }
 
   async #test(input: NetworkProxyTestInput): Promise<OperationOutcome<'network-proxy.test'>> {
     try {
