@@ -6,7 +6,7 @@
 
 ## Outcome
 
-The recovered historical scan contains no unaddressed GPL, AGPL, source-available, commercial, or unknown-license match. Of 417 files with SCANOSS results, 392 matched Maka repositories and 25 matched other projects. Manual review classified 22 of the 25 external candidates as common or structurally necessary short code and three as real third-party lineage with an incorrect or incomplete scanner attribution:
+The recovered historical scan surfaced no GPL, AGPL, commercial, or unknown-license candidate. One candidate is source-available (entry 23, `MIT + Commons Clause`); it was examined separately and Maka takes no material from it. Of 417 files with SCANOSS results, 392 matched Maka repositories and 25 matched other projects. Manual review classified 22 of the 25 external candidates as common or structurally necessary short code and three as real third-party lineage with an incorrect or incomplete scanner attribution:
 
 - the generated Astryx theme and ejected Astryx `ChatReasoning` component are MIT-licensed Meta material;
 - Maka's model protocol types are adapted from the Apache-2.0 AI SDK packages `@ai-sdk/provider-utils` and `@ai-sdk/provider`, not from the `talkio` package selected by the scanner.
@@ -26,6 +26,8 @@ The baseline contains 2,545 tracked files. The historical investigation used:
 | FOSSA CLI | 3.17.16 (`d693e0d6f44d`) | Static npm dependency analysis | Local static mode; no FOSSA project or cloud snippet scan | One npm project succeeded with no analysis warning |
 
 The SCANOSS response identifies server `5.4.25` and knowledge bases `26.07` (monthly) and `26.08.10` (daily). Markdown, images, and other unsupported formats did not receive SCANOSS fingerprints. They were handled separately under [Other provenance evidence](#other-provenance-evidence).
+
+The recovered JSON and WFP were working files and were not retained; they are not present on the machine that produced this report, and no hash or byte size of them was recorded before they were lost. This table therefore cannot be verified byte-for-byte against the artifacts it came from. What can be re-checked independently is each conclusion: every row names the upstream candidate, and the rows that drive a `LICENSE` or `NOTICE` decision carry their own reproduction path — see [Model protocol adaptation](#model-protocol-adaptation) for entry 17 and the git revisions cited in entry 23. A future scan should write its JSON and WFP to a retained location and record their SHA-256 and size in the report before any conclusion depends on them.
 
 No new fingerprint or source upload was performed while reconstructing this report.
 
@@ -55,6 +57,8 @@ The recovered result has 2,231 keys:
 
 The WFP records the MD5 content hash and an obfuscated filename for every scanned file. Hashing the fixed Git snapshot mapped all 2,231 identifiers back to exactly one repository path; no key was unmapped. The table records the scanner's best candidate. “Common snippet” means that the matched text is a routine API shape, type declaration, test scaffold, or build boilerplate and that the candidate does not explain the local file's provenance. A percentage is the scanner's reported coverage, not an authorship probability.
 
+Several rows note that the matched file is absent from current `main`. That is a supplementary fact, not a disposition: the repository history is published too, so each row is classified on the matched text itself rather than on whether the file survives in the release snapshot. Candidate license fields are the scanner's, and entry 23 shows they can be wrong; any candidate whose license affects a `LICENSE` or `NOTICE` conclusion was re-checked against the upstream license file.
+
 | # | Maka file and lines | SCANOSS candidate | Match | Classification and disposition |
 |---:|---|---|---:|---|
 | 1 | `apps/desktop/src/main/__tests__/renderer-core-barrel-node-boundary.test.ts:30-52` | [`muratgur/ordinus`](https://github.com/muratgur/ordinus) v0.1.0, `app/src/main/runtime/cli/process.ts:6-28` (MIT) | 33% | Common child-process Promise scaffold; no distinctive shared implementation. No attribution. File is absent from current `main`. |
@@ -79,7 +83,7 @@ The WFP records the MD5 content hash and an obfuscated filename for every scanne
 | 20 | `packages/ui/src/astryx-chat-reasoning.tsx:37-73` | [`@astryxdesign/lab`](https://www.npmjs.com/package/@astryxdesign/lab/v/0.1.2-canary.3f9afb0) 0.1.2-canary.3f9afb0, `src/ChatReasoning/ChatReasoning.tsx:181-217` (MIT) | 24% | **True third-party lineage.** The complete file already identifies the ejected Astryx v0.1.9 component, fixed commit, Meta copyright, MIT SPDX identifier, and local modifications. Covered by the new Astryx entry in `LICENSE`. |
 | 21 | `packages/ui/src/inline-rename-input.tsx:9-21` | [`695714420/ClaudeCodeIDE`](https://github.com/695714420/ClaudeCodeIDE) 1.3.0, `src/renderer/components/FileExplorer.tsx:481-493` (license not returned) | 25% | Short React prop declaration plus focus/select effect. The candidate does not establish copying; no attribution. |
 | 22 | `scripts/cu-physical-input-age.swift:8-16` | [`jianzhoujz/input-indicator`](https://github.com/jianzhoujz/input-indicator) v1.1.0, `Sources/DoubaoInputIndicator.swift:352-360` (MIT) | 42% | Enumeration of the public CoreGraphics input event cases needed by the API. No distinctive expression. File is absent from current `main`. |
-| 23 | `packages/ui/src/utils.ts:all` | [`roseratugo/okarin`](https://github.com/roseratugo/okarin) v0.3.13, `apps/desktop/src/lib/utils.ts:all` (MIT/Mackerras acknowledgement) | 100% | Four-line `clsx` convenience wrapper. This ubiquitous composition contains no project-specific expression; the unrelated Mackerras notice does not attach to it. No attribution. |
+| 23 | `packages/ui/src/utils.ts:all` | [`roseratugo/okarin`](https://github.com/roseratugo/okarin) v0.3.13, `apps/desktop/src/lib/utils.ts:all` (`MIT + Commons Clause`; the scanner reported `MIT/Mackerras acknowledgement`) | 100% | **Byte-identical, independently arrived at.** Maka's file is a five-line `clsx` wrapper whose lineage is recorded in this repository: `3bedf3341` created it as the shadcn `cn` helper with `twMerge`, and `51f04793c` (#1853) removed `twMerge` when the Astryx migration dropped Tailwind, leaving the current form. No upstream material was taken, so no attribution is required and the Commons Clause restriction reaches nothing in Maka. |
 | 24 | `scripts/apply-dependency-patches.mjs:17-22` | [`walkersutton/cyclemetry`](https://github.com/walkersutton/cyclemetry) v0.2.0, `scripts/release.mjs:4-9` (MIT) | 12% | Standard ESM `fileURLToPath` repository-root calculation. No attribution. |
 | 25 | `scripts/check-astryx-alignment.test.mjs:5-10` | [`naimkatiman/continuous-improvement`](https://github.com/naimkatiman/continuous-improvement) v3.9.1, `test/backfill.test.mjs:10-15` (MIT) | 25% | Standard Node test imports and `new URL('..', import.meta.url)` root calculation. No attribution. File is absent from current `main`. |
 
@@ -125,6 +129,21 @@ No `NOTICE` addition is warranted. The fixed Astryx and `trycua/cua` revisions h
 
 ## Other provenance evidence
 
+The SCANOSS table above covers only what its winnowing scanner fingerprints, which is source code in supported formats. Two further categories of incoming material were found outside it and are recorded here. Both are attribution gaps rather than license conflicts, and both are tracked for the release legal-files gate in #3270; neither is resolved by this report.
+
+### Adapted opencode source
+
+`packages/runtime/src/tool-output.ts` and `packages/runtime/src/edit-replace.ts` each state in a header comment that they are adapted from opencode. Both statements are accurate and the adaptation is substantial:
+
+- `truncateToolOutput` follows `truncate.output()` line for line, sharing the `2000`-line and `50 KiB` budgets, the `direction?: 'head' | 'tail'` option, the local names `out`, `bytes`, `hitBytes`, `size`, `preview`, `removed`, and `unit`, and the asymmetric newline accounting that uses `(i > 0 ? 1 : 0)` when keeping the head and `(out.length > 0 ? 1 : 0)` when keeping the tail. Maka added byte-safe single-line slicing, trailing-newline handling, and the recovery hint, and dropped the upstream spill-file machinery.
+- `edit-replace.ts` reuses the escape-normalizing replacer verbatim at the level of expression: the regular expression `/\\(n|t|r|'|"|`|\\|\n|\$)/g` is character-for-character identical and its nine branches appear in the same order, rewritten from a `switch` into an `if` chain. The line-trimmed and whitespace-normalized matchers follow the same upstream structure.
+
+Upstream is MIT, Copyright (c) 2025 opencode. The repository now resolves to `anomalyco/opencode`; the comparison used commit `fc80874`. Because opencode is not an npm dependency, `scripts/generate-third-party-notices.mjs` cannot reach it: that generator walks the npm production dependency trees of `@maka/desktop` and `maka-agent` only. "opencode" therefore appears in neither `LICENSE`, `NOTICE`, `packages/cli/THIRD_PARTY_NOTICES.txt`, nor the desktop notices, while both files ship in `@maka/runtime`. MIT requires the copyright and permission notice to travel with the material, so this is an open attribution obligation.
+
+### models.dev data snapshot
+
+`packages/core/src/model-metadata.generated.ts` and `packages/runtime/src/telemetry/model-pricing.generated.ts` are checked-in, shipped derivations of `https://models.dev/api.json`, together about 27,800 lines. Upstream `sst/models.dev` is MIT, Copyright (c) 2025 models.dev. The individual entries are facts and are not themselves copyrightable, but the selection and arrangement — which providers and fields are carried, and upstream's normalized structures such as `lifecycle` and `thinkingOptions.efforts` — come from that database. The same generator boundary applies: models.dev is not an npm dependency, and it appears in none of the four attribution surfaces. The generated headers also record no snapshot date or upstream revision, so the fixed source cannot currently be identified.
+
 ### Bundled Skills
 
 Pull request #2695 removed the 29 bundled Skills whose individual origins could not be confirmed. The retained `computer-use` Skill has a contributor-confirmed, independently reviewed origin record in `packages/runtime/resources/bundled-skills/provenance.json`. The final human approval on pull request #2676 reviewed commit `3c7683b9793e97cba7d8536f6864da0e38f24c30`. That review covers the Skill origin record; it does not make a legal or ASF release determination about implementation inputs.
@@ -167,9 +186,14 @@ Before code transfer or release review:
 
 1. obtain and record the bootstrap contributor confirmation;
 2. obtain an appropriate human legal/ASF determination about retaining the specifically documented facts recovered through static inspection, or replace those facts and dependent code independently;
-3. have the human contributor of record review this report, the 25 classifications, and the final `LICENSE`/`NOTICE` decision.
+3. have the human contributor of record review this report, the 25 classifications, and the final `LICENSE`/`NOTICE` decision;
+4. attribute the adapted opencode sources and the models.dev snapshot, and close the generator gap that hides them, under #3270.
 
 No additional source-removal issue is indicated by the recovered scan. A recurring cloud snippet scan is not recommended until the project chooses a service, data policy, stable thresholds, and an owner for false-positive review. The local dependency-notice check remains the narrower, deterministic CI control for shipped npm dependencies.
+
+That check has a structural blind spot worth stating plainly, because it produced both gaps in [Other provenance evidence](#other-provenance-evidence). `scripts/generate-third-party-notices.mjs` derives its inventory from npm production dependency trees, so material that enters the repository as vendored or adapted source, or as generated data, is invisible to it by construction — not missed by accident. Every such source must be registered by hand today, which means the next one will be missed the same way unless the generator gains a checked manual inventory.
+
+The scanner has a comparable blind spot. Entry 17 was matched at 14% against an unrelated package, and what actually identified its origin was structural: near-verbatim doc comments, preserved declaration forms, and a reproduced upstream inconsistency. A follow-up sweep for the same pattern across the repository — comparing locally declared types against installed dependency declarations by name overlap and ordered property sequences — found no second instance. That sweep is still blind to a copy whose type and field names were renamed, and no comment, import, or architectural note suggests such a case exists.
 
 ## References
 
