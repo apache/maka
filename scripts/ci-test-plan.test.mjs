@@ -190,6 +190,17 @@ test('core CI validates affected installed CLI packages on its existing runner',
   assert.match(workflow, /run: npm run release:cli:smoke/u);
 });
 
+test('release contracts run against built CLI outputs', () => {
+  const workflow = readWorkflow('ci.yml');
+  const buildIndex = workflow.indexOf('      - name: Build\n');
+  const buildEnd = workflow.indexOf('\n      - ', buildIndex + 1);
+  const releaseIndex = workflow.indexOf('      - name: Release contracts\n');
+
+  assert.ok(buildIndex >= 0);
+  assert.match(workflow.slice(buildIndex, buildEnd), /cli_package == 'true'/u);
+  assert.ok(buildIndex < releaseIndex);
+});
+
 test('pull request triggers stay on an explicit allowlist', () => {
   // Naming the lanes that must not run on pull requests only covers the ones
   // someone remembered to name; W0 kept an unbounded trigger that way.
