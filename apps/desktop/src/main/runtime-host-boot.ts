@@ -96,6 +96,7 @@ import {
   createDesktopMainRendererDiagnosticInput,
   createDesktopStartupDiagnosticInput,
   mainProcessLogBuffer,
+  runtimeHostProcessLogBuffer,
   type DesktopDiagnosticsDeps,
 } from "./main-process-diagnostics.js";
 import {
@@ -246,6 +247,7 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
       workspacePath: workspaceRoot,
     }),
   mainLogs: () => mainProcessLogBuffer.snapshot(),
+  runtimeHostProcessLogs: () => runtimeHostProcessLogBuffer.snapshot(),
   resolveActiveRuntimeHost: () => {
     const scope = activeRuntimeHostRef();
     return scope ? resolveRuntimeHostDiagnostics(scope) : undefined;

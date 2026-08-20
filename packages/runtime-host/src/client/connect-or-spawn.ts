@@ -39,6 +39,7 @@ import {
 import {
   launchDetachedRuntimeHostCandidate,
   launchOwnedRuntimeHostCandidate,
+  type CandidateProcessExit,
   type CandidateLauncher,
   type OwnedCandidateAttempt,
 } from './launcher.js';
@@ -110,6 +111,7 @@ export type ConnectOrSpawnRuntimeHostResult =
       kind: 'connected';
       connection: RuntimeHostConnection;
       registration: Extract<ConnectRuntimeHostResult, { kind: 'connected' }>['registration'];
+      spawnedProcess?: RuntimeHostSpawnedProcess;
     }
   | Extract<ConnectRuntimeHostResult, { kind: 'upgrade_required' }>
   | Extract<ConnectRuntimeHostResult, { kind: 'incompatible' }>
@@ -122,6 +124,11 @@ export type ConnectOrSpawnRuntimeHostResult =
       kind: 'failed';
       reason: CandidateStartupFailure['reason'] | 'startup_timeout' | 'host_unresponsive';
     };
+
+export interface RuntimeHostSpawnedProcess {
+  readonly pid: number;
+  readonly exited: Promise<CandidateProcessExit>;
+}
 
 export async function connectOrSpawnRuntimeHost(
   input: ConnectOrSpawnRuntimeHostInput,
@@ -249,6 +256,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   let startupFailure: CandidateStartupFailureReport | undefined;
   let pendingCandidateReports = 0;
   let electionSettled = false;
+  const spawnedProcesses = new Map<number, RuntimeHostSpawnedProcess>();
 
   try {
     while (performance.now() < deadline) {
@@ -285,7 +293,8 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
           );
           electionSettled = true;
           await retireCandidateStartupDiagnostic(capability.rootId, startupFailure);
-          return result;
+          const spawnedProcess = spawnedProcesses.get(result.registration.pid);
+          return spawnedProcess ? { ...result, spawnedProcess } : result;
         } catch {
           await result.connection.close().catch(() => undefined);
         }
@@ -326,6 +335,9 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
             ...(input.generation === undefined ? {} : { generation: input.generation }),
           });
           const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
+          if (attempt.exited) {
+            spawnedProcesses.set(attempt.pid, { pid: attempt.pid, exited: attempt.exited });
+          }
           if (attempt.startupFailure) {
             pendingCandidateReports += 1;
             void attempt.startupFailure
