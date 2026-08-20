@@ -71,7 +71,18 @@ export interface ExecuteCodeCellInput {
   callTool(name: string, input: unknown, signal: AbortSignal): Promise<unknown>;
   isFatalToolError?: (error: unknown) => boolean;
   signal?: AbortSignal;
-  executionPolicy?: CodeModeExecutionPolicy;
+  /**
+   * The complete policy for this cell. Production omits it, so the frozen
+   * product default is the only policy Maka ships; tests pass a whole policy to
+   * reach a limit they cannot practically hit at its default, such as the 30s
+   * deadline or a megabyte-scale byte cap.
+   *
+   * There is deliberately no per-field merge. The SDK resolves its own policy
+   * with `??` and skips a check outright for an integer above its
+   * `2_147_483_647` ceiling, so a partial override is a way to widen a product
+   * limit while appearing to tighten one.
+   */
+  executionPolicy?: Readonly<Required<CodeModeExecutionPolicy>>;
 }
 
 /**
@@ -79,8 +90,8 @@ export interface ExecuteCodeCellInput {
  *
  * The returned promise settles only after every host operation the cell started
  * has settled, on both the success and the failure path. That is the contract
- * `CodeCellAdmission` in `@maka/runtime` depends on; its doc comment explains
- * why the sandbox worker cap cannot stand in for it.
+ * the backend's `codeCellAdmission` limiter depends on; the comment at its call
+ * site explains why the sandbox worker cap cannot stand in for it.
  *
  * This module holds no cross-cell state. Bounding how many cells run at once
  * belongs to whoever owns execution, not to this adapter.
@@ -88,22 +99,7 @@ export interface ExecuteCodeCellInput {
 export async function executeCodeCell(
   input: ExecuteCodeCellInput,
 ): Promise<CodeModeExecutionResult> {
-  // Overrides are admitted only for known fields and only as positive integers.
-  // Anything else keeps Maka's product default: the SDK resolves its policy with
-  // `??`, so copying a `null` through would silently restore the SDK's looser
-  // default instead of the tighter one Maka ships.
-  const executionPolicy: CodeModeExecutionPolicy = { ...DEFAULT_CODE_MODE_EXECUTION_POLICY };
-  const overrides = input.executionPolicy;
-  if (overrides) {
-    for (const key of Object.keys(DEFAULT_CODE_MODE_EXECUTION_POLICY) as Array<
-      keyof CodeModeExecutionPolicy
-    >) {
-      const value = overrides[key];
-      if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
-        executionPolicy[key] = value;
-      }
-    }
-  }
+  const executionPolicy = input.executionPolicy ?? DEFAULT_CODE_MODE_EXECUTION_POLICY;
   const toolCalls: CodeModeToolCall[] = [];
   const hostToolOperations = new Set<Promise<unknown>>();
   const fatalAbortController = new AbortController();

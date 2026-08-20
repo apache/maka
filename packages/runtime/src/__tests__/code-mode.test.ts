@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { jsonSchema, tool } from 'ai';
-import { type ExecuteCodeCellInput, executeCodeCell } from '../code-mode.js';
+import {
+  DEFAULT_CODE_MODE_EXECUTION_POLICY,
+  type ExecuteCodeCellInput,
+  executeCodeCell,
+} from '../code-mode.js';
 
 function execute(code: string, input: Partial<Omit<ExecuteCodeCellInput, 'code'>> = {}) {
   return executeCodeCell({
@@ -135,6 +141,40 @@ test('does not expose Node capabilities to cell code', async () => {
   });
 });
 
+test('keeps sandbox console output out of the host process stdout', async () => {
+  // The product policy's `maxConsoleOutputBytes: 1` is the only thing standing
+  // between cell code and the host's stdout, which the CLI writes its TUI and
+  // command output to. The sandbox writes from a worker thread that Node pipes
+  // into the parent's stdout, so this has to be observed from outside the
+  // process rather than by patching `process.stdout.write` here.
+  const moduleUrl = new URL('../code-mode.js', import.meta.url).href;
+  const child = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `const { executeCodeCell } = await import(${JSON.stringify(moduleUrl)});
+       const result = await executeCodeCell({
+         code: "console.log('sandbox-console-marker'); return 1;",
+         tools: [],
+         callTool: async () => null,
+       });
+       if (!result.ok || result.value !== 1) process.exit(2);`,
+    ],
+    { stdio: ['ignore', 'pipe', 'ignore'] },
+  );
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    stdout += chunk;
+  });
+
+  const [code] = (await once(child, 'exit')) as [number | null];
+
+  assert.equal(code, 0, 'the probe cell did not run to completion');
+  assert.equal(stdout, '');
+});
+
 test('starts each cell in a fresh global context', async () => {
   const first = await execute('globalThis.transient = 42; return globalThis.transient;');
   const second = await execute('return globalThis.transient ?? null;');
@@ -253,14 +293,16 @@ test('reports uncaught runtime and tool failures', async (t) => {
 
 test('enforces byte and bridge limits', async (t) => {
   await t.test('source', async () => {
-    const result = await execute('return null;', { executionPolicy: { maxSourceBytes: 1 } });
+    const result = await execute('return null;', {
+      executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, maxSourceBytes: 1 },
+    });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
   });
 
   await t.test('tool input', async () => {
     const result = await execute("return await tools.echo({ value: '12345' });", {
       tools: [{ name: 'echo' }],
-      executionPolicy: { maxToolInputBytes: 4 },
+      executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, maxToolInputBytes: 4 },
       callTool: async () => null,
     });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
@@ -269,67 +311,37 @@ test('enforces byte and bridge limits', async (t) => {
   await t.test('tool output', async () => {
     const result = await execute('return await tools.echo({});', {
       tools: [{ name: 'echo' }],
-      executionPolicy: { maxToolOutputBytes: 4 },
+      executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, maxToolOutputBytes: 4 },
       callTool: async () => '12345',
     });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
   });
 
   await t.test('cell output', async () => {
-    const result = await execute("return '12345';", { executionPolicy: { maxResultBytes: 4 } });
+    const result = await execute("return '12345';", {
+      executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, maxResultBytes: 4 },
+    });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
   });
 
   await t.test('tool calls', async () => {
     const result = await execute('await tools.echo({}); return await tools.echo({});', {
       tools: [{ name: 'echo' }],
-      executionPolicy: { maxBridgeRequests: 1 },
+      executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, maxBridgeRequests: 1 },
       callTool: async () => null,
     });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
-  });
-
-  await t.test('undefined override keeps the product default', async () => {
-    const result = await execute(
-      `
-        for (let index = 0; index < 33; index += 1) await tools.echo({ index });
-        return null;
-      `,
-      {
-        tools: [{ name: 'echo' }],
-        executionPolicy: {
-          maxBridgeRequests: undefined,
-        } as unknown as ExecuteCodeCellInput['executionPolicy'],
-        callTool: async () => null,
-      },
-    );
-    assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
-  });
-
-  await t.test('a runtime-invalid override keeps the product default', async () => {
-    // The SDK resolves its policy with `??`, so a `null` that reached it would
-    // restore the SDK's looser default instead of the tighter product one.
-    const oversized = `const pad = '${'x'.repeat(70 * 1024)}'; return null;`;
-
-    for (const override of [null, 0, -1, 1.5, '65536', {}]) {
-      const result = await execute(oversized, {
-        executionPolicy: {
-          maxSourceBytes: override,
-        } as unknown as ExecuteCodeCellInput['executionPolicy'],
-      });
-      assert.equal(
-        result.ok ? undefined : result.error.kind,
-        'limit_exceeded',
-        `override ${JSON.stringify(override)} widened the source limit`,
-      );
-    }
   });
 
   await t.test('tool concurrency', async () => {
     let started = 0;
     const result = await execute('return await Promise.all([tools.echo({}), tools.echo({})]);', {
       tools: [{ name: 'echo' }],
-      executionPolicy: { maxInFlightBridgeRequests: 1, timeoutMs: 500 },
+      executionPolicy: {
+        ...DEFAULT_CODE_MODE_EXECUTION_POLICY,
+        maxInFlightBridgeRequests: 1,
+        timeoutMs: 500,
+      },
       callTool: async (_name, _input, signal) => {
         started += 1;
         await new Promise<void>((resolve) => {
@@ -346,7 +358,7 @@ test('enforces byte and bridge limits', async (t) => {
 
 test('enforces the configured VM stack limit', async () => {
   const result = await execute('function recurse() { return recurse(); } return recurse();', {
-    executionPolicy: { maxStackSizeBytes: 64 * 1024 },
+    executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, maxStackSizeBytes: 64 * 1024 },
   });
 
   assert.equal(result.ok, false);
@@ -355,7 +367,11 @@ test('enforces the configured VM stack limit', async () => {
 
 test('enforces the configured VM memory limit', async () => {
   const result = await execute('return new ArrayBuffer(16 * 1024 * 1024).byteLength;', {
-    executionPolicy: { memoryLimitBytes: 8 * 1024 * 1024, timeoutMs: 5_000 },
+    executionPolicy: {
+      ...DEFAULT_CODE_MODE_EXECUTION_POLICY,
+      memoryLimitBytes: 8 * 1024 * 1024,
+      timeoutMs: 5_000,
+    },
   });
 
   assert.equal(result.ok, false);
@@ -363,7 +379,9 @@ test('enforces the configured VM memory limit', async () => {
 });
 
 test('preempts a pure compute loop at the sandbox-time limit', async () => {
-  const result = await execute('while (true) {}', { executionPolicy: { timeoutMs: 20 } });
+  const result = await execute('while (true) {}', {
+    executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, timeoutMs: 20 },
+  });
 
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.error.kind, 'limit_exceeded');
