@@ -159,15 +159,22 @@ test('core CI uses the Windows inventory package-script authority', () => {
   assert.doesNotMatch(workflow, /run: node scripts\/windows-test-inventory\.mjs --check/u);
 });
 
-test('CI planner contracts run before dependency setup on every change', () => {
+test('contract checks run before dependency setup and can fail the job', () => {
   const workflow = readWorkflow('ci.yml');
-  const testStepStart = workflow.indexOf('      - name: Test CI planner\n');
   const setupNodeStart = workflow.indexOf('      - uses: actions/setup-node@');
-  const testStepEnd = workflow.indexOf('\n      - ', testStepStart + 1);
 
-  assert.ok(testStepStart >= 0);
-  assert.ok(testStepStart < setupNodeStart);
-  assert.doesNotMatch(workflow.slice(testStepStart, testStepEnd), /\n\s+if:/u);
+  // Both contracts need nothing but the checkout, so they run on every change
+  // rather than behind a surface flag — and a gate that cannot fail the job is
+  // not a gate.
+  for (const name of ['Test CI planner', 'Check Windows test inventory']) {
+    const start = workflow.indexOf(`      - name: ${name}\n`);
+    assert.ok(start >= 0, name);
+    assert.ok(start < setupNodeStart, name);
+
+    const step = workflow.slice(start, workflow.indexOf('\n      - ', start + 1));
+    assert.doesNotMatch(step, /\n\s+if:/u, name);
+    assert.doesNotMatch(step, /continue-on-error/u, name);
+  }
 });
 
 test('core CI validates affected installed CLI packages on its existing runner', () => {
