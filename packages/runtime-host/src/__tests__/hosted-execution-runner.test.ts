@@ -276,6 +276,7 @@ function terminalTurn(status: 'completed' | 'failed' | 'cancelled') {
 function usageSummary() {
   return {
     kind: 'summary' as const,
+    revision: 0,
     summary: {
       range: { from: 100, to: 200 },
       totalRequests: 1,

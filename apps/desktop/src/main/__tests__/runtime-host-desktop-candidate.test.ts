@@ -24,6 +24,7 @@ import {
   type DesktopRuntimeHostCandidateDeps,
 } from '../runtime-host-desktop-candidate.js';
 import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
+import { registerRuntimeHostUsageIpc } from '../runtime-host-usage-ipc-main.js';
 import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
 
 const TEST_HOST_ID = 'a'.repeat(64);
@@ -167,6 +168,43 @@ test('rejects a stale target generation when two profiles share one Host', async
     ['session-same-host-b'],
   );
   await secondCandidate.close();
+});
+
+test('routes default and ranged Usage reads through the selected Host scope', async () => {
+  const ipc = ipcHarness();
+  const usageQueries: unknown[] = [];
+  const host = connectionHarness('usage-scope', { usageQueries });
+  const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
+    ...deps(ipc),
+    registerClientIpc: (client, scopedIpc, _controls, _target, scope) => {
+      registerRuntimeHostUsageIpc({
+        client,
+        ipcMain: scopedIpc,
+        host: scope,
+        now: () => 2 * 24 * 60 * 60 * 1_000,
+        sendToRenderer() {},
+      });
+    },
+  });
+
+  const defaultStats = await ipc.invokeFor(TEST_HOST_ID, 'settings:usageStats');
+  const rangedStats = await ipc.invokeFor(TEST_HOST_ID, 'settings:usageStats', 'all');
+
+  assert.equal((defaultStats as { summary: { totalRequests: number } }).summary.totalRequests, 0);
+  assert.equal((rangedStats as { summary: { totalRequests: number } }).summary.totalRequests, 0);
+  const summaryRanges = usageQueries.flatMap((input) => {
+    const value = input as { kind?: unknown; query?: { range?: { from: number; to: number } } };
+    return value.kind === 'summary' && value.query?.range ? [value.query.range] : [];
+  });
+  assert.equal(summaryRanges.length, 2);
+  assert.equal(summaryRanges[0]!.to - summaryRanges[0]!.from, 24 * 60 * 60 * 1_000);
+  assert.equal(summaryRanges[1]!.from, 0);
+  await assert.rejects(
+    () => ipc.invokeWithoutScope('settings:usageStats'),
+    /missing its Host identity/,
+  );
+
+  await candidate.close();
 });
 
 test('tears down the whole candidate when the Host connection closes', async () => {
@@ -711,6 +749,11 @@ function ipcHarness(onSend?: (channel: string, payload: unknown) => void) {
     async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
       return this.invokeFor(TEST_HOST_ID, channel, ...args);
     },
+    async invokeWithoutScope(channel: string, ...args: unknown[]): Promise<unknown> {
+      const handler = handlers.get(channel);
+      assert.ok(handler, `missing handler: ${channel}`);
+      return handler({ sender } as never, ...args);
+    },
     async invokeFor(hostId: string, channel: string, ...args: unknown[]): Promise<unknown> {
       return this.invokeForTarget(TEST_TARGET_EPOCH, hostId, channel, ...args);
     },
@@ -791,6 +834,7 @@ function connectionHarness(
     activeAssistantStreams?: readonly SessionAssistantStreamIdentity[];
     subscriptionError?: Error;
     runtimeResourcePty?: ReturnType<typeof ptySnapshot>;
+    usageQueries?: unknown[];
   } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
@@ -895,6 +939,81 @@ function connectionHarness(
         startTurnCalls += 1;
         resolveTurnStarted?.();
         return {};
+      }
+      if (operation === 'usage.query') {
+        options.usageQueries?.push(input);
+        const query = input as {
+          kind: 'summary' | 'buckets' | 'logs';
+          source?: 'llm' | 'tool';
+          query: { range: { from: number; to: number } };
+        };
+        const emptyProvenance = {
+          coverage: {
+            attempts: 0,
+            pricedAttempts: 0,
+            unpricedAttempts: 0,
+            usageReportedAttempts: 0,
+            usagePartialAttempts: 0,
+            usageMissingAttempts: 0,
+          },
+          legacyRecords: 0,
+          unreadableRecords: 0,
+          pendingRepairs: 0,
+        };
+        if (query.kind === 'summary') {
+          return {
+            kind: 'summary',
+            revision: 1,
+            summary: {
+              range: query.query.range,
+              totalRequests: 0,
+              totalCostUsd: 0,
+              totalTokens: {
+                input: 0,
+                output: 0,
+                cacheMiss: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                reasoning: 0,
+                total: 0,
+              },
+              cacheHitRequests: 0,
+              cacheCreateRequests: 0,
+              errorRequests: 0,
+            },
+            provenance: emptyProvenance,
+          };
+        }
+        if (query.kind === 'buckets') {
+          return {
+            kind: 'buckets',
+            revision: 1,
+            buckets: [],
+            offset: 0,
+            total: 0,
+            nextOffset: null,
+            provenance: emptyProvenance,
+          };
+        }
+        return {
+          kind: 'logs',
+          revision: 1,
+          source: query.source,
+          rows: [],
+          offset: 0,
+          total: 0,
+          nextOffset: null,
+          ...(query.source === 'llm' ? { provenance: emptyProvenance } : {}),
+        };
+      }
+      if (operation === 'pricing.query') {
+        return {
+          kind: 'page',
+          revision: 1,
+          offset: 0,
+          entries: [],
+          nextOffset: null,
+        };
       }
       throw new Error(`Unexpected operation: ${operation}`);
     },

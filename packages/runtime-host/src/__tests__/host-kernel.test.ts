@@ -1735,7 +1735,7 @@ describe('non-serving Runtime Host kernel', () => {
           clientInstanceId: 'epoch-mismatch-client',
           protocolMin: CURRENT_PROTOCOL.min,
           protocolMax: CURRENT_PROTOCOL.max,
-          compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH + 1,
+          compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
           compositionId: 'maka.interactive',
         });
         const response = decodeHostFrame(await transport.read(2_000));

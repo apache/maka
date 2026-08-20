@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { userEvent } from 'storybook/test';
+import { expect, userEvent } from 'storybook/test';
 import { ToastProvider, useToast } from '@maka/ui';
 import type {
   AppSettings,
@@ -163,7 +163,11 @@ function makeUsageLog(input: {
   kind: 'model' | 'tool';
   model: string;
   toolName?: string;
-  status?: 'success' | 'error';
+  status?: 'success' | 'error' | 'aborted';
+  usageBasis?: 'reported' | 'partial' | 'missing';
+  costBasis?: 'priced' | 'unpriced';
+  legacy?: boolean;
+  omitCost?: boolean;
   minutesAgo: number;
 }): UsageStats['logs'][number] {
   return {
@@ -177,7 +181,9 @@ function makeUsageLog(input: {
     toolName: input.toolName,
     inputTokens: 12_400,
     outputTokens: 3_800,
-    costUsd: input.kind === 'model' ? 0.0412 : undefined,
+    ...(input.kind === 'model' && !input.legacy ? { usageBasis: input.usageBasis ?? 'reported' } : {}),
+    ...(input.kind === 'model' && !input.omitCost && input.costBasis !== 'unpriced' ? { costUsd: 0.0412 } : {}),
+    ...(input.kind === 'model' && !input.legacy ? { costBasis: input.costBasis ?? 'priced' } : {}),
     latencyMs: input.kind === 'model' ? 2840 : 640,
     status: input.status ?? 'success',
   };
@@ -199,9 +205,33 @@ const usageLogs: UsageStats['logs'] = [
   }),
   makeUsageLog({ id: '3', kind: 'model', model: 'glm-4.7', status: 'error', minutesAgo: 16 }),
   makeUsageLog({ id: '4', kind: 'tool', model: 'glm-4.7', toolName: 'Bash', minutesAgo: 25 }),
+  makeUsageLog({
+    id: '5',
+    kind: 'model',
+    model: 'openai-compatible/no-token-usage',
+    usageBasis: 'missing',
+    costBasis: 'unpriced',
+    minutesAgo: 31,
+  }),
+  makeUsageLog({ id: '6', kind: 'tool', model: 'glm-4.7', toolName: 'Bash', status: 'aborted', minutesAgo: 38 }),
+  makeUsageLog({ id: '7', kind: 'model', model: 'partial-usage-model', usageBasis: 'partial', minutesAgo: 44 }),
+  makeUsageLog({ id: '8', kind: 'model', model: 'legacy-model-without-cost', legacy: true, omitCost: true, minutesAgo: 52 }),
 ];
 
 const usageStats: UsageStats = {
+  provenance: {
+    coverage: {
+      attempts: 418,
+      pricedAttempts: 417,
+      unpricedAttempts: 1,
+      usageReportedAttempts: 416,
+      usagePartialAttempts: 1,
+      usageMissingAttempts: 1,
+    },
+    legacyRecords: 2,
+    unreadableRecords: 1,
+    pendingRepairs: 1,
+  },
   summary: {
     totalRequests: 420,
     totalCostUsd: 2.34,
@@ -231,14 +261,64 @@ const usageStats: UsageStats = {
       calls: 12,
       success: 11,
       errors: 1,
+      aborted: 0,
       avgDurationMs: 1240,
     },
-    { tool: 'Bash', calls: 120, success: 118, errors: 2, avgDurationMs: 840 },
+    { tool: 'Bash', calls: 120, success: 117, errors: 2, aborted: 1, avgDurationMs: 840 },
   ],
   pricing: [{ provider: 'zai-coding-plan', model: 'glm-4.7', inputPerMTokUsd: 0, outputPerMTokUsd: 0 }],
 };
 
+const longTailUsageStats: UsageStats = {
+  ...usageStats,
+  provenance: {
+    coverage: {
+      attempts: 420,
+      pricedAttempts: 420,
+      unpricedAttempts: 0,
+      usageReportedAttempts: 420,
+      usagePartialAttempts: 0,
+      usageMissingAttempts: 0,
+    },
+    legacyRecords: 0,
+    unreadableRecords: 0,
+    pendingRepairs: 0,
+  },
+  logs: usageLogs.filter((row) => !['5', '7', '8'].includes(row.id)),
+};
+
+const legacyOnlyUsageStats: UsageStats = {
+  ...longTailUsageStats,
+  provenance: {
+    coverage: {
+      attempts: 0,
+      pricedAttempts: 0,
+      unpricedAttempts: 0,
+      usageReportedAttempts: 0,
+      usagePartialAttempts: 0,
+      usageMissingAttempts: 0,
+    },
+    legacyRecords: longTailUsageStats.summary.totalRequests,
+    unreadableRecords: 0,
+    pendingRepairs: 0,
+  },
+  logs: longTailUsageStats.logs.map(({ usageBasis: _usageBasis, costBasis: _costBasis, ...row }) => row),
+};
+
 const emptyUsageStats: UsageStats = {
+  provenance: {
+    coverage: {
+      attempts: 0,
+      pricedAttempts: 0,
+      unpricedAttempts: 0,
+      usageReportedAttempts: 0,
+      usagePartialAttempts: 0,
+      usageMissingAttempts: 0,
+    },
+    legacyRecords: 0,
+    unreadableRecords: 0,
+    pendingRepairs: 0,
+  },
   summary: {
     totalRequests: 0,
     totalCostUsd: 0,
@@ -974,9 +1054,24 @@ const withUsageSingleProviderBridge = withUsageStoryBridge(singleProviderUsageSt
 const withUsageMultiModelBridge = withUsageStoryBridge(multiModelUsageStats, {
   activeTab: 'models',
 });
-const withUsageLongTailBridge = withUsageStoryBridge(usageStats, {
+const withUsageLongTailBridge = withUsageStoryBridge(longTailUsageStats, {
   showDetails: true,
   activeTab: 'requests',
+});
+const withUsageIncompleteBridge = withUsageStoryBridge(usageStats, {
+  showDetails: false,
+  activeTab: 'requests',
+});
+const withUsageIncompleteDetailsBridge = withUsageStoryBridge(usageStats, {
+  showDetails: true,
+  activeTab: 'requests',
+});
+const withUsageLegacyOnlyBridge = withUsageStoryBridge(legacyOnlyUsageStats, {
+  showDetails: false,
+  activeTab: 'requests',
+});
+const withUsageToolsBridge = withUsageStoryBridge(longTailUsageStats, {
+  activeTab: 'tools',
 });
 
 const subagentStorySettings = mergeSettings(createDefaultSettings(), {
@@ -1296,6 +1391,62 @@ export const UsageLongTail: Story = {
 export const UsageNarrow: Story = {
   ...UsageLongTail,
   parameters: { viewport: { defaultViewport: 'mobile2' } },
+};
+// Real path: incomplete Usage coverage with detail rows still disabled.
+export const UsageIncompleteCoverage: Story = {
+  decorators: [withUsageIncompleteBridge],
+  render: () => <SettingsStory section="usage" />,
+  play: async ({ canvasElement }) => {
+    await waitForStoryCondition(
+      () => canvasElement.textContent?.includes('部分用量数据不完整') === true,
+      'Usage coverage notice did not render',
+    );
+    const coverageTitles = Array.from(canvasElement.querySelectorAll('*')).filter(
+      (element) => element.children.length === 0 && element.textContent === '部分用量数据不完整',
+    );
+    const detailButtons = Array.from(canvasElement.querySelectorAll('button')).filter(
+      (button) => button.textContent?.includes('显示明细') === true,
+    );
+    expect(coverageTitles).toHaveLength(1);
+    expect(detailButtons).toHaveLength(1);
+  },
+};
+// Real path: the same coverage notice and its action at the minimum supported width.
+export const UsageIncompleteCoverageNarrow: Story = {
+  ...UsageIncompleteCoverage,
+  parameters: { viewport: { defaultViewport: 'mobile2' } },
+};
+// Real path: incomplete Usage coverage with missing, partial, and legacy request rows visible.
+export const UsageIncompleteDetails: Story = {
+  decorators: [withUsageIncompleteDetailsBridge],
+  render: () => <SettingsStory section="usage" />,
+  play: async ({ canvasElement }) => {
+    await waitForStoryCondition(
+      () => canvasElement.textContent?.includes('未上报') === true,
+      'Incomplete Usage request rows did not render',
+    );
+    expect(canvasElement.textContent).toContain('未定价');
+    expect(canvasElement.textContent).toContain('16200（部分）');
+    expect(canvasElement.textContent).toContain('$0.04（部分）');
+    expect(canvasElement.textContent).toContain('未记录');
+  },
+};
+// Real path: pre-Host Usage records remain visible without implying canonical coverage.
+export const UsageLegacyCoverage: Story = {
+  decorators: [withUsageLegacyOnlyBridge],
+  render: () => <SettingsStory section="usage" />,
+  play: async ({ canvasElement }) => {
+    await waitForStoryCondition(
+      () => canvasElement.textContent?.includes('部分历史用量缺少详细依据') === true,
+      'Legacy Usage coverage notice did not render',
+    );
+    expect(canvasElement.textContent).not.toContain('部分用量数据不完整');
+  },
+};
+// Real path: interrupted tool runs stay separate from successful and failed calls.
+export const UsageTools: Story = {
+  decorators: [withUsageToolsBridge],
+  render: () => <SettingsStory section="usage" />,
 };
 /**
  * #1364: entry list (long title / content / tag set), archived group, and

@@ -4980,6 +4980,10 @@ function mergeNormalizedUsage(
     cacheWriteInputTokens: current.cacheWriteInputTokens + next.cacheWriteInputTokens,
     reasoningTokens: current.reasoningTokens + next.reasoningTokens,
     totalTokens: current.totalTokens + next.totalTokens,
+    totalTokensSource:
+      current.totalTokensSource === 'reported' && next.totalTokensSource === 'reported'
+        ? 'reported'
+        : 'derived',
     ...(next.rawFinishReason !== undefined ? { rawFinishReason: next.rawFinishReason } : {}),
     cachedInputTokens: cacheHitInputTokens,
   };

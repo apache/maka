@@ -42,9 +42,23 @@ import {
 } from '../protocol/index.js';
 import type { UsagePricingOperationHandlerMap } from './operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
-import { readCanonicalUsage, type RunEventReader } from './canonical-usage-reader.js';
+import {
+  readCanonicalUsage,
+  repairPendingCanonicalUsage,
+  type CanonicalUsageRepairStats,
+  type RunEventReader,
+} from './canonical-usage-reader.js';
 
 export type { RunEventReader } from './canonical-usage-reader.js';
+
+const NO_REPAIR: CanonicalUsageRepairStats = { remaining: 0, unreadableEvents: 0 };
+
+/** One bounded repair pass plus the snapshot ticket that owns it. */
+interface UsageRepairEntry {
+  readonly snapshot: string | undefined;
+  settled: boolean;
+  readonly task: Promise<CanonicalUsageRepairStats>;
+}
 
 /** Root-scoped projection over the authentic lease-bound usage stores. */
 export class HostUsagePricingCoordinator {
@@ -60,6 +74,8 @@ export class HostUsagePricingCoordinator {
   readonly #activation: RuntimePolicyActivationGate;
   readonly #onCommittedPricingMutation: () => void;
   #poisonDrainRequested = false;
+  #activeUsageQueries = 0;
+  #usageRepairTask: UsageRepairEntry | undefined;
 
   constructor(
     stores: InteractiveUsageStoresWriter,
@@ -79,97 +95,178 @@ export class HostUsagePricingCoordinator {
    * Reads the canonical ledger for the window a query addresses (#1679). The
    * range is resolved once here so both sources answer the same window.
    */
-  async #canonicalUsage(query: UsageQuery, now: number): Promise<CanonicalUsageSource> {
-    return readCanonicalUsage(this.#stores, query, now, this.#readRunEvents);
+  async #canonicalUsage(
+    query: UsageQuery,
+    now: number,
+    repair: CanonicalUsageRepairStats,
+  ): Promise<CanonicalUsageSource> {
+    return readCanonicalUsage(this.#stores, query, now, repair);
   }
 
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
+    this.#activeUsageQueries += 1;
     try {
-      const now = Date.now();
-      if (input.kind === 'summary') {
-        const merged = mergeUsageSummary(
-          await this.#stores.telemetry.summary(input.query),
-          await this.#canonicalUsage(input.query, now),
-          input.query,
-          now,
-        );
-        const { provenance, ...summary } = merged;
+      // Concurrent Desktop views share one bounded repair pass and therefore
+      // one qualified pending-repair observation. The fence itself only reads:
+      // repair writes advance the snapshot revision, and fencing them in would
+      // retry forever whenever more than one pass's worth of runs remain.
+      const repair = await this.#sharedUsageRepair(input.snapshot);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const before = await this.#stores.usageSnapshotRevision();
+        const result = await this.#queryUsageResult(input, before, repair);
+        const after = await this.#stores.usageSnapshotRevision();
+        if (after === before) {
+          return {
+            ok: true,
+            result: encodeUsageQueryResult(result),
+          };
+        }
+      }
+      // Fence exhaustion is an ordinary busy-authority outcome, not a fault:
+      // the typed code lets the Desktop fold it into its whole-snapshot retry
+      // instead of surfacing a rejected invoke on the Usage page.
+      return {
+        ok: false,
+        error: {
+          code: 'usage_revision_changed',
+          message: 'Usage authority changed while reading the projection',
+        },
+      };
+    } catch (error) {
+      if (error instanceof InvalidUsageOffsetError) {
         return {
-          ok: true,
-          result: encodeUsageQueryResult({ kind: 'summary', summary, provenance }),
+          ok: false,
+          error: { code: 'invalid_request', message: 'Usage offset is invalid' },
         };
       }
-      if (input.kind === 'buckets') {
-        const offset = input.offset ?? 0;
-        const limit = input.limit ?? USAGE_PAGE_MAX_ITEMS;
-        const legacy = await this.#stores.telemetry.buckets(input.query, input.groupBy);
-        // Tool buckets group tool invocations, which the model-call ledger does
-        // not describe; there is nothing canonical to merge into them.
-        const merged =
-          input.groupBy === 'tool'
-            ? { buckets: [...legacy], provenance: EMPTY_PROVENANCE }
-            : mergeUsageBuckets(
-                legacy,
-                await this.#canonicalUsage(input.query, now),
-                input.query,
-                input.groupBy,
-                now,
-              );
-        if (offset > merged.buckets.length) return invalidUsageOffset();
+      // The revision read itself can fail to settle under dense write
+      // traffic; that is the same busy-authority condition as an exhausted
+      // fence, so it shares the retryable outcome.
+      if (classifyInteractiveUsageStoresFailure(error).kind === 'revision_unsettled') {
         return {
-          ok: true,
-          result: encodeUsageQueryResult(
-            usagePage(
-              'buckets',
-              merged.buckets.map(projectUsageBucket),
-              merged.buckets.length,
-              offset,
-              limit,
-              merged.provenance,
-            ),
-          ),
+          ok: false,
+          error: {
+            code: 'usage_revision_changed',
+            message: 'Usage authority changed while reading the projection',
+          },
         };
       }
-      const offset = input.offset ?? 0;
-      const limit = input.limit ?? USAGE_PAGE_MAX_ITEMS;
-      if (input.source === 'tool') {
-        const page = await this.#stores.telemetry.toolLogs(input.query, offset, limit);
-        if (offset > page.total) return invalidUsageOffset();
-        return {
-          ok: true,
-          result: encodeUsageQueryResult(
-            usageLogPage('tool', page.rows.map(projectToolUsageLog), page.total, offset, limit),
-          ),
-        };
-      }
-      // Both sources are newest-first, so the merged page can only be drawn
-      // from each source's own first `offset + limit` rows.
-      const legacy = await this.#stores.telemetry.logs(input.query, 0, offset + limit);
-      const merged = mergeUsageLogs(
-        legacy,
-        await this.#canonicalUsage(input.query, now),
+      return this.#mapReadFailure<'usage.query'>(error, 'Usage authority');
+    } finally {
+      this.#activeUsageQueries -= 1;
+    }
+  }
+
+  /**
+   * Returns the repair pass shared by one logical Desktop snapshot. A pass is
+   * shared while in flight regardless of ticket; once settled it is reused by
+   * the same snapshot ticket (a paginating reader's next page must never
+   * trigger a fresh pass — its writes would advance the revision mid-snapshot
+   * and defeat the Desktop's cross-page revision guard) or by a ticket-less
+   * query joining an active burst. A settled pass is replaced only by a new
+   * snapshot ticket or a ticket-less query arriving at an idle Host, which is
+   * what keeps the pending backlog draining across page loads.
+   */
+  #sharedUsageRepair(snapshot: string | undefined): Promise<CanonicalUsageRepairStats> {
+    if (!this.#readRunEvents) return Promise.resolve(NO_REPAIR);
+    const current = this.#usageRepairTask;
+    if (current !== undefined) {
+      if (!current.settled) return current.task;
+      if (snapshot !== undefined && current.snapshot === snapshot) return current.task;
+      if (snapshot === undefined && this.#activeUsageQueries > 1) return current.task;
+    }
+    const task = repairPendingCanonicalUsage(this.#stores, this.#readRunEvents);
+    const entry: UsageRepairEntry = { snapshot, settled: false, task };
+    void task.then(
+      () => {
+        entry.settled = true;
+      },
+      () => {
+        entry.settled = true;
+      },
+    );
+    this.#usageRepairTask = entry;
+    return task;
+  }
+
+  async #queryUsageResult(
+    input: UsageQueryInput,
+    revision: number,
+    repair: CanonicalUsageRepairStats,
+  ): Promise<UsageQueryResult> {
+    const now = Date.now();
+    if (input.kind === 'summary') {
+      const merged = mergeUsageSummary(
+        await this.#stores.telemetry.summary(input.query),
+        await this.#canonicalUsage(input.query, now, repair),
         input.query,
         now,
+      );
+      const { provenance, ...summary } = merged;
+      return { kind: 'summary', revision, summary, provenance };
+    }
+    if (input.kind === 'buckets') {
+      const offset = input.offset ?? 0;
+      const limit = input.limit ?? USAGE_PAGE_MAX_ITEMS;
+      const legacy = await this.#stores.telemetry.buckets(input.query, input.groupBy);
+      // Tool buckets group tool invocations, which the model-call ledger does
+      // not describe; there is nothing canonical to merge into them.
+      const merged =
+        input.groupBy === 'tool'
+          ? { buckets: [...legacy], provenance: EMPTY_PROVENANCE }
+          : mergeUsageBuckets(
+              legacy,
+              await this.#canonicalUsage(input.query, now, repair),
+              input.query,
+              input.groupBy,
+              now,
+            );
+      if (offset > merged.buckets.length) throw new InvalidUsageOffsetError();
+      return usagePage(
+        'buckets',
+        revision,
+        merged.buckets.map(projectUsageBucket),
+        merged.buckets.length,
+        offset,
+        limit,
+        merged.provenance,
+      );
+    }
+    const offset = input.offset ?? 0;
+    const limit = input.limit ?? USAGE_PAGE_MAX_ITEMS;
+    if (input.source === 'tool') {
+      const page = await this.#stores.telemetry.toolLogs(input.query, offset, limit);
+      if (offset > page.total) throw new InvalidUsageOffsetError();
+      return usageLogPage(
+        'tool',
+        revision,
+        page.rows.map(projectToolUsageLog),
+        page.total,
         offset,
         limit,
       );
-      if (offset > merged.total) return invalidUsageOffset();
-      return {
-        ok: true,
-        result: encodeUsageQueryResult(
-          usageLogPage(
-            'llm',
-            merged.rows.map(projectUsageLog),
-            merged.total,
-            offset,
-            limit,
-            merged.provenance,
-          ),
-        ),
-      };
-    } catch (error) {
-      return this.#mapReadFailure<'usage.query'>(error, 'Usage authority');
     }
+    // Both sources are newest-first, so the merged page can only be drawn
+    // from each source's own first `offset + limit` rows.
+    const legacy = await this.#stores.telemetry.logs(input.query, 0, offset + limit);
+    const merged = mergeUsageLogs(
+      legacy,
+      await this.#canonicalUsage(input.query, now, repair),
+      input.query,
+      now,
+      offset,
+      limit,
+    );
+    if (offset > merged.total) throw new InvalidUsageOffsetError();
+    return usageLogPage(
+      'llm',
+      revision,
+      merged.rows.map(projectUsageLog),
+      merged.total,
+      offset,
+      limit,
+      merged.provenance,
+    );
   }
 
   async #queryPricing(input: PricingQueryInput): Promise<OperationOutcome<'pricing.query'>> {
@@ -244,6 +341,13 @@ export class HostUsagePricingCoordinator {
             actualRevision: failure.actualRevision,
           },
         };
+      case 'revision_unsettled':
+        // Pricing mutations never read the Usage revision; unreachable, so
+        // surface a plain internal failure rather than a pricing-specific lie.
+        return {
+          ok: false,
+          error: { code: 'internal_failure', message: 'Usage revision did not settle' },
+        };
       case 'invalid_request':
         return {
           ok: false,
@@ -307,6 +411,13 @@ export class HostUsagePricingCoordinator {
         } as OperationOutcome<K>;
       case 'revision_conflict':
         throw error;
+      case 'revision_unsettled':
+        // The caller in #queryUsage maps this to the retryable
+        // usage_revision_changed outcome before #mapReadFailure runs.
+        return {
+          ok: false,
+          error: { code: 'internal_failure', message: `${authority} revision did not settle` },
+        } as OperationOutcome<K>;
       case 'unknown':
         throw failure.error;
     }
@@ -334,12 +445,7 @@ const EMPTY_PROVENANCE: UsageProvenance = {
   pendingRepairs: 0,
 };
 
-function invalidUsageOffset(): OperationOutcome<'usage.query'> {
-  return {
-    ok: false,
-    error: { code: 'invalid_request', message: 'Usage offset is invalid' },
-  };
-}
+class InvalidUsageOffsetError extends Error {}
 
 function createPricingPage(
   revision: number,
@@ -400,6 +506,7 @@ function projectEffectivePricingEntries(
 
 function usagePage(
   kind: 'buckets',
+  revision: number,
   allItems: readonly UsageBucket[],
   total: number,
   offset: number,
@@ -414,6 +521,7 @@ function usagePage(
     if (
       jsonBytes(
         bucketPageResult(
+          revision,
           candidate,
           total,
           offset,
@@ -430,21 +538,30 @@ function usagePage(
     throw new Error('Canonical usage item exceeds the wire page limit');
   }
   const nextOffset = offset + items.length;
-  return bucketPageResult(items, total, offset, nextOffset < total ? nextOffset : null, provenance);
+  return bucketPageResult(
+    revision,
+    items,
+    total,
+    offset,
+    nextOffset < total ? nextOffset : null,
+    provenance,
+  );
 }
 
 function bucketPageResult(
+  revision: number,
   items: readonly UsageBucket[],
   total: number,
   offset: number,
   nextOffset: number | null,
   provenance: UsageProvenance,
 ): Extract<UsageQueryResult, { kind: 'buckets' }> {
-  return { kind: 'buckets', buckets: items, offset, total, nextOffset, provenance };
+  return { kind: 'buckets', revision, buckets: items, offset, total, nextOffset, provenance };
 }
 
 function usageLogPage(
   source: 'llm',
+  revision: number,
   allItems: readonly LlmUsageLogProjection[],
   total: number,
   offset: number,
@@ -453,6 +570,7 @@ function usageLogPage(
 ): Extract<UsageQueryResult, { kind: 'logs'; source: 'llm' }>;
 function usageLogPage(
   source: 'tool',
+  revision: number,
   allItems: readonly ToolUsageLogProjection[],
   total: number,
   offset: number,
@@ -460,6 +578,7 @@ function usageLogPage(
 ): Extract<UsageQueryResult, { kind: 'logs'; source: 'tool' }>;
 function usageLogPage(
   source: 'llm' | 'tool',
+  revision: number,
   allItems: readonly UsageLogProjection[],
   total: number,
   offset: number,
@@ -474,6 +593,7 @@ function usageLogPage(
       jsonBytes(
         logPageResult(
           source,
+          revision,
           candidate,
           total,
           offset,
@@ -492,6 +612,7 @@ function usageLogPage(
   const nextOffset = offset + items.length;
   return logPageResult(
     source,
+    revision,
     items,
     total,
     offset,
@@ -502,6 +623,7 @@ function usageLogPage(
 
 function logPageResult(
   source: 'llm' | 'tool',
+  revision: number,
   rows: readonly UsageLogProjection[],
   total: number,
   offset: number,
@@ -511,6 +633,7 @@ function logPageResult(
   return {
     kind: 'logs',
     source,
+    revision,
     rows,
     offset,
     total,
@@ -551,6 +674,7 @@ function projectUsageLog(row: UsageLogRow): LlmUsageLogProjection {
       : {}),
     reasoningTokens: row.reasoningTokens,
     totalTokens: row.totalTokens,
+    ...(row.usageBasis === undefined ? {} : { usageBasis: row.usageBasis }),
     ...(row.costUsd === undefined ? {} : { costUsd: row.costUsd }),
     ...(row.costBasis === undefined ? {} : { costBasis: row.costBasis }),
     latencyMs: row.latencyMs,

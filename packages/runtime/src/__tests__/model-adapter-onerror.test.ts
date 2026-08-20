@@ -169,6 +169,7 @@ describe('ModelAdapter.startStream onError', () => {
         cacheWriteInputTokens: 0,
         reasoningTokens: 0,
         totalTokens: 2,
+        totalTokensSource: 'reported',
         rawFinishReason: 'stop',
       },
       request: { messages: [{ role: 'user', content: 'hi' }] },

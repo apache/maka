@@ -81,17 +81,22 @@ export function UsageSettingsPage(props: {
   }, [stats, usageDraft.status, normalizedModelFilter]);
 
   const tabCounts: Record<UsageActiveTab, number> = {
-    requests: stats?.logs.length ?? 0,
+    // The requests table may be page-capped; the total recorded row count is
+    // the honest tab count when the snapshot carries it.
+    requests: stats?.logsTotal ?? stats?.logs.length ?? 0,
     providers: stats?.byProvider.length ?? 0,
     models: stats?.byModel.length ?? 0,
     tools: stats?.byTool.length ?? 0,
     pricing: stats?.pricing.length ?? 0,
   };
+  const coverageNotice = stats ? usageCoverageNotice(stats.provenance, copy) : null;
+  const showSummaryOnlyNotice = usageDraft.activeTab === 'requests' && !usageDraft.showDetails;
 
   async function setRange(range: UsageRange) {
-    const saved = await updateUsage({ range });
-    if (!saved || !usagePageMountedRef.current) return;
-    await props.onReload(range);
+    // The reload is driven by the settings-surface effect on
+    // `settings.usage.range`; calling props.onReload here as well would issue
+    // a second complete snapshot load for the same change.
+    await updateUsage({ range });
   }
 
   function updateUsage(patch: Partial<AppSettings['usage']>): Promise<boolean> {
@@ -150,9 +155,21 @@ export function UsageSettingsPage(props: {
 
         <div className="settingsUsageSummary" role="group" aria-label={copy.summaryAria}>
           <MetricCard title={copy.totalRequests} value={String(stats?.summary.totalRequests ?? 0)} />
-          <MetricCard title={copy.totalCost} value={`$${(stats?.summary.totalCostUsd ?? 0).toFixed(2)}`} detail={copy.costHelp} />
-          <MetricCard title={copy.totalTokens} value={String(stats?.summary.totalTokens ?? 0)} detail={copy.tokenDetail(stats?.summary.inputTokens ?? 0, stats?.summary.outputTokens ?? 0)} />
-          <MetricCard title={copy.cacheTokens} value={String(stats?.summary.cacheTokens ?? 0)} detail={copy.cacheDetail(stats?.summary.cacheMiss ?? 0, stats?.summary.cacheRead ?? 0, stats?.summary.cacheCreation ?? 0)} />
+          <MetricCard
+            title={copy.totalCost}
+            value={`$${(stats?.summary.totalCostUsd ?? 0).toFixed(2)}`}
+            detail={copy.costHelp}
+          />
+          <MetricCard
+            title={copy.totalTokens}
+            value={String(stats?.summary.totalTokens ?? 0)}
+            detail={copy.tokenDetail(stats?.summary.inputTokens ?? 0, stats?.summary.outputTokens ?? 0)}
+          />
+          <MetricCard
+            title={copy.cacheTokens}
+            value={String(stats?.summary.cacheTokens ?? 0)}
+            detail={copy.cacheDetail(stats?.summary.cacheMiss ?? 0, stats?.summary.cacheRead ?? 0, stats?.summary.cacheCreation ?? 0)}
+          />
         </div>
       </div>
 
@@ -172,6 +189,35 @@ export function UsageSettingsPage(props: {
           </TabList>
         </div>
 
+        {coverageNotice ? (
+          <Banner
+            status="info"
+            title={coverageNotice.title}
+            description={coverageNotice.description}
+            endContent={showSummaryOnlyNotice ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void updateUsage({ showDetails: true })}
+                label={copy.showDetails}
+              />
+            ) : undefined}
+          />
+        ) : showSummaryOnlyNotice ? (
+          <Banner
+            status="info"
+            title={copy.summaryOnly}
+            endContent={(
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void updateUsage({ showDetails: true })}
+                label={copy.showDetails}
+              />
+            )}
+          />
+        ) : null}
+
         {usageDraft.activeTab === 'requests' ? (
           <div className="settingsUsageTabPanel">
             <UsageRequestsPanel
@@ -181,12 +227,13 @@ export function UsageSettingsPage(props: {
             modelFilter={usageDraft.modelFilter}
             status={usageDraft.status}
             recordCount={filteredLogs.length}
+            logsTotal={stats?.logsTotal}
+            logsTruncated={stats?.logsTruncated}
             hasRequestFilters={hasRequestFilters}
             requestEmpty={hasRequestFilters ? copy.filteredEmpty : copy.requestEmpty}
             copy={copy}
             locale={locale}
             onOpenSession={props.onOpenSession}
-            onEnableDetails={() => void updateUsage({ showDetails: true })}
             onModelFilterChange={(modelFilter) => void updateUsage({ modelFilter })}
             onStatusChange={(status) => void updateUsage({ status })}
             onToggleDetails={(showDetails) => void updateUsage({ showDetails })}
@@ -223,6 +270,46 @@ export function UsageSettingsPage(props: {
   );
 }
 
+/**
+ * Qualify Host-owned totals once at page level: projection and legacy gaps
+ * cannot be attributed to individual renderer buckets without guessing.
+ */
+function usageCoverageNotice(
+  provenance: UsageStats['provenance'],
+  copy: UsageSettingsCopy,
+): { title: string; description: string } | null {
+  const { coverage, legacyRecords, unreadableRecords, pendingRepairs } = provenance;
+  const hasIncompleteCanonicalData = coverage.usagePartialAttempts > 0
+    || coverage.usageMissingAttempts > 0
+    || coverage.unpricedAttempts > 0
+    || unreadableRecords > 0
+    || pendingRepairs > 0;
+  if (!hasIncompleteCanonicalData && legacyRecords === 0) return null;
+
+  const parts: string[] = [];
+  if (coverage.usagePartialAttempts > 0 || coverage.usageMissingAttempts > 0) {
+    parts.push(copy.coverage.token(coverage.usagePartialAttempts, coverage.usageMissingAttempts));
+  }
+  if (coverage.usagePartialAttempts > 0 || coverage.unpricedAttempts > 0) {
+    parts.push(copy.coverage.cost(coverage.usagePartialAttempts, coverage.unpricedAttempts));
+  }
+  if (legacyRecords > 0) parts.push(copy.coverage.legacy(legacyRecords));
+  if (unreadableRecords > 0 || pendingRepairs > 0) {
+    parts.push(copy.coverage.projection(unreadableRecords, pendingRepairs));
+  }
+  if (coverage.usagePartialAttempts > 0
+    || coverage.usageMissingAttempts > 0
+    || coverage.unpricedAttempts > 0) {
+    parts.push(copy.coverage.knownValuesOnly);
+  }
+  if (unreadableRecords > 0 || pendingRepairs > 0) parts.push(copy.coverage.projectionMayOmit);
+
+  return {
+    title: hasIncompleteCanonicalData ? copy.coverage.incompleteTitle : copy.coverage.legacyTitle,
+    description: copy.coverage.description(parts),
+  };
+}
+
 // ── Per-tab panels ─────────────────────────────────────────────────────────
 // Each tab owns its own component so the panel structure (filters, tables,
 // empty states) reads top-to-bottom instead of hiding inside one switch.
@@ -236,25 +323,19 @@ function UsageRequestsPanel(props: {
   modelFilter: string;
   status: AppSettings['usage']['status'];
   recordCount: number;
+  logsTotal?: number;
+  logsTruncated?: boolean;
   hasRequestFilters: boolean;
   requestEmpty: string;
   copy: UsageSettingsCopy;
   locale: ReturnType<typeof useUiLocale>;
   onOpenSession?(sessionId: string): void;
-  onEnableDetails(): void;
   onModelFilterChange(value: string): void;
   onStatusChange(status: AppSettings['usage']['status']): void;
   onToggleDetails(showDetails: boolean): void;
   onClearFilters(): void;
 }) {
-  if (!props.showDetails) {
-    return (
-      <Banner
-        status="info"
-        title={props.copy.summaryOnly}
-        endContent={<Button variant="secondary" size="sm" onClick={props.onEnableDetails} label={props.copy.showDetails} />} />
-    );
-  }
+  if (!props.showDetails) return null;
   return (
     <>
       <div className="settingsUsageFilters" role="group" aria-label={props.copy.filtersAria}>
@@ -276,6 +357,7 @@ function UsageRequestsPanel(props: {
             { value: 'all', label: props.copy.statuses[0] },
             { value: 'success', label: props.copy.statuses[1] },
             { value: 'error', label: props.copy.statuses[2] },
+            { value: 'aborted', label: props.copy.statuses[3] },
           ]}
           width={320}
           onChange={(value) => props.onStatusChange(value as AppSettings['usage']['status'])}
@@ -289,7 +371,11 @@ function UsageRequestsPanel(props: {
             onChange={props.onToggleDetails}
           />
         </div>
-        <small className="settingsUsageRecordCount">{props.copy.recordCount(props.recordCount)}</small>
+        <small className="settingsUsageRecordCount">
+          {props.logsTruncated && !props.hasRequestFilters && props.logsTotal !== undefined
+            ? props.copy.recordCountTruncated(props.recordCount, props.logsTotal)
+            : props.copy.recordCount(props.recordCount)}
+        </small>
         <Button
           className="settingsUsageClearFilter"
           variant="ghost"
@@ -318,9 +404,9 @@ function UsageRequestsPanel(props: {
           usageRequestKindLabel(row.kind, props.copy),
           usageRequestTarget(row),
           usageRequestSessionCell(row, props.copy, props.onOpenSession),
-          row.inputTokens + row.outputTokens,
-          row.kind === 'model' ? `$${(row.costUsd ?? 0).toFixed(2)}` : '-',
-          row.latencyMs ? `${row.latencyMs}ms` : '-',
+          usageRequestTokens(row, props.copy),
+          usageRequestCost(row, props.copy),
+          row.latencyMs === undefined ? '-' : `${row.latencyMs}ms`,
           usageRequestStatusLabel(row.status, props.copy),
         ])}
         empty={{
@@ -353,7 +439,12 @@ function UsageProvidersPanel(props: { stats: UsageStats | null; copy: UsageSetti
         { header: props.copy.tables.providerHeaders[2], numeric: true },
         { header: props.copy.tables.providerHeaders[3], numeric: true },
       ]}
-      rows={(props.stats?.byProvider ?? []).map((row) => [row.provider, row.requests, row.tokens, `$${row.costUsd.toFixed(2)}`])}
+      rows={(props.stats?.byProvider ?? []).map((row) => [
+        row.provider,
+        row.requests,
+        row.tokens,
+        `$${row.costUsd.toFixed(2)}`,
+      ])}
       empty={{ Icon: Database, title: props.copy.tables.providerEmptyTitle, body: props.copy.tables.providerEmptyBody }}
     />
   );
@@ -369,7 +460,12 @@ function UsageModelsPanel(props: { stats: UsageStats | null; copy: UsageSettings
         { header: props.copy.tables.modelHeaders[2], numeric: true },
         { header: props.copy.tables.modelHeaders[3], numeric: true },
       ]}
-      rows={(props.stats?.byModel ?? []).map((row) => [row.model, row.requests, row.tokens, `$${row.costUsd.toFixed(2)}`])}
+      rows={(props.stats?.byModel ?? []).map((row) => [
+        row.model,
+        row.requests,
+        row.tokens,
+        `$${row.costUsd.toFixed(2)}`,
+      ])}
       empty={{ Icon: Cpu, title: props.copy.tables.modelEmptyTitle, body: props.copy.tables.modelEmptyBody }}
     />
   );
@@ -385,8 +481,9 @@ function UsageToolsPanel(props: { stats: UsageStats | null; copy: UsageSettingsC
         { header: props.copy.tables.toolHeaders[2], numeric: true },
         { header: props.copy.tables.toolHeaders[3], numeric: true },
         { header: props.copy.tables.toolHeaders[4], numeric: true },
+        { header: props.copy.tables.toolHeaders[5], numeric: true },
       ]}
-      rows={(props.stats?.byTool ?? []).map((row) => [row.tool, row.calls, row.success, row.errors, `${row.avgDurationMs}ms`])}
+      rows={(props.stats?.byTool ?? []).map((row) => [row.tool, row.calls, row.success, row.errors, row.aborted, `${row.avgDurationMs}ms`])}
       empty={{ Icon: Activity, title: props.copy.tables.toolEmptyTitle, body: props.copy.tables.toolEmptyBody }}
     />
   );
@@ -422,10 +519,12 @@ function usageRequestTarget(row: UsageStats['logs'][number]) {
 }
 
 function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSettingsCopy, onOpenSession?: (sessionId: string) => void) {
-  const label = shortUsageSessionId(row.sessionId);
+  if (!row.sessionId) return '-';
+  const sessionId = row.sessionId;
+  const label = shortUsageSessionId(sessionId);
   if (!onOpenSession) return label;
   return (
-    <Button variant="ghost" size="sm" onClick={() => onOpenSession(row.sessionId)} label={copy.tables.openSession(label)} />
+    <Button variant="ghost" size="sm" onClick={() => onOpenSession(sessionId)} label={copy.tables.openSession(label)} />
   );
 }
 
@@ -437,7 +536,29 @@ function usageRequestStatusLabel(status: UsageStats['logs'][number]['status'], c
   switch (status) {
     case 'success': return copy.tables.success;
     case 'error': return copy.tables.error;
+    case 'aborted': return copy.tables.aborted;
   }
+}
+
+function usageRequestTokens(row: UsageStats['logs'][number], copy: UsageSettingsCopy) {
+  if (row.kind === 'tool') return copy.tables.notApplicable;
+  // Prefer the stored canonical total so the row reconciles with the summary
+  // and provider totals it feeds; input + output is only the fallback for
+  // rows from producers that predate the Host-backed projection.
+  const total = row.totalTokens ?? row.inputTokens + row.outputTokens;
+  if (row.usageBasis === 'missing') return copy.tables.notReported;
+  if (row.usageBasis === 'partial') return copy.tables.partial(total);
+  return total;
+}
+
+function usageRequestCost(row: UsageStats['logs'][number], copy: UsageSettingsCopy) {
+  if (row.kind === 'tool') return copy.tables.notApplicable;
+  if (row.costBasis === 'unpriced') return copy.tables.unpriced;
+  if (row.costUsd === undefined) return copy.tables.notRecorded;
+  const amount = `$${row.costUsd.toFixed(2)}`;
+  return row.usageBasis === 'partial' || row.usageBasis === 'missing'
+    ? copy.tables.partial(amount)
+    : amount;
 }
 
 // ── Usage table mapping ─────────────────────────────────────────────────────

@@ -1,3 +1,5 @@
+import type { ModelCallUsageBasis } from '../model-call-attempt.js';
+
 export const MODEL_CALL_KINDS = [
   'main',
   'semantic_compact',
@@ -56,6 +58,15 @@ export interface UsageBucket {
   costUsd: number;
   avgLatencyMs: number;
   errorRate: number;
+  /**
+   * Terminal-status breakdown, populated only by `groupBy: 'tool'` buckets —
+   * LLM buckets derive outcomes from token/cost fields instead. `requests`
+   * stays the total call count: requests === successCount + errorCount +
+   * abortedCount whenever the three are present.
+   */
+  successCount?: number;
+  errorCount?: number;
+  abortedCount?: number;
 }
 
 export interface UsageLogRow {
@@ -74,6 +85,12 @@ export interface UsageLogRow {
   cacheWriteTokens: number;
   reasoningTokens: number;
   totalTokens: number;
+  /**
+   * How completely the provider reported token usage for this attempt.
+   * Frozen pre-ledger rows leave this absent because their schema did not
+   * preserve the distinction.
+   */
+  usageBasis?: ModelCallUsageBasis;
   /**
    * Absent when `costBasis` is `'unpriced'`. Zero means the call was genuinely
    * free — it must never stand in for a price that could not be resolved.
@@ -131,6 +148,7 @@ export interface LlmCallRecord {
   cacheWriteInputTokens?: number;
   reasoningTokens?: number;
   totalTokens?: number;
+  totalTokensSource?: 'reported' | 'derived';
   rawFinishReason?: string;
   rawUsage?: {
     prompt_tokens?: number;

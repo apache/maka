@@ -1160,6 +1160,7 @@ export function normalizeAiSdkUsage(
     explicitCacheMissInputTokens !== undefined ? 'explicit' : 'derived';
   const reasoningTokens = reportedReasoningTokens ?? 0;
   const totalTokens = reportedTotalTokens ?? inputTokens + outputTokens;
+  const totalTokensSource = reportedTotalTokens === undefined ? 'derived' : 'reported';
   const raw = rawUsageFields(usage);
   const rawFinishReason = rawFinishReasonString(options.rawFinishReason);
   return {
@@ -1171,6 +1172,7 @@ export function normalizeAiSdkUsage(
     cacheWriteInputTokens,
     reasoningTokens,
     totalTokens,
+    totalTokensSource,
     ...(rawFinishReason !== undefined ? { rawFinishReason } : {}),
     ...(raw !== undefined ? { raw } : {}),
     cachedInputTokens: cacheHitInputTokens,

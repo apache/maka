@@ -282,6 +282,8 @@ export interface NormalizedUsage {
   cacheWriteInputTokens: number;
   reasoningTokens: number;
   totalTokens: number;
+  /** Whether `totalTokens` came from the provider or input + output. */
+  totalTokensSource?: 'reported' | 'derived';
   rawFinishReason?: string;
   raw?: RawUsageFields;
   /** Backward-compatible alias for `cacheHitInputTokens`. */

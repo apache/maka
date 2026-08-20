@@ -53,6 +53,14 @@ const writers = new WeakSet<object>();
 const writerByLease = new WeakMap<object, InteractiveUsageStoresWriter>();
 const writerOpeningByLease = new WeakMap<object, Promise<InteractiveUsageStoresWriter>>();
 
+/**
+ * A revision read needs a stable answer or a failure, never an unbounded wait
+ * behind a continuous write stream: every admitted write replaces the barrier
+ * synchronously, so an active turn could otherwise keep the loop alive
+ * indefinitely.
+ */
+const USAGE_REVISION_SETTLE_ATTEMPTS = 32;
+
 export interface TelemetryIndexReader {
   summary(query: UsageQuery): Promise<UsageSummaryV2>;
   buckets(query: UsageQuery, groupBy: UsageGroupBy): Promise<UsageBucket[]>;
@@ -119,6 +127,12 @@ export interface InteractiveUsageStoresWriter {
   readonly telemetry: Readonly<TelemetryIndexWriter>;
   readonly modelCalls: Readonly<ModelCallIndexWriter>;
   readonly pricing: Readonly<PricingAuthorityWriter>;
+  /**
+   * Host-epoch revision for the complete Usage read model. Waits for writes
+   * already admitted at the call boundary, so a caller can fence multi-read
+   * projections without observing an in-flight mutation.
+   */
+  usageSnapshotRevision(): Promise<number>;
   beginDrain(): Promise<void>;
   flush(): Promise<void>;
   close(): Promise<void>;
@@ -131,6 +145,13 @@ export class InteractiveUsageStoresClosedError extends Error {
   }
 }
 
+export class UsageRevisionUnsettledError extends Error {
+  constructor() {
+    super('Usage revision did not settle');
+    this.name = 'UsageRevisionUnsettledError';
+  }
+}
+
 export type InteractiveUsageStoresFailureClassification =
   | { readonly kind: 'lifecycle' }
   | {
@@ -138,6 +159,7 @@ export type InteractiveUsageStoresFailureClassification =
       readonly expectedRevision: number;
       readonly actualRevision: number;
     }
+  | { readonly kind: 'revision_unsettled' }
   | { readonly kind: 'invalid_request' }
   | { readonly kind: 'commit_outcome_unknown'; readonly needsDrain: true }
   | { readonly kind: 'persistence_failed'; readonly needsDrain: boolean }
@@ -155,6 +177,9 @@ export function classifyInteractiveUsageStoresFailure(
   }
   if (error instanceof PricingValidationError || error instanceof TelemetryQueryValidationError) {
     return { kind: 'invalid_request' };
+  }
+  if (error instanceof UsageRevisionUnsettledError) {
+    return { kind: 'revision_unsettled' };
   }
   if (
     error instanceof InteractiveUsageStoresClosedError ||
@@ -318,6 +343,7 @@ function createWriterFacade(
   const failures: unknown[] = [];
   let drainPromise: Promise<void> | undefined;
   let closePromise: Promise<void> | undefined;
+  let usageRevision = 0;
 
   const assertOpen = () => {
     if (state !== 'open') throw new InteractiveUsageStoresClosedError();
@@ -336,6 +362,14 @@ function createWriterFacade(
     );
     barrier = Promise.all([barrier, observed]).then(() => undefined);
     return admitted;
+  };
+  const admitUsage = <T>(operation: () => Promise<T>): Promise<T> => {
+    assertOpen();
+    if (usageRevision === Number.MAX_SAFE_INTEGER) {
+      return Promise.reject(new Error('Usage revision is exhausted'));
+    }
+    usageRevision += 1;
+    return admit(operation);
   };
   const read = <T>(operation: () => T): Promise<T> => {
     assertOpen();
@@ -401,18 +435,18 @@ function createWriterFacade(
       toolLogs: (query, offset, limit) => read(() => telemetry.toolLogs(query, offset, limit)),
       latestLlmRuntimeProbe: (connectionSlug, modelId) =>
         read(() => telemetry.latestLlmRuntimeProbe(connectionSlug, modelId)),
-      recordLlmCall: (record) => admit(() => run(() => telemetry.insertLlmCall(record))),
+      recordLlmCall: (record) => admitUsage(() => run(() => telemetry.insertLlmCall(record))),
       recordToolInvocation: (record) =>
-        admit(() => run(() => telemetry.insertToolInvocation(record))),
+        admitUsage(() => run(() => telemetry.insertToolInvocation(record))),
     },
     modelCalls: {
       modelCallAttempts: (range) => read(() => modelCalls.read(range)),
-      recordModelCallAttempt: (attempt) => admit(() => run(() => modelCalls.record(attempt))),
+      recordModelCallAttempt: (attempt) => admitUsage(() => run(() => modelCalls.record(attempt))),
       markRunPendingReprojection: (sessionId, runId) =>
-        admit(() => run(() => modelCalls.markRunPendingReprojection(sessionId, runId))),
+        admitUsage(() => run(() => modelCalls.markRunPendingReprojection(sessionId, runId))),
       pendingReprojections: () => read(() => modelCalls.pendingReprojections()),
       clearPendingReprojection: (sessionId, runId) =>
-        admit(() => run(() => modelCalls.clearPendingReprojection(sessionId, runId))),
+        admitUsage(() => run(() => modelCalls.clearPendingReprojection(sessionId, runId))),
     },
     pricing: {
       snapshot: () => read(() => pricing.snapshot()),
@@ -423,6 +457,15 @@ function createWriterFacade(
           () => run(() => pricing.delete(expectedRevision, modelKey)),
           isExpectedPricingFailure,
         ),
+    },
+    usageSnapshotRevision: async () => {
+      for (let attempt = 0; attempt < USAGE_REVISION_SETTLE_ATTEMPTS; attempt += 1) {
+        assertOpen();
+        const accepted = barrier;
+        await accepted;
+        if (accepted === barrier) return usageRevision;
+      }
+      throw new UsageRevisionUnsettledError();
     },
     beginDrain,
     flush,

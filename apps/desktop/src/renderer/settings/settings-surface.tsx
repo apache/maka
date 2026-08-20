@@ -462,16 +462,29 @@ export function SettingsSurface(props: {
     }
   }
 
-  async function reloadUsage(range: UsageRange = settings.usage.range) {
+  async function reloadUsage(
+    range: UsageRange = settings.usage.range,
+    host = selectedRuntimeHost,
+  ) {
+    if (!host) return;
+    const hostKey = runtimeHostKey(host);
     const ticket = usageReloadTicketRef.current + 1;
     usageReloadTicketRef.current = ticket;
     try {
-      const next = await window.maka.settings.usageStats(range);
-      if (settingsModalMountedRef.current && ticket === usageReloadTicketRef.current) {
+      const next = await window.maka.settings.usageStats(range, host);
+      if (
+        settingsModalMountedRef.current &&
+        ticket === usageReloadTicketRef.current &&
+        selectedRuntimeHostKeyRef.current === hostKey
+      ) {
         setUsageStats(next);
       }
     } catch (error) {
-      if (settingsModalMountedRef.current && ticket === usageReloadTicketRef.current) {
+      if (
+        settingsModalMountedRef.current &&
+        ticket === usageReloadTicketRef.current &&
+        selectedRuntimeHostKeyRef.current === hostKey
+      ) {
         toast.error(copy.usageLoadFailed, settingsActionErrorMessage(error, locale));
       }
     }
@@ -567,8 +580,12 @@ export function SettingsSurface(props: {
   }, [connectionsBridge, selectedRuntimeHost]);
 
   useEffect(() => {
-    if (section === 'usage') void reloadUsage();
-  }, [section]);
+    usageReloadTicketRef.current += 1;
+    setUsageStats(null);
+    if (section === 'usage' && selectedRuntimeHost) {
+      void reloadUsage(settings.usage.range, selectedRuntimeHost);
+    }
+  }, [section, selectedRuntimeHost, settings.usage.range]);
 
   // PR-SETTINGS-HEADER-COPY-MAP-0 (U1): the page header derives its title
   // and description from the section→copy map keyed by the active section,

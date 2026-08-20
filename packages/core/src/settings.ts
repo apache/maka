@@ -23,6 +23,11 @@ import {
 } from './ui-locale.js';
 import { normalizeSubagentSettings, type SubagentSettings } from './subagent-settings.js';
 import { isPetPackId } from './pet.js';
+import type {
+  ModelCallCostBasis,
+  ModelCallCoverage,
+  ModelCallUsageBasis,
+} from './model-call-attempt.js';
 
 export { UI_LOCALE_PREFERENCES, isUiLocalePreference } from './ui-locale.js';
 export type { UiLocalePreference } from './ui-locale.js';
@@ -92,7 +97,7 @@ export interface AppNetworkSettings {
 }
 
 export type UsageRange = '24h' | '7d' | '30d' | 'all';
-export type UsageStatus = 'all' | 'success' | 'error';
+export type UsageStatus = 'all' | 'success' | 'error' | 'aborted';
 export type UsageTab = 'requests' | 'providers' | 'models' | 'tools' | 'pricing';
 
 export interface UsageSettings {
@@ -266,20 +271,29 @@ export interface UsageRequestLog {
   id: string;
   ts: number;
   kind: 'model' | 'tool';
-  sessionId: string;
-  turnId: string;
+  sessionId?: string;
+  turnId?: string;
   provider: string;
   model: string;
   toolName?: string;
   inputTokens: number;
   outputTokens: number;
+  /**
+   * Stored canonical total for model rows (derived rows normalized at the
+   * Host's read boundary), so the request table reconciles with the summary
+   * and bucket totals. Absent only from producers that predate the
+   * Host-backed usage projection.
+   */
+  totalTokens?: number;
   cacheMiss?: number;
   cacheRead?: number;
   cacheCreation?: number;
   reasoning?: number;
+  usageBasis?: ModelCallUsageBasis;
   costUsd?: number;
+  costBasis?: ModelCallCostBasis;
   latencyMs?: number;
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'aborted';
 }
 
 export interface UsageSummary {
@@ -296,8 +310,22 @@ export interface UsageSummary {
 }
 
 export interface UsageStats {
+  provenance: {
+    coverage: ModelCallCoverage;
+    legacyRecords: number;
+    unreadableRecords: number;
+    pendingRepairs: number;
+  };
   summary: UsageSummary;
   logs: UsageRequestLog[];
+  /**
+   * Total recorded log rows across both sources in the window, even when
+   * `logs` itself is page-capped. `logsTruncated` marks that cap, so the UI
+   * can label the requests table as a newest-first window instead of the
+   * full history.
+   */
+  logsTotal?: number;
+  logsTruncated?: boolean;
   byProvider: Array<{
     provider: string;
     requests: number;
@@ -315,6 +343,7 @@ export interface UsageStats {
     calls: number;
     success: number;
     errors: number;
+    aborted: number;
     avgDurationMs: number;
   }>;
   pricing: Array<{

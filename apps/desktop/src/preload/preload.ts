@@ -2347,8 +2347,8 @@ const makaBridge = {
     testBotChannel(provider: BotProvider): Promise<SettingsTestResult> {
       return ipcRenderer.invoke('settings:testBotChannel', provider);
     },
-    usageStats(range?: UsageRange): Promise<UsageStats> {
-      return ipcRenderer.invoke('settings:usageStats', range);
+    usageStats(range: UsageRange | undefined, host: DesktopRuntimeHostRef): Promise<UsageStats> {
+      return invokeSelectedRuntimeHost(host, 'settings:usageStats', range);
     },
     bots: {
       listStatuses(): Promise<Record<BotProvider, BotStatus>> {

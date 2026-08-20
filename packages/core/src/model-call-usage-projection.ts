@@ -254,6 +254,7 @@ export function projectModelCallUsageLogs(
       cacheWriteTokens: t.cacheWrite,
       reasoningTokens: t.reasoning,
       totalTokens: t.total,
+      usageBasis: attempt.usageBasis,
       // A row keeps its basis, not just its number. Collapsing an unpriced call
       // to 0 here would reproduce, per row, exactly the ambiguity the coverage
       // breakdown removes from the totals.

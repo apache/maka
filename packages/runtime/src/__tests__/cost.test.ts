@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
+import { normalizeAiSdkUsage } from '../model-adapter.js';
 import { computeCost } from '../telemetry/cost.js';
+import { llmCallUsageFields } from '../telemetry/llm-call-usage.js';
 import { recordLlmCall } from '../telemetry/record-llm-call.js';
 import { recordToolInvocation } from '../telemetry/record-tool-invocation.js';
 import type { PersistedLlmCallRecord, PersistedToolInvocationRecord } from '../telemetry/types.js';
@@ -202,6 +204,61 @@ describe('recordLlmCall', () => {
     publish();
     await settlement;
     assert.equal(settled, true);
+  });
+
+  test('does not add reasoning tokens twice when the provider omitted a total', async () => {
+    const inserted: PersistedLlmCallRecord[] = [];
+    await recordLlmCall(
+      {
+        repo: {
+          insertLlmCall: async (record) => {
+            inserted.push(record);
+          },
+        },
+        lookupPricing: () => null,
+      },
+      {
+        providerId: 'anthropic',
+        modelId: 'claude',
+        inputTokens: 20,
+        outputTokens: 8,
+        reasoningTokens: 2,
+        latencyMs: 5,
+        status: 'success',
+        startedAt: 100,
+      },
+    );
+
+    assert.equal(inserted[0]?.totalTokens, 28);
+    assert.equal(inserted[0]?.reasoningTokens, 2);
+  });
+
+  test('preserves a normalized provider-without-total as derived provenance', async () => {
+    const usage = normalizeAiSdkUsage({ inputTokens: 20, outputTokens: 8 });
+    assert(usage);
+    const inserted: PersistedLlmCallRecord[] = [];
+
+    await recordLlmCall(
+      {
+        repo: {
+          insertLlmCall: async (record) => {
+            inserted.push(record);
+          },
+        },
+        lookupPricing: () => null,
+      },
+      {
+        providerId: 'anthropic',
+        modelId: 'claude',
+        ...llmCallUsageFields(usage),
+        latencyMs: 5,
+        status: 'success',
+        startedAt: 100,
+      },
+    );
+
+    assert.equal(inserted[0]?.totalTokens, 28);
+    assert.equal(inserted[0]?.totalTokensSource, 'derived');
   });
 
   test('contains writer failures at the best-effort telemetry boundary', async () => {

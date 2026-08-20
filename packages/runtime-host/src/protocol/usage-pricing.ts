@@ -3,6 +3,7 @@ import {
   normalizePricingModelKey,
   validateCanonicalPricingConfig,
 } from '@maka/core/usage-stats/pricing';
+import { MODEL_CALL_USAGE_BASES, type ModelCallUsageBasis } from '@maka/core/model-call-attempt';
 import type {
   CacheMissInputSource,
   ModelCallKind,
@@ -15,7 +16,7 @@ import type {
 } from '@maka/core/usage-stats/types';
 import { MODEL_CALL_KINDS } from '@maka/core/usage-stats/types';
 import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
-import { requireCount, requireExactRecord, requireRecord } from './codec.js';
+import { requireCount, requireExactRecord, requireRecord, requireString } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
@@ -32,7 +33,7 @@ const QUERY_ERRORS = [
   'persistence_failed',
   'internal_failure',
 ] as const;
-const USAGE_QUERY_ERRORS = [...QUERY_ERRORS, 'invalid_request'] as const;
+const USAGE_QUERY_ERRORS = [...QUERY_ERRORS, 'invalid_request', 'usage_revision_changed'] as const;
 const PRICING_QUERY_ERRORS = [...QUERY_ERRORS, 'invalid_request'] as const;
 const MUTATION_ERRORS = [...QUERY_ERRORS, 'invalid_request', 'commit_outcome_unknown'] as const;
 const LLM_USAGE_QUERY_FIELDS = new Set([
@@ -58,6 +59,9 @@ const USAGE_BUCKET_FIELDS = new Set([
   'costUsd',
   'avgLatencyMs',
   'errorRate',
+  'successCount',
+  'errorCount',
+  'abortedCount',
 ]);
 const LLM_USAGE_LOG_FIELDS = new Set([
   'source',
@@ -76,6 +80,7 @@ const LLM_USAGE_LOG_FIELDS = new Set([
   'cacheMissInputSource',
   'reasoningTokens',
   'totalTokens',
+  'usageBasis',
   'costUsd',
   'costBasis',
   'latencyMs',
@@ -139,6 +144,8 @@ export interface LlmUsageLogProjection {
   readonly cacheMissInputSource?: CacheMissInputSource;
   readonly reasoningTokens: number;
   readonly totalTokens: number;
+  /** Undefined for frozen rows whose schema predates the canonical ledger. */
+  readonly usageBasis?: ModelCallUsageBasis;
   /** Absent when `costBasis` is `'unpriced'`. Zero means genuinely free. */
   readonly costUsd?: number;
   /** Undefined for rows from the frozen table, which never recorded a basis. */
@@ -173,13 +180,14 @@ export interface ToolUsageLogProjection {
 export type UsageLogProjection = LlmUsageLogProjection | ToolUsageLogProjection;
 
 export type UsageQueryInput =
-  | { readonly kind: 'summary'; readonly query: LlmUsageQuery }
+  | { readonly kind: 'summary'; readonly query: LlmUsageQuery; readonly snapshot?: string }
   | {
       readonly kind: 'buckets';
       readonly query: LlmUsageQuery;
       readonly groupBy: Exclude<UsageGroupBy, 'tool'>;
       readonly offset?: number;
       readonly limit?: number;
+      readonly snapshot?: string;
     }
   | {
       readonly kind: 'buckets';
@@ -187,6 +195,7 @@ export type UsageQueryInput =
       readonly groupBy: 'tool';
       readonly offset?: number;
       readonly limit?: number;
+      readonly snapshot?: string;
     }
   | {
       readonly kind: 'logs';
@@ -194,6 +203,7 @@ export type UsageQueryInput =
       readonly query: LlmUsageQuery;
       readonly offset?: number;
       readonly limit?: number;
+      readonly snapshot?: string;
     }
   | {
       readonly kind: 'logs';
@@ -201,16 +211,19 @@ export type UsageQueryInput =
       readonly query: ToolUsageQuery;
       readonly offset?: number;
       readonly limit?: number;
+      readonly snapshot?: string;
     };
 
 export type UsageQueryResult =
   | {
       readonly kind: 'summary';
+      readonly revision: number;
       readonly summary: UsageSummaryV2;
       readonly provenance: UsageProvenance;
     }
   | {
       readonly kind: 'buckets';
+      readonly revision: number;
       readonly buckets: readonly UsageBucket[];
       readonly offset: number;
       readonly total: number;
@@ -219,6 +232,7 @@ export type UsageQueryResult =
     }
   | {
       readonly kind: 'logs';
+      readonly revision: number;
       readonly source: 'llm';
       readonly rows: readonly LlmUsageLogProjection[];
       readonly offset: number;
@@ -228,6 +242,7 @@ export type UsageQueryResult =
     }
   | {
       readonly kind: 'logs';
+      readonly revision: number;
       readonly source: 'tool';
       readonly rows: readonly ToolUsageLogProjection[];
       readonly offset: number;
@@ -327,36 +342,43 @@ export const USAGE_PRICING_OPERATION_SPECS = {
 export function decodeUsageQueryInput(value: unknown): UsageQueryInput {
   const input = requireRecord(value, 'usage query input');
   if (input.kind === 'summary') {
-    const exact = requireExactRecord(input, 'usage summary input', ['kind', 'query']);
-    return { kind: 'summary', query: decodeLlmUsageQuery(exact.query) };
+    assertOptionalExactKeys(input, 'usage summary input', ['kind', 'query'], ['snapshot']);
+    return {
+      kind: 'summary',
+      query: decodeLlmUsageQuery(input.query),
+      ...decodeUsageSnapshotField(input),
+    };
   }
   if (input.kind === 'buckets') {
     assertOptionalExactKeys(
       input,
       'usage buckets input',
       ['kind', 'query', 'groupBy'],
-      ['offset', 'limit'],
+      ['offset', 'limit', 'snapshot'],
     );
     const groupBy = decodeUsageGroupBy(input.groupBy);
     const page = { offset: decodeOffset(input.offset), limit: decodeLimit(input.limit) };
+    const snapshot = decodeUsageSnapshotField(input);
     return groupBy === 'tool'
-      ? { kind: 'buckets', query: decodeToolUsageQuery(input.query), groupBy, ...page }
-      : { kind: 'buckets', query: decodeLlmUsageQuery(input.query), groupBy, ...page };
+      ? { kind: 'buckets', query: decodeToolUsageQuery(input.query), groupBy, ...page, ...snapshot }
+      : { kind: 'buckets', query: decodeLlmUsageQuery(input.query), groupBy, ...page, ...snapshot };
   }
   if (input.kind === 'logs') {
     assertOptionalExactKeys(
       input,
       'usage logs input',
       ['kind', 'source', 'query'],
-      ['offset', 'limit'],
+      ['offset', 'limit', 'snapshot'],
     );
     const page = { offset: decodeOffset(input.offset), limit: decodeLimit(input.limit) };
+    const snapshot = decodeUsageSnapshotField(input);
     if (input.source === 'llm') {
       return {
         kind: 'logs',
         source: 'llm',
         query: decodeLlmUsageQuery(input.query),
         ...page,
+        ...snapshot,
       };
     }
     if (input.source === 'tool') {
@@ -365,6 +387,7 @@ export function decodeUsageQueryInput(value: unknown): UsageQueryInput {
         source: 'tool',
         query: decodeToolUsageQuery(input.query),
         ...page,
+        ...snapshot,
       };
     }
     throw invalidProtocolFrame('Invalid usage log source');
@@ -372,16 +395,30 @@ export function decodeUsageQueryInput(value: unknown): UsageQueryInput {
   throw invalidProtocolFrame('Invalid usage query kind');
 }
 
+/**
+ * Optional opaque snapshot ticket the Desktop threads through every page of one
+ * Usage snapshot load. The Host pins its bounded repair pass to this ticket so
+ * a paginating reader cannot observe a fresh pass (and its revision bump)
+ * mid-snapshot. Bounded like any other identity string.
+ */
+function decodeUsageSnapshotField(input: Record<string, unknown>): { snapshot?: string } {
+  return input.snapshot === undefined
+    ? {}
+    : { snapshot: requireString(input.snapshot, 'usage snapshot ticket', 128) };
+}
+
 export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
   const result = requireRecord(value, 'usage query result');
   if (result.kind === 'summary') {
     const exact = requireExactRecord(result, 'usage summary result', [
       'kind',
+      'revision',
       'summary',
       'provenance',
     ]);
     return {
       kind: 'summary',
+      revision: requireCount(exact.revision, 'usage revision'),
       summary: decodeUsageSummary(exact.summary),
       provenance: decodeUsageProvenance(exact.provenance),
     };
@@ -389,6 +426,7 @@ export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
   if (result.kind === 'buckets') {
     const exact = requireExactRecord(result, 'usage buckets result', [
       'kind',
+      'revision',
       'buckets',
       'offset',
       'total',
@@ -403,6 +441,7 @@ export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
     if (result.source === 'llm') {
       const exact = requireExactRecord(result, 'usage llm logs result', [
         'kind',
+        'revision',
         'source',
         'rows',
         'offset',
@@ -415,6 +454,7 @@ export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
     if (result.source === 'tool') {
       const exact = requireExactRecord(result, 'usage tool logs result', [
         'kind',
+        'revision',
         'source',
         'rows',
         'offset',
@@ -726,6 +766,7 @@ function decodeUsagePage(
   const page = decodeUsagePagePosition(result, items.length);
   const decoded = {
     kind,
+    revision: requireCount(result.revision, 'usage revision'),
     buckets: items,
     ...page,
     provenance: decodeUsageProvenance(result.provenance),
@@ -757,6 +798,7 @@ function decodeUsageLogPage(
   const page = decodeUsagePagePosition(result, items.length);
   const decoded = {
     kind: 'logs',
+    revision: requireCount(result.revision, 'usage revision'),
     source,
     rows: items,
     ...page,
@@ -915,6 +957,15 @@ function decodeUsageBucket(value: unknown): UsageBucket {
     costUsd: nonnegativeFinite(bucket.costUsd, 'usage bucket cost'),
     avgLatencyMs: nonnegativeFinite(bucket.avgLatencyMs, 'usage bucket average latency'),
     errorRate,
+    ...(bucket.successCount === undefined
+      ? {}
+      : { successCount: requireCount(bucket.successCount, 'usage bucket success count') }),
+    ...(bucket.errorCount === undefined
+      ? {}
+      : { errorCount: requireCount(bucket.errorCount, 'usage bucket error count') }),
+    ...(bucket.abortedCount === undefined
+      ? {}
+      : { abortedCount: requireCount(bucket.abortedCount, 'usage bucket aborted count') }),
   };
 }
 
@@ -963,6 +1014,7 @@ function decodeLlmUsageLog(value: unknown): LlmUsageLogProjection {
       : { cacheMissInputSource: decodeCacheMissInputSource(row.cacheMissInputSource) }),
     reasoningTokens: requireCount(row.reasoningTokens, 'usage log reasoning tokens'),
     totalTokens: requireCount(row.totalTokens, 'usage log total tokens'),
+    ...optionalEnum(row, 'usageBasis', MODEL_CALL_USAGE_BASES),
     ...(row.costUsd === undefined
       ? {}
       : { costUsd: nonnegativeFinite(row.costUsd, 'usage log cost') }),

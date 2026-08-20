@@ -13,6 +13,11 @@ export type PersistedLlmCallRecord = LlmCallRecord & {
   cacheWriteInputTokens: number;
   reasoningTokens: number;
   totalTokens: number;
+  /**
+   * Where `totalTokens` came from: the provider reported it, or the recorder
+   * derived it from the token classes. Legacy rows predate the field.
+   */
+  totalTokensSource?: 'reported' | 'derived';
   costUsd: number;
   date: string;
   ts: number;
@@ -51,6 +56,7 @@ const LLM_KEYS = exactKeys<PersistedLlmCallRecord>({
   cacheWriteInputTokens: true,
   reasoningTokens: true,
   totalTokens: true,
+  totalTokensSource: true,
   rawFinishReason: true,
   rawUsage: true,
   latencyMs: true,
@@ -165,6 +171,9 @@ export function decodePersistedLlmCallRecord(input: unknown): PersistedLlmCallRe
   }
   if (!optionalEnum(input.cacheMissInputSource, new Set(['explicit', 'derived']))) {
     throw invalid('invalid cacheMissInputSource');
+  }
+  if (!optionalEnum(input.totalTokensSource, new Set(['reported', 'derived']))) {
+    throw invalid('invalid totalTokensSource');
   }
   if (input.rawUsage !== undefined && !isRawUsage(input.rawUsage)) {
     throw invalid('invalid rawUsage');

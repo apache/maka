@@ -99,24 +99,21 @@ describe('model-call usage projection', () => {
   });
 
   test('usage-missing records are reported separately from unpriced ones', () => {
-    const summary = projectModelCallUsageSummary(
-      [
-        attempt({
-          attemptId: 'no-usage',
-          status: 'failed',
-          usageBasis: 'missing',
-          inputTokens: undefined,
-          outputTokens: undefined,
-          costBasis: 'unpriced',
-          costUsd: undefined,
-        }),
-      ],
-      { range: 'all' },
-      NOW,
-    );
+    const noUsage = attempt({
+      attemptId: 'no-usage',
+      status: 'failed',
+      usageBasis: 'missing',
+      inputTokens: undefined,
+      outputTokens: undefined,
+      costBasis: 'unpriced',
+      costUsd: undefined,
+    });
+    const summary = projectModelCallUsageSummary([noUsage], { range: 'all' }, NOW);
+    const logs = projectModelCallUsageLogs([noUsage], { range: 'all' }, NOW);
     assert.equal(summary.coverage.usageMissingAttempts, 1);
     assert.equal(summary.coverage.unpricedAttempts, 1);
     assert.equal(summary.totalTokens.total, 0);
+    assert.equal(logs.rows[0]?.usageBasis, 'missing');
   });
 
   test('a replayed attemptId is counted once', () => {

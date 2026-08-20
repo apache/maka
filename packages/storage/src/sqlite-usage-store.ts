@@ -159,7 +159,11 @@ class SqliteTelemetryRepo implements TelemetryRepo {
         cacheRead: sum(rows.map((row) => row.cacheHitInputTokens)),
         cacheWrite: sum(rows.map((row) => row.cacheWriteInputTokens)),
         reasoning: sum(rows.map((row) => row.reasoningTokens)),
-        total: sum(rows.map((row) => row.totalTokens)),
+        // `reasoningTokens` is an output-token detail, not an additional token
+        // class. Rows whose stored total is an explicit derived fallback are
+        // normalized to input + output at this frozen read boundary;
+        // provider-reported and source-less legacy totals pass through.
+        total: sum(rows.map(canonicalTotalTokens)),
       },
       cacheHitRequests: rows.filter((row) => row.cacheHitInputTokens > 0).length,
       cacheCreateRequests: rows.filter((row) => row.cacheWriteInputTokens > 0).length,
@@ -543,7 +547,7 @@ function toUsageLogRow(row: PersistedLlmCallRecord): UsageLogRow {
     cacheWriteTokens: row.cacheWriteInputTokens,
     ...(row.cacheMissInputSource ? { cacheMissInputSource: row.cacheMissInputSource } : {}),
     reasoningTokens: row.reasoningTokens,
-    totalTokens: row.totalTokens,
+    totalTokens: canonicalTotalTokens(row),
     costUsd: row.costUsd,
     latencyMs: row.latencyMs,
     status: row.status,
@@ -576,11 +580,24 @@ function usageBucket(key: string, rows: readonly PersistedLlmCallRecord[]): Usag
     cacheReadTokens: sum(rows.map((row) => row.cacheHitInputTokens)),
     cacheWriteTokens: sum(rows.map((row) => row.cacheWriteInputTokens)),
     reasoningTokens: sum(rows.map((row) => row.reasoningTokens)),
-    totalTokens: sum(rows.map((row) => row.totalTokens)),
+    totalTokens: sum(rows.map(canonicalTotalTokens)),
     costUsd: sum(rows.map((row) => row.costUsd)),
     avgLatencyMs: rows.length ? Math.round(sum(rows.map((row) => row.latencyMs)) / rows.length) : 0,
     errorRate: rows.length ? errors / rows.length : 0,
   };
+}
+
+function canonicalTotalTokens(row: PersistedLlmCallRecord): number {
+  // `reasoningTokens` is an output-token detail, not an additional token
+  // class, so a derived total is input + output — a legacy derivation that
+  // folded reasoning in on top would double-count it. Rows with explicit
+  // derived provenance are normalized here at the frozen read boundary.
+  // 'reported' rows keep the provider's fact, and source-less legacy rows are
+  // ambiguous (the stored total may be a provider fact or an old derived
+  // fallback), so both preserve the stored value rather than silently
+  // rewriting a provider-reported total.
+  if (row.totalTokensSource === 'derived') return row.inputTokens + row.outputTokens;
+  return row.totalTokens;
 }
 
 function toolBuckets(rows: readonly PersistedToolInvocationRecord[]): UsageBucket[] {
@@ -593,6 +610,7 @@ function toolBuckets(rows: readonly PersistedToolInvocationRecord[]): UsageBucke
   return [...groups.entries()]
     .map(([key, group]) => {
       const errors = group.filter((row) => row.status === 'error').length;
+      const aborted = group.filter((row) => row.status === 'aborted').length;
       const bytesIn = sum(group.map((row) => row.bytesIn));
       const bytesOut = sum(group.map((row) => row.bytesOut));
       return {
@@ -611,6 +629,11 @@ function toolBuckets(rows: readonly PersistedToolInvocationRecord[]): UsageBucke
           ? Math.round(sum(group.map((row) => row.durationMs)) / group.length)
           : 0,
         errorRate: group.length ? errors / group.length : 0,
+        // Terminal-status breakdown lets clients render the tool table from
+        // this aggregate instead of paging every tool row.
+        successCount: group.length - errors - aborted,
+        errorCount: errors,
+        abortedCount: aborted,
       };
     })
     .sort((left, right) => right.requests - left.requests);

@@ -247,8 +247,11 @@ describe('InteractiveUsageStores', () => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert(owner);
       const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      assert.equal(await stores.usageSnapshotRevision(), 0);
       await stores.telemetry.recordLlmCall(llmRecord());
+      assert.equal(await stores.usageSnapshotRevision(), 1);
       await stores.telemetry.recordToolInvocation(toolRecord());
+      assert.equal(await stores.usageSnapshotRevision(), 2);
 
       assert.equal((await stores.telemetry.logs({ range: 'all' })).total, 1);
       const tools = await stores.telemetry.toolLogs({
@@ -262,6 +265,133 @@ describe('InteractiveUsageStores', () => {
         () => stores.telemetry.logs({ range: 'all', toolName: 'Bash' }),
         /toolName is not applicable to LLM logs/,
       );
+      await stores.close();
+      await owner.close();
+    });
+  });
+
+  test('tool buckets carry the terminal-status breakdown', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      await stores.telemetry.recordToolInvocation(toolRecord());
+      await stores.telemetry.recordToolInvocation(
+        toolRecord({ id: 'tool_2', status: 'error', durationMs: 50, ts: Date.UTC(2026, 0, 2) }),
+      );
+      await stores.telemetry.recordToolInvocation(
+        toolRecord({ id: 'tool_3', status: 'aborted', durationMs: 70, ts: Date.UTC(2026, 0, 3) }),
+      );
+      await stores.telemetry.recordToolInvocation(
+        toolRecord({ id: 'tool_4', toolName: 'Read', durationMs: 10, ts: Date.UTC(2026, 0, 4) }),
+      );
+
+      const buckets = await stores.telemetry.buckets({ range: 'all' }, 'tool');
+
+      assert.equal(buckets.length, 2);
+      assert.equal(buckets[0]?.key, 'Bash');
+      assert.equal(buckets[0]?.requests, 3);
+      assert.equal(buckets[0]?.successCount, 1);
+      assert.equal(buckets[0]?.errorCount, 1);
+      assert.equal(buckets[0]?.abortedCount, 1);
+      assert.equal(buckets[0]?.avgLatencyMs, 50);
+      assert.equal(buckets[1]?.key, 'Read');
+      assert.equal(buckets[1]?.successCount, 1);
+      assert.equal(buckets[1]?.errorCount, 0);
+      assert.equal(buckets[1]?.abortedCount, 0);
+      await stores.close();
+      await owner.close();
+    });
+  });
+
+  test('usageSnapshotRevision fails fast behind a continuous write stream', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      let stop = false;
+      const writer = (async () => {
+        while (!stop) {
+          // Admit one write per macrotask turn: admit() replaces the barrier
+          // synchronously, so every barrier the reader awaits has already been
+          // superseded before its writes can complete. Failures are collected
+          // by the facade and surfaced through flush, not here.
+          void stores.telemetry.recordLlmCall(llmRecord()).catch(() => undefined);
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      })();
+      try {
+        await assert.rejects(stores.usageSnapshotRevision(), /Usage revision did not settle/);
+      } finally {
+        stop = true;
+        await writer;
+        await stores.close();
+        await owner.close();
+      }
+    });
+  });
+
+  test('preserves ambiguous legacy totals and consumes explicit derivation provenance', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      await stores.telemetry.recordLlmCall(
+        llmRecord({ inputTokens: 10, outputTokens: 20, reasoningTokens: 7, totalTokens: 37 }),
+      );
+      await stores.telemetry.recordLlmCall(
+        llmRecord({
+          id: 'usage_2',
+          inputTokens: 10,
+          outputTokens: 20,
+          reasoningTokens: 7,
+          totalTokens: 40,
+          rawUsage: { total_tokens: 40 },
+          ts: Date.UTC(2026, 0, 2),
+        }),
+      );
+      await stores.telemetry.recordLlmCall(
+        llmRecord({
+          id: 'usage_3',
+          inputTokens: 20,
+          outputTokens: 8,
+          reasoningTokens: 2,
+          totalTokens: 30,
+          totalTokensSource: 'reported',
+          ts: Date.UTC(2026, 0, 3),
+        }),
+      );
+      // Explicit derived provenance: the stored total is a computed fallback,
+      // so the read boundary normalizes it to input + output — a legacy
+      // derivation that folded reasoning in on top cannot double-count. This
+      // assertion fails if `totalTokensSource` is deleted from the write path.
+      await stores.telemetry.recordLlmCall(
+        llmRecord({
+          id: 'usage_4',
+          inputTokens: 10,
+          outputTokens: 20,
+          reasoningTokens: 7,
+          totalTokens: 37,
+          totalTokensSource: 'derived',
+          ts: Date.UTC(2026, 0, 4),
+        }),
+      );
+
+      const summary = await stores.telemetry.summary({ range: 'all' });
+      const buckets = await stores.telemetry.buckets({ range: 'all' }, 'model');
+      const logs = await stores.telemetry.logs({ range: 'all' });
+
+      assert.equal(summary.totalTokens.reasoning, 23);
+      assert.equal(summary.totalTokens.total, 137);
+      assert.equal(buckets[0]?.reasoningTokens, 23);
+      assert.equal(buckets[0]?.totalTokens, 137);
+      assert.equal(logs.rows[0]?.reasoningTokens, 7);
+      assert.equal(logs.rows[0]?.totalTokens, 30);
+      assert.equal(logs.rows[1]?.reasoningTokens, 2);
+      assert.equal(logs.rows[1]?.totalTokens, 30);
+      assert.equal(logs.rows[2]?.reasoningTokens, 7);
+      assert.equal(logs.rows[2]?.totalTokens, 40);
+      assert.equal(logs.rows[3]?.totalTokens, 37);
       await stores.close();
       await owner.close();
     });
@@ -349,7 +479,7 @@ function llmRecord(overrides: Record<string, unknown> = {}) {
   >[0];
 }
 
-function toolRecord() {
+function toolRecord(overrides: Record<string, unknown> = {}) {
   return {
     id: 'tool_1',
     toolName: 'Bash',
@@ -360,6 +490,7 @@ function toolRecord() {
     date: '2026-01-01',
     ts: Date.UTC(2026, 0, 1),
     startedAt: Date.UTC(2026, 0, 1),
+    ...overrides,
   } as Parameters<
     Awaited<
       ReturnType<typeof openInteractiveUsageStoresForWrite>

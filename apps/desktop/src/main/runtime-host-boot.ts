@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import { arch as osArch, homedir, release as osRelease } from "node:os";
 import { basename, join } from "node:path";
 import { type ConnectionEvent } from '@maka/core/connections';
-import type { UsageRange } from '@maka/core/settings';
 import { type SessionChangedEvent, type SessionChangedReason } from '@maka/core/session';
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
 import { resolveSystemUiLocale } from '@maka/core/ui-locale';
@@ -144,9 +143,6 @@ import {
 import { resolveDesktopStorageRoot } from "./storage-root-startup.js";
 import { startupStep, whileAwaitingPerson } from "./startup-step.js";
 import { registerWorkspaceSearchIpc } from "./workspace-search-ipc-main.js";
-import {
-  projectDesktopUsageStats,
-} from "../shared/desktop-session-projection.js";
 import {
   parseDesktopSessionResourceKey,
   requireDesktopTargetScope,
@@ -944,6 +940,7 @@ function registerHostClientIpc(
   registerRuntimeHostUsageIpc({
     ipcMain: scopedIpc,
     client,
+    host: scope,
     sendToRenderer,
   });
   registerRuntimeHostWorkspaceIpc({
@@ -1107,12 +1104,6 @@ function registerPersistentClientIpc(): void {
         }
       : {}),
   });
-  ipcMain.handle("settings:usageStats", async (_event, range?: UsageRange) =>
-    projectDesktopUsageStats(
-      { hostId: localRuntimeHostId },
-      await settingsStore.usageStats(range),
-    ),
-  );
   ipcMain.handle("sessions:unobserve", async (_event, observerId: unknown) => {
     if (typeof observerId !== "string" || observerId.length === 0 || observerId.length > 256) {
       throw new Error("Invalid Session observer identity");
