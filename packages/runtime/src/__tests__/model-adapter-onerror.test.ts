@@ -177,7 +177,7 @@ describe('ModelAdapter.startStream onError', () => {
     assert.deepEqual(outcome.failure, failures[0]);
   });
 
-  test('keeps a terminal provider finish ahead of an unfinalized reasoning trailer', async () => {
+  test('classifies a raw provider error finish ahead of an unfinalized reasoning trailer', async () => {
     const model = new MockLanguageModelV4({
       doStream: async () => ({
         stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
@@ -208,8 +208,14 @@ describe('ModelAdapter.startStream onError', () => {
 
     assert.equal(outcome.kind, 'terminal-failure');
     if (outcome.kind !== 'terminal-failure') return;
-    assert.equal(outcome.failure.kind, 'provider_unavailable');
-    assert.equal(outcome.failure.message, 'Provider stopped the stream with an error');
+    assert.deepEqual(outcome.failure, {
+      type: 'model_failure',
+      kind: 'rate_limit',
+      retryable: false,
+      message: 'Rate limit exceeded',
+      code: 'rate_limit_exceeded',
+    });
+    assert.equal(outcome.usage?.rawFinishReason, 'rate_limit_exceeded');
   });
 
   test('normalizes provider retry eligibility and Retry-After at the adapter boundary', async () => {

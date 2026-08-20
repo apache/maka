@@ -357,10 +357,19 @@ export class ModelAdapter {
         let failure: ModelFailure | undefined;
         let sawFinish = false;
         let streamedFinishReason: string | undefined;
+        let streamedRawFinishReason: string | undefined;
         let sawUnfinalizedPlaintextSummary = false;
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
             onStreamActivity();
+            if (
+              chunk.type === 'finish' ||
+              chunk.type === 'finish-step' ||
+              chunk.type === 'step-finish'
+            ) {
+              streamedRawFinishReason =
+                rawFinishReasonString(chunk.rawFinishReason) ?? streamedRawFinishReason;
+            }
             if (isUnfinalizedPlaintextSummaryReasoningEnd(chunk, resolvedRuntime)) {
               // The SDK emits this trailer from flush() when no
               // response.output_item.done finalized the active item. Defer the
@@ -395,12 +404,15 @@ export class ModelAdapter {
           ]);
           const finishReason =
             streamedFinishReason ?? rawFinishReasonString(sdkFinishReason) ?? 'unknown';
-          const usage = normalizeAiSdkUsage(sdkUsage, { rawFinishReason: finishReason });
+          const rawFinishReason =
+            streamedRawFinishReason ?? rawFinishReasonString(sdkFinishReason) ?? finishReason;
+          const usage = normalizeAiSdkUsage(sdkUsage, { rawFinishReason });
           let settled = settleModelStepOutcome({
             aborted: continuation.abortSignal.aborted,
             failure,
             sawFinish,
             finishReason,
+            rawFinishReason,
             usage,
             request,
           });
@@ -416,6 +428,7 @@ export class ModelAdapter {
               failure,
               sawFinish,
               finishReason,
+              rawFinishReason,
               usage,
               request,
             });
@@ -580,12 +593,13 @@ interface ModelStepSettlementEvidence {
   failure?: ModelFailure;
   sawFinish: boolean;
   finishReason: ModelFinishReason;
+  rawFinishReason?: string;
   usage?: NormalizedUsage;
   request: ModelRequestMetadata;
 }
 
 export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): ModelStepOutcome {
-  const { aborted, failure, sawFinish, finishReason, usage, request } = evidence;
+  const { aborted, failure, sawFinish, finishReason, rawFinishReason, usage, request } = evidence;
   if (aborted || failure?.kind === 'abort') {
     return failedStepOutcome(
       'aborted',
@@ -614,14 +628,13 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
     );
   }
   if (finishReason === 'content-filter' || finishReason === 'error') {
+    const terminalFailure =
+      finishReason === 'error'
+        ? providerFinishFailure(rawFinishReason)
+        : modelStepFailure('unknown', 'Provider stopped the stream on a content filter');
     return failedStepOutcome(
-      'terminal-failure',
-      modelStepFailure(
-        finishReason === 'content-filter' ? 'unknown' : 'provider_unavailable',
-        finishReason === 'content-filter'
-          ? 'Provider stopped the stream on a content filter'
-          : 'Provider stopped the stream with an error',
-      ),
+      terminalFailure.retryable ? 'retryable-failure' : 'terminal-failure',
+      terminalFailure,
       request,
       usage,
     );
@@ -637,6 +650,21 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
 
 function modelStepFailure(kind: ModelFailureKind, message: string): ModelFailure {
   return { type: 'model_failure', kind, message, retryable: false };
+}
+
+function providerFinishFailure(rawFinishReason: string | undefined): ModelFailure {
+  if (rawFinishReason && rawFinishReason !== 'error') {
+    const normalized = normalizeProviderFailure({
+      code: rawFinishReason,
+      message: 'Provider stopped the stream with an error',
+    });
+    if (normalized.kind !== 'unknown') return normalized;
+    return {
+      ...modelStepFailure('provider_unavailable', 'Provider stopped the stream with an error'),
+      ...(normalized.code ? { code: normalized.code } : {}),
+    };
+  }
+  return modelStepFailure('provider_unavailable', 'Provider stopped the stream with an error');
 }
 
 function failedStepOutcome(
@@ -1030,9 +1058,12 @@ function translateChunk(
     case 'finish-step':
     case 'step-finish': {
       const finishReason = chunkFinishReason(chunk);
+      const rawFinishReason = rawFinishReasonString(chunk.rawFinishReason);
       // The same value the turn's outcome is decided from, so the record and
       // the outcome cannot name different reasons for the same stream.
-      const usage = normalizeAiSdkUsage(chunk.usage, { rawFinishReason: finishReason });
+      const usage = normalizeAiSdkUsage(chunk.usage, {
+        rawFinishReason: rawFinishReason ?? finishReason,
+      });
       return [
         {
           kind: 'step-finish',

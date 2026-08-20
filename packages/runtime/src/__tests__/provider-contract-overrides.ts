@@ -79,6 +79,42 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
     run: runZenMuxSignedReasoningReplay,
   },
   {
+    keys: ['deepseek:reasoning-replay'],
+    title: 'DeepSeek replays plaintext reasoning content on its Responses wire',
+    run: () =>
+      runOpenAIResponsesWire({
+        providerType: 'deepseek',
+        slug: 'deepseek',
+        name: 'DeepSeek',
+        basePath: '/v1',
+        modelId: 'deepseek-v4-flash',
+        apiKey: 'deepseek-test-key',
+        plaintextReasoning: true,
+      }),
+  },
+  {
+    keys: ['xai:reasoning-replay', 'xai-oauth:reasoning-replay'],
+    title: 'xAI API-key and OAuth paths retain encrypted Responses reasoning',
+    run: async () => {
+      for (const input of [
+        { providerType: 'xai' as const, slug: 'xai', apiKey: 'xai-test-key' },
+        {
+          providerType: 'xai-oauth' as const,
+          slug: 'xai-oauth',
+          apiKey: 'xai-oauth-test-token',
+        },
+      ]) {
+        await runOpenAIResponsesWire({
+          ...input,
+          name: input.slug,
+          basePath: `/${input.slug}/v1`,
+          modelId: 'grok-4.5',
+          statelessReasoning: true,
+        });
+      }
+    },
+  },
+  {
     keys: [
       'openai-responses-compatible:exact-model-id',
       'openai-responses-compatible:tool-loop',
@@ -994,8 +1030,19 @@ async function runOpenAIResponsesWire(input: {
   modelId: string;
   apiKey: string;
   statelessReasoning?: boolean;
+  plaintextReasoning?: boolean;
 }): Promise<void> {
-  const { providerType, slug, name, basePath, modelId, apiKey, statelessReasoning } = input;
+  const {
+    providerType,
+    slug,
+    name,
+    basePath,
+    modelId,
+    apiKey,
+    statelessReasoning,
+    plaintextReasoning,
+  } = input;
+  const hasReasoning = statelessReasoning || plaintextReasoning;
   const requestBodies: Array<Record<string, unknown>> = [];
   const server = await startJsonServer(async (request, response) => {
     assert.equal(request.method, 'POST');
@@ -1019,7 +1066,16 @@ async function runOpenAIResponsesWire(input: {
                   encrypted_content: 'encrypted-relay-reasoning',
                 },
               ]
-            : []),
+            : plaintextReasoning
+              ? [
+                  {
+                    type: 'reasoning',
+                    id: 'rs_relay_tool',
+                    summary: [],
+                    content: [{ type: 'reasoning_text', text: 'Use echo.' }],
+                  },
+                ]
+              : []),
           {
             type: 'function_call',
             id: 'fc_relay_echo',
@@ -1065,7 +1121,7 @@ async function runOpenAIResponsesWire(input: {
   const result = await generateText({
     model: getAIModel({ connection, apiKey, modelId }),
     prompt: 'Call echo with hello.',
-    ...(statelessReasoning ? { providerOptions: buildProviderOptions(connection, modelId) } : {}),
+    ...(hasReasoning ? { providerOptions: buildProviderOptions(connection, modelId) } : {}),
     stopWhen: isStepCount(2),
     tools: {
       echo: tool({
@@ -1092,6 +1148,19 @@ async function runOpenAIResponsesWire(input: {
         id: 'rs_relay_tool',
         summary: [{ type: 'summary_text', text: 'Use echo.' }],
         encrypted_content: 'encrypted-relay-reasoning',
+      },
+    );
+  }
+  if (plaintextReasoning) {
+    assert.deepEqual(
+      (requestBodies[1].input as Array<Record<string, unknown>>).find(
+        ({ type }) => type === 'reasoning',
+      ),
+      {
+        type: 'reasoning',
+        id: 'rs_relay_tool',
+        summary: [],
+        content: [{ type: 'reasoning_text', text: 'Use echo.' }],
       },
     );
   }

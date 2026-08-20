@@ -402,17 +402,12 @@ function reasoningReplayCell(
       },
     };
   }
-  if (
-    providerType === 'volcengine-agent-plan' &&
-    adapter.kind === 'openai' &&
-    adapter.apiProtocol === 'openai-responses'
-  ) {
+  if (adapter.kind === 'openai' && adapter.apiProtocol === 'openai-responses') {
     return {
       state: 'override',
       dimension: 'reasoning-replay',
       overrideKey: overrideKeyFor(providerType, 'reasoning-replay'),
-      contract:
-        'Stateless OpenAI Responses reasoning items retain their encrypted content across Maka-owned durable replay',
+      contract: 'Native OpenAI Responses reasoning items retain their provider continuation state',
     };
   }
   // Native Anthropic / OpenAI / Google / Cohere SDKs own signed reasoning replay
