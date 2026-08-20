@@ -54,6 +54,8 @@ export interface SearchRequest {
   source: SearchSourceKind;
   query: string;
   limit: number;
+  /** Opaque continuation returned by a previous bounded search page. */
+  cursor?: string;
   allowedDomains?: string[];
   blockedDomains?: string[];
   includeMarkdown?: boolean;

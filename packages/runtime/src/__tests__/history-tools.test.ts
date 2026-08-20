@@ -21,6 +21,10 @@ test('history tools expose strict global-search and anchored-read schemas', () =
   const search = tools[0]!.parameters as ZodType;
   const read = tools[1]!.parameters as ZodType;
   assert.deepEqual(search.parse({ query: 'release notes' }), { query: 'release notes' });
+  assert.deepEqual(search.parse({ query: 'release notes', cursor: 'opaque-cursor' }), {
+    query: 'release notes',
+    cursor: 'opaque-cursor',
+  });
   assert.throws(() => search.parse({ query: '', session_id: 'past' }));
   assert.deepEqual(
     read.parse({
@@ -106,6 +110,33 @@ test('SearchHistory returns typed message hits from current and other sessions',
   );
   assert.match(JSON.stringify(result.rows), /\[redacted\]/u);
   assert.doesNotMatch(JSON.stringify(result.rows), /sk-ant-test-secret-token-12345/u);
+});
+
+test('SearchHistory exposes and consumes an opaque session continuation', async () => {
+  const sessions = Array.from({ length: 201 }, (_, index) =>
+    session(`session-${String(index).padStart(3, '0')}`, `Session ${index}`, 1),
+  );
+  const messages = new Map<string, StoredMessage[]>([
+    ['session-200', [user('only second page contains this needle', 'oldest-turn')]],
+  ]);
+  const tool = buildSearchHistoryTool(historyDeps(sessions, messages));
+
+  const first = (await tool.impl({ query: 'second page', limit: 5 }, context())) as {
+    next_cursor?: string;
+    rows: Array<Record<string, unknown>>;
+  };
+  assert.deepEqual(first.rows, []);
+  assert.equal(typeof first.next_cursor, 'string');
+
+  const second = (await tool.impl(
+    { query: 'second page', limit: 5, cursor: first.next_cursor },
+    context(),
+  )) as { next_cursor?: string; rows: Array<Record<string, unknown>> };
+  assert.deepEqual(
+    second.rows.map((row) => row.session_id),
+    ['session-200'],
+  );
+  assert.equal(second.next_cursor, undefined);
 });
 
 test('ReadHistory returns a bounded visible excerpt without reasoning or raw tool data', async () => {
@@ -284,6 +315,33 @@ test('ReadHistory preserves the requested anchor when earlier context fills the 
   );
   assert.match(JSON.stringify(result), /anchor must survive/u);
   assert.match(JSON.stringify(result), /"truncated":true/u);
+});
+
+test('ReadHistory spends an unanchored byte budget on the newest messages first', async () => {
+  const messages: StoredMessage[] = [
+    {
+      type: 'assistant',
+      id: 'older-large',
+      turnId: 'older-turn',
+      ts: 1,
+      text: 'x'.repeat(HISTORY_READ_MAX_BYTES * 2),
+      modelId: 'test-model',
+    },
+    user('latest question survives', 'latest-turn'),
+    assistant('latest answer survives', 'latest-turn'),
+  ];
+  const tool = buildReadHistoryTool(
+    historyDeps([session('past', 'Past', 1)], new Map([['past', messages]])),
+  );
+
+  const result = await tool.impl({ session_id: 'past' }, context());
+  const serialized = JSON.stringify(result);
+  assert.match(serialized, /latest question survives/u);
+  assert.match(serialized, /latest answer survives/u);
+  assert.match(serialized, /"truncated":true/u);
+  assert.ok(
+    serialized.indexOf('latest question survives') < serialized.indexOf('latest answer survives'),
+  );
 });
 
 test('ReadHistory rejects mismatched or hidden message anchors', async () => {

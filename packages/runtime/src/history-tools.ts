@@ -14,6 +14,7 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import {
   collectSearchableText,
   runThreadSearch,
+  THREAD_SEARCH_CURSOR_MAX_CHARS,
   type ThreadSearchDeps,
 } from '@maka/core/thread-search';
 import { z } from 'zod';
@@ -83,9 +84,18 @@ export function buildSearchHistoryTool(deps: HistoryToolDeps): MakaTool {
           .max(SEARCH_MAX_LIMIT)
           .optional()
           .describe(`Maximum matches; defaults to ${SEARCH_DEFAULT_LIMIT}.`),
+        cursor: z
+          .string()
+          .trim()
+          .min(1)
+          .max(THREAD_SEARCH_CURSOR_MAX_CHARS)
+          .optional()
+          .describe(
+            'Opaque continuation returned as next_cursor by an earlier SearchHistory page.',
+          ),
       })
       .strict(),
-    impl: async ({ query, limit }, context) => {
+    impl: async ({ query, limit, cursor }, context) => {
       if (context.abortSignal.aborted) {
         return historySearchError({
           ok: false,
@@ -100,7 +110,12 @@ export function buildSearchHistoryTool(deps: HistoryToolDeps): MakaTool {
 
       let sessions: SessionSummary[] = [];
       const result = await runThreadSearch(
-        { source: 'thread', query: normalizedQuery.value, limit: normalizedLimit.value },
+        {
+          source: 'thread',
+          query: normalizedQuery.value,
+          limit: normalizedLimit.value,
+          ...(cursor ? { cursor } : {}),
+        },
         {
           ...deps,
           listSessions: async () => {
@@ -129,6 +144,7 @@ export function buildSearchHistoryTool(deps: HistoryToolDeps): MakaTool {
         kind: 'history_search' as const,
         query: normalizedQuery.value,
         truncated: result.truncated,
+        ...(result.nextCursor ? { next_cursor: result.nextCursor } : {}),
         rows: result.results.flatMap((row) => {
           if (row.target?.kind !== 'thread') return [];
           const session = sessionById.get(row.target.sessionId);
@@ -437,6 +453,10 @@ function boundHistoryTurns(
   const anchorMessageIndex = Math.max(0, requestedAnchorIndex);
   if (anchorTurnIndex >= 0 && turns[anchorTurnIndex]!.messages.length > 0) {
     candidates.unshift({ turnIndex: anchorTurnIndex, messageIndex: anchorMessageIndex });
+  } else {
+    // An unanchored read means "show me the latest history". Spend the fixed
+    // byte budget newest-first, then restore chronological order below.
+    candidates.reverse();
   }
 
   const seen = new Set<string>();

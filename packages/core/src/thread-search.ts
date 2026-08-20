@@ -58,6 +58,9 @@ export const TOTAL_PAYLOAD_CAP_BYTES = 64 * 1024;
 /** Max sessions scanned per query (newest first by lastMessageAt). */
 export const MAX_SESSIONS_SCANNED = 200;
 
+/** Max encoded bytes accepted for an opaque thread-search continuation. */
+export const THREAD_SEARCH_CURSOR_MAX_CHARS = 2_048;
+
 /** Returned source kind — locked to `'thread'` in v1. */
 export const THREAD_SOURCE = 'thread' as const;
 
@@ -90,6 +93,15 @@ export interface ThreadSearchSuccess {
   readonly ok: true;
   readonly results: SearchResult[];
   readonly truncated: boolean;
+  /** Present only when another complete session-scan page is reachable. */
+  readonly nextCursor?: string;
+}
+
+interface ThreadSearchCursor {
+  readonly version: 1;
+  readonly query: string;
+  readonly lastMessageAt: number;
+  readonly sessionId: string;
 }
 
 /**
@@ -143,6 +155,22 @@ export async function runThreadSearch(
     return limitResult;
   }
 
+  // Matching a secret-shaped query against raw history would expose a
+  // hit/no-hit membership oracle even if the returned snippet were redacted.
+  // Reject such queries before touching the history authority, and match every
+  // searchable field only after applying the same redaction projection.
+  const redactedQuery = redactSecrets(queryResult.value);
+  if (redactedQuery !== queryResult.value) {
+    return {
+      ok: false,
+      reason: 'invalid_query',
+      message: 'Search query contains credential material and cannot be searched.',
+    };
+  }
+  const queryFolded = foldForMatch(redactedQuery);
+  const cursorResult = decodeThreadSearchCursor(record.cursor, queryFolded);
+  if (!cursorResult.ok) return cursorResult;
+
   // L4: privacy gate (PR-SEARCH-2.5 @xuan `2c55b975`). Host-owned
   // privacy authority. Two early-return paths share the same
   // `reason:'incognito_active'` to avoid an extra UI state:
@@ -170,7 +198,6 @@ export async function runThreadSearch(
     };
   }
 
-  const queryFolded = foldForMatch(queryResult.value);
   const maxResults = limitResult.value;
 
   const eligibleSessions = collapseSessionRevisions(
@@ -192,34 +219,42 @@ export async function runThreadSearch(
       return a.id.localeCompare(b.id);
     });
   if (options.abortSignal?.aborted) return abortedSearch();
-  const sessions = eligibleSessions.slice(0, MAX_SESSIONS_SCANNED);
+  const remainingSessions = cursorResult.value
+    ? eligibleSessions.filter((session) => sessionIsAfterCursor(session, cursorResult.value!))
+    : eligibleSessions;
+  const sessions = remainingSessions.slice(0, MAX_SESSIONS_SCANNED);
+  const hasMoreSessions = remainingSessions.length > sessions.length;
 
   const results: SearchResult[] = [];
   let totalBytes = 0;
-  let truncated = eligibleSessions.length > sessions.length;
+  let truncated = hasMoreSessions;
+  let scannedCompletePage = true;
 
-  for (const session of sessions) {
+  sessionScan: for (const session of sessions) {
     if (options.abortSignal?.aborted) return abortedSearch();
     if (results.length >= maxResults) {
       truncated = true;
+      scannedCompletePage = false;
       break;
     }
 
-    const titleHit = findMatch(session.name, queryFolded);
+    const searchableTitle = redactSecrets(session.name);
+    const titleHit = findMatch(searchableTitle, queryFolded);
     if (titleHit !== undefined) {
       const snippet = capCodePoints(
-        redactSecrets(buildSnippet(session.name, titleHit, SNIPPET_CONTEXT_HALF)),
+        buildSnippet(searchableTitle, titleHit, SNIPPET_CONTEXT_HALF),
         SNIPPET_MAX_CODE_POINTS,
       );
       const snippetBytes = Buffer.byteLength(snippet, 'utf8');
       if (totalBytes + snippetBytes > TOTAL_PAYLOAD_CAP_BYTES) {
         truncated = true;
+        scannedCompletePage = false;
         break;
       }
       totalBytes += snippetBytes;
       results.push({
         source: THREAD_SOURCE,
-        title: redactSecrets(session.name),
+        title: searchableTitle,
         summary: '任务标题',
         snippet,
         target: {
@@ -230,6 +265,7 @@ export async function runThreadSearch(
       });
       if (results.length >= maxResults) {
         truncated = true;
+        scannedCompletePage = false;
         break;
       }
     }
@@ -246,7 +282,8 @@ export async function runThreadSearch(
       const message = messages[messageIndex]!;
       if (results.length >= maxResults) {
         truncated = true;
-        break;
+        scannedCompletePage = false;
+        break sessionScan;
       }
 
       const turnId = (message as { turnId?: string }).turnId;
@@ -254,8 +291,9 @@ export async function runThreadSearch(
         continue;
       }
 
-      const candidate = collectSearchableText(message);
-      if (candidate === undefined) continue;
+      const rawCandidate = collectSearchableText(message);
+      if (rawCandidate === undefined) continue;
+      const candidate = redactSecrets(rawCandidate);
 
       const hit = findMatch(candidate, queryFolded);
       if (hit === undefined) continue;
@@ -269,7 +307,8 @@ export async function runThreadSearch(
       const snippetBytes = Buffer.byteLength(snippet, 'utf8');
       if (totalBytes + snippetBytes > TOTAL_PAYLOAD_CAP_BYTES) {
         truncated = true;
-        break;
+        scannedCompletePage = false;
+        break sessionScan;
       }
       totalBytes += snippetBytes;
 
@@ -297,11 +336,95 @@ export async function runThreadSearch(
     results[results.length - 1] = { ...results[results.length - 1]!, truncated: true };
   }
 
-  return { ok: true, results, truncated };
+  const lastSession = sessions.at(-1);
+  const nextCursor =
+    hasMoreSessions && scannedCompletePage && lastSession
+      ? encodeThreadSearchCursor({
+          version: 1,
+          query: queryFolded,
+          lastMessageAt: sessionSortTime(lastSession),
+          sessionId: lastSession.id,
+        })
+      : undefined;
+  return { ok: true, results, truncated, ...(nextCursor ? { nextCursor } : {}) };
 }
 
 function abortedSearch(): { ok: false; reason: 'aborted'; message: string } {
   return { ok: false, reason: 'aborted', message: 'History search was aborted.' };
+}
+
+function decodeThreadSearchCursor(
+  input: unknown,
+  query: string,
+):
+  | { readonly ok: true; readonly value: ThreadSearchCursor | undefined }
+  | { readonly ok: false; readonly reason: 'invalid_query'; readonly message: string } {
+  if (input === undefined) return { ok: true, value: undefined };
+  if (
+    typeof input !== 'string' ||
+    input.length === 0 ||
+    input.length > THREAD_SEARCH_CURSOR_MAX_CHARS ||
+    input.trim() !== input
+  ) {
+    return invalidThreadSearchCursor();
+  }
+  try {
+    const decoded = Buffer.from(input, 'base64url').toString('utf8');
+    if (Buffer.from(decoded, 'utf8').toString('base64url') !== input) {
+      return invalidThreadSearchCursor();
+    }
+    const value: unknown = JSON.parse(decoded);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return invalidThreadSearchCursor();
+    }
+    const cursor = value as Record<string, unknown>;
+    if (
+      cursor.version !== 1 ||
+      cursor.query !== query ||
+      typeof cursor.lastMessageAt !== 'number' ||
+      !Number.isFinite(cursor.lastMessageAt) ||
+      typeof cursor.sessionId !== 'string' ||
+      cursor.sessionId.length === 0 ||
+      cursor.sessionId.length > 256
+    ) {
+      return invalidThreadSearchCursor();
+    }
+    return {
+      ok: true,
+      value: {
+        version: 1,
+        query,
+        lastMessageAt: cursor.lastMessageAt,
+        sessionId: cursor.sessionId,
+      },
+    };
+  } catch {
+    return invalidThreadSearchCursor();
+  }
+}
+
+function invalidThreadSearchCursor() {
+  return {
+    ok: false as const,
+    reason: 'invalid_query' as const,
+    message: 'Search cursor is invalid or belongs to another query.',
+  };
+}
+
+function encodeThreadSearchCursor(cursor: ThreadSearchCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
+function sessionSortTime(session: SessionSummary): number {
+  return session.lastMessageAt ?? 0;
+}
+
+function sessionIsAfterCursor(session: SessionSummary, cursor: ThreadSearchCursor): boolean {
+  const timestamp = sessionSortTime(session);
+  return (
+    timestamp < cursor.lastMessageAt ||
+    (timestamp === cursor.lastMessageAt && session.id.localeCompare(cursor.sessionId) > 0)
+  );
 }
 
 /** Stable result classification shared by Desktop navigation and Agent tools. */

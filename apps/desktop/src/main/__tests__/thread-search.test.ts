@@ -132,23 +132,52 @@ describe('runThreadSearch', () => {
     assert.equal(hits.at(-1)?.truncated, true);
   });
 
-  it('reports truncation when eligible sessions exceed the scan ceiling', async () => {
+  it('continues beyond the session scan ceiling without gaps', async () => {
     const entries: Record<string, Entry> = {};
     for (let index = 0; index < 201; index += 1) {
       const id = `session-${String(index).padStart(3, '0')}`;
       entries[id] = {
-        session: session({ id, lastMessageAt: 10_000 - index }),
+        // The stable id tie-breaker is part of the cursor contract.
+        session: session({ id, lastMessageAt: 10_000 }),
         messages: index === 200 ? [userMessage('only-oldest-match')] : [],
       };
     }
-    const outcome = await runThreadSearch(
+    const first = await runThreadSearch(
       { source: 'thread', query: 'only-oldest-match', limit: 5 },
       makeDeps(entries),
     );
-    assert.equal(outcome.ok, true);
-    if (!outcome.ok) return;
-    assert.deepEqual(outcome.results, []);
-    assert.equal(outcome.truncated, true);
+    assert.equal(first.ok, true);
+    if (!first.ok) return;
+    assert.deepEqual(first.results, []);
+    assert.equal(first.truncated, true);
+    assert.equal(typeof first.nextCursor, 'string');
+
+    const second = await runThreadSearch(
+      {
+        source: 'thread',
+        query: 'only-oldest-match',
+        limit: 5,
+        cursor: first.nextCursor,
+      },
+      makeDeps(entries),
+    );
+    assert.equal(second.ok, true);
+    if (!second.ok) return;
+    assert.deepEqual(
+      second.results.map((result) =>
+        result.target?.kind === 'thread' ? result.target.sessionId : undefined,
+      ),
+      ['session-200'],
+    );
+    assert.equal(second.truncated, false);
+    assert.equal(second.nextCursor, undefined);
+
+    const mismatched = await runThreadSearch(
+      { source: 'thread', query: 'another-query', limit: 5, cursor: first.nextCursor },
+      makeDeps(entries),
+    );
+    assert.equal(mismatched.ok, false);
+    if (!mismatched.ok) assert.equal(mismatched.reason, 'invalid_query');
   });
 
   it('checks cancellation between transcript reads', async () => {
@@ -243,6 +272,57 @@ describe('runThreadSearch', () => {
     assert.equal(hits[0]?.target?.kind === 'thread' && hits[0].target.sessionId, 'real');
     assert.match(hits[0]?.snippet ?? '', /\[redacted\]/);
     assert.equal(hits[0]?.snippet?.includes('sk-ant-test-secret-token-12345'), false);
+  });
+
+  it('matches only redacted projections and rejects secret-shaped queries', async () => {
+    const entries = {
+      title: {
+        session: session({ id: 'title', name: 'password=title-secret-value' }),
+        messages: [],
+      },
+      message: {
+        session: session({ id: 'message' }),
+        messages: [userMessage('token=message-secret-value')],
+      },
+      intent: {
+        session: session({ id: 'intent' }),
+        messages: [toolCall('api_key=intent-secret-value')],
+      },
+      result: {
+        session: session({ id: 'result' }),
+        messages: [toolResult({ password: 'result-secret-value' })],
+      },
+    };
+
+    for (const query of [
+      'title-secret-value',
+      'title-wrong-value',
+      'message-secret-value',
+      'message-wrong-value',
+      'intent-secret-value',
+      'intent-wrong-value',
+      'result-secret-value',
+      'result-wrong-value',
+    ]) {
+      assert.deepEqual(
+        expectResults(
+          await runThreadSearch({ source: 'thread', query, limit: 10 }, makeDeps(entries)),
+        ),
+        [],
+      );
+    }
+
+    for (const query of [
+      'sk-ant-correctsecret12345678',
+      'sk-ant-wrongsecret123456789',
+    ]) {
+      const outcome = await runThreadSearch(
+        { source: 'thread', query, limit: 5 },
+        makeDeps(entries),
+      );
+      assert.equal(outcome.ok, false);
+      if (!outcome.ok) assert.equal(outcome.reason, 'invalid_query');
+    }
   });
 
   it('includes archived sessions only when the caller explicitly opts in', async () => {
