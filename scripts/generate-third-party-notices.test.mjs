@@ -22,9 +22,12 @@ test('keeps a version-pinned Apache override scoped to the Apache license', () =
     join(root, 'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt'),
     'utf8',
   );
+  // Match the package without its version: the override is version-pinned in
+  // the generator, but pinning the version here too would fail on every
+  // routine dependency bump rather than on the leak this test guards.
   const providerUtils = notices
     .split('\n================================================================================\n')
-    .find((section) => section.includes('Package: @ai-sdk/provider-utils@5.0.25'));
+    .find((section) => section.includes('Package: @ai-sdk/provider-utils@'));
   assert.ok(providerUtils, 'provider-utils notice section must exist');
   assert.doesNotMatch(providerUtils, /THIRD-PARTY COMPONENTS/);
 });
