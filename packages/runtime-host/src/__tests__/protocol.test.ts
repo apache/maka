@@ -49,7 +49,7 @@ describe('Runtime Host bootstrap protocol', () => {
 
   test('keeps the experimental protocol at v0 with the declared authority operations', () => {
     assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
-    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 13);
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 19);
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
       'access.credential.issue',
       'access.credential.revoke',
@@ -59,8 +59,6 @@ describe('Runtime Host bootstrap protocol', () => {
       'artifact.delete',
       'artifact.ingest',
       'artifact.query',
-      'automation.mutate',
-      'automation.query',
       'client.capability.replace',
       'client.capability.unregister',
       'configuration.credentials.export',
@@ -101,6 +99,9 @@ describe('Runtime Host bootstrap protocol', () => {
       'goal.query',
       'host.diagnostics.query',
       'host.status',
+      'host.upgrade.prepare',
+      'hosted.execution.cancel',
+      'hosted.execution.start',
       'interaction.answer',
       'interaction.query',
       'memory.mutate',
@@ -126,11 +127,12 @@ describe('Runtime Host bootstrap protocol', () => {
       'runtime.resource.query',
       'runtime.resource.start',
       'runtime.resource.stop',
+      'scheduled-task.mutate',
+      'scheduled-task.query',
       'session.branch.create',
       'session.catalog.query',
       'session.configuration.update',
       'session.create',
-      'session.cwd.relocate',
       'session.execution_boundary.query',
       'session.lifecycle.set',
       'session.metadata.update',
@@ -139,7 +141,9 @@ describe('Runtime Host bootstrap protocol', () => {
       'session.remove',
       'session.revision.abandon',
       'session.revision.create',
-      'session.transcript.query',
+      'session.transcript.overlay.release',
+      'session.transcript.page',
+      'session.workspace.relocate',
       'skill.catalog.invocable.query',
       'skill.catalog.mutate',
       'skill.catalog.preview-update',

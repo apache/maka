@@ -1,4 +1,5 @@
 import type { AppSettings, UpdateAppSettingsInput } from '@maka/core/settings';
+import type { CredentialRoutingStrategy } from '@maka/core/runtime-policy';
 import {
   PROVIDER_DEFAULTS,
   reconcileConnectionAfterEnabledModelsChange,
@@ -47,6 +48,7 @@ export interface ExportedProfileMeta {
 export interface V2ExportedConnection extends LlmConnection {
   readonly credentialProfiles?: readonly ExportedProfileMeta[];
   readonly routingMode?: 'legacy_primary' | 'balanced';
+  readonly routingStrategy?: CredentialRoutingStrategy;
 }
 
 export interface ExportedCredential {
@@ -119,8 +121,18 @@ export interface ConfigTransferDeps {
       slug: string,
       input: { profileId: string; profileRevision: number; enabled: boolean },
     ): Promise<void>;
-    setRoutingMode(slug: string, input: { mode: 'legacy_primary' | 'balanced' }): Promise<void>;
-    setCredential(slug: string, input: { profileId: string; secret: string }): Promise<void>;
+    setRoutingMode(
+      slug: string,
+      input: {
+        mode: 'legacy_primary' | 'balanced';
+        strategy?: CredentialRoutingStrategy;
+        orderedProfileIds?: readonly string[];
+      },
+    ): Promise<void>;
+    setCredential(
+      slug: string,
+      input: { profileId: string; secret: string; kind: 'api_key' | 'oauth_token' },
+    ): Promise<void>;
     test(slug: string, input: { profileId: string }): Promise<{ ok: boolean }>;
     /** Materialize the implicit primary into an explicit routing declaration. */
     materializePrimary(slug: string): Promise<void>;
@@ -537,14 +549,14 @@ async function applyV2ConfigImport(
       if (targetProfileId === 'primary') {
         await deps.credentialStore.setSecret(entry.slug, entry.kind, entry.value);
       } else {
-        // PR4 scope is API-key profiles; OAuth profile material is a later PR.
-        if (entry.kind !== 'api_key') {
+        if (entry.kind !== 'api_key' && entry.kind !== 'oauth_token') {
           skipped += 1;
           continue;
         }
         await profiles.setCredential(entry.slug, {
           profileId: targetProfileId,
           secret: entry.value,
+          kind: entry.kind,
         });
       }
       applied += 1;
@@ -626,7 +638,37 @@ async function applyV2ConfigImport(
       }
       if (connection.routingMode === 'balanced') {
         try {
-          await profiles.setRoutingMode(connection.slug, { mode: 'balanced' });
+          const freshProfiles = await profiles.list(connection.slug);
+          const orderedProfileIds: string[] = [];
+          const orderedIds = new Set<string>();
+          for (const profile of connection.credentialProfiles ?? []) {
+            const mappedId = slugMapping.get(profile.profileRef);
+            const targetId =
+              mappedId === EXPORT_PRIMARY_PROFILE_REF
+                ? freshProfiles.profiles.find((candidate) => candidate.primary)?.profileId
+                : freshProfiles.profiles.find(
+                    (candidate) => candidate.profileId === mappedId,
+                  )?.profileId;
+            if (targetId && !orderedIds.has(targetId)) {
+              orderedProfileIds.push(targetId);
+              orderedIds.add(targetId);
+            }
+          }
+          for (const profile of freshProfiles.profiles) {
+            if (!orderedIds.has(profile.profileId)) {
+              orderedProfileIds.push(profile.profileId);
+              orderedIds.add(profile.profileId);
+            }
+          }
+          await profiles.setRoutingMode(connection.slug, {
+            mode: 'balanced',
+            ...(connection.routingStrategy === undefined
+              ? {}
+              : { strategy: connection.routingStrategy }),
+            ...(orderedProfileIds.length === freshProfiles.profiles.length
+              ? { orderedProfileIds }
+              : {}),
+          });
           balancedRestored = true;
         } catch {
           // Activation gates (2+ verified profiles on one enabled model) no

@@ -22,47 +22,67 @@ export interface RouterCredentialMaterial {
 }
 
 /**
+ * One decision basis captured at the start of an acquire. The digest is held
+ * for every later eligibility/materialization step and copied onto the lease
+ * so settlement cannot drift to a newer basis created during the attempt.
+ */
+export interface RouterExecutionBasis {
+  readonly routing: ConnectionCredentialRouting | null;
+  readonly digest: string;
+}
+
+/**
  * The Host-facing world view the Router composes: routing declaration,
  * eligibility (health + verification), and per-profile credential material.
  * PR 2 keeps this as an injected seam; PR 3 wires Catalog/Vault/Health into
  * it.
  */
 export interface RouterProfileProvider {
-  /** Read the Connection's credentialRouting; null means legacy single. */
-  getRouting(connectionId: string): Promise<ConnectionCredentialRouting | null>;
   /**
-   * Filter candidate profileIds down to those eligible for `modelId`
-   * (enabled + configured + verified + health-allowed). An empty result
-   * means the pool is exhausted for this model.
+   * Read the live Connection/Profile/model execution basis once per acquire.
+   * Null means routing is not dispatchable for this model; the injected
+   * provider remains the only consumer-aware authority and gets a basis id.
+   */
+  acquireExecutionBasis(
+    connectionId: string,
+    modelId: string,
+  ): Promise<RouterExecutionBasis | null>;
+  /**
+   * Filter candidate profileIds down to those eligible for `modelId` under
+   * `digest` (enabled + configured + verified + health-allowed). The provider
+   * must not substitute a newer live digest.
    */
   getEligibleProfileIds(
     connectionId: string,
     profileIds: readonly string[],
     modelId: string,
+    digest: string,
   ): Promise<ReadonlySet<string>>;
-  /** Resolve the current credential for a Profile (null when unconfigured). */
+  /** Resolve the credential the supplied basis authorized (null when absent). */
   resolveCredential(
     connectionId: string,
     profileId: string,
+    digest: string,
+    modelId: string,
   ): Promise<RouterCredentialMaterial | null>;
   /** Persist the outcome into the routing Health authority. */
   settleHealth(lease: ProviderCredentialLease, outcome: ProviderCredentialOutcome): Promise<void>;
   /**
-   * Profiles whose circuit is open with the probe time elapsed (RFC 8.3):
-   * candidates for a half-open probe. `claimHalfOpenProbe` atomically admits
-   * exactly one probe per circuit.
+   * Profiles whose circuit is open with the probe time elapsed under `digest`.
    */
   probeEligibleProfiles(
     connectionId: string,
     profileIds: readonly string[],
     modelId: string,
+    digest: string,
   ): Promise<ReadonlyMap<string, string>>;
-  /** Atomically claim a half-open probe; false when another probe holds it. */
+  /** Atomically claim a half-open probe for the supplied basis; false otherwise. */
   claimHalfOpenProbe(
     connectionId: string,
     profileId: string,
     circuitModelId: string,
     modelId: string,
+    digest: string,
   ): Promise<boolean>;
 }
 
@@ -123,16 +143,16 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     if (context.signal.aborted) {
       throw new RouterAbortedError('Router acquire aborted before dispatch');
     }
-    const routing = await this.#provider.getRouting(context.connectionId);
-    if (!routing || routing.mode === 'legacy_primary') {
-      return this.#acquireLegacy(context, routing);
+    const basis = await this.#provider.acquireExecutionBasis(context.connectionId, context.modelId);
+    if (!basis || !basis.routing || basis.routing.mode === 'legacy_primary') {
+      return this.#acquireLegacy(context, basis);
     }
-    if (routing.mode !== 'balanced') {
-      throw new RouterConfigurationError(`Unsupported routing mode: ${routing.mode}`);
+    if (basis.routing.mode !== 'balanced') {
+      throw new RouterConfigurationError(`Unsupported routing mode: ${basis.routing.mode}`);
     }
     const { candidates, probeReason, probeCircuitModelId } = await this.#balancedCandidates(
       context,
-      routing,
+      basis,
       !this.#turnBindings.has(turnKey(context.sessionId, context.turnId)),
     );
     if (candidates.length === 0) {
@@ -141,8 +161,8 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
         {},
       );
     }
-    const binding = this.#selectBinding(context, routing, candidates, probeReason);
-    return this.#resolveBalancedBinding(context, routing, binding, candidates, probeCircuitModelId);
+    const binding = this.#selectBinding(context, basis.routing, candidates, probeReason);
+    return this.#resolveBalancedBinding(context, basis, binding, candidates, probeCircuitModelId);
   }
 
   async settle(lease: ProviderCredentialLease, outcome: ProviderCredentialOutcome): Promise<void> {
@@ -153,31 +173,22 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     this.#turnBindings.delete(turnKey(sessionId, turnId));
   }
 
-  /** LRU/TTL backstop for leaked turn bindings. */
-  reclaimStaleBindings(now: number = this.#now()): number {
-    let reclaimed = 0;
-    for (const [key, binding] of this.#turnBindings) {
-      if (binding.lastUsedAt < now) {
-        this.#turnBindings.delete(key);
-        reclaimed += 1;
-      }
-    }
-    return reclaimed;
-  }
-
   async #acquireLegacy(
     context: ProviderCredentialRouteContext,
-    routing: ConnectionCredentialRouting | null,
+    basis: RouterExecutionBasis | null,
   ): Promise<ProviderCredentialLease> {
+    const legacyRouting = basis?.routing ?? null;
     const profileId =
-      routing?.mode === 'legacy_primary'
-        ? routing.profiles.find((profile) => profile.profileId === context.connectionId)?.profileId
+      legacyRouting?.mode === 'legacy_primary'
+        ? legacyRouting.profiles.find(
+            (profile) => profile.profileId === context.connectionId,
+          )?.profileId
         : context.connectionId;
     if (!profileId) {
       throw new RouterPoolExhaustedError('primary profile is missing', {});
     }
-    if (routing?.mode === 'legacy_primary') {
-      const primary = routing.profiles.find(
+    if (legacyRouting?.mode === 'legacy_primary') {
+      const primary = legacyRouting.profiles.find(
         (profile) => profile.profileId === context.connectionId,
       );
       // A legacy_primary connection dispatches the primary identity only: an
@@ -187,7 +198,12 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
         throw new RouterPoolExhaustedError('primary profile is disabled', {});
       }
     }
-    const material = await this.#provider.resolveCredential(context.connectionId, profileId);
+    const material = await this.#provider.resolveCredential(
+      context.connectionId,
+      profileId,
+      basis?.digest ?? '',
+      context.modelId,
+    );
     if (!material) {
       throw new RouterPoolExhaustedError('primary credential is not configured', {});
     }
@@ -200,23 +216,25 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
       selectionReason: 'legacy_single',
       lastUsedAt: this.#now(),
     };
-    return this.#leaseFromMaterial(context, binding, material);
+    return this.#leaseFromMaterial(context, binding, material, undefined, basis?.digest ?? '');
   }
 
   async #balancedCandidates(
     context: ProviderCredentialRouteContext,
-    routing: ConnectionCredentialRouting,
+    basis: RouterExecutionBasis,
     newTurn: boolean,
   ): Promise<{
     readonly candidates: string[];
     readonly probeReason: boolean;
     readonly probeCircuitModelId?: string;
   }> {
+    const routing = basis.routing!;
     const allProfileIds = routing.profiles.map((profile) => profile.profileId);
     const eligible = await this.#provider.getEligibleProfileIds(
       context.connectionId,
       allProfileIds,
       context.modelId,
+      basis.digest,
     );
     const excluded = new Set(context.excludedProfileIds);
     if (context.reason === 'half_open_probe') {
@@ -240,6 +258,7 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     if (newTurn && context.reason === 'initial') {
       const recoveryProbe = await this.#claimProbeCandidate(
         context,
+        basis,
         allProfileIds.filter((profileId) => !excluded.has(profileId)),
       );
       if (recoveryProbe) return recoveryProbe;
@@ -254,6 +273,7 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     // because its circuit is open — the probe exists to test it).
     const exhaustedProbe = await this.#claimProbeCandidate(
       context,
+      basis,
       allProfileIds.filter((profileId) => !excluded.has(profileId)),
     );
     return exhaustedProbe ?? { candidates: [], probeReason: true };
@@ -261,6 +281,7 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
 
   async #claimProbeCandidate(
     context: ProviderCredentialRouteContext,
+    basis: RouterExecutionBasis,
     profileIds: readonly string[],
   ): Promise<{
     readonly candidates: string[];
@@ -271,6 +292,7 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
       context.connectionId,
       profileIds,
       context.modelId,
+      basis.digest,
     );
     for (const [profileId, circuitModelId] of probeEligible) {
       if (
@@ -279,6 +301,7 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
           profileId,
           circuitModelId,
           context.modelId,
+          basis.digest,
         )
       ) {
         return {
@@ -300,11 +323,12 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
    */
   async #resolveBalancedBinding(
     context: ProviderCredentialRouteContext,
-    routing: ConnectionCredentialRouting,
+    basis: RouterExecutionBasis,
     initialBinding: TurnBindingRecord,
     candidates: readonly string[],
     probeCircuitModelId?: string,
   ): Promise<ProviderCredentialLease> {
+    const routing = basis.routing!;
     let binding = initialBinding;
     let remaining = [...candidates];
     let lastFailure: string | undefined;
@@ -313,9 +337,17 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
         const material = await this.#provider.resolveCredential(
           context.connectionId,
           binding.profileId,
+          basis.digest,
+          context.modelId,
         );
         if (material) {
-          return this.#leaseFromMaterial(context, binding, material, probeCircuitModelId);
+          return this.#leaseFromMaterial(
+            context,
+            binding,
+            material,
+            probeCircuitModelId,
+            basis.digest,
+          );
         }
       } catch (error) {
         if (!(error instanceof RouterCredentialResolutionError)) throw error;
@@ -330,6 +362,7 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
               apiKey: '',
             },
             probeCircuitModelId,
+            basis.digest,
           ),
           {
             kind: 'failure',
@@ -512,6 +545,7 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     binding: Pick<ProviderProfileBinding, 'profileId' | 'selectionReason' | 'bindingId'>,
     material: RouterCredentialMaterial,
     probeCircuitModelId?: string,
+    executionBasisDigest?: string,
   ): ProviderCredentialLease {
     return {
       leaseId: createId('lease'),
@@ -523,6 +557,7 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
       credentialRevision: material.credentialRevision,
       selectionReason: binding.selectionReason,
       apiKey: material.apiKey,
+      ...(executionBasisDigest === undefined ? {} : { executionBasisDigest }),
       ...(material.requestHeaders ? { requestHeaders: material.requestHeaders } : {}),
       ...(material.fetch ? { fetch: material.fetch } : {}),
       ...(context.modelId ? { modelId: context.modelId } : {}),

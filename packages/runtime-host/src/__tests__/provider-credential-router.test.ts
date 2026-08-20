@@ -11,16 +11,20 @@ import {
 
 interface ProviderState {
   routing: ConnectionCredentialRouting | null;
-  eligible: (
+  digest?: string;
+  eligible?: (
     connectionId: string,
     profileIds: readonly string[],
     modelId: string,
+    digest: string,
   ) => Promise<ReadonlySet<string>>;
-  credentials: (
+  credentials?: (
     connectionId: string,
     profileId: string,
+    digest: string,
+    modelId: string,
   ) => Promise<RouterCredentialMaterial | null>;
-  settleCalls: Array<{ profileId: string; outcomeKind: string }>;
+  settleCalls?: Array<{ profileId: string; outcomeKind: string }>;
 }
 
 function routing(
@@ -42,17 +46,21 @@ function routing(
 
 function createProvider(state: Partial<ProviderState>): RouterProfileProvider {
   const settleCalls: ProviderState['settleCalls'] = [];
+  const basisDigestCalls: string[] = [];
   const probeEligible: Map<string, string> = new Map();
   const probeClaims: string[] = [];
   const provider: RouterProfileProvider = {
-    getRouting: async () => state.routing ?? null,
-    getEligibleProfileIds: async (connectionId, profileIds, modelId) =>
+    acquireExecutionBasis: async () => ({
+      routing: state.routing ?? null,
+      digest: state.digest ?? 'test-basis',
+    }),
+    getEligibleProfileIds: async (connectionId, profileIds, modelId, digest) =>
       state.eligible
-        ? state.eligible(connectionId, profileIds, modelId)
+        ? state.eligible(connectionId, profileIds, modelId, digest)
         : new Set<string>(profileIds),
-    resolveCredential: async (connectionId, profileId) =>
+    resolveCredential: async (connectionId, profileId, digest, modelId) =>
       state.credentials
-        ? state.credentials(connectionId, profileId)
+        ? state.credentials(connectionId, profileId, digest, modelId)
         : {
             credentialId: `cred-${profileId}`,
             credentialRevision: 1,
@@ -63,12 +71,13 @@ function createProvider(state: Partial<ProviderState>): RouterProfileProvider {
         profileId: lease.profileId,
         outcomeKind: outcome.kind,
       });
+      basisDigestCalls.push(lease.executionBasisDigest ?? '');
     },
-    probeEligibleProfiles: async (_c, profileIds) =>
+    probeEligibleProfiles: async (_c, profileIds, _modelId, _digest) =>
       new Map<string, string>(
         profileIds.filter((id) => probeEligible.has(id)).map((id) => [id, probeEligible.get(id)!]),
       ),
-    claimHalfOpenProbe: async (_c, profileId) => {
+    claimHalfOpenProbe: async (_c, profileId, _circuitModelId, _modelId, _digest) => {
       if (probeClaims.includes(profileId)) return false;
       probeClaims.push(profileId);
       return true;
@@ -76,6 +85,7 @@ function createProvider(state: Partial<ProviderState>): RouterProfileProvider {
   };
   return Object.assign(provider, {
     __settleCalls: settleCalls,
+    __basisDigestCalls: basisDigestCalls,
     __probeEligible: probeEligible,
     __probeClaims: probeClaims,
   });
@@ -559,6 +569,33 @@ describe('ProviderCredentialRouter', () => {
     assert.equal(calls.length, 1);
     assert.equal(calls[0]!.profileId, lease.profileId);
     assert.equal(calls[0]!.outcomeKind, 'success');
+  });
+
+  test('leases and settlement carry the exact acquired execution basis', async () => {
+    const state: ProviderState = {
+      routing: routing([{ id: 'a', weight: 1 }]),
+      digest: 'basis-one',
+      settleCalls: [],
+    };
+    const provider = createProvider(state);
+    const router = new ProviderCredentialRouter(provider);
+
+    const first = await router.acquireAttempt(context({ turnId: 'basis-turn-1' }));
+    assert.equal(first.executionBasisDigest, 'basis-one');
+    await router.settle(first, {
+      kind: 'failure',
+      failure: { kind: 'auth', retryable: false },
+      routingHint: { kind: 'auth', scope: 'credential', evidence: 'provider_adapter' },
+    });
+
+    state.digest = 'basis-two';
+    const second = await router.acquireAttempt(context({ turnId: 'basis-turn-2' }));
+    assert.equal(second.executionBasisDigest, 'basis-two');
+    await router.settle(second, { kind: 'success' });
+
+    const digestCalls = (provider as RouterProfileProvider & { __basisDigestCalls: string[] })
+      .__basisDigestCalls;
+    assert.deepEqual(digestCalls, ['basis-one', 'basis-two']);
   });
 
   test('aborted signal fails the acquire before dispatch', async () => {

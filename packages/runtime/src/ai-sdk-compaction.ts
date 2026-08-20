@@ -52,7 +52,7 @@ import {
 } from './history-compact-checkpoint.js';
 
 import { createHash } from 'node:crypto';
-import type { ModelMessage } from './model-protocol.js';
+import type { ModelFailureKind, ModelMessage } from './model-protocol.js';
 import type { ModelAdapter } from './model-adapter.js';
 import type {
   RequestProjection,
@@ -122,6 +122,10 @@ export interface ProviderImageBudget {
 export interface ProviderRequestOrigin {
   runId: string | undefined;
   imageBudget: ProviderImageBudget;
+}
+
+function isCredentialFailureKind(kind: ModelFailureKind): boolean {
+  return kind === 'auth' || kind === 'provider_billing' || kind === 'rate_limit';
 }
 
 /** Constructor dependencies for AiSdkCompaction. */
@@ -1156,13 +1160,23 @@ export class AiSdkCompaction {
               ...(tracker ? { providerRequestTracker: tracker } : {}),
             });
           } catch (error) {
-            auxiliaryOutcome = request.abortSignal?.aborted
-              ? { kind: 'aborted' }
-              : {
-                  kind: 'failure',
-                  failure: { kind: 'unknown', retryable: false },
-                  routingHint: { kind: 'unknown', scope: 'unknown', evidence: 'provider_adapter' },
-                };
+            if (request.abortSignal?.aborted) {
+              auxiliaryOutcome = { kind: 'aborted' };
+            } else {
+              const failure = this.modelAdapter.normalizeFailure(error);
+              auxiliaryOutcome =
+                failure.kind === 'abort'
+                  ? { kind: 'aborted' }
+                  : {
+                      kind: 'failure',
+                      failure: { kind: failure.kind, retryable: failure.retryable },
+                      routingHint: {
+                        kind: failure.kind,
+                        scope: isCredentialFailureKind(failure.kind) ? 'credential' : 'unknown',
+                        evidence: 'provider_adapter',
+                      },
+                    };
+            }
             throw error;
           } finally {
             await this.settleAuxiliaryLease(

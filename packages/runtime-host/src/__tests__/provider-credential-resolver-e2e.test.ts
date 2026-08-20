@@ -15,6 +15,7 @@ import { serializeOAuthSubscriptionTokens } from '@maka/runtime/subscription-cre
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { createHostCredentialResolver } from '../server/provider-credential-resolver-composition.js';
+import { RouterPoolExhaustedError } from '../server/provider-credential-router.js';
 import { HostOAuthExecutionAuthority } from '../server/oauth-execution-authority.js';
 
 type Writer = Awaited<ReturnType<typeof openInteractiveRuntimePolicyStoresForWrite>>;
@@ -178,6 +179,188 @@ describe('Provider Credential resolver end-to-end', () => {
           resolver.dispose();
         }
         void currentSecondary;
+      } finally {
+        if (!owner.closed) await owner.close();
+      }
+    });
+  });
+
+  test('an active resolver rejects stale dispatch after endpoint, header, and body changes', async () => {
+    await withInteractiveRoot(async ({ root }) => {
+      const owner = await tryAcquireInteractiveRootOwner(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
+      assert.ok(owner);
+      if (!owner) return;
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const connection = await createConnection(
+          stores,
+          0,
+          connectionDraft('e2e-basis-change', 'openai', 'E2E Basis Change'),
+        );
+        const created = await stores.operations.createCredentialProfile({
+          expected: connectionBasis(connection),
+          label: 'backup',
+          weight: 1,
+        });
+        assert.equal(created.kind, 'committed');
+        if (created.kind !== 'committed') return;
+        let snapshot = created.snapshot;
+        let routing = snapshot.connections.find(
+          (item) => item.connectionId === connection.connectionId,
+        )!.credentialRouting!;
+        const secondary = routing.profiles.find(
+          (profile) => profile.profileId !== connection.connectionId,
+        )!;
+        await stores.credentialVault.set({
+          locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' },
+          expected: null,
+          secret: 'sk-primary',
+        });
+        await stores.credentialVault.set({
+          locator: {
+            scope: 'connection_profile',
+            connectionId: connection.connectionId,
+            profileId: secondary.profileId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: 'sk-secondary',
+        });
+        const enabled = await stores.operations.setCredentialProfileEnabled({
+          expected: {
+            connectionId: connection.connectionId,
+            connectionRevision: snapshot.revision,
+            profileId: secondary.profileId,
+            profileRevision: secondary.revision,
+          },
+          enabled: true,
+        });
+        assert.equal(enabled.kind, 'committed');
+        if (enabled.kind !== 'committed') return;
+        snapshot = enabled.snapshot;
+        routing = snapshot.connections.find(
+          (item) => item.connectionId === connection.connectionId,
+        )!.credentialRouting!;
+        for (const profile of routing.profiles) {
+          const recorded = await stores.operations.recordCredentialProfileVerification({
+            connectionId: connection.connectionId,
+            connectionRevision: snapshot.revision,
+            profileId: profile.profileId,
+            profileRevision: profile.revision,
+            modelId: 'gpt-5',
+            status: 'supported',
+            source: 'tested',
+            evidence: 'positive_only',
+            checkedAt: 1000,
+          });
+          assert.equal(recorded.kind, 'committed');
+        }
+        const activated = await stores.operations.setCredentialRoutingMode({
+          expected: { connectionId: connection.connectionId, revision: snapshot.revision },
+          mode: 'balanced',
+        });
+        assert.equal(activated.kind, 'committed');
+        if (activated.kind !== 'committed') return;
+        snapshot = activated.snapshot;
+        routing = snapshot.connections.find(
+          (item) => item.connectionId === connection.connectionId,
+        )!.credentialRouting!;
+
+        const resolver = createHostCredentialResolver({
+          runtimePolicy: stores,
+          workspaceRoot: root,
+          connectionId: connection.connectionId,
+          connectionSlug: connection.slug,
+          providerType: connection.providerType,
+          endpoint: PROVIDER_DEFAULTS[connection.providerType].baseUrl,
+          apiProtocol: undefined,
+          requestHeadersCredentialId: null,
+          requestHeadersCredentialRevision: null,
+          requestBodyOverlayJson: null,
+          authKind: PROVIDER_DEFAULTS[connection.providerType].authKind,
+          routing,
+        });
+        try {
+          const oldBasisLease = await resolver.acquireAttempt(
+            balancedContext(connection, 'gpt-5', 'session-basis', 'turn-old-basis'),
+          );
+          assert.ok(oldBasisLease.executionBasisDigest);
+          await resolver.settle(oldBasisLease, { kind: 'success' });
+
+          const updated = await stores.connectionCatalog.update({
+            expected: connectionBasis(snapshot.connections[0]!),
+            changes: {
+              name: connection.name,
+              baseUrl: 'https://proxy.example/v1',
+              enabled: connection.enabled,
+              enabledModelIds: connection.enabledModelIds,
+              requestBodyOverlay: { provider: { order: ['secondary'] } },
+            },
+          });
+          assert.equal(updated.kind, 'committed');
+          if (updated.kind !== 'committed') return;
+          await stores.operations.replaceConnectionRequestHeaders(connection.connectionId, [
+            { name: 'X-Live-Basis', value: 'new' },
+          ]);
+          const updatedConnection = updated.snapshot.connections[0]!;
+
+          await assert.rejects(
+            resolver.acquireAttempt(
+              balancedContext(updatedConnection, 'gpt-5', 'session-basis', 'turn-stale-basis'),
+            ),
+            RouterPoolExhaustedError,
+          );
+
+          let rebasedSnapshot = updated.snapshot;
+          let rebasedConnection = updatedConnection;
+          for (const profile of rebasedConnection.credentialRouting!.profiles) {
+            const profileEnabled = await stores.operations.setCredentialProfileEnabled({
+              expected: {
+                connectionId: connection.connectionId,
+                connectionRevision: rebasedSnapshot.revision,
+                profileId: profile.profileId,
+                profileRevision: profile.revision,
+              },
+              enabled: true,
+            });
+            assert.equal(profileEnabled.kind, 'committed');
+            if (profileEnabled.kind !== 'committed') return;
+            rebasedSnapshot = profileEnabled.snapshot;
+            rebasedConnection = rebasedSnapshot.connections[0]!;
+          }
+          for (const profile of rebasedConnection.credentialRouting!.profiles) {
+            const recorded = await stores.operations.recordCredentialProfileVerification({
+              connectionId: connection.connectionId,
+              connectionRevision: rebasedSnapshot.revision,
+              profileId: profile.profileId,
+              profileRevision: profile.revision,
+              modelId: 'gpt-5',
+              status: 'supported',
+              source: 'tested',
+              evidence: 'positive_only',
+              checkedAt: 2000,
+            });
+            assert.equal(recorded.kind, 'committed');
+          }
+          const reactivated = await stores.operations.setCredentialRoutingMode({
+            expected: { connectionId: connection.connectionId, revision: rebasedSnapshot.revision },
+            mode: 'balanced',
+          });
+          assert.equal(reactivated.kind, 'committed');
+          if (reactivated.kind !== 'committed') return;
+          rebasedSnapshot = reactivated.snapshot;
+          rebasedConnection = rebasedSnapshot.connections[0]!;
+          const rebasedLease = await resolver.acquireAttempt(
+            balancedContext(rebasedConnection, 'gpt-5', 'session-basis', 'turn-rebased-basis'),
+          );
+          assert.notEqual(rebasedLease.executionBasisDigest, oldBasisLease.executionBasisDigest);
+          assert.ok(rebasedLease.apiKey === 'sk-primary' || rebasedLease.apiKey === 'sk-secondary');
+          await resolver.settle(rebasedLease, { kind: 'success' });
+        } finally {
+          resolver.dispose();
+        }
       } finally {
         if (!owner.closed) await owner.close();
       }

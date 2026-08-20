@@ -215,7 +215,9 @@ export class ConnectionCatalogDocumentOwner {
     const changes = decodeConnectionInput(() =>
       normalizeConnectionCatalogEntryUpdateForProvider(input.changes, previous.providerType),
     );
-    const endpointChanged = previous.baseUrl !== changes.baseUrl;
+    // A null endpoint instruction restores the Provider default.
+    const baseUrl = changes.baseUrl === null ? undefined : changes.baseUrl;
+    const endpointChanged = previous.baseUrl !== baseUrl;
     const requestBodyOverlayChanged =
       changes.requestBodyOverlay !== undefined &&
       !isDeepStrictEqual(previous.requestBodyOverlay, changes.requestBodyOverlay ?? undefined);
@@ -253,7 +255,7 @@ export class ConnectionCatalogDocumentOwner {
       slug: previous.slug,
       name: changes.name,
       providerType: previous.providerType,
-      ...(changes.baseUrl === undefined ? {} : { baseUrl: changes.baseUrl }),
+      ...(baseUrl === undefined ? {} : { baseUrl }),
       enabled: changes.enabled,
       enabledModelIds: changes.enabledModelIds,
       // Profile-table semantics, in order:

@@ -163,6 +163,83 @@ test('normalizes catalog inputs while canonical entries reject noncanonical endp
   );
 });
 
+test('catalog update baseUrl supports explicit clear-to-default', () => {
+  assert.equal(
+    normalizeConnectionCatalogEntryUpdate({
+      name: 'Custom endpoint',
+      enabled: true,
+      enabledModelIds: [],
+      baseUrl: null,
+    }).baseUrl,
+    null,
+  );
+  assert.equal(
+    normalizeConnectionCatalogEntryUpdateForProvider(
+      { name: 'Custom endpoint', enabled: true, enabledModelIds: [], baseUrl: null },
+      'openai',
+    ).baseUrl,
+    null,
+  );
+  assert.equal(
+    normalizeConnectionCatalogEntryUpdateForProvider(
+      {
+        name: 'Default OpenAI endpoint',
+        enabled: true,
+        enabledModelIds: [],
+        baseUrl: 'https://api.openai.com/v1',
+      },
+      'openai',
+    ).baseUrl,
+    undefined,
+  );
+});
+
+test('credential routing catalog decode fails closed without a primary profile', () => {
+  const connectionId = '123e4567-e89b-42d3-a456-426614174000';
+  const baseEntry = {
+    slug: 'balanced-profile',
+    name: 'Balanced profile',
+    providerType: 'anthropic',
+    enabled: true,
+    enabledModelIds: ['claude-sonnet'],
+    connectionId,
+    revision: 1,
+    models: [{ id: 'claude-sonnet', capabilities: { chat: true, vision: true } }],
+  } as any;
+  const secondary = {
+    profileId: 'secondary',
+    revision: 1,
+    label: 'secondary',
+    enabled: true,
+    weight: 1,
+  } as any;
+
+  assert.throws(
+    () =>
+      decodeCanonicalConnectionCatalogEntry({
+        ...baseEntry,
+        credentialRouting: {
+          mode: 'legacy_primary',
+          strategy: 'smooth_weighted_round_robin',
+          profiles: [secondary],
+        },
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
+  assert.throws(
+    () =>
+      decodeCanonicalConnectionCatalogEntry({
+        ...baseEntry,
+        credentialRouting: {
+          mode: 'legacy_primary',
+          strategy: 'smooth_weighted_round_robin',
+          profiles: [],
+        },
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
+});
+
 test('relay model profiles round-trip canonical entries and drafts, strictly', () => {
   const table = {
     'relay-reasoner': {

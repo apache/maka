@@ -166,41 +166,48 @@ export function v2ExportedConnections(
       connections: [connection],
     })[0];
     const routing = connection.credentialRouting;
+    const secondaryByProfileId = new Map(
+      (routing?.profiles ?? [])
+        .filter((profile) => profile.profileId !== connection.connectionId)
+        .map((profile, index) => [
+          profile.profileId,
+          {
+            profileRef: `secondary-${index}`,
+            profileId: profile.profileId,
+            label: profile.label,
+            enabled: profile.enabled,
+            weight: profile.weight,
+            primary: false,
+          } satisfies ExportedProfileMeta,
+        ] as const),
+    );
     const profiles: ExportedProfileMeta[] | undefined = routing
-      ? (() => {
-          // The primary is a real entry in the routing declaration: export its
-          // ACTUAL label/enabled/weight so an explicitly disabled primary
-          // round-trips and its metadata is not lost.
-          const primary =
-            routing.profiles.find(
-              (profile) => profile.profileId === connection.connectionId,
-            ) ?? { label: 'primary', enabled: true, weight: 1 };
-          return [
-            {
+      ? routing.profiles.map((profile) => {
+          // Preserve the routing declaration order. The primary is a real
+          // entry, so its actual label/enabled/weight round-trips.
+          if (profile.profileId === connection.connectionId) {
+            return {
               profileRef: EXPORT_PRIMARY_PROFILE_REF,
               profileId: connection.connectionId,
-              label: primary.label,
-              enabled: primary.enabled,
-              weight: primary.weight,
+              label: profile.label,
+              enabled: profile.enabled,
+              weight: profile.weight,
               primary: true,
-            },
-            ...routing.profiles
-              .filter((profile) => profile.profileId !== connection.connectionId)
-              .map((profile, index) => ({
-                profileRef: `secondary-${index}`,
-                profileId: profile.profileId,
-                label: profile.label,
-                enabled: profile.enabled,
-                weight: profile.weight,
-                primary: false,
-              })),
-          ];
-        })()
+            };
+          }
+          const secondary = secondaryByProfileId.get(profile.profileId);
+          if (!secondary) {
+            throw new Error(`Credential routing profile is missing from export: ${profile.profileId}`);
+          }
+          return secondary;
+        })
       : undefined;
     return {
       ...projected,
       ...(profiles === undefined ? {} : { credentialProfiles: profiles }),
-      ...(routing === undefined ? {} : { routingMode: routing.mode }),
+      ...(routing === undefined
+        ? {}
+        : { routingMode: routing.mode, routingStrategy: routing.strategy }),
     };
   });
 }
@@ -327,6 +334,10 @@ function profileTransferDeps(
       const updated = await deps.client.setCredentialRoutingMode({
         expected: { connectionId: connection.connectionId, revision: connection.revision },
         mode: input.mode,
+        ...(input.strategy === undefined ? {} : { strategy: input.strategy }),
+        ...(input.orderedProfileIds === undefined
+          ? {}
+          : { orderedProfileIds: input.orderedProfileIds }),
       });
       if (updated.kind !== 'committed') {
         throw new Error(`Unable to set imported routing mode: ${updated.kind}`);
@@ -338,7 +349,7 @@ function profileTransferDeps(
         scope: 'connection_profile' as const,
         connectionId: connection.connectionId,
         profileId: input.profileId,
-        kind: 'api_key' as const,
+        kind: input.kind,
       };
       const current = await deps.client.queryCredential(locator);
       const saved = await deps.client.setCredential({
@@ -401,7 +412,9 @@ export async function saveConnection(
       { connectionId: existing.connectionId, revision: existing.revision },
       {
         name: connection.name,
-        ...(connection.baseUrl ? { baseUrl: connection.baseUrl } : {}),
+        // Snapshot replacement: an absent override must clear a stored custom
+        // endpoint back to the Provider default.
+        baseUrl: connection.baseUrl ?? null,
         enabled: connection.enabled,
         enabledModelIds: [...(connection.enabledModelIds ?? [])],
         // Import-overwrite is snapshot replacement: absent in the snapshot

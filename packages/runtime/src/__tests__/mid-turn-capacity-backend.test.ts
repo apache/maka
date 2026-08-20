@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { setImmediate as flushMacrotask } from 'node:timers/promises';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
-import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
+import { APICallError, type LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { SessionHeader } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import type {
   ProviderCredentialLease,
+  ProviderCredentialOutcome,
   ProviderCredentialResolver,
 } from '@maka/core/provider-credential-routing';
 import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
@@ -98,7 +99,7 @@ interface MidTurnFixtureOptions {
   /** Give the fixture model a doGenerate so the semantic summarizer can dispatch. */
   semanticSummarizerCapable?: boolean;
   /** Throw from modelFactory when the semantic summarizer's leased key arrives. */
-  modelFactoryThrowsForLeaseKey?: boolean;
+  modelFactoryThrowsForLeaseKey?: boolean | 'rate_limit';
   /**
    * Override the semantic-compact policy (defaults to a tiny window that only
    * competes with the capacity hook). A dispatchable policy lets a test drive
@@ -382,6 +383,15 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     modelFactory: (factoryInput) => {
       fixture.modelFactoryKeys.push(factoryInput.apiKey);
       if (options.modelFactoryThrowsForLeaseKey && factoryInput.apiKey === 'sk-semantic') {
+        if (options.modelFactoryThrowsForLeaseKey === 'rate_limit') {
+          throw new APICallError({
+            message: 'rate limited',
+            url: 'https://provider.invalid/v1/messages',
+            requestBodyValues: {},
+            statusCode: 429,
+            responseHeaders: { 'retry-after-ms': '2500' },
+          });
+        }
         throw new Error('model factory exploded for leased key');
       }
       return model;
@@ -1185,6 +1195,78 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       settled.every((outcome) => outcome !== 'success'),
       'a failed materialization must never settle as success',
     );
+    assert.ok(released >= acquired, 'every acquired auxiliary lease was released');
+  });
+
+  test('semantic compaction classifies a rate-limit failure as credential-scoped', async () => {
+    const settled: ProviderCredentialOutcome[] = [];
+    let acquired = 0;
+    let released = 0;
+    const resolver: ProviderCredentialResolver = {
+      acquireAttempt: async (context) => {
+        if (context.turnId.startsWith('aux:semantic_compact')) {
+          acquired += 1;
+          return {
+            leaseId: 'semantic-lease-rate-limit',
+            bindingId: 'semantic-binding-rate-limit',
+            profileId: 'profile-semantic',
+            credentialId: 'cred-semantic',
+            credentialRevision: 1,
+            selectionReason: 'single_eligible',
+            apiKey: 'sk-semantic',
+            modelId: context.modelId,
+          };
+        }
+        return {
+          leaseId: 'main-lease-rate-limit',
+          bindingId: 'main-binding-rate-limit',
+          profileId: 'profile-main',
+          credentialId: 'cred-main',
+          credentialRevision: 1,
+          selectionReason: 'single_eligible',
+          apiKey: 'sk-main',
+          modelId: context.modelId,
+        };
+      },
+      settle: async (lease, outcome) => {
+        if (lease.profileId === 'profile-semantic') settled.push(outcome);
+      },
+      releaseTurn: () => {
+        released += 1;
+      },
+    };
+    const fixture = buildFixture({
+      semanticCompact: true,
+      historyCompactOff: true,
+      midTurnOff: true,
+      semanticSummarizerCapable: true,
+      modelFactoryThrowsForLeaseKey: 'rate_limit',
+      semanticPolicy: {
+        enabled: true,
+        mode: 'replace',
+        minStepNumber: 2,
+        maxActiveEstimatedTokens: 1,
+        minNewPrefixEstimatedTokens: 1,
+        minSafePrefixEstimatedTokens: 1,
+        maxAcceptedProjectionEstimatedTokens: 2048,
+        minSavingsTokens: 1,
+        minSavingsRatio: 0,
+      },
+      credentialRouting: { resolver, connectionId: 'connection-1', providerId: 'anthropic' },
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.ok(acquired >= 1, 'the semantic summarizer acquired a lease before dispatch');
+    assert.ok(
+      settled.some((outcome) => outcome.kind === 'failure'),
+      'the provider failure settled as a routing failure',
+    );
+    for (const outcome of settled) {
+      if (outcome.kind !== 'failure') continue;
+      assert.equal(outcome.failure.kind, 'rate_limit');
+      assert.equal(outcome.routingHint.scope, 'credential');
+      assert.equal(outcome.routingHint.kind, 'rate_limit');
+    }
     assert.ok(released >= acquired, 'every acquired auxiliary lease was released');
   });
 

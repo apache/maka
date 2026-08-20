@@ -266,8 +266,12 @@ export function decodeConnectionCredentialRouting(value: unknown): ConnectionCre
   if (item.strategy !== 'smooth_weighted_round_robin' && item.strategy !== 'priority_failover') {
     throw domainError('credential routing strategy is invalid');
   }
-  if (!Array.isArray(item.profiles) || item.profiles.length > CONNECTION_CREDENTIAL_PROFILE_MAX) {
-    throw domainError('credential routing profiles must be a bounded array');
+  if (
+    !Array.isArray(item.profiles) ||
+    item.profiles.length === 0 ||
+    item.profiles.length > CONNECTION_CREDENTIAL_PROFILE_MAX
+  ) {
+    throw domainError('credential routing profiles must be a non-empty bounded array');
   }
   const profiles = item.profiles.map((profile) => decodeConnectionCredentialProfileEntry(profile));
   const ids = profiles.map((profile) => profile.profileId);
@@ -328,7 +332,12 @@ export function normalizeConnectionCatalogEntryUpdate(
     ['name', 'baseUrl', 'enabled', 'enabledModelIds', 'relayModelProfiles', 'requestBodyOverlay'],
     ['name', 'enabled', 'enabledModelIds'],
   );
-  const baseUrl = normalizeCatalogConnectionBaseUrl(item.baseUrl);
+  const baseUrl =
+    item.baseUrl === undefined
+      ? undefined
+      : item.baseUrl === null
+        ? null
+        : normalizeCatalogConnectionBaseUrl(item.baseUrl);
   const enabledModelIds = decodeConnectionModelIds(item.enabledModelIds);
   const requestBodyOverlay =
     item.requestBodyOverlay === undefined
@@ -368,7 +377,10 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
   providerType: ProviderType,
 ): ConnectionCatalogEntryUpdate {
   const update = normalizeConnectionCatalogEntryUpdate(value);
-  const baseUrl = normalizeCatalogConnectionBaseUrl(update.baseUrl, providerType);
+  const baseUrl =
+    update.baseUrl === undefined || update.baseUrl === null
+      ? update.baseUrl
+      : normalizeCatalogConnectionBaseUrl(update.baseUrl, providerType);
   // A `null` (clear stale data) or absent (untouched) instruction is legal on
   // any provider; only a non-empty table is relay-only.
   if (update.relayModelProfiles !== undefined && update.relayModelProfiles !== null) {
@@ -578,6 +590,14 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
       ? {}
       : { credentialRouting: decodeConnectionCredentialRouting(item.credentialRouting) }),
   };
+  if (
+    decoded.credentialRouting &&
+    !decoded.credentialRouting.profiles.some(
+      (profile) => profile.profileId === decoded.connectionId,
+    )
+  ) {
+    throw domainError('credential routing must keep the primary profile identity');
+  }
   assertCanonicalValue(value, decoded, 'connection catalog entry');
   return decoded;
 }

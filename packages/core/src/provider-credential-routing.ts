@@ -101,6 +101,12 @@ export interface ProviderCredentialLease {
   readonly credentialRevision: number;
   readonly selectionReason: ProviderCredentialSelectionReason;
   readonly apiKey: string;
+  /**
+   * The live Catalog/Vault execution basis this lease was materialized from.
+   * Settlement must use this value, not a later re-read, so one physical
+   * attempt settles the same basis that made it eligible.
+   */
+  readonly executionBasisDigest?: string;
   readonly requestHeaders?: Readonly<Record<string, string>>;
   readonly fetch?: typeof fetch;
   /**

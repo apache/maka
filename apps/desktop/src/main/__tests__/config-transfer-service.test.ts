@@ -257,10 +257,13 @@ describe('config-transfer-service', () => {
         if (target) target.enabled = input.enabled;
       },
       setRoutingMode: async (_slug, input) => {
-        calls.push(`routing:${input.mode}`);
+        calls.push(`routing:${input.mode}:${input.strategy ?? ''}`);
+        if (input.orderedProfileIds) {
+          calls.push(`routeOrder:${input.orderedProfileIds.join(',')}`);
+        }
       },
       setCredential: async (_slug, input) => {
-        calls.push(`credential:${input.profileId}`);
+        calls.push(`credential:${input.profileId}:${input.kind}`);
         const target = profiles.find((p) => p.profileId === input.profileId);
         if (target) target.credentialConfigured = true;
       },
@@ -283,10 +286,11 @@ describe('config-transfer-service', () => {
               { profileRef: 'secondary-0', profileId: 'profile-77', label: 'backup', enabled: true, weight: 20, primary: false },
             ],
             routingMode: 'balanced',
+            routingStrategy: 'priority_failover',
           },
         ],
         credentials: [
-          { slug: 'imported-v2', profileRef: 'secondary-0', kind: 'api_key', value: 'sk-backup' },
+          { slug: 'imported-v2', profileRef: 'secondary-0', kind: 'oauth_token', value: 'oauth-backup' },
         ],
       },
     };
@@ -310,12 +314,13 @@ describe('config-transfer-service', () => {
       'materialize',
       'setEnabled:primary:false',
       'create:backup',
-      'credential:profile-900',
+      'credential:profile-900:oauth_token',
       'test:primary',
       'setEnabled:primary:true',
       'test:profile-900',
       'setEnabled:profile-900:true',
-      'routing:balanced',
+      'routing:balanced:priority_failover',
+      'routeOrder:primary,profile-900',
     ]);
     assert.deepEqual(result.credentials, { applied: 1, skipped: 0 });
   });

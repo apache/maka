@@ -359,7 +359,11 @@ export type ConnectionCatalogEntryDraft = ConnectionConfiguration;
 
 export interface ConnectionCatalogEntryUpdate {
   readonly name: string;
-  readonly baseUrl?: string;
+  /**
+   * Tri-state endpoint instruction. `null` clears a stored override back to
+   * the Provider default; absent leaves the stored value untouched.
+   */
+  readonly baseUrl?: string | null;
   readonly enabled: boolean;
   readonly enabledModelIds: readonly string[];
   /**

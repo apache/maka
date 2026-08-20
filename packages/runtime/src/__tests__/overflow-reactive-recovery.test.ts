@@ -614,13 +614,13 @@ describe('reactive overflow recovery in the streaming backend', () => {
         {
           phase: 'scheduled',
           attempt: 2,
-          maxAttempts: 10,
+          maxAttempts: 3,
           reason: 'rate_limit',
         },
         {
           phase: 'started',
           attempt: 2,
-          maxAttempts: 10,
+          maxAttempts: 3,
           reason: 'rate_limit',
         },
       ],
@@ -638,16 +638,16 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.deepEqual(fixture.toolExecutions, ['one.md']);
   });
 
-  test('stops after ten provider attempts with bounded exponential backoff', async () => {
+  test('stops after three provider attempts with bounded exponential backoff', async () => {
     const fixture = buildReactiveFixture({
       script: Array.from({ length: 10 }, () => 'error500'),
     });
     await runTurn(fixture);
 
-    assert.equal(fixture.model.doStreamCalls.length, 10);
+    assert.equal(fixture.model.doStreamCalls.length, 3);
     assert.equal(complete(fixture)?.stopReason, 'error');
-    assert.equal(fixture.retryDelays.length, 9);
-    const bases = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 32_000, 32_000, 32_000];
+    assert.equal(fixture.retryDelays.length, 2);
+    const bases = [1_000, 2_000];
     for (const [index, delay] of fixture.retryDelays.entries()) {
       const base = bases[index]!;
       assert.equal(delay >= base && delay <= base * 1.25, true);
@@ -798,13 +798,13 @@ describe('reactive overflow recovery in the streaming backend', () => {
     );
   });
 
-  test('surfaces the tenth transport failure without spending another sample', async () => {
+  test('surfaces the final transport failure without spending another sample', async () => {
     const fixture = buildReactiveFixture({
       script: ['tool', ...Array.from({ length: 10 }, () => 'terminated' as const)],
     });
     await runTurn(fixture);
 
-    assert.equal(fixture.model.doStreamCalls.length, 11);
+    assert.equal(fixture.model.doStreamCalls.length, 4);
     assert.equal(complete(fixture)?.stopReason, 'error');
     assert.deepEqual(fixture.toolExecutions, ['one.md']);
     assert.equal(fixture.recorded.length, 0);

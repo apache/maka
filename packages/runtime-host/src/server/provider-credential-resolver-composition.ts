@@ -1,4 +1,8 @@
-import type { ConnectionCredentialRouting, CredentialLocator } from '@maka/core/runtime-policy';
+import type {
+  ConnectionCatalogEntry,
+  ConnectionCredentialRouting,
+  CredentialLocator,
+} from '@maka/core/runtime-policy';
 import {
   effectiveBaseUrl,
   type ProviderType,
@@ -95,9 +99,12 @@ export function createHostCredentialResolver(
   });
   const router = new ProviderCredentialRouter(
     {
-      getRouting: (connectionId) => readCurrentRouting(input, connectionId),
-      getEligibleProfileIds: async (connectionId, profileIds, modelId) => {
+      acquireExecutionBasis: async (connectionId, modelId) => {
         const current = await readCurrentExecutionBasis(input, connectionId, modelId);
+        return current ?? { routing: disabledRouting(connectionId), digest: '' };
+      },
+      getEligibleProfileIds: async (connectionId, profileIds, modelId, digest) => {
+        const current = await matchingExecutionBasis(input, connectionId, modelId, digest);
         if (!current || current.routing?.mode !== 'balanced') return new Set<string>();
         return filterEligibleProfiles({
           connectionId,
@@ -106,15 +113,16 @@ export function createHostCredentialResolver(
           routing: current.routing,
           runtimePolicy: input.runtimePolicy,
           routingStore,
-          digest: current.digest,
+          digest,
           authKind: input.authKind,
         });
       },
-      resolveCredential: async (connectionId, profileId) => {
-        const currentRouting = await readCurrentRouting(input, connectionId);
+      resolveCredential: async (connectionId, profileId, digest, modelId) => {
+        const current = await matchingExecutionBasis(input, connectionId, modelId, digest);
+        if (!current) return null;
         if (
-          currentRouting &&
-          !currentRouting.profiles.some(
+          current.routing &&
+          !current.routing.profiles.some(
             (profile) => profile.profileId === profileId && profile.enabled,
           )
         ) {
@@ -128,9 +136,9 @@ export function createHostCredentialResolver(
           providerType: input.providerType,
           connectionSlug: input.connectionSlug,
           oauthCredentials: input.oauthCredentials,
-          connection: input.connection,
+          connection: current.connection,
           sessionId: input.sessionId,
-          modelId: input.modelId,
+          modelId,
           createFetchTransport: input.createFetchTransport,
           getModelFetchTransport,
           proxy: input.proxy,
@@ -140,13 +148,13 @@ export function createHostCredentialResolver(
         settleRoutingOutcome({
           connectionId: input.connectionId,
           routingStore,
-          digest,
+          digest: lease.executionBasisDigest ?? digest,
           lease,
           outcome,
           now: input.now ?? Date.now,
         }),
-      probeEligibleProfiles: async (connectionId, profileIds, modelId) => {
-        const current = await readCurrentExecutionBasis(input, connectionId, modelId);
+      probeEligibleProfiles: async (connectionId, profileIds, modelId, digest) => {
+        const current = await matchingExecutionBasis(input, connectionId, modelId, digest);
         if (!current || current.routing?.mode !== 'balanced') return new Map<string, string>();
         return probeEligibleProfiles({
           connectionId,
@@ -155,13 +163,19 @@ export function createHostCredentialResolver(
           routing: current.routing,
           runtimePolicy: input.runtimePolicy,
           routingStore,
-          digest: current.digest,
+          digest,
           authKind: input.authKind,
           now: input.now ?? Date.now,
         });
       },
-      claimHalfOpenProbe: async (connectionId, profileId, circuitModelId, modelId) => {
-        const current = await readCurrentExecutionBasis(input, connectionId, modelId);
+      claimHalfOpenProbe: async (
+        connectionId,
+        profileId,
+        circuitModelId,
+        modelId,
+        digest,
+      ) => {
+        const current = await matchingExecutionBasis(input, connectionId, modelId, digest);
         if (
           !current ||
           current.routing?.mode !== 'balanced' ||
@@ -177,7 +191,7 @@ export function createHostCredentialResolver(
           circuitModelId,
           runtimePolicy: input.runtimePolicy,
           routingStore,
-          digest: current.digest,
+          digest,
           authKind: input.authKind,
           now: input.now ?? Date.now,
         });
@@ -197,20 +211,23 @@ export function createHostCredentialResolver(
 }
 
 /**
- * A resolver can outlive an idle backend invalidation while a turn is active.
- * Always read the Catalog immediately before routing so profile disable/removal
- * and routing-mode changes take effect on the next physical attempt.
+ * Re-read immediately before an eligibility/materialization step, and accept
+ * it only when the live execution basis still matches the one the Router
+ * captured for this physical attempt. A newer basis makes the old step fail
+ * closed rather than dispatch material authorized under different metadata.
  */
-async function readCurrentRouting(
+async function matchingExecutionBasis(
   input: CreateHostCredentialResolverInput,
   connectionId: string,
-): Promise<ConnectionCredentialRouting | null> {
-  const snapshot = await input.runtimePolicy.connectionCatalog.getSnapshot();
-  const connection = snapshot.connections.find(
-    (candidate) => candidate.connectionId === connectionId,
-  );
-  if (!connection || !connection.enabled) return disabledRouting(connectionId);
-  return connection.credentialRouting ?? null;
+  modelId: string,
+  digest: string,
+): Promise<{
+  readonly routing: ConnectionCredentialRouting | null;
+  readonly digest: string;
+  readonly connection: RuntimeExecutionConnection;
+} | null> {
+  const current = await readCurrentExecutionBasis(input, connectionId, modelId);
+  return current?.digest === digest ? current : null;
 }
 
 /**
@@ -225,6 +242,7 @@ async function readCurrentExecutionBasis(
 ): Promise<{
   readonly routing: ConnectionCredentialRouting | null;
   readonly digest: string;
+  readonly connection: RuntimeExecutionConnection;
 } | null> {
   const snapshot = await input.runtimePolicy.connectionCatalog.getSnapshot();
   const connection = snapshot.connections.find(
@@ -246,6 +264,7 @@ async function readCurrentExecutionBasis(
   const model = connection.models.find((candidate) => candidate.id === modelId);
   return {
     routing: connection.credentialRouting ?? null,
+    connection: runtimeExecutionConnection(input, connection),
     digest: executionBasisDigest({
       providerType: connection.providerType,
       endpoint: effectiveBaseUrl(connection),
@@ -256,6 +275,25 @@ async function readCurrentExecutionBasis(
         ? JSON.stringify(connection.requestBodyOverlay)
         : null,
     }),
+  };
+}
+
+function runtimeExecutionConnection(
+  input: CreateHostCredentialResolverInput,
+  connection: ConnectionCatalogEntry,
+): RuntimeExecutionConnection {
+  return {
+    slug: connection.slug,
+    providerType: connection.providerType,
+    ...(connection.baseUrl === undefined ? {} : { baseUrl: connection.baseUrl }),
+    defaultModel: input.connection?.defaultModel ?? connection.models[0]?.id ?? '',
+    ...(connection.models.length > 0 ? { models: [...connection.models] } : {}),
+    ...(connection.relayModelProfiles === undefined
+      ? {}
+      : { relayModelProfiles: connection.relayModelProfiles }),
+    ...(connection.requestBodyOverlay === undefined
+      ? {}
+      : { requestBodyOverlay: connection.requestBodyOverlay }),
   };
 }
 

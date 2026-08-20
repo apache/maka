@@ -58,10 +58,12 @@ test('imports a local GitHub credential through the shared Host account path', a
         connectionId: current.connectionId,
         revision: current.revision,
       });
-      const { relayModelProfiles, requestBodyOverlay, ...restChanges } = changes;
+      const { relayModelProfiles, requestBodyOverlay, baseUrl, ...restChanges } = changes;
       const updated: ConnectionCatalogEntry = {
         ...current,
         ...restChanges,
+        // An explicit `baseUrl: null` clears back to the Provider default.
+        ...(baseUrl == null ? {} : { baseUrl }),
         ...(relayModelProfiles === null ? {} : { relayModelProfiles }),
         ...(requestBodyOverlay === null ? {} : { requestBodyOverlay }),
         revision: current.revision + 1,
