@@ -32,7 +32,7 @@ import { generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redact
 import { isBotOnboardingBrand, isBotOnboardingProvider } from '@maka/core/bot-onboarding';
 import type { BotRegistry } from '@maka/runtime/bots';
 import { proxiedFetch } from '@maka/runtime/bots';
-import type { SettingsStore } from '@maka/storage';
+import type { SettingsStore } from '@maka/storage/settings-store';
 import { createQQBindTask, pollQQBindTask } from './qq-bot-scan-login.js';
 import { fetchWeChatQrcode, pollWeChatQrcodeStatus } from './wechat-scan-login.js';
 

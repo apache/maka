@@ -23,12 +23,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
-import {
-  createSqliteAgentRunStore,
-  createSqliteRuntimeStore,
-  createSessionStore,
-} from '@maka/storage';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
+import { createSessionStore } from '@maka/storage/session-store';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
 import { buildPriorRuntimeContext } from '../prior-run-context.js';
 import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';

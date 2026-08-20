@@ -21,7 +21,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { AppSettings } from '@maka/core/settings';
 import type { LlmConnection } from '@maka/core/llm-connections';
-import type { CredentialKind } from '@maka/storage';
+import type { CredentialKind } from '@maka/storage/credential-store';
 import { applyConfigImport, type ConfigTransferDeps } from '../config-transfer-service.js';
 
 function conn(slug: string): LlmConnection {

@@ -20,11 +20,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  decodeSessionBundleManifestV1,
-  encodeSessionBundleManifestV1,
   SessionBundleFileError,
   type SessionBundleManifestV1,
-} from '../index.js';
+} from '../session-bundle-contract.js';
+import {
+  decodeSessionBundleManifestV1,
+  encodeSessionBundleManifestV1,
+} from '../session-bundle-manifest.js';
 
 const manifest: SessionBundleManifestV1 = {
   schemaVersion: 1,

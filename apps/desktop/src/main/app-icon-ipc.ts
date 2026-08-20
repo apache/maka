@@ -30,7 +30,7 @@ import {
   type AppIconChoice,
   type AppSettings,
 } from "@maka/core/settings";
-import type { SettingsStore } from "@maka/storage";
+import type { SettingsStore } from "@maka/storage/settings-store";
 import type { AppIconPreview } from "./app-icon-surface.js";
 import {
   CustomAppIconError,

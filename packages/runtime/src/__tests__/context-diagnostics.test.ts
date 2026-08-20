@@ -28,7 +28,7 @@ import type {
   AgentRunStore,
   EmittedAgentRunEvent,
 } from '@maka/core/agent-run';
-import { createSqliteAgentRunStore } from '@maka/storage';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { readLatestContextDiagnostics } from '../context-diagnostics.js';
 
 test('serves the sealed snapshot without reading a single run', async () => {

@@ -25,7 +25,7 @@ import { describe, it } from 'node:test';
 import { z } from 'zod';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { DeepResearchRun } from '@maka/core/deep-research-run';
-import { createSqliteDeepResearchStore } from '@maka/storage';
+import { createSqliteDeepResearchStore } from '@maka/storage/deep-research-store';
 import {
   DEEP_RESEARCH_CHECKPOINT_TOOL_NAME,
   DEEP_RESEARCH_COMPLETE_TOOL_NAME,

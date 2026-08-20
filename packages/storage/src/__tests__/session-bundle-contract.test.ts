@@ -27,7 +27,7 @@ import {
   SESSION_BUNDLE_LIMIT_NAMES,
   SessionBundleFileError,
   type SessionBundleLimits,
-} from '../index.js';
+} from '../session-bundle-contract.js';
 
 const limits: SessionBundleLimits = {
   maxCompressedBytes: 0,

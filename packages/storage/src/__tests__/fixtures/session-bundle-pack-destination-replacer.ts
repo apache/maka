@@ -41,7 +41,8 @@ fs.promises.link = async (existingPath, newPath) => {
 };
 syncBuiltinESMExports();
 
-const { createSessionBundleFileService, SessionBundleFileError } = await import('../../index.js');
+const { createSessionBundleFileService } = await import('../../session-bundle-file-service.js');
+const { SessionBundleFileError } = await import('../../session-bundle-contract.js');
 try {
   await createSessionBundleFileService().pack({
     snapshot: {

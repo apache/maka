@@ -33,7 +33,7 @@ import {
   type OAuthSubscriptionTokens,
 } from '@maka/runtime/subscription-credentials';
 import { fetchGitHubCopilotModels } from '@maka/runtime/model-fetcher';
-import type { CredentialStore } from '@maka/storage';
+import type { CredentialStore } from '@maka/storage/credential-store';
 
 const GITHUB_COPILOT_CONNECTION_SLUG = 'github-copilot';
 const execFileAsync = promisify(execFile);

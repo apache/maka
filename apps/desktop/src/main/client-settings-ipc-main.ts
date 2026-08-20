@@ -22,7 +22,7 @@ import type {
   UpdateAppSettingsInput,
   UpdateAppSettingsResult,
 } from "@maka/core/settings";
-import type { SettingsStore } from "@maka/storage";
+import type { SettingsStore } from "@maka/storage/settings-store";
 import type { IpcMain } from "electron";
 import {
   clientOwnedSettingsPatch,

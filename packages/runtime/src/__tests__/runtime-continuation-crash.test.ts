@@ -29,8 +29,9 @@ import { describe, test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { createSessionStore, createSqliteRuntimeStore } from '@maka/storage';
-import { createSqliteAgentRunStore } from '@maka/storage';
+import { createSessionStore } from '@maka/storage/session-store';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 
 import { type RuntimeContinuationFailpoint } from '../agent-run.js';
 import { BackendRegistry, SessionManager } from '../session-manager.js';

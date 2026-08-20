@@ -54,11 +54,9 @@ import {
 } from "@maka/runtime-host/client";
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { createCredentialMcpOAuthStorage, McpClientManager } from "@maka/mcp";
-import {
-  createSettingsStore,
-  createMcpConfigStore,
-  createFileCredentialStore,
-} from "@maka/storage";
+import { createFileCredentialStore } from "@maka/storage/credential-store";
+import { createMcpConfigStore } from "@maka/storage/mcp-config-store";
+import { createSettingsStore } from "@maka/storage/settings-store";
 import { resolveStorageRoot } from "@maka/storage/root-authority";
 
 import { createMcpOAuthController } from "./mcp-oauth-controller.js";
