@@ -81,6 +81,12 @@ jobs:
         working-directory: candidate-source
         run: npm audit --omit=dev --audit-level=moderate
 
+      - name: Verify source attribution inventories
+        working-directory: candidate-source
+        run: |
+          npm run check:third-party-notices
+          npm run check:cli-third-party-notices
+
       - name: Lint and format-check the extracted source
         working-directory: candidate-source
         run: |

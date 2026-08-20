@@ -105,15 +105,16 @@ the exact full fingerprint. Comparing the canonical payload avoids treating a
 platform's gzip encoding as source identity. A workflow-produced digest alone
 is not an independent trust check and is insufficient for signing.
 
-Export the matching public key for the podling `KEYS` file when needed:
+Start from a reviewed copy of the current podling `KEYS` file, then append the
+matching public key when needed:
 
 ```sh
-gpg --armor --export <full-pgp-fingerprint> > KEYS
+(gpg --list-sigs <full-pgp-fingerprint> && gpg --armor --export <full-pgp-fingerprint>) >> KEYS
 gpg --show-keys --with-fingerprint KEYS
 ```
 
-When preserving existing project keys, merge reviewed public-key blocks rather
-than replacing the published `KEYS` file.
+Review the combined file before publishing it. Retain every key that has been
+used to sign an Apache Maka release.
 
 Verify the complete signed candidate in a temporary keyring populated only
 from the reviewed `KEYS` file:
