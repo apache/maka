@@ -91,7 +91,6 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   function completePresentation(terminal: ActiveTerminal): void {
     if (active !== terminal || terminal.phase !== 'connecting') return;
     terminal.phase = 'connected';
-    active = undefined;
     presentation = undefined;
     revision += 1;
     if (terminal.revealTimer !== undefined) {
@@ -270,7 +269,10 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       if (tunnelInput.interaction !== 'terminal') return openSshTunnel(tunnelInput);
       const tunnel = await openSshTunnel(tunnelInput, { spawnProcess });
       const terminal = active;
-      if (terminal) completePresentation(terminal);
+      if (terminal) {
+        completePresentation(terminal);
+        if (active === terminal) active = undefined;
+      }
       return tunnel;
     },
     runSetup: async (setupInput, onProgress, onComplete) => {

@@ -113,6 +113,34 @@ test('keeps setup credentials out of the interactive terminal projection', async
   await harness.terminal.close();
 });
 
+test('keeps a completed setup process owned until it exits', async () => {
+  const harness = createHarness('pending');
+  const setup = harness.terminal.runSetup(
+    {
+      destination: 'operator@example.com',
+      setupPackage: { kind: 'npm', specifier: 'maka-agent@1.2.3' },
+      principalId: 'desktop:stable-client',
+    },
+    () => undefined,
+  );
+  await waitFor(() => harness.pty.hasDataListener());
+  harness.pty.emitData(encodeRuntimeHostSetupFrame({
+    schemaVersion: 1,
+    sequence: 0,
+    kind: 'complete',
+    version: '1.2.3',
+    rootId: 'a'.repeat(64),
+    endpoint: 'ws://127.0.0.1:7443/runtime-host',
+    credentialId: 'credential-1',
+    credential: 'secret-access-token',
+  }));
+
+  await harness.terminal.close();
+
+  assert.deepEqual(harness.pty.killSignals, ['SIGTERM']);
+  assert.equal((await setup).credentialId, 'credential-1');
+});
+
 test('force-stops a cancelled setup when SSH ignores graceful termination', async () => {
   const harness = createHarness('pending');
   harness.pty.deferKill = true;
