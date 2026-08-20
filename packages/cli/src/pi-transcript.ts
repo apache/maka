@@ -1776,7 +1776,9 @@ function transcriptErrorMessage(entry: MakaPiNoticeEntry, locale: UiLocale): str
           fallback: 'The task run failed. Try again later.',
         };
   const reason = entry.runtimeError?.reason;
-  if (reason && reason in copy && reason !== 'fallback') {
+  // `in` reaches Object.prototype: a provider-influenced reason like
+  // 'constructor' would interpolate a function into the notice (#2521).
+  if (reason && Object.hasOwn(copy, reason) && reason !== 'fallback') {
     return copy[reason as Exclude<keyof typeof copy, 'fallback'>];
   }
   if (entry.text.length > 0) return entry.text;
