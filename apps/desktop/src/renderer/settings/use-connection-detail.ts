@@ -407,6 +407,17 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     });
   }
 
+  function setDraftServiceTier(modelId: string, serviceTier: 'fast' | undefined): void {
+    updateRelayProfileDraft(modelId, (current) => {
+      if (serviceTier === undefined) {
+        if (!current) return current;
+        const { serviceTier: _dropped, ...rest } = current;
+        return Object.keys(rest).length > 0 ? rest : undefined;
+      }
+      return { ...(current ?? {}), serviceTier };
+    });
+  }
+
   // Compare against what persistence would store: drafts pruned to the
   // current selection and order-normalized by the same sanitizer the write
   // path applies, so a reordered-but-equal draft doesn't keep 保存 lit.
@@ -641,6 +652,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     setDraftThinkingLevels,
     setDraftVision,
     setDraftContextWindow,
+    setDraftServiceTier,
     saveRelayProfiles,
     runTest,
     refreshModels,

@@ -222,6 +222,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
       thinkingLevels: ['minimal', 'low'],
       vision: true,
       contextWindow: 128_000,
+      serviceTier: 'fast',
     },
   };
   const draft = normalizeCreateCatalogConnectionInput({

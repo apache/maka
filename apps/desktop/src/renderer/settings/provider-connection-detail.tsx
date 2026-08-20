@@ -15,6 +15,7 @@ import { isRelayProviderType, PROVIDER_DEFAULTS } from '@maka/core/llm-connectio
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   THINKING_LEVELS,
+  supportsRelayFastServiceTier,
   type RelayModelProfile,
   type ThinkingLevel,
 } from '@maka/core/model-thinking';
@@ -152,6 +153,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     setDraftThinkingLevels,
     setDraftVision,
     setDraftContextWindow,
+    setDraftServiceTier,
     saveRelayProfiles,
     runTest,
     refreshModels,
@@ -526,6 +528,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                       ? 'disabled'
                       : 'auto';
                 const draftLevels = declared?.thinkingLevels ?? [];
+                const serviceTierValue = declared?.serviceTier ?? 'auto';
+                const showsFastMode = supportsRelayFastServiceTier(
+                  connection.providerType,
+                  modelId,
+                );
                 // The menu offers the five declarable levels PLUS anything
                 // the stored table already claims — a level saved while it
                 // was still declarable (or hand-written into the document)
@@ -617,6 +624,25 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                         }
                       />
                     </CapabilityRow>
+                    {showsFastMode && (
+                      <CapabilityRow label={copy.fastMode} description={copy.fastModeHelp}>
+                        <Selector
+                          label={`${copy.fastMode} — ${modelId}`}
+                          isLabelHidden
+                          size="sm"
+                          width={132}
+                          options={[
+                            { value: 'auto', label: copy.fastAuto },
+                            { value: 'fast', label: copy.fastEnabled },
+                          ]}
+                          value={serviceTierValue}
+                          onChange={(value) =>
+                            setDraftServiceTier(modelId, value === 'fast' ? 'fast' : undefined)
+                          }
+                          isDisabled={allActionsBusy}
+                        />
+                      </CapabilityRow>
+                    )}
                   </VStack>
                 );
               })}

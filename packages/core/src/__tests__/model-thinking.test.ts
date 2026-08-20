@@ -9,6 +9,7 @@ import {
   thinkingOptionsForModel,
   thinkingVariantsForConnection,
   thinkingVariantsForModel,
+  supportsRelayFastServiceTier,
 } from '../model-thinking.js';
 import { isRelayProviderType } from '../llm-connections.js';
 
@@ -26,6 +27,30 @@ test('declarable relay levels are every intensity tier but off', () => {
   assert.deepEqual([...thinkingVariantsForConnection(declaredOff, 'm')], ['low']);
 });
 
+test('relay profiles preserve the fast service tier declaration', () => {
+  assert.deepEqual(normalizeRelayModelProfiles({ m: { serviceTier: 'fast' } }), {
+    m: { serviceTier: 'fast' },
+  });
+  assert.deepEqual(normalizeRelayModelProfiles({ m: { serviceTier: 'unknown' } }), undefined);
+});
+
+test('Fast visibility mirrors the pinned OpenAI SDK priority-processing families', () => {
+  const cases = [
+    ['gpt-4o', true],
+    ['gpt-4.1', true],
+    ['gpt-5', true],
+    ['gpt-5.1', true],
+    ['gpt-5-nano', false],
+    ['gpt-5-chat-latest', false],
+    ['o3-mini', true],
+    ['o4-mini', true],
+    ['plain-relay-id', false],
+  ] as const;
+  for (const [modelId, expected] of cases) {
+    assert.equal(supportsRelayFastServiceTier('openai-responses-compatible', modelId), expected);
+    assert.equal(supportsRelayFastServiceTier('openai-compatible', modelId), false);
+  }
+});
 
 test('relayModelProfile returns undefined without a usable declaration', () => {
   const connection = {

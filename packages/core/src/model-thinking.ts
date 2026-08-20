@@ -123,6 +123,8 @@ export interface RelayModelProfile {
   readonly thinkingLevels?: readonly ThinkingLevel[];
   readonly vision?: boolean;
   readonly contextWindow?: number;
+  /** Use OpenAI's low-latency service tier for this relay model. */
+  readonly serviceTier?: 'fast';
 }
 
 export type RelayModelProfiles = Readonly<Record<string, RelayModelProfile>>;
@@ -137,6 +139,7 @@ function normalizeRelayModelProfile(entry: unknown): RelayModelProfile | undefin
     thinkingLevels?: readonly ThinkingLevel[];
     vision?: boolean;
     contextWindow?: number;
+    serviceTier?: 'fast';
   } = {};
   if (Array.isArray(entry.thinkingLevels)) {
     // Declared levels are filtered to the declarable vocabulary, not merely
@@ -168,6 +171,7 @@ function normalizeRelayModelProfile(entry: unknown): RelayModelProfile | undefin
   ) {
     declared.contextWindow = entry.contextWindow;
   }
+  if (entry.serviceTier === 'fast') declared.serviceTier = 'fast';
   return Object.keys(declared).length > 0 ? (declared as RelayModelProfile) : undefined;
 }
 
@@ -235,6 +239,25 @@ export function relayModelProfile(
 ): RelayModelProfile | undefined {
   if (!isRelayProviderType(connection.providerType)) return undefined;
   return normalizeRelayModelProfile(connection.relayModelProfiles?.[modelId]);
+}
+
+/**
+ * Mirrors @ai-sdk/openai@4.0.42 priority-processing detection. The UI and
+ * runtime share this gate so a saved Fast declaration always reaches the wire.
+ */
+export function supportsRelayFastServiceTier(providerType: ProviderType, modelId: string): boolean {
+  if (providerType !== 'openai-responses-compatible') return false;
+  const oSeriesVersion = /^o(\d+)(?:-|$)/.exec(modelId)?.[1];
+  const gptMatch = /^gpt-(\d+)(?:\.(\d+))?(?:-(.+))?$/.exec(modelId);
+  const gptMajor = gptMatch?.[1] === undefined ? undefined : Number(gptMatch[1]);
+  const gptVariant = gptMatch?.[3];
+  const isGptNanoModel = gptVariant?.startsWith('nano') ?? false;
+  const isGptChatModel = gptVariant?.startsWith('chat') ?? false;
+  return (
+    modelId.startsWith('gpt-4') ||
+    (gptMajor !== undefined && gptMajor >= 5 && !isGptNanoModel && !isGptChatModel) ||
+    (oSeriesVersion !== undefined && Number(oSeriesVersion) >= 3)
+  );
 }
 
 /**
