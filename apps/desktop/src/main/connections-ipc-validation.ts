@@ -1,6 +1,7 @@
 import {
   normalizeConnectionBaseUrl,
   type CreateConnectionInput,
+  type PreviewConnectionModelsInput,
   type UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import { normalizeOptionalRequestBodyOverlay, normalizeRequestHeaders } from '@maka/core/runtime-policy';
@@ -72,6 +73,38 @@ export function normalizeCreateConnectionInputForIpc(value: unknown): CreateConn
     ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
   } as CreateConnectionInput;
   return normalizeConnectionBaseUrlForIpc(normalized);
+}
+
+export function normalizePreviewConnectionModelsInputForIpc(
+  value: unknown,
+): PreviewConnectionModelsInput {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('Invalid Connection model preview input');
+  }
+  const input = value as Partial<PreviewConnectionModelsInput>;
+  if (typeof input.providerType !== 'string' || !(input.providerType in PROVIDER_DEFAULTS)) {
+    throw new Error('Invalid Connection model preview provider');
+  }
+  const apiKey = input.apiKey === undefined
+    ? undefined
+    : normalizeConnectionApiKeyForIpc(input.apiKey, 'apiKey');
+  const requestHeaders = input.requestHeaders === undefined
+    ? undefined
+    : normalizeRequestHeaders(input.requestHeaders);
+  let baseUrl: string | undefined;
+  if (input.baseUrl !== undefined) {
+    const normalized = normalizeConnectionBaseUrl(input.baseUrl);
+    if (!normalized.ok || normalized.value.length === 0) {
+      throw new Error(normalized.ok ? 'baseUrl is required' : normalized.error);
+    }
+    baseUrl = normalized.value;
+  }
+  return {
+    providerType: input.providerType,
+    ...(baseUrl === undefined ? {} : { baseUrl }),
+    ...(apiKey === undefined ? {} : { apiKey }),
+    ...(requestHeaders === undefined ? {} : { requestHeaders }),
+  };
 }
 
 export function normalizeConnectionPatchSecretsForIpc(value: unknown): UpdateConnectionInput {

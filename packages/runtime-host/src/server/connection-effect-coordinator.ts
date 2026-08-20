@@ -195,7 +195,9 @@ export class HostConnectionEffectCoordinator {
     }
     const slug = deriveConnectionSlug(input.providerType);
     const catalog = await this.#stores.connectionCatalog.getSnapshot();
-    const candidate = catalog.connections.find((connection) => connection.slug === slug);
+    const candidate = input.baseUrl
+      ? undefined
+      : catalog.connections.find((connection) => connection.slug === slug);
     if (candidate && candidate.providerType !== input.providerType) {
       return { kind: 'rejected', reason: 'slug_conflict' };
     }
@@ -217,11 +219,11 @@ export class HostConnectionEffectCoordinator {
       toRuntimePolicyProxy(proxy.networkProxy, proxy.secretMaterial.networkProxy?.secret),
     );
     try {
-      const effect = await this.#runModelDiscovery(
-        candidate ?? transientConnection(input.providerType),
-        secret,
-        { fetch: transport.fetch },
-      );
+      const connection = candidate ?? transientConnection(input.providerType, input.baseUrl);
+      const fetch = input.requestHeaders
+        ? createRequestCustomizationFetch(transport.fetch, { headers: input.requestHeaders })
+        : transport.fetch;
+      const effect = await this.#runModelDiscovery(connection, secret, { fetch });
       if (!effect.ok || effect.models.length === 0) {
         return {
           kind: 'failed',
@@ -535,6 +537,7 @@ function operationFailure<
 
 function transientConnection(
   providerType: ConnectionOnboardingVerifyInput['providerType'],
+  baseUrl?: string,
 ): ConnectionCatalogEntry {
   const definition = PROVIDER_DEFAULTS[providerType];
   const models = definition.fallbackModels.map((id) => ({ id }));
@@ -544,7 +547,7 @@ function transientConnection(
     slug: deriveConnectionSlug(providerType),
     name: definition.label,
     providerType,
-    ...(definition.baseUrl ? { baseUrl: definition.baseUrl } : {}),
+    ...(baseUrl ? { baseUrl } : definition.baseUrl ? { baseUrl: definition.baseUrl } : {}),
     enabled: true,
     enabledModelIds: models.map(({ id }) => id),
     models,

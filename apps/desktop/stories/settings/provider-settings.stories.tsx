@@ -258,6 +258,11 @@ function createBridge(input: {
         fetchedAt: NOW,
       };
     },
+    async previewModels(input) {
+      return input.providerType.includes('anthropic')
+        ? [{ id: 'claude-sonnet-4-5' }, { id: 'claude-haiku-4-5' }]
+        : [{ id: 'gpt-5' }, { id: 'gpt-4o' }];
+    },
     async hasSecret() {
       return true;
     },

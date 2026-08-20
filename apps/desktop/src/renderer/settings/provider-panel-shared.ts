@@ -4,6 +4,8 @@ import {
   type CreateConnectionInput,
   type LlmConnection,
   type ModelDiscoveryResult,
+  type ModelInfo,
+  type PreviewConnectionModelsInput,
   type RequestHeaderUpdate,
   type SavedRequestHeaders,
   type ProviderCategory,
@@ -23,6 +25,7 @@ export interface ConnectionsBridge {
   delete(slug: string): Promise<void>;
   test(slug: string, opts?: { model?: string }): Promise<ConnectionTestResult>;
   fetchModels(slug: string): Promise<ModelDiscoveryResult>;
+  previewModels(input: PreviewConnectionModelsInput): Promise<ModelInfo[]>;
   hasSecret(slug: string): Promise<boolean>;
   getRequestHeaders(slug: string): Promise<SavedRequestHeaders>;
   setRequestHeaders(

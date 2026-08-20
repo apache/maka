@@ -114,7 +114,13 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a new compatibility epoch for TraceTotals removal', () => {
-    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 36);
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 35);
+  });
+
+  test('publishes a new compatibility epoch for transient onboarding overrides', () => {
+    // Earlier Hosts reject endpoint and header overrides on onboarding verify,
+    // then close the transport after decoding the invalid frame.
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 37);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {

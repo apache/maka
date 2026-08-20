@@ -688,6 +688,14 @@ export interface CreateConnectionInput {
   extras?: Record<string, unknown>;
 }
 
+/** Transient, non-persisted input used to preview a new connection's model catalog. */
+export interface PreviewConnectionModelsInput {
+  providerType: ProviderType;
+  baseUrl?: string;
+  apiKey?: string;
+  requestHeaders?: Readonly<Record<string, string>>;
+}
+
 export interface UpdateConnectionInput {
   name?: string;
   baseUrl?: string;

@@ -28,6 +28,62 @@ const context: ConnectionContext = {
   acquireResidency: () => ({ release: () => undefined }),
 };
 
+test('verifies custom relay models without persisting the draft or its secret', async () => {
+  await withFixture(async ({ stores }) => {
+    let observed:
+      | { baseUrl: string | undefined; secret: string; tenant: string | null }
+      | undefined;
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      createTransport: () => ({
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          observed = {
+            baseUrl: observed?.baseUrl,
+            secret: observed?.secret ?? '',
+            tenant: request.headers.get('x-tenant'),
+          };
+          return new Response('{}');
+        },
+        close: async () => undefined,
+      }),
+      runModelDiscovery: async (connection, secret, { fetch }) => {
+        observed = { baseUrl: connection.baseUrl, secret, tenant: null };
+        await fetch('https://relay.example/v1/models');
+        return { ok: true, models: [{ id: 'relay-model' }, { id: 'other-model' }] };
+      },
+    });
+
+    const result = await coordinator.handlers['connection.onboarding.verify'](
+      {
+        providerType: 'openai-compatible',
+        baseUrl: 'https://relay.example/v1',
+        apiKey: 'preview-secret',
+        requestHeaders: { 'X-Tenant': 'tenant-a' },
+      },
+      context,
+    );
+
+    assert.deepEqual(result, {
+      ok: true,
+      result: {
+        kind: 'verified',
+        models: [{ id: 'relay-model' }, { id: 'other-model' }],
+      },
+    });
+    assert.deepEqual(observed, {
+      baseUrl: 'https://relay.example/v1',
+      secret: 'preview-secret',
+      tenant: 'tenant-a',
+    });
+    assert.deepEqual((await stores.connectionCatalog.getSnapshot()).connections, []);
+    assert.deepEqual((await stores.credentialVault.getSnapshot()).entries, []);
+    assert.equal(JSON.stringify(result).includes('preview-secret'), false);
+  });
+});
+
 test('verifies a first-run API key without persisting a connection or credential', async () => {
   await withFixture(async ({ stores }) => {
     let observed: { slug: string; secret: string } | undefined;
