@@ -61,6 +61,22 @@ describe('settleModelStepOutcome', () => {
     if (outcome.kind !== 'retryable-failure') return;
     assert.equal(outcome.failure, failure);
   });
+
+  test('classifies a raw error finish without widening provider retry policy', () => {
+    const outcome = settleModelStepOutcome({
+      aborted: false,
+      sawFinish: true,
+      finishReason: 'error',
+      rawFinishReason: '503',
+      request: {},
+    });
+
+    assert.equal(outcome.kind, 'terminal-failure');
+    if (outcome.kind !== 'terminal-failure') return;
+    assert.equal(outcome.failure.kind, 'provider_unavailable');
+    assert.equal(outcome.failure.code, '503');
+    assert.equal(outcome.failure.retryable, false);
+  });
 });
 
 describe('ModelAdapter.startStream onError', () => {

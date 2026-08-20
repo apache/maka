@@ -16,6 +16,7 @@ export interface PlaintextResponsesReasoningState {
 
 export type PlaintextResponsesReasoningStateDecodeResult =
   | { readonly kind: 'missing' }
+  | { readonly kind: 'unsupported-version'; readonly version: number }
   | { readonly kind: 'malformed'; readonly profile?: string }
   | { readonly kind: 'valid'; readonly state: PlaintextResponsesReasoningState };
 
@@ -46,6 +47,9 @@ export function decodePlaintextResponsesReasoningState(
   const record = raw as Record<string, unknown>;
   const profile = isSafeProfile(record.profile) ? record.profile : undefined;
   const itemId = isSafeItemId(record.itemId) ? record.itemId : undefined;
+  if (isSafeStateVersion(record.version) && record.version !== STATE_VERSION) {
+    return { kind: 'unsupported-version', version: record.version };
+  }
   const baseInvalid = record.version !== STATE_VERSION || !profile || !itemId;
   if (baseInvalid) {
     return { kind: 'malformed', ...(profile ? { profile } : {}) };
@@ -124,6 +128,10 @@ function isSafeItemId(value: unknown): value is string {
     value.length <= MAX_ITEM_ID_LENGTH &&
     !/[\u0000-\u001f\u007f]/u.test(value)
   );
+}
+
+function isSafeStateVersion(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
 }
 
 function isSafeSummaryParts(value: readonly string[] | undefined): value is readonly string[] {

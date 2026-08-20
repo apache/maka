@@ -35,7 +35,7 @@ test('round-trips one bounded versioned plaintext Responses item identity', () =
 
 test('rejects malformed, widened, and unsafe plaintext Responses state', () => {
   for (const makaResponses of [
-    { version: 2, profile: 'alibaba-token-plan-cn', itemId: 'item' },
+    { version: '2', profile: 'alibaba-token-plan-cn', itemId: 'item' },
     { version: 1, profile: '', itemId: 'item' },
     { version: 1, profile: 'bad\nprofile', itemId: 'item' },
     { version: 1, profile: 'alibaba-token-plan-cn', itemId: '' },
@@ -59,7 +59,21 @@ test('rejects malformed, widened, and unsafe plaintext Responses state', () => {
         itemId: 'item',
       },
     }),
-    { kind: 'malformed', profile: 'another-provider' },
+    { kind: 'unsupported-version', version: 2 },
+  );
+});
+
+test('degrades a well-formed state version that this Runtime cannot replay', () => {
+  assert.deepEqual(
+    decodePlaintextResponsesReasoningState({
+      makaResponses: {
+        version: 2,
+        profile: 'alibaba-token-plan-cn',
+        itemId: 'item',
+        summaryPartLengths: [4],
+      },
+    }),
+    { kind: 'unsupported-version', version: 2 },
   );
 });
 

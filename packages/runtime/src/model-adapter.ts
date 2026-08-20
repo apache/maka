@@ -656,7 +656,10 @@ function providerFinishFailure(rawFinishReason: string | undefined): ModelFailur
       code: rawFinishReason,
       message: 'Provider stopped the stream with an error',
     });
-    if (normalized.kind !== 'unknown') return normalized;
+    // A finish reason carries no request-level Retry-After or transport
+    // evidence. Preserve its classification for diagnostics without widening
+    // the pre-existing retry policy for every provider.
+    if (normalized.kind !== 'unknown') return { ...normalized, retryable: false };
     return {
       ...modelStepFailure('provider_unavailable', 'Provider stopped the stream with an error'),
       ...(normalized.code ? { code: normalized.code } : {}),
@@ -1066,7 +1069,6 @@ function translateChunk(
       const finishReason = chunkFinishReason(chunk);
       return [{ kind: 'finish', ...(finishReason ? { finishReason } : {}) }];
     }
-    case 'reasoning-start':
     case 'start-step':
     case 'tool-result':
     case 'tool-error': {

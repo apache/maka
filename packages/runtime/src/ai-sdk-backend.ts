@@ -2376,6 +2376,18 @@ export class AiSdkBackend implements AgentBackend {
                   event.reasoningItemId ?? responsesReasoningItemId(event.providerOptions);
                 if (typeof itemId === 'string' && itemId.length > 0) {
                   let part = stepResponsesThinkingPartsByItemId.get(itemId);
+                  if (
+                    part &&
+                    event.providerOptions === undefined &&
+                    decodePlaintextResponsesReasoningState(part.providerOptions).kind === 'valid'
+                  ) {
+                    // The SDK does not suppress a stray delta after
+                    // output_item.done. Keep it out of the finalized item or
+                    // its durable summary boundaries will no longer match.
+                    part = { text: '' };
+                    stepResponsesThinkingParts.push(part);
+                    stepResponsesThinkingPartsByItemId.set(itemId, part);
+                  }
                   if (!part) {
                     part = {
                       text:
@@ -4000,6 +4012,7 @@ export class AiSdkBackend implements AgentBackend {
       ) {
         const decoded = decodePlaintextResponsesReasoningState(item.providerOptions);
         if (decoded.kind === 'missing') return undefined;
+        if (decoded.kind === 'unsupported-version') return undefined;
         if (decoded.kind === 'malformed') {
           if (
             decoded.profile !== undefined &&

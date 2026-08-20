@@ -33,6 +33,9 @@ interface RuntimeProviderIdentity {
 
 const ALIBABA_TOKEN_PLAN_RESPONSES = {
   adapter: 'open-responses',
+  // The pinned SDK streams `response.reasoning_text.delta` as reasoning text,
+  // then reads durable summary boundaries from `output_item.done.item.summary`.
+  // Keep the raw-SSE contract test in sync if either channel changes.
   reasoningReplay: 'plaintext-summary',
   compatibility: 'alibaba-token-plan',
 } as const satisfies RuntimeProviderResponsesContract;
@@ -48,6 +51,11 @@ export function resolveRuntimeProviderAdapter(
   return { ...adapter, responses: ALIBABA_TOKEN_PLAN_RESPONSES };
 }
 
+/**
+ * Runtime execution policy layered over Core's catalog-level OpenAI adapter
+ * default. Account-declared `ModelInfo.apiProtocol` remains authoritative in
+ * `resolveModelRuntimeWire`; this only supplies the otherwise-missing default.
+ */
 export function defaultOpenAiApiProtocol(
   modelId: string,
   providerType: ProviderType,
