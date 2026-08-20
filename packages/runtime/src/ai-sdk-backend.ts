@@ -148,6 +148,11 @@ import {
   type RequestProjectionContext,
   type RequestProjectionStage,
 } from './request-projection.js';
+import {
+  decodePlaintextResponsesReasoningState,
+  replayPlaintextResponsesProviderOptions,
+  responsesReasoningItemId,
+} from './responses-reasoning-state.js';
 import type { ActiveToolResultPruneDiagnosticPatch } from './active-tool-result-prune.js';
 import { toolResultOutput } from './tool-result-output.js';
 import { buildActiveCompactionHeadAnchor } from './active-compaction-kernel.js';
@@ -1443,6 +1448,7 @@ export class AiSdkBackend implements AgentBackend {
     let sawStepThinking = false;
     let stepThinkingProviderOptions: NonNullable<ModelMessage['providerOptions']> | undefined;
     let stepResponsesThinkingParts: AssistantThinkingPart[] = [];
+    let stepResponsesThinkingPartsByItemId = new Map<string, AssistantThinkingPart>();
     let stepSignature: string | undefined;
     const startedAt = this.now();
 
@@ -1538,6 +1544,7 @@ export class AiSdkBackend implements AgentBackend {
       sawStepThinking = false;
       stepThinkingProviderOptions = undefined;
       stepResponsesThinkingParts = [];
+      stepResponsesThinkingPartsByItemId = new Map();
       stepSignature = undefined;
     };
     let tokenUsage: NormalizedAiSdkUsage | undefined;
@@ -2365,32 +2372,58 @@ export class AiSdkBackend implements AgentBackend {
                   }
                   stepThinkingProviderOptions = event.providerOptions;
                 }
-                const openai = event.providerOptions?.openai;
                 const itemId =
-                  openai && typeof openai === 'object' && !Array.isArray(openai)
-                    ? (openai as { itemId?: unknown }).itemId
-                    : undefined;
+                  event.reasoningItemId ?? responsesReasoningItemId(event.providerOptions);
                 if (typeof itemId === 'string' && itemId.length > 0) {
-                  let part = stepResponsesThinkingParts.find(
-                    (candidate) =>
-                      (candidate.providerOptions?.openai as { itemId?: unknown } | undefined)
-                        ?.itemId === itemId,
-                  );
+                  let part = stepResponsesThinkingPartsByItemId.get(itemId);
+                  if (
+                    part &&
+                    event.providerOptions === undefined &&
+                    decodePlaintextResponsesReasoningState(part.providerOptions).kind === 'valid'
+                  ) {
+                    // The SDK does not suppress a stray delta after
+                    // output_item.done. Keep it out of the finalized item or
+                    // its durable summary boundaries will no longer match.
+                    part = { text: '' };
+                    stepResponsesThinkingParts.push(part);
+                    stepResponsesThinkingPartsByItemId.set(itemId, part);
+                  }
                   if (!part) {
                     part = {
                       text:
                         stepResponsesThinkingParts.length === 0 && event.text.length === 0
                           ? stepThinking
                           : '',
-                      providerOptions: event.providerOptions,
                     };
                     stepResponsesThinkingParts.push(part);
-                  } else {
+                    stepResponsesThinkingPartsByItemId.set(itemId, part);
+                  }
+                  const nextPartText = part.text + event.text;
+                  if (
+                    event.reasoningSummaryText !== undefined &&
+                    event.reasoningSummaryText !== nextPartText
+                  ) {
+                    throw new Error(
+                      'Streamed plaintext Responses reasoning does not match final provider summary',
+                    );
+                  }
+                  part.text = nextPartText;
+                  if (event.providerOptions !== undefined) {
                     part.providerOptions = event.providerOptions;
                   }
-                  part.text += event.text;
                 } else if (stepResponsesThinkingParts.length > 0) {
-                  stepResponsesThinkingParts.at(-1)!.text += event.text;
+                  const lastPart = stepResponsesThinkingParts.at(-1)!;
+                  const lastState = decodePlaintextResponsesReasoningState(
+                    lastPart.providerOptions,
+                  );
+                  if (lastState.kind === 'valid') {
+                    // An invalid next item has no usable stream id. Do not
+                    // append its deltas to the finalized item: partial-error
+                    // flush must keep that item's durable boundaries valid.
+                    stepResponsesThinkingParts.push({ text: event.text });
+                  } else {
+                    lastPart.text += event.text;
+                  }
                 }
                 queue.push({
                   type: 'thinking_delta',
@@ -3973,14 +4006,41 @@ export class AiSdkBackend implements AgentBackend {
             }
           : undefined;
       }
-      if (replaySupport.responsesReasoning === 'plaintext-content') {
-        if (item.text.length === 0) return undefined;
+      if (
+        typeof replaySupport.responsesReasoning === 'object' &&
+        replaySupport.responsesReasoning.kind === 'plaintext-item'
+      ) {
+        const decoded = decodePlaintextResponsesReasoningState(item.providerOptions);
+        if (decoded.kind === 'missing') return undefined;
+        if (decoded.kind === 'unsupported-version') return undefined;
+        if (decoded.kind === 'malformed') {
+          if (
+            decoded.profile !== undefined &&
+            decoded.profile !== replaySupport.responsesReasoning.profile
+          ) {
+            return undefined;
+          }
+          throw new Error('Malformed durable plaintext Responses reasoning state');
+        }
+        const state = decoded.state;
+        if (state.profile !== replaySupport.responsesReasoning.profile) {
+          return undefined;
+        }
         return {
           part: {
             type: 'reasoning' as const,
             text: item.text,
+            providerOptions: replayPlaintextResponsesProviderOptions({
+              providerOptionsKey: replaySupport.responsesReasoning.providerOptionsKey,
+              state,
+              text: item.text,
+            }),
           },
         };
+      }
+      if (replaySupport.responsesReasoning === 'plaintext-content') {
+        if (item.text.length === 0) return undefined;
+        return { part: { type: 'reasoning' as const, text: item.text } };
       }
       if (replaySupport.responsesReasoning === 'encrypted-content') {
         const openai = item.providerOptions?.openai;

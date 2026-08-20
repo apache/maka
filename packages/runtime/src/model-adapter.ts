@@ -38,6 +38,10 @@ export type {
 
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import {
+  plaintextResponsesReasoningProviderOptions,
+  safePlaintextResponsesReasoningItemId,
+} from './responses-reasoning-state.js';
+import {
   classifyError,
   errorPresentationFromClass,
   providerFailureSummary,
@@ -191,9 +195,17 @@ export class ModelAdapter {
       // recorded to the event log and rendered regardless.
       unsignedThinking: this.runtime.reasoningReplay.kind === 'openai-chat-plaintext',
       responsesReasoning:
-        this.runtime.reasoningReplay.kind === 'responses'
-          ? this.runtime.reasoningReplay.contract.reasoningReplay
-          : 'none',
+        this.runtime.reasoningReplay.kind !== 'responses'
+          ? 'none'
+          : this.runtime.reasoningReplay.contract.reasoningReplay === 'encrypted-content'
+            ? 'encrypted-content'
+            : this.runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-content'
+              ? 'plaintext-content'
+              : {
+                  kind: 'plaintext-item',
+                  profile: requireResponsesReplayProfile(this.runtime),
+                  providerOptionsKey: requireResponsesProviderOptionsKey(this.runtime),
+                },
     };
   }
 
@@ -332,6 +344,7 @@ export class ModelAdapter {
         ? this.openAiChatReasoningTransportState
         : undefined;
     const openAiResponsesTransportState = this.openAiResponsesTransportState;
+    const resolvedRuntime = this.runtime;
     let settleOutcome!: (outcome: ModelStepOutcome) => void;
     const outcome = new Promise<ModelStepOutcome>((resolve) => {
       settleOutcome = resolve;
@@ -342,10 +355,33 @@ export class ModelAdapter {
         let failure: ModelFailure | undefined;
         let sawFinish = false;
         let streamedFinishReason: string | undefined;
+        let streamedRawFinishReason: string | undefined;
+        let sawUnfinalizedPlaintextSummary = false;
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
             onStreamActivity();
-            for (const event of translateChunk(chunk, openAiChatReasoningTransportState)) {
+            if (
+              chunk.type === 'finish' ||
+              chunk.type === 'finish-step' ||
+              chunk.type === 'step-finish'
+            ) {
+              streamedRawFinishReason =
+                rawFinishReasonString(chunk.rawFinishReason) ?? streamedRawFinishReason;
+            }
+            if (isUnfinalizedPlaintextSummaryReasoningEnd(chunk, resolvedRuntime)) {
+              // The SDK emits this trailer from flush() when no
+              // response.output_item.done finalized the active item. Defer the
+              // decision until the terminal outcome is known: an existing
+              // provider failure must win, while a successful stream must
+              // still fail closed instead of losing replay state silently.
+              sawUnfinalizedPlaintextSummary = true;
+              continue;
+            }
+            for (const event of translateChunk(
+              chunk,
+              openAiChatReasoningTransportState,
+              resolvedRuntime,
+            )) {
               if (event.kind === 'error') failure = event.failure;
               if (event.kind === 'finish') sawFinish = true;
               if (event.kind === 'finish' || event.kind === 'step-finish') {
@@ -355,8 +391,10 @@ export class ModelAdapter {
             }
           }
         } catch (error) {
-          failure = normalizeProviderFailure(error);
-          yield { kind: 'error', failure };
+          if (!failure) {
+            failure = normalizeProviderFailure(error);
+            yield { kind: 'error', failure };
+          }
         } finally {
           const [sdkUsage, sdkFinishReason] = await Promise.all([
             sdk.usage.catch(() => undefined),
@@ -364,15 +402,35 @@ export class ModelAdapter {
           ]);
           const finishReason =
             streamedFinishReason ?? rawFinishReasonString(sdkFinishReason) ?? 'unknown';
-          const usage = normalizeAiSdkUsage(sdkUsage, { rawFinishReason: finishReason });
+          const rawFinishReason =
+            streamedRawFinishReason ?? rawFinishReasonString(sdkFinishReason) ?? finishReason;
+          const usage = normalizeAiSdkUsage(sdkUsage, { rawFinishReason });
           let settled = settleModelStepOutcome({
             aborted: continuation.abortSignal.aborted,
             failure,
             sawFinish,
             finishReason,
+            rawFinishReason,
             usage,
             request,
           });
+          let deferredFailure: ModelFailure | undefined;
+
+          if (sawUnfinalizedPlaintextSummary && settled.kind === 'completed') {
+            failure = normalizeProviderFailure(
+              new Error('Plaintext Responses reasoning item is missing final summary metadata'),
+            );
+            deferredFailure = failure;
+            settled = settleModelStepOutcome({
+              aborted: continuation.abortSignal.aborted,
+              failure,
+              sawFinish,
+              finishReason,
+              rawFinishReason,
+              usage,
+              request,
+            });
+          }
 
           try {
             if (continuation.lane) {
@@ -396,6 +454,12 @@ export class ModelAdapter {
             }
           } finally {
             settleOutcome(settled);
+          }
+          if (deferredFailure) {
+            // Consumers may stop iterating at the first error. The outcome and
+            // continuation lane must already be settled before this yield so a
+            // generator return cannot strand the caller awaiting result.outcome.
+            yield { kind: 'error', failure: deferredFailure };
           }
         }
       },
@@ -480,6 +544,7 @@ export class ModelAdapter {
       this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
         ? this.openAiChatReasoningTransportState
         : undefined,
+      this.runtime,
     );
   }
 
@@ -526,12 +591,13 @@ interface ModelStepSettlementEvidence {
   failure?: ModelFailure;
   sawFinish: boolean;
   finishReason: ModelFinishReason;
+  rawFinishReason?: string;
   usage?: NormalizedUsage;
   request: ModelRequestMetadata;
 }
 
 export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): ModelStepOutcome {
-  const { aborted, failure, sawFinish, finishReason, usage, request } = evidence;
+  const { aborted, failure, sawFinish, finishReason, rawFinishReason, usage, request } = evidence;
   if (aborted || failure?.kind === 'abort') {
     return failedStepOutcome(
       'aborted',
@@ -560,14 +626,13 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
     );
   }
   if (finishReason === 'content-filter' || finishReason === 'error') {
+    const terminalFailure =
+      finishReason === 'error'
+        ? providerFinishFailure(rawFinishReason)
+        : modelStepFailure('unknown', 'Provider stopped the stream on a content filter');
     return failedStepOutcome(
-      'terminal-failure',
-      modelStepFailure(
-        finishReason === 'content-filter' ? 'unknown' : 'provider_unavailable',
-        finishReason === 'content-filter'
-          ? 'Provider stopped the stream on a content filter'
-          : 'Provider stopped the stream with an error',
-      ),
+      terminalFailure.retryable ? 'retryable-failure' : 'terminal-failure',
+      terminalFailure,
       request,
       usage,
     );
@@ -583,6 +648,24 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
 
 function modelStepFailure(kind: ModelFailureKind, message: string): ModelFailure {
   return { type: 'model_failure', kind, message, retryable: false };
+}
+
+function providerFinishFailure(rawFinishReason: string | undefined): ModelFailure {
+  if (rawFinishReason && rawFinishReason !== 'error') {
+    const normalized = normalizeProviderFailure({
+      code: rawFinishReason,
+      message: 'Provider stopped the stream with an error',
+    });
+    // A finish reason carries no request-level Retry-After or transport
+    // evidence. Preserve its classification for diagnostics without widening
+    // the pre-existing retry policy for every provider.
+    if (normalized.kind !== 'unknown') return { ...normalized, retryable: false };
+    return {
+      ...modelStepFailure('provider_unavailable', 'Provider stopped the stream with an error'),
+      ...(normalized.code ? { code: normalized.code } : {}),
+    };
+  }
+  return modelStepFailure('provider_unavailable', 'Provider stopped the stream with an error');
 }
 
 function failedStepOutcome(
@@ -643,7 +726,29 @@ export interface ModelAdapterRuntimeEventReplaySupport {
   providerExecutedTools: boolean;
   signedThinking: boolean;
   unsignedThinking: boolean;
-  responsesReasoning: 'none' | 'encrypted-content' | 'plaintext-content';
+  responsesReasoning:
+    | 'none'
+    | 'encrypted-content'
+    | 'plaintext-content'
+    | {
+        kind: 'plaintext-item';
+        profile: string;
+        providerOptionsKey: string;
+      };
+}
+
+function requireResponsesProviderOptionsKey(runtime: ResolvedModelRuntime): string {
+  if (!runtime.responsesProviderOptionsKey) {
+    throw new Error('Plaintext Responses replay requires a provider-options key');
+  }
+  return runtime.responsesProviderOptionsKey;
+}
+
+function requireResponsesReplayProfile(runtime: ResolvedModelRuntime): string {
+  if (!runtime.responsesReplayProfile) {
+    throw new Error('Plaintext Responses replay requires a source profile');
+  }
+  return runtime.responsesReplayProfile;
 }
 
 /**
@@ -722,8 +827,48 @@ function reasoningSignatureFromChunk(chunk: AiSdkStreamChunk): string | undefine
 
 function openAiResponsesReasoningProviderOptionsFromChunk(
   chunk: AiSdkStreamChunk,
+  runtime: ResolvedModelRuntime,
 ): NonNullable<ModelMessage['providerOptions']> | undefined {
   const meta = chunk.providerMetadata;
+  if (
+    runtime.reasoningReplay.kind === 'responses' &&
+    runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-summary'
+  ) {
+    if (chunk.type !== 'reasoning' && chunk.type !== 'reasoning-end') return undefined;
+    const providerOptionsKey = runtime.responsesProviderOptionsKey;
+    const provider =
+      providerOptionsKey && meta && typeof meta === 'object'
+        ? (meta as Record<string, unknown>)[providerOptionsKey]
+        : undefined;
+    const metadataItemIdValue =
+      provider && typeof provider === 'object' && !Array.isArray(provider)
+        ? (provider as { itemId?: unknown }).itemId
+        : undefined;
+    const streamItemIdValue = (chunk as { id?: unknown }).id;
+    if (
+      typeof metadataItemIdValue === 'string' &&
+      typeof streamItemIdValue === 'string' &&
+      metadataItemIdValue !== streamItemIdValue
+    ) {
+      throw new Error('Plaintext Responses reasoning item id changed within one stream item');
+    }
+    const itemId =
+      safePlaintextResponsesReasoningItemId(metadataItemIdValue) ??
+      safePlaintextResponsesReasoningItemId(streamItemIdValue);
+    const summaryParts = plaintextSummaryParts(provider);
+    if (!itemId || !summaryParts) {
+      throw new Error('Plaintext Responses reasoning item is missing final summary metadata');
+    }
+    const providerOptions = plaintextResponsesReasoningProviderOptions(
+      itemId,
+      requireResponsesReplayProfile(runtime),
+      summaryParts,
+    );
+    if (!providerOptions) {
+      throw new Error('Plaintext Responses reasoning summary exceeds durable state bounds');
+    }
+    return providerOptions;
+  }
   if (!meta || typeof meta !== 'object') return undefined;
   const openai = (meta as { openai?: unknown }).openai;
   if (!openai || typeof openai !== 'object' || Array.isArray(openai)) return undefined;
@@ -742,6 +887,65 @@ function openAiResponsesReasoningProviderOptionsFromChunk(
   };
 }
 
+function isUnfinalizedPlaintextSummaryReasoningEnd(
+  chunk: AiSdkStreamChunk,
+  runtime: ResolvedModelRuntime,
+): boolean {
+  return (
+    runtime.reasoningReplay.kind === 'responses' &&
+    runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-summary' &&
+    chunk.type === 'reasoning-end' &&
+    (chunk.providerMetadata === undefined || chunk.providerMetadata === null)
+  );
+}
+
+function plaintextSummaryParts(provider: unknown): string[] | undefined {
+  if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return undefined;
+  const summary = (provider as { reasoningSummary?: unknown }).reasoningSummary;
+  if (!Array.isArray(summary)) return undefined;
+  const parts: string[] = [];
+  for (const part of summary) {
+    if (!part || typeof part !== 'object' || Array.isArray(part)) return undefined;
+    const { type, text } = part as { type?: unknown; text?: unknown };
+    if (type !== 'summary_text' || typeof text !== 'string') return undefined;
+    parts.push(text);
+  }
+  return parts;
+}
+
+function plaintextSummaryTextFromChunk(
+  chunk: AiSdkStreamChunk,
+  runtime: ResolvedModelRuntime | undefined,
+): string | undefined {
+  if (
+    runtime?.reasoningReplay.kind !== 'responses' ||
+    runtime.reasoningReplay.contract.reasoningReplay !== 'plaintext-summary' ||
+    (chunk.type !== 'reasoning' && chunk.type !== 'reasoning-end')
+  ) {
+    return undefined;
+  }
+  const providerOptionsKey = runtime.responsesProviderOptionsKey;
+  const meta = chunk.providerMetadata;
+  const provider =
+    providerOptionsKey && meta && typeof meta === 'object'
+      ? (meta as Record<string, unknown>)[providerOptionsKey]
+      : undefined;
+  return plaintextSummaryParts(provider)?.join('');
+}
+
+function plaintextSummaryItemIdFromChunk(
+  chunk: AiSdkStreamChunk,
+  runtime: ResolvedModelRuntime | undefined,
+): string | undefined {
+  if (
+    runtime?.reasoningReplay.kind !== 'responses' ||
+    runtime.reasoningReplay.contract.reasoningReplay !== 'plaintext-summary'
+  ) {
+    return undefined;
+  }
+  return safePlaintextResponsesReasoningItemId((chunk as { id?: unknown }).id);
+}
+
 /**
  * Translate one raw AI SDK stream chunk into zero or more Maka-owned
  * `ModelStreamEvent`s. The sole site that parses SDK chunk names; the backend
@@ -750,8 +954,13 @@ function openAiResponsesReasoningProviderOptionsFromChunk(
 function translateChunk(
   chunk: AiSdkStreamChunk,
   openAiChatReasoningTransportState?: OpenAiChatReasoningTransportState,
+  runtime?: ResolvedModelRuntime,
 ): ModelStreamEvent[] {
   switch (chunk.type) {
+    case 'reasoning-start': {
+      const reasoningItemId = plaintextSummaryItemIdFromChunk(chunk, runtime);
+      return reasoningItemId ? [{ kind: 'thinking', text: '', reasoningItemId }] : [];
+    }
     case 'text-start':
       return [{ kind: 'text-start' }];
     case 'text-delta': {
@@ -778,7 +987,11 @@ function translateChunk(
               ? chunk.delta
               : undefined;
       const signature = reasoningSignatureFromChunk(chunk);
-      const responsesProviderOptions = openAiResponsesReasoningProviderOptionsFromChunk(chunk);
+      const responsesProviderOptions = runtime
+        ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
+        : undefined;
+      const reasoningItemId = plaintextSummaryItemIdFromChunk(chunk, runtime);
+      const reasoningSummaryText = plaintextSummaryTextFromChunk(chunk, runtime);
       const events: ModelStreamEvent[] = [];
       if (signature) events.push({ kind: 'thinking-signature', signature });
       // The signed reasoning chunk arrives as a standalone delta with empty
@@ -798,17 +1011,31 @@ function translateChunk(
                   providerOptionsOrigin: 'maka_transport' as const,
                 }
               : {}),
+          ...(reasoningItemId ? { reasoningItemId } : {}),
+          ...(reasoningSummaryText !== undefined ? { reasoningSummaryText } : {}),
         });
       }
       return events;
     }
     case 'reasoning-end': {
       const signature = reasoningSignatureFromChunk(chunk);
-      const responsesProviderOptions = openAiResponsesReasoningProviderOptionsFromChunk(chunk);
+      const responsesProviderOptions = runtime
+        ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
+        : undefined;
+      const reasoningItemId = plaintextSummaryItemIdFromChunk(chunk, runtime);
+      const reasoningSummaryText = plaintextSummaryTextFromChunk(chunk, runtime);
       return [
         ...(signature ? [{ kind: 'thinking-signature' as const, signature }] : []),
         ...(responsesProviderOptions
-          ? [{ kind: 'thinking' as const, text: '', providerOptions: responsesProviderOptions }]
+          ? [
+              {
+                kind: 'thinking' as const,
+                text: '',
+                providerOptions: responsesProviderOptions,
+                ...(reasoningItemId ? { reasoningItemId } : {}),
+                ...(reasoningSummaryText !== undefined ? { reasoningSummaryText } : {}),
+              },
+            ]
           : []),
       ];
     }
@@ -824,9 +1051,12 @@ function translateChunk(
     case 'finish-step':
     case 'step-finish': {
       const finishReason = chunkFinishReason(chunk);
+      const rawFinishReason = rawFinishReasonString(chunk.rawFinishReason);
       // The same value the turn's outcome is decided from, so the record and
       // the outcome cannot name different reasons for the same stream.
-      const usage = normalizeAiSdkUsage(chunk.usage, { rawFinishReason: finishReason });
+      const usage = normalizeAiSdkUsage(chunk.usage, {
+        rawFinishReason: rawFinishReason ?? finishReason,
+      });
       return [
         {
           kind: 'step-finish',
@@ -839,7 +1069,6 @@ function translateChunk(
       const finishReason = chunkFinishReason(chunk);
       return [{ kind: 'finish', ...(finishReason ? { finishReason } : {}) }];
     }
-    case 'reasoning-start':
     case 'start-step':
     case 'tool-result':
     case 'tool-error': {
