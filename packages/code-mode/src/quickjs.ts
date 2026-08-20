@@ -16,11 +16,21 @@ import { DEFAULT_CODE_MODE_EXECUTION_POLICY } from './index.js';
 export async function executeCodeCellImpl(
   input: ExecuteCodeCellInput,
 ): Promise<CodeModeExecutionResult> {
-  // An explicit `undefined` override keeps the product default rather than
-  // falling through to the SDK's looser one.
+  // Overrides are admitted only for known fields and only as positive integers.
+  // Anything else keeps Maka's product default: the SDK resolves its policy with
+  // `??`, so copying a `null` through would silently restore the SDK's looser
+  // default instead of the tighter one this package ships.
   const executionPolicy: CodeModeExecutionPolicy = { ...DEFAULT_CODE_MODE_EXECUTION_POLICY };
-  for (const [key, value] of Object.entries(input.executionPolicy ?? {})) {
-    if (value !== undefined) (executionPolicy as Record<string, unknown>)[key] = value;
+  const overrides = input.executionPolicy;
+  if (overrides) {
+    for (const key of Object.keys(DEFAULT_CODE_MODE_EXECUTION_POLICY) as Array<
+      keyof CodeModeExecutionPolicy
+    >) {
+      const value = overrides[key];
+      if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+        executionPolicy[key] = value;
+      }
+    }
   }
   const toolCalls: CodeModeToolCall[] = [];
   const hostToolOperations = new Set<Promise<unknown>>();

@@ -306,6 +306,25 @@ test('enforces byte and bridge limits', async (t) => {
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
   });
 
+  await t.test('a runtime-invalid override keeps the product default', async () => {
+    // The SDK resolves its policy with `??`, so a `null` that reached it would
+    // restore the SDK's looser default instead of the tighter product one.
+    const oversized = `const pad = '${'x'.repeat(70 * 1024)}'; return null;`;
+
+    for (const override of [null, 0, -1, 1.5, '65536', {}]) {
+      const result = await execute(oversized, {
+        executionPolicy: {
+          maxSourceBytes: override,
+        } as unknown as ExecuteCodeCellInput['executionPolicy'],
+      });
+      assert.equal(
+        result.ok ? undefined : result.error.kind,
+        'limit_exceeded',
+        `override ${JSON.stringify(override)} widened the source limit`,
+      );
+    }
+  });
+
   await t.test('tool concurrency', async () => {
     let started = 0;
     const result = await execute('return await Promise.all([tools.echo({}), tools.echo({})]);', {
