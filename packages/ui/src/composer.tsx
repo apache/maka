@@ -607,7 +607,7 @@ export const Composer = forwardRef<
     onDraftKeyChange: resetPromptHistoryNavigation,
     persistence: props.draftPersistence,
   });
-  const { resetNavigation, rememberSentEntry, handleArrowKey, matchCompletion } = useComposerHistory({
+  const { resetNavigation, rememberSentEntry, handleArrowKey } = useComposerHistory({
     text: textPort,
     saveCurrentDraft,
   });
@@ -1546,14 +1546,6 @@ export const Composer = forwardRef<
                 // surfaces, and clearable from Settings · 数据 (see
                 // use-composer-history.ts).
                 hasHistory={false}
-                // The rest of the newest past prompt this draft is a prefix
-                // of, offered as dim text after the caret. What is offered is
-                // ours to decide; whether it can be shown — caret at the end,
-                // no trigger menu, not mid-composition — and how it wraps,
-                // scrolls, announces and commits are the input's, which is the
-                // only thing that knows those states.
-                inlineCompletion={matchCompletion(text) ?? undefined}
-                inlineCompletionLabel={copy.inlineCompletionHint}
                 triggers={triggers}
                 pasteAsToken={pasteAsToken}
                 onFiles={onInputFiles}

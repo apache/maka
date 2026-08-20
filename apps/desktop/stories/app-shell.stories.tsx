@@ -1,5 +1,4 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { userEvent } from 'storybook/test';
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
@@ -7,10 +6,8 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import {
   ChatSurfaceLayout,
   ChatView,
-  clearGlobalInputHistory,
   Composer,
   deriveTitlebarProjectName,
-  saveGlobalInputHistoryEntry,
   SessionListPanel,
   TitlebarSessionIdentity,
 } from '@maka/ui';
@@ -1031,40 +1028,4 @@ export const ModeOnWithPendingAttachments: Story = {
       }}
     />
   ),
-};
-
-const RECALLED_PROMPT = '帮我把 composer 的样式再收紧一点';
-
-// Real path: the user has sent this prompt before and starts retyping it, so
-// the editor offers the rest inside the field.
-//
-// A review driver, not coverage: the render smoke opens stories in embedded
-// mode, which disables autoplay (FIDELITY.md), so nothing below is executed by
-// CI. The active-offer lifecycle — Tab, caret, focus, composition, trigger-menu
-// priority, streaming Escape — is pinned in
-// `apps/desktop/e2e/composer-inline-completion.spec.ts`, which does run.
-export const ComposerInlineSuggestion: Story = {
-  // Seeded through the module's own write path, before the story mounts:
-  // `useComposerHistory` reads storage once at mount and thereafter follows
-  // that module's writes, so poking the key from `play` would seed a list
-  // nobody holds.
-  loaders: [
-    async () => {
-      clearGlobalInputHistory();
-      saveGlobalInputHistoryEntry(RECALLED_PROMPT);
-      return {};
-    },
-  ],
-  render: () => <ComposedShell chat={{ messages: [] }} />,
-  play: async ({ canvasElement }) => {
-    // Scoped to this canvas, not the document: Storybook can have other
-    // stories mounted, and a document-wide lookup would drive whichever
-    // composer happened to be first.
-    const editable = canvasElement.querySelector<HTMLElement>(
-      '.maka-composer-editor [contenteditable="true"]',
-    );
-    if (!editable) return;
-    await userEvent.click(editable);
-    await userEvent.keyboard(RECALLED_PROMPT.slice(0, 3));
-  },
 };
