@@ -465,3 +465,105 @@ test('aborts and drains concurrent tools while preserving the first fatal failur
     await Promise.allSettled([execution]);
   }
 });
+
+test('bounds serial execution at one pending cell', async () => {
+  const started: string[] = [];
+  let firstStarted!: () => void;
+  let releaseFirst!: () => void;
+  const firstHasStarted = new Promise<void>((resolve) => {
+    firstStarted = resolve;
+  });
+  const firstCanFinish = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const callTool = async (_name: string, input: unknown) => {
+    const id = (input as { id: string }).id;
+    started.push(id);
+    if (id === 'first') {
+      firstStarted();
+      await firstCanFinish;
+    }
+    return id;
+  };
+  const run = (id: string) =>
+    execute(`return await tools.hold({ id: '${id}' });`, {
+      tools: [{ name: 'hold' }],
+      callTool,
+    });
+
+  const first = run('first');
+  await firstHasStarted;
+  const second = run('second');
+  const third = run('third');
+
+  try {
+    const excess = await Promise.race([
+      third,
+      new Promise<'still-pending'>((resolve) => setImmediate(() => resolve('still-pending'))),
+    ]);
+    assert.notEqual(excess, 'still-pending');
+    if (excess !== 'still-pending') {
+      assert.equal(excess.ok ? undefined : excess.error.kind, 'limit_exceeded');
+      assert.deepEqual(excess.toolCalls, []);
+    }
+    assert.deepEqual(started, ['first']);
+    releaseFirst();
+    const results = await Promise.all([first, second]);
+    assert.deepEqual(
+      results.map((result) => (result.ok ? result.value : undefined)),
+      ['first', 'second'],
+    );
+  } finally {
+    releaseFirst();
+    await Promise.allSettled([first, second, third]);
+  }
+});
+
+test('aborts a queued cell without waiting for the active cell', async () => {
+  let firstStarted!: () => void;
+  let releaseFirst!: () => void;
+  const firstHasStarted = new Promise<void>((resolve) => {
+    firstStarted = resolve;
+  });
+  const firstCanFinish = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const first = execute('return await tools.hold({});', {
+    tools: [{ name: 'hold' }],
+    callTool: async () => {
+      firstStarted();
+      await firstCanFinish;
+      return null;
+    },
+  });
+  await firstHasStarted;
+
+  const controller = new AbortController();
+  const reason = new Error('queued cell cancelled');
+  let queuedToolCalls = 0;
+  const queued = execute('return await tools.never({});', {
+    tools: [{ name: 'never' }],
+    signal: controller.signal,
+    callTool: async () => {
+      queuedToolCalls += 1;
+      return null;
+    },
+  });
+  controller.abort(reason);
+
+  const outcome = await Promise.race([
+    queued.then(
+      () => 'resolved' as const,
+      (error) => error,
+    ),
+    new Promise<'still-pending'>((resolve) => setImmediate(() => resolve('still-pending'))),
+  ]);
+
+  try {
+    assert.equal(outcome, reason);
+    assert.equal(queuedToolCalls, 0);
+  } finally {
+    releaseFirst();
+    await Promise.allSettled([first, queued]);
+  }
+});

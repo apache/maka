@@ -63,4 +63,72 @@ export interface ExecuteCodeCellInput {
   executionPolicy?: CodeModeExecutionPolicy;
 }
 
-export { executeCodeCell } from './quickjs.js';
+interface QueuedCodeCell {
+  input: ExecuteCodeCellInput;
+  resolve: (result: CodeModeExecutionResult) => void;
+  reject: (error: unknown) => void;
+  onAbort?: () => void;
+}
+
+/**
+ * Admission for a Code Mode cell, held across its complete lifecycle — through
+ * the host-operation drain that follows `runCodeMode`, not just the sandbox run.
+ *
+ * The SDK's worker cap cannot stand in for this. On cancellation `runCodeMode`
+ * releases its worker slot and rejects at once, by design, while host operations
+ * started from the cell may still be running with durable side effects. Only
+ * Maka waits for those, so only Maka can bound how many cells are outstanding.
+ * Releasing admission when the worker is released would let repeated
+ * cancellation accumulate host work without bound.
+ */
+let queuedCodeCell: QueuedCodeCell | undefined;
+let codeCellActive = false;
+
+export async function executeCodeCell(
+  input: ExecuteCodeCellInput,
+): Promise<CodeModeExecutionResult> {
+  if (input.signal?.aborted) throw input.signal.reason ?? abortError();
+  return new Promise<CodeModeExecutionResult>((resolve, reject) => {
+    const entry: QueuedCodeCell = { input, resolve, reject };
+    if (codeCellActive) {
+      if (queuedCodeCell) {
+        resolve({
+          ok: false,
+          error: { kind: 'limit_exceeded', message: 'Code Mode execution queue is full' },
+          toolCalls: [],
+        });
+        return;
+      }
+      const onAbort = () => {
+        if (queuedCodeCell !== entry) return;
+        queuedCodeCell = undefined;
+        reject(input.signal?.reason ?? abortError());
+      };
+      entry.onAbort = onAbort;
+      input.signal?.addEventListener('abort', onAbort, { once: true });
+      queuedCodeCell = entry;
+      return;
+    }
+    codeCellActive = true;
+    runCodeCell(entry);
+  });
+}
+
+function runCodeCell(entry: QueuedCodeCell): void {
+  if (entry.onAbort) entry.input.signal?.removeEventListener('abort', entry.onAbort);
+  void executeCodeCellImpl(entry.input)
+    .then(entry.resolve, entry.reject)
+    .finally(() => {
+      const next = queuedCodeCell;
+      queuedCodeCell = undefined;
+      if (next) runCodeCell(next);
+      else codeCellActive = false;
+    });
+}
+
+function abortError(): Error {
+  const error = new Error('Code Mode cell aborted');
+  error.name = 'AbortError';
+  return error;
+}
+import { executeCodeCellImpl } from './quickjs.js';
