@@ -434,13 +434,10 @@ export async function verifyWindowsInstallerRollback(
       env: quitEnv,
       timeoutMs: 300_000,
     });
-    if (quit.code !== 0) {
-      throw new Error(
-        `Quit-failpoint upgrade exited with ${quit.code}, expected 0 (a bare template-style ` +
-          `Quit reports success): the pinned no-hook behavior changed — re-derive the gap.` +
-          `${quit.stderr.trim() ? `\nstderr: ${quit.stderr.trim()}` : ''}`,
-      );
-    }
+    // State first, exit code last: the state assertions carry the semantic
+    // pin (extracted files present, registration gone, backup retained), and
+    // on an exit-code drift they are the evidence that says what actually
+    // happened.
     await access(join(backupDirectory, backupMarkerName));
     // The recovery note is written at backup-creation time precisely so the
     // hookless Quit paths leave it behind; assert that here.
@@ -452,6 +449,18 @@ export async function verifyWindowsInstallerRollback(
       throw new Error(
         `After the Quit failpoint the uninstall registration should be gone (the old ` +
           `uninstaller removed it and nothing rewrote it), found ${JSON.stringify(orphanRegistration)}.`,
+      );
+    }
+    // Executed evidence, not inference: run 32384536035 measured a bare Quit
+    // at this point exiting 2 (the silent installer's generic failure code,
+    // shared with a hookless Abort default) — not 0 as NSIS source reading
+    // suggested. The state assertions above establish that the Quit branch
+    // (extraction completed, nothing registered) is the one that ran.
+    if (quit.code !== 2) {
+      throw new Error(
+        `Quit-failpoint upgrade exited with ${quit.code}, expected 2 (measured template-style ` +
+          `hookless Quit, run 32384536035): the pinned no-hook behavior changed — re-derive the gap.` +
+          `${quit.stderr.trim() ? `\nstderr: ${quit.stderr.trim()}` : ''}`,
       );
     }
 
