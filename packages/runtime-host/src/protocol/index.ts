@@ -101,7 +101,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 121 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 122 as const;
+// 122: connection.onboarding.verify accepts transient request-header overrides.
+// Older Hosts reject that field, so mixed-version peers must fail handshake.
 // 121: Host diagnostics report `upgradeBlockingActivity`, the Host's
 // authoritative activity answer for maintenance probes, computed by the same
 // authority that gates `host.upgrade.prepare`. Older Clients reject the

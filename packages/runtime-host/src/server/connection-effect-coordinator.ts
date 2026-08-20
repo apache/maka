@@ -287,9 +287,9 @@ export class HostConnectionEffectCoordinator {
       // pinned by the ticket whose basis the commit revalidates.
       const effect = await this.#runModelDiscovery(base, discoverySecret, {
         fetch: createRequestCustomizationFetch(transport.fetch, {
-          headers: begun.requestHeadersSecret
-            ? parseRequestHeaders(begun.requestHeadersSecret)
-            : {},
+          headers:
+            input.requestHeaders ??
+            (begun.requestHeadersSecret ? parseRequestHeaders(begun.requestHeadersSecret) : {}),
           bodyOverlay: base.requestBodyOverlay,
         }),
       });
