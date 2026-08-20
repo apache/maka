@@ -39,8 +39,8 @@ github:
   features:
     issues: true
     wiki: false
-    projects: true
-    discussions: false
+    projects: false
+    discussions: true
   enabled_merge_buttons:
     squash: true
     merge: false
@@ -62,3 +62,9 @@ github:
         # reports and no committer can override it.
         contexts:
           - test
+
+notifications:
+  commits:      commits@maka.apache.org
+  discussions:  dev@maka.apache.org 
+  issues:       commits@maka.apache.org
+  pullrequests: commits@maka.apache.org
