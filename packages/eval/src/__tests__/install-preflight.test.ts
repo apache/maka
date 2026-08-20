@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -48,7 +48,7 @@ test('preflights the pinned Python framework and Docker before execution', async
   assert.equal(calls[0]?.environment.MAKA_EVAL_EGRESS_ALLOWED_HOST, 'api.example.test');
   assert.equal(
     calls[0]?.environment.MAKA_EVAL_NETWORK_POLICY_PATH,
-    join(egress, 'network-policy.json'),
+    await realpath(join(egress, 'network-policy.json')),
   );
   assert.deepEqual(calls[1], {
     command: 'docker',
