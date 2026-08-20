@@ -1,5 +1,10 @@
 import { realpath } from 'node:fs/promises';
-import type { QueueEnqueueOutcome, SessionEvent } from '@maka/core/events';
+import type {
+  QueueEnqueueOutcome,
+  SessionEvent,
+  ShellRunSnapshotResult,
+  ShellRunUpdate,
+} from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -62,6 +67,13 @@ export interface MakaPreparePromptOptions {
   maxSteps?: number;
 }
 
+export interface MakaUserCommand {
+  readonly commandId: string;
+  readonly result: ShellRunSnapshotResult;
+  /** Returns the newest update that raced the initial card into the transcript. */
+  takeRacedUpdate(): ShellRunUpdate['result'] | undefined;
+}
+
 export class SkillInvocationBlockedError extends Error {
   constructor(readonly skillInvocation: SkillInvocationResult) {
     super('Explicit Skill invocation could not be resolved');
@@ -76,6 +88,10 @@ export interface MakaSessionDriver {
     prompt: string,
     options?: MakaPreparePromptOptions,
   ): Promise<MakaPreparedSessionTurn>;
+  /** Runs one user-owned command. Its input/output never becomes model prompt history. */
+  runUserCommand?(command: string): Promise<MakaUserCommand>;
+  /** Stops every live user-owned command started by this driver. */
+  stopUserCommands?(): Promise<void>;
   compactSession(): AsyncIterable<SessionEvent>;
   resumeLatest?(): AsyncIterable<SessionEvent>;
   steer?(text: string): Promise<QueueEnqueueOutcome>;

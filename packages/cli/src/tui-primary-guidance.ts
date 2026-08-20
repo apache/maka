@@ -14,8 +14,12 @@ export interface TuiPrimaryGuidanceCopy {
   readonly commands: Readonly<Record<TuiCommandId, string>>;
   readonly help: {
     readonly commandsHeading: string;
+    readonly userCommand: string;
     readonly keybindingsHeading: string;
     readonly keybindings: readonly string[];
+  };
+  readonly editor: {
+    readonly userCommandHint: string;
   };
 }
 
@@ -51,6 +55,7 @@ const TUI_PRIMARY_GUIDANCE = {
     },
     help: {
       commandsHeading: '命令',
+      userCommand: '  !<command> — 执行一次仅用户可见的 shell 命令',
       keybindingsHeading: '快捷键',
       keybindings: [
         '  Ctrl+O — 展开或折叠所有工具输出',
@@ -64,6 +69,9 @@ const TUI_PRIMARY_GUIDANCE = {
         '  Ctrl+C — 停止任务、清空输入，或连续按两次退出',
         '  Ctrl+D — 输入为空时退出',
       ],
+    },
+    editor: {
+      userCommandHint: '输入 shell 命令',
     },
   },
   en: {
@@ -97,6 +105,7 @@ const TUI_PRIMARY_GUIDANCE = {
     },
     help: {
       commandsHeading: 'Commands',
+      userCommand: '  !<command> — run one shell command visible only to you',
       keybindingsHeading: 'Keybindings',
       keybindings: [
         '  Ctrl+O — expand or collapse all tool output',
@@ -110,6 +119,9 @@ const TUI_PRIMARY_GUIDANCE = {
         '  Ctrl+C — stop the turn, clear input, or press twice to exit',
         '  Ctrl+D — exit when input is empty',
       ],
+    },
+    editor: {
+      userCommandHint: 'type a shell command',
     },
   },
 } satisfies UiCatalog<TuiPrimaryGuidanceCopy>;

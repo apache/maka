@@ -10,10 +10,13 @@ import {
   type ActiveInteractionRequestEvent,
   type QueueEnqueueOutcome,
   type SessionEvent,
+  type ShellRunSnapshotResult,
   type ShellRunUpdate,
 } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
+import { mergeShellRunUpdate } from '@maka/core/shell-run-result';
+import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { executionBoundaryDisplayMode } from '@maka/core/sandbox-boundary';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -149,6 +152,14 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   readonly #pendingInteractionListeners = new Set<(pending: InteractionPendingSnapshot) => void>();
   readonly #claimedTurnIds = new Set<string>();
   readonly #shellRunListeners = new Set<(update: ShellRunUpdate) => void>();
+  readonly #activeUserCommands = new Map<
+    string,
+    { readonly sessionId: string; readonly commandId: string }
+  >();
+  readonly #userCommandStartBarriers = new Set<Promise<void>>();
+  #userCommandStopGeneration = 0;
+  #userCommandStopsPending = 0;
+  #userCommandStopTail = Promise.resolve();
   readonly #resolvedInteractionListeners = new Set<
     (sessionId: string, requestId: string) => void
   >();
@@ -270,6 +281,92 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       channel.failTurn(turnId, error);
       throw error;
     }
+  }
+
+  async runUserCommand(command: string): Promise<{
+    commandId: string;
+    result: ShellRunSnapshotResult;
+    takeRacedUpdate(): ShellRunUpdate['result'] | undefined;
+  }> {
+    const stopGeneration = this.#userCommandStopGeneration;
+    const stopAlreadyPending = this.#userCommandStopsPending > 0;
+    let releaseStartBarrier: (() => void) | undefined;
+    const startBarrier = new Promise<void>((resolve) => {
+      releaseStartBarrier = resolve;
+    });
+    this.#userCommandStartBarriers.add(startBarrier);
+    let capture: ((update: ShellRunUpdate) => void) | undefined;
+    try {
+      const sessionId = await this.#ensureSession();
+      await this.#ensureChannel(sessionId);
+      const commandId = `user-command-${this.#newId()}`;
+      let latest: ShellRunUpdate | undefined;
+      capture = (update: ShellRunUpdate) => {
+        if (update.sessionId === sessionId && update.sourceToolCallId === commandId) {
+          latest = mergeShellRunUpdate(latest, update, 'cli.user-command-start').update;
+        }
+      };
+      this.#shellRunListeners.add(capture);
+      const started = await this.#request('runtime.resource.start', {
+        sessionId,
+        launchId: commandId,
+        command,
+      });
+      if (started.resource.mode !== 'pipes') {
+        throw new Error('Runtime Host did not start a one-shot user command');
+      }
+      const newestResult =
+        latest && latest.result.revision > started.resource.revision
+          ? latest.result
+          : started.resource;
+      if (isActiveShellRunStatus(newestResult.status)) {
+        const owner = { sessionId, commandId };
+        this.#activeUserCommands.set(newestResult.ref, owner);
+        if (
+          stopAlreadyPending ||
+          this.#userCommandStopGeneration !== stopGeneration ||
+          this.#userCommandStopsPending > 0
+        ) {
+          await this.#stopUserCommand(newestResult.ref, owner);
+        }
+      }
+      let activated = false;
+      return {
+        commandId,
+        result: started.resource,
+        takeRacedUpdate: () => {
+          if (activated) return undefined;
+          activated = true;
+          this.#shellRunListeners.delete(capture!);
+          return latest && latest.result.revision > started.resource.revision
+            ? latest.result
+            : undefined;
+        },
+      };
+    } catch (error) {
+      if (capture) this.#shellRunListeners.delete(capture);
+      throw error;
+    } finally {
+      releaseStartBarrier?.();
+      this.#userCommandStartBarriers.delete(startBarrier);
+    }
+  }
+
+  stopUserCommands(): Promise<void> {
+    this.#userCommandStopGeneration += 1;
+    this.#userCommandStopsPending += 1;
+    const stop = this.#userCommandStopTail.then(async () => {
+      try {
+        await Promise.all([...this.#userCommandStartBarriers]);
+        await Promise.all(
+          [...this.#activeUserCommands].map(([ref, owner]) => this.#stopUserCommand(ref, owner)),
+        );
+      } finally {
+        this.#userCommandStopsPending -= 1;
+      }
+    });
+    this.#userCommandStopTail = stop.catch(() => undefined);
+    return stop;
   }
 
   async *compactSession(): AsyncIterable<SessionEvent> {
@@ -452,6 +549,14 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         `Cannot resume externally isolated session ${sessionId} outside its owning harness.`,
       );
     }
+    // Leaving the current Session must not orphan its live user commands:
+    // the switch replaces the transcript, so their cards and the Ctrl+C stop
+    // affordance would disappear while the commands keep running. Await the
+    // start-barrier-aware stop path before changing Session identity so an
+    // in-flight start cannot land after the switch (#3210). This runs before
+    // the durable cwd relocation below: if a stop rejects, the switch aborts
+    // with nothing committed rather than stranding a half-switched Session.
+    await this.stopUserCommands();
     let relocation: MakaSessionMoveResult | undefined;
     if (options.relocateCwd !== undefined) {
       const nextCwd = await resolveMoveCwd(options.relocateCwd, this.#workspace.hostCwd);
@@ -563,6 +668,13 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   }
 
   startNewSession(): void {
+    // `/new` replaces the transcript without preserving user-command cards,
+    // so a still-running command would lose both its projection and its
+    // Ctrl+C stop affordance. Stop tracked commands before the identity
+    // change; the generation/pending bump is synchronous, so an in-flight
+    // start self-stops when it resolves even though this method stays sync
+    // (#3210).
+    void this.stopUserCommands().catch(() => undefined);
     this.#sessionGeneration += 1;
     this.#channelGeneration += 1;
     this.#sessionId = null;
@@ -618,12 +730,28 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   async stop(): Promise<void> {
     const turn = this.#channel?.snapshot.rootTurn;
-    if (!turn || isTerminalTurn(turn)) return;
-    await this.#request('turn.stop', {
-      sessionId: turn.sessionId,
-      turnId: turn.turnId,
-      runId: turn.runId,
-    });
+    // A user command is not part of the turn, so its stop must never be
+    // reported as a failed turn interrupt: a rejecting runtime.resource.stop
+    // (host draining, transport failure) would otherwise reset the caller's
+    // interrupt affordance even though turn.stop succeeded. Stop the commands
+    // best-effort here — this is also the close authority — while the callers
+    // that own their lifecycle (Ctrl+C, Session switch) await
+    // stopUserCommands() directly and surface its errors themselves (#3210).
+    const stops: Promise<unknown>[] = [this.stopUserCommands().catch(() => undefined)];
+    if (turn && !isTerminalTurn(turn)) {
+      stops.push(
+        this.#request('turn.stop', {
+          sessionId: turn.sessionId,
+          turnId: turn.turnId,
+          runId: turn.runId,
+        }),
+      );
+    }
+    const results = await Promise.allSettled(stops);
+    const failed = results.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    if (failed) throw failed.reason;
   }
 
   getSessionId(): string | null {
@@ -996,7 +1124,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     })
       .then((result) => {
         if (result.kind !== 'resource' || !result.resource) return;
-        for (const listener of this.#shellRunListeners) listener(result.resource);
+        this.#publishShellRunUpdate(result.resource);
       })
       .catch(() => undefined);
   }
@@ -1049,10 +1177,40 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       .then((resources) => {
         if (this.#sessionId !== sessionId) return;
         for (const resource of resources) {
-          for (const listener of this.#shellRunListeners) listener(resource);
+          this.#publishShellRunUpdate(resource);
         }
       })
       .catch(() => undefined);
+  }
+
+  async #stopUserCommand(
+    ref: string,
+    owner: { readonly sessionId: string; readonly commandId: string },
+  ): Promise<void> {
+    if (this.#activeUserCommands.get(ref) !== owner) return;
+    const stopped = await this.#request('runtime.resource.stop', {
+      sessionId: owner.sessionId,
+      ref,
+    });
+    this.#publishShellRunUpdate({
+      sessionId: owner.sessionId,
+      ownership: { kind: 'local' },
+      sourceTurnId: owner.commandId,
+      sourceToolCallId: owner.commandId,
+      result: stopped.resource,
+    });
+  }
+
+  #publishShellRunUpdate(update: ShellRunUpdate): void {
+    const owner = this.#activeUserCommands.get(update.result.ref);
+    if (
+      owner?.sessionId === update.sessionId &&
+      owner.commandId === update.sourceToolCallId &&
+      !isActiveShellRunStatus(update.result.status)
+    ) {
+      this.#activeUserCommands.delete(update.result.ref);
+    }
+    for (const listener of this.#shellRunListeners) listener(update);
   }
 
   #request<K extends DirectRequestOperationKey>(

@@ -3,9 +3,10 @@ import { describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import type { PipeShellOutput, PtyShellOutput } from '@maka/core/shell-run';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
-import type { SessionEvent, ToolResultContent } from '@maka/core/events';
+import type { SessionEvent, ShellRunSnapshotResult, ToolResultContent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
+  appendUserCommandToTranscript,
   appendUserPrompt,
   applyShellRunViewUpdateToTranscript,
   applyMakaSessionEventToTranscript,
@@ -1772,6 +1773,149 @@ describe('Maka Pi TUI transcript', () => {
       state.entries.some((entry) => entry.kind === 'notice'),
       false,
     );
+  });
+
+  test('updates a local user command card from its Runtime Resource', () => {
+    const state = createMakaPiTranscriptState();
+    const ref = 'maka://runtime/background-tasks/user-command-1';
+    appendUserCommandToTranscript(state, {
+      commandId: 'user-command-1',
+      command: 'pwd',
+      result: shellRun({ ref, status: 'running', stdout: '' }) as ShellRunSnapshotResult,
+    });
+
+    const applied = applyShellRunViewUpdateToTranscript(state, {
+      sessionId: 'session-1',
+      ownership: { kind: 'local' },
+      sourceTurnId: 'user-command-1',
+      sourceToolCallId: 'user-command-1',
+      result: shellRun({
+        ref,
+        status: 'completed',
+        stdout: '/repo\n',
+        completedAt: 2_000,
+        exitCode: 0,
+      }),
+    });
+
+    assert.equal(applied, true);
+    const tool = state.entries.find((entry) => entry.kind === 'tool');
+    assert.equal(tool?.toolName, 'User command');
+    assert.equal(tool?.status, 'done');
+    assert.equal(tool?.expanded, true);
+    assert.match(tool?.output ?? '', /\/repo/);
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'notice'),
+      false,
+    );
+  });
+
+  test('keeps user commands expanded and outside Ctrl+O model-tool toggles', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserCommandToTranscript(state, {
+      commandId: 'user-command-1',
+      command: 'printf done',
+      result: shellRun({
+        ref: 'maka://runtime/background-tasks/user-command-1',
+        status: 'completed',
+        stdout: 'done\n',
+        completedAt: 2_000,
+        exitCode: 0,
+      }) as ShellRunSnapshotResult,
+    });
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'model-tool-1',
+        toolName: 'Bash',
+        args: { command: 'printf model' },
+      }),
+    );
+    const tools = state.entries.filter((entry) => entry.kind === 'tool');
+    const userCommand = tools.find((entry) => entry.userOwned === true);
+    const modelTool = tools.find((entry) => entry.userOwned !== true);
+    assert.ok(userCommand && modelTool);
+    assert.equal(userCommand.expanded, true);
+    assert.equal(modelTool.expanded, false);
+
+    assert.equal(toggleAllToolExpansion(state), true);
+    assert.equal(userCommand.expanded, true);
+    assert.equal(modelTool.expanded, true);
+    assert.equal(toggleAllToolExpansion(state), true);
+    assert.equal(userCommand.expanded, true);
+    assert.equal(modelTool.expanded, false);
+  });
+
+  test('preserves local user-command cards only for same-session reconnect replacement', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserCommandToTranscript(state, {
+      commandId: 'user-command-1',
+      command: 'sleep 60',
+      result: shellRun({
+        ref: 'maka://runtime/background-tasks/user-command-1',
+        status: 'running',
+        stdout: '',
+      }) as ShellRunSnapshotResult,
+    });
+
+    replaceTranscriptWithStoredMessages(state, [], { preserveUserCommands: true });
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'tool' && entry.userOwned === true),
+      true,
+    );
+
+    replaceTranscriptWithStoredMessages(state, []);
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'tool' && entry.userOwned === true),
+      false,
+    );
+  });
+
+  test('reconnect re-inserts preserved user-command cards at their chronological position (#3210)', () => {
+    const state = createMakaPiTranscriptState();
+    // The command ran before the model turns that followed it.
+    appendUserCommandToTranscript(state, {
+      commandId: 'user-command-1',
+      command: 'pwd',
+      result: shellRun({
+        ref: 'maka://runtime/background-tasks/user-command-1',
+        status: 'completed',
+        stdout: '/repo\n',
+        startedAt: 1_000,
+      }) as ShellRunSnapshotResult,
+    });
+
+    replaceTranscriptWithStoredMessages(
+      state,
+      [
+        { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 2_000, text: 'later prompt' },
+        {
+          type: 'assistant',
+          id: 'message-2',
+          turnId: 'turn-1',
+          ts: 3_000,
+          text: 'later answer',
+          modelId: 'model-1',
+        },
+      ],
+      { preserveUserCommands: true },
+    );
+
+    const cardIndex = state.entries.findIndex(
+      (entry) => entry.kind === 'tool' && entry.userOwned === true,
+    );
+    const promptIndex = state.entries.findIndex((entry) =>
+      JSON.stringify(entry).includes('later prompt'),
+    );
+    const answerIndex = state.entries.findIndex((entry) =>
+      JSON.stringify(entry).includes('later answer'),
+    );
+    assert.notEqual(cardIndex, -1);
+    assert.notEqual(promptIndex, -1);
+    assert.notEqual(answerIndex, -1);
+    assert.ok(cardIndex < promptIndex, 'card must stay ahead of the later turn');
+    assert.ok(promptIndex < answerIndex);
   });
 
   test('notifies a settle exactly once across a folded poll and the live update', () => {

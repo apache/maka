@@ -68,9 +68,12 @@ import {
 } from './session-driver.js';
 import {
   appendTurnFailureToTranscript,
+  appendUserCommandToTranscript,
   appendUserPrompt,
   applyMakaSessionEventToTranscript,
+  applyShellRunUpdateToTranscript,
   createMakaPiTranscriptState,
+  hasRunningUserCommand,
   activeSandboxBoundaryRequest,
   activeUserQuestionRequest,
   completePendingInteraction,
@@ -260,9 +263,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const tui = new TUI(terminal);
   const state = createMakaPiTranscriptState();
   let transcriptMessages: readonly StoredMessage[] = [];
-  const replaceTranscript = (messages: readonly StoredMessage[]): void => {
+  const replaceTranscript = (
+    messages: readonly StoredMessage[],
+    options: { readonly preserveUserCommands?: boolean } = {},
+  ): void => {
     transcriptMessages = messages;
-    replaceTranscriptWithStoredMessages(state, messages);
+    replaceTranscriptWithStoredMessages(state, messages, options);
   };
   let cwd = input.cwd;
   let model = input.model;
@@ -331,6 +337,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let lastTurnEscapeAt = 0;
   let lastIdleEscapeAt = 0;
   let lastIdleCtrlCAt = 0;
+  // Set once a user-command stop rejects: a rejected stop publishes no
+  // terminal update, so the card would read running for the rest of the
+  // session and the branch below would capture every later Ctrl+C, hiding
+  // the exit chord. After a failure the capture disarms and Ctrl+C falls
+  // through to the normal idle handling (#3210).
+  let userCommandStopRejected = false;
   type AttachedTurnContext =
     | { readonly kind: 'adopted'; readonly turn: MakaPreparedSessionTurn }
     | { readonly kind: 'external'; readonly turn: MakaAttachedSessionTurn };
@@ -424,6 +436,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     paddingX: 1,
     autocompleteMaxVisible: EDITOR_AUTOCOMPLETE_MAX_VISIBLE,
   });
+  editor.setUserCommandHint(primaryGuidance.editor.userCommandHint);
   let refreshEditorCwd: ((cwd: string) => void) | undefined;
   const editorSurface = new MakaAutocompleteAboveEditorComponent(editor);
   const layout = new MakaPiLayoutComponent(
@@ -491,7 +504,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     input.driver.subscribeTranscriptReplacements?.((sessionId, turnId, messages, reason) => {
       if (closed || input.driver.getSessionId() !== sessionId) return;
       if (reason === 'reconnect') {
-        replaceTranscript(messages);
+        replaceTranscript(messages, { preserveUserCommands: true });
         shellRunElapsedTicker.sync();
         requestRender();
         return;
@@ -819,6 +832,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const idleMs = Date.now() - lastActivityAt;
     editor.addToHistory(prompt);
     if (handleSlashCommand(prompt, idleMs)) return;
+    const userCommand = parseUserCommand(prompt);
+    if (userCommand !== undefined) {
+      if (!userCommand) {
+        state.entries.push({ kind: 'notice', level: 'error', text: 'Usage: !<command>' });
+        requestRender();
+        return;
+      }
+      if (input.firstRun) {
+        void showSetupWizard();
+        return;
+      }
+      void runControl(() => runUserCommand(userCommand));
+      return;
+    }
     // First-run has no connection, so the wizard is the only surface. This is
     // the single choke point for idle submits (Enter, Alt+Enter, steer
     // fallback): reopen the wizard instead of opening a turn against a
@@ -1052,6 +1079,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       // input routing): check it before handing off to steering.
       if (isExitPrompt(prompt)) {
         beginGracefulClose();
+        return;
+      }
+      if (parseUserCommand(prompt) !== undefined) {
+        editor.addToHistory(prompt);
+        state.entries.push({
+          kind: 'notice',
+          level: 'error',
+          text: 'Cannot run a user command while a turn is running.',
+        });
+        requestRender();
         return;
       }
       const swarmCommand = parseSwarmCommand(prompt);
@@ -1429,6 +1466,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       level: 'info',
       text: nextLevel ? `Thinking: ${nextLevel}` : 'Thinking: default',
     });
+    requestRender();
+  };
+
+  const runUserCommand = async (command: string): Promise<void> => {
+    if (!input.driver.runUserCommand) {
+      throw new Error('User commands are unavailable on this session driver.');
+    }
+    const started = await input.driver.runUserCommand(command);
+    appendUserCommandToTranscript(state, { command, ...started });
+    const racedUpdate = started.takeRacedUpdate();
+    if (racedUpdate) {
+      applyShellRunUpdateToTranscript(state, started.commandId, racedUpdate);
+    }
     requestRender();
   };
 
@@ -2156,15 +2206,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const showHelp = () => {
     // Derive the command list from the registry so /help never drifts from the
     // real commands. Keybindings are not commands, so they are listed by hand.
-    const commands = slashCommands
-      .map((command) => {
+    const commands = [
+      ...slashCommands.map((command) => {
         const aliasSuffix =
           command.aliases && command.aliases.length > 0
             ? ` (${command.aliases.map((alias) => `/${alias}`).join(', ')})`
             : '';
         return `  /${command.name}${aliasSuffix} — ${command.description}`;
-      })
-      .join('\n');
+      }),
+      primaryGuidance.help.userCommand,
+    ].join('\n');
     const keybindings = primaryGuidance.help.keybindings.join('\n');
     state.entries.push({
       kind: 'notice',
@@ -3057,6 +3108,24 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       else requestTurnInterrupt();
       return { consume: true };
     }
+    if (
+      !turnRunning &&
+      matchesKey(data, Key.ctrl('c')) &&
+      !userCommandStopRejected &&
+      hasRunningUserCommand(state) &&
+      input.driver.stopUserCommands
+    ) {
+      lastIdleCtrlCAt = 0;
+      void runControl(async () => {
+        try {
+          await input.driver.stopUserCommands!();
+        } catch (error) {
+          userCommandStopRejected = true;
+          reportError(error);
+        }
+      });
+      return { consume: true };
+    }
     // Double Escape interrupts the running turn. This must sit below the
     // boundary branch so Escape keeps meaning "deny" while a prompt is
     // pending, and it only arms while a prompt turn is actually running.
@@ -3373,6 +3442,13 @@ function shortSessionId(id: string): string {
 function isExitPrompt(prompt: string): boolean {
   const trimmed = prompt.trim();
   return trimmed === 'quit' || trimmed === 'exit' || trimmed === '/quit' || trimmed === '/exit';
+}
+
+/** Only a leading bang opts into a local user command; ordinary prose remains a prompt. */
+function parseUserCommand(prompt: string): string | undefined {
+  const trimmed = prompt.trim();
+  if (!trimmed.startsWith('!')) return undefined;
+  return trimmed.slice(1).trim();
 }
 
 // Two Escapes this close together read as one deliberate "stop the turn".

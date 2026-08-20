@@ -4,6 +4,7 @@ import type {
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
   SessionEvent,
+  ShellRunSnapshotResult,
   ToolOutputStream,
   ToolResultContent,
 } from '@maka/core/events';
@@ -167,8 +168,10 @@ export type MakaPiTranscriptEntry =
       outputDeltas: BoundedChunkBuffer<MakaPiToolOutputDelta>;
       durationMs?: number;
       status: 'running' | 'done' | 'error' | 'failed' | 'aborted' | 'detached' | 'unavailable';
-      /** Expanded card view; stamped from expandAllTools, retargeted by Ctrl+O. */
+      /** Expanded card view; model tools follow expandAllTools and Ctrl+O. */
       expanded: boolean;
+      /** Local-only Runtime Resource started by `!<command>`, never a model tool call. */
+      userOwned?: boolean;
       /**
        * Set when a successful shell-run poll is folded into its parent while
        * off-screen: the entry cannot be spliced (that would shift line numbers
@@ -286,12 +289,18 @@ export function applyShellRunViewUpdateToTranscript(
   const tool = findToolEntry(state, update.sourceToolCallId);
   const wasLive = isLiveShellRunCard(tool);
   const applied = applyShellRunUpdateToTranscript(state, update.sourceToolCallId, update.result);
-  if (tool && wasLive && isSettledShellRunCard(tool) && options?.announceSettle !== false) {
+  if (
+    tool &&
+    tool.userOwned !== true &&
+    wasLive &&
+    isSettledShellRunCard(tool) &&
+    options?.announceSettle !== false
+  ) {
     pushShellRunSettledNotice(state, tool);
   }
   if (
     !tool ||
-    tool.toolName !== 'Bash' ||
+    !isShellRunToolCard(tool) ||
     tool.result?.kind !== 'shell_run' ||
     tool.result.ref !== update.result.ref ||
     !isActiveShellRunStatus(tool.result.status)
@@ -314,17 +323,74 @@ export function applyShellRunUpdateToTranscript(
   update: Extract<ToolResultContent, { kind: 'shell_run' }>,
 ): boolean {
   const tool = findToolEntry(state, sourceToolCallId);
-  if (!tool || tool.toolName !== 'Bash') return false;
+  if (!tool || !isShellRunToolCard(tool)) return false;
   if (tool.result?.kind === 'shell_run' && tool.result.ref !== update.ref) return false;
   return applyShellRunResult(tool, update);
+}
+
+/** Adds a local-only card for a `!<command>` resource without creating a model turn. */
+export function appendUserCommandToTranscript(
+  state: MakaPiTranscriptState,
+  input: { commandId: string; command: string; result: ShellRunSnapshotResult },
+): void {
+  state.entries.push({
+    kind: 'tool',
+    toolUseId: input.commandId,
+    toolName: 'User command',
+    title: 'User command',
+    input: { command: input.command },
+    result: input.result,
+    output: formatToolResultContent(input.result),
+    resultVersion: 1,
+    progress: createProgressBuffer(),
+    outputDeltas: createOutputBuffer(),
+    status: shellRunTranscriptStatus(input.result.status),
+    expanded: true,
+    userOwned: true,
+  });
 }
 
 export function replaceTranscriptWithStoredMessages(
   state: MakaPiTranscriptState,
   messages: readonly StoredMessage[],
+  options: { readonly preserveUserCommands?: boolean } = {},
 ): void {
+  const userCommands = options.preserveUserCommands
+    ? state.entries.filter(
+        (entry): entry is MakaPiToolEntry => entry.kind === 'tool' && entry.userOwned === true,
+      )
+    : [];
   const view = materializeSession(messages);
-  state.entries = foldStoredShellRunChildren(view.items.flatMap(chatItemToTranscriptEntries));
+  if (userCommands.length === 0) {
+    state.entries = foldStoredShellRunChildren(view.items.flatMap(chatItemToTranscriptEntries));
+  } else {
+    // Re-insert each preserved card at its chronological position: comparing
+    // the shell run's startedAt against item timestamps keeps a `!` command
+    // that ran before later model turns ahead of them, so a same-session
+    // reconnect does not reorder the transcript (#3210).
+    const cards = [...userCommands].sort(
+      (a, b) => userCommandCardStartedAt(a) - userCommandCardStartedAt(b),
+    );
+    const interleaved: MakaPiTranscriptEntry[] = [];
+    let cardIndex = 0;
+    for (const item of view.items) {
+      while (
+        cardIndex < cards.length &&
+        userCommandCardStartedAt(cards[cardIndex]!) <= chatItemTimestamp(item)
+      ) {
+        interleaved.push(cards[cardIndex]!);
+        cardIndex += 1;
+      }
+      interleaved.push(...chatItemToTranscriptEntries(item));
+    }
+    while (cardIndex < cards.length) {
+      interleaved.push(cards[cardIndex]!);
+      cardIndex += 1;
+    }
+    // Cards survive the fold untouched: folding only merges a stored shell-run
+    // child into a Bash parent sharing its ref, which a user command never is.
+    state.entries = foldStoredShellRunChildren(interleaved);
+  }
   clearPendingInteractions(state);
   state.pendingShellRunPolls.clear();
   state.expandAllTools = false;
@@ -345,6 +411,22 @@ export function replaceTranscriptWithStoredMessages(
   for (const msg of messages) {
     if (msg.type === 'token_usage') accumulateUsage(state.usage, msg);
   }
+}
+
+export function hasRunningUserCommand(state: MakaPiTranscriptState): boolean {
+  return state.entries.some(
+    (entry) => entry.kind === 'tool' && entry.userOwned === true && isLiveShellRunCard(entry),
+  );
+}
+
+/** Chronological key for a preserved user-command card; unknown times sort last. */
+function userCommandCardStartedAt(entry: MakaPiToolEntry): number {
+  return entry.result?.kind === 'shell_run' ? entry.result.startedAt : Number.POSITIVE_INFINITY;
+}
+
+/** Chronological key for a materialized view item. */
+function chatItemTimestamp(item: ChatItem): number {
+  return item.kind === 'tool' ? item.item.ts : item.message.ts;
 }
 
 /**
@@ -443,7 +525,7 @@ function togglesInert(state: MakaPiTranscriptState): boolean {
 export function toggleAllToolExpansion(state: MakaPiTranscriptState): boolean {
   if (togglesInert(state)) return false;
   const candidates = state.entries.filter(
-    (entry): entry is MakaPiToolEntry => entry.kind === 'tool',
+    (entry): entry is MakaPiToolEntry => entry.kind === 'tool' && entry.userOwned !== true,
   );
   if (candidates.length === 0) return false;
   state.expandAllTools = !state.expandAllTools;
@@ -1572,6 +1654,10 @@ function findToolEntry(
     .find(
       (entry): entry is MakaPiToolEntry => entry.kind === 'tool' && entry.toolUseId === toolUseId,
     );
+}
+
+function isShellRunToolCard(tool: MakaPiToolEntry): boolean {
+  return tool.toolName === 'Bash' || tool.userOwned === true;
 }
 
 function createProgressBuffer(): BoundedChunkBuffer<string> {

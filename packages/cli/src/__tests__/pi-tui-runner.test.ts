@@ -33,6 +33,7 @@ import type {
   MakaSessionRewindResult,
   MakaSessionSwitchOptions,
   MakaSessionSwitchResult,
+  MakaTranscriptReplacementReason,
   RewindTarget,
   SessionResumeAvailability,
 } from '../session-driver.js';
@@ -211,6 +212,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('快捷键'));
     const output = plainTerminalOutput(terminal.output());
     assert.match(output, /\/compact\s+— 压缩会话上下文/);
+    assert.match(output, /!<command> — 执行一次仅用户可见的 shell 命令/);
     assert.match(output, /Ctrl\+D — 输入为空时退出/);
 
     exitMaka(terminal);
@@ -220,6 +222,178 @@ describe('Maka Pi TUI runner', () => {
         throw new Error('TUI did not close during test cleanup');
       }),
     ]);
+  });
+
+  test('!<command> runs once without opening an agent turn', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new UserCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!pwd');
+    terminal.input('\r');
+    await waitFor(() => driver.commands.includes('pwd'));
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+    assert.deepEqual(driver.prompts, []);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('a bare ! shows localized user-command guidance without starting a turn', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new UserCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      locale: 'zh',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('输入 shell 命令'));
+    assert.deepEqual(driver.commands, []);
+    assert.deepEqual(driver.prompts, []);
+
+    terminal.input('p');
+    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('输入 shell 命令'));
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('Ctrl-C stops a running user command without exiting the TUI', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RunningUserCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!sleep 3600');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+
+    terminal.input('\x03');
+    await waitFor(() => driver.stopUserCommandCalls === 1);
+    assert.equal(terminal.stopCalls, 0);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('a rejected user-command stop hands Ctrl-C back to the exit chord (#3210)', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RejectingUserCommandStopDriver();
+    const processExitCodes: number[] = [];
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      onProcessExit: (exitCode) => processExitCodes.push(exitCode),
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!sleep 3600');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+
+    // The first Ctrl+C is captured to stop the command, but the stop rejects:
+    // no terminal update is published, so the card still reads running.
+    terminal.input('\x03');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('host_draining'));
+    assert.equal(driver.stopUserCommandCalls, 1);
+    assert.equal(terminal.stopCalls, 0);
+
+    // The capture must disarm: the next press shows the exit prompt and the
+    // one after exits.
+    terminal.input('\x03');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Press Ctrl+C again to exit.'),
+    );
+    assert.equal(driver.stopUserCommandCalls, 1);
+    assert.equal(terminal.stopCalls, 0);
+
+    terminal.input('\x03');
+    await run;
+    assert.deepEqual(processExitCodes, [0]);
+  });
+
+  test('same-session reconnect keeps a user-command card for its terminal update', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RunningUserCommandDriver();
+    let publishShellRun: ((update: ShellRunUpdate) => void) | undefined;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      subscribeShellRunUpdates: (listener) => {
+        publishShellRun = listener;
+        return () => {
+          publishShellRun = undefined;
+        };
+      },
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!printf done');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+
+    driver.publishReconnect();
+    publishShellRun?.({
+      sessionId: 'session-1',
+      ownership: { kind: 'local' },
+      sourceTurnId: 'user-command-1',
+      sourceToolCallId: 'user-command-1',
+      result: {
+        kind: 'shell_run',
+        ref: 'maka://runtime/background-tasks/user-command-1',
+        mode: 'pipes',
+        status: 'completed',
+        cwd: '/repo',
+        cmd: 'printf done',
+        startedAt: 1,
+        updatedAt: 2,
+        completedAt: 2,
+        exitCode: 0,
+        revision: 2,
+        output: pipeOutput('done\n'),
+      },
+    });
+
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('done'));
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /User command/);
+
+    exitMaka(terminal);
+    await run;
   });
 
   test('disables taskbar progress on Windows and Windows Terminal by default', () => {
@@ -6819,6 +6993,94 @@ class SlashCommandDriver implements MakaSessionDriver {
   }
   getPermissionMode(): PermissionMode {
     return this.activeBoundaryDisplayMode ?? 'ask';
+  }
+}
+
+class UserCommandDriver extends SlashCommandDriver {
+  readonly commands: string[] = [];
+
+  async runUserCommand(command: string) {
+    this.commands.push(command);
+    return {
+      commandId: `user-command-${this.commands.length}`,
+      result: {
+        kind: 'shell_run' as const,
+        ref: `maka://runtime/background-tasks/user-command-${this.commands.length}`,
+        mode: 'pipes' as const,
+        status: 'completed' as const,
+        cwd: '/repo',
+        cmd: command,
+        startedAt: 1,
+        updatedAt: 2,
+        completedAt: 2,
+        exitCode: 0,
+        revision: 1,
+        output: pipeOutput(command),
+      },
+      takeRacedUpdate: () => undefined,
+    };
+  }
+}
+
+class RunningUserCommandDriver extends SlashCommandDriver {
+  readonly commands: string[] = [];
+  stopUserCommandCalls = 0;
+  readonly #transcriptListeners = new Set<
+    (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void
+  >();
+
+  async runUserCommand(command: string) {
+    this.commands.push(command);
+    return {
+      commandId: `user-command-${this.commands.length}`,
+      result: {
+        kind: 'shell_run' as const,
+        ref: `maka://runtime/background-tasks/user-command-${this.commands.length}`,
+        mode: 'pipes' as const,
+        status: 'running' as const,
+        cwd: '/repo',
+        cmd: command,
+        startedAt: 1,
+        updatedAt: 1,
+        revision: 1,
+        output: pipeOutput(''),
+      },
+      takeRacedUpdate: () => undefined,
+    };
+  }
+
+  async stopUserCommands(): Promise<void> {
+    this.stopUserCommandCalls += 1;
+  }
+
+  subscribeTranscriptReplacements(
+    listener: (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void,
+  ): () => void {
+    this.#transcriptListeners.add(listener);
+    return () => this.#transcriptListeners.delete(listener);
+  }
+
+  publishReconnect(): void {
+    for (const listener of this.#transcriptListeners) {
+      listener('session-1', 'turn-1', [], 'reconnect');
+    }
+  }
+}
+
+class RejectingUserCommandStopDriver extends RunningUserCommandDriver {
+  override async stopUserCommands(): Promise<void> {
+    this.stopUserCommandCalls += 1;
+    throw new Error('host_draining');
   }
 }
 
