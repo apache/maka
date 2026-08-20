@@ -12,7 +12,6 @@ import {
   authorizeRuntimeHostOperation,
   createRuntimeHostConnectionAuthority,
 } from '../server/connection-authority.js';
-import { decodeScheduledTask, decodeScheduledTaskMutateInput } from '../protocol/scheduled-task.js';
 
 describe('ScheduledTask protocol', () => {
   test('requires Host-path authority only when a mutation submits a Host path', () => {
@@ -32,39 +31,6 @@ describe('ScheduledTask protocol', () => {
       for (const frame of [createMutationFrame(projectId), updateMutationFrame(projectId)]) {
         assert.equal(authorizeRuntimeHostOperation(authority, frame), false);
       }
-    }
-  });
-
-  test('a retired backend decodes on the way out but not on the way in', () => {
-    // #3211: the same execution decoder serves both directions, and they carry
-    // different backend invariants. A stored Automation frozen by a build that
-    // shipped FakeBackend must stay readable; a live create/update may not
-    // introduce the retired value.
-    const retired = (effect: ScheduledTaskEffect): ScheduledTaskEffect =>
-      effect.kind === 'agent_run'
-        ? { ...effect, execution: { ...effect.execution, backend: 'fake' } }
-        : effect;
-
-    const stored = { ...scheduledTask('task-1'), effect: retired(agentRunEffect('project-1')) };
-    assert.equal(decodeScheduledTask(stored).effect.kind, 'agent_run');
-
-    for (const input of [
-      {
-        kind: 'create' as const,
-        input: {
-          title: 'Inspect workspace',
-          intentBody: 'Summarize the workspace.',
-          schedule: { kind: 'once' as const, runAt: 1 },
-          effect: retired(agentRunEffect('project-1')),
-        },
-      },
-      {
-        kind: 'update' as const,
-        taskId: 'task-1',
-        patch: { effect: retired(agentRunEffect('project-1')) },
-      },
-    ]) {
-      assert.throws(() => decodeScheduledTaskMutateInput(input), /Invalid ScheduledTask backend/);
     }
   });
 
@@ -104,6 +70,40 @@ describe('ScheduledTask protocol', () => {
       /byte limit/,
     );
   });
+
+  test('tolerates the legacy backend key on agent_run execution templates', () => {
+    // Older builds persisted `ScheduledTaskExecutionTemplate.backend`. The field
+    // is dropped from new writes, but stored records that still carry it must
+    // keep decoding, and the decoded template must not resurrect the field.
+    const template = {
+      cwd: '/workspace',
+      backend: 'fake',
+      llmConnectionSlug: 'openai',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+      collaborationMode: 'agent',
+      orchestrationMode: 'default',
+    };
+    const decoded = decodeScheduledTaskQueryResult({
+      kind: 'task',
+      task: {
+        ...scheduledTask('legacy-backend'),
+        effect: { kind: 'agent_run', execution: template },
+      },
+    });
+    assert.equal(decoded.kind, 'task');
+    assert.ok(decoded.task !== null);
+    if (decoded.task.effect.kind !== 'agent_run') assert.fail('expected agent_run effect');
+    assert.deepEqual(decoded.task.effect.execution, {
+      cwd: '/workspace',
+      llmConnectionSlug: 'openai',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+      collaborationMode: 'agent',
+      orchestrationMode: 'default',
+    });
+    assert.equal('backend' in decoded.task.effect.execution, false);
+  });
 });
 
 function createMutationFrame(projectId: string | null | undefined): RequestFrame {
@@ -140,7 +140,6 @@ function agentRunEffect(projectId: string | null | undefined): ScheduledTaskEffe
     execution: {
       cwd: '/workspace',
       ...(projectId === undefined ? {} : { projectId }),
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai',
       model: 'gpt-5',
       permissionMode: 'ask',
