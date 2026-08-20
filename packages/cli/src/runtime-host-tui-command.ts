@@ -6,9 +6,11 @@ import { readRuntimeHostConnectionCatalog } from '@maka/runtime-host/client';
 import { createForeignSessionStore } from '@maka/storage';
 import { formatMakaResumeHint } from './cli-invocation.js';
 import {
+  canRestartRuntimeHostCliConflict,
   connectRuntimeHostCli,
+  resolveRuntimeHostCliConflictDecision,
   RuntimeHostCliConflictError,
-  shouldRetryRuntimeHostConflict,
+  type RuntimeHostCliLocalGenerationRequest,
 } from './runtime-host-cli-context.js';
 import { createRuntimeHostOnboardingSurface } from './runtime-host-onboarding.js';
 import type { MakaPiTuiTurnActivitySurface } from './pi-tui-contracts.js';
@@ -105,18 +107,38 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
 async function createTuiContextWithHostConflictPrompt(
   input: Parameters<typeof createRuntimeHostTuiContext>[0],
 ): Promise<Awaited<ReturnType<typeof createRuntimeHostTuiContext>> | null> {
+  let generationRequest: RuntimeHostCliLocalGenerationRequest | undefined;
   while (true) {
     try {
-      return await createRuntimeHostTuiContext(input);
+      return await createRuntimeHostTuiContext({
+        ...input,
+        ...(generationRequest ? { localGenerationRequest: generationRequest } : {}),
+      });
     } catch (error) {
       if (!(error instanceof RuntimeHostCliConflictError) || !process.stdin.isTTY) throw error;
+      if (!generationRequest && error.registration.lifecycleMode === 'ephemeral') {
+        generationRequest = { kind: 'require_installed' };
+        continue;
+      }
       process.stderr.write(`${error.message}\n`);
+      const canRestart = canRestartRuntimeHostCliConflict(error);
       const readline = createInterface({ input: process.stdin, output: process.stderr });
       try {
         const answer = await readline.question(
-          'Wait only if the existing Host is expected to become idle, or cancel? [w/C] ',
+          canRestart
+            ? 'Restart this local Host now, wait for it to exit, or cancel? [r/w/C] '
+            : 'Wait only if the existing Host is expected to exit, or cancel? [w/C] ',
         );
-        if (!shouldRetryRuntimeHostConflict(answer)) return null;
+        const decision = resolveRuntimeHostCliConflictDecision(answer, canRestart);
+        if (decision === 'cancel') return null;
+        if (decision === 'restart') {
+          generationRequest = {
+            kind: 'takeover',
+            expectedHostEpoch: error.registration.hostEpoch,
+          };
+          continue;
+        }
+        generationRequest = undefined;
       } finally {
         readline.close();
       }

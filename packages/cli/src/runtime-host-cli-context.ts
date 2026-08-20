@@ -26,18 +26,33 @@ import {
   type HostIncompatible,
 } from '@maka/runtime-host/protocol';
 import { resolveMakaClientDataRoot } from '@maka/storage';
+import {
+  loadRuntimeHostCliInstallationContext,
+  type RuntimeHostCliInstallationContext,
+} from './runtime-host-installation-context.js';
 
 export class RuntimeHostCliConflictError extends RuntimeHostPermanentReconnectError {
   readonly code = 'RUNTIME_HOST_RESTART_REQUIRED';
 
   constructor(
-    readonly handshake: HostIncompatible,
-    registration: HostRegistration,
+    readonly conflict:
+      | { readonly kind: 'incompatible'; readonly handshake: HostIncompatible }
+      | {
+          readonly kind: 'upgrade_required';
+          readonly restartable: boolean;
+          readonly handshake?: HostIncompatible;
+        },
+    readonly registration: HostRegistration,
+    readonly canReplaceLocalHost: boolean,
   ) {
-    super(formatRuntimeHostCliConflict(handshake, registration));
+    super(formatRuntimeHostCliConflict(conflict, registration, canReplaceLocalHost));
     this.name = 'RuntimeHostCliConflictError';
   }
 }
+
+export type RuntimeHostCliLocalGenerationRequest =
+  | { readonly kind: 'require_installed' }
+  | { readonly kind: 'takeover'; readonly expectedHostEpoch: string };
 
 export interface RuntimeHostCliConnectionContext {
   readonly connection: RuntimeHostConnection;
@@ -57,6 +72,7 @@ interface RuntimeHostCliContextDeps {
   readonly readConnectionCatalog: typeof readRuntimeHostConnectionCatalog;
   readonly loadClientInstanceId: typeof loadOrCreateRuntimeHostClientInstanceId;
   readonly executionCandidateEntrypoint: URL;
+  readonly loadInstallationContext: () => Promise<RuntimeHostCliInstallationContext>;
   readonly profileCatalog?: RuntimeHostProfileCatalog;
 }
 
@@ -66,6 +82,7 @@ export async function connectRuntimeHostCli(
     readonly surface: ClientSurface;
     readonly profileId?: string;
     readonly clientDataRoot?: string;
+    readonly localGenerationRequest?: RuntimeHostCliLocalGenerationRequest;
   },
   overrides: Partial<RuntimeHostCliContextDeps> = {},
 ): Promise<RuntimeHostCliConnectionContext> {
@@ -77,10 +94,15 @@ export async function connectRuntimeHostCli(
     executionCandidateEntrypoint: new URL(
       import.meta.resolve('@maka/runtime-host/execution-candidate-main'),
     ),
+    loadInstallationContext: loadRuntimeHostCliInstallationContext,
     ...overrides,
   };
   const resolvedProfile = await resolveHostProfile(input, deps);
   const profile = resolvedProfile.profile;
+  if (profile.kind === 'remote' && input.localGenerationRequest) {
+    throw new TypeError('A remote Runtime Host does not accept local generation requests');
+  }
+  const installation = profile.kind === 'local' ? await deps.loadInstallationContext() : undefined;
   const clientInstanceId =
     profile.kind === 'local'
       ? randomUUID()
@@ -94,6 +116,13 @@ export async function connectRuntimeHostCli(
     clientInstanceId,
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
     candidateEntrypoint: deps.executionCandidateEntrypoint,
+    ...(installation ? { candidateGeneration: installation.artifactGeneration } : {}),
+    ...(installation && input.localGenerationRequest
+      ? { generation: installation.artifactGeneration }
+      : {}),
+    ...(input.localGenerationRequest?.kind === 'takeover'
+      ? { takeoverHostEpoch: input.localGenerationRequest.expectedHostEpoch }
+      : {}),
   } as const;
   const connect = async (
     signal?: AbortSignal,
@@ -114,11 +143,21 @@ export async function connectRuntimeHostCli(
       ...(signal ? { signal } : {}),
     });
     if (connected.kind === 'incompatible') {
-      throw new RuntimeHostCliConflictError(connected.handshake, connected.registration);
+      throw new RuntimeHostCliConflictError(
+        { kind: 'incompatible', handshake: connected.handshake },
+        connected.registration,
+        installation?.installationScope === 'persistent',
+      );
     }
     if (connected.kind === 'upgrade_required') {
-      throw new RuntimeHostPermanentReconnectError(
-        'RUNTIME_HOST_RESTART_REQUIRED: An older Runtime Host build is still running. Restart it, or wait for its background work to finish.',
+      throw new RuntimeHostCliConflictError(
+        {
+          kind: 'upgrade_required',
+          restartable: connected.restartable,
+          ...(connected.handshake ? { handshake: connected.handshake } : {}),
+        },
+        connected.registration,
+        installation?.installationScope === 'persistent',
       );
     }
     if (connected.kind === 'failed') {
@@ -160,15 +199,16 @@ async function resolveHostProfile(
 }
 
 function formatRuntimeHostCliConflict(
-  handshake: HostIncompatible,
+  conflict: RuntimeHostCliConflictError['conflict'],
   registration: HostRegistration,
+  canReplaceLocalHost: boolean,
 ): string {
   const lines = [
-    'RUNTIME_HOST_RESTART_REQUIRED: An older Runtime Host is still running and cannot accept this client.',
+    'RUNTIME_HOST_RESTART_REQUIRED: A different Runtime Host is still running and cannot accept this client.',
     `Local Runtime Host: PID ${registration.pid}; lifecycle ${registration.lifecycleMode ?? 'unknown'}; compatibility epoch ${registration.compatibilityEpoch}.`,
   ];
   if (registration.lifecycleMode === 'ephemeral') {
-    lines.push('The ephemeral Host is not currently idle and cannot be replaced by this Client.');
+    lines.push('The ephemeral Host still owns this State Root.');
   } else if (registration.lifecycleMode === 'service') {
     lines.push(
       'This service Host is managed by its operator and cannot be replaced by this Client.',
@@ -176,23 +216,67 @@ function formatRuntimeHostCliConflict(
   } else {
     lines.push('This Host cannot be replaced by this Client.');
   }
-  if (handshake.compatibilityEpoch < RUNTIME_HOST_COMPATIBILITY_EPOCH) {
+  if (!canReplaceLocalHost && registration.lifecycleMode === 'ephemeral') {
     lines.push(
-      registration.lifecycleMode === 'service'
-        ? 'Use the service operator to inspect or upgrade the Host.'
-        : 'Use a previous compatible Maka build to inspect the Host and finish or clear any retained work. Stop the Host only after deciding that interruption is safe.',
+      'This transient CLI invocation is not a persistent installation owner and cannot replace the local Host.',
     );
-  } else {
+  }
+  const activity = conflict.handshake?.activity;
+  if (activity) {
     lines.push(
-      `Host protocol ${handshake.protocolMin}-${handshake.protocolMax}; CLI protocol ${RUNTIME_HOST_PROTOCOL_VERSION}.`,
+      `Host activity: ${activity.connections} connection(s), ${activity.activeOperations} active operation(s), uptime ${activity.processUptimeSeconds}s.`,
     );
+    if (activity.residencies.length > 0) {
+      lines.push(
+        `Durable residency: ${activity.residencies
+          .map(({ label, count }) => `${label} (${count})`)
+          .join(', ')}.`,
+      );
+    }
+    lines.push(
+      'Restarting preserves durable state, but it can interrupt in-flight external work.',
+    );
+  }
+  if (conflict.kind === 'incompatible') {
+    if (conflict.handshake.compatibilityEpoch < RUNTIME_HOST_COMPATIBILITY_EPOCH) {
+      lines.push(
+        registration.lifecycleMode === 'service'
+          ? 'Use the service operator to inspect or upgrade the Host.'
+          : canReplaceLocalHost
+            ? 'Restart only if interruption is acceptable. To inspect retained work first, use a previous compatible Maka build.'
+            : 'Use a persistent Maka installation or a previous compatible build to inspect and replace this Host.',
+      );
+    } else {
+      lines.push(
+        `Host protocol ${conflict.handshake.protocolMin}-${conflict.handshake.protocolMax}; CLI protocol ${RUNTIME_HOST_PROTOCOL_VERSION}.`,
+      );
+      lines.push(
+        registration.lifecycleMode === 'service'
+          ? 'Use the service operator to select compatible Client and Host builds.'
+          : 'Use a newer compatible Maka build to inspect this Host.',
+      );
+    }
   }
   return lines.join('\n');
 }
 
-export function shouldRetryRuntimeHostConflict(answer: string): boolean {
+export type RuntimeHostCliConflictDecision = 'restart' | 'wait' | 'cancel';
+
+export function resolveRuntimeHostCliConflictDecision(
+  answer: string,
+  canRestart: boolean,
+): RuntimeHostCliConflictDecision {
   const normalized = answer.trim().toLowerCase();
-  return normalized === 'w' || normalized === 'wait';
+  if (canRestart && (normalized === 'r' || normalized === 'restart')) return 'restart';
+  return normalized === 'w' || normalized === 'wait' ? 'wait' : 'cancel';
+}
+
+export function canRestartRuntimeHostCliConflict(error: RuntimeHostCliConflictError): boolean {
+  if (!error.canReplaceLocalHost || error.registration.lifecycleMode !== 'ephemeral') return false;
+  const activity = error.conflict.handshake?.activity;
+  return error.conflict.kind === 'upgrade_required'
+    ? error.conflict.restartable
+    : activity !== undefined && activity.connections === 0;
 }
 
 export function resolveRuntimeHostCliTarget(

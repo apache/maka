@@ -8,6 +8,7 @@ import { performance } from 'node:perf_hooks';
 import {
   requireClientInstanceId,
   requireHostCompositionId,
+  requireHostGeneration,
   validateProtocolRange,
   type ClientSurface,
   type HostIncompatible,
@@ -46,6 +47,7 @@ export interface ConnectOrSpawnRuntimeHostInput {
   protocol: ProtocolRange;
   compositionId: string;
   generation?: string;
+  candidateGeneration?: string;
   takeoverHostEpoch?: string;
   clientInstanceId?: string;
   electionDeadlineMs?: number;
@@ -159,6 +161,18 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   input: ConnectOrSpawnRuntimeHostInput,
   dependencies: ConnectOrSpawnRuntimeHostDependencies,
 ): Promise<ConnectOrSpawnRuntimeHostResult> {
+  if (
+    input.generation !== undefined &&
+    input.candidateGeneration !== undefined &&
+    input.generation !== input.candidateGeneration
+  ) {
+    throw new TypeError('Runtime Host generation and candidateGeneration must match');
+  }
+  const candidateGenerationInput = input.candidateGeneration ?? input.generation;
+  const candidateGeneration =
+    candidateGenerationInput === undefined
+      ? undefined
+      : requireHostGeneration(candidateGenerationInput);
   const deadlineMs = input.electionDeadlineMs ?? DEFAULT_ELECTION_DEADLINE_MS;
   if (!Number.isSafeInteger(deadlineMs) || deadlineMs <= 0 || deadlineMs > 120_000) {
     throw new RangeError('electionDeadlineMs must be an integer between 1 and 120000');
@@ -263,7 +277,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
             expectedRootId: capability.rootId,
             entrypoint: input.candidateEntrypoint,
             initialConnectionTimeoutMs: Math.ceil(remaining),
-            ...(input.generation === undefined ? {} : { generation: input.generation }),
+            ...(candidateGeneration === undefined ? {} : { generation: candidateGeneration }),
           });
           const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
           if (attempt.startupFailure) {
