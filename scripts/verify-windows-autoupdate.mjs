@@ -528,11 +528,24 @@ export async function verifyWindowsAutoupdate(
           },
         );
         smokeChild.stderr.setEncoding('utf8');
+        // A persistent collector, like every sibling smoke: without one the
+        // piped stream pauses once waitForDevToolsPort removes its listener,
+        // Chromium's stderr logging can fill the pipe and block the child,
+        // and the failure evidence this capture exists for is lost.
+        let smokeStderr = '';
+        smokeChild.stderr.on('data', (chunk) => {
+          smokeStderr = `${smokeStderr}${chunk}`.slice(-16_384);
+        });
         try {
           const smokePort = await waitForDevToolsPort(smokeChild);
           const smokeTarget = await findRendererTarget(smokePort, smokeChild);
           await waitForUsableRenderer(smokeTarget.webSocketDebuggerUrl, smokeChild, {
             description: 'Upgraded renderer',
+          }).catch((error) => {
+            throw new Error(
+              `${error.message}${smokeStderr.trim() ? `\n${smokeStderr.trim()}` : ''}`,
+              { cause: error },
+            );
           });
           const upgradedStatus = await evaluateInRenderer(
             smokeTarget.webSocketDebuggerUrl,
