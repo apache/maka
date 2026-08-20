@@ -60,6 +60,7 @@ type AutoOpenTarget =
   | 'detail-static'
   | 'detail-relay'
   | 'add'
+  | 'add-relay'
   | 'catalog'
   | 'oauth'
   | 'xai-device';
@@ -358,6 +359,7 @@ function createApiKeyOnboardingFixture(options: {
   save?: 'saved' | 'outcome_unknown' | 'auth_failed';
   failRefreshAfterSave?: boolean;
   emptyCatalog?: boolean;
+  verify?: ApiKeyOnboardingBridge['verify'];
 } = {}) {
   const bridge = createBridge({
     connections: options.emptyCatalog
@@ -405,15 +407,13 @@ function createApiKeyOnboardingFixture(options: {
         for (const listener of [...uncertaintyListeners]) listener();
       },
     },
-    async verify() {
-      return {
-        kind: 'verified',
-        models: [
-          { id: 'deepseek-reasoner', displayName: 'DeepSeek Reasoner' },
-          { id: 'deepseek-chat', displayName: 'DeepSeek Chat' },
-        ],
-      };
-    },
+    verify: options.verify ?? (async () => ({
+      kind: 'verified',
+      models: [
+        { id: 'deepseek-reasoner', displayName: 'DeepSeek Reasoner' },
+        { id: 'deepseek-chat', displayName: 'DeepSeek Chat' },
+      ],
+    })),
     async save() {
       const attemptId = nextAttemptId++;
       const wasUncertain = uncertainAttemptId !== undefined;
@@ -709,10 +709,11 @@ function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean
     return false;
   }
 
-  // 'add': walk to the catalog, then into one provider's form.
+  // 'add' / 'add-relay': walk to the catalog, then into one provider's form.
   const catalog = reachCatalog(root);
   if (!catalog) return false;
-  const providerRow = catalog.querySelector<HTMLElement>('[data-provider="deepseek"]')?.querySelector('button') ?? null;
+  const providerType = target === 'add-relay' ? 'openai-responses-compatible' : 'deepseek';
+  const providerRow = catalog.querySelector<HTMLElement>(`[data-provider="${providerType}"]`)?.querySelector('button') ?? null;
   providerRow?.click();
   return Boolean(providerRow);
 }
@@ -928,6 +929,66 @@ export const AddProvider: Story = {
       autoOpen="add"
     />
   ),
+};
+
+// Model discovery owns the endpoint, API key, and request-header snapshot for
+// its whole request. A delayed response must not race edits made against a
+// different relay configuration, so every discovery-affecting control stays
+// disabled until the preview settles.
+export const AddCustomRelayWhileModelDiscoveryPending: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture({
+      verify: () => new Promise((resolve) => {
+        window.addEventListener(
+          'maka-storybook-resolve-model-preview',
+          () => resolve({ kind: 'verified', models: [{ id: 'relay-model-current' }] }),
+          { once: true },
+        );
+      }),
+    });
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add-relay"
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const fetchModels = await canvas.findByRole('button', { name: /Fetch models|获取模型/ });
+    const apiKey = canvasElement.querySelector<HTMLInputElement>('input[type="password"]');
+    const endpoint = canvasElement.querySelector<HTMLInputElement>('input[placeholder="https://…"]');
+    if (!apiKey || !endpoint) throw new Error('Custom relay discovery inputs did not render');
+    await userEvent.type(apiKey, 'sk-storybook');
+    await userEvent.type(endpoint, 'https://relay.example.com/v1');
+    const defaultModel = await canvas.findByRole('textbox', { name: /Default model|默认模型/ });
+    await userEvent.type(defaultModel, 'manual-only-model');
+    await userEvent.click(await canvas.findByRole('button', {
+      name: /Show advanced request settings|展开高级请求设置/,
+    }));
+    const addHeader = await canvas.findByRole('button', { name: /Add header|添加请求头/ });
+
+    await userEvent.click(fetchModels);
+
+    await expect(apiKey).toBeDisabled();
+    await expect(endpoint).toBeDisabled();
+    await expect(addHeader).toBeDisabled();
+    await expect(canvas.getByRole('button', { name: /Save provider|保存供应商/ })).toBeDisabled();
+    window.dispatchEvent(new Event('maka-storybook-resolve-model-preview'));
+    const discoveredModels = await canvas.findByRole('combobox', {
+      name: /Discovered models|已获取的模型/,
+    });
+    await expect(discoveredModels).toBeEnabled();
+    await expect(defaultModel).toBeEnabled();
+    await expect(defaultModel).toHaveValue('manual-only-model');
+    await userEvent.click(discoveredModels);
+    await userEvent.click(
+      await within(document.body).findByRole('option', { name: 'relay-model-current' }),
+    );
+    await expect(defaultModel).toHaveValue('relay-model-current');
+    await expect(endpoint).toBeEnabled();
+  },
 };
 
 // Real path: 设置 → 模型 → 添加连接 → DeepSeek. The common fixed-endpoint

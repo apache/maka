@@ -26,6 +26,7 @@ import {
   decodeProviderType,
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
+  normalizeRequestHeaders,
   RuntimePolicyDomainDecodeError,
   type ConnectionVersionBasis,
   type ConnectionOnboardingTarget,
@@ -101,9 +102,12 @@ export interface ConnectionOnboardingVerifyInput {
    * "use the registry default or the existing connection's persisted URL".
    */
   readonly baseUrl: string | null;
+  /** Transient custom headers for this verification request only. */
+  readonly requestHeaders?: Readonly<Record<string, string>>;
 }
 
-export interface ConnectionOnboardingSaveInput extends ConnectionOnboardingVerifyInput {
+export interface ConnectionOnboardingSaveInput
+  extends Omit<ConnectionOnboardingVerifyInput, 'requestHeaders'> {
   /** Empty enables the complete non-empty model set discovered by this Host operation. */
   readonly enabledModelIds: readonly string[];
 }
@@ -341,11 +345,22 @@ export function decodeConnectionOnboardingSaveResult(
 export function decodeConnectionOnboardingVerifyInput(
   value: unknown,
 ): ConnectionOnboardingVerifyInput {
-  const input = requireExactRecord(value, 'connection onboarding verification input', [
-    'target',
-    'apiKey',
-    'baseUrl',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'connection onboarding verification input',
+    ['target', 'apiKey', 'baseUrl'],
+    ['requestHeaders'],
+  );
+  let requestHeaders: Readonly<Record<string, string>> | undefined;
+  if (input.requestHeaders !== undefined) {
+    try {
+      requestHeaders = normalizeRequestHeaders(input.requestHeaders);
+    } catch (error) {
+      throw invalidProtocolFrame(
+        error instanceof Error ? error.message : 'Invalid request headers',
+      );
+    }
+  }
   return {
     target: decodeConnectionOnboardingTarget(input.target),
     apiKey:
@@ -356,6 +371,7 @@ export function decodeConnectionOnboardingVerifyInput(
       input.baseUrl === null
         ? null
         : requireString(input.baseUrl, 'connection onboarding base URL', 2048),
+    ...(requestHeaders === undefined ? {} : { requestHeaders }),
   };
 }
 

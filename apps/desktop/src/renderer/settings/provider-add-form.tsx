@@ -18,11 +18,12 @@
  */
 
 import { useState, type FormEvent } from 'react';
-import type { ProviderType } from '@maka/core/llm-connections';
+import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import { PROVIDER_REGISTRY, deriveConnectionSlug } from '@maka/core/llm-connections';
 import {
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
+  providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
 import {
   Banner,
@@ -75,9 +76,16 @@ import {
 
 /* No `defaultModel`: the creation gate has no rule that can fail on the model
    id, so an error could never be reported against that field. The union is
-   kept aligned with `AddProviderIssue` plus the two form-local fields the
+   kept aligned with `AddProviderIssue` plus the three form-local fields the
    gate does not own. */
-type ProviderFormField = 'slug' | 'apiKey' | 'accountId' | 'baseUrl' | 'advancedRequest' | 'form';
+type ProviderFormField =
+  | 'slug'
+  | 'apiKey'
+  | 'accountId'
+  | 'baseUrl'
+  | 'modelDiscovery'
+  | 'advancedRequest'
+  | 'form';
 
 type ProviderFormError = {
   field: ProviderFormField;
@@ -130,19 +138,25 @@ export function AddProviderForm(props: {
   const [formState, setFormState] = useState<{
     readonly managedPhase: ManagedOnboardingPhase;
     readonly error: ProviderFormError | null;
+    readonly fetchingModels: boolean;
+    readonly discoveredModels: ModelInfo[] | null;
   }>(() => ({
     managedPhase: { kind: 'input' },
     error: null,
+    fetchingModels: false,
+    discoveredModels: null,
   }));
-  const { managedPhase, error } = formState;
+  const { managedPhase, error, fetchingModels, discoveredModels } = formState;
   const [busy, setBusy] = useState(false);
-  const submitGuard = useActionGuard<'submit'>();
+  const submitGuard = useActionGuard<'submit' | 'fetch-models'>();
   const addProviderMountedRef = useMountedRef();
 
   const isCloudflareWorkersAi = props.providerType === 'cloudflare-workers-ai';
   const requiresBaseUrl = !defaults.baseUrl && !isCloudflareWorkersAi;
   const showsDefaultModel = recommendedDefaultModel.trim() === '';
+  const isCustomRelay = defaults.category === 'custom';
   const isExperimental = defaults.status === 'phase3-experimental';
+  const supportsRemoteDiscovery = providerSupportsModelDiscovery(props.providerType);
   const supportsApiKey = providerAuthSupportsApiKey(props.providerType);
   const requiresApiKey = providerAuthRequiresSecret(props.providerType) && supportsApiKey;
   const usesApiKeyDialog = usesQuickApiKeyDialog(props.providerType);
@@ -172,6 +186,14 @@ export function AddProviderForm(props: {
     setError((current) =>
       current?.field === field ? null : current,
     );
+  }
+
+  function invalidateDiscoveredModels() {
+    setFormState((current) => ({
+      ...current,
+      discoveredModels: null,
+      error: current.error?.field === 'modelDiscovery' ? null : current.error,
+    }));
   }
 
   // The localized sentence for one field gate. The gate itself is in
@@ -212,6 +234,67 @@ export function AddProviderForm(props: {
     }
     if (result.reason === 'credential_not_configured') return copy.keyRequired(display.name);
     return copy.onboardingUnavailable;
+  }
+
+  async function fetchModelOptions() {
+    const onboarding = props.apiKeyOnboardingBridge;
+    if (!onboarding || submitGuard.current !== null) return;
+    setError(null);
+    const normalizedApiKey = apiKey.trim();
+    if (requiresApiKey && !normalizedApiKey) {
+      return setError({ field: 'apiKey', message: copy.keyRequired(display.name) });
+    }
+    const normalizedBaseUrl = baseUrl.trim();
+    if (requiresBaseUrl && !normalizedBaseUrl) {
+      return setError({ field: 'baseUrl', message: copy.endpointRequired });
+    }
+    let normalizedRequestHeaders: Readonly<Record<string, string>>;
+    try {
+      normalizedRequestHeaders = newRequestHeaders(requestHeaders);
+    } catch {
+      setAdvancedOpen(true);
+      return setError({ field: 'advancedRequest', message: copy.requestCustomizationInvalid });
+    }
+    submitGuard.begin('fetch-models');
+    setFormState((current) => ({
+      ...current,
+      fetchingModels: true,
+      discoveredModels: null,
+    }));
+    try {
+      const result = await onboarding.verify({
+        target: { kind: 'create', providerType: props.providerType },
+        apiKey: normalizedApiKey || null,
+        baseUrl: normalizedBaseUrl || null,
+        ...(Object.keys(normalizedRequestHeaders).length > 0
+          ? { requestHeaders: normalizedRequestHeaders }
+          : {}),
+      });
+      if (!addProviderMountedRef.current) return;
+      if (result.kind !== 'verified') {
+        setError({ field: 'modelDiscovery', message: onboardingFailureMessage(result) });
+        return;
+      }
+      const models = stableOnboardingModels(result.models);
+      if (models.length === 0) {
+        setError({ field: 'modelDiscovery', message: copy.onboardingNoModels });
+        return;
+      }
+      setFormState((current) => ({ ...current, discoveredModels: models }));
+      setDefaultModel((current) => current.trim() || models[0]!.id);
+    } catch (fetchError) {
+      if (!addProviderMountedRef.current) return;
+      setFormState((current) => ({ ...current, discoveredModels: null }));
+      setError({
+        field: 'modelDiscovery',
+        message: providerPanelActionErrorMessage(fetchError, locale),
+      });
+    } finally {
+      submitGuard.finish();
+      if (addProviderMountedRef.current) {
+        setFormState((current) => ({ ...current, fetchingModels: false }));
+      }
+    }
   }
 
   async function verifyManagedApiKey(normalizedApiKey: string) {
@@ -416,6 +499,7 @@ export function AddProviderForm(props: {
           onHeadersChange={(headers) => {
             setRequestHeaders(headers);
             resetManagedVerification();
+            invalidateDiscoveredModels();
             clearFieldError('advancedRequest');
           }}
           bodyText={requestBodyText}
@@ -424,7 +508,7 @@ export function AddProviderForm(props: {
             resetManagedVerification();
             clearFieldError('advancedRequest');
           }}
-          disabled={busy}
+          disabled={busy || fetchingModels}
           copy={{
             headers: copy.requestHeaders,
             headerName: copy.headerName,
@@ -633,6 +717,7 @@ export function AddProviderForm(props: {
             onChange={(next) => {
               setApiKey(next);
               resetManagedVerification();
+              invalidateDiscoveredModels();
               clearFieldError('apiKey');
             }}
             placeholder={copy.apiKeyPlaceholder}
@@ -699,7 +784,7 @@ export function AddProviderForm(props: {
             label={copy.apiKeyLabel}
             isRequired={requiresApiKey}
             isOptional={!requiresApiKey}
-            isDisabled={isExperimental || busy}
+            isDisabled={isExperimental || busy || fetchingModels}
             status={
               error?.field === 'apiKey'
                 ? { type: 'error', message: error.message }
@@ -757,10 +842,11 @@ export function AddProviderForm(props: {
             onChange={(value) => {
               setBaseUrl(value);
               resetManagedVerification();
+              invalidateDiscoveredModels();
               clearFieldError('baseUrl');
             }}
             placeholder={defaults.baseUrl || 'https://…'}
-            isDisabled={isExperimental || busy}
+            isDisabled={isExperimental || busy || fetchingModels}
             label={copy.endpointLabel}
             isRequired={requiresBaseUrl}
             status={
@@ -771,17 +857,53 @@ export function AddProviderForm(props: {
           />
         )}
         {showsDefaultModel && (
-          <TextInput
-            value={defaultModel}
-            onChange={(value) => {
-              setDefaultModel(value);
-              resetManagedVerification();
-            }}
-            placeholder={copy.defaultModelPlaceholder}
-            isDisabled={isExperimental || busy}
-            label={copy.defaultModel}
-            description={copy.defaultModelHelp}
-          />
+          <VStack gap={1.5}>
+            <TextInput
+              value={defaultModel}
+              onChange={(value) => {
+                setDefaultModel(value);
+                resetManagedVerification();
+              }}
+              placeholder={copy.defaultModelPlaceholder}
+              isDisabled={isExperimental || busy || fetchingModels}
+              label={copy.defaultModel}
+              description={copy.defaultModelHelp}
+            />
+            {isCustomRelay && supportsRemoteDiscovery && props.apiKeyOnboardingBridge && (
+              <>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  isDisabled={busy || fetchingModels}
+                  onClick={() => void fetchModelOptions()}
+                  label={fetchingModels ? copy.fetchingModels : copy.fetchModels}
+                />
+                {discoveredModels && (
+                  <Selector
+                    label={copy.discoveredModels}
+                    value={discoveredModels.some((model) => model.id === defaultModel)
+                      ? defaultModel
+                      : ''}
+                    options={discoveredModels.map((model) => ({
+                      value: model.id,
+                      label: model.displayName?.trim() || model.id,
+                    }))}
+                    placeholder={copy.chooseDiscoveredModel}
+                    onChange={setDefaultModel}
+                    isDisabled={busy || fetchingModels}
+                    width="100%"
+                  />
+                )}
+                {error?.field === 'modelDiscovery' && (
+                  <Banner
+                    status="warning"
+                    title={copy.modelsFetchFailed}
+                    description={`${error.message} ${copy.modelsFetchFallback}`}
+                  />
+                )}
+              </>
+            )}
+          </VStack>
         )}
         {advancedRequestEditor}
       </FormLayout>
@@ -790,7 +912,7 @@ export function AddProviderForm(props: {
       )}
       <HStack gap={2} justify="end">
         <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
-        <Button variant="primary" isDisabled={busy || isExperimental} onClick={submit} label={busy ? copy.saving : copy.save} />
+        <Button variant="primary" isDisabled={busy || fetchingModels || isExperimental} onClick={submit} label={busy ? copy.saving : copy.save} />
       </HStack>
     </VStack>
   );
