@@ -646,7 +646,7 @@ test('keeps a bounded transcript batch window in flight until the renderer ackno
   await observer.close();
 });
 
-test('finishes transcript open against a replacement that arrives while reset delivery waits', async () => {
+test('finishes transcript open and replays a stale range request after replacement', async () => {
   const firstEvents = new AsyncFrameQueue();
   const secondEvents = new AsyncFrameQueue();
   const message: StoredMessage = {
@@ -658,6 +658,7 @@ test('finishes transcript open against a replacement that arrives while reset de
     modelId: 'test-model',
   };
   let opens = 0;
+  let rangeLoads = 0;
   const observer = new RuntimeHostSessionObserver({
     client: {
       openSession: async () => {
@@ -667,6 +668,48 @@ test('finishes transcript open against a replacement that arrives while reset de
           snapshot: continuitySnapshot(),
           transcript: Promise.resolve([message]),
           events,
+          transcriptBootstrap: {
+            throughSequence: 0,
+            overlayMessageCount: 0,
+            durable: {
+              kind: 'page',
+              sessionId: 'session-1',
+              source: 'durable',
+              direction: 'older',
+              throughSequence: 0,
+              rawBytes: 1,
+              fragments: [],
+              nextCursor: 'older',
+            },
+            overlay: {
+              kind: 'page',
+              sessionId: 'session-1',
+              source: 'overlay',
+              direction: 'older',
+              throughSequence: null,
+              rawBytes: 0,
+              fragments: [],
+              nextCursor: null,
+            },
+          },
+          loadTranscriptOverlay: async () => [],
+          decodeTranscriptPage: async (page) => ({
+            messages: page.rawBytes === 1 ? [{ identity: 0, message }] : [],
+            nextCursor: page.nextCursor,
+          }),
+          loadTranscriptPage: async (input) => {
+            rangeLoads += 1;
+            return {
+              kind: 'page',
+              sessionId: 'session-1',
+              source: input.source,
+              direction: input.direction,
+              throughSequence: input.throughSequence,
+              rawBytes: 0,
+              fragments: [],
+              nextCursor: null,
+            };
+          },
           async close() {
             events.end();
           },
@@ -676,10 +719,21 @@ test('finishes transcript open against a replacement that arrives while reset de
     emitSessionsChanged() {},
   });
   const batches: DesktopTranscriptBatch[] = [];
+  let autoAcknowledge = false;
   const opening = observer.openTranscript('session-1', 'consumer-recovery', {
     id: 22,
     send(_channel, batch) {
       batches.push(batch);
+      if (autoAcknowledge) {
+        queueMicrotask(() =>
+          observer.acknowledgeTranscript(
+            'consumer-recovery',
+            batch.generation,
+            batch.deliverySequence,
+            22,
+          ),
+        );
+      }
     },
     once() {},
     off() {},
@@ -690,6 +744,7 @@ test('finishes transcript open against a replacement that arrives while reset de
   );
 
   await waitFor(() => batches.length === 4);
+  const staleGeneration = batches[0]!.generation;
   firstEvents.push({
     kind: 'subscription.closed',
     hostEpoch: 'host-1',
@@ -722,6 +777,21 @@ test('finishes transcript open against a replacement that arrives while reset de
   const opened = await result;
   assert.equal(opened.error, undefined);
   assert.equal(opened.value?.generation, batches.at(-1)?.generation);
+  assert.notEqual(opened.value?.generation, staleGeneration);
+  rangeLoads = 0;
+  autoAcknowledge = true;
+  await assert.doesNotReject(() =>
+    observer.loadTranscriptBefore(
+      {
+        consumerId: 'consumer-recovery',
+        generation: staleGeneration,
+        anchorSequence: 0,
+        maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+      },
+      22,
+    ),
+  );
+  assert.equal(rangeLoads, 1);
   await observer.close();
 });
 

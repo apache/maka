@@ -1302,9 +1302,10 @@ export class RuntimeHostSessionObserver {
     if (targetId !== undefined && consumer.target.id !== targetId) {
       throw new Error('Desktop transcript consumer belongs to another renderer');
     }
-    if (consumer.generation !== request.generation || replica.generation !== request.generation) {
-      throw new Error('Desktop transcript generation changed');
-    }
+    // Durable transcript sequence identities belong to the Session, not to a
+    // Desktop replica generation. Recovery may install a replacement after
+    // the renderer dispatches a range request; continue that read against the
+    // current replica so the user's navigation completes across reconnect.
     return { state, replica, consumer };
   }
 

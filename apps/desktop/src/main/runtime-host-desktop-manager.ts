@@ -455,6 +455,9 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             signal,
             starting ? target.input.remote?.sshInteraction : 'batch',
           ),
+        onReconnectError: (error) => {
+          console.warn('[runtime-host] reconnect attempt failed:', error);
+        },
         onFatalError: (error) => {
           if (!starting && target.valid) {
             target.valid = false;

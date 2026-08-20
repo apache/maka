@@ -67,7 +67,8 @@ export async function runExecutionCandidateEntry(
   const stopWatch = hooks.onWon?.(result.host);
   try {
     await runRuntimeHostProcessLifecycle(result.host);
-  } catch {
+  } catch (error) {
+    console.error('[runtime-host] lifecycle failed:', error);
     process.exitCode = 1;
   } finally {
     stopWatch?.();
