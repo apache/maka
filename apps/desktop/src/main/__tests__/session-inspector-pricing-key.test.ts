@@ -90,6 +90,7 @@ function traceWithAttempt(modelAttempt: TraceModelAttempt): SessionTrace {
       modelCalls: 'no_known_gap',
       turnsMissingModelCalls: [],
       unreadableRecords: 0,
+      oversizedRuns: 0,
       turnsWithFewerModelCallsThanSteps: [],
     },
   };
