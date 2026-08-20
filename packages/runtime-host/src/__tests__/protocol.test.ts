@@ -788,6 +788,8 @@ describe('Runtime Host bootstrap protocol', () => {
         messageId: 'message-1',
         content: { text: 'adjust the active turn' },
         placement: 'current_turn' as const,
+        busyBehavior: 'reject' as const,
+        admissionMode: 'replay_only' as const,
       },
     };
     const retract = {
@@ -812,6 +814,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.throws(
       () =>
         decodeClientFrame({ ...submit, input: { ...submit.input, originHostEpoch: undefined } }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () => decodeClientFrame({ ...submit, input: { ...submit.input, admissionMode: 'invalid' } }),
       isInvalidFrame,
     );
     assert.throws(

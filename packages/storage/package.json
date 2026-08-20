@@ -16,6 +16,7 @@
     "./goal-authority": "./dist/goal-authority.js",
     "./plan-authority": "./dist/plan-authority.js",
     "./execution-stores": "./dist/execution-stores.js",
+    "./external-conversation-authority": "./dist/external-conversation-authority.js",
     "./external-sessions": "./dist/external-sessions.js",
     "./agent-graph-control-store": "./dist/agent-graph-control-store.js",
     "./interaction-store": "./dist/interaction-store-public.js",

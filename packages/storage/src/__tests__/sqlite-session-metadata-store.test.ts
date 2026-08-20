@@ -33,7 +33,7 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
-  test('migrates v27 metadata to v28 without backfilling external origin', async () => {
+  test('migrates v27 metadata through current schema without backfilling external origin', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-v27-'));
     const path = join(root, 'state.sqlite');
     const legacyHeader = fullHeader({
@@ -54,6 +54,8 @@ describe('SqliteSessionMetadataStore', () => {
     const legacy = new DatabaseSync(path);
     try {
       legacy.exec(`
+        DROP TABLE external_conversation_release_receipts;
+        DROP TABLE external_conversation_bindings;
         DROP INDEX session_metadata_by_external_origin;
         ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
         ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
@@ -65,7 +67,7 @@ describe('SqliteSessionMetadataStore', () => {
 
     const migrated = createSqliteSessionMetadataStore(path);
     try {
-      assert.equal(migrated.schemaVersion(), 28);
+      assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
       assert.equal((await migrated.read(legacyHeader.id)).header.externalOrigin, undefined);
     } finally {
       migrated.close();
@@ -308,6 +310,10 @@ describe('SqliteSessionMetadataStore', () => {
             `UPDATE session_metadata_schema SET version = 24 WHERE scope = 'session_metadata'`,
           )
           .run();
+        legacy.exec(`
+          DROP TABLE external_conversation_release_receipts;
+          DROP TABLE external_conversation_bindings;
+        `);
       } finally {
         legacy.close();
       }
@@ -520,6 +526,8 @@ describe('SqliteSessionMetadataStore', () => {
           ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
           ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
           UPDATE session_metadata_schema SET version = 26 WHERE scope = 'session_metadata';
+          DROP TABLE external_conversation_release_receipts;
+          DROP TABLE external_conversation_bindings;
         `);
         legacy
           .prepare(

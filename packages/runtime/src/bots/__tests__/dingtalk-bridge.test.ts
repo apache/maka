@@ -84,16 +84,18 @@ describe('dingTalkPayloadToEvent', () => {
         text: { content: 'hello' },
         robotCode: 'app-key-1',
       },
+      'stream-message-1',
       1_700_000_000_000,
     );
     assert.ok(event);
     assert.equal(event!.platform, 'dingtalk');
     assert.equal(event!.userId, 'user-1');
     assert.equal(event!.userName, 'Alice');
-    assert.equal(event!.chatId, 'cidp-single');
+    assert.equal(event!.conversationId, 'cidp-single');
+    assert.deepEqual(event!.replyTarget, { chatId: 'user-1' });
     assert.equal(event!.isGroup, false);
     assert.equal(event!.text, 'hello');
-    assert.equal(event!.sourceMessageId, 'cidp-single:1700000000000');
+    assert.equal(event!.sourceEventId, 'stream-message-1');
     const groupEvent = dingTalkPayloadToEvent(
       {
         senderId: 'user-2',
@@ -101,16 +103,37 @@ describe('dingTalkPayloadToEvent', () => {
         conversationType: '2',
         text: { content: 'hi' },
       },
+      'stream-message-2',
       1,
     );
     assert.equal(groupEvent!.isGroup, true);
     assert.equal(groupEvent!.userName, 'user-2');
+    assert.deepEqual(groupEvent!.replyTarget, { chatId: 'cidp-group' });
   });
 
   it('drops payloads missing text or routing identity', () => {
-    assert.equal(dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c' }, 1), null);
-    assert.equal(dingTalkPayloadToEvent({ conversationId: 'c', text: { content: 'x' } }, 1), null);
-    assert.equal(dingTalkPayloadToEvent({ senderId: 'u', text: { content: 'x' } }, 1), null);
+    assert.equal(
+      dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c', text: {} }, 'm', 1),
+      null,
+    );
+    assert.equal(dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c' }, 'm', 1), null);
+    assert.equal(
+      dingTalkPayloadToEvent({ conversationId: 'c', text: { content: 'x' } }, 'm', 1),
+      null,
+    );
+    assert.equal(dingTalkPayloadToEvent({ senderId: 'u', text: { content: 'x' } }, 'm', 1), null);
+    assert.equal(
+      dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c', text: { content: 'x' } }, '', 1),
+      null,
+    );
+    assert.equal(
+      dingTalkPayloadToEvent(
+        { senderId: 'u', conversationId: 'c', text: { content: 'x' } },
+        '   ',
+        1,
+      ),
+      null,
+    );
   });
 });
 

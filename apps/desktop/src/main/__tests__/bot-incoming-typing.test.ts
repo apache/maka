@@ -3,6 +3,7 @@ import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
 import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
+import { createTestBotSessionAdapter } from './bot-session-adapter-fixture.js';
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -41,28 +42,24 @@ test('the bot typing loop owns only its active abort listener', async (t) => {
         throw new Error('typing unavailable');
       },
     } as unknown as BotRegistry,
-    sessions: {
-      async createSession() {
-        return 'bot-session';
-      },
-      async prepareSession() {
-        return 'ready';
-      },
-      async runTurn() {
+    sessions: createTestBotSessionAdapter({
+      async runTurn(input) {
+        if (input.admissionMode === 'replay_only') return { kind: 'admission_required' };
         await turnReleased;
         return { kind: 'completed', text: 'Bot reply' };
       },
-    },
+    }),
   });
 
   const handling = service.handleBotIncomingMessage({
     platform: 'telegram',
     userId: 'user',
     userName: 'User',
-    chatId: 'chat',
+    conversationId: 'chat',
+    sourceEventId: 'source',
+    replyTarget: { chatId: 'chat', replyToMessageId: 'source' },
     isGroup: false,
     text: 'hello',
-    sourceMessageId: 'source',
     receivedAt: Date.now(),
   } as BotIncomingMessage);
 
@@ -106,7 +103,7 @@ test('streams reply snapshots and persists the final reply through one channel s
         options: { isGroup: boolean; streamId: string },
       ) {
         assert.equal(options.isGroup, false);
-        assert.match(options.streamId, /^[0-9a-f-]{36}$/);
+        assert.match(options.streamId, /^bot_[0-9a-f]{64}$/);
         return {
           update(text: string) {
             updates.push(text);
@@ -126,29 +123,25 @@ test('streams reply snapshots and persists the final reply through one channel s
         return true;
       },
     } as unknown as BotRegistry,
-    sessions: {
-      async createSession() {
-        return 'bot-session';
-      },
-      async prepareSession() {
-        return 'ready';
-      },
+    sessions: createTestBotSessionAdapter({
       async runTurn(input) {
+        if (input.admissionMode === 'replay_only') return { kind: 'admission_required' };
         input.onReplySnapshot?.('Hello');
         input.onReplySnapshot?.('Hello world');
         return { kind: 'completed', text: 'Hello world' };
       },
-    },
+    }),
   });
 
   await service.handleBotIncomingMessage({
     platform: 'telegram',
     userId: 'user',
     userName: 'User',
-    chatId: 'chat',
+    conversationId: 'chat',
+    sourceEventId: 'source',
+    replyTarget: { chatId: 'chat', replyToMessageId: 'source' },
     isGroup: false,
     text: 'hello',
-    sourceMessageId: 'source',
     receivedAt: Date.now(),
   } as BotIncomingMessage);
 

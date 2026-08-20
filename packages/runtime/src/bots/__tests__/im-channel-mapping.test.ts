@@ -27,10 +27,11 @@ describe('IM channel event mapping', () => {
       platform: 'feishu',
       userId: 'ou_1',
       userName: 'Alice',
-      chatId: 'oc_1',
+      conversationId: 'oc_1',
+      sourceEventId: 'om_1',
+      replyTarget: { chatId: 'oc_1', replyToMessageId: 'om_1' },
       isGroup: true,
       text: 'hello',
-      sourceMessageId: 'om_1',
       receivedAt: 456,
     });
     assert.equal(JSON.stringify(event).includes('must-not-cross'), false);
@@ -75,10 +76,11 @@ describe('IM channel event mapping', () => {
       platform: 'wecom',
       userId: 'user_1',
       userName: 'user_1',
-      chatId: 'user_1',
+      conversationId: 'user_1',
+      sourceEventId: 'msg_1',
+      replyTarget: { chatId: 'user_1', replyToMessageId: 'msg_1' },
       isGroup: false,
       text: 'question',
-      sourceMessageId: 'msg_1',
       receivedAt: 789,
     });
   });
@@ -97,6 +99,27 @@ describe('IM channel event mapping', () => {
       },
     } as WsFrame<TextMessage>;
     assert.equal(wecomTextFrameToEvent(frame, 789, ['allowed_user']), null);
+  });
+
+  it('drops channel payloads without a stable platform message id', () => {
+    const feishu = {
+      messageId: '',
+      chatId: 'oc_1',
+      chatType: 'group',
+      senderId: 'ou_1',
+      content: 'hello',
+    } as NormalizedMessage;
+    assert.equal(feishuMessageToEvent(feishu, 456), null);
+
+    const wecom = {
+      body: {
+        msgtype: 'text',
+        chattype: 'single',
+        from: { userid: 'user_1' },
+        text: { content: 'question' },
+      },
+    } as WsFrame<TextMessage>;
+    assert.equal(wecomTextFrameToEvent(wecom, 789), null);
   });
 
   it('force-closes a Feishu raw socket even when the channel handshake never completed', async () => {

@@ -24,6 +24,17 @@ export interface BotStatus {
 
 export type BotIncomingMessage = BotMessageEvent;
 
+/** Normalize only real platform message identities; never mint placeholders. */
+export function normalizeBotSourceEventId(value: unknown): string | undefined {
+  const id =
+    typeof value === 'string'
+      ? value
+      : typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+        ? String(value)
+        : undefined;
+  return id && id.trim() === id ? id : undefined;
+}
+
 export interface BotBridge {
   readonly platform: BotPlatform;
   start(): Promise<void>;
@@ -66,7 +77,11 @@ export interface BotSendOptions {
 export interface BotReplyStreamOptions extends BotSendOptions {
   /** Whether the reply target is a group/channel rather than a direct chat. */
   readonly isGroup: boolean;
-  /** Stable identity of the Runtime Host Turn being projected. */
+  /**
+   * Stable identity of the reply being projected. The Desktop carries the
+   * canonical source-message id when the Host has not yet selected a Turn id,
+   * so draft updates and the final send share one identity.
+   */
   readonly streamId: string;
 }
 

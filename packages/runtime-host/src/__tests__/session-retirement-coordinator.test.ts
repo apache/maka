@@ -41,6 +41,10 @@ describe('Host Session retirement coordinator', () => {
       await assertFamilyLifecycle(harness, true);
       assert.deepEqual(new Set(harness.actions.disposed), new Set(harness.familyIds));
       assert.deepEqual(new Set(harness.actions.refreshed), new Set(harness.familyIds));
+      assert.deepEqual(
+        new Set(harness.actions.retiredExternalConversations),
+        new Set(harness.familyIds),
+      );
 
       harness.actions.disposed.length = 0;
       harness.actions.refreshed.length = 0;
@@ -115,6 +119,9 @@ describe('Host Session retirement coordinator', () => {
           ),
         );
       }
+      for (const sessionId of childSessionIds) {
+        harness.externalConversationBindings.add(sessionId);
+      }
       const target = await harness.store.readHeaderRecordSnapshot(harness.revisionId);
 
       const removed = await harness.coordinator.handlers['session.remove'](
@@ -140,6 +147,10 @@ describe('Host Session retirement coordinator', () => {
       assert.deepEqual(
         new Set(harness.actions.retiredMessages),
         new Set([...harness.familyIds, ...childSessionIds]),
+      );
+      assert.deepEqual(
+        new Set(harness.actions.retiredExternalConversations),
+        new Set(childSessionIds),
       );
       await waitFor(
         () => harness.actions.purgedArtifacts.length === harness.familyIds.length,
@@ -461,6 +472,120 @@ describe('Host Session retirement coordinator', () => {
       assert.deepEqual(await harness.graphStore.listAgentGraphScheduleUpdates(finishedGraphId), []);
       assert.ok(harness.actions.purgedAgentGraphs.includes(harness.rootId));
       assert.ok(harness.actions.purgedAgentGraphs.includes(harness.revisionId));
+    });
+  });
+
+  test('recovers an external conversation purge left behind by an interrupted archive', async () => {
+    await withHarness(async (harness) => {
+      for (const sessionId of harness.familyIds) {
+        harness.externalConversationBindings.add(sessionId);
+      }
+      harness.failExternalConversationRetirement = true;
+      const archived = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(archived.ok, false);
+      if (archived.ok) assert.fail('Committed archive must report an uncertain outcome');
+      assert.equal(archived.error.code, 'commit_outcome_unknown');
+      // The binding rows survive as the durable record of the unfinished purge.
+      assert.deepEqual(new Set(harness.externalConversationBindings), new Set(harness.familyIds));
+
+      harness.failExternalConversationRetirement = false;
+      await harness.coordinator.recover();
+
+      assert.deepEqual([...harness.externalConversationBindings], []);
+      assert.deepEqual(
+        new Set(harness.actions.retiredExternalConversations),
+        new Set(harness.familyIds),
+      );
+    });
+  });
+
+  test('retries the external conversation purge from the already-archived path', async () => {
+    await withHarness(async (harness) => {
+      for (const sessionId of harness.familyIds) {
+        harness.externalConversationBindings.add(sessionId);
+      }
+      harness.failExternalConversationRetirement = true;
+      const archived = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(archived.ok, false);
+      if (archived.ok) assert.fail('Committed archive must report an uncertain outcome');
+      assert.equal(archived.error.code, 'commit_outcome_unknown');
+
+      harness.failExternalConversationRetirement = false;
+      harness.actions.retiredExternalConversations.length = 0;
+      const retried = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(retried.ok, true);
+      assert.deepEqual([...harness.externalConversationBindings], []);
+      assert.deepEqual(
+        new Set(harness.actions.retiredExternalConversations),
+        new Set(harness.familyIds),
+      );
+    });
+  });
+
+  test('keeps external conversation bindings of live Sessions during recovery', async () => {
+    await withHarness(async (harness) => {
+      harness.externalConversationBindings.add(harness.rootId);
+      await harness.coordinator.recover();
+      assert.deepEqual([...harness.externalConversationBindings], [harness.rootId]);
+      assert.deepEqual(harness.actions.retiredExternalConversations, []);
+    });
+  });
+
+  test('keeps an absent crash-window claim for successor Session creation', async () => {
+    await withHarness(async (harness) => {
+      const claimedSessionId = 'claimed-before-create';
+      harness.externalConversationBindings.add(claimedSessionId);
+
+      await harness.coordinator.recover();
+
+      assert.deepEqual([...harness.externalConversationBindings], [claimedSessionId]);
+      assert.deepEqual(harness.actions.retiredExternalConversations, []);
+    });
+  });
+
+  test('isolates external conversation recovery failures and keeps Host readiness available', async () => {
+    await withHarness(async (harness) => {
+      const failedSessionId = harness.rootId;
+      const recoveredSessionId = harness.revisionId;
+      const [failed, recovered] = await Promise.all([
+        harness.store.readHeaderRecordSnapshot(failedSessionId),
+        harness.store.readHeaderRecordSnapshot(recoveredSessionId),
+      ]);
+      await harness.store.setSessionsArchivedVersioned(
+        [
+          { sessionId: failedSessionId, expectedVersion: failed.revision },
+          { sessionId: recoveredSessionId, expectedVersion: recovered.revision },
+        ],
+        true,
+      );
+      harness.externalConversationBindings.add(failedSessionId);
+      harness.externalConversationBindings.add(recoveredSessionId);
+      harness.externalConversationRetirementFailures.add(failedSessionId);
+
+      await harness.coordinator.recover();
+
+      assert.deepEqual([...harness.externalConversationBindings], [failedSessionId]);
+      assert.deepEqual(harness.actions.retiredExternalConversations, [recoveredSessionId]);
+      assert.equal(harness.recoveryFailures.length, 1);
+      assert.match(harness.recoveryFailures[0]?.message ?? '', /remains pending/);
+
+      harness.reportRecoveryFailure = () => {
+        throw new Error('injected recovery reporter failure');
+      };
+      await harness.coordinator.recover();
+
+      harness.externalConversationRetirementFailures.clear();
+      await harness.coordinator.recover();
+      assert.deepEqual([...harness.externalConversationBindings], []);
     });
   });
 
@@ -932,6 +1057,7 @@ interface RetirementActions {
   readonly retiredWorktrees: string[];
   readonly finalizedWorkspacePatches: string[];
   readonly retiredGraphWakes: string[];
+  readonly retiredExternalConversations: string[];
   goalCommits: number;
   goalRollbacks: number;
   scheduledTaskCommits: number;
@@ -970,6 +1096,7 @@ async function withHarness(
       retiredWorktrees: [],
       finalizedWorkspacePatches: [],
       retiredGraphWakes: [],
+      retiredExternalConversations: [],
       goalCommits: 0,
       goalRollbacks: 0,
       scheduledTaskCommits: 0,
@@ -1003,6 +1130,13 @@ async function withHarness(
       failRemoveCommit: false,
       failRemovalPublication: false,
       failArtifactCleanup: false,
+      failExternalConversationRetirement: false,
+      externalConversationRetirementFailures: new Set<string>(),
+      externalConversationBindings: new Set<string>(),
+      recoveryFailures: [],
+      reportRecoveryFailure(error) {
+        this.recoveryFailures.push(error);
+      },
       purgeArtifact: undefined,
       hideRevisionFromNextFamilyRead: false,
       updateMetadataDuringNextDispose: false,
@@ -1132,6 +1266,22 @@ async function withHarness(
       purgeOperationalState: async (sessionId) => {
         actions.purgedOperationalState.push(sessionId);
       },
+      retireExternalConversations: async (sessionIds) => {
+        if (
+          harness.failExternalConversationRetirement ||
+          sessionIds.some((sessionId) =>
+            harness.externalConversationRetirementFailures.has(sessionId),
+          )
+        ) {
+          throw new Error('injected external conversation retirement failure');
+        }
+        actions.retiredExternalConversations.push(...sessionIds);
+        for (const sessionId of sessionIds) {
+          harness.externalConversationBindings.delete(sessionId);
+        }
+      },
+      listExternalConversationSessionIds: async () => [...harness.externalConversationBindings],
+      reportRecoveryFailure: (error) => harness.reportRecoveryFailure(error),
       purgeAgentGraphState: async (sessionId) => {
         actions.purgedAgentGraphs.push(sessionId);
         await graphStore.purgeAgentGraphControlState(agentGraphIdForRootSession(sessionId));
@@ -1181,6 +1331,11 @@ interface RetirementHarness {
   failRemoveCommit: boolean;
   failRemovalPublication: boolean;
   failArtifactCleanup: boolean;
+  failExternalConversationRetirement: boolean;
+  readonly externalConversationRetirementFailures: Set<string>;
+  readonly externalConversationBindings: Set<string>;
+  readonly recoveryFailures: AggregateError[];
+  reportRecoveryFailure: (error: AggregateError) => void;
   purgeArtifact: ((sessionId: string) => Promise<void>) | undefined;
   hideRevisionFromNextFamilyRead: boolean;
   updateMetadataDuringNextDispose: boolean;

@@ -18,7 +18,7 @@
 
 import { GatewayBridgeBase } from './gateway-bridge-base.js';
 import { proxiedFetch } from './proxied-fetch.js';
-import type { BotSendOptions, SendCapable } from './types.js';
+import { normalizeBotSourceEventId, type BotSendOptions, type SendCapable } from './types.js';
 import type { WsCloseDecision } from './ws-bridge-base.js';
 
 const QQ_API = 'https://api.sgroup.qq.com';
@@ -136,22 +136,28 @@ export function qqChannelMessageToEvent(
   platform: 'qq';
   userId: string;
   userName: string;
-  chatId: string;
+  conversationId: string;
+  sourceEventId: string;
+  replyTarget: { chatId: string; replyToMessageId?: string };
   isGroup: boolean;
   text: string;
-  sourceMessageId: string;
   receivedAt: number;
 } | null {
   if (!d?.author || d.author.bot === true) return null;
-  const userId = String(d.author.id);
+  const sourceEventId = normalizeBotSourceEventId(d.id);
+  if (!sourceEventId) return null;
+  const channelId = normalizeBotSourceEventId(d.channel_id);
+  const userId = normalizeBotSourceEventId(d.author.id);
+  if (!channelId || !userId) return null;
   return {
     platform: 'qq',
     userId,
     userName: d.author.username ?? userId,
-    chatId: `channel:${d.channel_id}`,
+    conversationId: `channel:${channelId}`,
+    sourceEventId,
+    replyTarget: { chatId: `channel:${channelId}`, replyToMessageId: sourceEventId },
     isGroup: true,
     text: typeof d.content === 'string' ? d.content : '',
-    sourceMessageId: String(d.id),
     receivedAt,
   };
 }
@@ -163,23 +169,27 @@ export function qqGroupMessageToEvent(
   platform: 'qq';
   userId: string;
   userName: string;
-  chatId: string;
+  conversationId: string;
+  sourceEventId: string;
+  replyTarget: { chatId: string; replyToMessageId?: string };
   isGroup: boolean;
   text: string;
-  sourceMessageId: string;
   receivedAt: number;
 } | null {
   if (!d?.group_openid) return null;
+  const sourceEventId = normalizeBotSourceEventId(d.id);
+  if (!sourceEventId) return null;
   const userId = d.author?.member_openid ?? d.author?.user_openid ?? d.author?.id ?? '';
   if (!userId) return null;
   return {
     platform: 'qq',
     userId: String(userId),
     userName: String(userId),
-    chatId: `group:${d.group_openid}`,
+    conversationId: `group:${d.group_openid}`,
+    sourceEventId,
+    replyTarget: { chatId: `group:${d.group_openid}`, replyToMessageId: sourceEventId },
     isGroup: true,
     text: typeof d.content === 'string' ? d.content : '',
-    sourceMessageId: String(d.id),
     receivedAt,
   };
 }
@@ -191,23 +201,42 @@ export function qqC2CMessageToEvent(
   platform: 'qq';
   userId: string;
   userName: string;
-  chatId: string;
+  conversationId: string;
+  sourceEventId: string;
+  replyTarget: { chatId: string; replyToMessageId?: string };
   isGroup: boolean;
   text: string;
-  sourceMessageId: string;
   receivedAt: number;
 } | null {
   const userId = d.author?.user_openid ?? d.author?.id ?? '';
   if (!userId) return null;
+  const sourceEventId = normalizeBotSourceEventId(d.id);
+  if (!sourceEventId) return null;
   return {
     platform: 'qq',
     userId: String(userId),
     userName: String(userId),
-    chatId: `c2c:${userId}`,
+    conversationId: `c2c:${userId}`,
+    sourceEventId,
+    replyTarget: { chatId: `c2c:${userId}`, replyToMessageId: sourceEventId },
     isGroup: false,
     text: typeof d.content === 'string' ? d.content : '',
-    sourceMessageId: String(d.id),
     receivedAt,
+  };
+}
+
+export function qqDirectMessageToEvent(
+  d: QQChannelMessagePayload,
+  receivedAt: number,
+): ReturnType<typeof qqChannelMessageToEvent> {
+  const channel = qqChannelMessageToEvent(d, receivedAt);
+  if (!channel) return null;
+  return {
+    ...channel,
+    conversationId: `dm:${channel.conversationId}`,
+    // QQ direct messages still use the channel REST route. Only continuity
+    // needs a DM-specific identity; transport must retain the real address.
+    isGroup: false,
   };
 }
 
@@ -361,11 +390,7 @@ export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
     if (type === QQ_EVENT_AT_MESSAGE) {
       event = qqChannelMessageToEvent(d as QQChannelMessagePayload, receivedAt);
     } else if (type === QQ_EVENT_DIRECT_MESSAGE) {
-      // DMs use the channel-message shape.
-      const channelLike = qqChannelMessageToEvent(d as QQChannelMessagePayload, receivedAt);
-      if (channelLike) {
-        event = { ...channelLike, isGroup: false, chatId: `dm:${channelLike.chatId}` };
-      }
+      event = qqDirectMessageToEvent(d as QQChannelMessagePayload, receivedAt);
     } else if (type === QQ_EVENT_GROUP_AT_MESSAGE) {
       event = qqGroupMessageToEvent(d as QQGroupMessagePayload, receivedAt);
     } else if (type === QQ_EVENT_C2C_MESSAGE) {
@@ -499,6 +524,7 @@ export const __TEST__ = {
   qqChannelMessageToEvent,
   qqGroupMessageToEvent,
   qqC2CMessageToEvent,
+  qqDirectMessageToEvent,
   pickQQSendRoute,
   pickQQTypingRoute,
 };

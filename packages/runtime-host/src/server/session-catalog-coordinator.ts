@@ -71,6 +71,7 @@ type SessionCatalogStores = Pick<
   | 'createStableSession'
   | 'listCatalogPage'
   | 'markSessionReadThroughMessage'
+  | 'probeSessionRemoval'
   | 'probeStableSessionCreate'
   | 'readCatalogRecord'
   | 'readExecutionBoundary'
@@ -173,6 +174,34 @@ export class HostSessionCatalogCoordinator {
   async createForHost(input: SessionCreateInput): Promise<void> {
     const outcome = await this.#create(input);
     if (!outcome.ok) throw new Error(outcome.error.message);
+  }
+
+  async getSession(sessionId: string): Promise<SessionCatalogItem | null> {
+    const outcome = await this.#query({ kind: 'get', sessionId });
+    if (!outcome.ok) throw new Error(outcome.error.message);
+    if (outcome.result.kind !== 'session') {
+      throw new Error('Session catalog lookup returned a non-Session result');
+    }
+    return outcome.result.session;
+  }
+
+  async probeSession(
+    sessionId: string,
+  ): Promise<
+    | { readonly kind: 'present'; readonly session: SessionCatalogItem }
+    | { readonly kind: 'absent' | 'removed' }
+  > {
+    const probe = await this.#stores.probeSessionRemoval(sessionId);
+    return probe.kind === 'present'
+      ? {
+          kind: 'present',
+          session: projectSessionCatalogRecord(await this.#stores.readCatalogRecord(sessionId)),
+        }
+      : probe;
+  }
+
+  createSession(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
+    return this.#create(input);
   }
 
   async #query(

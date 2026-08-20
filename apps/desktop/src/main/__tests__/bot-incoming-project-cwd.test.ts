@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
+import { createTestBotSessionAdapter } from './bot-session-adapter-fixture.js';
 
 describe('bot incoming new-session cwd', () => {
   it('leaves the cwd to the shared desktop session resolver', async () => {
@@ -16,32 +17,31 @@ describe('bot incoming new-session cwd', () => {
           return true;
         },
       } as unknown as BotRegistry,
-      sessions: {
-        async createSession(input) {
+      sessions: createTestBotSessionAdapter({
+        async resolveSession(input) {
           createInput = input;
-          throw new Error('__short_circuit_after_create__');
-        },
-        async prepareSession() {
-          throw new Error('prepareSession must not be reached');
+          return { kind: 'permission_refused' };
         },
         async runTurn() {
           throw new Error('runTurn must not be reached');
         },
-      },
+      }),
     });
 
     await service.handleBotIncomingMessage({
       platform: 'telegram',
       userId: 'u',
       userName: 'U',
-      chatId: 'c1',
+      conversationId: 'c1',
+      sourceEventId: 'source-1',
+      replyTarget: { chatId: 'c1', replyToMessageId: 'source-1' },
       isGroup: false,
       text: 'hello',
-      sourceMessageId: '',
       receivedAt: Date.now(),
     } as unknown as BotIncomingMessage);
 
     assert.deepEqual(createInput, {
+      conversationId: 'telegram:c1',
       name: 'Telegram 任务',
       labels: ['bot', 'telegram'],
     });

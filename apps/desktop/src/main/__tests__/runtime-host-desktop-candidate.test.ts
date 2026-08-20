@@ -330,10 +330,11 @@ test('drains an accepted Host-backed Bot turn before closing its generation', as
     platform: 'telegram',
     userId: 'user',
     userName: 'User',
-    chatId: 'chat',
+    conversationId: 'chat',
+    sourceEventId: 'source-1',
+    replyTarget: { chatId: 'chat', replyToMessageId: 'source-1' },
     isGroup: false,
     text: 'answer this',
-    sourceMessageId: 'source-1',
     receivedAt: 1,
   } as BotIncomingMessage);
   await host.turnStarted;
@@ -347,10 +348,11 @@ test('drains an accepted Host-backed Bot turn before closing its generation', as
     platform: 'telegram',
     userId: 'user',
     userName: 'User',
-    chatId: 'chat',
+    conversationId: 'chat',
+    sourceEventId: 'source-2',
+    replyTarget: { chatId: 'chat', replyToMessageId: 'source-2' },
     isGroup: false,
     text: 'must not start',
-    sourceMessageId: 'source-2',
     receivedAt: 2,
   } as BotIncomingMessage);
   assert.equal(host.startTurnCalls, 1);
@@ -806,7 +808,7 @@ function connectionHarness(
   let capabilityRegistrations = 0;
   let capabilityUnregistrations = 0;
   let closeCalls = 0;
-  let startTurnCalls = 0;
+  let submitMessageCalls = 0;
   let runtimeResourceControllerAcquires = 0;
   let activeSubscriptionFrames: AsyncFrameQueue | undefined;
   const connection = {
@@ -829,6 +831,16 @@ function connectionHarness(
       }
       if (operation === 'session.create') {
         return session((input as { sessionId: string }).sessionId);
+      }
+      if (operation === 'external-conversation.reconcile') {
+        const reconcile = input as { kind: 'resolve' | 'release' };
+        return reconcile.kind === 'resolve'
+          ? {
+              kind: 'resolved',
+              disposition: 'existing',
+              session: session(`session-${label}`),
+            }
+          : { kind: 'released', hadBinding: true };
       }
       if (operation === 'external-session.source.query') {
         return { adapterIds: ['codex'] };
@@ -891,10 +903,28 @@ function connectionHarness(
       if (operation === 'session.lifecycle.set') {
         return session((input as { sessionId: string }).sessionId);
       }
-      if (operation === 'turn.start') {
-        startTurnCalls += 1;
+      if (operation === 'session.configuration.update') {
+        return {
+          kind: 'committed',
+          session: {
+            ...session((input as { sessionId: string }).sessionId),
+            permissionMode: 'explore',
+          },
+        };
+      }
+      if (operation === 'turn.query') {
+        const turnInput = input as { sessionId: string; turnId: string };
+        return {
+          sessionId: turnInput.sessionId,
+          turnId: turnInput.turnId,
+          runId: `run-${label}`,
+          status: 'running',
+        };
+      }
+      if (operation === 'turn.message.submit') {
+        submitMessageCalls += 1;
         resolveTurnStarted?.();
-        return {};
+        return { disposition: 'turn_started', turnId: `turn-${label}` };
       }
       throw new Error(`Unexpected operation: ${operation}`);
     },
@@ -977,7 +1007,7 @@ function connectionHarness(
       return closeCalls;
     },
     get startTurnCalls() {
-      return startTurnCalls;
+      return submitMessageCalls;
     },
     get runtimeResourceControllerAcquires() {
       return runtimeResourceControllerAcquires;

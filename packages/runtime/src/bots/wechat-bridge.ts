@@ -4,6 +4,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import { proxiedFetch } from './proxied-fetch.js';
+import { normalizeBotSourceEventId } from './types.js';
 import type {
   BotIncomingMessage,
   BotSendOptions,
@@ -340,7 +341,9 @@ export function mapWechatBridgeMessage(raw: unknown): BotIncomingMessage | null 
     message.isMentioned === true || message.isAt === true || message.atMe === true;
   if (isGroup && !isMentioned) return null;
   const senderId = firstStringField(message, ['senderId', 'fromWxid', 'sender', 'wxid']) ?? chatId;
-  const messageId = firstStringField(message, ['messageId', 'msgId', 'id', 'svrId']);
+  const messageId = normalizeBotSourceEventId(
+    firstStringField(message, ['messageId', 'msgId', 'id', 'svrId']),
+  );
   if (!chatId || !senderId || !messageId) return null;
   const body = firstStringField(message, ['body', 'text', 'content', 'message']) ?? '';
   const attachmentKind = wechatAttachmentKind(message);
@@ -350,10 +353,11 @@ export function mapWechatBridgeMessage(raw: unknown): BotIncomingMessage | null 
     platform: 'wechat',
     userId: senderId,
     userName: firstStringField(message, ['senderName', 'nickname', 'displayName']) ?? senderId,
-    chatId,
+    conversationId: chatId,
+    sourceEventId: messageId,
+    replyTarget: { chatId, replyToMessageId: messageId },
     isGroup,
     text: body,
-    sourceMessageId: messageId,
     receivedAt: timestamp ? normalizeBridgeTimestamp(timestamp) : Date.now(),
     ...(attachmentKind ? { attachmentKind } : {}),
   };
@@ -384,17 +388,23 @@ export function mapWechatIlinkMessage(raw: unknown): BotIncomingMessage | null {
   if (!text && !hasMedia) return null;
   const userId = firstStringField(message, ['from_user_id', 'fromUserId', 'fromWxid']);
   if (!userId) return null;
-  const messageId =
-    firstStringField(message, ['msg_id', 'message_id', 'client_id', 'id']) ?? randomUUID();
+  const messageId = normalizeBotSourceEventId(
+    firstStringField(message, ['msg_id', 'message_id', 'client_id', 'id']),
+  );
+  // Without a stable upstream identity a redelivery cannot be deduplicated: a
+  // locally generated id would route each retry to a fresh Host admission and
+  // could run the model twice. Drop the message like the DingTalk bridge does.
+  if (!messageId) return null;
   const timestamp = firstNumberField(message, ['create_time', 'timestamp', 'createdAt']);
   return {
     platform: 'wechat',
     userId,
     userName: firstStringField(message, ['from_user_name', 'nickname', 'displayName']) ?? userId,
-    chatId: userId,
+    conversationId: userId,
+    sourceEventId: messageId,
+    replyTarget: { chatId: userId, replyToMessageId: messageId },
     isGroup: false,
     text,
-    sourceMessageId: messageId,
     receivedAt: timestamp ? normalizeBridgeTimestamp(timestamp) : Date.now(),
     ...(hasMedia ? { attachmentKind: 'unknown' as const } : {}),
   };

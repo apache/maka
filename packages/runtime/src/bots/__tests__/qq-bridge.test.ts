@@ -9,6 +9,7 @@ const {
   qqChannelMessageToEvent,
   qqGroupMessageToEvent,
   qqC2CMessageToEvent,
+  qqDirectMessageToEvent,
   pickQQSendRoute,
   pickQQTypingRoute,
 } = __TEST__;
@@ -69,19 +70,19 @@ describe('QQ message mapping', () => {
         platform: channel?.platform,
         userId: channel?.userId,
         userName: channel?.userName,
-        chatId: channel?.chatId,
+        conversationId: channel?.conversationId,
         isGroup: channel?.isGroup,
         text: channel?.text,
-        sourceMessageId: channel?.sourceMessageId,
+        sourceEventId: channel?.sourceEventId,
       },
       {
         platform: 'qq',
         userId: 'u-1',
         userName: 'Alice',
-        chatId: 'channel:chan-1',
+        conversationId: 'channel:chan-1',
         isGroup: true,
         text: '@bot hello',
-        sourceMessageId: 'm-1',
+        sourceEventId: 'm-1',
       },
     );
 
@@ -90,8 +91,12 @@ describe('QQ message mapping', () => {
       1,
     );
     assert.deepEqual(
-      { chatId: group?.chatId, userId: group?.userId, isGroup: group?.isGroup },
-      { chatId: 'group:g-1', userId: 'mo-1', isGroup: true },
+      {
+        conversationId: group?.conversationId,
+        userId: group?.userId,
+        isGroup: group?.isGroup,
+      },
+      { conversationId: 'group:g-1', userId: 'mo-1', isGroup: true },
     );
     assert.equal(
       qqGroupMessageToEvent({ id: 'gm-2', group_openid: 'g-2', author: { user_openid: 'uo-2' } }, 1)
@@ -106,9 +111,28 @@ describe('QQ message mapping', () => {
       { id: 'c2c-1', content: 'hi', author: { user_openid: 'uo-1' } },
       1,
     );
-    assert.equal(c2c?.chatId, 'c2c:uo-1');
+    assert.equal(c2c?.conversationId, 'c2c:uo-1');
     assert.equal(c2c?.isGroup, false);
     assert.equal(c2c?.userId, 'uo-1');
+
+    const direct = qqDirectMessageToEvent(
+      {
+        id: 'dm-1',
+        channel_id: 'dm-channel-1',
+        content: 'hello',
+        author: { id: 'u-1', username: 'Alice' },
+      },
+      1,
+    );
+    assert.equal(direct?.conversationId, 'dm:channel:dm-channel-1');
+    assert.deepEqual(direct?.replyTarget, {
+      chatId: 'channel:dm-channel-1',
+      replyToMessageId: 'dm-1',
+    });
+    assert.equal(
+      pickQQSendRoute(direct?.replyTarget.chatId ?? '', 'reply')?.path,
+      '/channels/dm-channel-1/messages',
+    );
   });
 
   it('drops bot echoes and messages without required identities', () => {
@@ -117,6 +141,18 @@ describe('QQ message mapping', () => {
       null,
     );
     assert.equal(qqChannelMessageToEvent({ id: 'm-3', channel_id: 'c' }, 1), null);
+    assert.equal(
+      qqChannelMessageToEvent({ channel_id: 'c', author: { id: 'u' } } as never, 1),
+      null,
+    );
+    assert.equal(
+      qqChannelMessageToEvent({ id: 'm-4', channel_id: ' ', author: { id: 'u' } }, 1),
+      null,
+    );
+    assert.equal(
+      qqChannelMessageToEvent({ id: 'm-5', channel_id: 'c', author: { id: ' ' } }, 1),
+      null,
+    );
     assert.equal(
       qqGroupMessageToEvent(
         { id: 'gm-4', group_openid: '' as string, author: { id: 'x' } } as any,

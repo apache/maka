@@ -25,7 +25,7 @@
  */
 
 import { proxiedFetch } from './proxied-fetch.js';
-import type { BotSendOptions, SendCapable } from './types.js';
+import { normalizeBotSourceEventId, type BotSendOptions, type SendCapable } from './types.js';
 import { WsBridgeBase, type WsCloseDecision } from './ws-bridge-base.js';
 
 const DINGTALK_API = 'https://api.dingtalk.com';
@@ -177,17 +177,20 @@ export function classifyDingTalkSendResponse(
  */
 export function dingTalkPayloadToEvent(
   payload: DingTalkBotMessagePayload,
+  sourceEventId: string,
   receivedAt: number,
 ): {
   platform: 'dingtalk';
   userId: string;
   userName: string;
-  chatId: string;
+  conversationId: string;
+  sourceEventId: string;
+  replyTarget: { chatId: string };
   isGroup: boolean;
   text: string;
-  sourceMessageId: string;
   receivedAt: number;
 } | null {
+  const normalizedSourceEventId = normalizeBotSourceEventId(sourceEventId);
   if (!payload || typeof payload !== 'object') return null;
   const content = payload.text?.content;
   if (typeof content !== 'string' || content.length === 0) return null;
@@ -195,17 +198,17 @@ export function dingTalkPayloadToEvent(
   const userId = payload.senderId;
   if (typeof chatId !== 'string' || chatId.length === 0) return null;
   if (typeof userId !== 'string' || userId.length === 0) return null;
+  if (!normalizedSourceEventId) return null;
+  const isGroup = payload.conversationType === '2';
   return {
     platform: 'dingtalk',
     userId,
     userName: payload.senderNick ?? userId,
-    chatId,
-    isGroup: payload.conversationType === '2',
+    conversationId: chatId,
+    sourceEventId: normalizedSourceEventId,
+    replyTarget: { chatId: isGroup ? chatId : userId },
+    isGroup,
     text: content,
-    // DingTalk Stream callbacks do not carry the original message id;
-    // use a synthetic key so downstream contracts that key off
-    // `sourceMessageId` still get a unique value.
-    sourceMessageId: `${chatId}:${receivedAt}`,
     receivedAt,
   };
 }
@@ -333,7 +336,7 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
         payload = null;
       }
       if (payload) {
-        const event = dingTalkPayloadToEvent(payload, Date.now());
+        const event = dingTalkPayloadToEvent(payload, messageId, Date.now());
         if (event) {
           this.lastEventAt = event.receivedAt;
           this.emitIncomingMessage(event);

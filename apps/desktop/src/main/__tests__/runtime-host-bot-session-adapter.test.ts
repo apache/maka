@@ -8,7 +8,6 @@ import {
   type SubscriptionFrame,
   type TurnSnapshot,
 } from '@maka/runtime-host/protocol';
-import { BotSessionUnavailableError } from '../bot-session-adapter.js';
 import {
   createRuntimeHostBotSessionAdapter,
   type RuntimeHostBotSessionAdapterDeps,
@@ -17,134 +16,111 @@ import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.j
 
 type BotClient = RuntimeHostBotSessionAdapterDeps['client'];
 
-test('creates an explore Session through the Host-owned default model route', async () => {
-  const creates: unknown[] = [];
-  const changes: unknown[] = [];
-  const client = botClient({
-    createSession: async (input) => {
-      creates.push(input);
-      return session(input.sessionId, { permissionMode: 'explore' });
-    },
-  });
+test('resolves Host-owned conversation continuity and normalizes explore permission', async () => {
+  const calls: unknown[] = [];
   const adapter = createRuntimeHostBotSessionAdapter({
-    client,
+    client: botClient({
+      reconcileExternalConversation: async (input) => {
+        calls.push(input);
+        return input.kind === 'resolve' && input.session === undefined
+          ? { kind: 'create_required' }
+          : {
+              kind: 'resolved',
+              disposition: 'created',
+              session: session('session-1', { permissionMode: 'ask' }),
+            };
+      },
+      updateSessionConfiguration: async (sessionId, patch) => {
+        calls.push({ sessionId, patch });
+        return session(sessionId, { permissionMode: 'explore' });
+      },
+    }),
     resolveCreateTarget: async () => ({
       workspace: { kind: 'project', projectId: 'project-1' },
     }),
-    emitSessionsChanged: (reason, sessionId, extra) =>
-      changes.push({ reason, sessionId, extra }),
-    newId: () => 'bot-session-1',
+    emitSessionsChanged() {},
   });
 
-  const sessionId = await adapter.createSession({
-    name: 'Telegram conversation',
-    labels: ['bot', 'telegram'],
-  });
-
-  assert.equal(sessionId, 'bot-session-1');
-  assert.deepEqual(creates, [
+  assert.deepEqual(
+    await adapter.resolveSession({
+      conversationId: 'slack:channel:C1:thread:1.2',
+      name: 'Slack conversation',
+      labels: ['bot', 'slack'],
+    }),
+    { kind: 'ready', sessionId: 'session-1' },
+  );
+  assert.deepEqual(calls, [
     {
-      sessionId: 'bot-session-1',
-      workspace: { kind: 'project', projectId: 'project-1' },
+      kind: 'resolve',
+      conversationId: 'slack:channel:C1:thread:1.2',
+    },
+    {
+      kind: 'resolve',
+      conversationId: 'slack:channel:C1:thread:1.2',
+      session: {
+        workspace: { kind: 'project', projectId: 'project-1' },
+        name: 'Slack conversation',
+        labels: ['bot', 'slack'],
+        modelTarget: { kind: 'default' },
+      },
+    },
+    { sessionId: 'session-1', patch: { permissionMode: 'explore' } },
+  ]);
+});
+
+test('does not resolve the current Desktop project for an existing binding', async () => {
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      reconcileExternalConversation: async () => ({
+        kind: 'resolved',
+        disposition: 'existing',
+        session: session('session-1'),
+      }),
+    }),
+    resolveCreateTarget: async () => {
+      throw new Error('existing bindings must not depend on current project selection');
+    },
+    emitSessionsChanged() {},
+  });
+
+  assert.deepEqual(
+    await adapter.resolveSession({
+      conversationId: 'telegram:chat-1',
       name: 'Telegram conversation',
       labels: ['bot', 'telegram'],
-      modelTarget: { kind: 'default' },
-      permissionMode: 'explore',
-    },
-  ]);
-  assert.deepEqual(changes, [
-    { reason: 'created', sessionId: 'bot-session-1', extra: undefined },
-  ]);
-});
-
-test('prepares a bound Session without exposing Host configuration revisions to the Bot', async () => {
-  const updates: unknown[] = [];
-  const client = botClient({
-    getSession: async () => session('bot-session-1', { permissionMode: 'ask' }),
-    updateSessionConfiguration: async (sessionId, patch) => {
-      updates.push({ sessionId, patch });
-      return session(sessionId, { permissionMode: 'explore' });
-    },
-  });
-  const adapter = createRuntimeHostBotSessionAdapter({
-    client,
-    resolveCreateTarget: hostPathCreateTarget,
-    emitSessionsChanged() {},
-  });
-
-  assert.equal(await adapter.prepareSession('bot-session-1'), 'ready');
-  assert.deepEqual(updates, [
-    { sessionId: 'bot-session-1', patch: { permissionMode: 'explore' } },
-  ]);
-
-  const unavailable = createRuntimeHostBotSessionAdapter({
-    client: botClient({ getSession: async () => null }),
-    resolveCreateTarget: hostPathCreateTarget,
-    emitSessionsChanged() {},
-  });
-  await assert.rejects(
-    unavailable.prepareSession('removed-session'),
-    BotSessionUnavailableError,
-  );
-});
-
-test('rejects archived Sessions before and after a permission transition', async () => {
-  const initiallyArchived = createRuntimeHostBotSessionAdapter({
-    client: botClient({
-      getSession: async () =>
-        session('bot-session-1', { isArchived: true, status: 'active' }),
     }),
-    resolveCreateTarget: hostPathCreateTarget,
-    emitSessionsChanged() {},
-  });
-  await assert.rejects(
-    initiallyArchived.prepareSession('bot-session-1'),
-    BotSessionUnavailableError,
-  );
-
-  const archivedDuringUpdate = createRuntimeHostBotSessionAdapter({
-    client: botClient({
-      getSession: async () => session('bot-session-1', { permissionMode: 'ask' }),
-      updateSessionConfiguration: async (sessionId) =>
-        session(sessionId, {
-          permissionMode: 'explore',
-          isArchived: true,
-          status: 'active',
-        }),
-    }),
-    resolveCreateTarget: hostPathCreateTarget,
-    emitSessionsChanged() {},
-  });
-  await assert.rejects(
-    archivedDuringUpdate.prepareSession('bot-session-1'),
-    BotSessionUnavailableError,
+    { kind: 'ready', sessionId: 'session-1' },
   );
 });
 
-test('reconciles an uncertain Host Session create with its stable Session identity', async () => {
+test('releases continuity through an exact Host operation id', async () => {
+  let captured: unknown;
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
-      createSession: async () => {
-        throw new RuntimeHostOperationError(
-          'session.create',
-          'commit_outcome_unknown',
-          'response lost',
-        );
+      reconcileExternalConversation: async (input) => {
+        captured = input;
+        return { kind: 'released', hadBinding: true };
       },
-      getSession: async (sessionId) => session(sessionId, { permissionMode: 'explore' }),
     }),
     resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged() {},
-    newId: () => 'stable-session-id',
   });
 
   assert.equal(
-    await adapter.createSession({ name: 'Bot conversation', labels: ['bot'] }),
-    'stable-session-id',
+    await adapter.releaseConversation({
+      conversationId: 'telegram:chat-1',
+      operationId: 'bot_reset_1',
+    }),
+    true,
   );
+  assert.deepEqual(captured, {
+    kind: 'release',
+    conversationId: 'telegram:chat-1',
+    operationId: 'bot_reset_1',
+  });
 });
 
-test('subscribes before Turn start and settles a fast Host reply without losing text', async () => {
+test('starts collecting before submitting the stable source message for the Host-selected Turn', async () => {
   const events = new AsyncFrameQueue();
   const changes: unknown[] = [];
   const replySnapshots: string[] = [];
@@ -152,125 +128,193 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(null),
     activeAssistantStreams: [],
-    transcript: Promise.resolve([]),
+    transcript: Promise.resolve([
+      {
+        type: 'assistant',
+        id: 'assistant-1',
+        turnId: 'host-turn-1',
+        ts: 2,
+        text: 'Corrected reply',
+        modelId: 'test-model',
+      },
+    ]),
     events,
     async close() {
       closeCount += 1;
       events.end();
     },
   });
-  const client = botClient({
-    openSession: async () => handle,
-    startTurn: async (input) => {
-      assert.equal(events.nextCount, 1, 'the subscription must be draining before Turn start');
-      events.push(projectionFrame(1, runningTurn(input.sessionId, input.turnId)));
-      events.push(deltaFrame(2, input.sessionId, input.turnId, 0, 'Hello'));
-      events.push(deltaFrame(3, input.sessionId, input.turnId, 3, 'lo world'));
-      events.push(deltaFrame(4, input.sessionId, input.turnId, 0, 'Hello world'));
-      events.push(deltaFrame(5, input.sessionId, input.turnId, 0, 'Corrected reply', true));
-      events.push(
-        projectionFrame(6, {
-          ...runningTurn(input.sessionId, input.turnId),
-          status: 'completed',
-          terminalEventId: 'terminal-1',
-        }),
-      );
-      return startedTurn(runningTurn(input.sessionId, input.turnId));
-    },
-  });
   const adapter = createRuntimeHostBotSessionAdapter({
-    client,
+    client: botClient({
+      openSession: async () => handle,
+      queryTurn: async (input) => {
+        assert.deepEqual(input, { sessionId: 'session-1', turnId: 'host-turn-1' });
+        return runningTurn('session-1', 'host-turn-1');
+      },
+      submitMessage: async (input) => {
+        assert.equal(events.started, true);
+        assert.deepEqual(input, {
+          sessionId: 'session-1',
+          messageId: 'bot_source_1',
+          content: { text: 'hello' },
+          placement: 'next_turn',
+          busyBehavior: 'reject',
+          admissionMode: 'allow',
+        });
+        events.push(projectionFrame(1, runningTurn('session-1', 'host-turn-1')));
+        events.push(deltaFrame(2, 'session-1', 'host-turn-1', 0, 'Hello'));
+        events.push(deltaFrame(3, 'session-1', 'host-turn-1', 5, ' world'));
+        events.push(deltaFrame(4, 'session-1', 'host-turn-1', 0, 'Corrected reply', true));
+        events.push(
+          projectionFrame(5, {
+            ...runningTurn('session-1', 'host-turn-1'),
+            status: 'completed',
+            terminalEventId: 'terminal-1',
+          }),
+        );
+        return { disposition: 'turn_started', turnId: 'host-turn-1' };
+      },
+    }),
     resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged: (reason, sessionId, extra) =>
       changes.push({ reason, sessionId, extra }),
   });
 
-  const result = await adapter.runTurn({
-    sessionId: 'bot-session-1',
-    turnId: 'turn-1',
-    text: 'hello',
-    onReplySnapshot: (text) => replySnapshots.push(text),
-  });
-
-  assert.deepEqual(result, { kind: 'completed', text: 'Corrected reply' });
-  assert.deepEqual(replySnapshots, ['Hello', 'Hello world', 'Corrected reply']);
-  assert.equal(closeCount, 1);
-  assert.deepEqual(changes, [
-    {
-      reason: 'status-change',
-      sessionId: 'bot-session-1',
-      extra: { turnId: 'turn-1' },
-    },
-  ]);
-});
-
-test('accepts an empty reset delta as the authoritative Bot reply', async () => {
-  const events = new AsyncFrameQueue();
-  const replySnapshots: string[] = [];
-  const adapter = createRuntimeHostBotSessionAdapter({
-    client: botClient({
-      openSession: async () => runtimeHostSessionFixture({
-        snapshot: continuitySnapshot(null),
-        activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
-        events,
-        async close() {
-          events.end();
-        },
-      }),
-      startTurn: async (input) => {
-        events.push(deltaFrame(1, input.sessionId, input.turnId, 0, 'Provisional reply'));
-        events.push(deltaFrame(2, input.sessionId, input.turnId, 0, '', true));
-        events.push(
-          projectionFrame(3, {
-            ...runningTurn(input.sessionId, input.turnId),
-            status: 'completed',
-            terminalEventId: 'terminal-1',
-          }),
-        );
-        return startedTurn(runningTurn(input.sessionId, input.turnId));
-      },
-    }),
-    resolveCreateTarget: hostPathCreateTarget,
-    emitSessionsChanged() {},
-  });
-
   assert.deepEqual(
     await adapter.runTurn({
-      sessionId: 'bot-session-1',
-      turnId: 'turn-1',
+      sessionId: 'session-1',
+      messageId: 'bot_source_1',
       text: 'hello',
       onReplySnapshot: (text) => replySnapshots.push(text),
     }),
-    { kind: 'completed', text: '' },
+    { kind: 'completed', text: 'Corrected reply' },
   );
-  assert.deepEqual(replySnapshots, ['Provisional reply', '']);
+  assert.deepEqual(replySnapshots, ['Hello', 'Hello world', 'Corrected reply']);
+  assert.equal(closeCount, 1);
+  assert.deepEqual(changes, [
+    { reason: 'status-change', sessionId: 'session-1', extra: { turnId: 'host-turn-1' } },
+  ]);
 });
 
-test('reply snapshot observers cannot interrupt the authoritative Host Turn', async () => {
+test('reports a concurrent Turn without leaking the Bot message into the queue', async () => {
   const events = new AsyncFrameQueue();
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(null),
+    activeAssistantStreams: [],
+    transcript: Promise.resolve([]),
+    events,
+    async close() {
+      events.end();
+    },
+  });
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
-      openSession: async () => runtimeHostSessionFixture({
-        snapshot: continuitySnapshot(null),
-        activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
-        events,
-        async close() {
-          events.end();
-        },
-      }),
-      startTurn: async (input) => {
-        events.push(deltaFrame(1, input.sessionId, input.turnId, 0, 'Reply'));
+      openSession: async () => handle,
+      submitMessage: async (input) => {
+        assert.equal(input.busyBehavior, 'reject');
+        throw new RuntimeHostOperationError(
+          'turn.message.submit',
+          'session_busy',
+          'Session already has an active Turn',
+        );
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+
+  assert.deepEqual(
+    await adapter.runTurn({
+      sessionId: 'session-1',
+      messageId: 'bot_source_busy',
+      text: 'do not queue me',
+    }),
+    { kind: 'errored', reason: 'Session is already running a Turn' },
+  );
+});
+
+test('projects a missing replay proof without admitting a new Turn', async () => {
+  const events = new AsyncFrameQueue();
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(null),
+    activeAssistantStreams: [],
+    transcript: Promise.resolve([]),
+    events,
+    async close() {
+      events.end();
+    },
+  });
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      openSession: async () => handle,
+      submitMessage: async (input) => {
+        assert.equal(input.admissionMode, 'replay_only');
+        throw new RuntimeHostOperationError(
+          'turn.message.submit',
+          'outcome_unknown',
+          'Message has no durable admission proof',
+        );
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+
+  assert.deepEqual(
+    await adapter.runTurn({
+      sessionId: 'session-1',
+      messageId: 'bot_source_new',
+      text: 'new work',
+      admissionMode: 'replay_only',
+    }),
+    { kind: 'admission_required' },
+  );
+});
+
+test('reattaches an exact redelivery to its already-running Host Turn', async () => {
+  const events = new AsyncFrameQueue();
+  const replySnapshots: string[] = [];
+  const activeTurn = runningTurn('session-1', 'redelivered-turn');
+  let transcriptReads = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(activeTurn),
+    activeAssistantStreams: [],
+    async loadTranscript() {
+      transcriptReads += 1;
+      return transcriptReads === 1
+        ? []
+        : [
+            {
+              type: 'assistant' as const,
+              id: 'assistant-1',
+              turnId: 'redelivered-turn',
+              ts: 2,
+              text: 'Recovered reply',
+              modelId: 'test-model',
+            },
+          ];
+    },
+    events,
+    async close() {
+      events.end();
+    },
+  });
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      openSession: async () => handle,
+      submitMessage: async (input) => {
+        assert.equal(input.messageId, 'stable-redelivery');
+        events.push(deltaFrame(1, 'session-1', 'redelivered-turn', 0, 'Recovered reply'));
         events.push(
           projectionFrame(2, {
-            ...runningTurn(input.sessionId, input.turnId),
+            ...activeTurn,
             status: 'completed',
-            terminalEventId: 'terminal-1',
+            terminalEventId: 'redelivered-terminal',
           }),
         );
-        return startedTurn(runningTurn(input.sessionId, input.turnId));
+        return { disposition: 'turn_started', turnId: 'redelivered-turn' };
       },
+      queryTurn: async () => activeTurn,
     }),
     resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged() {},
@@ -278,39 +322,92 @@ test('reply snapshot observers cannot interrupt the authoritative Host Turn', as
 
   assert.deepEqual(
     await adapter.runTurn({
-      sessionId: 'bot-session-1',
-      turnId: 'turn-1',
-      text: 'hello',
-      onReplySnapshot() {
-        throw new Error('delivery failed');
-      },
+      sessionId: 'session-1',
+      messageId: 'stable-redelivery',
+      text: 'redelivered input',
+      onReplySnapshot: (text) => replySnapshots.push(text),
     }),
-    { kind: 'completed', text: 'Reply' },
+    { kind: 'completed', text: 'Recovered reply' },
   );
+  assert.deepEqual(replySnapshots, ['Recovered reply']);
 });
 
-test('returns blocked Skill feedback without waiting for a Turn that was not created', async () => {
+test('fails closed on a queued submit disposition instead of misreporting a busy race', async () => {
+  for (const disposition of ['followup', 'steering'] as const) {
+    const events = new AsyncFrameQueue();
+    const handle = runtimeHostSessionFixture({
+      snapshot: continuitySnapshot(null),
+      transcript: Promise.resolve([]),
+      events,
+      async close() {
+        events.end();
+      },
+    });
+    const adapter = createRuntimeHostBotSessionAdapter({
+      client: botClient({
+        openSession: async () => handle,
+        // placement 'next_turn' + busyBehavior 'reject' never queues: only a
+        // changed Host contract could produce this.
+        submitMessage: async () => ({ disposition, queueRevision: 7 }),
+      }),
+      resolveCreateTarget: hostPathCreateTarget,
+      emitSessionsChanged() {},
+    });
+
+    await assert.rejects(
+      adapter.runTurn({
+        sessionId: 'session-1',
+        messageId: 'bot_source_queued',
+        text: 'queued dispositions are not a busy race',
+      }),
+      new Error(`Unexpected turn.message.submit disposition: ${disposition}`),
+    );
+  }
+});
+
+test('recovers an older completed Turn from the canonical query and transcript', async () => {
   const events = new AsyncFrameQueue();
-  let closeCount = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot({
+      ...runningTurn('session-1', 'newer-turn'),
+      status: 'completed',
+      terminalEventId: 'terminal-newer',
+    }),
+    activeAssistantStreams: [],
+    transcript: Promise.resolve([
+      {
+        type: 'assistant',
+        id: 'assistant-old',
+        turnId: 'historical-turn',
+        ts: 2,
+        text: 'Historical reply',
+        modelId: 'test-model',
+      },
+      {
+        type: 'assistant',
+        id: 'assistant-newer',
+        turnId: 'newer-turn',
+        ts: 3,
+        text: 'Newer reply',
+        modelId: 'test-model',
+      },
+    ]),
+    async close() {
+      events.end();
+    },
+    events,
+  });
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
-      openSession: async () => runtimeHostSessionFixture({
-        snapshot: continuitySnapshot(null),
-        activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
-        events,
-        async close() {
-          closeCount += 1;
-          events.end();
-        },
+      openSession: async () => handle,
+      submitMessage: async () => ({
+        disposition: 'turn_started',
+        turnId: 'historical-turn',
       }),
-      startTurn: async () => ({
-        kind: 'blocked',
-        skillInvocation: {
-          loaded: [],
-          failed: [{ request: 'writer', reason: 'not_found' }],
-          receipts: [],
-        },
+      queryTurn: async () => ({
+        ...runningTurn('session-1', 'historical-turn'),
+        status: 'completed',
+        terminalEventId: 'terminal-old',
       }),
     }),
     resolveCreateTarget: hostPathCreateTarget,
@@ -319,71 +416,198 @@ test('returns blocked Skill feedback without waiting for a Turn that was not cre
 
   assert.deepEqual(
     await adapter.runTurn({
-      sessionId: 'bot-session-1',
-      turnId: 'turn-blocked',
-      text: '/skill:writer help',
+      sessionId: 'session-1',
+      messageId: 'bot_source_old',
+      text: 'old message',
     }),
-    { kind: 'errored', reason: 'writer: not_found' },
+    { kind: 'completed', text: 'Historical reply' },
   );
-  assert.equal(closeCount, 1);
 });
 
-test('projects Host interaction and failure outcomes into the Bot reply contract', async () => {
-  const suspended = await runProjectedTurn({
-    ...runningTurn('bot-session-1', 'turn-1'),
-    status: 'waiting_for_user',
-  });
-  const failed = await runProjectedTurn({
-    ...runningTurn('bot-session-1', 'turn-1'),
-    status: 'failed',
-    terminalEventId: 'terminal-1',
-    failureClass: 'model_unavailable',
-  });
-
-  assert.deepEqual(suspended, { kind: 'suspended' });
-  assert.deepEqual(failed, { kind: 'errored', reason: 'model_unavailable' });
-});
-
-async function runProjectedTurn(rootTurn: TurnSnapshot) {
+test('loads a fast completed Turn transcript only after message admission', async () => {
   const events = new AsyncFrameQueue();
+  let submitted = false;
+  let transcriptReads = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(null),
+    activeAssistantStreams: [],
+    async loadTranscript() {
+      transcriptReads += 1;
+      return submitted
+        ? [
+            {
+              type: 'assistant' as const,
+              id: 'assistant-fast',
+              turnId: 'fast-turn',
+              ts: 2,
+              text: 'Fast reply',
+              modelId: 'test-model',
+            },
+          ]
+        : [];
+    },
+    events,
+    async close() {
+      events.end();
+    },
+  });
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
-      openSession: async () => runtimeHostSessionFixture({
-        snapshot: continuitySnapshot(null),
-        activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
-        events,
-        async close() {
-          events.end();
-        },
-      }),
-      startTurn: async () => {
-        events.push(projectionFrame(1, rootTurn));
-        return startedTurn(runningTurn(rootTurn.sessionId, rootTurn.turnId));
+      openSession: async () => handle,
+      submitMessage: async () => {
+        assert.equal(transcriptReads, 0);
+        submitted = true;
+        return { disposition: 'turn_started', turnId: 'fast-turn' };
       },
+      queryTurn: async () => ({
+        ...runningTurn('session-1', 'fast-turn'),
+        status: 'completed',
+        terminalEventId: 'terminal-fast',
+      }),
     }),
     resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged() {},
   });
-  return adapter.runTurn({
-    sessionId: rootTurn.sessionId,
-    turnId: rootTurn.turnId,
-    text: 'hello',
+
+  assert.deepEqual(
+    await adapter.runTurn({
+      sessionId: 'session-1',
+      messageId: 'bot_source_fast',
+      text: 'fast message',
+    }),
+    { kind: 'completed', text: 'Fast reply' },
+  );
+  assert.equal(transcriptReads, 1);
+});
+
+test('recovers a completed Turn when no assistant delta reaches the subscriber', async () => {
+  const events = new AsyncFrameQueue();
+  let transcriptReads = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(null),
+    activeAssistantStreams: [],
+    async loadTranscript() {
+      transcriptReads += 1;
+      return [
+        {
+          type: 'assistant' as const,
+          id: 'assistant-terminal-only',
+          turnId: 'terminal-only-turn',
+          ts: 2,
+          text: 'Recovered after terminal projection',
+          modelId: 'test-model',
+        },
+      ];
+    },
+    events,
+    async close() {
+      events.end();
+    },
   });
-}
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      openSession: async () => handle,
+      submitMessage: async () => {
+        events.push(
+          projectionFrame(1, {
+            ...runningTurn('session-1', 'terminal-only-turn'),
+            status: 'completed',
+            terminalEventId: 'terminal-only-event',
+          }),
+        );
+        return { disposition: 'turn_started', turnId: 'terminal-only-turn' };
+      },
+      queryTurn: async () => runningTurn('session-1', 'terminal-only-turn'),
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+
+  assert.deepEqual(
+    await adapter.runTurn({
+      sessionId: 'session-1',
+      messageId: 'bot_source_terminal_only',
+      text: 'terminal only',
+    }),
+    { kind: 'completed', text: 'Recovered after terminal projection' },
+  );
+  assert.equal(transcriptReads, 1);
+});
+
+test('seeds an adopted assistant stream and ignores thinking without stalling', async () => {
+  const events = new AsyncFrameQueue();
+  let transcriptReads = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(runningTurn('session-1', 'adopted-turn')),
+    activeAssistantStreams: [],
+    async loadTranscript() {
+      transcriptReads += 1;
+      return [
+        {
+          type: 'assistant' as const,
+          id: 'assistant-1',
+          turnId: 'adopted-turn',
+          ts: 2,
+          text: transcriptReads === 1 ? 'Hello' : 'Hello world',
+          modelId: 'test-model',
+        },
+      ];
+    },
+    events,
+    async close() {
+      events.end();
+    },
+  });
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      openSession: async () => handle,
+      submitMessage: async () => {
+        events.push(thinkingDeltaFrame(1, 'session-1', 'adopted-turn'));
+        events.push(deltaFrame(2, 'session-1', 'adopted-turn', 5, ' world'));
+        events.push(
+          projectionFrame(3, {
+            ...runningTurn('session-1', 'adopted-turn'),
+            status: 'completed',
+            terminalEventId: 'terminal-adopted',
+          }),
+        );
+        return { disposition: 'turn_started', turnId: 'adopted-turn' };
+      },
+      queryTurn: async () => runningTurn('session-1', 'adopted-turn'),
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+
+  assert.deepEqual(
+    await adapter.runTurn({
+      sessionId: 'session-1',
+      messageId: 'bot_source_adopted',
+      text: 'resume',
+    }),
+    { kind: 'completed', text: 'Hello world' },
+  );
+  assert.equal(transcriptReads, 2);
+});
 
 function botClient(overrides: Partial<BotClient>): BotClient {
   const unexpected = (): never => {
     throw new Error('Unexpected Runtime Host Bot client call');
   };
   return {
-    createSession: unexpected,
-    getSession: unexpected,
+    reconcileExternalConversation: unexpected,
     openSession: unexpected,
-    startTurn: unexpected,
+    queryTurn: unexpected,
+    submitMessage: unexpected,
     updateSessionConfiguration: unexpected,
     ...overrides,
   };
+}
+
+function hostPathCreateTarget() {
+  return Promise.resolve({
+    workspace: { kind: 'host_path' as const, path: '/workspace' },
+  });
 }
 
 function session(
@@ -410,34 +634,22 @@ function session(
     llmConnectionSlug: 'test-connection',
     connectionLocked: false,
     model: 'test-model',
-    permissionMode: 'ask',
+    permissionMode: 'explore',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     ...overrides,
   };
 }
 
-async function hostPathCreateTarget() {
-  return { workspace: { kind: 'host_path' as const, path: '/workspace' } };
-}
-
 function runningTurn(sessionId: string, turnId: string): TurnSnapshot {
   return { sessionId, turnId, runId: 'run-1', status: 'running' };
-}
-
-function startedTurn(turn: TurnSnapshot) {
-  return {
-    kind: 'started' as const,
-    turn,
-    skillInvocation: { loaded: [], failed: [], receipts: [] },
-  };
 }
 
 function continuitySnapshot(rootTurn: TurnSnapshot | null): SessionContinuitySnapshot {
   return {
     schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
     session: {
-      sessionId: 'bot-session-1',
+      sessionId: rootTurn?.sessionId ?? 'session-1',
       metadataRevision: 1,
       status: rootTurn ? 'running' : 'active',
       createdAt: 1,
@@ -480,7 +692,7 @@ function deltaFrame(
       kind: 'text',
       turnId,
       runId: 'run-1',
-      messageId: 'message-1',
+      messageId: 'assistant-1',
       startOffset,
       text,
       ...(reset ? { reset: true } : {}),
@@ -488,11 +700,37 @@ function deltaFrame(
   };
 }
 
+function thinkingDeltaFrame(
+  sequence: number,
+  sessionId: string,
+  turnId: string,
+): SubscriptionFrame {
+  return {
+    kind: 'subscription.session_delta',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence,
+    sessionId,
+    delta: {
+      kind: 'thinking',
+      turnId,
+      runId: 'run-1',
+      messageId: 'thinking-1',
+      startOffset: 0,
+      text: 'private reasoning',
+    },
+  };
+}
+
 class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
   readonly #frames: SubscriptionFrame[] = [];
   readonly #waiters: Array<(result: IteratorResult<SubscriptionFrame>) => void> = [];
-  nextCount = 0;
   #ended = false;
+  #started = false;
+
+  get started(): boolean {
+    return this.#started;
+  }
 
   push(frame: SubscriptionFrame): void {
     const waiter = this.#waiters.shift();
@@ -502,15 +740,13 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
 
   end(): void {
     this.#ended = true;
-    for (const waiter of this.#waiters.splice(0)) {
-      waiter({ value: undefined, done: true });
-    }
+    for (const waiter of this.#waiters.splice(0)) waiter({ value: undefined, done: true });
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SubscriptionFrame> {
     return {
       next: () => {
-        this.nextCount += 1;
+        this.#started = true;
         const frame = this.#frames.shift();
         if (frame) return Promise.resolve({ value: frame, done: false });
         if (this.#ended) return Promise.resolve({ value: undefined, done: true });

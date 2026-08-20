@@ -8,7 +8,12 @@ import {
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
-import type { BotSendOptions, BotStatus, SendCapable } from './types.js';
+import {
+  normalizeBotSourceEventId,
+  type BotSendOptions,
+  type BotStatus,
+  type SendCapable,
+} from './types.js';
 
 const HANDSHAKE_TIMEOUT_MS = 15_000;
 
@@ -34,6 +39,8 @@ export function feishuMessageToEvent(
   allowedUserIds?: ReadonlyArray<string>,
 ) {
   if (!message.content.trim() || !message.senderId || !message.chatId) return null;
+  const sourceEventId = normalizeBotSourceEventId(message.messageId);
+  if (!sourceEventId) return null;
   // PR-BOT-USER-ALLOWLIST-0 / PR1197 review: the Lark SDK policy gate only
   // enforces the allowlist for DMs (PolicyGate.evaluateGroup checks
   // groupAllowlist + requireMention, and this bridge sets requireMention:false),
@@ -46,10 +53,11 @@ export function feishuMessageToEvent(
     platform: 'feishu' as const,
     userId: message.senderId,
     userName: message.senderName ?? message.senderId,
-    chatId: message.chatId,
+    conversationId: message.chatId,
+    sourceEventId,
+    replyTarget: { chatId: message.chatId, replyToMessageId: sourceEventId },
     isGroup: message.chatType === 'group',
     text: message.content,
-    sourceMessageId: message.messageId,
     receivedAt,
   };
 }

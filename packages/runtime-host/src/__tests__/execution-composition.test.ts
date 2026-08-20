@@ -16,6 +16,7 @@ import { SessionManager } from '@maka/runtime/session-manager';
 import { fingerprintAgentGraphRunnableIntent } from '@maka/runtime/stream-graph-admission';
 import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readiness';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
+import { openInteractiveExternalConversationAuthorityForWrite } from '@maka/storage/external-conversation-authority';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import {
   LONG_TERM_MEMORY_DATABASE_NAME,
@@ -29,6 +30,7 @@ import {
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import { createSessionStore } from '@maka/storage';
 import { HostResidencyRegistry } from '../server/host-residency-registry.js';
 import {
   createExecutionRuntimeHostComposition,
@@ -72,6 +74,158 @@ test('production composition owns the long-term memory database lifecycle', asyn
       assert.equal(counts.operation_count, 0);
     } finally {
       database.close();
+    }
+  });
+});
+
+test('production composition owns external conversation binding and Session creation', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      const reconcile = composition.handlers['external-conversation.reconcile'];
+      const conversationId = 'slack:channel:C1:thread:10.1';
+      const client = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'bot-client',
+        surface: 'desktop' as const,
+        principal: 'local_os_user' as const,
+        acquireResidency: () => ({ release() {} }),
+      };
+      assert.deepEqual(await reconcile({ kind: 'resolve', conversationId }, client), {
+        ok: true,
+        result: { kind: 'create_required' },
+      });
+
+      const created = await reconcile(
+        {
+          kind: 'resolve',
+          conversationId,
+          session: {
+            workspace: { kind: 'host_path', path: root },
+            name: 'Slack conversation',
+            labels: ['bot', 'slack'],
+            modelTarget: { kind: 'default' },
+          },
+        },
+        client,
+      );
+      assert.equal(created.ok, true, JSON.stringify(created));
+      if (!created.ok || created.result.kind !== 'resolved') assert.fail(JSON.stringify(created));
+      assert.equal(created.result.disposition, 'created');
+
+      const repeated = await reconcile({ kind: 'resolve', conversationId }, client);
+      assert.equal(repeated.ok, true);
+      if (!repeated.ok || repeated.result.kind !== 'resolved') {
+        assert.fail(JSON.stringify(repeated));
+      }
+      assert.equal(repeated.result.disposition, 'existing');
+      assert.equal(repeated.result.session.id, created.result.session.id);
+
+      assert.deepEqual(
+        await reconcile({ kind: 'release', conversationId, operationId: 'reset_1' }, client),
+        { ok: true, result: { kind: 'released', hadBinding: true } },
+      );
+      assert.deepEqual(await reconcile({ kind: 'resolve', conversationId }, client), {
+        ok: true,
+        result: { kind: 'create_required' },
+      });
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('production recovery preserves a crash-window conversation claim for Session creation', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const conversationId = 'slack:channel:C1:thread:crash-window';
+    const claimedSessionId = 'claimed-session-before-crash';
+    const authority = await openInteractiveExternalConversationAuthorityForWrite(owner.lease);
+    const claim = await authority.resolve(conversationId, claimedSessionId);
+    assert.equal(claim.kind, 'claimed');
+    assert.equal(claim.binding.sessionId, claimedSessionId);
+    authority.close();
+
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      await composition.recover();
+      const outcome = await composition.handlers['external-conversation.reconcile'](
+        {
+          kind: 'resolve',
+          conversationId,
+          session: {
+            workspace: { kind: 'host_path', path: root },
+            name: 'Recovered Slack conversation',
+            labels: ['bot', 'slack'],
+            modelTarget: { kind: 'default' },
+          },
+        },
+        {
+          hostEpoch: 'crash-window-recovery',
+          connectionId: 'bot-client',
+          surface: 'desktop',
+          principal: 'local_os_user',
+          acquireResidency: () => ({ release() {} }),
+        },
+      );
+      assert.equal(outcome.ok, true, JSON.stringify(outcome));
+      if (!outcome.ok || outcome.result.kind !== 'resolved') assert.fail(JSON.stringify(outcome));
+      assert.equal(outcome.result.disposition, 'created');
+      assert.equal(outcome.result.session.id, claimedSessionId);
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('production startup migrates a real v27 database before recovery', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const setup = createSessionStore(root);
+    await setup.ready();
+    await setup.close?.();
+    const Database = (require('node:sqlite') as typeof import('node:sqlite')).DatabaseSync;
+    const databasePath = join(root, 'runtime.sqlite');
+    const database = new Database(databasePath);
+    try {
+      database.exec(`
+        DROP TABLE external_conversation_release_receipts;
+        DROP TABLE external_conversation_bindings;
+        DROP INDEX session_metadata_by_external_origin;
+        ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
+        ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
+        UPDATE session_metadata_schema
+        SET version = 27
+        WHERE scope = 'session_metadata';
+      `);
+    } finally {
+      database.close();
+    }
+
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      await composition.recover();
+      const migrated = new Database(databasePath);
+      try {
+        const version = migrated
+          .prepare(`SELECT version FROM session_metadata_schema WHERE scope = 'session_metadata'`)
+          .get() as { version: number };
+        assert.equal(version.version, 29);
+        const tables = migrated
+          .prepare(
+            `SELECT name FROM sqlite_schema
+             WHERE type = 'table' AND name LIKE 'external_conversation_%'
+             ORDER BY name`,
+          )
+          .all()
+          .map((row) => (row as { name: string }).name);
+        assert.deepEqual(tables, [
+          'external_conversation_bindings',
+          'external_conversation_release_receipts',
+        ]);
+      } finally {
+        migrated.close();
+      }
+    } finally {
+      await composition.close();
     }
   });
 });

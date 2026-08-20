@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   botConversationKey,
   botDisplayLabel,
@@ -12,12 +12,8 @@ import {
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import type { BotIncomingMessage, BotRegistry, BotReplyStream } from '@maka/runtime/bots';
 import type { BotSessionAdapter, BotSessionTurnResult } from './bot-session-adapter.js';
-import { isBotSessionUnavailableError } from './bot-session-adapter.js';
 import { isSessionWorkspaceUnavailableError } from './project-context-root.js';
 
-const BOT_RECENT_SOURCE_EVENT_LIMIT = 1_000;
-const BOT_RECENT_SOURCE_EVENT_TTL_MS = 60 * 60 * 1_000;
-const BOT_CONVERSATION_SESSION_LIMIT = 500;
 const BOT_CONVERSATION_RATE_BURST = 8;
 const BOT_CONVERSATION_RATE_REFILL_MS = 5_000;
 const BOT_CONVERSATION_RATE_BUCKET_TTL_MS = 60 * 60 * 1_000;
@@ -30,31 +26,21 @@ interface BotConversationRateBucket {
 
 export interface BotIncomingMainService {
   handleBotIncomingMessage(message: BotIncomingMessage): Promise<void>;
-  invalidateSessionBindings(sessionId: string): void;
   close(): Promise<void>;
 }
 
 interface BotIncomingMainServiceDeps {
   sessions: BotSessionAdapter;
   botRegistry: BotRegistry;
+  newId?: () => string;
 }
 
 export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): BotIncomingMainService {
-  const botConversationSessions = new Map<string, string>();
   const botConversationQueues = new Map<string, Promise<void>>();
-  const botRecentSourceEventKeys = new Map<string, number>();
   const botConversationRateBuckets = new Map<string, BotConversationRateBucket>();
   const activeTasks = new Set<Promise<void>>();
   let closed = false;
   let closeTask: Promise<void> | undefined;
-
-  function invalidateSessionBindings(sessionId: string): void {
-    for (const [conversationKey, boundSessionId] of botConversationSessions) {
-      if (boundSessionId !== sessionId) continue;
-      botConversationSessions.delete(conversationKey);
-      botConversationRateBuckets.delete(conversationKey);
-    }
-  }
 
   function handleBotIncomingMessage(message: BotIncomingMessage): Promise<void> {
     if (closed) return Promise.resolve();
@@ -65,7 +51,6 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   }
 
   async function handleAcceptedBotIncomingMessage(message: BotIncomingMessage): Promise<void> {
-    if (rememberBotSourceEvent(message)) return;
     const text = message.text.trim();
     // PR-BOT-NON-TEXT-MESSAGE-ACK-0: previously a photo / voice / sticker
     // with no caption was silently dropped — the user got zero response.
@@ -75,11 +60,18 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     // transient system notices.
     if (!text && message.attachmentKind) {
       const replyOptions = {
-        ...(message.sourceMessageId ? { replyToMessageId: message.sourceMessageId } : {}),
+        ...(message.replyTarget.replyToMessageId
+          ? { replyToMessageId: message.replyTarget.replyToMessageId }
+          : {}),
         ephemeralTtlMs: 5 * 60 * 1_000,
       };
       await deps.botRegistry
-        .sendMessage(message.platform, message.chatId, nonTextMessageAck(message.attachmentKind), replyOptions)
+        .sendMessage(
+          message.platform,
+          message.replyTarget.chatId,
+          nonTextMessageAck(message.attachmentKind),
+          replyOptions,
+        )
         .catch(() => null);
       return;
     }
@@ -100,34 +92,10 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     if (closeTask) return closeTask;
     closed = true;
     closeTask = Promise.allSettled([...activeTasks]).then(() => {
-      botConversationSessions.clear();
       botConversationQueues.clear();
-      botRecentSourceEventKeys.clear();
       botConversationRateBuckets.clear();
     });
     return closeTask;
-  }
-
-  function rememberBotSourceEvent(message: BotIncomingMessage): boolean {
-    const key = botSourceEventKey(message);
-    if (!key) return false;
-    const now = Date.now();
-    pruneExpiredBotSourceEvents(now);
-    if (botRecentSourceEventKeys.has(key)) return true;
-    botRecentSourceEventKeys.set(key, now);
-    while (botRecentSourceEventKeys.size > BOT_RECENT_SOURCE_EVENT_LIMIT) {
-      const oldest = botRecentSourceEventKeys.keys().next().value;
-      if (!oldest) break;
-      botRecentSourceEventKeys.delete(oldest);
-    }
-    return false;
-  }
-
-  function pruneExpiredBotSourceEvents(now: number): void {
-    for (const [key, seenAt] of botRecentSourceEventKeys) {
-      if (now - seenAt <= BOT_RECENT_SOURCE_EVENT_TTL_MS) break;
-      botRecentSourceEventKeys.delete(key);
-    }
   }
 
   function consumeBotConversationToken(conversationKey: string, now = Date.now()): boolean {
@@ -168,34 +136,32 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     if (closed) return;
     await deps.botRegistry.sendMessage(
       message.platform,
-      message.chatId,
+      message.replyTarget.chatId,
       text,
       {
-        ...(message.sourceMessageId ? { replyToMessageId: message.sourceMessageId } : {}),
+        ...(message.replyTarget.replyToMessageId
+          ? { replyToMessageId: message.replyTarget.replyToMessageId }
+          : {}),
         ephemeralTtlMs: ttlMs,
       },
     ).catch(() => null);
   }
 
-  async function createBotConversationSession(
+  async function resolveBotConversationSession(
     conversationKey: string,
     message: BotIncomingMessage,
     noticeTtlMs: number,
   ): Promise<string | undefined> {
-    if (botConversationSessions.size >= BOT_CONVERSATION_SESSION_LIMIT) {
-      await sendTransientBotNotice(message, 'Maka 当前机器人任务数量已达上限，请重置或清理旧任务后再试。', noticeTtlMs);
-      return undefined;
-    }
-    if (!consumeBotConversationToken(conversationKey)) {
-      await sendTransientBotNotice(message, 'Maka 收到的机器人消息过于频繁，请稍后再试。', noticeTtlMs);
-      return undefined;
-    }
-    const sessionId = await deps.sessions.createSession({
+    const resolution = await deps.sessions.resolveSession({
+      conversationId: conversationKey,
       name: `${botDisplayLabel(message.platform)} 任务`,
       labels: ['bot', message.platform],
     });
-    botConversationSessions.set(conversationKey, sessionId);
-    return sessionId;
+    if (resolution.kind === 'permission_refused') {
+      await sendBotPermissionRefusal(message, noticeTtlMs);
+      return undefined;
+    }
+    return resolution.sessionId;
   }
 
   async function processBotIncomingMessage(
@@ -216,12 +182,14 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     // capability list, not a (silent) reset.
     if (isPlaintextHelpCommand({ text, isGroup: message.isGroup })) {
       const replyOptions = {
-        ...(message.sourceMessageId ? { replyToMessageId: message.sourceMessageId } : {}),
+        ...(message.replyTarget.replyToMessageId
+          ? { replyToMessageId: message.replyTarget.replyToMessageId }
+          : {}),
         ephemeralTtlMs: SYSTEM_NOTICE_TTL_MS,
       };
       await deps.botRegistry.sendMessage(
         message.platform,
-        message.chatId,
+        message.replyTarget.chatId,
         plaintextHelpReply(),
         replyOptions,
       ).catch(() => null);
@@ -230,51 +198,52 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     // PR-BOT-PLAINTEXT-RESET-COMMAND-0 (external bot research): in DMs, a bare
     // "restart" / "重置" / etc. drops the conversation/session binding so
     // the next message starts a fresh thread. DM-only because the
-    // conversation key is `${platform}:${chatId}` — in a group chat any
+    // conversation identity is channel-defined — in a group chat any
     // member would otherwise be able to wipe everyone else's context.
     if (isPlaintextResetCommand({ text, isGroup: message.isGroup })) {
-      const had = botConversationSessions.delete(conversationKey);
+      const had = await deps.sessions.releaseConversation({
+        conversationId: conversationKey,
+        operationId: botSourceOperationId(message),
+      });
       botConversationRateBuckets.delete(conversationKey);
       const replyOptions = {
-        ...(message.sourceMessageId ? { replyToMessageId: message.sourceMessageId } : {}),
+        ...(message.replyTarget.replyToMessageId
+          ? { replyToMessageId: message.replyTarget.replyToMessageId }
+          : {}),
         ephemeralTtlMs: SYSTEM_NOTICE_TTL_MS,
       };
       const ack = had
         ? '任务已重置，下一条消息会开新任务。'
         : '当前没有进行中的任务；下一条消息会开新任务。';
-      await deps.botRegistry.sendMessage(message.platform, message.chatId, ack, replyOptions).catch(() => null);
+      await deps.botRegistry
+        .sendMessage(message.platform, message.replyTarget.chatId, ack, replyOptions)
+        .catch(() => null);
       return;
     }
-    let sessionId = botConversationSessions.get(conversationKey);
     try {
-      if (!sessionId) {
-        sessionId = await createBotConversationSession(
-          conversationKey,
-          message,
-          SYSTEM_NOTICE_TTL_MS,
-        );
-        if (!sessionId) return;
-      } else {
-        let rebound = false;
-        try {
-          const permissionModeOk = await ensureBotSessionExploreMode(
-            sessionId,
-            message,
-            SYSTEM_NOTICE_TTL_MS,
-          );
-          if (!permissionModeOk) return;
-        } catch (error) {
-          if (!isBotSessionUnavailableError(error)) throw error;
-          invalidateSessionBindings(sessionId);
-          sessionId = await createBotConversationSession(
-            conversationKey,
-            message,
-            SYSTEM_NOTICE_TTL_MS,
-          );
-          if (!sessionId) return;
-          rebound = true;
-        }
-        if (!rebound && !consumeBotConversationToken(conversationKey)) {
+      const sessionId = await resolveBotConversationSession(
+        conversationKey,
+        message,
+        SYSTEM_NOTICE_TTL_MS,
+      );
+      if (!sessionId) return;
+
+      const messageId = botSourceOperationId(message);
+      const replyOptions = message.replyTarget.replyToMessageId
+        ? { replyToMessageId: message.replyTarget.replyToMessageId }
+        : undefined;
+      const turnInput = {
+        sessionId,
+        messageId,
+        text: formatBotMessageForSession({ ...message, text }),
+      } as const;
+      const replay = await deps.sessions.runTurn({
+        ...turnInput,
+        admissionMode: 'replay_only',
+      });
+      let turnResult: Exclude<BotSessionTurnResult, { readonly kind: 'admission_required' }>;
+      if (replay.kind === 'admission_required') {
+        if (!consumeBotConversationToken(conversationKey)) {
           await sendTransientBotNotice(
             message,
             'Maka 收到的机器人消息过于频繁，请稍后再试。',
@@ -282,57 +251,62 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
           );
           return;
         }
-      }
-
-      const turnId = randomUUID();
-      const replyOptions = message.sourceMessageId
-        ? { replyToMessageId: message.sourceMessageId }
-        : undefined;
-      replyStream = deps.botRegistry.startReplyStream?.(
-        message.platform,
-        message.chatId,
-        { ...(replyOptions ?? {}), isGroup: message.isGroup, streamId: turnId },
-      ) ?? null;
-      const turn = deps.sessions.runTurn({
-        sessionId,
-        turnId,
-        text: formatBotMessageForSession({ ...message, text }),
-        onReplySnapshot: (snapshot) => replyStream?.update(snapshot),
-      });
-      // PR-BOT-TYPING-INDICATOR-0 (external bot research): keep "Maka 正在
-      // 输入…" visible in the Telegram client while the agent generates
-      // its reply. Telegram auto-clears the indicator after ~5 seconds,
-      // so we refresh every 4 seconds. The loop is best-effort: every
-      // failure is swallowed so a typing-endpoint outage cannot block
-      // or corrupt the actual reply path.
-      const typingAbort = new AbortController();
-      const typingLoop = (async () => {
-        // Fire-and-forget first beat so the indicator shows immediately,
-        // not 4 seconds in.
-        await deps.botRegistry.sendTypingIndicator(message.platform, message.chatId).catch(() => false);
-        while (!typingAbort.signal.aborted) {
-          await new Promise<void>((resolve) => {
-            const onAbort = (): void => {
-              clearTimeout(timer);
-              resolve();
-            };
-            const timer = setTimeout(() => {
-              typingAbort.signal.removeEventListener('abort', onAbort);
-              resolve();
-            }, 4000);
-            typingAbort.signal.addEventListener('abort', onAbort, { once: true });
-          });
-          if (typingAbort.signal.aborted) break;
-          await deps.botRegistry.sendTypingIndicator(message.platform, message.chatId).catch(() => false);
+        replyStream =
+          deps.botRegistry.startReplyStream?.(
+            message.platform,
+            message.replyTarget.chatId,
+            { ...(replyOptions ?? {}), isGroup: message.isGroup, streamId: messageId },
+          ) ?? null;
+        const turn = deps.sessions.runTurn({
+          ...turnInput,
+          admissionMode: 'allow',
+          onReplySnapshot: (snapshot) => replyStream?.update(snapshot),
+        });
+        // PR-BOT-TYPING-INDICATOR-0 (external bot research): keep "Maka 正在
+        // 输入…" visible in the Telegram client while the agent generates
+        // its reply. Telegram auto-clears the indicator after ~5 seconds,
+        // so we refresh every 4 seconds. The loop is best-effort: every
+        // failure is swallowed so a typing-endpoint outage cannot block
+        // or corrupt the actual reply path.
+        const typingAbort = new AbortController();
+        const typingLoop = (async () => {
+          // Fire-and-forget first beat so the indicator shows immediately,
+          // not 4 seconds in.
+          await deps.botRegistry
+            .sendTypingIndicator(message.platform, message.replyTarget.chatId)
+            .catch(() => false);
+          while (!typingAbort.signal.aborted) {
+            await new Promise<void>((resolve) => {
+              const onAbort = (): void => {
+                clearTimeout(timer);
+                resolve();
+              };
+              const timer = setTimeout(() => {
+                typingAbort.signal.removeEventListener('abort', onAbort);
+                resolve();
+              }, 4000);
+              typingAbort.signal.addEventListener('abort', onAbort, { once: true });
+            });
+            if (typingAbort.signal.aborted) break;
+            await deps.botRegistry
+              .sendTypingIndicator(message.platform, message.replyTarget.chatId)
+              .catch(() => false);
+          }
+        })();
+        try {
+          const admitted = await turn;
+          if (admitted.kind === 'admission_required') {
+            throw new Error('Runtime Host requested admission after admission was allowed');
+          }
+          turnResult = admitted;
+        } finally {
+          typingAbort.abort();
+          await typingLoop.catch(() => {});
         }
-      })();
-      let reply: string;
-      try {
-        reply = botReply(await turn);
-      } finally {
-        typingAbort.abort();
-        await typingLoop.catch(() => {});
+      } else {
+        turnResult = replay;
       }
+      const reply = botReply(turnResult);
       if (closed) {
         await replyStream?.abort();
         return;
@@ -350,7 +324,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
           ? await replyStream.finish(reply.trim())
           : await deps.botRegistry.sendMessage(
               message.platform,
-              message.chatId,
+              message.replyTarget.chatId,
               reply.trim(),
               replyOptions,
             );
@@ -359,7 +333,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
           // not accumulate "delivery failed" markers.
           await deps.botRegistry.sendMessage(
             message.platform,
-            message.chatId,
+            message.replyTarget.chatId,
             'Maka 已生成回复，但当前机器人通道暂时无法发送。',
             { ...(replyOptions ?? {}), ephemeralTtlMs: 5 * 60 * 1_000 },
           ).catch(() => null);
@@ -374,38 +348,50 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
         ? '工作目录不可用，请在桌面端选择有效目录后重试'
         : generalizedErrorMessage(error, '机器人对话处理失败');
       const replyOptions = {
-        ...(message.sourceMessageId ? { replyToMessageId: message.sourceMessageId } : {}),
+        ...(message.replyTarget.replyToMessageId
+          ? { replyToMessageId: message.replyTarget.replyToMessageId }
+          : {}),
         // Error notice: same 5-minute TTL as the other transient system
         // notices.
         ephemeralTtlMs: 5 * 60 * 1_000,
       };
       await deps.botRegistry.sendMessage(
         message.platform,
-        message.chatId,
+        message.replyTarget.chatId,
         `Maka 暂时无法处理这条消息：${detail}`,
         replyOptions,
       ).catch(() => null);
     }
   }
 
-  async function ensureBotSessionExploreMode(
-    sessionId: string,
+  async function sendBotPermissionRefusal(
     message: BotIncomingMessage,
     noticeTtlMs: number,
-  ): Promise<boolean> {
-    if ((await deps.sessions.prepareSession(sessionId)) === 'ready') return true;
+  ): Promise<void> {
     await sendTransientBotNotice(
       message,
       'Maka 已拒绝这条机器人消息：绑定任务当前不是只读探索模式，请先在桌面端切回 explore 后再试。',
       noticeTtlMs,
     );
-    return false;
   }
 
-  return { handleBotIncomingMessage, invalidateSessionBindings, close };
+  return { handleBotIncomingMessage, close };
 }
 
-function botReply(result: BotSessionTurnResult): string {
+function botSourceOperationId(message: BotIncomingMessage): string {
+  const sourceEventKey = botSourceEventKey(message);
+  if (!sourceEventKey) {
+    throw new Error('Bot source event identity is required');
+  }
+  // Host message admission is idempotent for this source operation and exact
+  // payload, so a reconnect redelivery cannot run the model twice. Reply delivery remains
+  // at-least-once: IM send APIs provide no transaction shared with Host state.
+  return `bot_${createHash('sha256').update(sourceEventKey, 'utf8').digest('hex')}`;
+}
+
+function botReply(
+  result: Exclude<BotSessionTurnResult, { readonly kind: 'admission_required' }>,
+): string {
   if (result.kind === 'suspended') {
     return '这条请求需要在 Maka 桌面端审批后才能继续。';
   }

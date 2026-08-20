@@ -138,10 +138,11 @@ describe('discordMessageToEvent', () => {
       platform: 'discord',
       userId: 'user-1',
       userName: 'Alice',
-      chatId: 'chan-1',
+      conversationId: 'chan-1',
+      sourceEventId: 'msg-1',
+      replyTarget: { chatId: 'chan-1', replyToMessageId: 'msg-1' },
       isGroup: true,
       text: 'hello',
-      sourceMessageId: 'msg-1',
       receivedAt: 1_700_000_000_000,
     });
     const direct = discordMessageToEvent(
@@ -171,6 +172,10 @@ describe('discordMessageToEvent', () => {
       null,
     );
     assert.equal(discordMessageToEvent({ id: 'msg-4', channel_id: 'chan-4' }, 1), null);
+    assert.equal(
+      discordMessageToEvent({ channel_id: 'chan-4', author: { id: 'user-4' } } as never, 1),
+      null,
+    );
   });
 });
 

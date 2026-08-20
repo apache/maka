@@ -801,6 +801,12 @@ export class DesktopRuntimeHostClient {
     );
   }
 
+  reconcileExternalConversation(
+    input: OperationInput<'external-conversation.reconcile'>,
+  ): Promise<OperationOutput<'external-conversation.reconcile'>> {
+    return this.request('external-conversation.reconcile', input);
+  }
+
   listExternalSessionSources(): Promise<ExternalSessionSourceQueryResult> {
     return this.request("external-session.source.query", {});
   }

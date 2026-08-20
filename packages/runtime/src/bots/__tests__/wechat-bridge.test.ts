@@ -111,10 +111,11 @@ describe('WechatBridge', () => {
       platform: 'wechat',
       userId: 'wxid_friend',
       userName: 'Alice',
-      chatId: 'wxid_friend',
+      conversationId: 'wxid_friend',
+      sourceEventId: 'msg-1',
+      replyTarget: { chatId: 'wxid_friend', replyToMessageId: 'msg-1' },
       isGroup: false,
       text: 'hello',
-      sourceMessageId: 'msg-1',
       receivedAt: 1_700_000_000_000,
     });
   });
@@ -154,11 +155,11 @@ describe('WechatBridge', () => {
     });
 
     assert.equal(event?.platform, 'wechat');
-    assert.equal(event?.chatId, 'room@chatroom');
+    assert.equal(event?.conversationId, 'room@chatroom');
     assert.equal(event?.userId, 'wxid_member');
     assert.equal(event?.userName, 'Bob');
     assert.equal(event?.isGroup, true);
-    assert.equal(event?.sourceMessageId, 'group-1');
+    assert.equal(event?.sourceEventId, 'group-1');
     assert.equal(event?.text, '@Maka ping');
     assert.equal(event?.receivedAt, 1_700_000_001_234);
   });
@@ -175,11 +176,42 @@ describe('WechatBridge', () => {
     });
 
     assert.equal(event?.platform, 'wechat');
-    assert.equal(event?.chatId, 'wxid_friend');
+    assert.equal(event?.conversationId, 'wxid_friend');
     assert.equal(event?.userId, 'wxid_friend');
-    assert.equal(event?.sourceMessageId, 'client-1');
+    assert.equal(event?.sourceEventId, 'client-1');
     assert.equal(event?.text, 'hello\nvoice transcript');
     assert.equal(event?.receivedAt, 1_700_000_002_000);
+  });
+
+  test('drops iLink messages without a stable upstream identity', () => {
+    // A redelivery of an id-less message would otherwise mint a fresh
+    // sourceEventId each time, defeating Host admission idempotency and
+    // running a duplicate Turn.
+    assert.equal(
+      mapWechatIlinkMessage({
+        from_user_id: 'wxid_friend',
+        create_time: 1_700_000_002,
+        item_list: [{ type: 1, text_item: { text: 'no id anywhere' } }],
+      }),
+      null,
+    );
+    assert.equal(
+      mapWechatIlinkMessage({
+        from_user_id: 'wxid_friend',
+        client_id: '   ',
+        item_list: [{ type: 1, text_item: { text: 'blank id' } }],
+      }),
+      null,
+    );
+    assert.equal(
+      mapWechatBridgeMessage({
+        chatId: 'wxid_friend',
+        senderId: 'wxid_friend',
+        messageId: '   ',
+        text: 'blank id',
+      }),
+      null,
+    );
   });
 
   test('maps bridge media kinds and rejects empty non-media messages', () => {

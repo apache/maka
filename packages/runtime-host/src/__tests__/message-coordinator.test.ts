@@ -53,6 +53,38 @@ test('idle submit starts exactly one root Turn and retry identity is connection-
   assert.equal(fixture.liveResidencies(), 0);
 });
 
+test('replay-only submit proves a durable retry without admitting new work', async () => {
+  const fixture = createFixture();
+  fixture.setRootState({ kind: 'idle' });
+  const input = {
+    originHostEpoch: 'epoch-1',
+    sessionId: ROOT.sessionId,
+    messageId: 'replay-message',
+    content: { text: 'start after proof query' },
+    placement: 'next_turn',
+    busyBehavior: 'reject',
+  } as const;
+
+  const missing = await fixture.coordinator.handlers['turn.message.submit'](
+    { ...input, admissionMode: 'replay_only' },
+    operationContext('connection-1'),
+  );
+  assert.equal(missing.ok, false);
+  if (!missing.ok) assert.equal(missing.error.code, 'outcome_unknown');
+  assert.equal(fixture.startCalls(), 0);
+
+  const admitted = await fixture.coordinator.handlers['turn.message.submit'](
+    { ...input, admissionMode: 'allow' },
+    operationContext('connection-1'),
+  );
+  const replayed = await fixture.coordinator.handlers['turn.message.submit'](
+    { ...input, admissionMode: 'replay_only' },
+    operationContext('connection-2'),
+  );
+  assert.deepEqual(replayed, admitted);
+  assert.equal(fixture.startCalls(), 1);
+});
+
 test('submit re-runs admission when the queue revision moves during preflight', async () => {
   let preflightCalls = 0;
   const fixture = createFixture(undefined, async () => {
@@ -97,6 +129,31 @@ test('submit re-runs admission when the queue revision moves during preflight', 
     `expected admission retry, preflight ran ${preflightCalls} time(s)`,
   );
   owner.release();
+});
+
+test('rejects a busy-only submit without leaving a queued follow-up', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+
+  const outcome = await fixture.coordinator.handlers['turn.message.submit'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      messageId: 'bot-message',
+      content: { text: 'run only if idle' },
+      placement: 'next_turn',
+      busyBehavior: 'reject',
+    },
+    operationContext(),
+  );
+
+  assert.equal(outcome.ok, false);
+  assert.equal(!outcome.ok && outcome.error.code, 'session_busy');
+  assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId).followup, []);
+  owner.release();
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+  fixture.coordinator.completeIdle(batch);
 });
 
 test('keeps submitted Skill text durable while handing prepared content to steering and follow-up roots', async () => {

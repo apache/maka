@@ -3,7 +3,7 @@ import { generalizedErrorMessage } from '@maka/core/redaction';
 import { SocketModeClient } from '@slack/socket-mode';
 import { WebClient } from '@slack/web-api';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
-import type { BotSendOptions, SendCapable } from './types.js';
+import { normalizeBotSourceEventId, type BotSendOptions, type SendCapable } from './types.js';
 
 interface SlackMessageEvent {
   type?: string;
@@ -25,26 +25,30 @@ interface SlackEventEnvelope {
 }
 
 export function slackMessageToEvent(event: SlackMessageEvent, receivedAt: number) {
+  const sourceEventId = normalizeBotSourceEventId(event.ts);
   if (
     event.type !== 'message' ||
     event.subtype ||
     event.bot_id ||
     !event.user ||
     !event.channel ||
-    !event.ts
+    !sourceEventId
   ) {
     return null;
   }
+  const isGroup = event.channel_type !== 'im';
+  const threadRoot = event.thread_ts ?? sourceEventId;
   return {
     platform: 'slack' as const,
     userId: event.user,
     userName: event.user,
-    chatId: event.channel,
-    isGroup: event.channel_type !== 'im',
+    conversationId: isGroup
+      ? `channel:${event.channel}:thread:${threadRoot}`
+      : `dm:${event.channel}`,
+    sourceEventId,
+    replyTarget: { chatId: event.channel, replyToMessageId: threadRoot },
+    isGroup,
     text: event.text ?? '',
-    // Slack replies must stay on the existing thread. A top-level message uses
-    // its own ts as the thread root; a thread reply carries the root in thread_ts.
-    sourceMessageId: event.thread_ts ?? event.ts,
     receivedAt,
   };
 }

@@ -18,7 +18,7 @@
 
 import { GatewayBridgeBase } from './gateway-bridge-base.js';
 import { proxiedFetch } from './proxied-fetch.js';
-import type { BotSendOptions, SendCapable } from './types.js';
+import { normalizeBotSourceEventId, type BotSendOptions, type SendCapable } from './types.js';
 import type { WsCloseDecision } from './ws-bridge-base.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
@@ -168,26 +168,33 @@ export function discordMessageToEvent(
   platform: 'discord';
   userId: string;
   userName: string;
-  chatId: string;
+  conversationId: string;
+  sourceEventId: string;
+  replyTarget: { chatId: string; replyToMessageId?: string };
   isGroup: boolean;
   text: string;
-  sourceMessageId: string;
   receivedAt: number;
 } | null {
   if (!d?.author || d.author.bot === true) return null;
+  const sourceEventId = normalizeBotSourceEventId(d.id);
+  if (!sourceEventId) return null;
   const userId = String(d.author.id);
   return {
     platform: 'discord',
     userId,
     userName: d.author.global_name ?? d.author.username ?? userId,
-    chatId: String(d.channel_id),
+    conversationId: String(d.channel_id),
+    sourceEventId,
+    replyTarget: {
+      chatId: String(d.channel_id),
+      replyToMessageId: sourceEventId,
+    },
     // Discord guilds are "groups" semantically — DMs are channels
     // without a guild_id. The bot platform's conversation-key
     // contract treats `isGroup === true` as "do not honor plaintext
     // reset", which matches the policy we want for Discord guilds.
     isGroup: typeof d.guild_id === 'string' && d.guild_id.length > 0,
     text: typeof d.content === 'string' ? d.content : '',
-    sourceMessageId: String(d.id ?? ''),
     receivedAt,
   };
 }

@@ -20,10 +20,14 @@ describe('Slack bridge message mapping', () => {
         platform: 'slack',
         userId: 'U123',
         userName: 'U123',
-        chatId: 'C456',
+        conversationId: 'channel:C456:thread:1720000000.123456',
+        sourceEventId: '1720000000.123456',
+        replyTarget: {
+          chatId: 'C456',
+          replyToMessageId: '1720000000.123456',
+        },
         isGroup: true,
         text: 'hello from Slack',
-        sourceMessageId: '1720000000.123456',
         receivedAt: 1_720_000_001_000,
       },
     );
@@ -56,6 +60,10 @@ describe('Slack bridge message mapping', () => {
       null,
     );
     assert.equal(
+      slackMessageToEvent({ type: 'message', user: 'U123', channel: 'D456', ts: '   ' }, 5),
+      null,
+    );
+    assert.equal(
       slackMessageToEvent(
         {
           type: 'message',
@@ -83,6 +91,11 @@ describe('Slack bridge message mapping', () => {
       },
       5,
     );
-    assert.equal(event?.sourceMessageId, '1720000000.1');
+    assert.equal(event?.conversationId, 'channel:C456:thread:1720000000.1');
+    assert.equal(event?.sourceEventId, '1720000001.2');
+    assert.deepEqual(event?.replyTarget, {
+      chatId: 'C456',
+      replyToMessageId: '1720000000.1',
+    });
   });
 });
