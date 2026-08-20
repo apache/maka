@@ -119,6 +119,8 @@ Electron `safeStorage` is not used; pre-existing `safeStorage` files are deliber
 | `@larksuiteoapi/node-sdk` 1.72.0 | [packages/runtime](../packages/runtime/package.json) | AES-256-CBC `createDecipheriv` for Lark event-callback decryption — 1 site in `lib/index.js`, 1 in `es/index.js`. ⚠️ Maka configures no encrypt key, so the path appears unreachable as configured. |
 | `@wecom/aibot-node-sdk` 1.0.7 | [packages/runtime](../packages/runtime/package.json) | AES-256-CBC for WeCom callback encryption. ⚠️ Also exposes per-message `aesKey` file decryption (`decryptFile`, `downloadFile`), which does not depend on a global callback key, so unreachability cannot be inferred from configuration alone. |
 | `jose` 6.2.3 | `@modelcontextprotocol/sdk` 1.30.0, `@modelcontextprotocol/client` 2.0.0 | JOSE — JWS signing and JWE encryption, via MCP OAuth. v6 delegates to the runtime WebCrypto/`node:crypto`. |
+| `openai` 6.49.0 | `@openai/agents-core` 0.14.3 via [packages/runtime](../packages/runtime/package.json); present in the desktop third-party notices | Webhook signature verification — `subtle.importKey` with HMAC-SHA256 and `subtle.verify` (`resources/webhooks/webhooks.mjs:65`). Integrity, per §D. |
+| `uuid` 14.0.1 | Transitive, production closure | Carries MD5 and SHA-1 implementations for name-based UUIDs. Digests, exempt per §C. |
 | `@ai-sdk/code-mode`, `cookie-signature` | [packages/code-mode](../packages/code-mode/package.json); `express` via `@modelcontextprotocol/sdk` | HMAC-SHA256 continuation signing and cookie signing. Integrity, per §D. |
 | Node.js ≥22.19.0 | `engines` — user-supplied for the CLI | **OpenSSL.** Backs every `node:crypto`, `node:tls`, `node:https` call. |
 | Electron 43.2.0 | [apps/desktop](../apps/desktop/package.json), embedded in packaged binaries | **BoringSSL**, plus Node's OpenSSL. Not in the source artifact. |
@@ -138,7 +140,7 @@ Electron `safeStorage` is not used; pre-existing `safeStorage` files are deliber
 
 ### Coverage limit
 
-Sections §A–§H are exhaustive for the tracked source. **§J is not exhaustive for transitive dependencies.** It covers all three lockfiles' direct and notable transitive crypto plus a scan for common crypto-implementing package names. Two revisions of this document each missed a shipped dependency that a name-based scan does not surface — `dugite`, whose crypto is a bundled binary payload rather than JavaScript, and `@jackwener/opencli`, whose crypto is inline vendor protocol code. **A closed manufacturer set must be generated per artifact from a frozen install and from the actual packaged output, not taken from this list.**
+Sections §A–§H are exhaustive for the tracked source. **§J is not exhaustive for transitive dependencies.** It covers all three lockfiles' direct and notable transitive crypto plus a scan for common crypto-implementing package names. Three successive revisions of this document each missed a shipped dependency that a name-based scan does not surface — `dugite`, whose crypto is a bundled binary payload rather than JavaScript; `@jackwener/opencli`, whose crypto is inline vendor protocol code; and `openai`, reached transitively through `@openai/agents-core`. **A closed manufacturer set must be generated per artifact from a frozen install and from the actual packaged output, not taken from this list.**
 
 ## K. Determination
 
@@ -164,4 +166,4 @@ If a closed manufacturer set is ever needed, it must be generated per artifact f
 
 ---
 
-*Produced with AI assistance (Claude, via Claude Code). Two rounds of adversarial review by Claude Fable and OpenAI Codex found, and this revision corrects: an unsupported legal conclusion, an unsupported "all standard cryptography" claim, a missing TLS interception path, two missing shipped dependencies (`dugite`, `@jackwener/opencli`), a missing credential vault, two missing lockfiles, a SHA-1 omission, a stale snapshot, and a mislabelled PowerShell call. That two rounds still missed shipped dependencies is the reason §J states its coverage limit rather than claiming completeness. Findings were verified against the source before being applied; that is not independent human review. The human contributor of record owns the accuracy of this inventory; the determination in §K is the mentors'.*
+*Produced with AI assistance (Claude, via Claude Code), and revised across three rounds of adversarial review by Claude Fable and OpenAI Codex. Findings were verified against the source, the ASF pages, and the regulatory text before being applied; that is not independent human review. The human contributor of record owns the accuracy of this inventory; the determination in §K is the mentors'.*
