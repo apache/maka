@@ -293,8 +293,8 @@ describe('ToolRuntime durable boundary', () => {
       32,
     );
 
-    // An absent result costs the four bytes of the `null` that gets published,
-    // so it must not be rejected as though the result were too large.
+    // An absent result is published as empty text, so it must not be rejected
+    // as though the result were too large.
     assert.equal(result, undefined);
     assert.equal(JSON.stringify(outcomes).includes('byte limit exceeded'), false);
   });

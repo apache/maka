@@ -9,11 +9,13 @@
  * report `Number.POSITIVE_INFINITY` rather than a count.
  *
  * One deliberate departure from `JSON.stringify`, which returns `undefined`
- * for a top-level `undefined`: that case is counted as the four bytes of
- * `null`, because `null` is what callers actually publish in its place — a
- * Code Mode cell through `value ?? null`, a tool result through result-content
- * coercion. Reporting infinity would make a tool that simply returned nothing
- * fail its result-byte bound as though the result were too large.
+ * for a top-level `undefined`: that case is counted as four bytes rather than
+ * reported as unrepresentable. An absent result is not an oversized one, and
+ * four bytes is a conservative bound on what callers publish in its place — a
+ * Code Mode cell substitutes `null` through `value ?? null`, and a tool result
+ * becomes empty text through result-content coercion. Reporting infinity would
+ * make a tool that simply returned nothing fail its result-byte bound as though
+ * the result were too large.
  */
 export function serializedByteLength(value: unknown, maxBytes = Number.POSITIVE_INFINITY): number {
   const limit =

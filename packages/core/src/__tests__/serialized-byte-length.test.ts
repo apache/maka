@@ -37,9 +37,10 @@ test('agrees with JSON.stringify on the payloads validation bounds', () => {
 });
 
 test('pins the deliberate departure from JSON.stringify at the top level', () => {
-  // `JSON.stringify(undefined)` is unrepresentable, but callers publish `null`
-  // in its place, so an absent value costs the four bytes it actually occupies.
-  // Reporting infinity here would read downstream as "result too large".
+  // `JSON.stringify(undefined)` is unrepresentable, but an absent result is not
+  // an oversized one: four bytes conservatively bounds what callers publish in
+  // its place. Reporting infinity here would read downstream as "result too
+  // large".
   assert.equal(serializedByteLength(undefined), 4);
   assert.equal(serializedByteLength(null), 4);
 });
