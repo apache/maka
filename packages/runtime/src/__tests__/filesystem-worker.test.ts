@@ -122,6 +122,35 @@ describe('filesystem worker operations', () => {
     await assert.rejects(readFile(link, 'utf8'), { code: 'ENOENT' });
   });
 
+  test('refuses a directory delete with the structured is_directory code', async () => {
+    const root = await temporaryDirectory('maka-worker-delete-dir-');
+    const dir = join(root, 'subdir');
+    await mkdir(dir);
+
+    const response = await executeFilesystemWorkerRequest(
+      await requestFor(
+        { kind: 'apply_patch', cwd: root, path: dir, action: 'delete' },
+        {
+          enforcementPath: dir,
+          access: 'write',
+          scope: 'exact',
+          targetType: 'directory',
+        },
+      ),
+    );
+
+    // The structured code survives classification — the model learns a
+    // directory was refused, not a generic filesystem failure (#2600).
+    assert.equal(response.ok, false);
+    if (!response.ok) {
+      assert.equal(response.error.code, 'is_directory');
+      assert.match(response.error.message, /directory/i);
+    }
+    // The directory is untouched at its original path.
+    const entries = await (await import('node:fs/promises')).readdir(root);
+    assert.deepEqual(entries, ['subdir']);
+  });
+
   test('fails Grep closed inside the Windows sandbox instead of approximating its contract', async () => {
     const root = await temporaryDirectory('maka-worker-grep-sandboxed-');
     const target = join(root, 'file.ts');

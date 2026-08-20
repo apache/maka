@@ -205,6 +205,9 @@ export const FilesystemWorkerErrorCodeSchema = z.enum([
   // found the on-path inode no longer matches the one it wrote). The host
   // treats this as an unknown outcome on disk, not a clean failure.
   'outcome_unknown',
+  // The entry-delete path refuses directories outright (#2600): a directory
+  // cannot be unlinked, only recursively removed — a different operation.
+  'is_directory',
 ]);
 
 export const FilesystemWorkerResponseSchema = z.discriminatedUnion('ok', [

@@ -17,14 +17,24 @@
 // unlike a plain 'w' open, which truncates as part of opening.
 
 import { randomUUID } from 'node:crypto';
-import { link, lstat, open, rename, stat, unlink, type FileHandle } from 'node:fs/promises';
+import {
+  link,
+  lstat,
+  open,
+  readlink,
+  rename,
+  stat,
+  symlink,
+  unlink,
+  type FileHandle,
+} from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import type { FilesystemTargetIdentity } from './filesystem-authority.js';
 
-/** The two failure modes this primitive can report. */
-export type StableWriteErrorCode = 'path_changed' | 'outcome_unknown';
+/** The failure modes this primitive can report. */
+export type StableWriteErrorCode = 'path_changed' | 'outcome_unknown' | 'is_directory';
 
 export class StableWriteFailure extends Error {
   constructor(
@@ -199,57 +209,94 @@ export async function hostVisibilityAfterWrite(
  * rename(2) moves the directory entry itself, so this works for regular files
  * and symlinks alike, needs no permission on the file (only write+execute on
  * the parent directory, exactly like unlink), and never follows a symlink.
- * Directories are rejected up front: renaming one into the tombstone would
- * succeed while the tombstone unlink cannot (EISDIR/EPERM), hiding the
- * directory under a stray name instead of failing cleanly.
+ * Directories are refused — up front when visible, and again after the
+ * capture when a directory races into the window — because a directory cannot
+ * be unlinked, only recursively removed: a different operation entirely.
  */
 export async function compareAndDeleteEntry(input: {
   path: string;
   approvedIdentity: FilesystemTargetIdentity | undefined;
 }): Promise<void> {
-  // Reject directories before touching anything (#2600 review): a rename into
-  // the tombstone succeeds for directories, but the tombstone unlink then
-  // fails and leaves the directory hidden under the tombstone name — strictly
-  // worse than the plain unlink, which failed without moving it.
+  // Fast refusal when the directory is visible up front (#2600 review): a
+  // rename into the tombstone succeeds for directories, but the tombstone
+  // unlink cannot (EISDIR/EPERM), which would hide the directory under a
+  // stray name instead of failing cleanly. The post-capture check below is
+  // the enforcement; this pre-check just avoids moving anything.
   const entryBefore = await lstat(input.path);
   if (entryBefore.isDirectory()) {
-    throw new Error('Refusing to delete a directory through the entry-delete path.');
+    throw new StableWriteFailure(
+      'is_directory',
+      'Refusing to delete a directory through the entry-delete path.',
+    );
   }
   const tombstone = join(dirname(input.path), `.maka-pending-delete-${randomUUID()}`);
   // Atomically capture whatever entry the path names right now.
   await rename(input.path, tombstone);
-  try {
-    if (input.approvedIdentity) {
-      const entry = await lstat(tombstone, { bigint: true }).catch(() => null);
-      const matches =
-        entry !== null &&
-        String(entry.dev) === input.approvedIdentity.dev &&
-        String(entry.ino) === input.approvedIdentity.ino;
-      if (!matches) {
-        // A replacement was installed after the check. Restore it without
-        // clobbering: if the path was reoccupied in the window, the restore
-        // itself throws outcome_unknown and the tombstone is preserved.
-        await restoreTombstoneNoReplace(tombstone, input.path);
-        throw pathChanged(
-          'The approved filesystem target changed before the delete; the replacement was restored. Re-check the directory before deleting again.',
-        );
-      }
-    }
-    // The tombstone is a private unpredictable name: nothing else contends
-    // with this unlink.
+  await deleteCapturedTombstone(tombstone, input.path, input.approvedIdentity);
+}
+
+/**
+ * Verify and delete the entry held on the tombstone, restoring it on any
+ * mismatch. The capture rename in the caller is the atomic step, so this is
+ * where enforcement lives (#2600 review): the captured entry's TYPE is checked
+ * before anything else — a directory that raced in after the caller's pre-check
+ * is renamed straight back rather than identity-compared (link() cannot restore
+ * a directory, so the mismatch path would strand it on the tombstone).
+ *
+ * @internal Exported for the forced-directory-in-tombstone regression test.
+ */
+export async function deleteCapturedTombstone(
+  tombstone: string,
+  path: string,
+  approvedIdentity: FilesystemTargetIdentity | undefined,
+): Promise<void> {
+  const captured = await lstat(tombstone).catch(() => null);
+  if (captured?.isDirectory()) {
+    // A directory raced into the window between the caller's pre-check and
+    // the capture. Restore it by rename — the only mechanism that moves a
+    // directory — before any identity comparison. POSIX self-protects most
+    // reoccupations (dir → existing non-directory fails ENOTDIR); if even
+    // that fails, preserve the tombstone and report the location.
     try {
-      await unlink(tombstone);
+      await rename(tombstone, path);
     } catch {
-      // The approved entry was moved but not removed: the delete's outcome on
-      // disk is genuinely unknown, and the tombstone preserves the content.
       throw new StableWriteFailure(
         'outcome_unknown',
-        `The delete may not have completed; the entry is preserved at ${tombstone}.`,
+        `A directory was captured and could not be restored; it is preserved at ${tombstone}.`,
       );
     }
-  } finally {
-    // Nothing to clean up: the tombstone is either unlinked or deliberately
-    // preserved (restored to the path, or kept as the reported location).
+    throw new StableWriteFailure(
+      'is_directory',
+      'Refusing to delete a directory through the entry-delete path; it was restored to its original location.',
+    );
+  }
+  if (approvedIdentity) {
+    const entry = await lstat(tombstone, { bigint: true }).catch(() => null);
+    const matches =
+      entry !== null &&
+      String(entry.dev) === approvedIdentity.dev &&
+      String(entry.ino) === approvedIdentity.ino;
+    if (!matches) {
+      // A replacement was installed after the check. Restore it without
+      // clobbering: if the path was reoccupied in the window, the restore
+      // itself throws outcome_unknown and the tombstone is preserved.
+      await restoreTombstoneNoReplace(tombstone, path);
+      throw pathChanged(
+        'The approved filesystem target changed before the delete; the replacement was restored. Re-check the directory before deleting again.',
+      );
+    }
+  }
+  // The tombstone is a private unpredictable name: nothing else contends
+  // with this unlink.
+  try {
+    await unlink(tombstone);
+  } catch {
+    // The approved entry was moved but not removed: the delete's outcome on
+    // disk is genuinely unknown, and the tombstone preserves the content.
+    throw new StableWriteFailure(
+      'outcome_unknown',
+      `The delete may not have completed; the entry is preserved at ${tombstone}.`,
+    );
   }
 }
 
@@ -258,14 +305,49 @@ export async function compareAndDeleteEntry(input: {
  * whatever may have reoccupied the path while the entry was captured (#2600
  * review: a plain rename would atomically delete the new occupant — the exact
  * class of replacement loss this module exists to prevent). Node exposes no
- * RENAME_NOREPLACE, but `link()` is natively no-replace: it fails with EEXIST
- * when the destination exists. On EEXIST — or when linking is unsupported for
- * the entry type / filesystem — the tombstone is preserved and the failure is
- * reported as `outcome_unknown` with the location, so nothing is ever lost.
+ * RENAME_NOREPLACE, so the no-replace mechanism depends on the entry type:
  *
- * @internal Exported for the no-replace restore regression test.
+ * - Regular file: `link()` is natively no-replace (EEXIST when the destination
+ *   exists) and links the very inode the tombstone holds.
+ * - Symlink: `link()` is unusable — POSIX leaves its treatment of a symlink
+ *   source implementation-defined, and darwin dereferences it, which would
+ *   plant a regular-file alias of the TARGET at the path (a foreign entry any
+ *   later read/write silently edits). The link is instead recreated with
+ *   `symlink(readlink(...))`, which is also natively no-replace and round-trips
+ *   the target string exactly; the recreated link is a new inode, which is
+ *   immaterial for a delete this call is refusing anyway.
+ *
+ * On EEXIST — or any creation failure — the tombstone is preserved and the
+ * failure reported as `outcome_unknown` with the location, so nothing is ever
+ * lost.
+ *
+ * @internal Exported for the no-replace restore regression tests.
  */
 export async function restoreTombstoneNoReplace(tombstone: string, path: string): Promise<void> {
+  const captured = await lstat(tombstone).catch(() => null);
+  if (captured === null) {
+    throw new StableWriteFailure(
+      'outcome_unknown',
+      `The captured entry could not be read; it is preserved at ${tombstone}.`,
+    );
+  }
+  if (captured.isSymbolicLink()) {
+    const target = await readlink(tombstone);
+    try {
+      await symlink(target, path);
+    } catch {
+      // EEXIST: the path was reoccupied after the capture (or symlink creation
+      // failed). Preserving the tombstone is the only non-destructive option.
+      throw new StableWriteFailure(
+        'outcome_unknown',
+        `The original path was reoccupied; the captured symlink is preserved at ${tombstone}.`,
+      );
+    }
+    // The link semantics are restored at the path; dropping the old link name
+    // is best-effort — a failure leaves a stray name, never data loss.
+    await unlink(tombstone).catch(() => {});
+    return;
+  }
   try {
     await link(tombstone, path);
   } catch {
@@ -278,10 +360,11 @@ export async function restoreTombstoneNoReplace(tombstone: string, path: string)
       `The original path was reoccupied; the captured entry is preserved at ${tombstone}.`,
     );
   }
-  // Guard the platform wrinkle where link() follows a symlink source (POSIX
-  // leaves it implementation-defined): the restored entry must be the very
-  // inode the tombstone holds. On a mismatch, touch nothing — we cannot prove
-  // what we created — and report both locations.
+  // The restored entry must be the very inode the tombstone holds. A mismatch
+  // means the path no longer carries what this call created — most plausibly a
+  // concurrent rename placed a foreign entry there — and unlinking it would
+  // destroy third-party data (the exact loss class this module prevents).
+  // Touch nothing and report both locations.
   const restored = await lstat(path, { bigint: true }).catch(() => null);
   const held = await lstat(tombstone, { bigint: true }).catch(() => null);
   if (

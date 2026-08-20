@@ -11,6 +11,7 @@ import { afterEach, describe, test } from 'node:test';
 
 import {
   compareAndDeleteEntry,
+  deleteCapturedTombstone,
   hostVisibilityAfterWrite,
   openStableTarget,
   restoreTombstoneNoReplace,
@@ -217,9 +218,83 @@ describe('compare-and-delete (tombstone verification)', () => {
         path: dir,
         approvedIdentity: { dev: String(meta.dev), ino: String(meta.ino) },
       }),
-      /directory/i,
+      (error: StableWriteFailure) => error.code === 'is_directory',
     );
     // The directory is untouched at its original path — not hidden anywhere.
     assert.deepEqual(await readdir(cwd), ['subdir']);
+  });
+
+  // #2600 review: the pre-check is not an enforcement point — a directory can
+  // race into the window between it and the capture. The enforcement lives
+  // after the capture: the tombstone's type is checked and a directory is
+  // renamed straight back BEFORE any identity comparison (link() cannot
+  // restore a directory, so the mismatch path would strand it on the tombstone
+  // with the path left empty). Force the directory into the tombstone directly.
+  test('a directory that raced into the capture is renamed back, not stranded', async () => {
+    const cwd = await temporaryDirectory('maka-delete-dirrace-');
+    const dir = join(cwd, 'raced-in');
+    const {
+      mkdir,
+      readdir,
+      rename: mv,
+      rm,
+      stat: st,
+      writeFile: wf,
+    } = await import('node:fs/promises');
+    // The delete was approved against a regular file at this path.
+    await wf(dir, 'x', 'utf8');
+    const meta = await st(dir, { bigint: true });
+    const approvedIdentity = { dev: String(meta.dev), ino: String(meta.ino) };
+    // The race: an external process removes the file and puts a directory at
+    // the path — after the caller's pre-check, before the capture.
+    await rm(dir);
+    await mkdir(dir);
+    // The production caller's capture rename grabs whatever is at the path,
+    // which is now the directory, onto a fresh tombstone name.
+    const tombstone = join(cwd, 'captured');
+    await mv(dir, tombstone);
+
+    await assert.rejects(
+      deleteCapturedTombstone(tombstone, dir, approvedIdentity),
+      (error: StableWriteFailure) => error.code === 'is_directory',
+    );
+    // The directory is back at its original path; nothing is stranded.
+    assert.deepEqual(await readdir(cwd), ['raced-in']);
+  });
+
+  // #2600 review: on darwin, link() dereferences a symlink source, so a
+  // link-based restore of a captured symlink would plant a regular-file alias
+  // of the TARGET at the path — a foreign entry later reads/writes silently
+  // edit. The restore must recreate the symlink itself; the path may never be
+  // left holding a foreign regular-file entry.
+  test('restores a swapped-in symlink as a symlink, never a foreign regular file', async () => {
+    const cwd = await temporaryDirectory('maka-delete-linkswap-');
+    const target = join(cwd, 'link.txt');
+    const pointedA = join(cwd, 'pointed-a.txt');
+    const pointedC = join(cwd, 'pointed-c.txt');
+    const { lstat: lst, readdir, symlink: lnsym, writeFile: wf } = await import('node:fs/promises');
+    await wf(pointedA, 'approved-target', 'utf8');
+    await wf(pointedC, 'replacement-target', 'utf8');
+    await lnsym(pointedA, target); // the approved entry A
+    const meta = await lst(target, { bigint: true });
+    const approvedIdentity = { dev: String(meta.dev), ino: String(meta.ino) };
+    // The race: a different symlink C is swapped over the path.
+    const replacement = join(cwd, 'replacement-link');
+    await lnsym(pointedC, replacement);
+    await rename(replacement, target);
+
+    await assert.rejects(
+      compareAndDeleteEntry({ path: target, approvedIdentity }),
+      (error: StableWriteFailure) => error.code === 'path_changed',
+    );
+    // The path holds a SYMLINK pointing where C pointed — not a regular-file
+    // alias of C's target, and not the approved A either.
+    const restored = await lst(target);
+    assert.equal(restored.isSymbolicLink(), true, 'path must hold a symlink, not a regular file');
+    const { readlink } = await import('node:fs/promises');
+    assert.equal(await readlink(target), pointedC);
+    // No tombstone leaked; the approved target's content is untouched.
+    assert.deepEqual((await readdir(cwd)).sort(), ['link.txt', 'pointed-a.txt', 'pointed-c.txt']);
+    assert.equal(await readFile(pointedA, 'utf8'), 'approved-target');
   });
 });
