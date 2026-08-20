@@ -995,13 +995,13 @@ const makaBridge = {
     },
     profiles: {
       query(slug: string): Promise<CredentialProfileReadinessView> {
-        return ipcRenderer.invoke('connections:profiles:query', slug);
+        return invokeActiveRuntimeHost('connections:profiles:query', slug);
       },
       usage(slug: string, profileId: string): Promise<CredentialProfileUsageView> {
-        return ipcRenderer.invoke('connections:profiles:usage', slug, profileId);
+        return invokeActiveRuntimeHost('connections:profiles:usage', slug, profileId);
       },
       create(slug: string, input: { label: string; weight: number }): Promise<void> {
-        return ipcRenderer.invoke('connections:profiles:create', slug, input);
+        return invokeActiveRuntimeHost('connections:profiles:create', slug, input);
       },
       update(
         slug: string,
@@ -1012,35 +1012,35 @@ const makaBridge = {
           weight?: number;
         },
       ): Promise<void> {
-        return ipcRenderer.invoke('connections:profiles:update', slug, input);
+        return invokeActiveRuntimeHost('connections:profiles:update', slug, input);
       },
       setEnabled(
         slug: string,
         input: { profileId: string; profileRevision: number; enabled: boolean },
       ): Promise<void> {
-        return ipcRenderer.invoke('connections:profiles:setEnabled', slug, input);
+        return invokeActiveRuntimeHost('connections:profiles:setEnabled', slug, input);
       },
       remove(slug: string, input: { profileId: string; profileRevision: number }): Promise<void> {
-        return ipcRenderer.invoke('connections:profiles:remove', slug, input);
+        return invokeActiveRuntimeHost('connections:profiles:remove', slug, input);
       },
       setRoutingMode(slug: string, input: {
         mode: 'legacy_primary' | 'balanced';
         strategy?: 'smooth_weighted_round_robin' | 'priority_failover';
         orderedProfileIds?: readonly string[];
       }): Promise<void> {
-        return ipcRenderer.invoke('connections:profiles:setRoutingMode', slug, input);
+        return invokeActiveRuntimeHost('connections:profiles:setRoutingMode', slug, input);
       },
       setCredential(slug: string, input: { profileId: string; secret: string }): Promise<void> {
-        return ipcRenderer.invoke('connections:profiles:setCredential', slug, input);
+        return invokeActiveRuntimeHost('connections:profiles:setCredential', slug, input);
       },
       test(
         slug: string,
         input: { profileId: string; modelId?: string },
       ): Promise<ConnectionTestResult> {
-        return ipcRenderer.invoke('connections:profiles:test', slug, input);
+        return invokeActiveRuntimeHost('connections:profiles:test', slug, input);
       },
       fetchModels(slug: string, input: { profileId: string }): Promise<ModelDiscoveryResult> {
-        return ipcRenderer.invoke('connections:profiles:fetchModels', slug, input);
+        return invokeActiveRuntimeHost('connections:profiles:fetchModels', slug, input);
       },
     },
   },
