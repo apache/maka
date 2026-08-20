@@ -226,12 +226,14 @@
 }
 
 /*
- * Project groups are a real parent-child hierarchy. Astryx nests icon-less
- * children by spacing-6 (24px) so their text meets a parent title after a
- * 16px icon + 8px gap. Session rows already spend 8px on StatusDot in that
- * slot, so the remaining nest is spacing-2: titles share one x, and the row
- * still sits inside the project. Pin the value because StyleX owns the
- * unlayered default. Child combinator only — do not use a descendant
+ * Project groups are a parent-child hierarchy. SideNav always nests children
+ * by spacing-6; that is a fixed inset, not a title-alignment rule. Project
+ * rows lead with a 16px folder, session rows with an 8px StatusDot, so the
+ * default 24px inset puts session titles 16px right of the project name.
+ * Product intent: keep an 8px hierarchical inset (spacing-2) so titles share
+ * one x. The whole session button, including hover/selected fill, moves with
+ * that inset; the right edge stays on the rail. Pin the value because StyleX
+ * owns the unlayered default. Child combinator only — do not use a descendant
  * selector that would indent deeper nest levels twice if any appear later.
  * DOM: .maka-project-row > SideNavItem root > [role=group] > childrenInner
  */

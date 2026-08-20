@@ -18,13 +18,12 @@ describe('project-grouped session hierarchy', () => {
     );
 
     assert.ok(projectChildrenRule, 'project children must have an explicit hierarchy rule');
-    // Astryx nests icon-less children by spacing-6 (24px) so their text meets a
-    // parent title after a 16px icon + 8px gap. Session rows already spend 8px
-    // on StatusDot in that slot, so the remaining nest is spacing-2.
+    // Product contract: 8px nest so session titles share the project title's x.
+    // SideNav's default spacing-6 is a fixed child inset, not that alignment.
     assert.match(
       projectChildrenRule[1] ?? '',
       /padding-inline-start:\s*var\(--spacing-2\)\s*!important;/,
-      'project sessions must nest by the unused 8px of the SideNav icon column',
+      'project sessions must keep an 8px hierarchical nest',
     );
   });
 });
