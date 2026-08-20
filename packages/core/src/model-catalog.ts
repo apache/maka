@@ -8,11 +8,6 @@ import { PROVIDER_DEFAULTS, providerSupportsModelDiscovery } from './llm-connect
 import type { PricingConfig } from './usage-stats/types.js';
 import { curatedCatalogFallbackModelsForProvider, lookupModelMetadata } from './model-metadata.js';
 import { pricingModelKey } from './usage-stats/pricing.js';
-import {
-  applyModelFactOverride,
-  lookupModelFactOverride,
-  type ModelFactOverrides,
-} from './model-facts.js';
 
 export type ModelCapabilitySource = 'provider_api' | 'static_catalog' | 'user_override' | 'unknown';
 
@@ -39,7 +34,6 @@ export interface KnownModelCapabilities {
   reasoning?: true;
   functionCalling?: true;
   imageGeneration?: true;
-  webSearch?: true;
 }
 
 export interface ModelCatalogPricing {
@@ -115,7 +109,6 @@ export interface BuildConnectionModelCatalogInput {
   authOk?: boolean;
   pricing?: Iterable<PricingConfig>;
   pricingSource?: 'builtin' | 'user_override';
-  modelFactOverrides?: ModelFactOverrides;
 }
 
 export interface BuildModelCatalogInput {
@@ -133,7 +126,6 @@ export interface BuildModelCatalogInput {
   pricing?: Iterable<PricingConfig>;
   pricingSource?: 'builtin' | 'user_override';
   savedModelIds?: Iterable<SavedModelChoice | undefined | null>;
-  modelFactOverrides?: ModelFactOverrides;
 }
 
 const DEFAULT_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
@@ -166,10 +158,7 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
     .map((model) =>
       makeEntry(
         input,
-        applyModelFactOverride(
-          model,
-          lookupModelFactOverride(input.modelFactOverrides, input.providerType, model.id.trim()),
-        ),
+        model,
         source,
         modelSource,
         savedChoiceSources,
@@ -239,7 +228,6 @@ export function buildConnectionModelCatalogEntries(
     pricing: input.pricing,
     pricingSource: input.pricingSource,
     savedModelIds: input.savedModelIds,
-    modelFactOverrides: input.modelFactOverrides,
   });
 }
 
@@ -302,11 +290,7 @@ function makeEntry(
     providerType: input.providerType,
     ...(input.connectionSlug ? { connectionSlug: input.connectionSlug } : {}),
     source,
-    capabilitySource: lookupModelFactOverride(
-      input.modelFactOverrides,
-      input.providerType,
-      normalizedModel.id,
-    )?.capabilities
+    capabilitySource: normalizedModel.factOverriddenFields?.includes('capabilities')
       ? 'user_override'
       : normalizedModel.capabilities
         ? source
@@ -358,7 +342,6 @@ function mergeCapabilities(
     reasoning: providerCapabilities.reasoning ?? metadataCapabilities.reasoning,
     functionCalling: providerCapabilities.functionCalling ?? metadataCapabilities.functionCalling,
     imageGeneration: providerCapabilities.imageGeneration ?? metadataCapabilities.imageGeneration,
-    webSearch: providerCapabilities.webSearch ?? metadataCapabilities.webSearch,
   };
 }
 
@@ -372,10 +355,7 @@ function makeMissingDefaultEntry(
 ): ModelCatalogEntry {
   const unavailableReason = missingEntryUnavailableReason(input, modelSource);
   const metadata = lookupModelMetadata(input.providerType, id);
-  const model = applyModelFactOverride(
-    { id },
-    lookupModelFactOverride(input.modelFactOverrides, input.providerType, id),
-  );
+  const model: ModelInfo = { id };
   const recommendedRank = recommendedRanks.get(id);
   return {
     id,
@@ -440,10 +420,7 @@ function makeMissingUserChoiceEntry(
 ): ModelCatalogEntry {
   const unavailableReason = missingEntryUnavailableReason(input, modelSource);
   const metadata = lookupModelMetadata(input.providerType, id);
-  const model = applyModelFactOverride(
-    { id },
-    lookupModelFactOverride(input.modelFactOverrides, input.providerType, id),
-  );
+  const model: ModelInfo = { id };
   const recommendedRank = recommendedRanks.get(id);
   return {
     id,
@@ -624,7 +601,6 @@ function normalizeCapabilities(caps: ModelInfo['capabilities']): KnownModelCapab
     ...(caps.reasoning === true ? { reasoning: true as const } : {}),
     ...(caps.functionCalling === true ? { functionCalling: true as const } : {}),
     ...(caps.imageGeneration === true ? { imageGeneration: true as const } : {}),
-    ...(caps.webSearch === true ? { webSearch: true as const } : {}),
   };
 }
 

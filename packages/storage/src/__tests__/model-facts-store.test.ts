@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -55,6 +55,50 @@ test('model facts temporary writes are removed by runtime policy recovery', asyn
     );
     await cleanupRuntimePolicyDocumentTemps(root);
     assert.deepEqual(await readdir(root), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('future model facts schemas are preserved and cannot be overwritten', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-facts-future-'));
+  try {
+    const owner = new ModelFactsDocumentOwner();
+    const future = JSON.stringify({
+      schemaVersion: 2,
+      overrides: { 'openai:o4-mini': { contextWindow: 1 } },
+    });
+    await writeFile(join(root, 'model-facts.json'), future, 'utf8');
+    const read = await owner.readWithDiagnostics(root);
+    assert.equal(read.diagnostic, 'unsupported_schema');
+    await assert.rejects(
+      () => owner.replace(root, { 'openai:o4-mini': { contextWindow: 200_000 } }),
+      (error: unknown) =>
+        error instanceof RuntimePolicyStoreError && error.code === 'invalid_policy_input',
+    );
+    assert.equal(await readFile(join(root, 'model-facts.json'), 'utf8'), future);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('model facts replacement supports fingerprint compare-and-set', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-facts-cas-'));
+  try {
+    const owner = new ModelFactsDocumentOwner();
+    const initial = await owner.readWithDiagnostics(root);
+    await owner.replace(
+      root,
+      { 'openai:o4-mini': { contextWindow: 100_000 } },
+      initial.fingerprint,
+    );
+    await assert.rejects(
+      () =>
+        owner.replace(root, { 'openai:o4-mini': { contextWindow: 200_000 } }, initial.fingerprint),
+      (error: unknown) =>
+        error instanceof RuntimePolicyStoreError && error.code === 'revision_conflict',
+    );
+    assert.equal((await owner.read(root)).overrides['openai:o4-mini']?.contextWindow, 100_000);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

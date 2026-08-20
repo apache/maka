@@ -132,6 +132,27 @@ test('connection catalogs preserve user-choice provenance without inventing avai
   assert.deepEqual(entries[2]?.provenance.sources?.userChoice, ['session_model']);
 });
 
+test('catalog provenance follows the projected model facts marker used in production', () => {
+  const [entry] = buildConnectionModelCatalogEntries({
+    connection: {
+      slug: 'facts',
+      providerType: 'openai',
+      defaultModel: 'custom-model',
+      models: [
+        {
+          id: 'custom-model',
+          contextWindow: 200_000,
+          capabilities: { chat: true },
+          factOverriddenFields: ['contextWindow', 'capabilities'],
+        },
+      ],
+      modelSource: 'fetched',
+    },
+  });
+  assert.equal(entry?.capabilitySource, 'user_override');
+  assert.equal(entry?.contextWindow, 200_000);
+});
+
 test('unknown persisted provider ids return an empty catalog', () => {
   assert.deepEqual(
     buildConnectionModelCatalogEntries({
@@ -175,7 +196,7 @@ test('Alibaba Token Plan catalogs the formal Qwen3.8 model instead of its retire
   }
 });
 
-test('saved model choices can materialize a user fact override without exposing unrelated entries', () => {
+test('saved model choices do not expose unrelated entries', () => {
   const entries = buildConnectionModelCatalogEntries({
     connection: {
       slug: 'zai-live',
@@ -185,37 +206,11 @@ test('saved model choices can materialize a user fact override without exposing 
       modelSource: 'fetched',
     },
     savedModelIds: [{ id: 'saved-custom', source: 'session_model' }],
-    modelFactOverrides: {
-      'zai-coding-plan:saved-custom': {
-        displayName: 'Saved Custom',
-        contextWindow: 88_000,
-        knowledgeCutoff: '2026-01-01',
-        structuredOutput: true,
-        lastUpdated: '2026-02-01',
-        modalities: { input: ['text'], output: ['text'] },
-      },
-      'zai-coding-plan:hidden': { contextWindow: 1_000 },
-    },
   });
   const saved = entries.find((entry) => entry.id === 'saved-custom');
-  assert.equal(saved?.displayName, 'Saved Custom');
-  assert.equal(saved?.contextWindow, 88_000);
-  assert.equal(saved?.knowledgeCutoff, '2026-01-01');
-  assert.equal(saved?.structuredOutput, true);
-  assert.equal(saved?.lastUpdated, '2026-02-01');
-  assert.deepEqual(saved?.modalities, { input: ['text'], output: ['text'] });
+  assert.equal(saved?.displayName, undefined);
   assert.equal(
     entries.some((entry) => entry.id === 'hidden'),
     false,
   );
-});
-
-test('catalog capability merges retain provider web search facts alongside overrides', () => {
-  const entries = buildModelCatalogEntries({
-    providerType: 'deepseek',
-    models: [{ id: 'deepseek-v4-flash', capabilities: { webSearch: true } }],
-    modelSource: 'fetched',
-    modelFactOverrides: { 'deepseek:deepseek-v4-flash': { capabilities: { chat: true } } },
-  });
-  assert.equal(entries[0]?.capabilities.webSearch, true);
 });

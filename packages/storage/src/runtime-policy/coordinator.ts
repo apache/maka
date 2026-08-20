@@ -37,6 +37,7 @@ import {
   applyModelFactOverridesToCatalogSnapshot,
   modelFactOverrideIdsForProvider,
   type ModelFactOverrides,
+  type ModelFactsDocument,
 } from '@maka/core/model-facts';
 import { deriveProviderAuthContract, type ProviderAuthAction } from '@maka/core/provider-auth';
 import {
@@ -159,7 +160,7 @@ type SemanticConnectionBasis =
       readonly kind: 'connection_test';
       readonly requestBodyOverlayJson: string;
       readonly model: ConnectionTestModelBasis;
-      readonly modelFactsGeneration: number;
+      readonly modelFactsFingerprint: string;
     });
 
 interface ConnectionTicketRecord {
@@ -184,8 +185,6 @@ export class RuntimePolicyCoordinator {
   private readonly catalog = new ConnectionCatalogDocumentOwner();
   private readonly vault = new CredentialVaultDocumentOwner();
   private readonly modelFacts = new ModelFactsDocumentOwner();
-  private modelFactsGeneration = 0;
-  private modelFactsFingerprint: string | undefined;
   private warnedModelFactsFingerprint: string | undefined;
   private readonly tickets = new WeakMap<object, OperationTicketRecord>();
   private onboardingRecoveryRequired = false;
@@ -220,31 +219,44 @@ export class RuntimePolicyCoordinator {
     return this.inLane(async (root) => deepFreeze(await this.readModelFacts(root)));
   }
 
-  replaceModelFacts(overrides: ModelFactOverrides) {
+  replaceModelFacts(overrides: ModelFactOverrides, expectedFingerprint?: string) {
     return this.inLane(async (root) => {
       const document = this.modelFacts.prepareReplacement(overrides);
-      await this.readModelFacts(root);
-      let cleared = false;
-      try {
-        cleared = await this.catalog.clearAllConnectionLastTests(
-          root,
-          await this.catalog.read(root),
-        );
-      } catch (error) {
-        throw commitOutcomeUnknown(
-          'Connection verification clearing failed before model facts replacement',
-          error,
+      const currentFacts = await this.modelFacts.readWithDiagnostics(root);
+      if (currentFacts.diagnostic === 'unsupported_schema') {
+        throw new RuntimePolicyStoreError(
+          'invalid_policy_input',
+          'model-facts.json uses a newer unsupported schema and cannot be overwritten',
         );
       }
-      // Clearing is durable, so no ticket may survive any replacement attempt that follows it.
-      this.modelFactsGeneration += 1;
+      if (expectedFingerprint !== undefined && currentFacts.fingerprint !== expectedFingerprint) {
+        throw new RuntimePolicyStoreError(
+          'revision_conflict',
+          'model-facts.json changed before replacement; reload before retrying',
+        );
+      }
+      const currentCatalog = await this.catalog.read(root);
+      const affected = currentCatalog.connections.filter(
+        (connection) =>
+          connection.lastTest !== undefined &&
+          this.modelFacts.fingerprintForConnection(currentFacts.document, connection) !==
+            this.modelFacts.fingerprintForConnection(document, connection),
+      );
+      let cleared = false;
       try {
-        const persisted = await this.modelFacts.writeReplacement(root, document);
-        this.modelFactsFingerprint = this.modelFacts.fingerprint(persisted);
+        for (const connection of affected) {
+          const latest = await this.catalog.read(root);
+          cleared =
+            (await this.catalog.clearConnectionLastTest(root, latest, connection.connectionId)) ||
+            cleared;
+        }
+        const persisted = await this.modelFacts.writeReplacement(
+          root,
+          document,
+          currentFacts.fingerprint,
+        );
         return deepFreeze(persisted);
       } catch (error) {
-        // A post-rename directory sync failure may have published the replacement.
-        this.modelFactsFingerprint = undefined;
         if (cleared) {
           throw commitOutcomeUnknown(
             'Connection verification was cleared before model facts replacement completed',
@@ -1057,9 +1069,10 @@ export class RuntimePolicyCoordinator {
         'test_credentials',
       );
       if (prepared.kind !== 'ready') return prepared;
+      const facts = await this.readModelFacts(root);
       const projectedConnection = applyModelFactOverridesToConnection(
         structuredClone(prepared.connection),
-        (await this.readModelFacts(root)).document.overrides,
+        facts.document.overrides,
       );
       const projected = { ...prepared, connection: projectedConnection };
       const modelId =
@@ -1074,7 +1087,10 @@ export class RuntimePolicyCoordinator {
       }
       const ticket = this.issueTicket(
         'connection_test',
-        connectionTestSemanticBasis(projected, this.modelFactsGeneration),
+        connectionTestSemanticBasis(
+          projected,
+          this.modelFacts.fingerprintForConnection(facts.document, prepared.connection),
+        ),
       );
       return deepFreeze({
         kind: 'ready' as const,
@@ -1094,6 +1110,9 @@ export class RuntimePolicyCoordinator {
     const claimed = this.claimTicket(ticket, 'connection_test');
     return this.completeClaimedTicket(claimed, () =>
       this.inLane(async (root) => {
+        if (claimed.basis.kind !== 'connection_test') {
+          throw new Error('Coordinator admitted a non-connection-test ticket');
+        }
         const catalog = await this.catalog.read(root);
         const checked = await this.checkSemanticConnectionBasis(root, catalog, claimed.basis);
         if (checked.changed.length > 0 || !checked.connection) {
@@ -1104,6 +1123,7 @@ export class RuntimePolicyCoordinator {
           catalog,
           connectionBasis(checked.connection),
           result,
+          claimed.basis.modelFactsFingerprint,
         );
         return deepFreeze({
           kind: 'committed' as const,
@@ -1255,7 +1275,9 @@ export class RuntimePolicyCoordinator {
     const facts = basis.kind === 'connection_test' ? await this.readModelFacts(root) : undefined;
     if (
       basis.kind === 'connection_test' &&
-      basis.modelFactsGeneration !== this.modelFactsGeneration
+      (!connection ||
+        this.modelFacts.fingerprintForConnection(facts!.document, connection) !==
+          basis.modelFactsFingerprint)
     ) {
       changed.push('connection');
     }
@@ -1453,30 +1475,19 @@ export class RuntimePolicyCoordinator {
 
   private async projectCatalogSnapshot(root: string): Promise<ConnectionCatalogSnapshot> {
     const facts = await this.readModelFacts(root);
+    const snapshot = catalogSnapshot(await this.catalog.read(root));
     return deepFreeze(
-      applyModelFactOverridesToCatalogSnapshot(
-        catalogSnapshot(await this.catalog.read(root)),
-        facts.document.overrides,
+      hideStaleModelFactsVerification(
+        applyModelFactOverridesToCatalogSnapshot(snapshot, facts.document.overrides),
+        snapshot,
+        facts.document,
+        this.modelFacts,
       ),
     );
   }
 
   private async readModelFacts(root: string) {
     const facts = await this.modelFacts.readWithDiagnostics(root);
-    const changed =
-      this.modelFactsFingerprint !== undefined && this.modelFactsFingerprint !== facts.fingerprint;
-    if (changed) {
-      this.modelFactsGeneration += 1;
-      try {
-        await this.catalog.clearAllConnectionLastTests(root, await this.catalog.read(root));
-      } catch (error) {
-        throw commitOutcomeUnknown(
-          'Connection verification clearing failed after model facts changed externally',
-          error,
-        );
-      }
-    }
-    this.modelFactsFingerprint = facts.fingerprint;
     if (facts.diagnostic !== undefined && this.warnedModelFactsFingerprint !== facts.fingerprint) {
       process.emitWarning(`model-facts.json is ${facts.diagnostic}; ignoring its overrides`, {
         type: 'RuntimePolicyWarning',
@@ -1496,6 +1507,42 @@ export class RuntimePolicyCoordinator {
       snapshot: await this.projectCatalogSnapshot(root),
     }) as T;
   }
+}
+
+function hideStaleModelFactsVerification(
+  projected: ConnectionCatalogSnapshot,
+  persisted: ConnectionCatalogSnapshot,
+  document: ModelFactsDocument,
+  owner: ModelFactsDocumentOwner,
+): ConnectionCatalogSnapshot {
+  const persistedById = new Map(
+    persisted.connections.map((connection) => [connection.connectionId, connection] as const),
+  );
+  return {
+    ...projected,
+    connections: projected.connections.map((connection) => {
+      if (connection.lastTest === undefined) return connection;
+      const raw = persistedById.get(connection.connectionId);
+      if (!raw) return connection;
+      const current = owner.fingerprintForConnection(document, raw);
+      // Catalogs written before model facts existed have no marker. They remain
+      // valid until facts actually exist; every test recorded by this feature
+      // carries a connection-scoped marker and is checked exactly.
+      if (
+        raw.lastTestModelFactsFingerprint === current ||
+        (raw.lastTestModelFactsFingerprint === undefined &&
+          Object.keys(document.overrides).length === 0)
+      ) {
+        return connection;
+      }
+      const {
+        lastTest: _lastTest,
+        lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
+        ...withoutLastTest
+      } = connection;
+      return withoutLastTest;
+    }),
+  };
 }
 
 function isCommitOutcomeUnknown(error: unknown): error is RuntimePolicyStoreError {
@@ -1529,14 +1576,14 @@ function modelFetchSemanticBasis(
 
 function connectionTestSemanticBasis(
   prepared: PreparedConnectionMaterial,
-  modelFactsGeneration: number,
+  modelFactsFingerprint: string,
 ): Extract<SemanticConnectionBasis, { readonly kind: 'connection_test' }> {
   return {
     kind: 'connection_test',
     ...commonSemanticConnectionBasis(prepared),
     requestBodyOverlayJson: JSON.stringify(prepared.connection.requestBodyOverlay ?? {}),
     model: connectionTestModelBasis(prepared.connection),
-    modelFactsGeneration,
+    modelFactsFingerprint,
   };
 }
 

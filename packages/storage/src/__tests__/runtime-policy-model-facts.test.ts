@@ -154,23 +154,37 @@ test('model facts are not persisted when verification invalidation fails', async
   const root = await mkdtemp(join(tmpdir(), 'maka-runtime-facts-invalidation-'));
   try {
     const coordinator = new RuntimePolicyCoordinator((operation) => operation(root));
+    const connectionId = await createTestConnection(coordinator);
+    const testTicket = await coordinator.beginConnectionTest(connectionId, null);
+    assert.equal(testTicket.kind, 'ready');
+    if (testTicket.kind === 'ready') {
+      assert.equal(
+        (
+          await coordinator.completeConnectionTest(
+            testTicket.ticket,
+            verifiedAt('2026-08-01T00:00:00.000Z'),
+          )
+        ).kind,
+        'committed',
+      );
+    }
     const catalogOwner = (
       coordinator as unknown as {
-        catalog: { clearAllConnectionLastTests: () => Promise<boolean> };
+        catalog: { clearConnectionLastTest: () => Promise<boolean> };
       }
     ).catalog;
-    const original = catalogOwner.clearAllConnectionLastTests;
-    catalogOwner.clearAllConnectionLastTests = async () => {
+    const original = catalogOwner.clearConnectionLastTest;
+    catalogOwner.clearConnectionLastTest = async () => {
       throw new Error('injected invalidation failure');
     };
     try {
       await assert.rejects(
         () => coordinator.replaceModelFacts({ 'ollama:custom-model': { contextWindow: 64_000 } }),
         (error: unknown) =>
-          error instanceof RuntimePolicyStoreError && error.code === 'commit_outcome_unknown',
+          error instanceof Error && error.message === 'injected invalidation failure',
       );
     } finally {
-      catalogOwner.clearAllConnectionLastTests = original;
+      catalogOwner.clearConnectionLastTest = original;
     }
     assert.deepEqual((await coordinator.getModelFacts()).document.overrides, {});
   } finally {

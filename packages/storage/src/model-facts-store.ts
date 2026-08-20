@@ -4,10 +4,12 @@ import {
   MODEL_FACTS_MAX_OVERRIDES,
   MODEL_FACTS_SCHEMA_VERSION,
   normalizeModelFactOverride,
+  UnsupportedModelFactsSchemaError,
   type ModelFactOverrides,
   type ModelFactsDocument,
 } from '@maka/core/model-facts';
 import { RuntimePolicyStoreError } from './runtime-policy/errors.js';
+import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import {
   readBoundedDocumentBytes,
   serializeJsonDocument,
@@ -19,7 +21,7 @@ const FILE = 'model-facts.json';
 
 export interface ModelFactsReadResult {
   readonly document: ModelFactsDocument;
-  readonly diagnostic?: 'malformed' | 'oversized' | 'io_failed';
+  readonly diagnostic?: 'malformed' | 'oversized' | 'unsupported_schema';
   readonly fingerprint: string;
 }
 
@@ -48,14 +50,21 @@ export class ModelFactsDocumentOwner {
     try {
       value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
       return { document: decodeModelFactsDocument(value), fingerprint };
-    } catch {
+    } catch (error) {
+      if (error instanceof UnsupportedModelFactsSchemaError) {
+        return { document: emptyDocument(), diagnostic: 'unsupported_schema', fingerprint };
+      }
       return { document: emptyDocument(), diagnostic: 'malformed', fingerprint };
     }
   }
 
-  async replace(root: string, overrides: ModelFactOverrides): Promise<ModelFactsDocument> {
+  async replace(
+    root: string,
+    overrides: ModelFactOverrides,
+    expectedFingerprint?: string,
+  ): Promise<ModelFactsDocument> {
     const validated = this.prepareReplacement(overrides);
-    return this.writeReplacement(root, validated);
+    return this.writeReplacement(root, validated, expectedFingerprint);
   }
 
   prepareReplacement(overrides: ModelFactOverrides): ModelFactsDocument {
@@ -93,13 +102,51 @@ export class ModelFactsDocumentOwner {
     return validated;
   }
 
-  async writeReplacement(root: string, document: ModelFactsDocument): Promise<ModelFactsDocument> {
+  async writeReplacement(
+    root: string,
+    document: ModelFactsDocument,
+    expectedFingerprint?: string,
+  ): Promise<ModelFactsDocument> {
+    const current = await this.readWithDiagnostics(root);
+    if (current.diagnostic === 'unsupported_schema') {
+      throw new RuntimePolicyStoreError(
+        'invalid_policy_input',
+        'model-facts.json uses a newer unsupported schema and cannot be overwritten',
+      );
+    }
+    if (expectedFingerprint !== undefined && current.fingerprint !== expectedFingerprint) {
+      throw new RuntimePolicyStoreError(
+        'revision_conflict',
+        'model-facts.json changed before replacement; reload before retrying',
+      );
+    }
     await writeJsonDocument(root, FILE, document, MODEL_FACTS_DOCUMENT_MAX_BYTES);
     return document;
   }
 
   fingerprint(document: ModelFactsDocument): string {
     return fingerprintBytes(serializeJsonDocument(document));
+  }
+
+  fingerprintForConnection(
+    document: ModelFactsDocument,
+    connection: Pick<ConnectionCatalogEntry, 'providerType' | 'enabledModelIds' | 'models'>,
+  ): string {
+    const modelIds = new Set<string>([
+      ...(connection.models ?? []).map((model) => model.id),
+      ...connection.enabledModelIds,
+    ]);
+    const entries = Object.entries(document.overrides)
+      .filter(([key]) => {
+        const separator = key.indexOf(':');
+        return (
+          separator > 0 &&
+          key.slice(0, separator) === connection.providerType &&
+          modelIds.has(key.slice(separator + 1))
+        );
+      })
+      .sort(([left], [right]) => left.localeCompare(right));
+    return fingerprintBytes(Buffer.from(JSON.stringify(entries), 'utf8'));
   }
 }
 

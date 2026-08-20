@@ -1,16 +1,28 @@
-import type { ModelInfo, ProviderType } from './llm-connections.js';
+import { PROVIDER_REGISTRY, type ProviderType } from './provider-registry.js';
+import type { ModelFactField, ModelInfo } from './llm-connections.js';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from './runtime-policy.js';
 
 export const MODEL_FACTS_SCHEMA_VERSION = 1 as const;
 export const MODEL_FACT_KEY_MAX_LENGTH = 512;
 export const MODEL_FACTS_MAX_OVERRIDES = 512;
 
-export type ModelFactOverride = Readonly<Partial<Omit<ModelInfo, 'id'>>>;
+export type ModelFactOverride = Readonly<
+  Omit<Partial<Omit<ModelInfo, 'id' | 'modalities' | 'factOverriddenFields'>>, 'modalities'> & {
+    readonly modalities?: Readonly<Partial<ModelInfo['modalities']>>;
+  }
+>;
 export type ModelFactOverrides = Readonly<Record<string, ModelFactOverride>>;
 
 export interface ModelFactsDocument {
   readonly schemaVersion: typeof MODEL_FACTS_SCHEMA_VERSION;
   readonly overrides: ModelFactOverrides;
+}
+
+export class UnsupportedModelFactsSchemaError extends Error {
+  constructor(readonly schemaVersion: number) {
+    super(`model-facts.json schema version ${schemaVersion} is not supported`);
+    this.name = 'UnsupportedModelFactsSchemaError';
+  }
 }
 
 const PROVIDER_ID_PATTERN = /^[^:\s]{1,128}$/;
@@ -25,6 +37,9 @@ export function modelFactKey(providerType: ProviderType | string, modelId: strin
   const model = modelId.trim();
   if (!provider || !model || !PROVIDER_ID_PATTERN.test(provider) || !MODEL_ID_PATTERN.test(model)) {
     throw new Error('Model fact keys must use a non-empty provider:model identifier');
+  }
+  if (!Object.hasOwn(PROVIDER_REGISTRY, provider)) {
+    throw new Error(`Unknown model-facts provider: ${provider}`);
   }
   const key = `${provider}:${model}`;
   if (key.length > MODEL_FACT_KEY_MAX_LENGTH) throw new Error('Model fact key is too long');
@@ -57,9 +72,12 @@ export function modelFactOverrideIdsForProvider(
 }
 
 export function decodeModelFactsDocument(value: unknown): ModelFactsDocument {
-  if (!isRecord(value) || value.schemaVersion !== MODEL_FACTS_SCHEMA_VERSION) {
-    throw new Error('model-facts.json has an unsupported schema');
+  if (!isRecord(value)) throw new Error('model-facts.json must be an object');
+  if (!Number.isSafeInteger(value.schemaVersion)) {
+    throw new Error('model-facts.json schemaVersion must be an integer');
   }
+  if (value.schemaVersion !== MODEL_FACTS_SCHEMA_VERSION)
+    throw new UnsupportedModelFactsSchemaError(value.schemaVersion);
   if (!isRecord(value.overrides)) throw new Error('model-facts.json.overrides must be an object');
   const keys = Object.keys(value.overrides);
   if (keys.length > MODEL_FACTS_MAX_OVERRIDES)
@@ -68,6 +86,7 @@ export function decodeModelFactsDocument(value: unknown): ModelFactsDocument {
   for (const key of keys) {
     const match = PROVIDER_MODEL_KEY_PATTERN.exec(key);
     if (!match || key.length > MODEL_FACT_KEY_MAX_LENGTH) throw new Error('Invalid model fact key');
+    modelFactKey(match[1]!, match[2]!);
     overrides[key] = normalizeModelFactOverride(value.overrides[key]);
   }
   return { schemaVersion: MODEL_FACTS_SCHEMA_VERSION, overrides };
@@ -149,14 +168,27 @@ function normalizeCapabilities(value: unknown): NonNullable<ModelInfo['capabilit
   return result;
 }
 
-function normalizeModalities(value: unknown): NonNullable<ModelInfo['modalities']> {
-  if (!isRecord(value) || !Array.isArray(value.input) || !Array.isArray(value.output))
+function normalizeModalities(value: unknown): NonNullable<ModelFactOverride['modalities']> {
+  if (!isRecord(value)) throw new Error('Invalid modalities');
+  if (value.input === undefined && value.output === undefined)
     throw new Error('Invalid modalities');
-  const inputs = value.input.filter(isModality);
-  const outputs = value.output.filter(isOutputModality);
-  if (inputs.length !== value.input.length || outputs.length !== value.output.length)
-    throw new Error('Invalid modality value');
-  return { input: [...new Set(inputs)], output: [...new Set(outputs)] };
+  const input = normalizeModalityDirection(value.input, isModality);
+  const output = normalizeModalityDirection(value.output, isOutputModality);
+  return {
+    ...(input === undefined ? {} : { input }),
+    ...(output === undefined ? {} : { output }),
+  };
+}
+
+function normalizeModalityDirection<T extends string>(
+  value: unknown,
+  allowed: (value: unknown) => value is T,
+): T[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error('Invalid modality value');
+  const entries = Array.from(value);
+  if (!entries.every(allowed)) throw new Error('Invalid modality value');
+  return [...new Set(entries)];
 }
 
 function isModality(value: unknown): value is 'text' | 'image' | 'audio' | 'pdf' {
@@ -182,15 +214,33 @@ export function applyModelFactOverride(
   override: ModelFactOverride | undefined,
 ): ModelInfo {
   if (!override) return { ...model };
+  const overriddenFields = new Set<ModelFactField>(model.factOverriddenFields);
+  for (const field of Object.keys(override) as ModelFactField[]) overriddenFields.add(field);
+  // An authoritative context-window correction must not leave a stale,
+  // narrower provider input limit to silently win in the runtime resolver.
+  if (override.contextWindow !== undefined && override.inputLimit === undefined) {
+    overriddenFields.add('inputLimit');
+  }
+  const modalities = override.modalities
+    ? {
+        input: override.modalities.input ?? model.modalities?.input ?? ['text'],
+        output: override.modalities.output ?? model.modalities?.output ?? ['text'],
+      }
+    : model.modalities;
+  const { modalities: _ignoredModalities, ...scalarOverride } = override;
   return {
     ...model,
-    ...override,
+    ...scalarOverride,
     id: model.id,
+    factOverriddenFields: [...overriddenFields],
+    ...(override.contextWindow === undefined || override.inputLimit !== undefined
+      ? {}
+      : { inputLimit: override.contextWindow }),
     ...(override.capabilities === undefined
       ? {}
       : { capabilities: { ...model.capabilities, ...override.capabilities } }),
-    ...(override.modalities === undefined ? {} : { modalities: override.modalities }),
-  };
+    ...(modalities === undefined ? {} : { modalities }),
+  } satisfies ModelInfo;
 }
 
 type ModelFactConnectionLike = {

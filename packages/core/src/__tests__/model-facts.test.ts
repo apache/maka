@@ -46,6 +46,12 @@ test('malformed and unknown model fact fields are rejected', () => {
       overrides: { 'openai:o4-mini': { capabilities: { toString: true } } },
     }),
   );
+  assert.throws(() =>
+    decodeModelFactsDocument({
+      schemaVersion: 1,
+      overrides: { 'toString:model': { contextWindow: 1 } },
+    }),
+  );
 });
 
 test('model fact keys preserve colons in provider model ids', () => {
@@ -72,8 +78,22 @@ test('override-only models are projected only when enabled', () => {
   });
   assert.deepEqual(result.models, [
     { id: 'provider-model' },
-    { id: 'custom', contextWindow: 64_000 },
+    {
+      id: 'custom',
+      contextWindow: 64_000,
+      inputLimit: 64_000,
+      factOverriddenFields: ['contextWindow', 'inputLimit'],
+    },
   ]);
+});
+
+test('context window facts cannot be truncated by an older input limit', () => {
+  const result = applyModelFactOverride(
+    { id: 'model', contextWindow: 8_192, inputLimit: 8_192 },
+    { contextWindow: 200_000 },
+  );
+  assert.equal(result.contextWindow, 200_000);
+  assert.equal(result.inputLimit, 200_000);
 });
 
 test('overrides replace fields on discovered models while preserving untouched provider facts', () => {

@@ -322,6 +322,7 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
       'modelSource',
       'modelsFetchedAt',
       'lastTest',
+      'lastTestModelFactsFingerprint',
     ],
     [
       'connectionId',
@@ -390,6 +391,15 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
     ...(item.lastTest === undefined
       ? {}
       : { lastTest: decodeConnectionTestSummary(item.lastTest) }),
+    ...(item.lastTestModelFactsFingerprint === undefined
+      ? {}
+      : {
+          lastTestModelFactsFingerprint: stringValue(
+            item.lastTestModelFactsFingerprint,
+            'connection test model facts fingerprint',
+            128,
+          ),
+        }),
   };
   assertCanonicalValue(value, decoded, 'connection catalog entry');
   return decoded;

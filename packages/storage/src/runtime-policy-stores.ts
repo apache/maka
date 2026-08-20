@@ -96,7 +96,7 @@ export interface ModelFactsReader {
 }
 
 export interface ModelFactsWriter extends ModelFactsReader {
-  replace(overrides: ModelFactOverrides): Promise<ModelFactsDocument>;
+  replace(overrides: ModelFactOverrides, expectedFingerprint?: string): Promise<ModelFactsDocument>;
 }
 
 export interface CredentialVaultReader {
@@ -216,7 +216,8 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
     },
     modelFacts: {
       get: () => coordinator.getModelFacts(),
-      replace: (overrides) => coordinator.replaceModelFacts(overrides),
+      replace: (overrides, expectedFingerprint) =>
+        coordinator.replaceModelFacts(overrides, expectedFingerprint),
     },
     credentialVault: {
       getSnapshot: () => coordinator.getVaultSnapshot(),
