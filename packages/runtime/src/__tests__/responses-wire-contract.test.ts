@@ -7,6 +7,7 @@ import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { thinkingVariantsForModel } from '@maka/core/model-thinking';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { resolveModelRuntime } from '../model-runtime.js';
+import { resolveRuntimeProviderAdapter } from '../provider-runtime-policy.js';
 import { lowerModelTools } from '../model-adapter.js';
 import { openAiCodexCompactionMessages } from '../openai-codex-history-compactor.js';
 import { openAiResponsesBaseUrl, openResponsesUrl } from '../provider-urls.js';
@@ -142,7 +143,10 @@ describe('responses wire contract', () => {
 
   test('enables Responses only through an explicit supported contract', () => {
     const configured = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
-      const adapter = definition.runtimeAdapter;
+      const adapter = resolveRuntimeProviderAdapter(
+        providerType as LlmConnection['providerType'],
+        definition.runtimeAdapter,
+      );
       return adapter.kind === 'openai-compatible' && adapter.responses
         ? [{ providerType, contract: adapter.responses }]
         : [];

@@ -158,6 +158,55 @@ function standardFunctionCallStream(): string {
   return `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`;
 }
 
+function unfinalizedReasoningStream(terminal: 'completed' | 'failed'): string {
+  const response = {
+    id: 'r',
+    object: 'response',
+    created_at: 0,
+    model: 'qwen3.8-max',
+    status: terminal,
+    output: [],
+    usage: { input_tokens: 1, output_tokens: 1 },
+    ...(terminal === 'failed'
+      ? { error: { code: 'rate_limit_exceeded', message: 'rate limited' } }
+      : {}),
+  };
+  const events = [
+    { type: 'response.created', response: { id: 'r' } },
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: { type: 'reasoning', id: ITEM_ID, status: 'in_progress', content: [], summary: [] },
+    },
+    {
+      type: 'response.reasoning_text.delta',
+      content_index: 0,
+      delta: 'unfinished reasoning',
+      item_id: ITEM_ID,
+      output_index: 0,
+    },
+    { type: `response.${terminal}`, response },
+  ];
+  return `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`;
+}
+
+async function alibabaStreamParts(body: string) {
+  const connection = conn('alibaba-token-plan-cn');
+  const model = getAIModel({
+    connection,
+    apiKey: 'test-key',
+    modelId: 'qwen3.8-max',
+    fetch: sseFetch(body),
+  });
+  const { stream } = await model.doStream({
+    prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    providerOptions: buildProviderOptions(connection, 'qwen3.8-max', 'high'),
+  });
+  const parts = [];
+  for await (const part of stream) parts.push(part);
+  return parts;
+}
+
 /**
  * Chunks are cut from the encoded bytes, not from the string: slicing the
  * string would hand every chunk a whole character and quietly make multi-byte
@@ -207,6 +256,27 @@ async function streamParts(
 }
 
 describe('open responses plaintext reasoning', () => {
+  test('the pinned SDK flushes an unfinalized item without provider metadata', async () => {
+    const parts = await alibabaStreamParts(unfinalizedReasoningStream('completed'));
+    const reasoningEnd = parts.find((part) => part.type === 'reasoning-end');
+    const finish = parts.find((part) => part.type === 'finish');
+
+    assert.ok(reasoningEnd);
+    assert.equal(reasoningEnd.providerMetadata, undefined);
+    assert.equal(finish?.finishReason.unified, 'stop');
+  });
+
+  test('the pinned SDK keeps response.failed ahead of its unfinalized trailer', async () => {
+    const parts = await alibabaStreamParts(unfinalizedReasoningStream('failed'));
+    const reasoningEnd = parts.find((part) => part.type === 'reasoning-end');
+    const finish = parts.find((part) => part.type === 'finish');
+
+    assert.ok(reasoningEnd);
+    assert.equal(reasoningEnd.providerMetadata, undefined);
+    assert.equal(finish?.finishReason.unified, 'error');
+    assert.equal(finish?.finishReason.raw, 'rate_limit_exceeded');
+  });
+
   test('streamed reasoning text reaches the model stream', async () => {
     const deltas = ['The user asks if 91 is prime. ', '91 = 7 x 13, ', 'so it is composite.'];
     const parts = await streamParts('deepseek', sseFetch(deepseekReasoningStream(deltas)));

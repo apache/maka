@@ -13,7 +13,6 @@ import {
   type SharedV4ProviderOptions,
 } from '@ai-sdk/provider';
 import { type RuntimeExecutionConnection } from '@maka/core/llm-connections';
-import type { ProviderRuntimeAdapter } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
   resolveThinkingLevel,
@@ -35,6 +34,7 @@ import {
 } from './provider-urls.js';
 import { createOpenResponsesCompatibilityFetch } from './open-responses-compatibility.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
+import type { RuntimeProviderAdapter } from './provider-runtime-policy.js';
 import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
 
@@ -610,7 +610,7 @@ function buildFamilyWire(
  * providerOptions key the SDK wants: see `openAiCompatibleProviderOptionsKey`.
  */
 function openAiCompatibleProviderName(
-  adapter: ProviderRuntimeAdapter,
+  adapter: RuntimeProviderAdapter,
   connection: RuntimeExecutionConnection,
 ): string {
   return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
@@ -633,7 +633,7 @@ function toCamelCase(name: string): string {
  * namespaces stay as they were.
  */
 function openAiCompatibleProviderOptionsKey(
-  adapter: ProviderRuntimeAdapter,
+  adapter: RuntimeProviderAdapter,
   connection: RuntimeExecutionConnection,
 ): string {
   return adapter.kind === 'openai-compatible' && adapter.name === 'connection'

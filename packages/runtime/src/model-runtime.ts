@@ -2,12 +2,17 @@ import {
   PROVIDER_DEFAULTS,
   effectiveBaseUrl,
   type ModelInfo,
-  type ProviderResponsesContract,
   type ProviderRuntimeAdapter,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import { lookupModelProviderOverride, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
+import { lookupModelProviderOverride } from '@maka/core/model-metadata';
 import { resolveApplyPatchProfile, type ApplyPatchProfile } from './apply-patch-profile.js';
+import {
+  defaultOpenAiApiProtocol,
+  resolveRuntimeProviderAdapter,
+  type RuntimeProviderAdapter,
+  type RuntimeProviderResponsesContract,
+} from './provider-runtime-policy.js';
 
 export type ModelRuntimeWire =
   | 'anthropic-messages'
@@ -20,10 +25,10 @@ export type ReasoningReplayContract =
   | { kind: 'none' }
   | { kind: 'anthropic-signed' }
   | { kind: 'openai-chat-plaintext'; requestField: 'observed' | 'reasoning' }
-  | { kind: 'responses'; contract: ProviderResponsesContract };
+  | { kind: 'responses'; contract: RuntimeProviderResponsesContract };
 
 export interface ResolvedModelRuntime {
-  adapter: ProviderRuntimeAdapter;
+  adapter: RuntimeProviderAdapter;
   baseUrl: string;
   /** Account-advertised request wire for adapters that route per model. */
   apiProtocol?: ModelInfo['apiProtocol'];
@@ -71,7 +76,7 @@ export function resolveModelRuntime(
       `Kimi Coding Plan protocol must be openai-chat or anthropic-messages, received ${apiProtocol}`,
     );
   }
-  const adapter: ProviderRuntimeAdapter =
+  const baseAdapter: ProviderRuntimeAdapter =
     connection.providerType === 'kimi-coding-plan' && apiProtocol === 'openai-chat'
       ? ({
           kind: 'openai-compatible',
@@ -81,6 +86,7 @@ export function resolveModelRuntime(
       : override
         ? runtimeAdapterOverride(override.npm)
         : defaults.runtimeAdapter;
+  const adapter = resolveRuntimeProviderAdapter(connection.providerType, baseAdapter);
   const configuredBaseUrl = connection.baseUrl?.trim();
   const resolvedBaseUrl = configuredBaseUrl
     ? effectiveBaseUrl(connection)
@@ -116,7 +122,7 @@ export function resolveModelRuntime(
 
 function responsesProviderOptionsKey(
   connection: ModelRuntimeConnection,
-  adapter: ProviderRuntimeAdapter,
+  adapter: RuntimeProviderAdapter,
 ): string {
   return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
     ? (connection.slug ?? connection.providerType)
@@ -144,7 +150,7 @@ export function modelUsesNativeOpenAiResponses(
 function resolveModelRuntimeWire(
   providerType: ProviderType,
   modelId: string,
-  adapter: ProviderRuntimeAdapter,
+  adapter: RuntimeProviderAdapter,
   apiProtocol: ModelInfo['apiProtocol'] | undefined,
 ): ModelRuntimeWire {
   switch (adapter.kind) {
@@ -162,12 +168,12 @@ function resolveModelRuntimeWire(
     case 'openai':
       return (adapter.apiProtocol ??
         apiProtocol ??
-        openAiAdapterApiProtocol(modelId, providerType)) === 'openai-responses'
+        defaultOpenAiApiProtocol(modelId, providerType)) === 'openai-responses'
         ? 'openai-responses'
         : 'openai-chat';
     case 'openai-compatible':
       return adapter.responses !== undefined &&
-        (apiProtocol ?? openAiAdapterApiProtocol(modelId, providerType)) === 'openai-responses'
+        (apiProtocol ?? defaultOpenAiApiProtocol(modelId, providerType)) === 'openai-responses'
         ? 'openai-responses'
         : 'openai-chat';
     case 'google':
@@ -178,7 +184,7 @@ function resolveModelRuntimeWire(
 }
 
 function reasoningReplayContract(
-  adapter: ProviderRuntimeAdapter,
+  adapter: RuntimeProviderAdapter,
   wire: ModelRuntimeWire,
 ): ReasoningReplayContract {
   switch (wire) {
@@ -200,7 +206,7 @@ function reasoningReplayContract(
   }
 }
 
-function responsesContract(adapter: ProviderRuntimeAdapter): ProviderResponsesContract {
+function responsesContract(adapter: RuntimeProviderAdapter): RuntimeProviderResponsesContract {
   if (adapter.kind === 'openai-compatible' && adapter.responses) return adapter.responses;
   return { adapter: 'openai', reasoningReplay: 'encrypted-content' };
 }

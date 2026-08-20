@@ -237,7 +237,18 @@ describe('ModelAdapter stream and error normalization', () => {
       () =>
         adapter.translateChunk({
           type: 'reasoning-end',
+          id: 'unfinished-flush',
+        } as Chunk),
+      /missing final summary metadata/,
+    );
+    assert.throws(
+      () =>
+        adapter.translateChunk({
+          type: 'reasoning-end',
           id: 'missing-final-summary',
+          providerMetadata: {
+            [providerType]: { itemId: 'missing-final-summary' },
+          },
         } as Chunk),
       /missing final summary metadata/,
     );

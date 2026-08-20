@@ -357,9 +357,19 @@ export class ModelAdapter {
         let failure: ModelFailure | undefined;
         let sawFinish = false;
         let streamedFinishReason: string | undefined;
+        let sawUnfinalizedPlaintextSummary = false;
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
             onStreamActivity();
+            if (isUnfinalizedPlaintextSummaryReasoningEnd(chunk, resolvedRuntime)) {
+              // The SDK emits this trailer from flush() when no
+              // response.output_item.done finalized the active item. Defer the
+              // decision until the terminal outcome is known: an existing
+              // provider failure must win, while a successful stream must
+              // still fail closed instead of losing replay state silently.
+              sawUnfinalizedPlaintextSummary = true;
+              continue;
+            }
             for (const event of translateChunk(
               chunk,
               openAiChatReasoningTransportState,
@@ -374,8 +384,10 @@ export class ModelAdapter {
             }
           }
         } catch (error) {
-          failure = normalizeProviderFailure(error);
-          yield { kind: 'error', failure };
+          if (!failure) {
+            failure = normalizeProviderFailure(error);
+            yield { kind: 'error', failure };
+          }
         } finally {
           const [sdkUsage, sdkFinishReason] = await Promise.all([
             sdk.usage.catch(() => undefined),
@@ -392,6 +404,22 @@ export class ModelAdapter {
             usage,
             request,
           });
+          let deferredFailure: ModelFailure | undefined;
+
+          if (sawUnfinalizedPlaintextSummary && settled.kind === 'completed') {
+            failure = normalizeProviderFailure(
+              new Error('Plaintext Responses reasoning item is missing final summary metadata'),
+            );
+            deferredFailure = failure;
+            settled = settleModelStepOutcome({
+              aborted: continuation.abortSignal.aborted,
+              failure,
+              sawFinish,
+              finishReason,
+              usage,
+              request,
+            });
+          }
 
           try {
             if (continuation.lane) {
@@ -415,6 +443,12 @@ export class ModelAdapter {
             }
           } finally {
             settleOutcome(settled);
+          }
+          if (deferredFailure) {
+            // Consumers may stop iterating at the first error. The outcome and
+            // continuation lane must already be settled before this yield so a
+            // generator return cannot strand the caller awaiting result.outcome.
+            yield { kind: 'error', failure: deferredFailure };
           }
         }
       },
@@ -830,6 +864,18 @@ function openAiResponsesReasoningProviderOptionsFromChunk(
         : {}),
     },
   };
+}
+
+function isUnfinalizedPlaintextSummaryReasoningEnd(
+  chunk: AiSdkStreamChunk,
+  runtime: ResolvedModelRuntime,
+): boolean {
+  return (
+    runtime.reasoningReplay.kind === 'responses' &&
+    runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-summary' &&
+    chunk.type === 'reasoning-end' &&
+    (chunk.providerMetadata === undefined || chunk.providerMetadata === null)
+  );
 }
 
 function plaintextSummaryParts(provider: unknown): string[] | undefined {

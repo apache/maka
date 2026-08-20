@@ -1,4 +1,4 @@
-import type { ProviderResponsesCompatibilityModule } from '@maka/core/llm-connections';
+import type { ProviderResponsesCompatibilityModule } from './provider-runtime-policy.js';
 
 export function createOpenResponsesCompatibilityFetch(
   fetchImpl: typeof globalThis.fetch,

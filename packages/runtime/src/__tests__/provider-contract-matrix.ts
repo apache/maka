@@ -24,7 +24,7 @@
  * Pure: no IO, no network, no clock. Given the registry it is a total function.
  */
 
-import { lookupModelProviderOverride, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
+import { lookupModelProviderOverride } from '@maka/core/model-metadata';
 import {
   PROVIDER_REGISTRY,
   type ProviderDefaults,
@@ -32,6 +32,10 @@ import {
   type ProviderRuntimeAdapter,
   type ProviderType,
 } from '@maka/core/provider-registry';
+import {
+  defaultOpenAiApiProtocol,
+  resolveRuntimeProviderAdapter,
+} from '../provider-runtime-policy.js';
 
 export const PROVIDER_CONTRACT_DIMENSIONS = [
   'discovery',
@@ -195,12 +199,12 @@ function usesOpenAiResponsesWire(
   def: ProviderDefaults,
   modelId: string,
 ): boolean {
-  const adapter = def.runtimeAdapter;
+  const adapter = resolveRuntimeProviderAdapter(providerType, def.runtimeAdapter);
   const supportsResponses =
     adapter.kind === 'openai' ||
     (adapter.kind === 'openai-compatible' && adapter.responses !== undefined);
   return (
-    supportsResponses && openAiAdapterApiProtocol(modelId, providerType) === 'openai-responses'
+    supportsResponses && defaultOpenAiApiProtocol(modelId, providerType) === 'openai-responses'
   );
 }
 
@@ -360,7 +364,7 @@ function reasoningReplayCell(
   providerType: ProviderType,
   def: ProviderDefaults,
 ): ProviderContractCell {
-  const adapter = def.runtimeAdapter;
+  const adapter = resolveRuntimeProviderAdapter(providerType, def.runtimeAdapter);
   if (SUBSCRIPTION_WIRE_ADAPTER_KINDS.has(adapter.kind)) {
     return {
       state: 'override',
