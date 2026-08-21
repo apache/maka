@@ -197,6 +197,14 @@
      16px section      (h3-h6, and either side of an `hr`)
      24px chapter      (h1, h2)
 
+   What holds this: __tests__/markdown-rhythm-contract.test.tsx pins the
+   ladder's ORDER (retuning a rung is a design call and stays green), that
+   every rung declared is actually spent by a rule, and that the runtime hooks
+   these selectors need are really emitted. The adjacent-sibling gap form, the
+   `hr` rung, the ListItem padding reset and the two heading size tiers are
+   reasoned about below but NOT pinned — they are how the table works rather
+   than what it promises, and each is one rule away from being re-read here.
+
    Three deliberate choices:
 
    - Only `[data-density="compact"]`. The document mode is not broken (its
@@ -295,9 +303,9 @@
    second compact surface would silently inherit transcript heading sizes and
    dimmed deep headings. Giving typography its own surface attribute would
    decouple them, but nothing needs it yet; the assumption is held by a test
-   instead (packages/ui/src/__tests__/markdown-rhythm-dom-contract.test.tsx,
-   "keeps compact markdown a transcript-only surface"), which fails the moment
-   the sets diverge and says what the choice is. */
+   instead (__tests__/markdown-rhythm-contract.test.tsx, "keeps compact
+   markdown a transcript-only surface"), which fails the moment the sets
+   diverge and says what the choice is. */
 [data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] .astryx-markdown-heading:is([data-level="1"], [data-level="2"]) {
   font: var(--maka-text-heading-3);
 }
