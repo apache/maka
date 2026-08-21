@@ -22,10 +22,11 @@ import { realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { SessionEvent } from '@maka/core/events';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
-import type { CreateSessionInput, UserMessageInput } from '@maka/core/runtime-inputs';
+import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
 import type { SessionSummary } from '@maka/core/session';
 import { normalizeUserSessionName } from '@maka/core/session-name';
+import type { CreateSessionRequest } from './session-driver.js';
 import { selectMakaRunSession } from './run-session-selection.js';
 import { sessionEventSandboxBoundaryFailureReason } from './sandbox-boundary-failure.js';
 import { resolveMakaWorkspaceRoot } from './workspace-root.js';
@@ -54,7 +55,7 @@ export type ParseMakaRunArgsResult =
   | { kind: 'error'; message: string };
 
 export interface MakaRunRuntime {
-  createSession(input: CreateSessionInput): Promise<SessionSummary>;
+  createSession(input: CreateSessionRequest): Promise<SessionSummary>;
   readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
   sendMessage(sessionId: string, input: UserMessageInput): AsyncIterable<SessionEvent>;
   respondToSandboxBoundary(
@@ -335,7 +336,10 @@ export async function runMakaTextCliCore(
             name: makaRunSessionName(prompt),
             llmConnectionSlug: context.target.connection.slug,
             model: context.target.model,
-            permissionMode: parsed.options.yolo ? 'bypass' : 'ask',
+            // `--yolo` is a one-shot elevation, not one half of a choice.
+            // Omitting the field lets the Session start in the Host's
+            // configured default instead of forcing Auto onto every run.
+            ...(parsed.options.yolo ? { permissionMode: 'bypass' as const } : {}),
             ...(parsed.options.thinking !== undefined
               ? { thinkingLevel: parsed.options.thinking }
               : {}),

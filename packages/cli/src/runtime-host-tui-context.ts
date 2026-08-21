@@ -32,7 +32,11 @@ import {
   type RuntimeHostProfile,
 } from '@maka/runtime-host/client';
 import type { AgentGraphClientSnapshot, WorkspaceTarget } from '@maka/runtime-host/protocol';
-import { connectRuntimeHostCli, resolveRuntimeHostCliTarget } from './runtime-host-cli-context.js';
+import {
+  connectRuntimeHostCli,
+  readHostChatDefaultPermissionMode,
+  resolveRuntimeHostCliTarget,
+} from './runtime-host-cli-context.js';
 import type {
   MakaPiTuiTurnActivitySurface,
   ModelChoice,
@@ -95,12 +99,13 @@ export async function createRuntimeHostTuiContext(
       ? await resolveResumeTarget(connection, catalog, input.resumeSessionId)
       : resolveTarget(catalog);
     const modelChoices = projectRuntimeHostModelChoices(catalog);
+    const hostDefaultPermissionMode = await readHostChatDefaultPermissionMode(connection);
     const driverInput: RuntimeHostMakaSessionDriverInput = {
       connection,
       cwd: input.cwd,
       llmConnectionSlug: target.connection.slug,
       model: target.model,
-      permissionMode: 'ask',
+      permissionMode: hostDefaultPermissionMode,
       executionLocation:
         connected.profile.kind === 'local' ? { kind: 'client_path' } : { kind: 'host' },
       ...(workspace ? { workspace } : {}),
@@ -124,7 +129,7 @@ export async function createRuntimeHostTuiContext(
           driver.getSessionId(),
           workspace ??
             (connected.profile.kind === 'local' ? { kind: 'host_path', path: cwd } : undefined),
-          driver.getPermissionMode?.() ?? 'ask',
+          driver.getPermissionMode?.() ?? hostDefaultPermissionMode,
         ),
       agentGraphHistory: createRuntimeHostAgentGraphHistory(connection),
       recap: createRuntimeHostRecapGenerator(connection),

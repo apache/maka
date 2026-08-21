@@ -24,7 +24,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { TurnOrchestration } from '@maka/core/runtime-inputs';
+import type { CreateSessionInput, TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
@@ -152,8 +152,29 @@ export interface MakaSessionDriver {
   controlGoal?(action: GoalControlAction): Promise<GoalProjection | null>;
   getContextDiagnostics?(): Promise<ContextDiagnostics>;
   getOrchestrationMode?(): OrchestrationMode;
-  getPermissionMode?(): PermissionMode;
+  /**
+   * The mode in force, or `undefined` when no Session exists yet and the
+   * driver has no local claim on what a new one will start in — the owning
+   * runtime resolves that from its own configured default. Callers that must
+   * render something choose their own stand-in rather than being handed an
+   * invented mode here.
+   */
+  getPermissionMode?(): PermissionMode | undefined;
 }
+
+/**
+ * A create request whose permission mode may be left to the owning runtime.
+ *
+ * `CreateSessionInput` requires a mode because the local runtime writes it
+ * straight onto the Session header. A client speaking to a Runtime Host is in
+ * a different position: the Host resolves an omitted mode from its Runtime
+ * Policy `chatDefaults`. Omitting the field is how a client says "no explicit
+ * choice", and it is the only way the configured default can apply — sending
+ * a literal would silently override it.
+ */
+export type CreateSessionRequest = Omit<CreateSessionInput, 'permissionMode'> & {
+  permissionMode?: PermissionMode;
+};
 
 export type MakaTranscriptReplacementReason = 'terminal' | 'reconnect';
 
