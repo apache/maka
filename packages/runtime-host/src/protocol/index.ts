@@ -72,7 +72,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 29 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 30 as const;
+// 30: live `tool_start` frames may carry optional `intent` / `argsPreview`
+// keys. Older Clients decode the event with a strict allowed-key list and tear
+// the connection down on unknown keys, so the pair must be refused up front.
 // 29: `goal.arm` is a new wire operation. An older Host decodes it as unknown
 // and tears the connection down, so the pair must be refused up front.
 // 28: Relay model profiles carry the Fast service-tier declaration. Older

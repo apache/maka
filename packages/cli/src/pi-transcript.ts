@@ -566,7 +566,7 @@ export function applyMakaSessionEventToTranscript(
           state.pendingShellRunPolls.set(event.toolUseId, {
             toolName: event.toolName,
             ...(event.displayName ? { title: event.displayName } : {}),
-            input: projectToolActivityArgs(event.toolName, event.args),
+            input: projectToolActivityArgs(event.toolName, event.args ?? event.argsPreview),
           });
           break;
         }
@@ -577,7 +577,10 @@ export function applyMakaSessionEventToTranscript(
         toolUseId: event.toolUseId,
         toolName: event.toolName,
         ...(event.displayName ? { title: event.displayName } : {}),
-        input: projectToolActivityArgs(event.toolName, event.args),
+        // Live Runtime Host frames omit full args; the bounded wire preview
+        // still lets the compact row name the call. The turn-end reconcile
+        // replaces it with the durable full args.
+        input: projectToolActivityArgs(event.toolName, event.args ?? event.argsPreview),
         resultVersion: 0,
         progress: createProgressBuffer(),
         outputDeltas: createOutputBuffer(),

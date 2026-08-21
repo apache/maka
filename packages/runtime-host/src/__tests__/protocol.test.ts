@@ -244,6 +244,13 @@ describe('Runtime Host bootstrap protocol', () => {
       },
       {
         ...identity,
+        type: 'tool_start',
+        toolName: 'Bash',
+        intent: '只读探索:定位渲染入口',
+        argsPreview: { command: 'git status --porcelain' },
+      },
+      {
+        ...identity,
         type: 'tool_output_delta',
         seq: 0,
         stream: 'stdout',
@@ -275,6 +282,18 @@ describe('Runtime Host bootstrap protocol', () => {
         type: 'tool_start',
         toolName: 'read',
         args: { path: '/private' },
+      },
+      {
+        ...identity,
+        type: 'tool_start',
+        toolName: 'read',
+        argsPreview: { command: 'x'.repeat(9 * 1024) },
+      },
+      {
+        ...identity,
+        type: 'tool_start',
+        toolName: 'read',
+        intent: 42,
       },
       {
         ...identity,

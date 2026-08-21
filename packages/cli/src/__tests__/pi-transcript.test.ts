@@ -2635,6 +2635,90 @@ describe('Maka Pi TUI transcript', () => {
     }
   });
 
+  test('names a live quiet Bash row from the wire args preview', () => {
+    const state = createMakaPiTranscriptState();
+    // Runtime Host live tool_start omits full args; the bounded preview is all
+    // the compact row has until the turn-end reconcile.
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'bash-preview',
+        toolName: 'Bash',
+        args: undefined,
+        argsPreview: { command: 'git status --porcelain' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'bash-preview',
+        isError: false,
+        content: {
+          kind: 'terminal',
+          cwd: '/repo',
+          cmd: 'git status --porcelain',
+          status: 'completed',
+          exitCode: 0,
+          output: { mode: 'pipes', stdout: '', stderr: '' },
+        },
+      }),
+    );
+
+    const rendered = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
+    assert.match(rendered, /\$ git status --porcelain/);
+    // Once the row names the call, the quiet-success disclaimer is noise.
+    assert.doesNotMatch(rendered, /\(no output\)/);
+  });
+
+  test('keeps the no-output placeholder when the row cannot name the call', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'tool_start', toolUseId: 'bash-blind', toolName: 'Bash', args: undefined }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'bash-blind',
+        isError: false,
+        content: {
+          kind: 'terminal',
+          cwd: '/repo',
+          cmd: 'true',
+          status: 'completed',
+          exitCode: 0,
+          output: { mode: 'pipes', stdout: '', stderr: '' },
+        },
+      }),
+    );
+
+    const rendered = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
+    assert.match(rendered, /\(no output\)/);
+  });
+
+  test('names a task_create row by its first subject, not a JSON dump', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'task-1',
+        toolName: 'task_create',
+        displayName: 'Task Create',
+        args: undefined,
+        argsPreview: { tasks: [{ subject: '修复登录 bug' }], tasksTotal: 2 },
+      }),
+    );
+
+    const rendered = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
+    assert.match(rendered, /修复登录 bug/);
+    assert.doesNotMatch(rendered, /tasks:/);
+    assert.doesNotMatch(rendered, /\(no output\)/);
+  });
+
   test('orders and de-dupes tool_output_delta by seq and marks redacted chunks', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(

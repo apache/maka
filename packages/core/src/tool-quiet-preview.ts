@@ -11,7 +11,7 @@
  */
 
 import { redactSecrets } from './display-redaction.js';
-import { readWriteStdinInputPreview } from './tool-activity-args.js';
+import { projectToolActivityArgs, readWriteStdinInputPreview } from './tool-activity-args.js';
 import type { UiLocale } from './ui-locale.js';
 
 // ── Locale ───────────────────────────────────────────────────────────────
@@ -28,6 +28,10 @@ interface QuietPreviewStrings {
   written: string;
   /** Format a byte count suffix, e.g. `共 7 字节` / `7 bytes`. */
   bytes: (n: number) => string;
+  /** Suffix for a task list previewed by its first entry, e.g. `等 3 项` / `+2 more`. */
+  moreTasks: (total: number) => string;
+  /** Suffix for a question list previewed by its first entry, e.g. `等 2 问` / `+1 more`. */
+  moreQuestions: (total: number) => string;
 }
 
 const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
@@ -39,6 +43,8 @@ const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
     replacements: (n) => `${n} 处`,
     written: '已写入',
     bytes: (n) => `共 ${n} 字节`,
+    moreTasks: (total) => (total > 1 ? ` 等 ${total} 项` : ''),
+    moreQuestions: (total) => (total > 1 ? ` 等 ${total} 问` : ''),
   },
   en: {
     backgroundTerminal: 'Background terminal interaction',
@@ -48,6 +54,8 @@ const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
     replacements: (n) => (n === 1 ? '1 replacement' : `${n} replacements`),
     written: 'written',
     bytes: (n) => `${n} bytes`,
+    moreTasks: (total) => (total > 1 ? ` +${total - 1} more` : ''),
+    moreQuestions: (total) => (total > 1 ? ` +${total - 1} more` : ''),
   },
 };
 
@@ -236,6 +244,49 @@ export function formatToolInvocationLine(
     return parts.join(' · ');
   }
 
+  // Session task ledger and other structured-args tools: the generic key:value
+  // fallback renders their nested payloads as `tasks:` / `questions:` dumps, so
+  // give the row the one fact a reader needs — the first subject / question,
+  // the goal condition — with a count suffix when more entries exist.
+  if (name === 'task_create') {
+    const tasks = Array.isArray(args.tasks) ? args.tasks : undefined;
+    const firstSubject = tasks
+      ?.map((task) => stringField(asRecord(task), 'subject'))
+      .find((subject) => subject !== undefined);
+    if (firstSubject) {
+      // A wire args preview caps the list; `tasksTotal` keeps the real count.
+      const total = numberField(args, 'tasksTotal') ?? tasks!.length;
+      return redactSecrets(`${firstSubject}${s.moreTasks(total)}`);
+    }
+  }
+
+  if (name === 'task_update') {
+    const subject = stringField(args, 'subject');
+    if (subject) return redactSecrets(subject);
+    const id = stringField(args, 'id');
+    if (id) {
+      const status = stringField(args, 'status');
+      const shortId = id.length > 12 ? `${id.slice(0, 8)}…` : id;
+      return redactSecrets(status ? `${shortId} → ${status}` : shortId);
+    }
+  }
+
+  if (name === 'GoalSet') {
+    const condition = stringField(args, 'condition');
+    if (condition) return redactSecrets(condition);
+  }
+
+  if (name === 'AskUserQuestion') {
+    const questions = Array.isArray(args.questions) ? args.questions : undefined;
+    const firstQuestion = questions
+      ?.map((question) => stringField(asRecord(question), 'question'))
+      .find((questionText) => questionText !== undefined);
+    if (firstQuestion) {
+      const total = numberField(args, 'questionsTotal') ?? questions!.length;
+      return redactSecrets(`${firstQuestion}${s.moreQuestions(total)}`);
+    }
+  }
+
   if (name === 'Grep' || (pattern && (name === 'Glob' || path))) {
     if (pattern) {
       const scope = path ? ` in ${path}` : '';
@@ -267,6 +318,176 @@ export function formatToolInvocationLine(
   // Last resort: short key:value lines (still not JSON braces).
   const lines = formatAsKeyValueLines(args, 0, locale);
   return lines.length > 0 ? lines : undefined;
+}
+
+// ── Public API: args preview (live wire) ────────────────────────────────
+
+/**
+ * Per-value cap for the wire preview. Long commands/paths still identify the
+ * call; the full value arrives with the durable transcript at turn end.
+ */
+const ARGS_PREVIEW_STRING_MAX_CHARS = 240;
+/** Whole-preview cap; lowest-priority fields drop until the preview fits. */
+const ARGS_PREVIEW_MAX_CHARS = 2048;
+/** List fields (tasks / questions) keep only their leading entries. */
+const ARGS_PREVIEW_LIST_MAX_ITEMS = 4;
+
+/**
+ * Whitelist of scalar args keys {@link formatToolInvocationLine} can read, in
+ * display-priority order. Anything not listed here (file contents, option
+ * payloads, provider blobs) never enters the live wire preview.
+ */
+const ARGS_PREVIEW_SCALAR_KEYS = [
+  'command',
+  'cmd',
+  'script',
+  'path',
+  'file',
+  'pattern',
+  'glob',
+  'cwd',
+  'query',
+  'url',
+  'name',
+  'title',
+  'subject',
+  'condition',
+  'status',
+  'id',
+  'ref',
+  'input',
+] as const;
+
+const ARGS_PREVIEW_NUMBER_KEYS = ['offset', 'limit'] as const;
+
+function boundPreviewString(value: string): string {
+  const redacted = redactSecrets(value);
+  const chars = Array.from(redacted);
+  return chars.length <= ARGS_PREVIEW_STRING_MAX_CHARS
+    ? redacted
+    : `${chars.slice(0, ARGS_PREVIEW_STRING_MAX_CHARS - 1).join('')}…`;
+}
+
+function previewStringField(record: Record<string, unknown>, key: string): string | undefined {
+  const raw = record[key];
+  return typeof raw === 'string' && raw.trim().length > 0 ? boundPreviewString(raw) : undefined;
+}
+
+function previewListSubjects(
+  record: Record<string, unknown>,
+  listKey: 'tasks' | 'questions',
+  itemKey: 'subject' | 'question',
+): { items: Record<string, unknown>[]; total: number } | undefined {
+  const list = record[listKey];
+  if (!Array.isArray(list) || list.length === 0) return undefined;
+  const items: Record<string, unknown>[] = [];
+  for (const entry of list.slice(0, ARGS_PREVIEW_LIST_MAX_ITEMS)) {
+    const text = previewStringField(asRecord(entry) ?? {}, itemKey);
+    if (text !== undefined) items.push({ [itemKey]: text });
+  }
+  return items.length > 0 ? { items, total: list.length } : undefined;
+}
+
+function previewInputPreview(value: unknown): Record<string, unknown> | undefined {
+  const preview = asRecord(value);
+  if (!preview) return undefined;
+  const text = previewStringField(preview, 'text');
+  if (text === undefined) return undefined;
+  const bytes = numberField(preview, 'bytes');
+  return {
+    text,
+    bytes: bytes ?? Array.from(text).length,
+    truncated: preview.truncated === true,
+  };
+}
+
+function previewSize(value: unknown): Record<string, unknown> | undefined {
+  const size = asRecord(value);
+  if (!size) return undefined;
+  const cols = numberField(size, 'cols');
+  const rows = numberField(size, 'rows');
+  return cols !== undefined && rows !== undefined ? { cols, rows } : undefined;
+}
+
+/**
+ * A bounded, redacted, wire-safe preview of a tool call's args, shaped like
+ * the args themselves so `formatToolInvocationLine` renders the same line from
+ * the preview as from the full args.
+ *
+ * Runtime Host live `tool_start` frames deliberately omit full args (the lean
+ * subscription channel predates per-frame budgets; a Write can carry a whole
+ * file). Without any args signal, compact/collapsed tool rows render name-only
+ * for the whole live window — the only window a watching user sees. This
+ * preview carries just the fields the invocation-line formatter reads, each
+ * string redacted and capped, so live rows can say what the call does without
+ * streaming file bodies or option payloads.
+ *
+ * Sensitive keys are dropped structurally (never redacted-in-place) and every
+ * string still passes `redactSecrets`; the durable transcript remains the
+ * authority for full args.
+ */
+export function projectToolArgsPreview(
+  toolName: string,
+  args: unknown,
+): Record<string, unknown> | undefined {
+  const record = asRecord(args);
+  if (!record) return undefined;
+
+  // Apply the canonical activity projection first so WriteStdin's inputPreview
+  // shape (bounded, display-safe) is what the whitelist picks up.
+  const projected = asRecord(projectToolActivityArgs(toolName, args)) ?? record;
+
+  const picked = new Map<string, unknown>();
+  for (const key of ARGS_PREVIEW_SCALAR_KEYS) {
+    if (isSensitiveKey(key)) continue;
+    const value = previewStringField(projected, key);
+    if (value !== undefined) picked.set(key, value);
+  }
+  for (const key of ARGS_PREVIEW_NUMBER_KEYS) {
+    const value = numberField(projected, key);
+    if (value !== undefined) picked.set(key, value);
+  }
+  const inputPreview = previewInputPreview(projected.inputPreview);
+  if (inputPreview) picked.set('inputPreview', inputPreview);
+  const size = previewSize(projected.size);
+  if (size) picked.set('size', size);
+  const tasks = previewListSubjects(projected, 'tasks', 'subject');
+  if (tasks) {
+    picked.set('tasks', tasks.items);
+    if (tasks.total > tasks.items.length) picked.set('tasksTotal', tasks.total);
+  }
+  const questions = previewListSubjects(projected, 'questions', 'question');
+  if (questions) {
+    picked.set('questions', questions.items);
+    if (questions.total > questions.items.length) picked.set('questionsTotal', questions.total);
+  }
+
+  if (picked.size === 0) return undefined;
+
+  // Enforce the whole-preview budget by dropping lowest-priority fields; the
+  // first picked (highest-priority) field always survives.
+  const keysByPriority = [
+    ...ARGS_PREVIEW_SCALAR_KEYS,
+    ...ARGS_PREVIEW_NUMBER_KEYS,
+    'inputPreview',
+    'size',
+    'tasks',
+    'tasksTotal',
+    'questions',
+    'questionsTotal',
+  ];
+  const result: Record<string, unknown> = {};
+  for (const key of keysByPriority) {
+    const value = picked.get(key);
+    if (value !== undefined) result[key] = value;
+  }
+  const droppable = [...keysByPriority].reverse();
+  while (JSON.stringify(result).length > ARGS_PREVIEW_MAX_CHARS && droppable.length > 1) {
+    const key = droppable.shift()!;
+    if (key === keysByPriority.find((candidate) => result[candidate] !== undefined)) continue;
+    delete result[key];
+  }
+  return result;
 }
 
 // ── Public API: quiet JSON value ─────────────────────────────────────────

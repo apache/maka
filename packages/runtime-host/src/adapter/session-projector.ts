@@ -477,6 +477,10 @@ function projectToolEvent(
       ...(event.operationId ? { operationId: event.operationId } : {}),
       ...(event.activityKind ? { activityKind: event.activityKind } : {}),
       ...(event.displayName ? { displayName: event.displayName } : {}),
+      ...(event.intent ? { intent: event.intent } : {}),
+      ...(event.argsPreview !== undefined
+        ? { argsPreview: structuredClone(event.argsPreview) }
+        : {}),
       ...(event.stepId ? { stepId: event.stepId } : {}),
     };
   }

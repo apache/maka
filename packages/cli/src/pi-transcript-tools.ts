@@ -68,14 +68,19 @@ function toolDurationText(entry: MakaPiToolEntry): string {
  * expand, so the row needs neither
  * a separator glyph nor an expand marker. Short annotations are reserved
  * whole during truncation: a long command can never hide an `exit 1`.
+ *
+ * The `no output` placeholder appears only when the row cannot name the call
+ * (no input summary): once the target says what ran, `● Bash  $ git add -A`
+ * reads complete on its own and the disclaimer is noise.
  */
 function renderCompactToolBlock(entry: MakaPiToolEntry, width: number): string[] {
   const inputSummary = collapseToSingleLine(toolInputSummary(entry));
   const head = `${toolDisc(entry)} ${entry.title ?? entry.toolName}`;
   const annotation = compactAnnotation(entry);
+  const annotationText = annotation.placeholderOnly && inputSummary ? '' : annotation.text;
   return [
     fitLine(
-      assembleCompactToolRow(head, inputSummary, annotation.text, width, annotation.protect),
+      assembleCompactToolRow(head, inputSummary, annotationText, width, annotation.protect),
       width,
     ),
   ];
@@ -89,19 +94,26 @@ function renderCompactToolBlock(entry: MakaPiToolEntry, width: number): string[]
  * `protect` reports whether every part is a fixed shape (durations always
  * are): only protected annotations are reserved whole during truncation.
  */
-function compactAnnotation(entry: MakaPiToolEntry): { text: string; protect: boolean } {
+function compactAnnotation(entry: MakaPiToolEntry): {
+  text: string;
+  protect: boolean;
+  /** True when the annotation is solely the dim `no output` placeholder. */
+  placeholderOnly: boolean;
+} {
   const parts: string[] = [];
   const duration = toolDurationText(entry);
   if (duration) parts.push(duration);
   let protect = true;
+  let placeholderOnly = false;
   if (entry.status !== 'running') {
     const summary = compactToolSummary(entry);
     if (summary && !(summary.placeholder && parts.length > 0)) {
       parts.push(collapseToSingleLine(summary.text));
       protect = summary.protect === true;
+      placeholderOnly = summary.placeholder === true && parts.length === 1;
     }
   }
-  return { text: parts.length > 0 ? `(${parts.join(' · ')})` : '', protect };
+  return { text: parts.length > 0 ? `(${parts.join(' · ')})` : '', protect, placeholderOnly };
 }
 
 /**
@@ -793,7 +805,11 @@ function toolInputSummary(entry: MakaPiToolEntry): string {
   const line = formatToolInvocationLine({ toolName: entry.toolName, args: input }, 'en');
   if (line) return limitText(line, 600);
   // Absolute last resort — still single-line for the compact header contract.
-  return `input: ${limitText(formatUnknownInline(input), 600)}`;
+  // An empty args object carries no information; leave the row bare instead of
+  // printing `input: {}` noise (and let a quiet result keep its placeholder).
+  const inline = formatUnknownInline(input);
+  if (inline === '{}') return '';
+  return `input: ${limitText(inline, 600)}`;
 }
 
 /**
