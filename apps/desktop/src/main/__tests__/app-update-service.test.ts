@@ -136,7 +136,6 @@ describe('AppUpdateService', () => {
 
     assert.equal(updater.autoDownload, true);
     assert.equal(updater.autoInstallOnAppQuit, false);
-    assert.equal(updater.allowPrerelease, false);
     assert.equal(updater.setFeedURLCalls, 0);
 
     service.start();
@@ -149,6 +148,15 @@ describe('AppUpdateService', () => {
 
     service.dispose();
     assert.equal(clock.pending().length, 0);
+  });
+
+  test('preserves electron-updater channel policy derived from the app version', () => {
+    for (const allowPrerelease of [false, true]) {
+      const updater = new FakeUpdater();
+      updater.allowPrerelease = allowPrerelease;
+      createHarness({ updater });
+      assert.equal(updater.allowPrerelease, allowPrerelease);
+    }
   });
 
   test('routes the feed to a loopback generic provider when the test override is set', () => {

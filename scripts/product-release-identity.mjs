@@ -48,7 +48,7 @@ export function parseAsfSourceReferenceTag(tag) {
 }
 
 export function resolveProductManifestIdentity({ rootManifest, desktopManifest, cliManifest }) {
-  const { version } = parseProductReleaseVersion(rootManifest.version);
+  const { version, prerelease } = parseProductReleaseVersion(rootManifest.version);
   for (const [label, manifest] of [
     ['Desktop', desktopManifest],
     ['CLI', cliManifest],
@@ -65,6 +65,7 @@ export function resolveProductManifestIdentity({ rootManifest, desktopManifest, 
 
   return {
     version,
+    isPrerelease: prerelease.length > 0,
     runtimeHostSetupPackage: `maka-agent@${version}`,
     publicCommands: ['maka'],
   };
@@ -159,6 +160,7 @@ export async function readProductReleaseIdentity({
 function githubOutputEntries(identity) {
   return {
     version: identity.version,
+    is_prerelease: identity.isPrerelease,
     tag: identity.tag,
     source_commit: identity.sourceCommit,
     source_reference_tag: identity.sourceReferenceTag,

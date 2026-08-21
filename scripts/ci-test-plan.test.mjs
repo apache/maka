@@ -102,7 +102,6 @@ test('release authority changes select their dedicated contract gate', () => {
     'scripts/product-release-identity.mjs',
     'scripts/product-release-tag.mjs',
     'scripts/product-release.test.mjs',
-    'scripts/release-checksum.mjs',
     'scripts/release-eval-smoke-sitecustomize.py',
     'scripts/release-version.mjs',
     'scripts/release-cli-publication.test.mjs',

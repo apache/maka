@@ -57,7 +57,8 @@ These controls close the check-to-upload and check-to-stage windows. Keep the Re
 5. Confirm `release-identity`, both Desktop matrix entries, `cli-macos-arm64`, `source`, and
    `publish` pass. A skipped or failed required job must prevent Draft creation.
 6. Confirm one Draft named `v<version>` targets the approved source SHA, identifies the ASF source
-   reference in its notes, and contains at least:
+   reference in its notes, is marked as a GitHub prerelease exactly when the product version is a
+   prerelease (stable releases are marked Latest), and contains at least:
    - `Maka-<version>-mac-arm64.dmg` and checksum;
    - `Maka-<version>-win-x64.exe` and checksum;
    - `Maka-<version>-cli-mac-arm64.zip` and checksum;

@@ -34,7 +34,6 @@ import { resolveWorkspaceReleaseFiles } from './release-cli-file-policy.mjs';
 import { isTuiReadyOutput } from './verify-macos-arm64-cli.mjs';
 import { makePtyProbe } from './verify-packaged-app.mjs';
 import { ensureProductTag } from './product-release-tag.mjs';
-import { writeSha256Sidecar } from './release-checksum.mjs';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, '..');
@@ -59,6 +58,7 @@ test('one root version defines every product artifact from one source commit', (
   });
 
   assert.equal(identity.version, '1.2.3');
+  assert.equal(identity.isPrerelease, false);
   assert.equal(identity.tag, 'v1.2.3');
   assert.equal(identity.sourceCommit, 'a'.repeat(40));
   assert.equal(identity.sourceReferenceTag, 'v1.2.3-incubating-rc2');
@@ -77,6 +77,20 @@ test('one root version defines every product artifact from one source commit', (
   assert.equal(identity.exe, 'Maka-1.2.3-win-x64.exe');
   assert.equal(identity.cliArchive, 'Maka-1.2.3-cli-mac-arm64.zip');
   assert.equal(identity.sourceArchive, 'Maka-1.2.3-bundled-git-source.tar.gz');
+});
+
+test('the product identity classifies prereleases once for every publication surface', () => {
+  const version = '1.2.3-beta.2';
+  const identity = resolveProductReleaseIdentity({
+    rootManifest: { ...rootManifest, version },
+    desktopManifest: { version },
+    cliManifest: { version, bin: { maka: './dist/cli.js' } },
+    sha: 'a'.repeat(40),
+    sourceReferenceTag: `v${version}-incubating-rc1`,
+  });
+
+  assert.equal(identity.isPrerelease, true);
+  assert.equal(identity.tag, `v${version}`);
 });
 
 test('Desktop packaging derives the Runtime Host setup package from product manifests', async () => {
@@ -244,24 +258,6 @@ test('product tag creation is exact and idempotent but rejects a conflicting com
     await assert.rejects(
       ensureProductTag({ cwd: source, remote, tag: 'v1.2.3', source: second }),
       /points to .* instead of/u,
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('release artifacts get a checksum sidecar for their final bytes', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-release-checksum-'));
-  try {
-    const artifact = join(root, 'Maka-1.2.3.dmg');
-    await writeFile(artifact, 'final installer\n');
-
-    const checksum = await writeSha256Sidecar(artifact);
-
-    assert.equal(checksum, `${artifact}.sha256`);
-    assert.equal(
-      await readFile(checksum, 'utf8'),
-      'ddc9faf55279d297f3fd55a04de0e66c4d7906512677c2e3a05b657a19ccdf92  Maka-1.2.3.dmg\n',
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -493,22 +489,12 @@ test('one product workflow gates one draft release on every required artifact', 
   }
 
   const desktopStepNames = jobs.desktop.steps.map((step) => step.name);
-  const checksumStep = jobs.desktop.steps.find(
-    (step) => step.name === 'Hash the final Desktop installer',
-  );
-  assert.ok(checksumStep);
-  assert.ok(
-    desktopStepNames.indexOf('Hash the final Desktop installer') >
-      desktopStepNames.indexOf('Verify the final DMG'),
-  );
-  assert.ok(
-    desktopStepNames.indexOf('Hash the final Desktop installer') >
-      desktopStepNames.indexOf('Exercise pinned Windows upgrade and uninstall'),
-  );
-  assert.ok(
-    desktopStepNames.indexOf('Hash the final Desktop installer') <
-      desktopStepNames.indexOf('Upload the verified release assets'),
-  );
+  const uploadIndex = desktopStepNames.indexOf('Upload the verified release assets');
+  assert.ok(uploadIndex >= 0);
+  for (const verifier of ['Verify the final DMG', 'Verify the Windows release']) {
+    const verifierIndex = desktopStepNames.indexOf(verifier);
+    assert.ok(verifierIndex >= 0 && verifierIndex < uploadIndex);
+  }
 
   const commands = Object.values(jobs)
     .flatMap((job) => job.steps ?? [])
@@ -528,6 +514,20 @@ test('one product workflow gates one draft release on every required artifact', 
   const publishRelease = jobs.publish.steps.find(
     (step) => step.name === 'Create or update the draft GitHub Release',
   ).run;
+  assert.equal(
+    jobs['release-identity'].outputs.is_prerelease,
+    '${{ steps.identity.outputs.is_prerelease }}',
+  );
+  assert.equal(
+    jobs.publish.steps.find((step) => step.name === 'Create or update the draft GitHub Release').env
+      .IS_PRERELEASE,
+    '${{ needs.release-identity.outputs.is_prerelease }}',
+  );
+  assert.match(publishRelease, /create_classification=\(--latest\)/u);
+  assert.match(publishRelease, /edit_classification=\(--prerelease=false --latest\)/u);
+  assert.match(publishRelease, /--prerelease --latest=false/u);
+  assert.match(publishRelease, /--prerelease=false/u);
+  assert.match(publishRelease, /--json isPrerelease/u);
   assert.doesNotMatch(publishRelease, /gh release delete-asset/u);
   assert.match(publishRelease, /gh release download/u);
   assert.match(publishRelease, /cmp -s/u);

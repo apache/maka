@@ -38,7 +38,6 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/product-release-identity.mjs',
   'scripts/product-release-tag.mjs',
   'scripts/product-release.test.mjs',
-  'scripts/release-checksum.mjs',
   'scripts/release-eval-smoke-sitecustomize.py',
   'scripts/release-version.mjs',
   'scripts/verify-macos-arm64-cli.mjs',

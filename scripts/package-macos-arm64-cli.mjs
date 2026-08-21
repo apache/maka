@@ -845,14 +845,14 @@ export async function packageMacosArm64Cli({
     const officialNode = await extractOfficialNodeRuntime(
       stagingRoot,
       resolve(nodeArchivePath),
-      toolchain,
+      identity,
       { env, run },
     );
     const officialNodeEntitlements = await inspectReleaseToolchain({
       execPath: officialNode.execPath,
       env,
       inspect,
-      toolchain,
+      toolchain: identity,
     });
     const nodeEntitlements = distributionNodeEntitlements(officialNodeEntitlements);
 

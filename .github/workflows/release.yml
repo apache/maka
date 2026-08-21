@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       version: ${{ steps.identity.outputs.version }}
+      is_prerelease: ${{ steps.identity.outputs.is_prerelease }}
       tag: ${{ steps.identity.outputs.tag }}
       source_commit: ${{ steps.identity.outputs.source_commit }}
       source_reference_tag: ${{ steps.identity.outputs.source_reference_tag }}
@@ -207,11 +208,6 @@ jobs:
           npm run verify:windows-autoupdate -- \
             "apps/desktop/release/${{ needs.release-identity.outputs.exe }}" \
             apps/desktop/release-autoupdate-next
-
-      - name: Hash the final Desktop installer
-        env:
-          INSTALLER: apps/desktop/release/${{ matrix.platform == 'macos' && needs.release-identity.outputs.dmg || needs.release-identity.outputs.exe }}
-        run: node scripts/release-checksum.mjs "$INSTALLER"
 
       - name: Upload the verified release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -440,6 +436,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.release-identity.outputs.version }}
+          IS_PRERELEASE: ${{ needs.release-identity.outputs.is_prerelease }}
           TAG: ${{ needs.release-identity.outputs.tag }}
           SOURCE_COMMIT: ${{ needs.release-identity.outputs.source_commit }}
           SOURCE_REFERENCE_TAG: ${{ needs.release-identity.outputs.source_reference_tag }}
@@ -454,6 +451,16 @@ jobs:
 
           Known limitation: Computer Use is not included in this release."
 
+          create_classification=(--latest)
+          edit_classification=(--prerelease=false --latest)
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            create_classification=(--prerelease --latest=false)
+            edit_classification=(--prerelease --latest=false)
+          elif [[ "$IS_PRERELEASE" != "false" ]]; then
+            echo "Product prerelease classification must be true or false; found $IS_PRERELEASE" >&2
+            exit 1
+          fi
+
           if gh release view "$TAG" >/dev/null 2>&1; then
             is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
             if [[ "$is_draft" != "true" ]]; then
@@ -464,6 +471,7 @@ jobs:
             gh release create "$TAG" \
               --draft \
               --verify-tag \
+              "${create_classification[@]}" \
               --title "Maka ${VERSION}" \
               --notes "$notes"
           fi
@@ -472,7 +480,15 @@ jobs:
             echo "Release ${TAG} was published while recovery was running." >&2
             exit 1
           fi
-          gh release edit "$TAG" --title "Maka ${VERSION}" --notes "$notes"
+          gh release edit "$TAG" \
+            "${edit_classification[@]}" \
+            --title "Maka ${VERSION}" \
+            --notes "$notes"
+          actual_prerelease="$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)"
+          if [[ "$actual_prerelease" != "$IS_PRERELEASE" ]]; then
+            echo "Release ${TAG} prerelease state is ${actual_prerelease}, expected ${IS_PRERELEASE}." >&2
+            exit 1
+          fi
           asset_names="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
           declare -A expected_assets=()
           declare -A existing_assets=()
@@ -502,8 +518,9 @@ jobs:
               missing_assets+=("release-assets/$asset")
             fi
           done
-          if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != "true" ]]; then
-            echo "Release ${TAG} was published while assets were checked." >&2
+          release_state="$(gh release view "$TAG" --json isDraft,isPrerelease --jq '[.isDraft, .isPrerelease] | map(tostring) | join(" ")')"
+          if [[ "$release_state" != "true $IS_PRERELEASE" ]]; then
+            echo "Release ${TAG} changed state while assets were checked: ${release_state}." >&2
             exit 1
           fi
           if (( ${#missing_assets[@]} > 0 )); then

@@ -296,7 +296,6 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
 
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = false;
-  updater.allowPrerelease = false;
   updater.logger = null;
   const testFeed = resolveUpdateFeedOverride(deps.testFeedUrl);
   // Production reads electron-builder's packaged app-update.yml. Only the
