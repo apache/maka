@@ -13,6 +13,12 @@ const CONTEXT_OVERFLOW_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'request_too_large', // Anthropic byte-size overflow (HTTP 413): error.type
 ]);
 
+/** Provider codes meaning the model is temporarily at capacity. */
+const PROVIDER_CAPACITY_CODES: ReadonlySet<string> = new Set([
+  'resource-exhausted',
+  'resource_exhausted',
+]);
+
 /**
  * A provider failure normalized into classification evidence. classifyError's
  * real input domain is NOT just Error instances: a request-level failure is
@@ -119,6 +125,13 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
   const status = Number(evidence.statusCode || evidence.code);
   const errorClass = classifyProviderFacts(facts);
   const retryAfterMs = parseRetryAfterMs(facts.responseHeaders ?? {});
+  if (errorClass === 'ProviderCapacity') {
+    if (retryAfterMs === null) return { retryable: false };
+    return {
+      retryable: true,
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+    };
+  }
   if (errorClass === 'RateLimit' || status === 429) {
     if (retryAfterMs === undefined || retryAfterMs === null) return { retryable: false };
     return { retryable: true, retryAfterMs };
@@ -280,6 +293,7 @@ const DURABLE_PROVIDER_ERROR_CLASSES: ReadonlySet<string> = new Set([
   'Auth',
   'ContextLength',
   'Network',
+  'ProviderCapacity',
   'ProviderBilling',
   'ProviderUnavailable',
   'RateLimit',
@@ -587,6 +601,12 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   if (statusCode === '429' || code === '429') return 'RateLimit';
   if (statusCode === '401' || statusCode === '403' || code === '401' || code === '403')
     return 'Auth';
+  if (
+    PROVIDER_CAPACITY_CODES.has(code) ||
+    structuredCodes.some((c) => PROVIDER_CAPACITY_CODES.has(c))
+  ) {
+    return 'ProviderCapacity';
+  }
   // Structured provider evidence: the parsed error JSON's code/type is the
   // only unconditional signal for a context overflow.
   if (structuredCodes.some((c) => CONTEXT_OVERFLOW_PROVIDER_CODES.has(c))) return 'ContextLength';
@@ -623,6 +643,8 @@ export function errorPresentationFromClass(errorClass: string): {
       return { reason: 'auth', message: 'Authentication failed' };
     case 'ProviderBilling':
       return { reason: 'provider_billing', message: 'Provider billing required' };
+    case 'ProviderCapacity':
+      return { reason: 'provider_capacity', message: 'Model service is temporarily at capacity' };
     case 'ProviderUnavailable':
       return { reason: 'provider_unavailable', message: 'Provider returned an error' };
     case 'RateLimit':
