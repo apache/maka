@@ -146,16 +146,38 @@ async function startFeedServer(files) {
   };
 }
 
-async function readInstalledProductVersion(executablePath, { run = runCommand } = {}) {
+export async function waitForInstalledProductVersion(
+  executablePath,
+  {
+    run = runCommand,
+    timeoutMs = 60_000,
+    probeTimeoutMs = 10_000,
+    pollIntervalMs = 1_000,
+    sleep = delay,
+  } = {},
+) {
   const script = `(Get-Item ${powerShellLiteral(executablePath)}).VersionInfo.ProductVersion`;
-  const { stdout } = await run(
-    'powershell',
-    ['-NoProfile', '-NonInteractive', '-Command', script],
-    {
-      timeoutMs: 30_000,
-    },
-  );
-  return stdout;
+  const deadline = Date.now() + timeoutMs;
+  let lastProbeError;
+  for (;;) {
+    try {
+      const { stdout } = await run(
+        'powershell',
+        ['-NoProfile', '-NonInteractive', '-Command', script],
+        { timeoutMs: Math.max(1, Math.min(probeTimeoutMs, deadline - Date.now())) },
+      );
+      return stdout;
+    } catch (error) {
+      lastProbeError = error;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Could not read the installed ProductVersion within ${timeoutMs}ms: ${lastProbeError.message}`,
+        { cause: lastProbeError },
+      );
+    }
+    await sleep(pollIntervalMs);
+  }
 }
 
 /**
@@ -407,7 +429,7 @@ export async function verifyWindowsAutoupdate(
     const relaunched = await waitForInstalledProcessAppearance(installDirectory, executableName, {
       timeoutMs: 120_000,
     });
-    const productVersion = await readInstalledProductVersion(installedExecutable, { run });
+    const productVersion = await waitForInstalledProductVersion(installedExecutable, { run });
     try {
       assertWindowsProductVersion(productVersion, nextVersion);
     } catch (error) {

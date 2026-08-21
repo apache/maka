@@ -13,6 +13,7 @@ import {
   waitForDevToolsPort,
   waitForUsableRenderer,
 } from './verify-packaged-app.mjs';
+import { waitForInstalledProductVersion } from './verify-windows-autoupdate.mjs';
 import {
   completeInstalledApplicationUninstall,
   listInstalledProcesses,
@@ -351,6 +352,26 @@ describe('waitForInstalledProcessAppearance', () => {
         }),
       /did not appear among installed processes within 150ms\.\nlast probe error: wmi stalled/,
     );
+  });
+});
+
+describe('waitForInstalledProductVersion', () => {
+  it('retries a stalled PowerShell read within the outer deadline', async () => {
+    const observedTimeouts = [];
+    const results = [new Error('powershell stalled'), { stdout: '0.1.12', stderr: '' }];
+    const version = await waitForInstalledProductVersion('C:/installed/Maka.exe', {
+      run: async (_command, _args, options) => {
+        observedTimeouts.push(options.timeoutMs);
+        const result = results.shift();
+        if (result instanceof Error) throw result;
+        return result;
+      },
+      timeoutMs: 60_000,
+      pollIntervalMs: 1,
+    });
+    assert.equal(version, '0.1.12');
+    assert.equal(observedTimeouts.length, 2);
+    assert.ok(observedTimeouts.every((timeout) => timeout > 0 && timeout <= 10_000));
   });
 });
 
