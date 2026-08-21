@@ -174,6 +174,37 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('does not republish idempotent model-usage mutations', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      const changed: string[] = [];
+      const unsubscribe = stores.subscribeSessionUsageChanges((sessionId) =>
+        changed.push(sessionId),
+      );
+      try {
+        const record = modelCallAttempt('session-idempotent');
+        await stores.modelCalls.recordModelCallAttempt(record);
+        await stores.modelCalls.recordModelCallAttempt(record);
+        await stores.modelCalls.markRunPendingReprojection('session-idempotent', 'run-1');
+        await stores.modelCalls.markRunPendingReprojection('session-idempotent', 'run-1');
+        await stores.modelCalls.clearPendingReprojection('session-idempotent', 'run-1');
+        await stores.modelCalls.clearPendingReprojection('session-idempotent', 'run-1');
+
+        assert.deepEqual(changed, [
+          'session-idempotent',
+          'session-idempotent',
+          'session-idempotent',
+        ]);
+      } finally {
+        unsubscribe();
+        await stores.close();
+        await owner.close();
+      }
+    });
+  });
+
   test('classifies a renamed or replaced live root as a draining persistence failure', {
     skip:
       process.platform === 'win32'

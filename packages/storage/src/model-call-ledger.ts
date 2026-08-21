@@ -62,15 +62,17 @@ export interface PendingReprojection {
 }
 
 export interface ModelCallLedgerWriter extends ModelCallLedgerReader {
-  /** Projects one attempt already committed to the authority. Idempotent. */
-  record(attempt: ModelCallAttempt): Promise<void>;
+  /** Projects one attempt already committed to the authority. True when stored state changed. */
+  record(attempt: ModelCallAttempt): Promise<boolean>;
   /**
    * Records that a run's committed attempts may not be fully projected here.
    * Best-effort: losing the marker costs a targeted repair, not the records.
+   * Returns true only when this call created the marker.
    */
-  markRunPendingReprojection(sessionId: string, runId: string): Promise<void>;
+  markRunPendingReprojection(sessionId: string, runId: string): Promise<boolean>;
   pendingReprojections(sessionId?: string): PendingReprojection[];
-  clearPendingReprojection(sessionId: string, runId: string): Promise<void>;
+  /** Clears one marker, returning true only when it existed. */
+  clearPendingReprojection(sessionId: string, runId: string): Promise<boolean>;
 }
 
 export interface ModelCallLedger extends ModelCallLedgerWriter {
@@ -109,7 +111,7 @@ class SqliteModelCallLedger implements ModelCallLedger {
     this.#lease = acquireOperationalStateDatabase(workspaceRoot);
   }
 
-  record(attempt: ModelCallAttempt): Promise<void> {
+  record(attempt: ModelCallAttempt): Promise<boolean> {
     let admitted: ModelCallAttempt;
     try {
       admitted = decodeModelCallAttempt(attempt);
@@ -121,7 +123,7 @@ class SqliteModelCallLedger implements ModelCallLedger {
     // `finish` settles the same attempt, so the settled record must replace the
     // provisional one rather than duplicate it.
     return this.write(() => {
-      this.#lease.database
+      const changed = this.#lease.database
         .prepare(`
           INSERT INTO usage_model_call_attempts(attempt_id, completed_at, record_json, session_id)
           VALUES (?, ?, ?, ?)
@@ -129,38 +131,46 @@ class SqliteModelCallLedger implements ModelCallLedger {
             completed_at = excluded.completed_at,
             record_json = excluded.record_json,
             session_id = excluded.session_id
+          WHERE completed_at IS NOT excluded.completed_at
+             OR record_json IS NOT excluded.record_json
+             OR session_id IS NOT excluded.session_id
         `)
         .run(
           admitted.attemptId,
           admitted.completedAt,
           JSON.stringify(admitted),
           admitted.sessionId,
-        );
+        ).changes;
+      return changed > 0;
     });
   }
 
-  private write(operation: () => void): Promise<void> {
+  private write<T>(operation: () => T): Promise<T> {
     const accepted = this.#queue.then(() => {
       try {
-        this.#lease.transaction('write', operation);
+        return this.#lease.transaction('write', operation);
       } catch (cause) {
         throw new ModelCallLedgerPublicationError(false, { cause });
       }
     });
-    this.#queue = accepted.catch(() => undefined);
+    this.#queue = accepted.then(
+      () => undefined,
+      () => undefined,
+    );
     return accepted;
   }
 
-  markRunPendingReprojection(sessionId: string, runId: string): Promise<void> {
+  markRunPendingReprojection(sessionId: string, runId: string): Promise<boolean> {
     if (this.#state !== 'open') return Promise.reject(new ModelCallLedgerClosedError());
     return this.write(() => {
-      this.#lease.database
+      const changed = this.#lease.database
         .prepare(`
           INSERT INTO usage_model_call_reprojection(session_id, run_id, marked_at)
           VALUES (?, ?, ?)
           ON CONFLICT(session_id, run_id) DO NOTHING
         `)
-        .run(sessionId, runId, Date.now());
+        .run(sessionId, runId, Date.now()).changes;
+      return changed > 0;
     });
   }
 
@@ -185,12 +195,13 @@ class SqliteModelCallLedger implements ModelCallLedger {
     }));
   }
 
-  clearPendingReprojection(sessionId: string, runId: string): Promise<void> {
+  clearPendingReprojection(sessionId: string, runId: string): Promise<boolean> {
     if (this.#state !== 'open') return Promise.reject(new ModelCallLedgerClosedError());
     return this.write(() => {
-      this.#lease.database
+      const changed = this.#lease.database
         .prepare('DELETE FROM usage_model_call_reprojection WHERE session_id = ? AND run_id = ?')
-        .run(sessionId, runId);
+        .run(sessionId, runId).changes;
+      return changed > 0;
     });
   }
 
@@ -247,9 +258,9 @@ class SqliteModelCallLedger implements ModelCallLedger {
  * can pass the store directly, without either shape leaking into the other.
  */
 export interface ModelCallProjectionTarget {
-  record(attempt: ModelCallAttempt): Promise<void>;
+  record(attempt: ModelCallAttempt): Promise<unknown>;
   pending(): PendingReprojection[] | Promise<PendingReprojection[]>;
-  clear(sessionId: string, runId: string): Promise<void>;
+  clear(sessionId: string, runId: string): Promise<unknown>;
 }
 
 export interface RepairModelCallProjectionsInput {

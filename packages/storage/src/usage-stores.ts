@@ -361,6 +361,13 @@ function createWriterFacade(
       if (sessionId) publishSessionUsageChange(sessionId);
       return result;
     });
+  const admitSessionUsageChange = (
+    sessionId: string,
+    operation: () => Promise<boolean>,
+  ): Promise<void> =>
+    admit(async () => {
+      if (await run(operation)) publishSessionUsageChange(sessionId);
+    });
   const read = <T>(operation: () => T): Promise<T> => {
     assertOpen();
     return run(operation);
@@ -434,14 +441,14 @@ function createWriterFacade(
     modelCalls: {
       modelCallAttempts: (range, sessionId) => read(() => modelCalls.read(range, sessionId)),
       recordModelCallAttempt: (attempt) =>
-        admitSessionUsageMutation(attempt.sessionId, () => modelCalls.record(attempt)),
+        admitSessionUsageChange(attempt.sessionId, () => modelCalls.record(attempt)),
       markRunPendingReprojection: (sessionId, runId) =>
-        admitSessionUsageMutation(sessionId, () =>
+        admitSessionUsageChange(sessionId, () =>
           modelCalls.markRunPendingReprojection(sessionId, runId),
         ),
       pendingReprojections: (sessionId) => read(() => modelCalls.pendingReprojections(sessionId)),
       clearPendingReprojection: (sessionId, runId) =>
-        admitSessionUsageMutation(sessionId, () =>
+        admitSessionUsageChange(sessionId, () =>
           modelCalls.clearPendingReprojection(sessionId, runId),
         ),
     },
