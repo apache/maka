@@ -32,6 +32,7 @@ import {
 } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY } from '@maka/runtime-host/operator';
 
 const PACKAGE_NAME = 'maka-agent';
 
@@ -301,7 +302,7 @@ async function writeOperatorLauncher(
     '  shift',
     `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host access "$@"`,
     'fi',
-    `exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service "$@" --client-data-root ${quotePosix(clientDataRoot)}`,
+    `exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service "$@" --client-data-root ${quotePosix(clientDataRoot)} --operator-capability ${quotePosix(RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY)}`,
     '',
   ].join('\n');
   try {

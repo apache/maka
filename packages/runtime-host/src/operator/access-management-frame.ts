@@ -31,18 +31,20 @@ const CREDENTIAL_METADATA_SCHEMA = z
   })
   .strict();
 
-const ACCESS_MANAGEMENT_FRAME_SCHEMA = z.discriminatedUnion('kind', [
+const ACCESS_MANAGEMENT_FRAME_SCHEMA = z.union([
   z
     .object({
       schemaVersion: z.literal(1),
-      kind: z.literal('list'),
+      kind: z.literal('result'),
+      action: z.literal('list'),
       credentials: z.array(CREDENTIAL_METADATA_SCHEMA),
     })
     .strict(),
   z
     .object({
       schemaVersion: z.literal(1),
-      kind: z.literal('prepared'),
+      kind: z.literal('result'),
+      action: z.literal('prepare'),
       credential: boundedString(CREDENTIAL_MAX_BYTES),
       credentials: z.array(CREDENTIAL_METADATA_SCHEMA),
     })
@@ -50,7 +52,8 @@ const ACCESS_MANAGEMENT_FRAME_SCHEMA = z.discriminatedUnion('kind', [
   z
     .object({
       schemaVersion: z.literal(1),
-      kind: z.literal('revoked'),
+      kind: z.literal('result'),
+      action: z.literal('revoke'),
       credentialId: boundedString(128),
       revoked: z.boolean(),
       credentials: z.array(CREDENTIAL_METADATA_SCHEMA),

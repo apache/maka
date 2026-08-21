@@ -108,7 +108,8 @@ export async function runRuntimeHostAccessListCli(
       framed
         ? encodeRuntimeHostAccessManagementFrame({
             schemaVersion: 1,
-            kind: 'list',
+            kind: 'result',
+            action: 'list',
             credentials: mutableCredentialMetadata(result.credentials),
           })
         : `${JSON.stringify(result, null, 2)}\n`,
@@ -123,7 +124,6 @@ export async function runRuntimeHostAccessListCli(
 
 export async function runRuntimeHostAccessPrepareCli(
   options: RuntimeHostAccessIssueOptions,
-  framed = false,
 ): Promise<number> {
   try {
     const prepared = await prepareRuntimeHostAccessCredential(options);
@@ -133,22 +133,17 @@ export async function runRuntimeHostAccessPrepareCli(
     ) {
       throw new Error('Prepared Runtime Host credential metadata is unavailable');
     }
-    if (framed) {
-      process.stdout.write(
-        encodeRuntimeHostAccessManagementFrame({
-          schemaVersion: 1,
-          kind: 'prepared',
-          credential: prepared.credential,
-          credentials: mutableCredentialMetadata(listed.credentials),
-        }),
-      );
-    } else {
-      const { rootId: _rootId, ...output } = prepared;
-      process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    }
+    process.stdout.write(
+      encodeRuntimeHostAccessManagementFrame({
+        schemaVersion: 1,
+        kind: 'result',
+        action: 'prepare',
+        credential: prepared.credential,
+        credentials: mutableCredentialMetadata(listed.credentials),
+      }),
+    );
     return 0;
   } catch (error) {
-    if (!framed) throw error;
     writeAccessManagementError('prepare', error);
     return 1;
   }
@@ -252,7 +247,8 @@ export async function runRuntimeHostAccessRevokeCli(
       framed
         ? encodeRuntimeHostAccessManagementFrame({
             schemaVersion: 1,
-            kind: 'revoked',
+            kind: 'result',
+            action: 'revoke',
             ...result,
             credentials: mutableCredentialMetadata(listed.credentials),
           })

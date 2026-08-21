@@ -45,7 +45,6 @@ export function RuntimeHostManagementDialog(props: {
   const [error, setError] = useState<string>();
   const [uninstalledRoot, setUninstalledRoot] = useState<string>();
   const [confirmingUninstall, setConfirmingUninstall] = useState(false);
-  const [view, setView] = useState<'service' | 'access'>('service');
   const [access, setAccess] = useState<DesktopRuntimeHostAccessSnapshot>();
   const [revokeTarget, setRevokeTarget] = useState<DesktopRuntimeHostAccessCredential>();
   const logsRef = useRef<HTMLPreElement>(null);
@@ -58,7 +57,6 @@ export function RuntimeHostManagementDialog(props: {
     setError(undefined);
     setUninstalledRoot(undefined);
     setConfirmingUninstall(false);
-    setView('service');
     setAccess(undefined);
     setRevokeTarget(undefined);
     setLoading(true);
@@ -118,7 +116,6 @@ export function RuntimeHostManagementDialog(props: {
     setError(undefined);
     try {
       setAccess(await window.maka.runtimeHostManagement.listCredentials(profile.id));
-      setView('access');
     } catch (failure) {
       const message = settingsActionErrorMessage(failure, locale);
       setError(message);
@@ -210,7 +207,7 @@ export function RuntimeHostManagementDialog(props: {
                   title={copy.uninstallRetained(uninstalledRoot)}
                 />
               ) : null}
-              {view === 'service' && service ? (
+              {!access && service ? (
                 <>
                   <dl className="settingsRuntimeHostManagementFacts">
                     <Fact label={copy.serviceStatus} value={copy.serviceState[service.state]} />
@@ -250,7 +247,7 @@ export function RuntimeHostManagementDialog(props: {
                   ) : null}
                 </>
               ) : null}
-              {view === 'access' && access ? (
+              {access ? (
                 <div className="settingsRuntimeHostAccess">
                   <Text type="body" weight="semibold">{copy.accessTitle}</Text>
                   {revokeTarget ? (
@@ -350,14 +347,15 @@ export function RuntimeHostManagementDialog(props: {
                     }}
                   />
                 </>
-              ) : view === 'access' ? (
+              ) : access ? (
                 <>
                   <Button
                     variant="secondary"
                     label={copy.back}
                     isDisabled={loading}
                     onClick={() => {
-                      setView('service');
+                      setAccess(undefined);
+                      setRevokeTarget(undefined);
                       setError(undefined);
                     }}
                   />
@@ -384,7 +382,7 @@ export function RuntimeHostManagementDialog(props: {
                       clickAction={() => run('install')}
                     />
                   ) : null}
-                  {profile && serviceInstalled && !uninstalled ? (
+                  {profile && serviceInstalled && result?.accessManagementAvailable && !uninstalled ? (
                     <Button
                       variant="secondary"
                       label={copy.manageAccess}

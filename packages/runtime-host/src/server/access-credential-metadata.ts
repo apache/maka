@@ -1,7 +1,8 @@
 import { join } from 'node:path';
 import {
+  discoverMarkedStorageRoot,
   resolveExistingStorageRootControlDirectory,
-  resolveStorageRoot,
+  resolveExistingStorageRoot,
 } from '@maka/storage/root-authority';
 import type { OperationKey } from '../protocol/index.js';
 import { ACCESS_FILE_NAME, readAccessCredentialFile } from './access-credential-store.js';
@@ -23,10 +24,13 @@ export async function readRuntimeHostAccessCredentialMetadata(
   rootPath: string,
   expectedRootId?: string,
 ): Promise<{ readonly credentials: readonly RuntimeHostAccessCredentialMetadata[] }> {
-  const capability = await resolveStorageRoot({ path: rootPath, kind: 'interactive' });
-  if (expectedRootId && capability.rootId !== expectedRootId) {
-    throw new Error('Runtime Host service is bound to a different State Root');
-  }
+  const capability = expectedRootId
+    ? await resolveExistingStorageRoot({
+        path: rootPath,
+        kind: 'interactive',
+        expectedRootId,
+      })
+    : await discoverMarkedStorageRoot({ path: rootPath });
   const { controlDirectory } = await resolveExistingStorageRootControlDirectory(capability);
   const file = await readAccessCredentialFile(join(controlDirectory, ACCESS_FILE_NAME));
   const now = Date.now();

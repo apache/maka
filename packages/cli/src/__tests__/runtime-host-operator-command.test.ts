@@ -174,6 +174,17 @@ describe('Runtime Host operator commands', () => {
         preset: 'desktop-client',
       },
     );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'access',
+        'prepare',
+        '--principal',
+        'desktop:stable-client',
+        '--preset',
+        'desktop-client',
+      ]).kind,
+      'error',
+    );
     assert.deepEqual(parseRuntimeHostCommand(['access', 'list', '--framed']), {
       kind: 'runtime-host-access-list',
       framed: true,

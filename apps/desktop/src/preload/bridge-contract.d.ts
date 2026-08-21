@@ -394,10 +394,13 @@ export type DesktopRuntimeHostManagementAction =
 export type DesktopRuntimeHostManagementResult = Extract<
   RuntimeHostServiceManagementFrame,
   { kind: 'result' }
->;
+> & {
+  readonly accessManagementAvailable: boolean;
+};
 
 export type DesktopRuntimeHostManagementResponse =
-  | RuntimeHostServiceManagementFrame
+  | DesktopRuntimeHostManagementResult
+  | Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }>
   | {
       readonly kind: 'uninstalled';
       readonly retainedStateRoot: string;

@@ -124,7 +124,6 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
     `  ${cliCommand} runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>`,
     `  ${cliCommand} runtime-host access list`,
-    `  ${cliCommand} runtime-host access prepare --principal <id> --preset <desktop-client|terminal-client>`,
     `  ${cliCommand} runtime-host access issue --kind capability-provider --principal <id>`,
     `  ${cliCommand} runtime-host access revoke --credential <id>`,
     `  ${cliCommand} runtime-host project list [--root <path>]`,
@@ -260,6 +259,9 @@ export async function runMakaCli(
         action: command.action,
         json: command.json,
         framed: command.framed ?? false,
+        ...(command.operatorCapabilities
+          ? { operatorCapabilities: command.operatorCapabilities }
+          : {}),
         clientDataRoot: serviceDataRoots.clientDataRoot,
         defaultRootPath: serviceDataRoots.workspaceRoot,
         nodePath: process.execPath,
@@ -289,7 +291,7 @@ export async function runMakaCli(
         ...(command.preset ? { preset: command.preset } : {}),
       };
       return command.mode === 'prepare'
-        ? runRuntimeHostAccessPrepareCli(accessInput, command.framed)
+        ? runRuntimeHostAccessPrepareCli(accessInput)
         : runRuntimeHostAccessIssueCli(accessInput);
     }
     case 'runtime-host-access-list': {

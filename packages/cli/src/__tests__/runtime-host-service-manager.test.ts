@@ -88,6 +88,8 @@ describe('managed Runtime Host service', () => {
         'service',
         'status',
         '--framed',
+        '--operator-capability',
+        'access-management-v1',
         '--expected-service-id',
         'b'.repeat(64),
         '--expected-root-path',
@@ -100,6 +102,7 @@ describe('managed Runtime Host service', () => {
         action: 'status',
         json: false,
         framed: true,
+        operatorCapabilities: ['access-management-v1'],
         expectedTarget: {
           serviceId: 'b'.repeat(64),
           rootPath: '/srv/maka',
@@ -515,6 +518,7 @@ describe('managed Runtime Host service', () => {
         action: 'status',
         json: false,
         framed: true,
+        operatorCapabilities: ['access-management-v1'],
         clientDataRoot: '/config/Maka',
         defaultRootPath: '/config/Maka/workspaces/default',
         nodePath: '/usr/bin/node',
@@ -554,6 +558,7 @@ describe('managed Runtime Host service', () => {
     assert.equal(frame?.kind, 'result');
     if (frame?.kind !== 'result') assert.fail('Expected a service result frame');
     assert.equal(frame.service.installedVersion, '1.2.3');
+    assert.deepEqual(frame.operatorCapabilities, ['access-management-v1']);
     assert.equal(frame.service.stateRoot, '/srv/maka');
     assert.doesNotMatch(JSON.stringify(frame), /secret/u);
   });
