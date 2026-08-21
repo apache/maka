@@ -125,9 +125,7 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
     item.relayModelProfiles === undefined
       ? {}
       : nonEmptyRelayProfiles(item.relayModelProfiles, enabledModelIds);
-  if (profiles.relayModelProfiles !== undefined) {
-    rejectForeignProfiles(providerType);
-  }
+  assertProfileFieldsFitProvider(profiles.relayModelProfiles, providerType);
   return {
     slug: decodeConnectionSlug(item.slug),
     name: decodeConnectionName(item.name),
@@ -190,11 +188,7 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
 ): ConnectionCatalogEntryUpdate {
   const update = normalizeConnectionCatalogEntryUpdate(value);
   const baseUrl = normalizeCatalogConnectionBaseUrl(update.baseUrl, providerType);
-  // A `null` (clear stale data) or absent (untouched) instruction is legal on
-  // any provider; only a non-empty table is relay-only.
-  if (update.relayModelProfiles !== undefined && update.relayModelProfiles !== null) {
-    rejectForeignProfiles(providerType);
-  }
+  assertProfileFieldsFitProvider(update.relayModelProfiles, providerType);
   return {
     name: update.name,
     ...(baseUrl === undefined ? {} : { baseUrl }),
@@ -207,15 +201,6 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
       ? {}
       : { requestBodyOverlay: update.requestBodyOverlay }),
   };
-}
-
-// Relay profiles are a custom OpenAI relay feature: on any other provider the
-// metadata chain is the truth, and a table here would either sit as dead
-// state or silently shadow metadata for the ungated read seams.
-function rejectForeignProfiles(providerType: ProviderType): void {
-  if (!isRelayProviderType(providerType)) {
-    throw domainError('relay model profiles are only supported for OpenAI-compatible connections');
-  }
 }
 
 /**
@@ -300,6 +285,41 @@ export function decodeRelayModelProfilesTable(
     parsed.push([modelId, declared]);
   }
   return Object.fromEntries(parsed);
+}
+
+/**
+ * Which declarations a provider can actually carry.
+ *
+ * `contextWindow` and `vision` state facts about a model. A user has them when
+ * Maka does not — a model newer than the bundled snapshot, or any model on a
+ * provider with no model-list endpoint — and that need is not confined to
+ * relays (#1584), so they are legal everywhere.
+ *
+ * `thinkingLevels` and `serviceTier` name a wire feature instead. They encode
+ * into request shapes only the OpenAI-compatible relays accept —
+ * `reasoning_effort` tiers and priority processing — and
+ * `supportsRelayFastServiceTier` gates the read side by provider for the same
+ * reason. A table carrying them on another provider describes a request Maka
+ * would never send: dead state at best, and on a provider whose wire rejects
+ * the unknown value, a 400 the user cannot explain.
+ */
+function assertProfileFieldsFitProvider(
+  profiles: Readonly<Record<string, RelayModelProfile>> | null | undefined,
+  providerType: ProviderType,
+): void {
+  if (!profiles || isRelayProviderType(providerType)) return;
+  for (const [modelId, profile] of Object.entries(profiles)) {
+    if (profile.thinkingLevels !== undefined) {
+      throw domainError(
+        `declared thinking levels for ${modelId} require an OpenAI-compatible connection`,
+      );
+    }
+    if (profile.serviceTier !== undefined) {
+      throw domainError(
+        `declared service tier for ${modelId} requires an OpenAI-compatible connection`,
+      );
+    }
+  }
 }
 
 // An empty table is not a state worth storing: drafts/canonical entries omit

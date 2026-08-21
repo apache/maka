@@ -304,36 +304,78 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     enabledModelIds: [],
   });
 
-  // Profiles are a relay-only feature: non-empty tables on other providers
-  // are rejected at the write seam (null/absent stay legal for cleanup).
-  assert.throws(
-    () =>
-      normalizeCreateCatalogConnectionInput({
-        expectedCatalogRevision: 0,
-        connection: {
-          slug: 'not-a-relay',
-          name: 'Other',
-          providerType: 'openai',
-          enabled: true,
-          enabledModelIds: ['relay-reasoner'],
-          relayModelProfiles: table,
-        },
-      }),
-    RuntimePolicyDomainDecodeError,
+  // The write seam splits the table by FIELD, not by provider (#1584).
+  // `contextWindow` and `vision` state facts about a model, and a user has
+  // them when Maka does not — a model newer than the bundled snapshot, or any
+  // model on a provider with no model-list endpoint — so they are legal
+  // everywhere.
+  const facts = { 'relay-reasoner': { vision: true, contextWindow: 128_000 } };
+  assert.deepEqual(
+    normalizeCreateCatalogConnectionInput({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'not-a-relay',
+        name: 'Other',
+        providerType: 'openai',
+        enabled: true,
+        enabledModelIds: ['relay-reasoner'],
+        relayModelProfiles: facts,
+      },
+    }).connection.relayModelProfiles,
+    facts,
   );
-  assert.throws(
-    () =>
-      normalizeConnectionCatalogEntryUpdateForProvider(
-        {
-          name: 'Other',
-          enabled: true,
-          enabledModelIds: ['relay-reasoner'],
-          relayModelProfiles: table,
-        },
-        'anthropic',
-      ),
-    RuntimePolicyDomainDecodeError,
+  assert.deepEqual(
+    normalizeConnectionCatalogEntryUpdateForProvider(
+      {
+        name: 'Other',
+        enabled: true,
+        enabledModelIds: ['relay-reasoner'],
+        relayModelProfiles: facts,
+      },
+      'anthropic',
+    ).relayModelProfiles,
+    facts,
   );
+
+  // `thinkingLevels` and `serviceTier` name a wire feature only the
+  // OpenAI-compatible relays accept, so they stay relay-only on both write
+  // paths: elsewhere they are a request Maka would never send.
+  for (const wireShaped of [
+    { 'relay-reasoner': { thinkingLevels: ['low'] } },
+    { 'relay-reasoner': { serviceTier: 'fast' } },
+  ]) {
+    assert.throws(
+      () =>
+        normalizeCreateCatalogConnectionInput({
+          expectedCatalogRevision: 0,
+          connection: {
+            slug: 'not-a-relay',
+            name: 'Other',
+            providerType: 'openai',
+            enabled: true,
+            enabledModelIds: ['relay-reasoner'],
+            relayModelProfiles: wireShaped,
+          },
+        }),
+      /require[s]? an OpenAI-compatible connection/,
+      JSON.stringify(wireShaped),
+    );
+    assert.throws(
+      () =>
+        normalizeConnectionCatalogEntryUpdateForProvider(
+          {
+            name: 'Other',
+            enabled: true,
+            enabledModelIds: ['relay-reasoner'],
+            relayModelProfiles: wireShaped,
+          },
+          'anthropic',
+        ),
+      /require[s]? an OpenAI-compatible connection/,
+      JSON.stringify(wireShaped),
+    );
+  }
+
   assert.equal(
     normalizeConnectionCatalogEntryUpdateForProvider(
       { name: 'Other', enabled: true, enabledModelIds: [], relayModelProfiles: null },

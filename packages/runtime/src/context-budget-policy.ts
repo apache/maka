@@ -419,9 +419,10 @@ export function resolveSelectedModelContextWindow(
 ): number | undefined {
   const selectedModelId = modelId ?? connection.defaultModel;
   if (selectedModelId === undefined) return undefined;
-  // A user declaration outranks both the relay's /models report and generated
-  // metadata — mirrors the declared-vision precedence in model-metadata.ts,
-  // through the same provider-gated seam (relay declarations only).
+  // A user declaration outranks both the provider's /models report and
+  // generated metadata — mirrors the declared-vision precedence in
+  // model-metadata.ts. A declared context window is legal on any provider: it
+  // states a fact about the model, not a request shape (#1584).
   const declared = relayModelProfile(connection, selectedModelId)?.contextWindow;
   if (declared !== undefined) return declared;
   const model = connection.models?.find((candidate) => candidate.id === selectedModelId);

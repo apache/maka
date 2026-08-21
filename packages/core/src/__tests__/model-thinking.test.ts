@@ -105,23 +105,28 @@ test('relayModelProfile normalizes order, keeps explicit vision:false, and bound
   }
 });
 
-test('relayModelProfile gates declarations to custom OpenAI relays', () => {
+test('relayModelProfile honours a declaration on any provider', () => {
   const profiles = { m: { vision: true, contextWindow: 64_000 } };
-  assert.deepEqual(
-    relayModelProfile({ providerType: 'openai-compatible', relayModelProfiles: profiles }, 'm'),
-    { vision: true, contextWindow: 64_000 },
-  );
-  assert.deepEqual(
-    relayModelProfile(
-      { providerType: 'openai-responses-compatible', relayModelProfiles: profiles },
-      'm',
-    ),
-    { vision: true, contextWindow: 64_000 },
-  );
-  // The same table on a non-relay connection is inert: metadata rules.
-  for (const providerType of ['anthropic', 'openai'] as const) {
-    assert.equal(relayModelProfile({ providerType, relayModelProfiles: profiles }, 'm'), undefined);
+  // A declaration is a user statement about one model, and the reason to make
+  // one — Maka has no other way to learn the fact — is not confined to relays:
+  // it holds for any model newer than the bundled snapshot, and for every
+  // model on a provider with no model-list endpoint (#1584).
+  for (const providerType of [
+    'openai-compatible',
+    'openai-responses-compatible',
+    'anthropic',
+    'volcengine-agent-plan',
+  ] as const) {
+    assert.deepEqual(relayModelProfile({ providerType, relayModelProfiles: profiles }, 'm'), {
+      vision: true,
+      contextWindow: 64_000,
+    });
   }
+  // Absent stays absent: an undeclared model falls through to the metadata chain.
+  assert.equal(
+    relayModelProfile({ providerType: 'anthropic', relayModelProfiles: profiles }, 'other'),
+    undefined,
+  );
 });
 
 test('isRelayProviderType only accepts the two custom OpenAI relay providers', () => {

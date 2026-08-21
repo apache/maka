@@ -5,7 +5,7 @@ Each row is one on-disk product surface file. Regenerated inventory must stay in
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 189 files — blocker 0, polish 0, aligned 189.
+**Totals:** 190 files — blocker 0, polish 0, aligned 190.
 
 ## Exclusions (explicit)
 
@@ -80,6 +80,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/personalization-settings-section.tsx` | settings-module | SegmentedControl, SegmentedControlItem | aligned — uses Astryx (SegmentedControl, SegmentedControlItem) | aligned |
 | `apps/desktop/src/renderer/settings/projects-settings-page.tsx` | settings-page | Badge, Banner, Button, EmptyState, HStack, List, ListItem | aligned — uses Astryx (Badge, Banner, Button, EmptyState, HStack, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/settings/provider-add-form.tsx` | settings-module | Banner, Button, Collapsible, HStack, VStack | aligned — uses Astryx (Banner, Button, Collapsible, HStack, VStack) | aligned |
+| `apps/desktop/src/renderer/settings/provider-add-model-dialog.tsx` | settings-module | Button, Dialog, DialogHeader, Layout, LayoutContent | aligned — uses Astryx (Button, Dialog, DialogHeader, Layout, LayoutContent) | aligned |
 | `apps/desktop/src/renderer/settings/provider-brand-marks.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/provider-catalog-page.tsx` | settings-page | Banner, Button, EmptyState, HStack, List, ListItem, Section, Selector, VStack | aligned — uses Astryx (Banner, Button, EmptyState, HStack, List, ListItem, Section, Selector) | aligned |
 | `apps/desktop/src/renderer/settings/provider-connection-detail.tsx` | settings-module | Banner, Button, Divider, HStack, Heading, Text, VStack | aligned — uses Astryx (Banner, Button, Divider, HStack, Heading, Text, VStack) | aligned |

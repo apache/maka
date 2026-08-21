@@ -28,7 +28,7 @@ const meta = {
 export default meta;
 
 type Story = StoryObj<typeof meta>;
-type AutoOpenTarget = 'detail' | 'add' | 'catalog' | 'oauth' | 'xai-device';
+type AutoOpenTarget = 'detail' | 'detail-static' | 'add' | 'catalog' | 'oauth' | 'xai-device';
 
 function makeConnection(input: {
   slug: string;
@@ -98,6 +98,26 @@ const configuredConnections = [
     defaultModel: 'qwen2.5-coder',
     lastTestStatus: 'verified',
   }),
+];
+
+// A provider whose key cannot call a model-list endpoint: refresh replays the
+// array this build shipped, so 添加模型 replaces 更新模型目录 as the only way the
+// catalog can grow. `deepseek-v4-pro-beta` is a model added that way — absent
+// from `models`, declared in `relayModelProfiles` (#1584).
+const staticCatalogConnections = [
+  {
+    ...makeConnection({
+      slug: 'ark-plan',
+      name: 'Ark Agent Plan',
+      providerType: 'volcengine-agent-plan',
+      defaultModel: 'doubao-seed-2.1-turbo',
+      lastTestStatus: 'verified',
+      models: [{ id: 'doubao-seed-2.1-turbo' }, { id: 'kimi-k2.6' }],
+      modelSource: 'fetched',
+    }),
+    enabledModelIds: ['doubao-seed-2.1-turbo', 'deepseek-v4-pro-beta'],
+    relayModelProfiles: { 'deepseek-v4-pro-beta': { contextWindow: 262_144 } },
+  },
 ];
 
 const problemConnections = [
@@ -351,10 +371,11 @@ function reachCatalog(root: HTMLElement): HTMLElement | null {
 }
 
 function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean {
-  if (target === 'detail') {
+  if (target === 'detail' || target === 'detail-static') {
     // ListItem's clickable surface is an invisible button inside the row, so
     // the row is located by its slug hook and the button taken from within it.
-    const row = root.querySelector<HTMLElement>('[data-connection-slug="zai-live"]');
+    const slug = target === 'detail' ? 'zai-live' : 'ark-plan';
+    const row = root.querySelector<HTMLElement>(`[data-connection-slug="${slug}"]`);
     const detailButton = row?.querySelector('button') ?? null;
     detailButton?.click();
     return Boolean(detailButton);
@@ -415,6 +436,18 @@ export const ConnectionDetailPage: Story = {
     <ProviderStory
       bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })}
       autoOpen="detail"
+    />
+  ),
+};
+
+// Real path: 设置 → 模型 → click a connection whose provider has no model-list
+// endpoint — 添加模型 stands where 更新模型目录 would, and the capability section
+// lists the models Maka's bundled metadata cannot describe.
+export const StaticCatalogConnectionDetail: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: staticCatalogConnections, defaultSlug: 'ark-plan' })}
+      autoOpen="detail-static"
     />
   ),
 };

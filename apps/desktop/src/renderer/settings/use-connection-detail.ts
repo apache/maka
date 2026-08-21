@@ -244,6 +244,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       slug: connection.slug,
       providerType: connection.providerType,
       defaultModel: connection.defaultModel,
+      enabledModelIds,
       models: modelSource === 'fetched' || models.length > 0 ? models : undefined,
       modelSource,
       modelsFetchedAt: connection.modelsFetchedAt,
@@ -484,6 +485,66 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
   }
 
+  /**
+   * Introduce a model the provider's catalog does not list.
+   *
+   * Only offered where refresh cannot help: a provider with no model-list
+   * endpoint replays the array this build shipped, so a model the user's plan
+   * serves but Maka has never heard of has no other way in (#1584).
+   *
+   * The id enters `enabledModelIds` — the same user-selection authority a
+   * catalogued model uses, so nothing here pretends the provider advertised
+   * it — and the context window enters `relayModelProfiles`, which is where a
+   * user states a fact no other source knows. Both go in ONE write: the store
+   * requires every declaration to key an enabled model, so a table written
+   * ahead of its id would be rejected.
+   *
+   * The saved table is the base, not the unsaved draft: adding a model must
+   * not silently commit edits the user has open in the capability section.
+   * The draft is then caught up by hand, because a dirty draft deliberately
+   * does not reseed from props — see `relayProfileDraftReseedPlan`.
+   */
+  async function addDeclaredModel(id: string, contextWindow: number) {
+    const modelId = id.trim();
+    if (!modelId || enabledModelIds.includes(modelId)) return;
+    if (connectionDetailActionGuard.has('save-enabled-models') || detailActionBusy) return;
+    const next = [...enabledModelIds, modelId];
+    const previous = enabledModelIds;
+    const lifecycle = connectionDetailLifecycleRef.current;
+    const releaseSaveModels = connectionDetailActionGuard.begin('save-enabled-models');
+    if (!releaseSaveModels) return;
+    setSavingEnabledModels(true);
+    setEnabledModelIds(next);
+    let saved = false;
+    try {
+      await props.bridge.update(connection.slug, {
+        enabledModelIds: next,
+        relayModelProfiles: { ...(savedRelayProfiles ?? {}), [modelId]: { contextWindow } },
+      });
+      saved = true;
+      if (!isConnectionDetailCurrent(lifecycle)) return;
+      // The editor's draft is a second copy of this table, and while it is
+      // dirty it does not reseed from props — that is what keeps an unrelated
+      // reload from discarding typed work. So the declaration just written has
+      // to be merged in here. Without it the draft is a table that no longer
+      // contains this model, the capability-save button lights up on that
+      // difference, and its whole-table replace drops the context window the
+      // user just declared — silently, back to the unknown-model default.
+      setRelayProfileDrafts((current) => ({ ...current, [modelId]: { contextWindow } }));
+      await props.onChanged();
+    } catch (error) {
+      if (!isConnectionDetailCurrent(lifecycle)) return;
+      if (!saved) setEnabledModelIds(previous);
+      toast.error(
+        saved ? copy.refreshFailed : copy.saveModelsFailed,
+        providerPanelActionErrorMessage(error, locale),
+      );
+    } finally {
+      releaseSaveModels();
+      if (isConnectionDetailCurrent(lifecycle)) setSavingEnabledModels(false);
+    }
+  }
+
   async function runTest() {
     const releaseTest = connectionDetailActionGuard.beginExclusive('test');
     if (!releaseTest) return;
@@ -653,6 +714,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     lastTestAtMs,
     save,
     updateEnabledModels,
+    addDeclaredModel,
     relayProfileDraft: relayProfileDrafts,
     relayProfilesDirty,
     hasRelayProfileChanges,
