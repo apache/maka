@@ -39,6 +39,8 @@ import {
 } from './operation-dispatcher.js';
 import {
   issueAccessCredential,
+  finalizeAccessCredential,
+  prepareAccessCredential,
   replaceAccessCredential,
   revokeAccessCredential,
   type RuntimeHostAccessAuthority,
@@ -230,6 +232,7 @@ export class RuntimeHostKernel {
           await host.#abortStartup();
         }
       } else {
+        await options.accessAuthority?.close().catch(() => undefined);
         await owner.close();
       }
       throw error;
@@ -621,14 +624,41 @@ export class RuntimeHostKernel {
           return { ok: true, result: { kind: 'prepared', pid: process.pid } };
         },
         'access.credential.issue': async (input) =>
-          issueAccessCredential(this.#options.accessAuthority, input),
+          this.#settleAccessCredentialMutation(
+            issueAccessCredential(this.#options.accessAuthority, input),
+          ),
         'access.credential.replace': async (input) =>
-          replaceAccessCredential(this.#options.accessAuthority, input),
+          this.#settleAccessCredentialMutation(
+            replaceAccessCredential(this.#options.accessAuthority, input),
+          ),
+        'access.credential.prepare': async (input) =>
+          this.#settleAccessCredentialMutation(
+            prepareAccessCredential(this.#options.accessAuthority, input),
+          ),
         'access.credential.revoke': async (input) =>
-          revokeAccessCredential(this.#options.accessAuthority, input),
+          this.#settleAccessCredentialMutation(
+            revokeAccessCredential(this.#options.accessAuthority, input),
+          ),
+        'access.credential.finalize': async (_input, context) =>
+          this.#settleAccessCredentialMutation(
+            finalizeAccessCredential(this.#options.accessAuthority, context.credentialId),
+          ),
       },
       domainHandlers,
     );
+  }
+
+  async #settleAccessCredentialMutation<
+    T extends {
+      readonly ok: boolean;
+      readonly error?: { readonly code: string };
+    },
+  >(operation: Promise<T>): Promise<T> {
+    const outcome = await operation;
+    if (!outcome.ok && outcome.error?.code === 'commit_outcome_unknown') {
+      this.#requestDrain();
+    }
+    return outcome;
   }
 
   #statusSnapshot(): HostStatusResult {
@@ -836,6 +866,8 @@ export class RuntimeHostKernel {
     this.#assertShutdownCanContinue();
     await this.#listeners?.cleanup().catch((error: unknown) => errors.push(error));
     this.#assertShutdownCanContinue();
+    await this.#options.accessAuthority?.close().catch((error: unknown) => errors.push(error));
+    this.#assertShutdownCanContinue();
     await removeHostRegistration(this.#options.owner.controlDirectory, this.hostEpoch).catch(
       (error: unknown) => errors.push(error),
     );
@@ -857,6 +889,7 @@ export class RuntimeHostKernel {
     for (const transport of this.#acceptedTransports) transport.abort();
     await this.#listeners?.closeAdmission().catch(() => undefined);
     await this.#listeners?.cleanup().catch(() => undefined);
+    await this.#options.accessAuthority?.close().catch(() => undefined);
     await removeHostRegistration(this.#options.owner.controlDirectory, this.hostEpoch).catch(
       () => undefined,
     );

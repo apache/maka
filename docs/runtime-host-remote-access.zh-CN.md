@@ -118,7 +118,9 @@ Client Profile 还必须单独持久化明文风险确认。Maka 不会把 TLS �
 
 ## 连接 Desktop
 
-打开`设置 → 工作区 → Runtime Host`，选择**添加远程 Host**，选定连接方式，再填写对应 endpoint、ready event 中的 `rootId` 和刚签发的 credential，然后选择**保存并启用**。
+打开`设置 → 工作区 → Runtime Host`，选择**添加电脑**并填写 OpenSSH 目标。Desktop 会在交互式 SSH 会话中运行已发布的 setup 命令，保存返回的 credential，验证 tunnel，然后打开远程 Project 选择器。
+
+已有 TLS、SSH 或明确允许的明文 endpoint 可通过**手动配置**添加。
 
 Credential 与 Profile 分开存储。Desktop 会让 Local 与每个已启用的 remote Host 独立保持连接，并允许指定一个默认 Host 来创建新 Session；已有 Session 仍使用自己的 Host。Remote connection 失败时仍会显示，但不会中断其他 Host。连接后从该 Host 已注册的 Project 中选择一个；Client 本地目录操作不可用。
 
@@ -174,5 +176,6 @@ Remote Client 不会自动升级或重启 Host、降级 transport、修改 Profi
 - 不要把 credential 放在命令行或 Profile JSON 中。
 - 明文连接需要持久的 Client 确认和独立的 Host 启动参数。
 - Session response 中的 `hostCwd` 只是 Host metadata，不能通过 Client filesystem 解释。
-- Remote Client 不会升级或终止 service process。
+- Remote Client 不能请求升级、重启或终止 service process。若 durable commit 的结果无法确定，
+  Host 仍会主动 drain；managed service supervisor 会将其重新拉起。
 - 在 Host 上使用 `maka runtime-host access revoke --root /srv/maka --credential <credentialId>` 撤销 credential。

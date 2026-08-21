@@ -37,7 +37,6 @@ if (unsupportedArguments.length > 0) {
   throw new Error(`Unsupported release argument: ${unsupportedArguments.join(', ')}`);
 }
 const internalPackageNames = [
-  '@maka/code-mode',
   '@maka/core',
   '@maka/eval',
   '@maka/mcp',
@@ -47,7 +46,6 @@ const internalPackageNames = [
 ];
 const internalPackageSet = new Set(internalPackageNames);
 const buildOrder = [
-  '@maka/code-mode',
   '@maka/core',
   '@maka/storage',
   '@maka/mcp',
@@ -512,7 +510,27 @@ function writeReleaseManifest(cli, publishable) {
     bundledDependencies: Object.keys(dependencies).sort(),
     ...(!publishable ? { private: true } : {}),
   };
+  if (!publishable) {
+    manifest.version = developmentPackageVersion(source.version, manifest);
+  }
   writeFileSync(join(stageRoot, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+function developmentPackageVersion(baseVersion, manifest) {
+  const digest = createHash('sha256');
+  for (const path of walkFiles(stageRoot)
+    .filter((candidate) => lstatSync(candidate).isFile())
+    .sort()) {
+    digest.update(relative(stageRoot, path).split(sep).join('/'));
+    digest.update('\0');
+    digest.update(readFileSync(path));
+    digest.update('\0');
+  }
+  const { version: _version, ...manifestIdentity } = manifest;
+  digest.update('package.json\0');
+  digest.update(JSON.stringify(manifestIdentity));
+  digest.update('\0');
+  return `${baseVersion}${baseVersion.includes('-') ? '.' : '-'}dev-${digest.digest('hex').slice(0, 12)}`;
 }
 
 function validateStaging() {

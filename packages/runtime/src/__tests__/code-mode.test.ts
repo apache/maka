@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { jsonSchema, tool } from 'ai';
-import { type ExecuteCodeCellInput, executeCodeCell, serializedByteLength } from '../index.js';
+import {
+  DEFAULT_CODE_MODE_EXECUTION_POLICY,
+  type ExecuteCodeCellInput,
+  executeCodeCell,
+} from '../code-mode.js';
 
 function execute(code: string, input: Partial<Omit<ExecuteCodeCellInput, 'code'>> = {}) {
   return executeCodeCell({
@@ -11,21 +17,6 @@ function execute(code: string, input: Partial<Omit<ExecuteCodeCellInput, 'code'>
     ...input,
   });
 }
-
-test('counts the bounded JSON representation used at the tool boundary', () => {
-  let inspectedPastLimit = false;
-  const trailing = Object.defineProperty({}, 'value', {
-    enumerable: true,
-    get: () => {
-      inspectedPastLimit = true;
-      throw new Error('must not inspect values after the byte limit');
-    },
-  });
-
-  assert.equal(serializedByteLength('\0'.repeat(10)), 62);
-  assert.equal(serializedByteLength(['x'.repeat(128), trailing], 32), 33);
-  assert.equal(inspectedPastLimit, false);
-});
 
 test('executes standard JavaScript without an interpreter subset', async () => {
   const result = await execute(`
@@ -150,6 +141,40 @@ test('does not expose Node capabilities to cell code', async () => {
   });
 });
 
+test('keeps sandbox console output out of the host process stdout', async () => {
+  // The product policy's `maxConsoleOutputBytes: 1` is the only thing standing
+  // between cell code and the host's stdout, which the CLI writes its TUI and
+  // command output to. The sandbox writes from a worker thread that Node pipes
+  // into the parent's stdout, so this has to be observed from outside the
+  // process rather than by patching `process.stdout.write` here.
+  const moduleUrl = new URL('../code-mode.js', import.meta.url).href;
+  const child = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `const { executeCodeCell } = await import(${JSON.stringify(moduleUrl)});
+       const result = await executeCodeCell({
+         code: "console.log('sandbox-console-marker'); return 1;",
+         tools: [],
+         callTool: async () => null,
+       });
+       if (!result.ok || result.value !== 1) process.exit(2);`,
+    ],
+    { stdio: ['ignore', 'pipe', 'ignore'] },
+  );
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    stdout += chunk;
+  });
+
+  const [code] = (await once(child, 'exit')) as [number | null];
+
+  assert.equal(code, 0, 'the probe cell did not run to completion');
+  assert.equal(stdout, '');
+});
+
 test('starts each cell in a fresh global context', async () => {
   const first = await execute('globalThis.transient = 42; return globalThis.transient;');
   const second = await execute('return globalThis.transient ?? null;');
@@ -268,14 +293,16 @@ test('reports uncaught runtime and tool failures', async (t) => {
 
 test('enforces byte and bridge limits', async (t) => {
   await t.test('source', async () => {
-    const result = await execute('return null;', { limits: { maxSourceBytes: 1 } });
+    const result = await execute('return null;', {
+      executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, maxSourceBytes: 1 },
+    });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
   });
 
   await t.test('tool input', async () => {
     const result = await execute("return await tools.echo({ value: '12345' });", {
       tools: [{ name: 'echo' }],
-      limits: { maxToolInputBytes: 4 },
+      executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, maxToolInputBytes: 4 },
       callTool: async () => null,
     });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
@@ -284,38 +311,25 @@ test('enforces byte and bridge limits', async (t) => {
   await t.test('tool output', async () => {
     const result = await execute('return await tools.echo({});', {
       tools: [{ name: 'echo' }],
-      limits: { maxToolOutputBytes: 4 },
+      executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, maxToolOutputBytes: 4 },
       callTool: async () => '12345',
     });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
   });
 
   await t.test('cell output', async () => {
-    const result = await execute("return '12345';", { limits: { maxOutputBytes: 4 } });
+    const result = await execute("return '12345';", {
+      executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, maxResultBytes: 4 },
+    });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
   });
 
   await t.test('tool calls', async () => {
     const result = await execute('await tools.echo({}); return await tools.echo({});', {
       tools: [{ name: 'echo' }],
-      limits: { maxToolCalls: 1 },
+      executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, maxBridgeRequests: 1 },
       callTool: async () => null,
     });
-    assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
-  });
-
-  await t.test('undefined override keeps the product default', async () => {
-    const result = await execute(
-      `
-        for (let index = 0; index < 33; index += 1) await tools.echo({ index });
-        return null;
-      `,
-      {
-        tools: [{ name: 'echo' }],
-        limits: { maxToolCalls: undefined } as unknown as ExecuteCodeCellInput['limits'],
-        callTool: async () => null,
-      },
-    );
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
   });
 
@@ -323,7 +337,11 @@ test('enforces byte and bridge limits', async (t) => {
     let started = 0;
     const result = await execute('return await Promise.all([tools.echo({}), tools.echo({})]);', {
       tools: [{ name: 'echo' }],
-      limits: { maxToolConcurrency: 1, maxSandboxTimeMs: 500 },
+      executionPolicy: {
+        ...DEFAULT_CODE_MODE_EXECUTION_POLICY,
+        maxInFlightBridgeRequests: 1,
+        timeoutMs: 500,
+      },
       callTool: async (_name, _input, signal) => {
         started += 1;
         await new Promise<void>((resolve) => {
@@ -340,7 +358,7 @@ test('enforces byte and bridge limits', async (t) => {
 
 test('enforces the configured VM stack limit', async () => {
   const result = await execute('function recurse() { return recurse(); } return recurse();', {
-    limits: { maxStackBytes: 64 * 1024 },
+    executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, maxStackSizeBytes: 64 * 1024 },
   });
 
   assert.equal(result.ok, false);
@@ -349,7 +367,11 @@ test('enforces the configured VM stack limit', async () => {
 
 test('enforces the configured VM memory limit', async () => {
   const result = await execute('return new ArrayBuffer(16 * 1024 * 1024).byteLength;', {
-    limits: { maxMemoryBytes: 8 * 1024 * 1024, maxSandboxTimeMs: 5_000 },
+    executionPolicy: {
+      ...DEFAULT_CODE_MODE_EXECUTION_POLICY,
+      memoryLimitBytes: 8 * 1024 * 1024,
+      timeoutMs: 5_000,
+    },
   });
 
   assert.equal(result.ok, false);
@@ -357,7 +379,9 @@ test('enforces the configured VM memory limit', async () => {
 });
 
 test('preempts a pure compute loop at the sandbox-time limit', async () => {
-  const result = await execute('while (true) {}', { limits: { maxSandboxTimeMs: 20 } });
+  const result = await execute('while (true) {}', {
+    executionPolicy: { ...DEFAULT_CODE_MODE_EXECUTION_POLICY, timeoutMs: 20 },
+  });
 
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.error.kind, 'limit_exceeded');
@@ -476,107 +500,5 @@ test('aborts and drains concurrent tools while preserving the first fatal failur
   } finally {
     releasePeer();
     await Promise.allSettled([execution]);
-  }
-});
-
-test('bounds serial execution at one pending cell', async () => {
-  const started: string[] = [];
-  let firstStarted!: () => void;
-  let releaseFirst!: () => void;
-  const firstHasStarted = new Promise<void>((resolve) => {
-    firstStarted = resolve;
-  });
-  const firstCanFinish = new Promise<void>((resolve) => {
-    releaseFirst = resolve;
-  });
-  const callTool = async (_name: string, input: unknown) => {
-    const id = (input as { id: string }).id;
-    started.push(id);
-    if (id === 'first') {
-      firstStarted();
-      await firstCanFinish;
-    }
-    return id;
-  };
-  const run = (id: string) =>
-    execute(`return await tools.hold({ id: '${id}' });`, {
-      tools: [{ name: 'hold' }],
-      callTool,
-    });
-
-  const first = run('first');
-  await firstHasStarted;
-  const second = run('second');
-  const third = run('third');
-
-  try {
-    const excess = await Promise.race([
-      third,
-      new Promise<'still-pending'>((resolve) => setImmediate(() => resolve('still-pending'))),
-    ]);
-    assert.notEqual(excess, 'still-pending');
-    if (excess !== 'still-pending') {
-      assert.equal(excess.ok ? undefined : excess.error.kind, 'limit_exceeded');
-      assert.deepEqual(excess.toolCalls, []);
-    }
-    assert.deepEqual(started, ['first']);
-    releaseFirst();
-    const results = await Promise.all([first, second]);
-    assert.deepEqual(
-      results.map((result) => (result.ok ? result.value : undefined)),
-      ['first', 'second'],
-    );
-  } finally {
-    releaseFirst();
-    await Promise.allSettled([first, second, third]);
-  }
-});
-
-test('aborts a queued cell without waiting for the active cell', async () => {
-  let firstStarted!: () => void;
-  let releaseFirst!: () => void;
-  const firstHasStarted = new Promise<void>((resolve) => {
-    firstStarted = resolve;
-  });
-  const firstCanFinish = new Promise<void>((resolve) => {
-    releaseFirst = resolve;
-  });
-  const first = execute('return await tools.hold({});', {
-    tools: [{ name: 'hold' }],
-    callTool: async () => {
-      firstStarted();
-      await firstCanFinish;
-      return null;
-    },
-  });
-  await firstHasStarted;
-
-  const controller = new AbortController();
-  const reason = new Error('queued cell cancelled');
-  let queuedToolCalls = 0;
-  const queued = execute('return await tools.never({});', {
-    tools: [{ name: 'never' }],
-    signal: controller.signal,
-    callTool: async () => {
-      queuedToolCalls += 1;
-      return null;
-    },
-  });
-  controller.abort(reason);
-
-  const outcome = await Promise.race([
-    queued.then(
-      () => 'resolved' as const,
-      (error) => error,
-    ),
-    new Promise<'still-pending'>((resolve) => setImmediate(() => resolve('still-pending'))),
-  ]);
-
-  try {
-    assert.equal(outcome, reason);
-    assert.equal(queuedToolCalls, 0);
-  } finally {
-    releaseFirst();
-    await Promise.allSettled([first, queued]);
   }
 });

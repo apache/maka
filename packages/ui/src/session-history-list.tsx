@@ -346,7 +346,7 @@ function ProjectNavRow(props: {
           ) : undefined
         }
       >
-        {/* sidebar.css preserves one SideNav nesting step for project hierarchy. */}
+        {/* sidebar.css keeps an 8px nest so session titles share the project x. */}
         {hasSessions ? (
           <VStack gap={0.5}>{props.sessions.map((session) => props.renderSession(session))}</VStack>
         ) : undefined}

@@ -15,10 +15,13 @@ import {
 } from '@maka/runtime-host/protocol';
 import { withFileUpdateLock } from '@maka/storage/file-update-lock';
 import {
+  prepareRuntimeHostAccessCredential,
   replaceRuntimeHostAccessCredential,
+  revokeRuntimeHostAccessCredential,
   type RuntimeHostAccessPreset,
 } from './runtime-host-access-command.js';
 import {
+  isRuntimeHostDevelopmentPackageVersion,
   prepareRuntimeHostManagedPackageDeployment,
   RuntimeHostManagedDeploymentError,
 } from './runtime-host-managed-deployment.js';
@@ -41,6 +44,7 @@ export interface RuntimeHostSetupCliOptions {
   readonly version: string;
   readonly principalId: string;
   readonly preset: RuntimeHostAccessPreset;
+  readonly deferPairingCommit?: boolean;
   readonly rootPath?: string;
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly websocketPort?: number;
@@ -51,7 +55,9 @@ interface RuntimeHostSetupDeps {
   readonly manageService: typeof manageRuntimeHostService;
   readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
   readonly prepareDeployment: typeof prepareRuntimeHostManagedPackageDeployment;
+  readonly prepareCredential: typeof prepareRuntimeHostAccessCredential;
   readonly replaceCredential: typeof replaceRuntimeHostAccessCredential;
+  readonly revokeCredential: typeof revokeRuntimeHostAccessCredential;
   readonly verifyCredential: typeof verifyRuntimeHostSetupCredential;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
@@ -76,7 +82,9 @@ export async function runRuntimeHostSetupCli(
     manageService: manageRuntimeHostService,
     createBackend: createPlatformRuntimeHostServiceBackend,
     prepareDeployment: prepareRuntimeHostManagedPackageDeployment,
+    prepareCredential: prepareRuntimeHostAccessCredential,
     replaceCredential: replaceRuntimeHostAccessCredential,
+    revokeCredential: revokeRuntimeHostAccessCredential,
     verifyCredential: verifyRuntimeHostSetupCredential,
     writeOutput: (value) => process.stdout.write(value),
     writeError: (value) => process.stderr.write(value),
@@ -153,9 +161,12 @@ async function runRuntimeHostSetupLocked(
   }
 
   emit({ kind: 'progress', phase: 'pairing_client' });
-  let paired: Awaited<ReturnType<typeof replaceRuntimeHostAccessCredential>>;
+  let paired: Awaited<ReturnType<typeof prepareRuntimeHostAccessCredential>>;
   try {
-    paired = await deps.replaceCredential({
+    const pairCredential = options.deferPairingCommit
+      ? deps.prepareCredential
+      : deps.replaceCredential;
+    paired = await pairCredential({
       rootPath: config.rootPath,
       principalKind: 'remote_owner',
       principalId: options.principalId,
@@ -174,19 +185,37 @@ async function runRuntimeHostSetupLocked(
 
   const endpoint = websocketUrl(config.websocket);
   emit({ kind: 'progress', phase: 'verifying_connection' });
-  await deps.verifyCredential({
-    endpoint,
-    rootId: paired.rootId,
-    credential: paired.credential,
-  });
-  emit({
-    kind: 'complete',
-    version: deployment.version,
-    rootId: paired.rootId,
-    endpoint,
-    credentialId: paired.credentialId,
-    credential: paired.credential,
-  });
+  try {
+    await deps.verifyCredential({
+      endpoint,
+      rootId: paired.rootId,
+      credential: paired.credential,
+    });
+    await deployment.commit().catch(() => undefined);
+    emit({
+      kind: 'complete',
+      version: deployment.version,
+      rootId: paired.rootId,
+      endpoint,
+      credentialId: paired.credentialId,
+      credential: paired.credential,
+    });
+  } catch (error) {
+    if (options.deferPairingCommit) {
+      try {
+        await deps.revokeCredential({
+          rootPath: config.rootPath,
+          credentialId: paired.credentialId,
+        });
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          'Runtime Host pairing failed and its candidate credential could not be revoked',
+        );
+      }
+    }
+    throw error;
+  }
 }
 
 async function assertCompatibleExistingVersion(
@@ -210,7 +239,13 @@ async function assertCompatibleExistingVersion(
       { cause: error },
     );
   }
-  if (existingVersion !== version) {
+  if (
+    existingVersion !== version &&
+    !(
+      isRuntimeHostDevelopmentPackageVersion(existingVersion) &&
+      isRuntimeHostDevelopmentPackageVersion(version)
+    )
+  ) {
     throw new RuntimeHostSetupError(
       'version_change_requires_update',
       `Runtime Host ${String(existingVersion)} is already installed; changing to ${version} requires the update workflow`,

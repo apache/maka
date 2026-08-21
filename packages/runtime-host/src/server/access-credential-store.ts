@@ -28,11 +28,12 @@ export interface StoredAccessCredential {
   readonly credentialHash: string;
   readonly principalId: string;
   readonly principalKind: AccessCredentialPrincipalKind;
-  readonly status: 'active' | 'revoked';
+  readonly status: 'pending' | 'active' | 'revoked';
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
   readonly createdAt: string;
+  readonly expiresAt?: string;
   readonly revokedAt?: string;
 }
 
@@ -52,6 +53,13 @@ export class RuntimeHostAccessCapacityError extends Error {
   constructor() {
     super('Runtime Host access credential storage is full');
     this.name = 'RuntimeHostAccessCapacityError';
+  }
+}
+
+export class RuntimeHostAccessCommitOutcomeUnknownError extends Error {
+  constructor(cause: unknown) {
+    super('Runtime Host access credential commit outcome is unknown', { cause });
+    this.name = 'RuntimeHostAccessCommitOutcomeUnknownError';
   }
 }
 
@@ -108,6 +116,7 @@ export async function writeAccessCredentialFile(
 ): Promise<void> {
   const contents = serializeAccessCredentialFile(file);
   const tempPath = `${path}.${randomUUID()}.tmp`;
+  let published = false;
   try {
     const handle = await open(tempPath, 'wx', 0o600);
     try {
@@ -118,9 +127,11 @@ export async function writeAccessCredentialFile(
     }
     if (process.platform !== 'win32') await chmod(tempPath, 0o600);
     await rename(tempPath, path);
+    published = true;
     await syncDirectory(dirname(path));
   } catch (error) {
     await rm(tempPath, { force: true });
+    if (published) throw new RuntimeHostAccessCommitOutcomeUnknownError(error);
     throw error;
   }
 }
@@ -144,6 +155,12 @@ function decodeAccessFile(value: unknown): AccessCredentialFile {
   ) {
     throw new Error('Duplicate Runtime Host access credential identity');
   }
+  const pendingPrincipals = credentials
+    .filter((credential) => credential.status === 'pending')
+    .map((credential) => `${credential.principalKind}:${credential.principalId}`);
+  if (new Set(pendingPrincipals).size !== pendingPrincipals.length) {
+    throw new Error('Duplicate Runtime Host pending credential principal');
+  }
   return createAccessCredentialFile(credentials);
 }
 
@@ -158,7 +175,9 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
   if (principalKind !== 'remote_owner' && principalKind !== 'capability_provider') {
     throw new Error('Invalid principalKind');
   }
-  if (value.status !== 'active' && value.status !== 'revoked') throw new Error('Invalid status');
+  if (value.status !== 'pending' && value.status !== 'active' && value.status !== 'revoked') {
+    throw new Error('Invalid status');
+  }
   if (!Array.isArray(value.operationGrants)) throw new Error('Invalid operationGrants');
   const storedOperationGrants = value.operationGrants.map((grant) =>
     requireStoredString(grant, 'operationGrant'),
@@ -181,6 +200,14 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
     throw new Error('Invalid access credential authority');
   }
   const createdAt = requireStoredString(value.createdAt, 'createdAt');
+  const expiresAt = value.expiresAt;
+  if (value.status === 'pending') {
+    if (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt))) {
+      throw new Error('Invalid expiresAt');
+    }
+  } else if (expiresAt !== undefined) {
+    throw new Error('Invalid expiresAt');
+  }
   const revokedAt = value.revokedAt;
   if (revokedAt !== undefined && typeof revokedAt !== 'string') {
     throw new Error('Invalid revokedAt');
@@ -195,6 +222,7 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
     canPublishClientCapabilities: value.canPublishClientCapabilities,
     canUseHostPaths: value.canUseHostPaths,
     createdAt,
+    ...(typeof expiresAt === 'string' ? { expiresAt } : {}),
     ...(revokedAt === undefined ? {} : { revokedAt }),
   };
 }

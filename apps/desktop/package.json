@@ -25,7 +25,7 @@
     "build:preload": "esbuild src/preload/preload.ts --bundle --platform=node --format=cjs --outfile=dist/preload/preload.cjs --external:electron",
     "build:overlay": "node ../../scripts/build-cursor-overlay.mjs",
     "build:renderer": "vite build && node ../../scripts/check-third-party-notices.mjs",
-    "build:workspace-deps": "npm --workspace @maka/code-mode run build && npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/ui run build",
+    "build:workspace-deps": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/ui run build",
     "package:macos-arm64": "electron-builder --config electron-builder.config.mjs --mac --arm64 --publish never",
     "package:windows-x64": "electron-builder --config electron-builder.config.mjs --win --x64 --publish never",
     "typecheck": "tsc -p tsconfig.preload.json --noEmit && tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit && tsc -p tsconfig.storybook.json --noEmit",

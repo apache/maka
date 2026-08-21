@@ -111,6 +111,10 @@ export interface ConversationCopy {
     chooseSkill: string;
     /** Why that entry is unavailable: the catalog is empty. */
     noSkillsAvailable: string;
+    /** The ＋ menu entry that opens the Goal dialog. */
+    setGoal: string;
+    /** Why that entry is unavailable: this Session already has an unfinished Goal. */
+    goalAlreadySet: string;
     switchDisabledStreaming: string;
     switchDisabledRunning: string;
     switchDisabledPermission: string;
@@ -385,6 +389,7 @@ const CONVERSATION_COPY = {
       interruptHint: '或点停止中断', addContext: '添加上下文', stagedContext: '附加内容',
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件或目录',
       chooseSkill: '选择技能', noSkillsAvailable: '当前没有可用技能',
+      setGoal: '设定 Goal…', goalAlreadySet: '当前会话已有进行中的 Goal',
       switchDisabledStreaming: '当前任务正在流式输出，等结束后再切换模型。', switchDisabledRunning: '当前任务正在运行，等结束后再切换模型。', switchDisabledPermission: '当前有工具调用正在等待确认，处理后再切换模型。',
       thinkingDisabledStreaming: '当前任务正在流式输出，等结束后再切换思考级别。', thinkingDisabledRunning: '当前任务正在运行，等结束后再切换思考级别。', thinkingDisabledPermission: '当前有工具调用正在等待确认，处理后再切换思考级别。',
       orchestrationModeAriaLabel: '编排模式',
@@ -525,6 +530,7 @@ const CONVERSATION_COPY = {
       interruptHint: 'or click Stop to interrupt', addContext: 'Add context', stagedContext: 'staged items',
       selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add file or directory',
       chooseSkill: 'Choose skills', noSkillsAvailable: 'No skills available',
+      setGoal: 'Set a goal…', goalAlreadySet: 'This session already has a goal in progress',
       switchDisabledStreaming: 'Wait for the current response to finish before switching models.', switchDisabledRunning: 'Wait for the current run to finish before switching models.', switchDisabledPermission: 'Resolve the pending tool permission before switching models.',
       thinkingDisabledStreaming: 'Wait for the current response to finish before changing the thinking level.', thinkingDisabledRunning: 'Wait for the current run to finish before changing the thinking level.', thinkingDisabledPermission: 'Resolve the pending tool permission before changing the thinking level.',
       orchestrationModeAriaLabel: 'Orchestration mode',

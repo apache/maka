@@ -1,34 +1,105 @@
+// packages/runtime/src/code-mode.ts
+// Integration glue over `@ai-sdk/code-mode`: the product execution policy, the
+// result shapes the backend publishes, and the adapter that bridges sandbox
+// tool calls onto host tools and waits for them to drain.
+
 import {
   CodeModeError,
+  type CodeModeExecutionPolicy,
   CodeModeToolError,
   experimental_runCodeMode as runCodeMode,
 } from '@ai-sdk/code-mode';
 import { jsonSchema, tool, type ToolSet } from 'ai';
-import type {
-  CodeModeDiagnostic,
-  CodeModeExecutionResult,
-  CodeModeToolCall,
-  ExecuteCodeCellInput,
-} from './index.js';
-import { DEFAULT_CODE_MODE_LIMITS } from './index.js';
 
-export async function executeCodeCellImpl(
+export interface CodeModeToolDefinition {
+  name: string;
+}
+
+/**
+ * Product limits for a Code Mode cell, expressed in the SDK's own policy shape.
+ * The SDK applies looser defaults; these are the values Maka ships.
+ */
+export const DEFAULT_CODE_MODE_EXECUTION_POLICY: Readonly<Required<CodeModeExecutionPolicy>> =
+  Object.freeze({
+    /** Sandbox invocation deadline; aborted host operations still drain before settlement. */
+    timeoutMs: 30_000,
+    memoryLimitBytes: 64 * 1024 * 1024,
+    maxStackSizeBytes: 2 * 1024 * 1024,
+    maxResultBytes: 1024 * 1024,
+    maxConsoleOutputBytes: 1,
+    maxSourceBytes: 64 * 1024,
+    maxToolInputBytes: 1024 * 1024,
+    maxToolOutputBytes: 1024 * 1024,
+    maxBridgeRequests: 32,
+    maxInFlightBridgeRequests: 8,
+  });
+
+export type CodeModeDiagnosticKind =
+  | 'parse_error'
+  | 'execution_error'
+  | 'unknown_tool'
+  | 'limit_exceeded'
+  | 'tool_failure';
+
+export interface CodeModeDiagnostic {
+  kind: CodeModeDiagnosticKind;
+  message: string;
+}
+
+export interface CodeModeToolCall {
+  index: number;
+  name: string;
+}
+
+export interface CodeModeExecutionSuccess {
+  ok: true;
+  value: unknown;
+  toolCalls: CodeModeToolCall[];
+}
+
+export interface CodeModeExecutionFailure {
+  ok: false;
+  error: CodeModeDiagnostic;
+  toolCalls: CodeModeToolCall[];
+}
+
+export type CodeModeExecutionResult = CodeModeExecutionSuccess | CodeModeExecutionFailure;
+
+export interface ExecuteCodeCellInput {
+  code: string;
+  tools: readonly CodeModeToolDefinition[];
+  callTool(name: string, input: unknown, signal: AbortSignal): Promise<unknown>;
+  isFatalToolError?: (error: unknown) => boolean;
+  signal?: AbortSignal;
+  /**
+   * The complete policy for this cell. Production omits it, so the frozen
+   * product default is the only policy Maka ships; tests pass a whole policy to
+   * reach a limit they cannot practically hit at its default, such as the 30s
+   * deadline or a megabyte-scale byte cap.
+   *
+   * There is deliberately no per-field merge. The SDK resolves its own policy
+   * with `??` and skips a check outright for an integer above its
+   * `2_147_483_647` ceiling, so a partial override is a way to widen a product
+   * limit while appearing to tighten one.
+   */
+  executionPolicy?: Readonly<Required<CodeModeExecutionPolicy>>;
+}
+
+/**
+ * Runs one Code Mode cell to quiescence.
+ *
+ * The returned promise settles only after every host operation the cell started
+ * has settled, on both the success and the failure path. That is the contract
+ * the backend's `codeCellAdmission` limiter depends on; the comment at its call
+ * site explains why the sandbox worker cap cannot stand in for it.
+ *
+ * This module holds no cross-cell state. Bounding how many cells run at once
+ * belongs to whoever owns execution, not to this adapter.
+ */
+export async function executeCodeCell(
   input: ExecuteCodeCellInput,
 ): Promise<CodeModeExecutionResult> {
-  const limits = {
-    maxSourceBytes: input.limits?.maxSourceBytes ?? DEFAULT_CODE_MODE_LIMITS.maxSourceBytes,
-    maxSandboxTimeMs: input.limits?.maxSandboxTimeMs ?? DEFAULT_CODE_MODE_LIMITS.maxSandboxTimeMs,
-    maxMemoryBytes: input.limits?.maxMemoryBytes ?? DEFAULT_CODE_MODE_LIMITS.maxMemoryBytes,
-    maxStackBytes: input.limits?.maxStackBytes ?? DEFAULT_CODE_MODE_LIMITS.maxStackBytes,
-    maxToolCalls: input.limits?.maxToolCalls ?? DEFAULT_CODE_MODE_LIMITS.maxToolCalls,
-    maxToolConcurrency:
-      input.limits?.maxToolConcurrency ?? DEFAULT_CODE_MODE_LIMITS.maxToolConcurrency,
-    maxToolInputBytes:
-      input.limits?.maxToolInputBytes ?? DEFAULT_CODE_MODE_LIMITS.maxToolInputBytes,
-    maxToolOutputBytes:
-      input.limits?.maxToolOutputBytes ?? DEFAULT_CODE_MODE_LIMITS.maxToolOutputBytes,
-    maxOutputBytes: input.limits?.maxOutputBytes ?? DEFAULT_CODE_MODE_LIMITS.maxOutputBytes,
-  };
+  const executionPolicy = input.executionPolicy ?? DEFAULT_CODE_MODE_EXECUTION_POLICY;
   const toolCalls: CodeModeToolCall[] = [];
   const hostToolOperations = new Set<Promise<unknown>>();
   const fatalAbortController = new AbortController();
@@ -75,20 +146,7 @@ export async function executeCodeCellImpl(
       js: input.code,
       tools,
       toolExecutionOptions: { abortSignal: invocationSignal },
-      options: {
-        executionPolicy: {
-          timeoutMs: limits.maxSandboxTimeMs,
-          memoryLimitBytes: limits.maxMemoryBytes,
-          maxStackSizeBytes: limits.maxStackBytes,
-          maxResultBytes: limits.maxOutputBytes,
-          maxConsoleOutputBytes: 1,
-          maxSourceBytes: limits.maxSourceBytes,
-          maxToolInputBytes: limits.maxToolInputBytes,
-          maxToolOutputBytes: limits.maxToolOutputBytes,
-          maxBridgeRequests: limits.maxToolCalls,
-          maxInFlightBridgeRequests: limits.maxToolConcurrency,
-        },
-      },
+      options: { executionPolicy },
     });
     await drainHostToolOperations(hostToolOperations);
     if (fatalToolFailure) throw fatalToolFailure.reason;

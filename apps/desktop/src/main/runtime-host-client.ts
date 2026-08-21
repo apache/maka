@@ -236,6 +236,10 @@ export class DesktopRuntimeHostClient {
     return this.#connectionClosed || this.#closeTask ? 'unavailable' : 'ready';
   }
 
+  finalizeAccessCredential(): Promise<OperationOutput<'access.credential.finalize'>> {
+    return this.request('access.credential.finalize', {});
+  }
+
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
     this.#assertOpen();
     return this.connection.subscribeConfigurationChanges(listener);
@@ -1181,6 +1185,16 @@ export class DesktopRuntimeHostClient {
 
   queryGoal(sessionId: string): Promise<OperationOutput<"goal.query">> {
     return this.request("goal.query", { sessionId });
+  }
+
+  /**
+   * Arm a Goal the user asked for. No optimistic retry loop like `clearGoal`:
+   * arming names no revision, so there is no stale one to refresh — a Session
+   * that already has an unfinished Goal fails with `operation_conflict`, and
+   * that is an answer for the user, not a race to re-run.
+   */
+  armGoal(input: OperationInput<"goal.arm">): Promise<OperationOutput<"goal.arm">> {
+    return this.request("goal.arm", input);
   }
 
   controlGoal(

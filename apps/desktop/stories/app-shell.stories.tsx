@@ -19,6 +19,7 @@ import { deriveBranchBanner } from '../src/renderer/branch-banner';
 import { deriveSessionRevisionNavigation } from '../src/renderer/session-revisions';
 import { deriveSessionRail } from '../src/renderer/session-rail';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
+import { GoalDialog } from '../src/renderer/goal-dialog';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
 
@@ -229,6 +230,9 @@ const baseComposerProps: ComposerProps = {
   onPlanModeChange: noop,
   orchestrationMode: 'default',
   onOrchestrationModeChange: noop,
+  // Production wires this for every Session it can interact with locally
+  // (app-shell.tsx), so the ＋ menu always carries the Goal entry.
+  onSetGoal: noop,
   // Thinking is a separate right-footer Selector when levels are offered.
   activeThinkingLevels: ['off', 'low', 'medium', 'high', 'xhigh'],
   activeThinkingLevel: 'medium',
@@ -1026,5 +1030,25 @@ export const ModeOnWithPendingAttachments: Story = {
         onRemoveAttachment: noop,
       }}
     />
+  ),
+};
+
+// Real path: this Session already has a running Goal, which the composer shows
+// above the input. Arming refuses a second one, so the ＋ menu's Goal entry
+// says why instead of opening a dialog that would fail on submit.
+export const GoalAlreadySet: Story = {
+  render: () => <ComposedShell composer={{ goalActive: true }} />,
+};
+
+// Real path: composer ＋ → 设定 Goal…, on a Session with no Goal running and no
+// Turn in flight — app-shell mounts this dialog at the top level, over the
+// shell, exactly as composed here. It is the only place the two budgets that
+// stop a Goal are visible before one starts.
+export const GoalDialogOpen: Story = {
+  render: () => (
+    <>
+      <ComposedShell />
+      <GoalDialog sessionId="session-1" onClose={noop} />
+    </>
   ),
 };

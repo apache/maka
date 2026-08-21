@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
+  RuntimeHostOperationError,
   RuntimeHostPermanentReconnectError,
+  RuntimeHostRequestInterruptedError,
   runtimeHostStartupError,
   LOCAL_RUNTIME_HOST_PROFILE,
   sameResolvedRuntimeHostProfileTarget,
@@ -28,6 +30,7 @@ export interface RuntimeHostDesktopManager {
   ownsScope(scope: { readonly hostId: string; readonly targetEpoch: string }): boolean;
   defaultProfileId(): string;
   handleBotIncomingMessage(message: BotIncomingMessage): Promise<void>;
+  finalizePairing(profileId: string): Promise<void>;
   stopSession(ref: DesktopTargetSessionRef): Promise<void>;
   closeTranscript(consumerId: string, targetId: number): Promise<void>;
   acknowledgeTranscript(
@@ -92,6 +95,15 @@ export class RuntimeHostUpgradeCancelledError extends RuntimeHostPermanentReconn
   }
 }
 
+export class RuntimeHostPairingFinalizationInterruptedError extends Error {
+  constructor() {
+    super('Runtime Host pairing finalization was deferred until the next startup');
+    this.name = 'RuntimeHostPairingFinalizationInterruptedError';
+  }
+}
+
+const DEFAULT_PAIRING_FINALIZATION_TIMEOUT_MS = 30_000;
+
 export type RuntimeHostRestartableConflict = Extract<
   DesktopRuntimeHostCandidateStartResult,
   { kind: 'upgrade_required'; restartable: true }
@@ -138,6 +150,7 @@ export async function startRuntimeHostDesktopManager(
       signal: AbortSignal,
     ) => Promise<void>;
     reconnectBackoff?: RuntimeHostReconnectBackoff;
+    pairingFinalizationTimeoutMs?: number;
     onTargetStateChanged?: (state: RuntimeHostDesktopTargetState) => void;
     onTargetRemoved?: (state: RuntimeHostDesktopTargetState) => void;
     onDefaultProfileChanged?: (profileId: string) => void;
@@ -152,6 +165,7 @@ export async function startRuntimeHostDesktopManager(
     options.waitForHostExit ?? waitForProcessExit,
     options.waitForHostRetirement ?? waitForProcessRetirement,
     options.reconnectBackoff,
+    options.pairingFinalizationTimeoutMs ?? DEFAULT_PAIRING_FINALIZATION_TIMEOUT_MS,
     options.onTargetStateChanged,
     options.onTargetRemoved,
     options.onDefaultProfileChanged,
@@ -166,6 +180,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   readonly #targets = new Map<string, DesktopRuntimeHostTargetGeneration>();
   readonly #targetMutations = new Map<string, Promise<void>>();
   readonly #baseInput: DesktopRuntimeHostCandidateStartInput;
+  readonly #pairingFinalizationShutdown = new AbortController();
   #defaultProfileId: string = LOCAL_RUNTIME_HOST_PROFILE.id;
   #closed = false;
   #closeTask: Promise<void> | undefined;
@@ -187,6 +202,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       signal: AbortSignal,
     ) => Promise<void>,
     private readonly reconnectBackoff: RuntimeHostReconnectBackoff | undefined,
+    private readonly pairingFinalizationTimeoutMs: number,
     private readonly onTargetStateChanged:
       | ((state: RuntimeHostDesktopTargetState) => void)
       | undefined,
@@ -228,6 +244,46 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       this.#requireLifecycle(target),
     );
     await candidate.botIncoming.handleBotIncomingMessage(message);
+  }
+
+  finalizePairing(profileId: string): Promise<void> {
+    return this.#mutateTarget(profileId, () => this.#finalizePairing(profileId));
+  }
+
+  async #finalizePairing(profileId: string): Promise<void> {
+    const target = this.#requireTarget(profileId);
+    if (target.target.profile.kind !== 'remote') {
+      throw new Error('Only remote Runtime Host profiles can finalize pairing');
+    }
+    const lifecycle = this.#requireLifecycle(target);
+    const timeout = new AbortController();
+    const timer = setTimeout(
+      () => timeout.abort(new RuntimeHostPairingFinalizationInterruptedError()),
+      this.pairingFinalizationTimeoutMs,
+    );
+    const signal = AbortSignal.any([
+      this.#pairingFinalizationShutdown.signal,
+      timeout.signal,
+    ]);
+    try {
+      let candidate = await this.#waitForReadyCandidate(lifecycle, undefined, signal);
+      while (true) {
+        signal.throwIfAborted();
+        if (!target.valid || candidate.client.hostId !== target.target.profile.rootId) {
+          throw new Error('Runtime Host target changed before pairing was finalized');
+        }
+        try {
+          await candidate.client.finalizeAccessCredential();
+          return;
+        } catch (error) {
+          const retry = pairingFinalizeRetry(error);
+          if (!retry) throw error;
+          candidate = await this.#waitForReadyCandidate(lifecycle, candidate, signal);
+        }
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   current(profileId?: string): RuntimeHostDesktopTargetSnapshot | undefined {
@@ -428,6 +484,9 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
 
   async #close(): Promise<void> {
     this.#closed = true;
+    this.#pairingFinalizationShutdown.abort(
+      new RuntimeHostPairingFinalizationInterruptedError(),
+    );
     await Promise.allSettled([...this.#targetMutations.values()]);
     const results = await Promise.allSettled(
       [...this.#targets.values()].map((target) => this.#removeTarget(target)),
@@ -563,10 +622,13 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
 
   async #waitForReadyCandidate(
     lifecycle: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>,
+    previous?: DesktopRuntimeHostCandidate,
+    signal?: AbortSignal,
   ): Promise<DesktopRuntimeHostCandidate> {
-    let candidate = await lifecycle.waitForCurrent();
+    signal?.throwIfAborted();
+    let candidate = await lifecycle.waitForCurrent(previous, signal);
     while (candidate.client.lifecycleState !== 'ready') {
-      candidate = await lifecycle.waitForCurrent(candidate);
+      candidate = await lifecycle.waitForCurrent(candidate, signal);
     }
     return candidate;
   }
@@ -709,6 +771,22 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       );
     }
   }
+}
+
+function pairingFinalizeRetry(error: unknown): boolean {
+  // Finalization is idempotent for the current credential, so both a known
+  // non-dispatch and an unknown outcome converge on the replacement connection.
+  if (
+    error instanceof RuntimeHostRequestInterruptedError &&
+    error.operation === 'access.credential.finalize' &&
+    error.reason === 'connection_lost'
+  ) {
+    return true;
+  }
+  if (error instanceof RuntimeHostOperationError && error.operation === 'access.credential.finalize') {
+    return error.code === 'commit_outcome_unknown';
+  }
+  return false;
 }
 
 function withRuntimeHostTarget(

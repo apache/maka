@@ -69,7 +69,8 @@ maka runtime-host service status --json
 ```
 
 The install command persists the current exact Node and Maka CLI paths. Re-running it updates the
-same service; an omitted WebSocket port preserves the existing port. Before uninstalling the npm
+same systemd-supervised service; repeated startup failures stop automatic restarts and remain visible
+in `maka runtime-host service status`. An omitted WebSocket port preserves the existing port. Before uninstalling the npm
 package, remove the service with `maka runtime-host service uninstall`. Service uninstall keeps the
 State Root and Project data. Installation reports an actionable error instead of claiming persistence
 when systemd user lingering is disabled. Run service installation from a persistent global Maka
@@ -124,9 +125,13 @@ The Client Profile must separately persist the plaintext acknowledgement. Maka n
 
 ## Connect Desktop
 
-Open `Settings → Workspace → Runtime Host`, choose **Add remote Host**, select the connection method, and enter the method-specific endpoint, the ready event's `rootId`, and the issued credential. Choose **Save and enable**.
+Open `Settings → Workspace → Runtime Host` and choose **Add computer**. Enter an OpenSSH destination; Desktop runs the released setup command in an interactive SSH session, stores the resulting credential, verifies the tunnel, and then opens the remote Project picker.
+
+Use **Configure manually** for an existing TLS, SSH, or explicitly acknowledged plaintext endpoint.
 
 The credential is stored separately from the Profile. Desktop keeps Local and every enabled remote Host connected independently. Choose one as the default for new Sessions; existing Sessions continue to use their owning Host. A failed remote connection remains visible without interrupting the other Hosts. After connecting, choose a Project registered on that Host; Client-local directory actions remain unavailable.
+
+During guided pairing, the delivered credential has the selected Client grants and expires after 15 minutes unless Desktop explicitly finalizes it after saving the local binding.
 
 ## Connect TUI or CLI
 
@@ -180,5 +185,6 @@ Remote Clients never auto-upgrade or restart the Host, downgrade the transport, 
 - Do not put credentials on the command line or in Profile JSON.
 - Plaintext requires durable Client acknowledgement and an independent Host startup flag.
 - Session responses may include a resolved `hostCwd`. Treat it as Host metadata, never as a Client filesystem path.
-- A remote Client neither upgrades nor terminates the service process.
+- A remote Client cannot request a service upgrade, restart, or shutdown. The Host may still drain
+  itself after an indeterminate durable commit; a managed service supervisor restarts it.
 - Revoke a credential on the Host with `maka runtime-host access revoke --root /srv/maka --credential <credentialId>`.

@@ -89,7 +89,6 @@ import type {
   ToolInvocationRecord,
 } from '@maka/core/usage-stats/types';
 import type { ContextBudgetDiagnostic, PromptSegmentEstimate } from '@maka/core/usage-stats/types';
-import { DEFAULT_CODE_MODE_LIMITS, executeCodeCell } from '@maka/code-mode';
 import type {
   JSONValue,
   ModelFinishReason,
@@ -111,6 +110,12 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import { z } from 'zod';
 
 import { AsyncEventQueue } from './async-queue.js';
+import { AdmissionLimiter } from './admission-limiter.js';
+import {
+  type CodeModeExecutionResult,
+  DEFAULT_CODE_MODE_EXECUTION_POLICY,
+  executeCodeCell,
+} from './code-mode.js';
 import {
   StreamWatchdog,
   formatStreamWatchdogError,
@@ -901,6 +906,15 @@ function nativeApplyPatchFailureOutput(output: ToolResultOutput): ToolResultOutp
   };
 }
 
+/**
+ * One Code Mode cell runs at a time on a backend, with one allowed to wait.
+ * Widening either needs evidence that concurrent cells are wanted; none exists
+ * today, and this is the bound the Code Mode adapter enforced before execution
+ * admission moved to the side that owns it.
+ */
+const MAX_ACTIVE_CODE_MODE_CELLS = 1;
+const MAX_WAITING_CODE_MODE_CELLS = 1;
+
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
 const MAX_IDLE_WATCHDOG_RETRIES_PER_STEP = 1;
 const MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP = 1;
@@ -1042,6 +1056,9 @@ export class AiSdkBackend implements AgentBackend {
   private readonly resolvedProviderOptions: Record<string, unknown>;
   private readonly toolAvailabilityRuntime: ToolAvailabilityRuntime;
   private readonly applyPatchProfile: ApplyPatchProfile | null;
+
+  /** Bounds outstanding Code Mode cells on this backend. */
+  private readonly codeCellAdmission = new AdmissionLimiter(MAX_ACTIVE_CODE_MODE_CELLS);
 
   /**
    * Every `send()` currently in flight on this backend.
@@ -3079,7 +3096,7 @@ export class AiSdkBackend implements AgentBackend {
           const nextBytes = new TextEncoder().encode(event.chunk).byteLength;
           if (
             nestedOutputLimitExceeded ||
-            nestedOutputBytes + nextBytes > DEFAULT_CODE_MODE_LIMITS.maxToolOutputBytes
+            nestedOutputBytes + nextBytes > DEFAULT_CODE_MODE_EXECUTION_POLICY.maxToolOutputBytes
           ) {
             nestedOutputLimitExceeded = true;
             return;
@@ -3090,38 +3107,64 @@ export class AiSdkBackend implements AgentBackend {
       },
       pushAndWaitUntilConsumed: (event) => eventSink.pushAndWaitUntilConsumed(event),
     };
-    return executeCodeCell({
-      code,
-      signal: context.abortSignal,
-      tools: [...snapshot.values()].map((tool) => ({
-        name: tool.name,
-      })),
-      isFatalToolError: isRuntimeCommitBoundaryError,
-      callTool: async (name, input, signal) => {
-        const tool = snapshot.get(name);
-        if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
-        const parsedInput = await validateCodeModeToolInput(tool, input);
-        const settlement = await scope.toolRuntime.settleToolCallRaw({
-          tool,
-          turnId: context.turnId,
-          toolCallId: `${context.toolCallId}:nested:${this.newId()}`,
-          input: parsedInput,
-          abortSignal: signal,
-          eventSink: nestedEventSink,
-          origin: 'code_mode',
-          parentToolCallId: context.toolCallId,
-          ...(context.operationId ? { parentOperationId: context.operationId } : {}),
-          maxResultBytes: DEFAULT_CODE_MODE_LIMITS.maxToolOutputBytes,
-        });
-        if (settlement.providerError !== undefined) {
-          throw new Error(settlement.providerError);
-        }
-        if (nestedOutputLimitExceeded) {
-          throw new Error('Code Mode nested output byte limit exceeded');
-        }
-        return settlement.result;
-      },
-    });
+    // A permit is held across the cell's complete lifecycle, not just its
+    // sandbox run: `executeCodeCell` settles only once the cell's host
+    // operations have drained, so releasing on settlement covers the drain.
+    // The sandbox worker cap cannot serve this purpose — on cancellation
+    // `runCodeMode` releases its worker and rejects at once, by design, while
+    // host operations started by the cell may still be running with durable
+    // side effects. Only the Runtime waits for those, so only the Runtime can
+    // bound them; releasing when the worker is released would let repeated
+    // cancellation accumulate host work without bound.
+    //
+    // One cell may wait; the next is turned away rather than queued, which is
+    // what the Code Mode adapter did before this moved to the side that owns
+    // execution. Nothing awaits between reading `waitingCount` and the enqueue
+    // inside `acquire`, so the pair is atomic.
+    if (this.codeCellAdmission.waitingCount >= MAX_WAITING_CODE_MODE_CELLS) {
+      return {
+        ok: false,
+        error: { kind: 'limit_exceeded', message: 'Code Mode execution queue is full' },
+        toolCalls: [],
+      } satisfies CodeModeExecutionResult;
+    }
+    const permit = await this.codeCellAdmission.acquire(context.abortSignal);
+    try {
+      return await executeCodeCell({
+        code,
+        signal: context.abortSignal,
+        tools: [...snapshot.values()].map((tool) => ({
+          name: tool.name,
+        })),
+        isFatalToolError: isRuntimeCommitBoundaryError,
+        callTool: async (name, input, signal) => {
+          const tool = snapshot.get(name);
+          if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
+          const parsedInput = await validateCodeModeToolInput(tool, input);
+          const settlement = await scope.toolRuntime.settleToolCallRaw({
+            tool,
+            turnId: context.turnId,
+            toolCallId: `${context.toolCallId}:nested:${this.newId()}`,
+            input: parsedInput,
+            abortSignal: signal,
+            eventSink: nestedEventSink,
+            origin: 'code_mode',
+            parentToolCallId: context.toolCallId,
+            ...(context.operationId ? { parentOperationId: context.operationId } : {}),
+            maxResultBytes: DEFAULT_CODE_MODE_EXECUTION_POLICY.maxToolOutputBytes,
+          });
+          if (settlement.providerError !== undefined) {
+            throw new Error(settlement.providerError);
+          }
+          if (nestedOutputLimitExceeded) {
+            throw new Error('Code Mode nested output byte limit exceeded');
+          }
+          return settlement.result;
+        },
+      });
+    } finally {
+      permit.release();
+    }
   }
 
   private handlePlanToolResult(

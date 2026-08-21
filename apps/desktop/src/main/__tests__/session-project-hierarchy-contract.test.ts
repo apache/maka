@@ -12,16 +12,18 @@ if (!sidebarCssUrl) throw new Error('Could not locate renderer/styles/sidebar.cs
 const sidebarCss = readFileSync(sidebarCssUrl, 'utf8');
 
 describe('project-grouped session hierarchy', () => {
-  it('visually indents session rows beneath their project', () => {
+  it('aligns session titles with the project name', () => {
     const projectChildrenRule = sidebarCss.match(
       /\.maka-project-row\s*>\s*div\s*>\s*\[role=["']group["']\]\s*>\s*div\s*\{([^}]*)\}/,
     );
 
     assert.ok(projectChildrenRule, 'project children must have an explicit hierarchy rule');
+    // Product contract: 8px nest so session titles share the project title's x.
+    // SideNav's default spacing-6 is a fixed child inset, not that alignment.
     assert.match(
       projectChildrenRule[1] ?? '',
-      /padding-inline-start:\s*var\(--spacing-6\)\s*!important;/,
-      'project sessions must keep one SideNav nesting step (24px)',
+      /padding-inline-start:\s*var\(--spacing-2\)\s*!important;/,
+      'project sessions must keep an 8px hierarchical nest',
     );
   });
 });

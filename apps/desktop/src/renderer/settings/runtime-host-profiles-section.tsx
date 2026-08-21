@@ -25,6 +25,7 @@ import { getSettingsProjectsCopy } from "../locales/settings-projects-copy.js";
 import { PasswordInput } from "./password-input.js";
 import { settingsActionErrorMessage } from "./settings-error-copy.js";
 import { SettingsField, SettingsRow, SettingsSection } from "./settings-section.js";
+import { RuntimeHostOnboardingDialog } from './runtime-host-onboarding-dialog.js';
 
 type RemoteTransportKind = RuntimeHostRemoteTransport["kind"];
 
@@ -44,7 +45,9 @@ function createRemoteHostDraft() {
   };
 }
 
-export function RuntimeHostProfilesSection() {
+export function RuntimeHostProfilesSection(props: {
+  readonly onRemoteHostAdded: (profileId: string) => void;
+}) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
   const mountedRef = useMountedRef();
@@ -53,6 +56,7 @@ export function RuntimeHostProfilesSection() {
     Awaited<ReturnType<typeof window.maka.runtimeHostProfiles.getSnapshot>>
   >();
   const [showAdd, setShowAdd] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
@@ -152,6 +156,23 @@ export function RuntimeHostProfilesSection() {
     }
   }
 
+  async function resolvePairingRecovery() {
+    setSwitching(true);
+    try {
+      const next = await window.maka.runtimeHostProfiles.resolvePairingRecovery();
+      if (mountedRef.current) setSnapshot(next);
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(
+          copy.resolvePairingRecoveryFailed,
+          settingsActionErrorMessage(error, locale),
+        );
+      }
+    } finally {
+      if (mountedRef.current) setSwitching(false);
+    }
+  }
+
   const remoteEntries = snapshot?.entries.filter((entry) => entry.profile.kind === "remote") ?? [];
   const profileOptions = (snapshot?.entries ?? [])
     .filter((entry) => entry.enabled)
@@ -183,15 +204,39 @@ export function RuntimeHostProfilesSection() {
         title={copy.remoteTitle}
         description={copy.remoteDescription}
         action={
-          <Button
-            variant="secondary"
-            size="sm"
-            label={showAdd ? copy.cancel : copy.add}
-            isDisabled={switching}
-            onClick={toggleAdd}
-          />
+          <HStack gap={2} align="center">
+            <Button
+              variant="primary"
+              size="sm"
+              label={copy.addComputer}
+              isDisabled={switching}
+              onClick={() => setShowOnboarding(true)}
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              label={showAdd ? copy.cancel : copy.configureManually}
+              isDisabled={switching}
+              onClick={toggleAdd}
+            />
+          </HStack>
         }
       >
+        {snapshot?.pairingRecoveryBlocked || snapshot?.pairingRecoveryPending ? (
+          <SettingsRow
+            label={copy.pairingRecoveryTitle}
+            description={copy.pairingRecoveryDescription}
+            end={(
+              <Button
+                variant="secondary"
+                size="sm"
+                label={copy.resolvePairingRecovery}
+                isDisabled={switching}
+                onClick={() => void resolvePairingRecovery()}
+              />
+            )}
+          />
+        ) : null}
         {showAdd ? (
           <>
             <SettingsRow
@@ -326,6 +371,14 @@ export function RuntimeHostProfilesSection() {
           </List>
         )}
       </SettingsSection>
+      <RuntimeHostOnboardingDialog
+        isOpen={showOnboarding}
+        onClose={() => {
+          setShowOnboarding(false);
+          void reload();
+        }}
+        onRemoteHostAdded={props.onRemoteHostAdded}
+      />
     </>
   );
 }

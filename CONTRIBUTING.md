@@ -100,6 +100,16 @@ npm run cli:dev                                  # TUI with the Maka Dev profile
 npm run cli:dev -- run "…"                       # one non-interactive turn
 ```
 
+To exercise Desktop's remote Runtime Host setup with the current worktree, build the same
+self-contained package shape used for releases and opt the development app into that archive:
+
+```sh
+npm run release:cli:pack -- --allow-dirty
+MAKA_RUNTIME_HOST_SETUP_ARCHIVE="$PWD/packages/cli/release/<archive>.tgz" npm run dev
+```
+
+The development app uploads the temporary archive over SSH. Packaged apps ignore this override.
+
 Evaluation commands and contracts live in [`packages/eval`](./packages/eval).
 
 ### Building

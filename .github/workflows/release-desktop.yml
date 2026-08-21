@@ -49,6 +49,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify Runtime Host setup package
+        run: |
+          requested_version="$(node -p "require('./packages/cli/package.json').version")"
+          setup_package="maka-agent@${requested_version}"
+          published_version="$(npm view "$setup_package" version)"
+          if [ "$published_version" != "$requested_version" ]; then
+            echo "Published package resolved to ${published_version}, expected ${requested_version}." >&2
+            exit 1
+          fi
+          echo "MAKA_RUNTIME_HOST_SETUP_PACKAGE=$setup_package" >> "$GITHUB_ENV"
+
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=moderate
 

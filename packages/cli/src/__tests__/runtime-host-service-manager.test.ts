@@ -86,6 +86,7 @@ describe('managed Runtime Host service', () => {
         'desktop.client-1',
         '--preset',
         'desktop-client',
+        '--defer-pairing-commit',
         '--json',
       ]),
       {
@@ -93,6 +94,7 @@ describe('managed Runtime Host service', () => {
         json: true,
         principalId: 'desktop.client-1',
         preset: 'desktop-client',
+        deferPairingCommit: true,
       },
     );
   });
@@ -154,6 +156,9 @@ describe('managed Runtime Host service', () => {
     assert.equal(installed.service.enabled, true);
     assert.equal(installed.service.config?.websocket.port, 47_777);
     assert.match(await readFile(unitPath, 'utf8'), /ExecStart=.*runtime-host.*serve/u);
+    const resetFailed = systemd.calls.findIndex(([command]) => command === 'reset-failed');
+    const restart = systemd.calls.findIndex(([command]) => command === 'restart');
+    assert.ok(resetFailed >= 0 && resetFailed < restart);
 
     const reinstalled = await manageRuntimeHostService(
       { ...common, action: 'install' },
@@ -309,6 +314,9 @@ describe('managed Runtime Host service', () => {
     const unit = renderSystemdUnit(config);
     assert.match(unit, /"\/srv\/Maka 100%%"/u);
     assert.match(unit, /"Cash\$\$=\/home\/ada\/My Projects"/u);
+    assert.match(unit, /^Restart=always$/mu);
+    assert.match(unit, /^StartLimitIntervalSec=60s$/mu);
+    assert.match(unit, /^StartLimitBurst=5$/mu);
   });
 
   it('emits one stable machine error for an unmet service prerequisite', async () => {
@@ -380,6 +388,7 @@ describe('managed Runtime Host service', () => {
     });
     assert.equal(first.service.config?.websocket.port, 41_001);
 
+    const updateCallsStart = systemd.calls.length;
     await assert.rejects(
       manageRuntimeHostService({ ...input, websocketPort: 41_002 }, backend(), {
         waitForReady: async () => {
@@ -391,6 +400,10 @@ describe('managed Runtime Host service', () => {
       }),
       /candidate failed readiness/u,
     );
+    assert.deepEqual(systemd.calls.slice(updateCallsStart).slice(-2), [
+      ['reset-failed', basename(unitPath)],
+      ['restart', basename(unitPath)],
+    ]);
     const status = await manageRuntimeHostService({ ...input, action: 'status' }, backend());
     assert.equal(status.service.config?.websocket.port, 41_001);
     assert.match(await readFile(unitPath, 'utf8'), /--websocket-port" "41001"/u);
@@ -531,6 +544,7 @@ describe('managed Runtime Host service', () => {
 
 function createFakeSystemd(unitPath: string): {
   readonly failNext: (command: string) => void;
+  readonly calls: readonly (readonly string[])[];
   readonly run: (args: readonly string[]) => Promise<{
     exitCode: number;
     stdout: string;
@@ -541,11 +555,14 @@ function createFakeSystemd(unitPath: string): {
   let enabled = false;
   let active = false;
   let failureCommand: string | undefined;
+  const calls: string[][] = [];
   return {
+    calls,
     failNext: (command) => {
       failureCommand = command;
     },
     run: async (args) => {
+      calls.push([...args]);
       if (
         ['show', 'enable', 'disable', 'start', 'restart', 'stop', 'reset-failed'].includes(
           args[0] ?? '',

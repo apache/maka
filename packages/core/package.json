@@ -42,6 +42,7 @@
     "./permission-profile": "./dist/permission-profile.js",
     "./windows-path": "./dist/windows-path.js",
     "./sandbox-boundary": "./dist/sandbox-boundary.js",
+    "./serialized-byte-length": "./dist/serialized-byte-length.js",
     "./permission-profile-compiler": "./dist/permission-profile-compiler.js",
     "./user-question": "./dist/user-question.js",
     "./connections": "./dist/connections.js",

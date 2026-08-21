@@ -167,11 +167,14 @@ export function renderSystemdUnit(config: RuntimeHostManagedServiceConfig): stri
     '[Unit]',
     'Description=Maka Runtime Host',
     'After=network.target',
+    'StartLimitIntervalSec=60s',
+    'StartLimitBurst=5',
     '',
     '[Service]',
     'Type=simple',
     `ExecStart=${args.map(quoteSystemdArgument).join(' ')}`,
-    'Restart=on-failure',
+    // A clean idle exit must not silently remove a configured remote Host.
+    'Restart=always',
     'RestartSec=2s',
     'KillMode=mixed',
     'TimeoutStopSec=45s',
@@ -221,6 +224,7 @@ async function applySystemdDeployment(
     ['enable', context.unitName],
     'Enabling the Runtime Host service failed',
   );
+  await context.runSystemctl(['reset-failed', context.unitName]);
   await requireSystemctl(
     context.runSystemctl,
     ['restart', context.unitName],
@@ -282,6 +286,9 @@ async function restoreSystemdDeployment(
     [snapshot.status.enabled ? 'enable' : 'disable', context.unitName],
     'Restoring the Runtime Host service enablement failed',
   );
+  if (snapshot.status.active) {
+    await context.runSystemctl(['reset-failed', context.unitName]);
+  }
   await requireSystemctl(
     context.runSystemctl,
     [snapshot.status.active ? 'restart' : 'stop', context.unitName],

@@ -319,6 +319,27 @@ type ShellCopy = {
     thinkingFailedTitle: string;
     thinkingFallback: string;
   };
+  /**
+   * The Goal dialog. A Goal spends tokens without further prompting, so the
+   * wording states what it does and names the two budgets that stop it —
+   * silence here reads as "nothing happens until I press something else".
+   */
+  goalDialog: {
+    title: string;
+    description: string;
+    conditionLabel: string;
+    conditionDescription: string;
+    conditionPlaceholder: string;
+    maxIterationsLabel: string;
+    maxIterationsDescription: string;
+    maxIterationsInvalid(max: number): string;
+    tokenBudgetLabel: string;
+    tokenBudgetDescription: string;
+    tokenBudgetInvalid(min: number): string;
+    cancel: string;
+    submit: string;
+    failedFallback: string;
+  };
   errorBoundary: {
     copyPending: string;
     copied: string;
@@ -443,6 +464,12 @@ type ShellCopy = {
     modeChangeStreaming: string;
     modeChangeRunning: string;
     modeChangeWaiting: string;
+    /**
+     * Why the ＋ menu's Goal entry is unavailable right now. A Goal takes hold
+     * on the next Turn, so arming one mid-Turn would look like it did nothing;
+     * saying so is better than letting the user find that out afterwards.
+     */
+    goalTurnActive: string;
     planModeFailedTitle: string;
     planModeFallback: string;
     orchestrationModeFailedTitle: string;
@@ -952,6 +979,22 @@ const SHELL_COPY_BY_LOCALE = {
       thinkingFailedTitle: '切换思考级别失败',
       thinkingFallback: '思考级别暂时无法切换，请稍后重试。',
     },
+    goalDialog: {
+      title: '设定 Goal',
+      description: 'Goal 会在每轮结束后自动续行，直到达成、判定不可行，或触及下面的预算。随时可在输入框上方停止。',
+      conditionLabel: '达成条件',
+      conditionDescription: '用一句话说明什么算做完；Maka 每轮都据此判断。',
+      conditionPlaceholder: '例如：所有测试通过，且 lint 无告警',
+      maxIterationsLabel: '最多轮数',
+      maxIterationsDescription: '留空使用默认值。',
+      maxIterationsInvalid: (max) => `请填 1 到 ${max} 之间的整数，或留空。`,
+      tokenBudgetLabel: 'Token 预算',
+      tokenBudgetDescription: '留空表示不设 token 上限。',
+      tokenBudgetInvalid: (min) => `请填不小于 ${min} 的整数，或留空。`,
+      cancel: '取消',
+      submit: '开始',
+      failedFallback: '无法设定 Goal，请稍后重试。',
+    },
     errorBoundary: {
       copyPending: '复制中…',
       copied: '已复制',
@@ -1143,6 +1186,7 @@ const SHELL_COPY_BY_LOCALE = {
       modeChangeStreaming: '当前任务正在流式输出，等结束后再切换模式。',
       modeChangeRunning: '当前任务正在运行，等结束后再切换模式。',
       modeChangeWaiting: '当前有工具调用正在等待确认，处理后再切换模式。',
+      goalTurnActive: 'Goal 从下一轮开始生效。等当前这一轮结束后再设定。',
       planModeFailedTitle: '切换 Plan 模式失败',
       planModeFallback: 'Plan 模式暂时无法切换，请稍后重试。',
       orchestrationModeFailedTitle: '切换编排模式失败',
@@ -1437,6 +1481,22 @@ const SHELL_COPY_BY_LOCALE = {
       thinkingFailedTitle: 'Could not change thinking level',
       thinkingFallback: 'The thinking level could not be changed. Try again later.',
     },
+    goalDialog: {
+      title: 'Set a goal',
+      description: 'Maka continues on its own after each turn until the goal is met, judged impossible, or a budget below is reached. You can stop it any time from above the composer.',
+      conditionLabel: 'Completion condition',
+      conditionDescription: 'One sentence for what counts as done; Maka checks it after every turn.',
+      conditionPlaceholder: 'e.g. all tests pass and lint reports no warnings',
+      maxIterationsLabel: 'Maximum turns',
+      maxIterationsDescription: 'Leave empty to use the default.',
+      maxIterationsInvalid: (max) => `Enter a whole number from 1 to ${max}, or leave it empty.`,
+      tokenBudgetLabel: 'Token budget',
+      tokenBudgetDescription: 'Leave empty for no token ceiling.',
+      tokenBudgetInvalid: (min) => `Enter a whole number of at least ${min}, or leave it empty.`,
+      cancel: 'Cancel',
+      submit: 'Start',
+      failedFallback: 'The goal could not be set. Try again.',
+    },
     errorBoundary: {
       copyPending: 'Copying…',
       copied: 'Copied',
@@ -1670,6 +1730,8 @@ const SHELL_COPY_BY_LOCALE = {
       modeChangeStreaming: 'This task is streaming. Wait for it to finish before changing the mode.',
       modeChangeRunning: 'This task is running. Wait for it to finish before changing the mode.',
       modeChangeWaiting: 'A tool call is waiting for confirmation. Respond before changing the mode.',
+      goalTurnActive:
+        'A goal takes hold on the next turn. Wait for this one to finish before setting one.',
       planModeFailedTitle: 'Could not change Plan mode',
       planModeFallback: 'Plan mode could not be changed. Try again later.',
       orchestrationModeFailedTitle: 'Could not change the orchestration mode',

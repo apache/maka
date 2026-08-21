@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isCanonicalRuntimeHostWebSocketPath } from '../protocol/index.js';
 
 export const RUNTIME_HOST_SETUP_FRAME_PREFIX = 'MAKA_RUNTIME_HOST_SETUP_V1 ';
 const SETUP_FRAME_MAX_BYTES = 16 * 1024;
@@ -39,7 +40,9 @@ const SETUP_FRAME_SCHEMA = z.discriminatedUnion('kind', [
       kind: z.literal('complete'),
       version: boundedString(128),
       rootId: z.string().regex(/^[a-f0-9]{64}$/u),
-      endpoint: boundedString(SETUP_FIELD_MAX_BYTES).refine(isLoopbackWebSocketUrl),
+      endpoint: boundedString(SETUP_FIELD_MAX_BYTES).refine(
+        (value) => parseRuntimeHostSetupEndpoint(value) !== undefined,
+      ),
       credentialId: boundedString(SETUP_FIELD_MAX_BYTES),
       credential: boundedString(SETUP_CREDENTIAL_MAX_BYTES),
     })
@@ -59,6 +62,35 @@ const SETUP_FRAME_SCHEMA = z.discriminatedUnion('kind', [
 ]);
 
 export type RuntimeHostSetupFrame = z.infer<typeof SETUP_FRAME_SCHEMA>;
+
+export interface RuntimeHostSetupEndpoint {
+  readonly port: number;
+  readonly websocketPath: string;
+}
+
+export function parseRuntimeHostSetupEndpoint(value: string): RuntimeHostSetupEndpoint | undefined {
+  try {
+    const url = new URL(value);
+    const port = Number(url.port);
+    if (
+      url.protocol !== 'ws:' ||
+      (url.hostname !== '127.0.0.1' && url.hostname !== '[::1]' && url.hostname !== '::1') ||
+      url.username ||
+      url.password ||
+      !Number.isInteger(port) ||
+      port < 1 ||
+      port > 65_535 ||
+      url.search ||
+      url.hash ||
+      !isCanonicalRuntimeHostWebSocketPath(url.pathname)
+    ) {
+      return undefined;
+    }
+    return { port, websocketPath: url.pathname };
+  } catch {
+    return undefined;
+  }
+}
 
 export function encodeRuntimeHostSetupFrame(frame: RuntimeHostSetupFrame): string {
   const encoded = Buffer.from(JSON.stringify(SETUP_FRAME_SCHEMA.parse(frame))).toString(
@@ -83,17 +115,5 @@ export function decodeRuntimeHostSetupFrame(line: string): RuntimeHostSetupFrame
     return decoded.success ? decoded.data : undefined;
   } catch {
     return undefined;
-  }
-}
-
-function isLoopbackWebSocketUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return (
-      url.protocol === 'ws:' &&
-      (url.hostname === '127.0.0.1' || url.hostname === '[::1]' || url.hostname === '::1')
-    );
-  } catch {
-    return false;
   }
 }

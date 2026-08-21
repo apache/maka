@@ -13,6 +13,7 @@ const ACCESS_ERRORS = [
   'operation_unavailable',
   'invalid_request',
   'persistence_failed',
+  'commit_outcome_unknown',
   'internal_failure',
 ] as const;
 
@@ -36,6 +37,8 @@ export interface AccessCredentialIssueResult {
 
 export type AccessCredentialReplaceInput = AccessCredentialIssueInput;
 export type AccessCredentialReplaceResult = AccessCredentialIssueResult;
+export type AccessCredentialPrepareInput = AccessCredentialIssueInput;
+export type AccessCredentialPrepareResult = AccessCredentialIssueResult;
 
 export interface AccessCredentialRevokeInput {
   readonly credentialId: string;
@@ -45,6 +48,9 @@ export interface AccessCredentialRevokeResult {
   readonly credentialId: string;
   readonly revoked: boolean;
 }
+
+export type AccessCredentialFinalizeInput = Record<string, never>;
+export type AccessCredentialFinalizeResult = Record<string, never>;
 
 export const ACCESS_AUTHORITY_OPERATION_SPECS = {
   'access.credential.issue': defineOperation<
@@ -69,6 +75,17 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
     decodeInput: decodeAccessCredentialIssueInput,
     decodeOutput: decodeAccessCredentialIssueResult,
   }),
+  'access.credential.prepare': defineOperation<
+    AccessCredentialPrepareInput,
+    AccessCredentialPrepareResult,
+    (typeof ACCESS_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: ACCESS_ERRORS,
+    decodeInput: decodeAccessCredentialIssueInput,
+    decodeOutput: decodeAccessCredentialIssueResult,
+  }),
   'access.credential.revoke': defineOperation<
     AccessCredentialRevokeInput,
     AccessCredentialRevokeResult,
@@ -79,6 +96,17 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
     errors: ACCESS_ERRORS,
     decodeInput: decodeAccessCredentialRevokeInput,
     decodeOutput: decodeAccessCredentialRevokeResult,
+  }),
+  'access.credential.finalize': defineOperation<
+    AccessCredentialFinalizeInput,
+    AccessCredentialFinalizeResult,
+    (typeof ACCESS_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: ACCESS_ERRORS,
+    decodeInput: decodeAccessCredentialFinalizeInput,
+    decodeOutput: decodeAccessCredentialFinalizeResult,
   }),
 } as const;
 
@@ -147,6 +175,18 @@ export function decodeAccessCredentialRevokeResult(value: unknown): AccessCreden
     credentialId: requireId(record.credentialId, 'credentialId'),
     revoked: boolean(record.revoked, 'revoked'),
   };
+}
+
+export function decodeAccessCredentialFinalizeInput(value: unknown): AccessCredentialFinalizeInput {
+  requireExactRecord(value, 'access credential finalize input', []);
+  return {};
+}
+
+export function decodeAccessCredentialFinalizeResult(
+  value: unknown,
+): AccessCredentialFinalizeResult {
+  requireExactRecord(value, 'access credential finalize result', []);
+  return {};
 }
 
 function operationGrants(value: unknown): readonly OperationKey[] {

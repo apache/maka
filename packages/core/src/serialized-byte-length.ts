@@ -1,11 +1,21 @@
-export interface CodeModeToolDefinition {
-  name: string;
-}
-
 /**
- * The byte definition shared by Code Mode and Runtime's nested-result
- * publication boundary. JSON is the representation that is persisted and
- * returned to the cell, including quotes and escapes for strings.
+ * The single serialized-byte fact for the repository: how many UTF-8 bytes the
+ * JSON representation of a value occupies, including quotes and escapes. Used
+ * wherever a payload is bounded before it is persisted or published.
+ *
+ * Counting stops as soon as `maxBytes` is exceeded, so callers can bound
+ * untrusted input without materializing it. Values JSON cannot faithfully
+ * represent (a circular reference, a `toJSON` hook, a non-plain prototype)
+ * report `Number.POSITIVE_INFINITY` rather than a count.
+ *
+ * One deliberate departure from `JSON.stringify`, which returns `undefined`
+ * for a top-level `undefined`: that case is counted as four bytes rather than
+ * reported as unrepresentable. An absent result is not an oversized one, and
+ * four bytes is a conservative bound on what callers publish in its place — a
+ * Code Mode cell substitutes `null` through `value ?? null`, and a tool result
+ * becomes empty text through result-content coercion. Reporting infinity would
+ * make a tool that simply returned nothing fail its result-byte bound as though
+ * the result were too large.
  */
 export function serializedByteLength(value: unknown, maxBytes = Number.POSITIVE_INFINITY): number {
   const limit =
@@ -18,7 +28,6 @@ export function serializedByteLength(value: unknown, maxBytes = Number.POSITIVE_
   }
   return budget.bytes;
 }
-
 interface SerializedByteBudget {
   bytes: number;
   limit: number;
@@ -145,127 +154,3 @@ function addSerializedBytes(budget: SerializedByteBudget, bytes: number): boolea
   budget.bytes += bytes;
   return true;
 }
-
-export interface CodeModeLimits {
-  maxSourceBytes: number;
-  /** Sandbox invocation deadline; aborted host operations still drain before settlement. */
-  maxSandboxTimeMs: number;
-  maxMemoryBytes: number;
-  maxStackBytes: number;
-  maxToolCalls: number;
-  maxToolConcurrency: number;
-  maxToolInputBytes: number;
-  maxToolOutputBytes: number;
-  maxOutputBytes: number;
-}
-
-export const DEFAULT_CODE_MODE_LIMITS: Readonly<CodeModeLimits> = Object.freeze({
-  maxSourceBytes: 64 * 1024,
-  maxSandboxTimeMs: 30_000,
-  maxMemoryBytes: 64 * 1024 * 1024,
-  maxStackBytes: 2 * 1024 * 1024,
-  maxToolCalls: 32,
-  maxToolConcurrency: 8,
-  maxToolInputBytes: 1024 * 1024,
-  maxToolOutputBytes: 1024 * 1024,
-  maxOutputBytes: 1024 * 1024,
-});
-
-export type CodeModeDiagnosticKind =
-  | 'parse_error'
-  | 'execution_error'
-  | 'unknown_tool'
-  | 'limit_exceeded'
-  | 'tool_failure';
-
-export interface CodeModeDiagnostic {
-  kind: CodeModeDiagnosticKind;
-  message: string;
-}
-
-export interface CodeModeToolCall {
-  index: number;
-  name: string;
-}
-
-export interface CodeModeExecutionSuccess {
-  ok: true;
-  value: unknown;
-  toolCalls: CodeModeToolCall[];
-}
-
-export interface CodeModeExecutionFailure {
-  ok: false;
-  error: CodeModeDiagnostic;
-  toolCalls: CodeModeToolCall[];
-}
-
-export type CodeModeExecutionResult = CodeModeExecutionSuccess | CodeModeExecutionFailure;
-
-export interface ExecuteCodeCellInput {
-  code: string;
-  tools: readonly CodeModeToolDefinition[];
-  callTool(name: string, input: unknown, signal: AbortSignal): Promise<unknown>;
-  isFatalToolError?: (error: unknown) => boolean;
-  signal?: AbortSignal;
-  limits?: Partial<CodeModeLimits>;
-}
-
-interface QueuedCodeCell {
-  input: ExecuteCodeCellInput;
-  resolve: (result: CodeModeExecutionResult) => void;
-  reject: (error: unknown) => void;
-  onAbort?: () => void;
-}
-
-let queuedCodeCell: QueuedCodeCell | undefined;
-let codeCellActive = false;
-
-export async function executeCodeCell(
-  input: ExecuteCodeCellInput,
-): Promise<CodeModeExecutionResult> {
-  if (input.signal?.aborted) throw input.signal.reason ?? abortError();
-  return new Promise<CodeModeExecutionResult>((resolve, reject) => {
-    const entry: QueuedCodeCell = { input, resolve, reject };
-    if (codeCellActive) {
-      if (queuedCodeCell) {
-        resolve({
-          ok: false,
-          error: { kind: 'limit_exceeded', message: 'Code Mode execution queue is full' },
-          toolCalls: [],
-        });
-        return;
-      }
-      const onAbort = () => {
-        if (queuedCodeCell !== entry) return;
-        queuedCodeCell = undefined;
-        reject(input.signal?.reason ?? abortError());
-      };
-      entry.onAbort = onAbort;
-      input.signal?.addEventListener('abort', onAbort, { once: true });
-      queuedCodeCell = entry;
-      return;
-    }
-    codeCellActive = true;
-    runCodeCell(entry);
-  });
-}
-
-function runCodeCell(entry: QueuedCodeCell): void {
-  if (entry.onAbort) entry.input.signal?.removeEventListener('abort', entry.onAbort);
-  void executeCodeCellImpl(entry.input)
-    .then(entry.resolve, entry.reject)
-    .finally(() => {
-      const next = queuedCodeCell;
-      queuedCodeCell = undefined;
-      if (next) runCodeCell(next);
-      else codeCellActive = false;
-    });
-}
-
-function abortError(): Error {
-  const error = new Error('Code Mode cell aborted');
-  error.name = 'AbortError';
-  return error;
-}
-import { executeCodeCellImpl } from './quickjs.js';

@@ -88,8 +88,6 @@ jobs:
         run: npm run build --workspace @maka/core
       - name: Build storage workspace
         run: npm run build --workspace @maka/storage
-      - name: Build code-mode workspace
-        run: npm run build --workspace @maka/code-mode
       - name: Build runtime workspace
         run: npm run build --workspace @maka/runtime
       - name: Run real filesystem-worker operations through the broker

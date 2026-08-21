@@ -192,12 +192,6 @@ function trimTrailingSlashes(value: string): string {
   return trimTrailingPathSeparators(value);
 }
 
-function serializedByteLength(value: unknown): number {
-  const json = JSON.stringify(value);
-  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(json).byteLength;
-  return json.length;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -218,3 +212,4 @@ import {
   samePath,
   trimTrailingPathSeparators,
 } from './absolute-path.js';
+import { serializedByteLength } from './serialized-byte-length.js';

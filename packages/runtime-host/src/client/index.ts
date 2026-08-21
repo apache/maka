@@ -10,11 +10,14 @@ export {
 export {
   LOCAL_RUNTIME_HOST_PROFILE,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
+  createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
   createFileRuntimeHostProfileCatalog,
   createRuntimeHostProfileCredentialStore,
   connectRemoteRuntimeHostProfile,
+  decodeRemoteRuntimeHostProfile,
   remoteRuntimeHostUnavailableError,
+  sameRemoteRuntimeHostProfileTarget,
   sameResolvedRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
   type RuntimeHostRemoteTransport,
@@ -28,6 +31,7 @@ export {
   isRuntimeHostReconnectingConnection,
 } from './reconnecting-connection.js';
 export {
+  normalizeRuntimeHostSshDestination,
   openRuntimeHostSshTunnel,
   type RuntimeHostSshInteraction,
   type RuntimeHostSshProcess,
@@ -88,6 +92,8 @@ export {
   RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES,
   decodeRuntimeHostSetupFrame,
   encodeRuntimeHostSetupFrame,
+  parseRuntimeHostSetupEndpoint,
+  type RuntimeHostSetupEndpoint,
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
 } from './setup-frame.js';

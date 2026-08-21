@@ -1,8 +1,19 @@
+const runtimeHostSetupPackage = process.env.MAKA_RUNTIME_HOST_SETUP_PACKAGE?.trim();
+if (
+  runtimeHostSetupPackage !== undefined &&
+  !/^maka-agent@[0-9][0-9A-Za-z.+-]*$/u.test(runtimeHostSetupPackage)
+) {
+  throw new Error('MAKA_RUNTIME_HOST_SETUP_PACKAGE must name an exact Maka CLI version');
+}
+
 export default {
   appId: 'com.maka.desktop',
   productName: 'Maka',
   artifactName: 'Maka-${version}-mac-${arch}.${ext}',
   asar: true,
+  ...(runtimeHostSetupPackage
+    ? { extraMetadata: { runtimeHostSetupPackage } }
+    : {}),
   directories: {
     output: 'release',
   },

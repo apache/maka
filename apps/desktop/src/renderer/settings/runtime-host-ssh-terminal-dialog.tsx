@@ -86,7 +86,7 @@ export function RuntimeHostSshTerminalDialog() {
       }
       return;
     }
-    if (event.kind === 'connected') {
+    if (event.kind === 'connected' || event.kind === 'dismissed') {
       sessionIdRef.current = undefined;
       pendingOutputRef.current = '';
       setClosed(false);

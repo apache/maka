@@ -1,6 +1,8 @@
 import {
   GOAL_CONDITION_TEXT_LIMIT,
+  GOAL_MAX_ITERATIONS_LIMIT,
   GOAL_REASON_TEXT_LIMIT,
+  GOAL_TOKEN_BUDGET_MINIMUM,
   isGoalStatus,
   type GoalStatus,
 } from '@maka/core/goal';
@@ -24,6 +26,7 @@ const QUERY_ERRORS = [
   'internal_failure',
 ] as const;
 const CONTROL_ERRORS = [...QUERY_ERRORS, 'session_archived', 'operation_conflict'] as const;
+const ARM_ERRORS = CONTROL_ERRORS;
 
 export type GoalControlAction = 'pause' | 'resume' | 'clear';
 
@@ -54,6 +57,31 @@ export interface GoalQueryResult {
   readonly goal: GoalProjection | null;
 }
 
+/**
+ * Arm a Goal for a Session from outside a Turn.
+ *
+ * The model arms its own Goal with the GoalSet tool, inside the Turn that owns
+ * the control lease. A user arming one has no Turn to speak from, so this is
+ * the Host's own entry point for it — same authority, same durable record, no
+ * second implementation of what a Goal is.
+ *
+ * `maxIterations` and `tokenBudget` are nullable rather than optional: the
+ * frame carries an exact key set, and "the caller did not choose" has to be a
+ * value on the wire rather than an absent field. Null means the Goal takes the
+ * Runtime default (and, for the budget, no budget at all).
+ */
+export interface GoalArmInput {
+  readonly sessionId: string;
+  readonly condition: string;
+  readonly maxIterations: number | null;
+  readonly tokenBudget: number | null;
+}
+
+export interface GoalArmResult {
+  readonly sessionId: string;
+  readonly goal: GoalProjection;
+}
+
 export interface GoalControlInput {
   readonly sessionId: string;
   readonly goalId: string;
@@ -76,6 +104,18 @@ export const GOAL_OPERATION_SPECS = {
     assertOutputForInput(input, output) {
       if (input.sessionId !== output.sessionId) {
         throw invalidProtocolFrame('Goal query result belongs to a different Session');
+      }
+    },
+  }),
+  'goal.arm': defineOperation({
+    mode: 'control',
+    availability: 'ready',
+    errors: ARM_ERRORS,
+    decodeInput: decodeGoalArmInput,
+    decodeOutput: decodeGoalArmResult,
+    assertOutputForInput(input, output) {
+      if (input.sessionId !== output.sessionId) {
+        throw invalidProtocolFrame('Goal arm result belongs to a different Session');
       }
     },
   }),
@@ -151,6 +191,48 @@ function decodeGoalQueryResult(value: unknown): GoalQueryResult {
   const goal = record.goal === null ? null : decodeGoalProjection(record.goal);
   if (goal && goal.sessionId !== sessionId) {
     throw invalidProtocolFrame('Goal query result contains a Goal from another Session');
+  }
+  return { sessionId, goal };
+}
+
+function decodeGoalArmInput(value: unknown): GoalArmInput {
+  const record = requireExactRecord(value, 'goal.arm input', [
+    'sessionId',
+    'condition',
+    'maxIterations',
+    'tokenBudget',
+  ]);
+  const condition = requireUtf8String(
+    record.condition,
+    'Goal condition',
+    GOAL_CONDITION_TEXT_LIMIT.utf8Bytes,
+  );
+  if (!condition.trim() || condition.length > GOAL_CONDITION_TEXT_LIMIT.codeUnits) {
+    throw invalidProtocolFrame('Invalid Goal condition');
+  }
+  const maxIterations = requireNullablePositiveCount(record.maxIterations, 'Goal maxIterations');
+  if (maxIterations !== null && maxIterations > GOAL_MAX_ITERATIONS_LIMIT) {
+    throw invalidProtocolFrame('Goal maxIterations exceeds its limit');
+  }
+  const tokenBudget = requireNullablePositiveCount(record.tokenBudget, 'Goal tokenBudget');
+  if (tokenBudget !== null && tokenBudget < GOAL_TOKEN_BUDGET_MINIMUM) {
+    throw invalidProtocolFrame('Goal tokenBudget is below its minimum');
+  }
+  return {
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    condition,
+    maxIterations,
+    tokenBudget,
+  };
+}
+
+function decodeGoalArmResult(value: unknown): GoalArmResult {
+  requireEncodedByteLimit(value, 'Goal arm result', GOAL_RESULT_MAX_BYTES);
+  const record = requireExactRecord(value, 'goal.arm result', ['sessionId', 'goal']);
+  const sessionId = requireEntityId(record.sessionId, 'sessionId');
+  const goal = decodeGoalProjection(record.goal);
+  if (goal.sessionId !== sessionId) {
+    throw invalidProtocolFrame('Goal arm result contains a Goal from another Session');
   }
   return { sessionId, goal };
 }

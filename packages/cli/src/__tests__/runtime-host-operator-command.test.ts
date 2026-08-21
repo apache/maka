@@ -103,6 +103,7 @@ describe('Runtime Host operator commands', () => {
       assert.equal(resolved.principalKind, 'remote_owner');
       assert.equal(resolved.canUseHostPaths, false);
       assert.equal(resolved.operationGrants.includes('access.credential.issue'), false);
+      assert.equal(resolved.operationGrants.includes('access.credential.prepare'), false);
       assert.equal(resolved.operationGrants.includes('access.credential.replace'), false);
       assert.equal(resolved.operationGrants.includes('access.credential.revoke'), false);
       assert.equal(resolved.operationGrants.includes('host.upgrade.prepare'), false);
@@ -137,6 +138,7 @@ describe('Runtime Host operator commands', () => {
         .sort(),
       [
         'access.credential.issue',
+        'access.credential.prepare',
         'access.credential.replace',
         'access.credential.revoke',
         'host.upgrade.prepare',

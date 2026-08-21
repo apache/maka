@@ -44,7 +44,6 @@ const ASF_SOURCE_FILES = new Set([
 
 const CLI_PACKAGE_WORKSPACES = [
   'packages/cli',
-  'packages/code-mode',
   'packages/core',
   'packages/eval',
   'packages/mcp',

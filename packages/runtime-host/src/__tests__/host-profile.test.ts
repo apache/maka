@@ -177,6 +177,30 @@ describe('Runtime Host profiles', () => {
     assert.deepEqual(await desktop.read(), { schemaVersion: 1, profiles: [] });
   });
 
+  test('conditionally updates one Host connection and credential', async () => {
+    const path = await profilePath();
+    const credentials = memoryCredentials();
+    const desktop = createFileRuntimeHostProfileCatalog(path, credentials);
+    const external = createFileRuntimeHostProfileCatalog(path, credentials);
+    const original = remoteProfile('office', 'wss://runtime.example.com', ROOT_A);
+    const replacement = { ...original, name: 'Renamed office' };
+
+    await desktop.create(original, 'old-token');
+    const expected = await desktop.resolve(original.id);
+    assert.equal((await desktop.rebindIfCurrent(expected, replacement, 'new-token')).rebound, true);
+    assert.deepEqual(await desktop.resolve(original.id), {
+      profile: {
+        ...replacement,
+        transport: { kind: 'tls', url: 'wss://runtime.example.com/' },
+      },
+      credential: 'new-token',
+    });
+
+    await external.save({ ...replacement, name: 'Externally updated' }, 'external-token');
+    assert.equal((await desktop.rebindIfCurrent(expected, original, 'stale-token')).rebound, false);
+    assert.equal((await desktop.resolve(original.id)).credential, 'external-token');
+  });
+
   test('resolves an atomic profile snapshot without waiting for the writer lock', async () => {
     const path = await profilePath();
     const catalog = createFileRuntimeHostProfileCatalog(path, memoryCredentials());

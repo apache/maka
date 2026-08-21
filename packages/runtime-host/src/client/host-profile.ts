@@ -17,7 +17,11 @@ import {
 } from './connection.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 import { RuntimeHostRemoteCompatibilityError } from './remote-compatibility-error.js';
-import { openRuntimeHostSshTunnel, type RuntimeHostSshInteraction } from './ssh-tunnel.js';
+import {
+  normalizeRuntimeHostSshDestination,
+  openRuntimeHostSshTunnel,
+  type RuntimeHostSshInteraction,
+} from './ssh-tunnel.js';
 import { waitForRuntimeHostReady } from './wait-for-ready.js';
 
 const PROFILE_SCHEMA_VERSION = 1;
@@ -85,6 +89,13 @@ export function sameResolvedRuntimeHostProfileTarget(
   );
 }
 
+export function sameRemoteRuntimeHostProfileTarget(
+  left: RemoteRuntimeHostProfile,
+  right: RemoteRuntimeHostProfile,
+): boolean {
+  return profileCredentialBinding(left) === profileCredentialBinding(right);
+}
+
 export interface RuntimeHostProfileCatalog {
   read(): Promise<RuntimeHostProfileDocument>;
   resolve(profileId?: string): Promise<ResolvedRuntimeHostProfile>;
@@ -96,6 +107,14 @@ export interface RuntimeHostProfileCatalog {
   remove(profileId: string): Promise<RuntimeHostProfileDocument>;
   removeIfCurrent(target: ResolvedRuntimeHostProfile): Promise<{
     readonly removed: boolean;
+    readonly document: RuntimeHostProfileDocument;
+  }>;
+  rebindIfCurrent(
+    target: ResolvedRuntimeHostProfile,
+    profile: RemoteRuntimeHostProfile,
+    credential: string,
+  ): Promise<{
+    readonly rebound: boolean;
     readonly document: RuntimeHostProfileDocument;
   }>;
 }
@@ -115,13 +134,16 @@ export function createFileRuntimeHostProfileCatalog(
 
 export function createClientRuntimeHostProfileCatalog(
   clientDataRoot: string,
+  credentialStore: CredentialStore = createClientRuntimeHostCredentialStore(clientDataRoot),
 ): RuntimeHostProfileCatalog {
   return createFileRuntimeHostProfileCatalog(
     join(clientDataRoot, 'runtime-host-profiles.json'),
-    createRuntimeHostProfileCredentialStore(
-      createFileCredentialStore(join(clientDataRoot, 'runtime-host-client')),
-    ),
+    createRuntimeHostProfileCredentialStore(credentialStore),
   );
+}
+
+export function createClientRuntimeHostCredentialStore(clientDataRoot: string): CredentialStore {
+  return createFileCredentialStore(join(clientDataRoot, 'runtime-host-client'));
 }
 
 export function createRuntimeHostProfileCredentialStore(
@@ -434,6 +456,59 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     });
   }
 
+  rebindIfCurrent(
+    target: ResolvedRuntimeHostProfile,
+    value: RemoteRuntimeHostProfile,
+    credential: string,
+  ): Promise<{
+    readonly rebound: boolean;
+    readonly document: RuntimeHostProfileDocument;
+  }> {
+    if (target.profile.kind !== 'remote' || target.credential === undefined) {
+      return Promise.reject(new Error('Expected a resolved remote Runtime Host profile'));
+    }
+    const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
+    const profile = decodeRemoteRuntimeHostProfile(value);
+    if (
+      profile.id !== expectedProfile.id ||
+      !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile)
+    ) {
+      return Promise.reject(new Error('A Runtime Host profile rebind must retain its connection'));
+    }
+    return this.#exclusive(async () => {
+      const current = await this.read();
+      const stored = current.profiles.find((candidate) => candidate.id === expectedProfile.id);
+      if (
+        !stored ||
+        !sameRemoteRuntimeHostProfile(stored, expectedProfile) ||
+        (await this.credentials.get(stored)) !== target.credential
+      ) {
+        return { rebound: false, document: current };
+      }
+      const next = decodeRuntimeHostProfileDocument({
+        schemaVersion: PROFILE_SCHEMA_VERSION,
+        profiles: current.profiles.map((candidate) =>
+          candidate.id === profile.id ? profile : candidate,
+        ),
+      });
+      await this.credentials.set(profile, credential);
+      try {
+        await writeProfileDocument(this.path, next);
+      } catch (error) {
+        await restoreCredential(this.credentials, profile, target.credential).catch(
+          (rollbackError) => {
+            throw new AggregateError(
+              [error, rollbackError],
+              'Runtime Host profile rebind failed and its credential could not be restored',
+            );
+          },
+        );
+        throw error;
+      }
+      return { rebound: true, document: next };
+    });
+  }
+
   async #removeProfile(
     current: RuntimeHostProfileDocument,
     profile: RemoteRuntimeHostProfile,
@@ -472,7 +547,7 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
   }
 }
 
-function decodeRemoteRuntimeHostProfile(value: unknown): RemoteRuntimeHostProfile {
+export function decodeRemoteRuntimeHostProfile(value: unknown): RemoteRuntimeHostProfile {
   const record = requireExactRecord(value, 'Remote Runtime Host profile', [
     'id',
     'name',
@@ -528,7 +603,9 @@ function decodeRuntimeHostRemoteTransport(value: unknown): RuntimeHostRemoteTran
       ['kind', 'destination', 'remotePort', 'websocketPath'],
       ['sshPort'],
     );
-    const destination = requireSshDestination(record.destination);
+    const destination = normalizeRuntimeHostSshDestination(
+      requireString(record.destination, 'Runtime Host SSH destination'),
+    );
     const sshPort = optionalPort(record.sshPort, 'Runtime Host SSH port');
     const remotePort = requirePort(record.remotePort, 'Runtime Host SSH remote port');
     const websocketPath = requireWebSocketPath(record.websocketPath);
@@ -613,19 +690,6 @@ function requireProfileName(value: unknown): string {
 function requireString(value: unknown, label: string): string {
   if (typeof value !== 'string') throw new Error(`${label} must be a string`);
   return value;
-}
-
-function requireSshDestination(value: unknown): string {
-  const destination = requireString(value, 'Runtime Host SSH destination').trim();
-  if (
-    destination.length === 0 ||
-    destination.length > 512 ||
-    destination.startsWith('-') ||
-    /\s|[\u0000-\u001f\u007f]/u.test(destination)
-  ) {
-    throw new Error('Runtime Host SSH destination is invalid');
-  }
-  return destination;
 }
 
 function optionalPort(value: unknown, label: string): number | undefined {

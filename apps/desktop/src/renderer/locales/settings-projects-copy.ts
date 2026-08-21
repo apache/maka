@@ -8,6 +8,19 @@ export type SettingsProjectsCopy = {
     selectedHelp: string;
     remoteTitle: string;
     remoteDescription: string;
+    addComputer: string;
+    configureManually: string;
+    setupTitle: string;
+    setupDescription: string;
+    setupName: string;
+    setupSshPort: string;
+    setupConnect: string;
+    setupCancel: string;
+    setupRetry: string;
+    setupDone: string;
+    setupChooseProject: string;
+    setupComplete: string;
+    setupPhase: Record<import('../../preload/bridge-contract.js').DesktopRuntimeHostOnboardingPhase, string>;
     add: string;
     cancel: string;
     name: string;
@@ -50,6 +63,10 @@ export type SettingsProjectsCopy = {
     selectFailed: string;
     saveFailed: string;
     removeFailed: string;
+    pairingRecoveryTitle: string;
+    pairingRecoveryDescription: string;
+    resolvePairingRecovery: string;
+    resolvePairingRecoveryFailed: string;
     moreActions(name: string): string;
   };
   section: string;
@@ -96,7 +113,28 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       selected: '默认 Host',
       selectedHelp: '新任务和未指定 Host 的设置使用默认 Host',
       remoteTitle: '远程 Host',
-      remoteDescription: '先在远程机器准备 service、Project 和访问凭据，再通过 TLS 或 SSH tunnel 连接。凭据不会写入 profile 文件。',
+      remoteDescription: '通过 SSH 自动设置一台电脑，或手动连接已有 Runtime Host。',
+      addComputer: '添加电脑',
+      configureManually: '手动配置',
+      setupTitle: '添加远程电脑',
+      setupDescription: '通过 SSH 安装并连接 Runtime Host',
+      setupName: '显示名称（可选）',
+      setupSshPort: 'SSH 端口（可选）',
+      setupConnect: '连接',
+      setupCancel: '取消',
+      setupRetry: '重试',
+      setupDone: '完成',
+      setupChooseProject: '选择项目',
+      setupComplete: 'Runtime Host 已连接',
+      setupPhase: {
+        connecting_ssh: '正在连接 SSH…',
+        checking_environment: '正在检查远程环境…',
+        installing_package: '正在安装 Maka…',
+        installing_service: '正在启动 Runtime Host…',
+        pairing_client: '正在配对这台设备…',
+        verifying_connection: '正在验证凭据…',
+        connecting_host: '正在建立安全连接…',
+      },
       add: '添加远程 Host',
       cancel: '取消',
       name: '显示名称',
@@ -139,6 +177,10 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       selectFailed: '无法更新 Runtime Host',
       saveFailed: '无法保存 Runtime Host profile',
       removeFailed: '无法移除 Runtime Host profile',
+      pairingRecoveryTitle: '有未完成的配对',
+      pairingRecoveryDescription: '远程 Host 恢复连接后，可在此继续完成配对。',
+      resolvePairingRecovery: '重试配对',
+      resolvePairingRecoveryFailed: '无法处理配对恢复',
       moreActions: (name: string) => `更多操作：${name}`,
     },
     section: '工作区',
@@ -183,7 +225,28 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       selectedHelp: 'New tasks and unscoped settings use the default Host',
       remoteTitle: 'Remote Hosts',
       remoteDescription:
-        'Prepare the service, Project, and access credential on the remote machine, then connect through TLS or an SSH tunnel. Credentials are never written to the profile file.',
+        'Set up a computer over SSH, or connect an existing Runtime Host manually.',
+      addComputer: 'Add computer',
+      configureManually: 'Configure manually',
+      setupTitle: 'Add remote computer',
+      setupDescription: 'Install and connect Runtime Host over SSH',
+      setupName: 'Display name (optional)',
+      setupSshPort: 'SSH port (optional)',
+      setupConnect: 'Connect',
+      setupCancel: 'Cancel',
+      setupRetry: 'Retry',
+      setupDone: 'Done',
+      setupChooseProject: 'Choose project',
+      setupComplete: 'Runtime Host connected',
+      setupPhase: {
+        connecting_ssh: 'Connecting over SSH…',
+        checking_environment: 'Checking the remote environment…',
+        installing_package: 'Installing Maka…',
+        installing_service: 'Starting Runtime Host…',
+        pairing_client: 'Pairing this device…',
+        verifying_connection: 'Verifying access…',
+        connecting_host: 'Establishing the secure connection…',
+      },
       add: 'Add remote Host',
       cancel: 'Cancel',
       name: 'Display name',
@@ -226,6 +289,10 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       selectFailed: 'Could not update the Runtime Host',
       saveFailed: 'Could not save the Runtime Host profile',
       removeFailed: 'Could not remove the Runtime Host profile',
+      pairingRecoveryTitle: 'Pairing is unfinished',
+      pairingRecoveryDescription: 'Retry when the remote Host is reachable to finish pairing.',
+      resolvePairingRecovery: 'Retry pairing',
+      resolvePairingRecoveryFailed: 'Could not resolve pairing recovery',
       moreActions: (name: string) => `More actions for ${name}`,
     },
     section: 'Workspace',

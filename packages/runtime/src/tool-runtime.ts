@@ -10,6 +10,7 @@ import {
   type SandboxBoundarySettlement,
   type SettleSandboxBoundaryRequest,
 } from '@maka/core/sandbox-boundary';
+import { serializedByteLength } from '@maka/core/serialized-byte-length';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
 import type {
   SandboxBoundaryDecisionAckEvent,
@@ -46,7 +47,6 @@ import type { SessionHeader } from '@maka/core/session';
 import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import { redactSecrets } from '@maka/core/redaction';
 import { TOOL_BOUNDARY_PROTOCOL_V1, type RuntimeEvent } from '@maka/core/runtime-event';
-import { serializedByteLength } from '@maka/code-mode';
 
 import { recordToolArtifactsSafely, type ToolArtifactRecorder } from './tool-artifacts.js';
 import { computerActionFields, describeComputerUseArgsViolation } from './computer-use-codec.js';
@@ -64,7 +64,7 @@ import {
   type RuntimeCommitSink,
   type ToolRecoveryMode,
 } from './runtime-commit-sink.js';
-import { ChildAgentRunLimiter } from './child-agent-run-limiter.js';
+import { AdmissionLimiter } from './admission-limiter.js';
 import type { AgentProfile } from './agent-catalog.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
 import { sandboxErrorMetadata, serializeSandboxError } from './sandbox/errors.js';
@@ -483,7 +483,7 @@ export class ToolRuntime {
   private sandboxBoundaryClosureDeferred = false;
   private questionClosureDeferred = false;
   private activeSubagentToolCount = 0;
-  private childAgentRunLimiter = new ChildAgentRunLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
+  private childAgentRunLimiter = new AdmissionLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
   /**
    * Tool-availability gating for the execute boundary. Set by the backend each
    * turn from `ToolAvailabilityRuntime`. Undefined when gating is off (economy
@@ -765,7 +765,7 @@ export class ToolRuntime {
 
   resetTurnState(): void {
     const priorChildAgentRunLimiter = this.childAgentRunLimiter;
-    this.childAgentRunLimiter = new ChildAgentRunLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
+    this.childAgentRunLimiter = new AdmissionLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
     priorChildAgentRunLimiter.close(
       new Error('Child agent run permit scope ended before capacity became available'),
     );

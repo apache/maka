@@ -126,6 +126,7 @@ export function SettingsSurface(props: {
   onOpenSession?(sessionId: string): void;
   archivedTasks: ArchivedTasksBridge;
   onTaskImported(session: DesktopSessionSummary): void;
+  onRemoteHostAdded(profileId: string): void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
@@ -766,6 +767,7 @@ export function SettingsSurface(props: {
                         onOpenSession={props.onOpenSession}
                         archivedTasks={props.archivedTasks}
                         onTaskImported={props.onTaskImported}
+                        onRemoteHostAdded={props.onRemoteHostAdded}
                         openProviderCatalog={providerCatalogRequested}
                         initialConnectionSlug={props.initialConnectionSlug}
                         initialCreateProviderType={createProviderRequest}
@@ -807,6 +809,7 @@ function SettingsPageBody(props: {
   onOpenSession?(sessionId: string): void;
   archivedTasks: ArchivedTasksBridge;
   onTaskImported(session: DesktopSessionSummary): void;
+  onRemoteHostAdded(profileId: string): void;
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -885,6 +888,7 @@ function SettingsPageBody(props: {
           runtimeHostStatus={props.runtimeHostStatus}
           onUpdate={props.onUpdateSettings}
           onRetryRuntimeHost={props.onRetryRuntimeHost}
+          onRemoteHostAdded={props.onRemoteHostAdded}
         />
       );
     case 'appearance':
