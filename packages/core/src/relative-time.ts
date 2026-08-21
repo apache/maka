@@ -18,24 +18,11 @@
  */
 
 /**
- * PR-RELATIVE-TIME-0: a single, locale-aware relative-time formatter
- * shared by every Maka surface. The existing `formatRelativeTimestamp`
- * sat inside `packages/ui/src/components.tsx` as a private helper,
- * which meant it could not be unit-tested and could not be reused by
- * sidebar / settings panels.
- *
- * The formatter is pure (takes an optional `now` so tests do not have
- * to monkey-patch `Date.now`). The first minute stays on a single
- * just-now label so scan-level rows do not tick through "1秒钟前",
- * "2秒钟前", …. After that the buckets widen from minute to hour to
- * day. Anything older than ~7 days falls back to an absolute date so
- * we do not produce misleadingly round numbers like "5 个月前".
- *
- * The threshold is a deliberate divergence from the previous
- * implementation, which used `.format(-Math.round(diffHours / 24), 'day')`
- * for ALL timestamps older than a day and produced things like
- * "300 天前" for messages a year old. That was strictly less useful than
- * the locale date string.
+ * Locale-aware relative-time formatter shared across Maka surfaces. Pure
+ * (optional `now`) so tests can pin a clock. The first minute stays on one
+ * just-now label instead of counting seconds, then buckets widen from minute
+ * to hour to day; past ~7 days we fall back to an absolute date, which is more
+ * useful than a relative label like "300 天前".
  */
 
 import { uiLocaleToIntlLocale, type UiCatalog, type UiLocale } from './ui-locale.js';
@@ -79,12 +66,9 @@ function getAbsoluteFormat(uiLocale: UiLocale): Intl.DateTimeFormat {
 }
 
 /**
- * Returns a localized relative label for `ts` (e.g. "刚刚", "1 分钟前")
- * when within `RELATIVE_HORIZON_MS`, otherwise the absolute date string.
- *
- * `now` is injectable so tests can pin a deterministic clock. The first
- * minute — and future timestamps from clock skew — stay on one just-now
- * label so rows do not count seconds or show "in 2 minutes".
+ * Localized relative label for `ts` within the 7-day horizon, otherwise the
+ * absolute date string. `now` is injectable so tests pin a deterministic clock;
+ * future timestamps (clock skew) snap to the just-now label.
  */
 export function formatRelativeTimestamp(
   ts: number,
@@ -136,13 +120,10 @@ function getCompactFormats(uiLocale: UiLocale): {
 }
 
 /**
- * Compact variant for space-starved rows (sidebar session list): same
- * relative buckets inside the 7-day horizon, then a DATE-ONLY label —
- * "6月20日" within the current year, "2025年6月20日" across years.
- * `formatRelativeTimestamp`'s medium-date + time fallback
- * ("2026年6月20日 16:33") is right for wide surfaces but crushed the
- * session title next to it to ~2 characters. Minute precision belongs
- * in tooltips/detail surfaces, not scan-level list rows.
+ * Compact variant for space-starved rows (sidebar session list): same relative
+ * buckets inside the horizon, then a date-only label ("6月20日" within the
+ * current year, "2025年6月20日" across years) instead of the wide
+ * medium-date-plus-time fallback.
  */
 export function formatCompactTimestamp(
   ts: number,
@@ -176,11 +157,9 @@ export function resetRelativeTimeFormatters(): void {
 }
 
 /**
- * Picks the next refresh delay (ms) for a relative timestamp. Used by
- * the React `<RelativeTime>` ticker so we re-render at the right
- * cadence: once when the just-now window ends, every minute for
- * sub-hour, every 10 minutes after that. Past the horizon we never
- * re-render.
+ * Next tick delay (ms) for the `<RelativeTime>` ticker: once when the just-now
+ * window ends, every minute for the first hour, then every 10 minutes; null
+ * past the horizon (never re-render).
  */
 export function nextRelativeRefreshDelay(ts: number, now: number = Date.now()): number | null {
   const diffMs = now - ts;
