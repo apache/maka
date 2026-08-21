@@ -29,10 +29,7 @@ import {
   resolveCliWorkspacePackages,
   resolveMacosArm64CliArtifactPaths,
 } from './package-macos-arm64-cli.mjs';
-import {
-  releaseToolchainFromManifest,
-  resolveProductReleaseIdentity,
-} from './product-release-identity.mjs';
+import { resolveProductReleaseIdentity } from './product-release-identity.mjs';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -499,7 +496,6 @@ export async function verifyMacosArm64Cli(
     readFile(join(repoRoot, 'packages', 'cli', 'package.json'), 'utf8').then(JSON.parse),
     run('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }),
   ]);
-  const toolchain = releaseToolchainFromManifest(rootManifest);
   const identity = resolveProductReleaseIdentity({
     rootManifest,
     desktopManifest,
@@ -564,19 +560,19 @@ export async function verifyMacosArm64Cli(
       metadata.sourceCommit !== identity.sourceCommit ||
       metadata.platform !== 'macos' ||
       metadata.architecture !== 'arm64' ||
-      metadata.node?.version !== toolchain.nodeVersion ||
-      metadata.node?.sourceUrl !== toolchain.nodeSourceUrl ||
-      metadata.node?.archive !== toolchain.nodeArchive ||
-      metadata.node?.archiveSha256 !== toolchain.nodeArchiveSha256 ||
+      metadata.node?.version !== identity.nodeVersion ||
+      metadata.node?.sourceUrl !== identity.nodeSourceUrl ||
+      metadata.node?.archive !== identity.nodeArchive ||
+      metadata.node?.archiveSha256 !== identity.nodeArchiveSha256 ||
       JSON.stringify(metadata.node?.entitlements) !==
         JSON.stringify(
           requireReleaseSigning
             ? DISTRIBUTION_NODE_RUNTIME_ENTITLEMENTS
             : OFFICIAL_NODE_RUNTIME_ENTITLEMENTS,
         ) ||
-      metadata.npmVersion !== toolchain.npmVersion ||
-      (requireReleaseSigning && metadata.signingTeamIdentifier !== toolchain.appleTeamIdentifier) ||
-      JSON.stringify(metadata.publicCommands) !== JSON.stringify(['maka'])
+      metadata.npmVersion !== identity.npmVersion ||
+      (requireReleaseSigning && metadata.signingTeamIdentifier !== identity.appleTeamIdentifier) ||
+      JSON.stringify(metadata.publicCommands) !== JSON.stringify(identity.publicCommands)
     ) {
       throw new Error('CLI release metadata does not match the product release identity.');
     }
@@ -619,7 +615,7 @@ export async function verifyMacosArm64Cli(
     const nodeDependencies = await run('otool', ['-L', nodePath]);
     assertSelfContainedNode(nodeDependencies.stdout);
     const signingTeamIdentifier = await verifyBinarySignatures(machOBinaries, {
-      expectedTeamIdentifier: toolchain.appleTeamIdentifier,
+      expectedTeamIdentifier: identity.appleTeamIdentifier,
       nodePath,
       requireReleaseSigning,
       run,
@@ -652,7 +648,7 @@ export async function verifyMacosArm64Cli(
       cwd: commandWorkspace,
       env: environment,
     });
-    if (embeddedNodeVersion.stdout.trim() !== toolchain.nodeVersion) {
+    if (embeddedNodeVersion.stdout.trim() !== identity.nodeVersion) {
       throw new Error('Embedded Node version does not match the pinned release toolchain.');
     }
     const versionResult = await run(makaPath, ['--version'], {

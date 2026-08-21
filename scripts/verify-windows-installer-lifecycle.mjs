@@ -2,6 +2,7 @@ import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { parseProductReleaseVersion } from './release-version.mjs';
 import { runCommand } from './verify-packaged-app.mjs';
 import { powerShellLiteral, verifyPackagedWindowsApp } from './verify-windows-x64.mjs';
 
@@ -11,8 +12,13 @@ const temporaryCleanupRetryDelayMs = 250;
 const pollingProbeTimeoutMs = 10_000;
 
 export function installerVersion(path) {
-  const match = basename(path).match(/^Maka-(\d+\.\d+\.\d+)-win-x64\.exe$/u);
+  const match = basename(path).match(/^Maka-(.+)-win-x64\.exe$/u);
   if (!match) {
+    throw new Error(`Cannot infer a release version from ${basename(path)}.`);
+  }
+  try {
+    parseProductReleaseVersion(match[1]);
+  } catch {
     throw new Error(`Cannot infer a release version from ${basename(path)}.`);
   }
   return match[1];
@@ -399,6 +405,7 @@ export async function verifyWindowsInstallerLifecycle(
       await verifyApp(installDirectory, {
         workingDirectory: smokeDirectory,
         expectedVersion: previousVersion,
+        artifactContract: 'legacy-baseline',
       });
       console.log('[verify-windows-installer] waiting for previous-version processes to exit');
       await waitForProcessesToExit(installDirectory);

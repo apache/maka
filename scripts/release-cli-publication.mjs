@@ -3,7 +3,7 @@ import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { CLI_RELEASE_ARTIFACT_LIMITS } from './release-cli-artifact-policy.mjs';
-import { parseProductReleaseVersion } from './release-version.mjs';
+import { compareProductReleaseVersions, parseProductReleaseVersion } from './release-version.mjs';
 
 const PACKAGE_NAME = 'maka-agent';
 const REGISTRY_ORIGIN = 'https://registry.npmjs.org';
@@ -45,7 +45,7 @@ export function validateRegistryChannels({ releaseVersion, releaseDistTag, distT
     throw channelLagError({ releaseVersion, releaseDistTag, latest, next });
   }
   if (typeof latest === 'string' && typeof next === 'string') {
-    if (compareReleaseSemver(next, latest) < 0) {
+    if (compareProductReleaseVersions(next, latest) < 0) {
       throw channelLagError({ releaseVersion, releaseDistTag, latest, next });
     }
   }
@@ -340,33 +340,6 @@ function matchesReleaseProvenance(statement, record) {
     ) &&
     statement?.predicate?.runDetails?.metadata?.invocationId === invocationId
   );
-}
-
-function compareReleaseSemver(left, right) {
-  const a = parseProductReleaseVersion(left);
-  const b = parseProductReleaseVersion(right);
-  for (let index = 0; index < a.core.length; index += 1) {
-    if (a.core[index] < b.core[index]) return -1;
-    if (a.core[index] > b.core[index]) return 1;
-  }
-  if (a.prerelease.length === 0) return b.prerelease.length === 0 ? 0 : 1;
-  if (b.prerelease.length === 0) return -1;
-  for (let index = 0; index < Math.max(a.prerelease.length, b.prerelease.length); index += 1) {
-    const leftIdentifier = a.prerelease[index];
-    const rightIdentifier = b.prerelease[index];
-    if (leftIdentifier === undefined) return -1;
-    if (rightIdentifier === undefined) return 1;
-    if (leftIdentifier === rightIdentifier) continue;
-    const leftNumeric = /^\d+$/u.test(leftIdentifier);
-    const rightNumeric = /^\d+$/u.test(rightIdentifier);
-    if (leftNumeric && rightNumeric) {
-      return BigInt(leftIdentifier) < BigInt(rightIdentifier) ? -1 : 1;
-    }
-    if (leftNumeric) return -1;
-    if (rightNumeric) return 1;
-    return leftIdentifier < rightIdentifier ? -1 : 1;
-  }
-  return 0;
 }
 
 function channelLagError({ releaseVersion, releaseDistTag, latest, next }) {

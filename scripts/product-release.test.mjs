@@ -12,7 +12,6 @@ import { planTests } from './ci-test-plan.mjs';
 import {
   assertProductReleaseExpectation,
   parseAsfSourceReferenceTag,
-  releaseToolchainFromManifest,
   resolveProductManifestIdentity,
   resolveProductReleaseIdentity,
 } from './product-release-identity.mjs';
@@ -64,6 +63,16 @@ test('one root version defines every product artifact from one source commit', (
   assert.equal(identity.sourceCommit, 'a'.repeat(40));
   assert.equal(identity.sourceReferenceTag, 'v1.2.3-incubating-rc2');
   assert.equal(identity.runtimeHostSetupPackage, 'maka-agent@1.2.3');
+  assert.deepEqual(identity.publicCommands, ['maka']);
+  assert.equal(identity.appleTeamIdentifier, 'FABM2QUA8Q');
+  assert.equal(identity.nodeVersion, '24.18.1');
+  assert.equal(identity.nodeArchive, 'node-v24.18.1-darwin-arm64.tar.xz');
+  assert.equal(identity.nodeArchiveSha256, '1'.repeat(64));
+  assert.equal(
+    identity.nodeSourceUrl,
+    'https://nodejs.org/download/release/v24.18.1/node-v24.18.1-darwin-arm64.tar.xz',
+  );
+  assert.equal(identity.npmVersion, '11.19.0');
   assert.equal(identity.dmg, 'Maka-1.2.3-mac-arm64.dmg');
   assert.equal(identity.exe, 'Maka-1.2.3-win-x64.exe');
   assert.equal(identity.cliArchive, 'Maka-1.2.3-cli-mac-arm64.zip');
@@ -82,6 +91,9 @@ test('Desktop packaging derives the Runtime Host setup package from product mani
   assert.deepEqual(desktopBuilderConfig.extraMetadata, {
     runtimeHostSetupPackage: `maka-agent@${checkedRootManifest.version}`,
   });
+  assert.deepEqual(desktopBuilderConfig.publish, [
+    { provider: 'github', owner: 'apache', repo: 'maka' },
+  ]);
 });
 
 test('the packaged-app probe rejects a mismatched Runtime Host setup package', async () => {
@@ -236,17 +248,6 @@ test('product tag creation is exact and idempotent but rejects a conflicting com
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-});
-
-test('the root manifest pins the Node archive and npm used by release jobs', () => {
-  assert.deepEqual(releaseToolchainFromManifest(rootManifest), {
-    appleTeamIdentifier: 'FABM2QUA8Q',
-    nodeVersion: '24.18.1',
-    nodeArchive: 'node-v24.18.1-darwin-arm64.tar.xz',
-    nodeArchiveSha256: '1'.repeat(64),
-    nodeSourceUrl: 'https://nodejs.org/download/release/v24.18.1/node-v24.18.1-darwin-arm64.tar.xz',
-    npmVersion: '11.19.0',
-  });
 });
 
 test('release artifacts get a checksum sidecar for their final bytes', async () => {

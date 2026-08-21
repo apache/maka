@@ -503,13 +503,6 @@ export async function verifyWindowsAutoupdate(
     await verifyPackagedWindowsApp(installDirectory, {
       workingDirectory: smokeDirectory,
       expectedVersion: nextVersion,
-      // The upgraded install is a current build (only its version is bumped),
-      // so it gets the full sandbox, disclaimer and dependency-closure
-      // verification a released baseline would be exempt from.
-      requireWindowsSandbox: true,
-      requireDisclaimer: true,
-      requireDependencyClosure: true,
-      requireRuntimeHostSetupPackage: true,
       smokeRenderer: async (executable, { workingDirectory }) => {
         const smokeHome = join(workingDirectory, 'home');
         const smokeUserData = join(workingDirectory, 'user-data');

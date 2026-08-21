@@ -298,16 +298,10 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   updater.autoInstallOnAppQuit = false;
   updater.allowPrerelease = false;
   updater.logger = null;
-  // The override changes the feed URL and nothing else: every other updater
-  // setting and the whole status machine behave identically under it, so what
-  // the loopback harness verifies is what production runs.
-  updater.setFeedURL(
-    resolveUpdateFeedOverride(deps.testFeedUrl) ?? {
-      provider: 'github',
-      owner: 'Maka-Agent',
-      repo: 'maka-agent',
-    },
-  );
+  const testFeed = resolveUpdateFeedOverride(deps.testFeedUrl);
+  // Production reads electron-builder's packaged app-update.yml. Only the
+  // loopback harness replaces that single authority boundary.
+  if (testFeed) updater.setFeedURL(testFeed);
 
   updater.on('checking-for-update', () => {
     publish({ state: 'checking', currentVersion: deps.currentVersion });

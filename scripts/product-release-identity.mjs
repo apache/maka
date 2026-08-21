@@ -8,7 +8,7 @@ import { parseProductReleaseVersion } from './release-version.mjs';
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const execFileAsync = promisify(execFile);
 
-export function releaseToolchainFromManifest(rootManifest) {
+function releaseToolchainFromManifest(rootManifest) {
   const appleTeamIdentifier = rootManifest.releaseToolchain?.appleTeamIdentifier;
   const nodeVersion = rootManifest.releaseToolchain?.node;
   const nodeArchiveSha256 = rootManifest.releaseToolchain?.nodeDarwinArm64Sha256;

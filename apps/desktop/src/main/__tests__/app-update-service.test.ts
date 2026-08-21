@@ -56,9 +56,11 @@ class FakeUpdater extends EventEmitter {
   quitAndInstallDispatchError = false;
   onQuitAndInstall: (() => void) | undefined;
   feed: unknown;
+  setFeedURLCalls = 0;
   checkResult: Promise<unknown> | undefined;
 
   setFeedURL(input: unknown): void {
+    this.setFeedURLCalls += 1;
     this.feed = input;
   }
 
@@ -135,11 +137,7 @@ describe('AppUpdateService', () => {
     assert.equal(updater.autoDownload, true);
     assert.equal(updater.autoInstallOnAppQuit, false);
     assert.equal(updater.allowPrerelease, false);
-    assert.deepEqual(updater.feed, {
-      provider: 'github',
-      owner: 'Maka-Agent',
-      repo: 'maka-agent',
-    });
+    assert.equal(updater.setFeedURLCalls, 0);
 
     service.start();
     service.start();
@@ -159,6 +157,7 @@ describe('AppUpdateService', () => {
       provider: 'generic',
       url: 'http://127.0.0.1:8443/feed',
     });
+    assert.equal(updater.setFeedURLCalls, 1);
   });
 
   test('rejects a non-loopback test feed instead of falling back to production', () => {

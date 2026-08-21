@@ -206,8 +206,8 @@ export default {
   publish: [
     {
       provider: 'github',
-      owner: 'Maka-Agent',
-      repo: 'maka-agent',
+      owner: 'apache',
+      repo: 'maka',
     },
   ],
 };

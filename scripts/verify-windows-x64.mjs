@@ -89,20 +89,13 @@ export async function verifyPackagedWindowsApp(
     smokeRenderer = smokePackagedRenderer,
     workingDirectory = appDirectory,
     expectedVersion,
-    // An expectedVersion historically marks a previously released baseline,
-    // which cannot be required to carry resources added after it shipped. A
-    // caller verifying a *current* build under a different version (the
-    // auto-update gate's upgraded install) overrides these to true so the
-    // sandbox and disclaimer checks are not silently skipped. `== null`
-    // matches the `expectedVersion ?? product.version` fallback below,
-    // so a `null` cannot disable these checks while also meaning "no expected
-    // version".
-    requireWindowsSandbox = expectedVersion == null,
-    requireDisclaimer = expectedVersion == null,
-    requireDependencyClosure = expectedVersion == null,
-    requireRuntimeHostSetupPackage = expectedVersion == null,
+    artifactContract = 'current',
   } = {},
 ) {
+  if (artifactContract !== 'current' && artifactContract !== 'legacy-baseline') {
+    throw new Error(`Unknown packaged Windows artifact contract: ${artifactContract}`);
+  }
+  const requiresCurrentContract = artifactContract === 'current';
   const product = await readProductManifestIdentity();
   const resources = join(appDirectory, 'resources');
   const executable = join(appDirectory, executableName);
@@ -114,15 +107,10 @@ export async function verifyPackagedWindowsApp(
   await assertPackagedResources(resources, {
     requirePath,
     forbidPath,
-    requireWindowsSandbox,
-    requireDisclaimer,
+    requireWindowsSandbox: requiresCurrentContract,
+    requireDisclaimer: requiresCurrentContract,
   });
-  // Defaulted like the sandbox and disclaimer gates above, and overridable for
-  // the same reason: a baseline install predates this classification, so
-  // requiring it of a previously released build would fail a release that was
-  // correct when it shipped — but a caller that knows it is verifying a current
-  // build (the auto-update check's upgraded install) can ask for it back.
-  if (requireDependencyClosure) await assertPackagedDependencyClosure(resources);
+  if (requiresCurrentContract) await assertPackagedDependencyClosure(resources);
   await requirePath(join(resources, 'git', 'cmd', 'git.exe'));
 
   step('reading the executable architecture');
@@ -131,7 +119,7 @@ export async function verifyPackagedWindowsApp(
     throw new Error(`${executableName} must be x64, found PE machine 0x${machine.toString(16)}.`);
   }
 
-  if (requireWindowsSandbox) {
+  if (requiresCurrentContract) {
     step('smoking the packaged Windows sandbox');
     const sandboxMachine = await readMachine(sandboxExecutable);
     if (sandboxMachine !== amd64Machine) {
@@ -214,7 +202,7 @@ export async function verifyPackagedWindowsApp(
   const ptyProbe = makePtyProbe(
     process.env.ComSpec || 'cmd.exe',
     ['/c', 'echo', 'maka-node-pty-ok'],
-    requireRuntimeHostSetupPackage ? product.runtimeHostSetupPackage : undefined,
+    requiresCurrentContract ? product.runtimeHostSetupPackage : undefined,
   );
   await run(executable, ['-e', ptyProbe, join(appAsar, 'package.json')], {
     env: {

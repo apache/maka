@@ -20,10 +20,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import {
-  releaseToolchainFromManifest,
-  resolveProductReleaseIdentity,
-} from './product-release-identity.mjs';
+import { resolveProductReleaseIdentity } from './product-release-identity.mjs';
 import {
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
@@ -826,10 +823,9 @@ export async function packageMacosArm64Cli({
     cliManifest,
     sha: sourceCommit,
   });
-  const toolchain = releaseToolchainFromManifest(rootManifest);
   if (releaseSigning) assertReleaseSigningEnvironment(env);
   if (!nodeArchivePath) {
-    throw new Error(`Set MAKA_CLI_NODE_ARCHIVE to the verified ${toolchain.nodeArchive} path.`);
+    throw new Error(`Set MAKA_CLI_NODE_ARCHIVE to the verified ${identity.nodeArchive} path.`);
   }
 
   const version = identity.version;
@@ -934,24 +930,24 @@ export async function packageMacosArm64Cli({
       sourceCommit,
       platform: 'macos',
       architecture: 'arm64',
-      publicCommands: ['maka'],
+      publicCommands: identity.publicCommands,
       node: {
-        version: toolchain.nodeVersion,
-        sourceUrl: toolchain.nodeSourceUrl,
-        archive: toolchain.nodeArchive,
-        archiveSha256: toolchain.nodeArchiveSha256,
+        version: identity.nodeVersion,
+        sourceUrl: identity.nodeSourceUrl,
+        archive: identity.nodeArchive,
+        archiveSha256: identity.nodeArchiveSha256,
         entitlements: releaseSigning
           ? DISTRIBUTION_NODE_RUNTIME_ENTITLEMENTS
           : OFFICIAL_NODE_RUNTIME_ENTITLEMENTS,
       },
-      npmVersion: toolchain.npmVersion,
+      npmVersion: identity.npmVersion,
       dependencyPatches,
       productionDependencies,
       thirdPartyNoticesSha256,
       workspacePackages: workspacePackages.map(({ name }) => name).sort(),
       machOBinaries: machOBinaries.map((path) => relative(archiveRoot, path)).sort(),
       signing: releaseSigning ? 'developer-id-notarized' : 'development',
-      signingTeamIdentifier: releaseSigning ? toolchain.appleTeamIdentifier : null,
+      signingTeamIdentifier: releaseSigning ? identity.appleTeamIdentifier : null,
     };
     await writeFile(
       join(archiveRoot, 'RELEASE.json'),
@@ -963,7 +959,7 @@ export async function packageMacosArm64Cli({
     if (releaseSigning) {
       signing = await signCliBinaries(machOBinaries, {
         env,
-        expectedTeamIdentifier: toolchain.appleTeamIdentifier,
+        expectedTeamIdentifier: identity.appleTeamIdentifier,
         run,
         inspect,
         nodeEntitlements,

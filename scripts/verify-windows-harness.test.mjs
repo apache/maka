@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { after, describe, it } from 'node:test';
+import { bumpedAutoupdateVersion } from './package-windows-autoupdate-next.mjs';
+import { validateWindowsUpgradeBaseline } from './prepare-windows-upgrade-baseline.mjs';
 import {
   diffTreeManifests,
   directoryTreeManifest,
@@ -16,6 +18,7 @@ import {
 import { waitForInstalledProductVersion } from './verify-windows-autoupdate.mjs';
 import {
   completeInstalledApplicationUninstall,
+  installerVersion,
   listInstalledProcesses,
   terminateInstalledProcesses,
   waitForInstalledProcessAppearance,
@@ -30,6 +33,24 @@ import {
 const temporaryRoots = [];
 const delay = (milliseconds) =>
   new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
+
+it('uses the product SemVer contract throughout Windows release verification', () => {
+  assert.equal(installerVersion('Maka-1.2.3-beta.2-win-x64.exe'), '1.2.3-beta.2');
+  assert.equal(bumpedAutoupdateVersion('1.2.3-beta.2'), '1.2.3');
+  assert.equal(bumpedAutoupdateVersion('1.2.3'), '1.2.4');
+
+  const baseline = {
+    version: '1.2.3-beta.1',
+    tag: 'v1.2.3-beta.1',
+    assetName: 'Maka-1.2.3-beta.1-win-x64.exe',
+    sha256: 'a'.repeat(64),
+  };
+  assert.equal(validateWindowsUpgradeBaseline(baseline, '1.2.3-beta.2'), baseline);
+  assert.throws(
+    () => validateWindowsUpgradeBaseline(baseline, '1.2.3-alpha.1'),
+    /must be older than the candidate/u,
+  );
+});
 
 async function makeTree(shape) {
   const root = await mkdtemp(join(tmpdir(), 'maka-harness-test-'));
