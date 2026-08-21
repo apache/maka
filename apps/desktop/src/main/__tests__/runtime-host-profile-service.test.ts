@@ -262,6 +262,53 @@ test("reconnects an enabled remote Host with interactive SSH", async () => {
   ]);
 });
 
+test("tests an unsaved remote Host without persisting its profile or credential", async () => {
+  const root = await clientRoot();
+  const startup = await resolveDesktopRuntimeHostStartup(root);
+  const tested: ResolvedRuntimeHostProfile[] = [];
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    test: async (target) => {
+      tested.push(target);
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+
+  const result = await service.testConnection({ profile: PROFILE, credential: "opaque-token" });
+
+  assert.deepEqual(result, { kind: "connected" });
+  assert.equal(tested.length, 1);
+  assert.equal(tested[0]?.credential, "opaque-token");
+  assert.equal((await service.getSnapshot()).entries.some((entry) => entry.profile.id === PROFILE.id), false);
+});
+
+test("classifies a rejected temporary connection without creating a profile", async () => {
+  const root = await clientRoot();
+  const startup = await resolveDesktopRuntimeHostStartup(root);
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    test: async () => {
+      throw new RuntimeHostPermanentReconnectError("Runtime Host rejected its access credential");
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+
+  const result = await service.testConnection({ profile: PROFILE, credential: "opaque-token" });
+
+  assert.deepEqual(result, { kind: "failed", stage: "credential" });
+  assert.equal((await service.getSnapshot()).entries.some((entry) => entry.profile.id === PROFILE.id), false);
+});
+
 test("does not enable the same State Root twice", async () => {
   const root = await clientRoot();
   const startup = await resolveDesktopRuntimeHostStartup(root);

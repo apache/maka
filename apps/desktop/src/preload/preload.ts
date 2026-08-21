@@ -1175,6 +1175,9 @@ const makaBridge = {
     addAndEnable(input: DesktopRuntimeHostProfileAddInput) {
       return ipcRenderer.invoke('runtime-host-profiles:add-and-enable', input);
     },
+    testConnection(input: DesktopRuntimeHostProfileAddInput) {
+      return ipcRenderer.invoke('runtime-host-profiles:test-connection', input);
+    },
     remove(profileId: string) {
       return ipcRenderer.invoke('runtime-host-profiles:remove', profileId);
     },

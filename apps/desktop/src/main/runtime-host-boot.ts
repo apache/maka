@@ -48,6 +48,7 @@ import {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
   createRuntimeHostCandidateLaunchBarrier,
+  connectRemoteRuntimeHostProfile,
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
 } from "@maka/runtime-host/client";
@@ -424,6 +425,21 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
       credential: target.credential,
       ...(target.profile.transport.kind === "ssh" ? { sshInteraction } : {}),
     });
+  },
+  test: async (target, sshInteraction) => {
+    if (target.profile.kind !== "remote" || !target.credential) {
+      throw new Error("A resolved remote Runtime Host profile is required");
+    }
+    const connection = await connectRemoteRuntimeHostProfile(
+      {
+        profile: target.profile,
+        credential: target.credential,
+        clientInstanceId: runtimeHostClientInstanceId,
+        ...(target.profile.transport.kind === "ssh" ? { sshInteraction } : {}),
+      },
+      { openSshTunnel: runtimeHostSshTerminal.openSshTunnel },
+    );
+    await connection.close();
   },
   disable: async (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");

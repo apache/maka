@@ -356,6 +356,23 @@ export type DesktopRuntimeHostProfileAddResult =
       readonly kind: 'unavailable';
       readonly snapshot: DesktopRuntimeHostProfileSnapshot;
       readonly message: string;
+      readonly stage: DesktopRuntimeHostProfileTestStage;
+    };
+
+export type DesktopRuntimeHostProfileTestStage =
+  | 'ssh_configuration'
+  | 'ssh_tunnel'
+  | 'credential'
+  | 'state_root'
+  | 'compatibility'
+  | 'endpoint'
+  | 'connection';
+
+export type DesktopRuntimeHostProfileTestResult =
+  | { readonly kind: 'connected' }
+  | {
+      readonly kind: 'failed';
+      readonly stage: DesktopRuntimeHostProfileTestStage;
     };
 
 export interface DesktopRuntimeHostProfileChangedEvent {
@@ -586,6 +603,9 @@ export interface MakaBridge {
     addAndEnable(
       input: DesktopRuntimeHostProfileAddInput,
     ): Promise<DesktopRuntimeHostProfileAddResult>;
+    testConnection(
+      input: DesktopRuntimeHostProfileAddInput,
+    ): Promise<DesktopRuntimeHostProfileTestResult>;
     remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
     setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
     setDefault(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
