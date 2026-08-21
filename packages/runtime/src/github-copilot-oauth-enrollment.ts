@@ -1,0 +1,223 @@
+import {
+  createGitHubCopilotAccountTokens,
+  isSupportedGitHubCopilotAccountToken,
+  type OAuthSubscriptionTokens,
+} from './subscription-credentials.js';
+import {
+  OAUTH_LOGIN_MAX_TOKEN_CHARS,
+  OAuthTokenEndpointError,
+  requestOAuthEndpointJson,
+} from './oauth-login.js';
+import {
+  OAUTH_PROVIDER_CONTRACTS,
+  OAuthDeviceAuthorizationExpiredError,
+  oauthExpiresAt,
+  requireOAuthBoundedString,
+  requireOAuthDataRecord,
+  requireOAuthPositiveInteger,
+} from './oauth-provider-contracts.js';
+
+const COPILOT = OAUTH_PROVIDER_CONTRACTS['github-copilot'];
+
+/**
+ * RFC 8628 device authorization for a GitHub account that carries a Copilot
+ * subscription. The account token this yields is what
+ * `createGitHubCopilotAccountTokens` already expects — the enrollment replaces
+ * where that token comes from (previously `gh auth token` or a fine-grained
+ * PAT), not what is done with it.
+ */
+export interface GitHubCopilotDeviceAuthorization {
+  readonly deviceCode: string;
+  readonly userCode: string;
+  readonly verificationUrl: string;
+  readonly expiresAt: number;
+  readonly intervalMs: number;
+}
+
+export interface StartGitHubCopilotDeviceAuthorizationInput {
+  readonly fetchFn: typeof fetch;
+  readonly signal: AbortSignal;
+  readonly now?: () => number;
+  readonly timeoutMs?: number;
+}
+
+export interface PollGitHubCopilotDeviceAuthorizationInput
+  extends StartGitHubCopilotDeviceAuthorizationInput {
+  readonly authorization: GitHubCopilotDeviceAuthorization;
+  readonly sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
+  /** Runs immediately before one token request becomes non-cancellable. */
+  readonly onPollAdmission?: () => void;
+  /** Runs after a retryable response restores the cancellation boundary. */
+  readonly onPollRetry?: () => void;
+}
+
+export async function startGitHubCopilotDeviceAuthorization(
+  input: StartGitHubCopilotDeviceAuthorizationInput,
+): Promise<GitHubCopilotDeviceAuthorization> {
+  const response = await requestOAuthEndpointJson({
+    endpoint: COPILOT.deviceEndpoint,
+    init: {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        client_id: COPILOT.clientId,
+        scope: COPILOT.scope,
+      }).toString(),
+    },
+    fetchFn: input.fetchFn,
+    signal: input.signal,
+    timeoutMs: input.timeoutMs,
+  });
+  if (!response.ok) throw new OAuthTokenEndpointError('provider_rejected', response.status);
+  const payload = requireOAuthDataRecord(response.payload);
+  // GitHub answers a malformed device request with HTTP 200 and an `error`
+  // body, so an ok status alone does not mean an authorization was issued.
+  const rejection = providerErrorCode(payload);
+  if (rejection) throw new OAuthTokenEndpointError('provider_rejected', response.status);
+  const deviceCode = requireOAuthBoundedString(payload.device_code, OAUTH_LOGIN_MAX_TOKEN_CHARS);
+  const userCode = requireOAuthBoundedString(payload.user_code, 1_024);
+  const verificationUrl = requireOAuthBoundedString(payload.verification_uri, 8_192);
+  assertGitHubVerificationUrl(verificationUrl);
+  const now = input.now?.() ?? Date.now();
+  const expiresIn = requireOAuthPositiveInteger(payload.expires_in, 24 * 60 * 60);
+  const intervalSeconds =
+    payload.interval === undefined ? 5 : requireOAuthPositiveInteger(payload.interval, 300);
+  return {
+    deviceCode,
+    userCode,
+    verificationUrl,
+    expiresAt: oauthExpiresAt(now, expiresIn, response.status),
+    intervalMs: intervalSeconds * 1_000,
+  };
+}
+
+export async function pollGitHubCopilotDeviceAuthorization(
+  input: PollGitHubCopilotDeviceAuthorizationInput,
+): Promise<OAuthSubscriptionTokens> {
+  const now = input.now ?? (() => Date.now());
+  const sleep = input.sleep ?? abortableSleep;
+  let intervalMs = input.authorization.intervalMs;
+  for (;;) {
+    // Sleep at most until the window elapses, then re-check so no request is
+    // issued after the device code expired locally.
+    const remaining = input.authorization.expiresAt - now();
+    if (remaining <= 0) throw new OAuthDeviceAuthorizationExpiredError();
+    await sleep(Math.min(intervalMs, remaining), input.signal);
+    input.signal.throwIfAborted();
+    if (now() >= input.authorization.expiresAt) {
+      throw new OAuthDeviceAuthorizationExpiredError();
+    }
+    input.onPollAdmission?.();
+    const response = await requestOAuthEndpointJson({
+      endpoint: COPILOT.tokenEndpoint,
+      init: {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          client_id: COPILOT.clientId,
+          device_code: input.authorization.deviceCode,
+          grant_type: COPILOT.deviceGrant,
+        }).toString(),
+      },
+      fetchFn: input.fetchFn,
+      // One token request is not cancellable: an abort between the grant being
+      // spent and the token being read would strand a usable credential.
+      signal: new AbortController().signal,
+      timeoutMs: input.timeoutMs,
+    });
+    if (!response.ok) throw new OAuthTokenEndpointError('provider_rejected', response.status);
+    const payload = requireOAuthDataRecord(response.payload);
+    // Unlike xAI, GitHub reports pending/slow_down as HTTP 200 with an `error`
+    // body, so the error code must be read before the success shape.
+    const code = providerErrorCode(payload);
+    if (code === 'authorization_pending') {
+      input.onPollRetry?.();
+      input.signal.throwIfAborted();
+      continue;
+    }
+    if (code === 'slow_down') {
+      const advertised = payload.interval;
+      intervalMs =
+        advertised === undefined
+          ? Math.min(intervalMs + 5_000, 5 * 60 * 1_000)
+          : requireOAuthPositiveInteger(advertised, 300) * 1_000;
+      input.onPollRetry?.();
+      input.signal.throwIfAborted();
+      continue;
+    }
+    // A denial is the account refusing; `expired_token` only means the user did
+    // not finish in time, which the host maps to authorization_failed instead.
+    if (code === 'access_denied')
+      throw new OAuthTokenEndpointError('invalid_grant', response.status);
+    if (code === 'expired_token') throw new OAuthDeviceAuthorizationExpiredError();
+    if (code) throw new OAuthTokenEndpointError('provider_rejected', response.status);
+    return decodeGitHubCopilotAccountToken(payload);
+  }
+}
+
+/**
+ * The device grant must yield a GitHub OAuth user token (`gho_`/`ghu_`). A
+ * classic PAT shape here would mean the flow resolved to something other than
+ * the account that authorized it, so it is rejected rather than stored.
+ */
+function decodeGitHubCopilotAccountToken(
+  payload: Record<string, unknown>,
+): OAuthSubscriptionTokens {
+  const accessToken = requireOAuthBoundedString(payload.access_token, OAUTH_LOGIN_MAX_TOKEN_CHARS);
+  if (!isSupportedGitHubCopilotAccountToken(accessToken)) {
+    throw new OAuthTokenEndpointError('invalid_response');
+  }
+  return createGitHubCopilotAccountTokens(accessToken);
+}
+
+function providerErrorCode(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const error = (value as Record<string, unknown>).error;
+  return typeof error === 'string' ? error.toLowerCase() : undefined;
+}
+
+/**
+ * The verification URL is handed to the presentation layer, which opens it in
+ * the user's browser. Pin it to github.com so a malformed response cannot
+ * redirect the user somewhere else to type a code that looks legitimate.
+ */
+function assertGitHubVerificationUrl(value: string): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new OAuthTokenEndpointError('invalid_response');
+  }
+  if (
+    url.protocol !== 'https:' ||
+    url.username ||
+    url.password ||
+    (url.hostname !== 'github.com' && !url.hostname.endsWith('.github.com'))
+  ) {
+    throw new OAuthTokenEndpointError('invalid_response');
+  }
+}
+
+function abortableSleep(delayMs: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason ?? new DOMException('OAuth login cancelled', 'AbortError'));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new DOMException('OAuth login cancelled', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}

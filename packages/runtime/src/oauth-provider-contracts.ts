@@ -1,4 +1,4 @@
-export type OAuthEnrollmentProvider = 'openai-codex' | 'xai-oauth';
+export type OAuthEnrollmentProvider = 'openai-codex' | 'xai-oauth' | 'github-copilot';
 
 export type OAuthTokenEndpointErrorCategory =
   | 'invalid_grant'
@@ -52,6 +52,20 @@ export const OAUTH_PROVIDER_CONTRACTS = {
     deviceRedirectUri: 'https://auth.openai.com/deviceauth/callback',
     experimentalEnvironmentVariable: 'MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL',
   },
+  'github-copilot': {
+    // The GitHub Copilot editor client id. Copilot entitlement is granted to
+    // editor clients only, so a device flow that means to reach a user's own
+    // subscription has no other client to present. The provider already ships
+    // the matching editor headers (GITHUB_COPILOT_COMPAT_HEADERS), so this
+    // changes how the credential is obtained, not who Maka claims to be.
+    clientId: 'Iv1.b507a08c87ecfe98',
+    deviceEndpoint: 'https://github.com/login/device/code',
+    tokenEndpoint: 'https://github.com/login/oauth/access_token',
+    // `read:user` is what the Copilot token endpoint checks; no repository or
+    // workflow scope is requested, so the grant cannot reach a user's code.
+    scope: 'read:user',
+    deviceGrant: 'urn:ietf:params:oauth:grant-type:device_code',
+  },
   'xai-oauth': {
     clientId: 'b1a00492-073a-47ea-816f-4c329264a828',
     // xAI device-code flow: request a user code at `deviceEndpoint`, then
@@ -70,7 +84,7 @@ export function isOAuthEnrollmentProviderEnabled(
   provider: OAuthEnrollmentProvider,
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): boolean {
-  if (provider === 'xai-oauth') return true;
+  if (provider === 'xai-oauth' || provider === 'github-copilot') return true;
   return environment[OAUTH_PROVIDER_CONTRACTS[provider].experimentalEnvironmentVariable] !== '0';
 }
 
