@@ -73,43 +73,46 @@ describe('Work Board IPC', () => {
     await withTempRoot(async (root) => {
       const ipc = createFakeIpcMain();
       const window = createFakeWindowController();
-      registerWorkBoardIpc({
+      const registration = registerWorkBoardIpc({
         ipcMain: ipc as unknown as Pick<IpcMain, 'handle'>,
         workspaceRoot: root,
         mainWindowController: window,
       });
+      try {
+        const created = await ipc.invoke<WorkBoardIpcResult<{ id: string; revision: number }>>(
+          'workBoard:create',
+          itemInput(),
+        );
+        assert.equal(created.ok, true);
+        assert.ok(created.ok && created.value.id);
 
-      const created = await ipc.invoke<WorkBoardIpcResult<{ id: string; revision: number }>>(
-        'workBoard:create',
-        itemInput(),
-      );
-      assert.equal(created.ok, true);
-      assert.ok(created.ok && created.value.id);
+        const page = await ipc.invoke<WorkBoardIpcResult<{ items: Array<{ id: string }> }>>(
+          'workBoard:list',
+          {},
+        );
+        assert.equal(page.ok, true);
+        assert.ok(page.ok);
+        assert.equal(page.value.items.length, 1);
+        assert.equal(page.value.items[0]?.id, created.ok ? created.value.id : undefined);
 
-      const page = await ipc.invoke<WorkBoardIpcResult<{ items: Array<{ id: string }> }>>(
-        'workBoard:list',
-        {},
-      );
-      assert.equal(page.ok, true);
-      assert.ok(page.ok);
-      assert.equal(page.value.items.length, 1);
-      assert.equal(page.value.items[0]?.id, created.ok ? created.value.id : undefined);
-
-      const changed = window.events.filter(
-        (event) => event.channel === 'workBoard:changed',
-      );
-      assert.equal(changed.length, 1);
-      const event = changed[0]?.args[0] as WorkBoardChangedEvent;
-      assert.equal(event.type, 'work_board_changed');
-      assert.ok(typeof event.ts === 'number');
-      assert.deepEqual(ipc.channels, [
-        'workBoard:list',
-        'workBoard:create',
-        'workBoard:update',
-        'workBoard:archive',
-        'workBoard:unarchive',
-        'workBoard:remove',
-      ]);
+        const changed = window.events.filter(
+          (event) => event.channel === 'workBoard:changed',
+        );
+        assert.equal(changed.length, 1);
+        const event = changed[0]?.args[0] as WorkBoardChangedEvent;
+        assert.equal(event.type, 'work_board_changed');
+        assert.ok(typeof event.ts === 'number');
+        assert.deepEqual(ipc.channels, [
+          'workBoard:list',
+          'workBoard:create',
+          'workBoard:update',
+          'workBoard:archive',
+          'workBoard:unarchive',
+          'workBoard:remove',
+        ]);
+      } finally {
+        registration.close();
+      }
     });
   });
 
@@ -117,24 +120,33 @@ describe('Work Board IPC', () => {
     await withTempRoot(async (root) => {
       const ipc = createFakeIpcMain();
       const window = createFakeWindowController();
-      registerWorkBoardIpc({
+      const registration = registerWorkBoardIpc({
         ipcMain: ipc as unknown as Pick<IpcMain, 'handle'>,
         workspaceRoot: root,
         mainWindowController: window,
       });
+      try {
+        const created = await ipc.invoke<WorkBoardIpcResult<{ id: string; revision: number }>>(
+          'workBoard:create',
+          itemInput(),
+        );
+        assert.ok(created.ok);
+        const id = created.ok ? created.value.id : '';
 
-      const created = await ipc.invoke<WorkBoardIpcResult<{ id: string; revision: number }>>(
-        'workBoard:create',
-        itemInput(),
-      );
-      assert.ok(created.ok);
-      const id = created.ok ? created.value.id : '';
+        const renamed = await ipc.invoke<
+          WorkBoardIpcResult<{ title: string; revision: number; state: string }>
+        >('workBoard:update', id, { title: 'Review auth v2' });
+        assert.ok(renamed.ok);
+        assert.equal(renamed.ok && renamed.value.revision, 2);
 
-      const renamed = await ipc.invoke<
-        WorkBoardIpcResult<{ title: string; revision: number; state: string }>
-      >('workBoard:update', id, { title: 'Review auth v2' });
-      assert.ok(renamed.ok);
-      assert.equal(renamed.ok && renamed.value.revision, 2);
+        const staleRename = await ipc.invoke<WorkBoardIpcResult<unknown>>(
+          'workBoard:update',
+          id,
+          { title: 'stale write' },
+          { expectedRevision: 1 },
+        );
+        assert.equal(staleRename.ok, false);
+        if (!staleRename.ok) assert.equal(staleRename.code, 'operation_conflict');
 
       const removedBeforeArchive = await ipc.invoke<WorkBoardIpcResult<null>>(
         'workBoard:remove',
@@ -183,11 +195,14 @@ describe('Work Board IPC', () => {
       assert.ok(page.ok);
       assert.equal(page.ok && page.value.items.length, 0);
 
-      // create, update, archive, unarchive, archive, remove = 6 mutations
-      const changed = window.events.filter(
-        (event) => event.channel === 'workBoard:changed',
-      );
-      assert.equal(changed.length, 6);
+        // create, update, archive, unarchive, archive, remove = 6 mutations
+        const changed = window.events.filter(
+          (event) => event.channel === 'workBoard:changed',
+        );
+        assert.equal(changed.length, 6);
+      } finally {
+        registration.close();
+      }
     });
   });
 });

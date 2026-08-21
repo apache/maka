@@ -55,6 +55,7 @@ import {
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { createCredentialMcpOAuthStorage, McpClientManager } from "@maka/mcp";
 import {
+  createWorkBoardStore,
   createSettingsStore,
   createMcpConfigStore,
   createFileCredentialStore,
@@ -309,6 +310,7 @@ const desktopLocale = createDesktopLocaleAuthority({
   preferredSystemLanguages: () => app.getPreferredSystemLanguages(),
 });
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
+const workBoardStore = createWorkBoardStore(workspaceRoot);
 const mcpManager = new McpClientManager({
   clientName: "maka-desktop",
   clientVersion: app.getVersion(),
@@ -666,7 +668,12 @@ mcpManager.onChange(() => {
 
 registerPersistentClientIpc();
 registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController, settingsStore });
-registerWorkBoardIpc({ ipcMain, workspaceRoot, mainWindowController });
+const workBoardIpc = registerWorkBoardIpc({
+  ipcMain,
+  workspaceRoot,
+  mainWindowController,
+  store: workBoardStore,
+});
 const browserIpc = registerBrowserIpc({
   mainWindowController,
   isHostActive: (scope) => runtimeHostManager?.ownsScope(scope) === true,
@@ -1564,6 +1571,7 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     Promise.resolve().then(() => runtimeHostManagement.close()),
     runtimeHostManager?.close(),
     runtimeHostOnboarding.close(),
+    Promise.resolve().then(() => workBoardIpc.close()),
     runtimeHostSshTerminal.close(),
     botRegistry.stopAll(),
     mcpManager.close(),
