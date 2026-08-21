@@ -1,4 +1,4 @@
-import { Markdown } from '@earendil-works/pi-tui';
+import { Markdown, visibleWidth } from '@earendil-works/pi-tui';
 import type {
   ProviderRetryEvent,
   SandboxBoundaryRequestEvent,
@@ -20,6 +20,7 @@ import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 import { type ShellRunUpdate } from '@maka/core/events';
 import { homedir } from 'node:os';
+import { basename } from 'node:path';
 import {
   materializeSession,
   type ChatItem,
@@ -1328,20 +1329,25 @@ export function permissionModeLabel(mode: string): string {
 export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width: number): string {
   const safeWidth = Math.max(1, width);
   const sep = ansi.dim(' · ');
-  const parts: string[] = [
-    ansi.bold(metadata.title),
-    ansi.dim(permissionModeLabel(metadata.permissionMode)),
-    ansi.dim(metadata.model),
+  // #3421: segments carry a dropRank so overflow drops whole low-value
+  // segments instead of cutting the chain mid-token from the right.
+  // Lower ranks drop first; segments without a rank never drop:
+  // title, permission mode and goal are safety-relevant, ctx is the
+  // context budget, model is the session's identity.
+  const parts: MakaPiStatusLineSegment[] = [
+    { text: ansi.bold(metadata.title) },
+    { text: ansi.dim(permissionModeLabel(metadata.permissionMode)) },
+    { text: ansi.dim(metadata.model) },
   ];
   // #1064: omit thinking:default — it is noise before the user explicitly
   // changes the level. Only a non-default, explicitly set level shows.
   if (metadata.thinkingLevel) {
-    parts.push(ansi.dim(`thinking:${metadata.thinkingLevel}`));
+    parts.push({ text: ansi.dim(`thinking:${metadata.thinkingLevel}`), dropRank: 3 });
   }
   if (metadata.orchestrationMode === 'swarm') {
-    parts.push(ansi.accent('swarm'));
+    parts.push({ text: ansi.accent('swarm'), dropRank: 4 });
   } else if (metadata.orchestrationMode === 'graph') {
-    parts.push(ansi.accent('graph'));
+    parts.push({ text: ansi.accent('graph'), dropRank: 4 });
   }
   // An autonomous goal burns tokens between prompts; it must never be
   // invisible. Terminal goals show nothing (the desktop chip hides them too).
@@ -1350,13 +1356,14 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
     // paused gets warning salience: the loop stopped burning but stays armed
     // and resumable, which the user must not miss. waiting is a normal
     // transient between turns, so it stays dim like the other chrome.
-    parts.push(
-      metadata.goal.status === 'active'
-        ? ansi.accent(text)
-        : metadata.goal.status === 'paused'
-          ? ansi.yellow(text)
-          : ansi.dim(text),
-    );
+    parts.push({
+      text:
+        metadata.goal.status === 'active'
+          ? ansi.accent(text)
+          : metadata.goal.status === 'paused'
+            ? ansi.yellow(text)
+            : ansi.dim(text),
+    });
   }
   const usage = metadata.usage;
   if (usage) {
@@ -1369,25 +1376,71 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
       const pct = Math.round((used / metadata.modelContextWindow) * 100);
       // #1064: color warning — yellow >80%, red >95%, dim otherwise.
       const ctxColor = pct > 95 ? ansi.red : pct > 80 ? ansi.yellow : ansi.dim;
-      parts.push(
-        ctxColor(
+      parts.push({
+        text: ctxColor(
           `ctx ${formatTokenCount(used)}/${formatTokenCount(metadata.modelContextWindow)} ${pct}%`,
         ),
-      );
+      });
     }
     if (usage.costUsd > 0) {
-      parts.push(ansi.dim(`$${formatCost(usage.costUsd)}`));
+      parts.push({ text: ansi.dim(`$${formatCost(usage.costUsd)}`), dropRank: 1 });
     }
     const totalCache = usage.cacheHitInput + usage.cacheMissInput;
     if (totalCache > 0) {
       const hitRate = Math.round((usage.cacheHitInput / totalCache) * 100);
-      parts.push(ansi.dim(`cache ${hitRate}%`));
+      parts.push({ text: ansi.dim(`cache ${hitRate}%`), dropRank: 0 });
     }
   }
-  parts.push(ansi.dim(metadata.connectionSlug));
+  parts.push({ text: ansi.dim(metadata.connectionSlug), dropRank: 2 });
   // #1064: shorten cwd to ~-relative path instead of the full path.
-  parts.push(ansi.dim(shortenCwd(metadata.cwd)));
-  return fitLine(parts.join(sep), safeWidth);
+  const cwd = shortenCwd(metadata.cwd);
+  // cwd degrades progressively (full → basename → dropped), after every
+  // ranked segment above but before the final truncation fallback.
+  parts.push({
+    text: ansi.dim(cwd),
+    dropRank: 5,
+    shortenedText: cwd === '~' || cwd === '/' ? undefined : ansi.dim(basename(cwd)),
+  });
+  return fitStatusLine(parts, sep, safeWidth);
+}
+
+interface MakaPiStatusLineSegment {
+  text: string;
+  /** Overflow drops whole segments lowest-rank-first; undefined never drops. */
+  dropRank?: number;
+  /** Progressive fallback tried before this segment is dropped entirely. */
+  shortenedText?: string;
+}
+
+function fitStatusLine(segments: MakaPiStatusLineSegment[], sep: string, width: number): string {
+  const lineWidth = (segs: MakaPiStatusLineSegment[]): number =>
+    visibleWidth(segs.map((segment) => segment.text).join(sep));
+  let kept = segments;
+  // Drop whole low-value segments, lowest rank first, re-checking after each
+  // rank so the fewest possible segments are sacrificed.
+  for (let rank = 0; lineWidth(kept) > width; rank++) {
+    const droppable = kept.some((segment) => segment.dropRank !== undefined);
+    if (!droppable) break;
+    const lowest = Math.min(
+      ...kept.flatMap((segment) => (segment.dropRank !== undefined ? [segment.dropRank] : [])),
+    );
+    // A segment with a shortened form degrades to it before dropping.
+    const shorten = kept.find(
+      (segment) => segment.dropRank === lowest && segment.shortenedText !== undefined,
+    );
+    if (shorten) {
+      kept = kept.map((segment) =>
+        segment === shorten
+          ? { ...segment, text: segment.shortenedText ?? segment.text, shortenedText: undefined }
+          : segment,
+      );
+    } else {
+      kept = kept.filter((segment) => segment.dropRank !== lowest);
+    }
+  }
+  // Last resort for still-oversized lines (e.g. a long model id alone):
+  // the previous hard truncation.
+  return fitLine(kept.map((segment) => segment.text).join(sep), width);
 }
 
 /**
