@@ -96,3 +96,13 @@ test('a chat-default thinking level the app does not recognize drops to no prefe
   });
   expect(normalized.chatDefaults.thinkingLevel).toBe(undefined);
 });
+
+test('WorkHub stays opt-in and malformed persisted values fail closed', () => {
+  const defaults = createDefaultSettings();
+  expect(defaults.workHub).toEqual({ enabled: false });
+  expect(normalizeSettings({ workHub: { enabled: true } }).workHub).toEqual({ enabled: true });
+  expect(normalizeSettings({ workHub: { enabled: 'yes' } }).workHub).toEqual({ enabled: false });
+  expect(mergeSettings(defaults, { workHub: { enabled: true } }).workHub).toEqual({
+    enabled: true,
+  });
+});

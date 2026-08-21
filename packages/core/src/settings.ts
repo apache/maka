@@ -216,6 +216,11 @@ export interface NotificationSettings {
   runComplete: boolean;
 }
 
+/** Client-owned opt-in for the cross-Session WorkHub router. */
+export interface WorkHubSettings {
+  enabled: boolean;
+}
+
 /**
  * System-level power behavior (Settings surface: the 定时任务 page's
  * capability row). Scheduled tasks are driven by an in-process timer; when
@@ -257,6 +262,7 @@ export interface AppSettings {
   chatDefaults: ChatDefaultsSettings;
   projects: ProjectPreferencesSettings;
   notifications: NotificationSettings;
+  workHub: WorkHubSettings;
   system: SystemSettings;
   shell: ShellSettings;
   subagents: SubagentSettings;
@@ -360,6 +366,7 @@ export type UpdateAppSettingsInput = Partial<{
   chatDefaults: Partial<ChatDefaultsSettings>;
   projects: Partial<ProjectPreferencesSettings>;
   notifications: Partial<NotificationSettings>;
+  workHub: Partial<WorkHubSettings>;
   system: Partial<SystemSettings>;
   shell: Partial<ShellSettings>;
   webSearch: WebSearchSettingsPatch;
@@ -437,6 +444,9 @@ export function createDefaultSettings(): AppSettings {
     notifications: {
       runComplete: true,
     },
+    workHub: {
+      enabled: false,
+    },
     system: {
       // Off by default: holding a power-save blocker is an explicit,
       // battery-affecting opt-in, not a silent default.
@@ -513,6 +523,10 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
       ...current.notifications,
       ...(patch.notifications ?? {}),
     },
+    workHub: {
+      ...current.workHub,
+      ...(patch.workHub ?? {}),
+    },
     system: {
       ...current.system,
       ...(patch.system ?? {}),
@@ -546,6 +560,7 @@ export function normalizeSettings(input: unknown): AppSettings {
     chatDefaults: value.chatDefaults,
     projects: value.projects,
     notifications: value.notifications,
+    workHub: value.workHub,
     system: value.system,
     shell: value.shell,
     subagents: value.subagents,
@@ -615,6 +630,9 @@ export function normalizeSettings(input: unknown): AppSettings {
     notifications: {
       runComplete:
         typeof base.notifications.runComplete === 'boolean' ? base.notifications.runComplete : true,
+    },
+    workHub: {
+      enabled: typeof base.workHub.enabled === 'boolean' ? base.workHub.enabled : false,
     },
     // Fail-closed boolean coercion, same reasoning as
     // `notifications.runComplete`: a non-boolean `keepSystemAwake` (from a

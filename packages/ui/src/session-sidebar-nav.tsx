@@ -1,5 +1,5 @@
 import type { ScheduledTask } from '@maka/core/scheduled-task';
-import { AlertCircle, Blocks, Download, Settings, SquarePen, Timer } from './icons.js';
+import { AlertCircle, Blocks, Download, Network, Settings, SquarePen, Timer } from './icons.js';
 import type { NavModuleMemory, NavSelection } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
@@ -14,6 +14,11 @@ export function SessionSidebarNav(props: {
   moduleMemory?: NavModuleMemory;
   onSelect(selection: NavSelection): void;
   onNew(): void;
+  workHubEntry?: {
+    active: boolean;
+    label: string;
+    onSelect(): void;
+  };
 }) {
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
@@ -44,6 +49,15 @@ export function SessionSidebarNav(props: {
         onClick={props.onNew}
         endContent={<kbd className="maka-nav-kbd" aria-hidden="true">⌘ N</kbd>}
       />
+      {props.workHubEntry ? (
+        <SideNavItem
+          label={props.workHubEntry.label}
+          icon={Network}
+          size="md"
+          isSelected={props.workHubEntry.active}
+          onClick={props.workHubEntry.onSelect}
+        />
+      ) : null}
       {/* No 任务 row. Expanded, the list below IS that row's destination, and a
           control that selects what is already on screen under it is the same
           redundancy as the 会话 list heading this change deleted one row down.

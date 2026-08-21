@@ -173,6 +173,24 @@ export function GeneralSettingsPage(props: {
             />
           }
         /> : null}
+        <SettingsRow
+          label={copy.workHub}
+          description={copy.workHubHelp}
+          end={
+            <Switch
+              label={copy.workHub}
+              isLabelHidden
+              value={props.settings.workHub.enabled}
+              changeAction={async (enabled) => {
+                try {
+                  await props.onUpdate({ workHub: { enabled } });
+                } catch (error: unknown) {
+                  toast.error(copy.workHubFailed, settingsActionErrorMessage(error, locale));
+                }
+              }}
+            />
+          }
+        />
       </SettingsSection>
       {runtimeHostAvailable ? (
         <>
