@@ -358,7 +358,10 @@ async function withE2eWindow(
     });
     let page: Page;
     try {
-      page = await app.firstWindow();
+      // Runtime Host election is allowed 45 seconds. A fresh macOS runner can
+      // spend most of that budget starting its first Electron Candidate, so
+      // Playwright's 30-second default would fail before the product contract.
+      page = await app.firstWindow({ timeout: 60_000 });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const logs = mainLogs.length > 0 ? `\nElectron main console:\n${mainLogs.join('\n')}` : '';

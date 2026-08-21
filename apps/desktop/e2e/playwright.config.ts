@@ -30,7 +30,9 @@ export default defineConfig({
   // to mount (the cold-start convergence point — connection seed, onboarding
   // clear, renderer hydrated), so cold-start variance never reaches the test.
   retries: 0,
-  timeout: 60_000,
+  // Keep enough room for the 60-second first-window bound plus the fixture's
+  // readiness assertion. Runtime Host election remains independently capped.
+  timeout: 90_000,
   expect: { timeout: 10_000 },
   outputDir: 'test-results',
   use: {
