@@ -178,16 +178,16 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
       kind: 'committed',
       session: session('session-1', 12, {
         collaborationMode: 'plan',
-        permissionMode: 'execute',
+        permissionMode: 'ask',
       }),
     },
   ]);
 
   const updated = await client.updateSessionConfiguration('session-1', {
-    permissionMode: 'execute',
+    permissionMode: 'ask',
   });
 
-  assert.equal(updated.permissionMode, 'execute');
+  assert.equal(updated.permissionMode, 'ask');
   assert.equal(updated.collaborationMode, 'plan');
   assert.deepEqual(
     requests
@@ -204,7 +204,7 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
             model: 'test-model',
           },
           thinkingLevel: null,
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           collaborationMode: 'agent',
           orchestrationMode: 'default',
         },
@@ -219,7 +219,7 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
             model: 'test-model',
           },
           thinkingLevel: null,
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           collaborationMode: 'plan',
           orchestrationMode: 'default',
         },

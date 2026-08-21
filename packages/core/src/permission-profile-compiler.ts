@@ -53,7 +53,6 @@ export function compilePermissionProfile(
     case 'explore':
       return compileManaged(input.mode, createReadOnlyPermissionProfile(), workspaceRoots);
     case 'ask':
-    case 'execute':
       return compileManaged(input.mode, createWorkspaceWritePermissionProfile(), workspaceRoots);
     case 'bypass':
       return compileManaged(input.mode, createDangerFullAccessPermissionProfile(), workspaceRoots);

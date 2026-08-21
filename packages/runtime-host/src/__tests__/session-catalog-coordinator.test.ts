@@ -743,7 +743,7 @@ test('creation materializes Deep Research semantics inside the Host transaction'
       name: 'Caller override',
       labels: ['customer-label'],
       modelTarget: { kind: 'default' },
-      permissionMode: 'execute',
+      permissionMode: 'ask',
     },
     context,
   );

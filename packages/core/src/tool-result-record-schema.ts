@@ -21,7 +21,7 @@ import {
   decodeCanonicalShellToolResultContent,
   isSandboxDenialSignal,
 } from './shell-run-result.js';
-import { isPermissionMode } from './permission.js';
+import { decodePersistedPermissionMode } from './permission.js';
 import { isStorageRef, type ToolResultContent } from './events.js';
 import { validateSandboxBoundaryExpansion } from './sandbox-boundary.js';
 import {
@@ -324,7 +324,7 @@ function hasValidSubagentResultFields(value: Record<string, unknown>): boolean {
     typeof value.agentName === 'string' &&
     typeof value.turnId === 'string' &&
     isOptionalString(value.runId) &&
-    isPermissionMode(value.permissionMode) &&
+    decodePersistedPermissionMode(value.permissionMode) !== undefined &&
     typeof value.summary === 'string' &&
     isStringArray(value.artifactIds) &&
     isOptionalFiniteNumber(value.startedAt) &&

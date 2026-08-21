@@ -282,10 +282,10 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       );
     }
     assert.equal(
-      (await ipc.invoke('sessions:setPermissionMode', 'session-ipc', 'execute') as {
+      (await ipc.invoke('sessions:setPermissionMode', 'session-ipc', 'bypass') as {
         permissionMode: string;
       }).permissionMode,
-      'execute',
+      'bypass',
     );
     await ipc.invoke('sessions:archive', 'session-ipc');
     assert.equal((await ipc.invoke('sessions:list') as Array<{ isArchived: boolean }>)[0]?.isArchived, true);

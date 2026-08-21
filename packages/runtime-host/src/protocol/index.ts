@@ -91,7 +91,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 37 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 38 as const;
+// 38: `execute` is no longer a permission mode. Frame decoders reject it, so a
+// peer that still sends it would fail mid-Session rather than at connect.
+// 37: External Session catalog queries carry a search term.
 // 36: Session trace inspection no longer transports aggregate TraceTotals.
 // 35: Session trace inspection uses cursor pages and Session usage has its own
 // invalidation domain. Older peers cannot safely exchange those frames.

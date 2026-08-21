@@ -563,7 +563,7 @@ describe('AiSdkBackend deferred agent tools', () => {
     const spawnCalls: unknown[] = [];
     await drainWithDurableTurn(
       agentBackend(loadAgentThenSpawnModel(captured), spawnCalls, {
-        permissionMode: 'execute',
+        permissionMode: 'ask',
         durable,
       }).send(durable.sendInput({ runId: 'parent-run' })),
       durable,

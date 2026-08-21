@@ -23,7 +23,7 @@
  */
 
 import type { ToolResultContent, ToolResultPreviewContent } from './events.js';
-import { isPermissionMode } from './permission.js';
+import { decodePersistedPermissionMode } from './permission.js';
 import { defineObjectShape, hasExactShape, isOptionalString, isRecord } from './record-schema.js';
 
 const SUBAGENT_PREVIEW_SHAPE = defineObjectShape<
@@ -77,6 +77,6 @@ function isSubagentPreview(
     typeof value.turnId === 'string' &&
     isOptionalString(value.runId) &&
     value.status === 'running' &&
-    isPermissionMode(value.permissionMode)
+    decodePersistedPermissionMode(value.permissionMode) !== undefined
   );
 }

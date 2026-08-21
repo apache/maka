@@ -35,20 +35,14 @@ describe('compilePermissionProfile', () => {
     assert.deepEqual(compiled.network, { kind: 'restricted' });
   });
 
-  it('maps ask and execute to the same workspace-write profile while preserving mode', () => {
+  it('maps ask to the workspace-write profile while preserving mode', () => {
     const ask = compilePermissionProfile({ mode: 'ask', cwd: '/repo' });
-    const execute = compilePermissionProfile({ mode: 'execute', cwd: '/repo' });
 
     assert.equal(ask.mode, 'ask');
-    assert.equal(execute.mode, 'execute');
     assert.equal(ask.profileName, 'workspace-write');
-    assert.equal(execute.profileName, 'workspace-write');
     assert.equal(ask.profile.type, 'managed');
-    assert.equal(execute.profile.type, 'managed');
     assert.equal(ask.profile.name, 'workspace-write');
-    assert.equal(execute.profile.name, 'workspace-write');
     assert.deepEqual(ask.network, { kind: 'restricted' });
-    assert.deepEqual(execute.network, { kind: 'restricted' });
   });
 
   it('maps bypass to danger-full-access', () => {
@@ -64,7 +58,7 @@ describe('compilePermissionProfile', () => {
 
   it('uses explicit workspaceRoots when provided', () => {
     const compiled = compilePermissionProfile({
-      mode: 'execute',
+      mode: 'ask',
       cwd: '/repo',
       workspaceRoots: ['/repo', '/other-repo'],
     });

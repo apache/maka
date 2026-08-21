@@ -121,7 +121,7 @@ describe('filesystem worker client permission snapshots', () => {
           operation: { kind: 'write', path: 'allowed-by-legacy-mode.txt', content: kind },
           cwd: workspace,
           executionBoundary: { kind, revision: 1 },
-          mode: 'execute',
+          mode: 'ask',
           expectedIdentity: 'unchecked',
         }),
         (error: unknown) => {
@@ -175,7 +175,7 @@ describe('filesystem worker client permission snapshots', () => {
       client.execute({
         operation: { kind: 'write', path: 'blocked.txt', content: 'blocked' },
         cwd: workspace,
-        mode: 'execute',
+        mode: 'ask',
         permissionProfile: createReadOnlyPermissionProfile(),
         expectedIdentity: 'unchecked',
       }),
@@ -205,7 +205,7 @@ describe('filesystem worker client permission snapshots', () => {
       client.execute({
         operation: { kind: 'write', path: target, content: 'blocked' },
         cwd: workspace,
-        mode: 'execute',
+        mode: 'ask',
         permissionProfile: profile,
         expectedIdentity: 'unchecked',
       }),
@@ -311,7 +311,7 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
     await client.execute({
       operation: { kind: 'write', path: target, content: 'target' },
       cwd: workspace,
-      mode: 'execute',
+      mode: 'ask',
       expectedIdentity: 'unchecked',
     });
 

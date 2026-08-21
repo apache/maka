@@ -49,7 +49,7 @@ import {
 } from '@maka/core/session';
 import { isCollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode } from '@maka/core/orchestration';
-import { isPermissionMode } from '@maka/core/permission';
+import { decodePersistedPermissionMode } from '@maka/core/permission';
 import { isSubagentWorkspaceBinding } from '@maka/core/subagent-workspace';
 import { WORKSPACE_AUTHORITY_SESSION_ID } from '@maka/core/workspace-version-authority';
 import type {
@@ -1081,6 +1081,10 @@ export function normalizeSessionHeader(
   header: SessionHeader,
   sessionId: string = header.id,
 ): SessionHeader {
+  // A retired mode decodes to its live equivalent rather than failing the
+  // header: such a record is old, not malformed, and rejecting it would make
+  // the Session unopenable.
+  const permissionMode = decodePersistedPermissionMode(header.permissionMode);
   const valid =
     header.id === sessionId &&
     typeof header.workspaceRoot === 'string' &&
@@ -1114,7 +1118,7 @@ export function normalizeSessionHeader(
     typeof header.connectionLocked === 'boolean' &&
     typeof header.model === 'string' &&
     (header.toolProfile === undefined || isSessionToolProfile(header.toolProfile)) &&
-    isPermissionMode(header.permissionMode) &&
+    permissionMode !== undefined &&
     isCollaborationMode(header.collaborationMode) &&
     isOrchestrationMode(header.orchestrationMode) &&
     (header.transcriptLedgerVersion === undefined ||
@@ -1127,9 +1131,9 @@ export function normalizeSessionHeader(
   const normalizedName = normalizeSessionName(header.name);
   if (header.blockedReason === undefined) {
     const { blockedReason: _blockedReason, ...withoutBlockedReason } = header;
-    return { ...withoutBlockedReason, name: normalizedName };
+    return { ...withoutBlockedReason, name: normalizedName, permissionMode };
   }
-  return { ...header, name: normalizedName };
+  return { ...header, name: normalizedName, permissionMode };
 }
 
 function isValidSessionExternalOrigin(origin: SessionHeader['externalOrigin']): boolean {

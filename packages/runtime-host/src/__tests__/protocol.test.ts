@@ -121,19 +121,40 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a new compatibility epoch for sandbox failure results', () => {
+    // Epoch 32 rejects the bounded sandbox failure reason on live tool results,
+    // so mixed-version peers must fail the handshake. Asserted as a floor, like
+    // the epochs above: pinning an exact value breaks on every later bump.
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 32);
   });
 
   test('publishes a new compatibility epoch for backend-free ScheduledTask templates', () => {
+    // Epoch 33 Clients require the `backend` field these templates no longer
+    // emit. Also a floor, for the same reason as above.
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 33);
   });
 
   test('publishes a new compatibility epoch for Session trace pagination', () => {
+    // Epoch 34 peers cannot exchange the paged trace and usage frames. Also a
+    // floor, for the same reason as above.
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 34);
   });
 
+  test('publishes a new compatibility epoch for TraceTotals removal', () => {
+    // Epoch 35 peers still transport aggregate TraceTotals. Also a floor, for
+    // the same reason as above.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 35);
+  });
+
   test('publishes a new compatibility epoch for the catalog search term', () => {
-    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 37);
+    // Epoch 36 cannot carry the search term. Also a floor, for the same reason
+    // as above.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 36);
+  });
+
+  test('publishes a new compatibility epoch for the retired execute permission mode', () => {
+    // Epoch 37 still speaks `execute`. Frame decoders now reject it, so such a
+    // peer would fail mid-Session rather than at connect.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 37);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {

@@ -437,7 +437,6 @@ const CONVERSATION_COPY = {
       mode: {
         explore: { label: '只读', hint: '只读搜索，不写文件、不上网；需要时先问你。' },
         ask: { label: '自动', hint: '保护层内自动执行，越权先问你。' },
-        execute: { label: '自动执行', hint: '常见工具直接执行；危险操作仍会确认。' },
         bypass: { label: '完全权限', hint: '直接访问文件和网络，仅限可信任务。' },
       },
       modeAriaLabel: (label) => `权限模式：${label}`,
@@ -578,7 +577,6 @@ const CONVERSATION_COPY = {
       mode: {
         explore: { label: 'Read only', hint: 'Read and search only; asks before write or network.' },
         ask: { label: 'Auto', hint: "Runs inside Maka's protection; asks before going further." },
-        execute: { label: 'Auto execute', hint: 'Common tools run; risky actions still confirm.' },
         bypass: { label: 'Full access', hint: 'Direct file and network access. Trust-only tasks.' },
       },
       modeAriaLabel: (label) => `Permission mode: ${label}`,

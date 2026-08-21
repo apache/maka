@@ -194,7 +194,7 @@ async function runCrashChild(): Promise<void> {
     cwd: workspaceRoot,
     llmConnectionSlug: 'fake',
     model: 'fake-model',
-    permissionMode: 'execute',
+    permissionMode: 'ask',
     name: 'continuation crash child',
   });
   await runStore.createRun(sourceHeader(session.id, workspaceRoot));
@@ -374,7 +374,7 @@ function sourceHeader(sessionId: string, cwd: string): AgentRunHeader {
     modelId: 'fake-model',
     cwd,
     workspaceIdentity: 'workspace-1',
-    permissionMode: 'execute',
+    permissionMode: 'ask',
     createdAt: 1,
     updatedAt: 2,
     completedAt: 2,

@@ -166,7 +166,7 @@ async function seedParentRemovalSessions(userDataDir: string): Promise<void> {
       cwd: path.join(userDataDir, 'project'),
       llmConnectionSlug: 'e2e',
       model: 'claude-sonnet-4-5-20250929',
-      permissionMode: 'execute',
+      permissionMode: 'ask',
       name: PARENT_REMOVAL_CHILD_NAME,
       labels: [],
       subagentParent: {

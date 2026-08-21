@@ -195,8 +195,6 @@ export type ExecutionBoundarySummary =
 
 export type ExecutionBoundaryReadModel = ExecutionBoundary | ExecutionBoundarySummary;
 
-export type LegacyPermissionMode = 'ask' | 'execute' | 'explore' | 'bypass';
-
 /**
  * The permission mode a boundary should be *presented* as (#1611).
  *
@@ -228,7 +226,7 @@ export function executionBoundaryDisplayMode(
   return readOnly ? 'explore' : 'ask';
 }
 
-export function createGenesisExecutionBoundary(mode: LegacyPermissionMode): ExecutionBoundary {
+export function createGenesisExecutionBoundary(mode: PermissionMode): ExecutionBoundary {
   if (mode === 'bypass') return { kind: 'bypass', revision: 0 };
   return {
     kind: 'managed',

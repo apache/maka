@@ -37,7 +37,7 @@ describe('sandbox diagnostics', () => {
       canonicalizePath: async (path) => path,
     });
     const unsupportedSnapshot = await unsupported.resolve({
-      mode: 'execute',
+      mode: 'ask',
       cwd: 'C:\\workspace',
     });
     assert.deepEqual(unsupportedSnapshot.capabilities.command.failure, {

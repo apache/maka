@@ -1028,7 +1028,7 @@ test('linked child Sessions reject public safe-boundary continuation', async () 
       cwd: parent.cwd,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'execute',
+      permissionMode: 'ask',
       collaborationMode: 'agent',
       orchestrationMode: 'default',
       subagentParent: {
@@ -1171,7 +1171,7 @@ test('worktree child Sessions reject roots outside managed child execution', asy
       cwd: binding.worktreePath,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
-      permissionMode: 'execute',
+      permissionMode: 'ask',
       collaborationMode: 'agent',
       orchestrationMode: 'default',
       subagentParent: {

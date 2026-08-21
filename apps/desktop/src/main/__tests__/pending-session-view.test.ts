@@ -47,7 +47,7 @@ test('the pending chat view matches no offered model choice', () => {
   const view = pendingSessionView({
     sessionId: 'session-2',
     name: '新任务',
-    permissionMode: 'execute',
+    permissionMode: 'ask',
   });
   const offered = [
     { connectionSlug: 'anthropic', model: 'claude-sonnet-4-5-20250929' },

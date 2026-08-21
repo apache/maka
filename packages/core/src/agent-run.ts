@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { isPermissionMode, type PermissionMode } from './permission.js';
+import { decodePersistedPermissionMode, type PermissionMode } from './permission.js';
 import { isCollaborationMode, type CollaborationMode } from './collaboration.js';
 import {
   isAgentSwarmAuthorizationSource,
@@ -607,6 +607,10 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
   }
   const status =
     value.status === 'waiting_permission' ? ('waiting_for_user' as const) : value.status;
+  // Same shape as the status fold above: a run written before a mode was
+  // retired is old, not malformed, so it decodes to the live equivalent
+  // rather than making the run unreadable.
+  const permissionMode = decodePersistedPermissionMode(value.permissionMode);
   const valid =
     typeof value.runId === 'string' &&
     typeof value.sessionId === 'string' &&
@@ -616,7 +620,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
     typeof value.llmConnectionSlug === 'string' &&
     typeof value.modelId === 'string' &&
     typeof value.cwd === 'string' &&
-    isPermissionMode(value.permissionMode) &&
+    permissionMode !== undefined &&
     (value.collaborationMode === undefined || isCollaborationMode(value.collaborationMode)) &&
     (value.orchestrationMode === undefined || isOrchestrationMode(value.orchestrationMode)) &&
     (value.orchestrationSource === undefined ||
@@ -660,7 +664,9 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
     (value.continuationSource === undefined ||
       isAgentRunContinuationSource(value.continuationSource));
   if (!valid) throw new Error('Invalid AgentRun header schema');
-  if (status !== value.status) return { ...value, status } as unknown as AgentRunHeader;
+  if (status !== value.status || permissionMode !== value.permissionMode) {
+    return { ...value, status, permissionMode } as unknown as AgentRunHeader;
+  }
   return value as unknown as AgentRunHeader;
 }
 

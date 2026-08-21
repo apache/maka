@@ -526,7 +526,7 @@ describe('Host Session retirement coordinator', () => {
       };
       const { header: child } = await harness.store.createSubagent(
         sessionInput('Worktree child', {
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           subagentParent: {
             kind: 'subagent',
             parentSessionId: harness.rootId,
@@ -1272,7 +1272,7 @@ async function createClosedSubagent(
   const seed = index.toString(16).padStart(64, '0');
   const { header } = await harness.store.createSubagent(
     sessionInput(`Subagent ${index}`, {
-      permissionMode: 'execute',
+      permissionMode: 'ask',
       subagentParent: {
         kind: 'subagent',
         parentSessionId,
@@ -1350,7 +1350,7 @@ async function createClosedGraphOperator(
   };
   const child = await harness.store.createAgentGraphOperator(
     sessionInput('Graph operator', {
-      permissionMode: 'execute',
+      permissionMode: 'ask',
       subagentParent: {
         kind: 'subagent',
         parentSessionId: rootSessionId,

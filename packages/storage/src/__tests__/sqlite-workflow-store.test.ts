@@ -363,7 +363,7 @@ describe('SQLite workflow stores', () => {
               backend: 'ai-sdk',
               llmConnectionSlug: 'default',
               model: 'test-model',
-              permissionMode: 'execute',
+              permissionMode: 'ask',
               collaborationMode: 'agent',
               orchestrationMode: 'default',
             },

@@ -50,10 +50,10 @@ export interface PermissionModeMeta {
 }
 
 /**
- * Sessions may run under a read-only (`explore`) boundary and legacy records
- * may contain `execute`, so metadata remains complete for the persisted
- * PermissionMode union. User-facing pickers offer only Auto (`ask`) and full
- * access (`bypass`), but any mode can be the state being displayed.
+ * Sessions may run under a read-only (`explore`) boundary, so metadata stays
+ * complete for the whole PermissionMode union. User-facing pickers offer only
+ * Auto (`ask`) and full access (`bypass`), but any mode can be the state being
+ * displayed.
  *
  * This module is the one home for the mode table and shared picker: both the
  * composer and Settings render from it so labels, hints, and markup cannot
@@ -96,11 +96,9 @@ export function PermissionModeSelect(props: {
   const locale = useUiLocale();
   const permissionCopy = getConversationCopy(locale).permissions;
   const modeMeta = getPermissionModeMeta(locale);
-  // #1611: only legacy `execute` collapses to Auto. `explore` is a real
-  // read-only boundary the user is running under, so it shows its own label
-  // and hint instead of borrowing Auto's.
-  const displayMode: PermissionMode =
-    props.activeMode === 'execute' ? 'ask' : props.activeMode;
+  // #1611: `explore` is a real read-only boundary the user is running under,
+  // so it shows its own label and hint instead of borrowing Auto's.
+  const displayMode: PermissionMode = props.activeMode;
   const meta = modeMeta[displayMode];
   const selectedValue: ChatDefaultPermissionMode | undefined = PERMISSION_MODE_ORDER.includes(
     displayMode as ChatDefaultPermissionMode,
