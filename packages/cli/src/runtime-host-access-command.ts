@@ -75,7 +75,11 @@ export interface RuntimeHostAccessListOptions {
 
 export interface RuntimeHostAccessRevokeOptions extends RuntimeHostAccessListOptions {
   readonly credentialId: string;
-  readonly protectedCredentialFingerprint?: string;
+  readonly currentCredentialFingerprint?: string;
+}
+
+export interface RuntimeHostAccessPrepareOptions extends RuntimeHostAccessListOptions {
+  readonly currentCredentialFingerprint: string;
 }
 
 export interface IssuedRuntimeHostAccessCredential {
@@ -123,10 +127,23 @@ export async function runRuntimeHostAccessListCli(
 }
 
 export async function runRuntimeHostAccessPrepareCli(
-  options: RuntimeHostAccessIssueOptions,
+  options: RuntimeHostAccessPrepareOptions,
 ): Promise<number> {
   try {
-    const prepared = await prepareRuntimeHostAccessCredential(options);
+    const before = await listRuntimeHostAccessCredentials(options);
+    const current = requireCurrentDesktopCredential(
+      before.credentials,
+      options.currentCredentialFingerprint,
+    );
+    const prepared = await prepareRuntimeHostAccessCredential({
+      ...options,
+      principalKind: current.principalKind,
+      principalId: current.principalId,
+      operationGrants: [],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+      preset: 'desktop-client',
+    });
     const listed = await listRuntimeHostAccessCredentials(options);
     if (
       !listed.credentials.some((credential) => credential.credentialId === prepared.credentialId)
@@ -234,11 +251,10 @@ export async function runRuntimeHostAccessRevokeCli(
     const target = before.credentials.find(
       (credential) => credential.credentialId === options.credentialId,
     );
-    if (
-      target &&
-      options.protectedCredentialFingerprint &&
-      target.credentialFingerprint === options.protectedCredentialFingerprint
-    ) {
+    if (options.currentCredentialFingerprint) {
+      requireCurrentDesktopCredential(before.credentials, options.currentCredentialFingerprint);
+    }
+    if (target?.credentialFingerprint === options.currentCredentialFingerprint) {
       throw new Error('Rotate this Desktop credential instead of revoking it');
     }
     const result = await revokeRuntimeHostAccessCredential(options);
@@ -260,6 +276,25 @@ export async function runRuntimeHostAccessRevokeCli(
     writeAccessManagementError('revoke', error);
     return 1;
   }
+}
+
+function requireCurrentDesktopCredential(
+  credentials: readonly RuntimeHostAccessCredentialMetadata[],
+  fingerprint: string,
+): RuntimeHostAccessCredentialMetadata {
+  const current = credentials.find(
+    (credential) => credential.credentialFingerprint === fingerprint,
+  );
+  if (
+    !current ||
+    current.status !== 'active' ||
+    current.principalKind !== 'remote_owner' ||
+    !current.canPublishClientCapabilities ||
+    current.canUseHostPaths
+  ) {
+    throw new Error('The current Desktop credential is not active on this Runtime Host');
+  }
+  return current;
 }
 
 function mutableCredentialMetadata(credentials: readonly RuntimeHostAccessCredentialMetadata[]) {

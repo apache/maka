@@ -95,7 +95,12 @@ export interface DesktopRuntimeHostProfileService {
   resolveManagedService(
     profileId: string,
   ): Promise<DesktopRuntimeHostManagedServiceBinding | undefined>;
-  resolveManagedCredentialFingerprint(profileId: string): Promise<string | undefined>;
+  resolveManagedAccess(
+    profileId: string,
+  ): Promise<
+    | (DesktopRuntimeHostManagedServiceBinding & { readonly credentialFingerprint: string })
+    | undefined
+  >;
   clearManagedServiceBinding(expected: DesktopRuntimeHostManagedServiceBinding): Promise<void>;
   markManagedServiceUninstalling(
     expected: DesktopRuntimeHostManagedServiceBinding,
@@ -647,8 +652,14 @@ export function createDesktopRuntimeHostProfileService(input: {
         return binding;
       });
     },
-    resolveManagedCredentialFingerprint(profileId) {
+    resolveManagedAccess(profileId) {
       return mutate(async () => {
+        if (pairingReadFailure || pairingIntents.has(profileId)) {
+          throw new Error(
+            "Resolve this Runtime Host's unfinished pairing before managing its access",
+            pairingReadFailure ? { cause: pairingReadFailure } : undefined,
+          );
+        }
         const resolved = await catalog.resolve(profileId).catch(() => undefined);
         if (!resolved?.credential || resolved.profile.kind !== "remote") return undefined;
         const binding = findDesktopRuntimeHostManagedServiceBinding(
@@ -656,7 +667,10 @@ export function createDesktopRuntimeHostProfileService(input: {
           resolved.profile,
         );
         return binding
-          ? runtimeHostAccessCredentialFingerprint(resolved.credential)
+          ? {
+              ...binding,
+              credentialFingerprint: runtimeHostAccessCredentialFingerprint(resolved.credential),
+            }
           : undefined;
       });
     },

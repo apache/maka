@@ -150,10 +150,8 @@ describe('Runtime Host operator commands', () => {
       parseRuntimeHostCommand([
         'access',
         'prepare',
-        '--principal',
-        'desktop:stable-client',
-        '--preset',
-        'desktop-client',
+        '--current-fingerprint',
+        'a'.repeat(32),
         '--root',
         '/srv/maka',
         '--expected-root',
@@ -161,28 +159,14 @@ describe('Runtime Host operator commands', () => {
         '--framed',
       ]),
       {
-        kind: 'runtime-host-access-issue',
-        mode: 'prepare',
+        kind: 'runtime-host-access-prepare',
         rootPath: '/srv/maka',
         expectedRootId: 'a'.repeat(64),
-        framed: true,
-        principalKind: 'remote_owner',
-        principalId: 'desktop:stable-client',
-        operationGrants: [],
-        canPublishClientCapabilities: false,
-        canUseHostPaths: false,
-        preset: 'desktop-client',
+        currentCredentialFingerprint: 'a'.repeat(32),
       },
     );
     assert.equal(
-      parseRuntimeHostCommand([
-        'access',
-        'prepare',
-        '--principal',
-        'desktop:stable-client',
-        '--preset',
-        'desktop-client',
-      ]).kind,
+      parseRuntimeHostCommand(['access', 'prepare', '--current-fingerprint', 'a'.repeat(32)]).kind,
       'error',
     );
     assert.deepEqual(parseRuntimeHostCommand(['access', 'list', '--framed']), {
@@ -195,14 +179,14 @@ describe('Runtime Host operator commands', () => {
         'revoke',
         '--credential',
         'credential-1',
-        '--protect-fingerprint',
+        '--current-fingerprint',
         'a'.repeat(32),
         '--framed',
       ]),
       {
         kind: 'runtime-host-access-revoke',
         credentialId: 'credential-1',
-        protectedCredentialFingerprint: 'a'.repeat(32),
+        currentCredentialFingerprint: 'a'.repeat(32),
         framed: true,
       },
     );

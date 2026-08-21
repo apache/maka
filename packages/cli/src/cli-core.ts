@@ -259,9 +259,6 @@ export async function runMakaCli(
         action: command.action,
         json: command.json,
         framed: command.framed ?? false,
-        ...(command.operatorCapabilities
-          ? { operatorCapabilities: command.operatorCapabilities }
-          : {}),
         clientDataRoot: serviceDataRoots.clientDataRoot,
         defaultRootPath: serviceDataRoots.workspaceRoot,
         nodePath: process.execPath,
@@ -277,10 +274,8 @@ export async function runMakaCli(
       });
     }
     case 'runtime-host-access-issue': {
-      const { runRuntimeHostAccessIssueCli, runRuntimeHostAccessPrepareCli } = await import(
-        './runtime-host-access-command.js'
-      );
-      const accessInput = {
+      const { runRuntimeHostAccessIssueCli } = await import('./runtime-host-access-command.js');
+      return runRuntimeHostAccessIssueCli({
         rootPath: command.rootPath ?? dataRoots.workspaceRoot,
         ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
         principalKind: command.principalKind,
@@ -289,10 +284,15 @@ export async function runMakaCli(
         canPublishClientCapabilities: command.canPublishClientCapabilities,
         canUseHostPaths: command.canUseHostPaths,
         ...(command.preset ? { preset: command.preset } : {}),
-      };
-      return command.mode === 'prepare'
-        ? runRuntimeHostAccessPrepareCli(accessInput)
-        : runRuntimeHostAccessIssueCli(accessInput);
+      });
+    }
+    case 'runtime-host-access-prepare': {
+      const { runRuntimeHostAccessPrepareCli } = await import('./runtime-host-access-command.js');
+      return runRuntimeHostAccessPrepareCli({
+        rootPath: command.rootPath ?? dataRoots.workspaceRoot,
+        ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
+        currentCredentialFingerprint: command.currentCredentialFingerprint,
+      });
     }
     case 'runtime-host-access-list': {
       const { runRuntimeHostAccessListCli } = await import('./runtime-host-access-command.js');
@@ -311,8 +311,8 @@ export async function runMakaCli(
           rootPath: command.rootPath ?? dataRoots.workspaceRoot,
           ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
           credentialId: command.credentialId,
-          ...(command.protectedCredentialFingerprint
-            ? { protectedCredentialFingerprint: command.protectedCredentialFingerprint }
+          ...(command.currentCredentialFingerprint
+            ? { currentCredentialFingerprint: command.currentCredentialFingerprint }
             : {}),
         },
         command.framed,

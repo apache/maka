@@ -32,7 +32,11 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
-import { decodeRuntimeHostServiceManagementFrame } from '@maka/runtime-host/operator';
+import {
+  decodeRuntimeHostServiceManagementFrame,
+  RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
+} from '@maka/runtime-host/operator';
 import { resolveStorageRoot } from '@maka/storage/root-authority';
 import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
 import {
@@ -46,6 +50,7 @@ import {
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceConfig,
+  type RuntimeHostManagedServiceResult,
   type RuntimeHostServiceBackend,
 } from '../runtime-host-service-manager.js';
 import {
@@ -88,8 +93,6 @@ describe('managed Runtime Host service', () => {
         'service',
         'status',
         '--framed',
-        '--operator-capability',
-        'access-management-v1',
         '--expected-service-id',
         'b'.repeat(64),
         '--expected-root-path',
@@ -102,7 +105,6 @@ describe('managed Runtime Host service', () => {
         action: 'status',
         json: false,
         framed: true,
-        operatorCapabilities: ['access-management-v1'],
         expectedTarget: {
           serviceId: 'b'.repeat(64),
           rootPath: '/srv/maka',
@@ -511,50 +513,69 @@ describe('managed Runtime Host service', () => {
     });
   });
 
-  it('projects a framed service summary without launch configuration', async () => {
-    let output = '';
-    const exitCode = await runManagedRuntimeHostServiceCli(
-      {
-        action: 'status',
-        json: false,
-        framed: true,
-        operatorCapabilities: ['access-management-v1'],
-        clientDataRoot: '/config/Maka',
-        defaultRootPath: '/config/Maka/workspaces/default',
-        nodePath: '/usr/bin/node',
-        cliPath: '/opt/maka/cli.js',
+  it('projects requested operator capabilities without launch configuration', async (t) => {
+    const previousCapabilityRequest = process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV];
+    delete process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV];
+    t.after(() => {
+      if (previousCapabilityRequest === undefined) {
+        delete process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV];
+      } else {
+        process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] = previousCapabilityRequest;
+      }
+    });
+    const options = {
+      action: 'status' as const,
+      json: false,
+      framed: true,
+      clientDataRoot: '/config/Maka',
+      defaultRootPath: '/config/Maka/workspaces/default',
+      nodePath: '/usr/bin/node',
+      cliPath: '/opt/maka/cli.js',
+    };
+    const manage = async (): Promise<RuntimeHostManagedServiceResult> => ({
+      schemaVersion: 1 as const,
+      action: 'status' as const,
+      service: {
+        manager: 'systemd_user' as const,
+        installed: true,
+        enabled: true,
+        active: true,
+        state: 'running' as const,
+        pid: 42,
+        lastExitCode: 0,
+        installedVersion: '1.2.3',
+        config: {
+          schemaVersion: 1 as const,
+          rootPath: '/srv/maka',
+          projectDirectoryRoots: [{ label: 'Home', path: '/home/ada' }],
+          websocket: { host: '127.0.0.1', port: 7443, path: '/runtime-host' },
+          launch: { nodePath: '/secret/node', cliPath: '/secret/cli.js' },
+        },
       },
-      {
-        manage: async () => ({
-          schemaVersion: 1,
-          action: 'status',
-          service: {
-            manager: 'systemd_user',
-            installed: true,
-            enabled: true,
-            active: true,
-            state: 'running',
-            pid: 42,
-            lastExitCode: 0,
-            installedVersion: '1.2.3',
-            config: {
-              schemaVersion: 1,
-              rootPath: '/srv/maka',
-              projectDirectoryRoots: [{ label: 'Home', path: '/home/ada' }],
-              websocket: { host: '127.0.0.1', port: 7443, path: '/runtime-host' },
-              launch: { nodePath: '/secret/node', cliPath: '/secret/cli.js' },
-            },
-          },
-        }),
+    });
+    const run = async () => {
+      let output = '';
+      const exitCode = await runManagedRuntimeHostServiceCli(options, {
+        manage,
         createBackend: createUnusedBackend,
         writeOutput: (value) => {
           output += value;
         },
-      },
+      });
+      assert.equal(exitCode, 0);
+      return output;
+    };
+
+    const legacyFrame = decodeRuntimeHostServiceManagementFrame(await run());
+    assert.equal(legacyFrame?.kind, 'result');
+    assert.equal(
+      legacyFrame?.kind === 'result' ? legacyFrame.operatorCapabilities : undefined,
+      undefined,
     );
 
-    assert.equal(exitCode, 0);
-    const frame = decodeRuntimeHostServiceManagementFrame(output);
+    process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] =
+      RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY;
+    const frame = decodeRuntimeHostServiceManagementFrame(await run());
     assert.equal(frame?.kind, 'result');
     if (frame?.kind !== 'result') assert.fail('Expected a service result frame');
     assert.equal(frame.service.installedVersion, '1.2.3');

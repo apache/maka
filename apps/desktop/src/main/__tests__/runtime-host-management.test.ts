@@ -46,7 +46,7 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
     rootPath: '/srv/maka',
     operatorPath: '/home/operator/.local/share/maka/operator',
   };
-  const principalId = 'desktop:desktop-client';
+  const principalId = 'desktop:original-installation';
   const replacement = 'maka_rh_replacement-secret';
   let currentFingerprint = runtimeHostAccessCredentialFingerprint('maka_rh_current-secret');
   let credentials = [
@@ -63,10 +63,14 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
       removeHandler: (channel) => handlers.delete(channel),
     },
-    clientInstanceId: 'desktop-client',
     profiles: {
       resolveManagedService: async () => ({ profile, service, state: 'active' as const }),
-      resolveManagedCredentialFingerprint: async () => currentFingerprint,
+      resolveManagedAccess: async () => ({
+        profile,
+        service,
+        state: 'active' as const,
+        credentialFingerprint: currentFingerprint,
+      }),
       rotateManagedCredential: async (_profileId, credential) => {
         assert.equal(credential, replacement);
         currentFingerprint = runtimeHostAccessCredentialFingerprint(credential);
@@ -81,6 +85,7 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
         return { schemaVersion: 1, kind: 'result', action: 'list', credentials };
       }
       if (input.action === 'prepare') {
+        assert.equal(input.currentCredentialFingerprint, currentFingerprint);
         const pending = {
           ...accessCredential(
             'replacement',
@@ -98,11 +103,11 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
           credentials: [...credentials, pending],
         };
       }
-      assert.equal(input.protectedCredentialFingerprint, currentFingerprint);
+      assert.equal(input.currentCredentialFingerprint, currentFingerprint);
       const target = credentials.find(
         (credential) => credential.credentialId === input.credentialId,
       );
-      if (target?.credentialFingerprint === input.protectedCredentialFingerprint) {
+      if (target?.credentialFingerprint === input.currentCredentialFingerprint) {
         return {
           schemaVersion: 1,
           kind: 'error',
@@ -191,13 +196,12 @@ test('manages only the service identity bound by Desktop onboarding', async () =
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
       removeHandler: (channel) => handlers.delete(channel),
     },
-    clientInstanceId: 'desktop-client',
     profiles: {
       resolveManagedService: async (profileId) =>
         profileId === managedProfile.id
           ? { profile: managedProfile, service: managedService, state: 'active' as const }
           : undefined,
-      resolveManagedCredentialFingerprint: async () => undefined,
+      resolveManagedAccess: async () => undefined,
       markManagedServiceUninstalling: async (binding) => {
         uninstallOrder.push('mark-uninstalling');
         return { ...binding, state: 'uninstalling' as const };
@@ -312,10 +316,9 @@ test('resumes deployment cleanup without repeating the committed service uninsta
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
       removeHandler: (channel) => handlers.delete(channel),
     },
-    clientInstanceId: 'desktop-client',
     profiles: {
       resolveManagedService: async () => ({ profile, service, state }),
-      resolveManagedCredentialFingerprint: async () => undefined,
+      resolveManagedAccess: async () => undefined,
       markManagedServiceUninstalling: async (binding) => {
         state = 'uninstalling';
         return { ...binding, state };
@@ -360,7 +363,6 @@ test('does not commit uninstall until the remote service confirms it is removed'
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
       removeHandler: (channel) => handlers.delete(channel),
     },
-    clientInstanceId: 'desktop-client',
     profiles: {
       resolveManagedService: async () => ({
         profile: {
@@ -382,7 +384,7 @@ test('does not commit uninstall until the remote service confirms it is removed'
         },
         state: 'active' as const,
       }),
-      resolveManagedCredentialFingerprint: async () => undefined,
+      resolveManagedAccess: async () => undefined,
       markManagedServiceUninstalling: async (binding) => {
         marked = true;
         return { ...binding, state: 'uninstalling' as const };

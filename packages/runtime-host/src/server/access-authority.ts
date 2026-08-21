@@ -17,8 +17,9 @@
  * under the License.
  */
 
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
+import { runtimeHostAccessCredentialHash } from '../access-credential-identity.js';
 import {
   type AccessCredentialIssueInput,
   type AccessCredentialIssueResult,
@@ -113,7 +114,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
 
   authenticate(credential: string): RuntimeHostConnectionAuthority | undefined {
     if (this.#closed) return undefined;
-    const candidate = hashCredential(credential);
+    const candidate = runtimeHostAccessCredentialHash(credential);
     let match: StoredAccessCredential | undefined;
     for (const stored of this.#file.credentials) {
       const storedHash = Buffer.from(stored.credentialHash, 'hex');
@@ -180,7 +181,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       const createdAt = new Date();
       const stored: StoredAccessCredential = {
         credentialId,
-        credentialHash: hashCredential(credential).toString('hex'),
+        credentialHash: runtimeHostAccessCredentialHash(credential).toString('hex'),
         principalId: input.principalId,
         principalKind: input.principalKind,
         status: mode === 'prepare' ? 'pending' : 'active',
@@ -545,8 +546,4 @@ function unavailable(
       message: 'Runtime Host access credentials are unavailable in this composition',
     },
   };
-}
-
-function hashCredential(credential: string): Buffer {
-  return createHash('sha256').update(credential, 'utf8').digest();
 }

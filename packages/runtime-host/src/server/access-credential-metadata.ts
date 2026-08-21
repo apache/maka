@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { runtimeHostAccessCredentialFingerprintFromHash } from '../access-credential-identity.js';
 import {
   discoverMarkedStorageRoot,
   resolveExistingStorageRootControlDirectory,
@@ -45,7 +46,9 @@ export async function readRuntimeHostAccessCredentialMetadata(
       return [
         {
           credentialId: credential.credentialId,
-          credentialFingerprint: credential.credentialHash.slice(0, 32),
+          credentialFingerprint: runtimeHostAccessCredentialFingerprintFromHash(
+            credential.credentialHash,
+          ),
           principalKind: credential.principalKind,
           principalId: credential.principalId,
           status: credential.status,

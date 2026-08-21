@@ -37,6 +37,8 @@ import {
   decodeRuntimeHostServiceManagementFrame,
   decodeRuntimeHostSetupFrame,
   RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
+  RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   type RuntimeHostAccessManagementFrame,
@@ -113,11 +115,11 @@ interface DesktopRuntimeHostSshAccessTarget {
 export type DesktopRuntimeHostSshAccessInput = DesktopRuntimeHostSshAccessTarget &
   (
     | { readonly action: 'list' }
-    | { readonly action: 'prepare'; readonly principalId: string }
+    | { readonly action: 'prepare'; readonly currentCredentialFingerprint: string }
     | {
         readonly action: 'revoke';
         readonly credentialId: string;
-        readonly protectedCredentialFingerprint: string;
+        readonly currentCredentialFingerprint: string;
       }
   );
 
@@ -844,18 +846,21 @@ function runtimeHostServiceManagementRemoteCommand(
     ...(input.retainManagedDeployment ? ['--retain-managed-deployment'] : []),
     ...managedServiceTargetArgs(input.expectedTarget),
   ].map(quotePosix).join(' ');
-  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;
+  const invocation =
+    `${RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV}=` +
+    `${quotePosix(RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY)} exec ${command}`;
+  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
 }
 
 function runtimeHostAccessManagementRemoteCommand(
   input: DesktopRuntimeHostSshAccessInput,
 ): string {
   const actionArgs = input.action === 'prepare'
-    ? ['--principal', input.principalId, '--preset', 'desktop-client']
+    ? ['--current-fingerprint', input.currentCredentialFingerprint]
     : input.action === 'revoke'
       ? [
           '--credential', input.credentialId,
-          '--protect-fingerprint', input.protectedCredentialFingerprint,
+          '--current-fingerprint', input.currentCredentialFingerprint,
         ]
       : [];
   const command = [
