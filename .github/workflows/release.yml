@@ -451,11 +451,9 @@ jobs:
 
           Known limitation: Computer Use is not included in this release."
 
-          create_classification=(--latest)
-          edit_classification=(--prerelease=false --latest)
+          classification=(--prerelease=false --latest=false)
           if [[ "$IS_PRERELEASE" == "true" ]]; then
-            create_classification=(--prerelease --latest=false)
-            edit_classification=(--prerelease --latest=false)
+            classification=(--prerelease --latest=false)
           elif [[ "$IS_PRERELEASE" != "false" ]]; then
             echo "Product prerelease classification must be true or false; found $IS_PRERELEASE" >&2
             exit 1
@@ -471,7 +469,7 @@ jobs:
             gh release create "$TAG" \
               --draft \
               --verify-tag \
-              "${create_classification[@]}" \
+              "${classification[@]}" \
               --title "Maka ${VERSION}" \
               --notes "$notes"
           fi
@@ -481,7 +479,7 @@ jobs:
             exit 1
           fi
           gh release edit "$TAG" \
-            "${edit_classification[@]}" \
+            "${classification[@]}" \
             --title "Maka ${VERSION}" \
             --notes "$notes"
           actual_prerelease="$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)"

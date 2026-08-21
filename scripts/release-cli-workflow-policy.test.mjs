@@ -41,11 +41,8 @@ test('stage consumes the validated artifact and makes provenance staging the fin
   assert.match(guidance, /npm dist-tag add/u);
   const submit = namedStep(steps, 'Submit the candidate to npm staging');
   assert.equal(steps.at(-1), submit);
-  assert.match(submit, /git ls-remote --tags --refs origin/u);
-  assert.match(submit, /git merge-base --is-ancestor "\$PRODUCT_SOURCE_COMMIT" origin\/main/u);
-  assert.match(submit, /gh release view "\$PRODUCT_TAG"/u);
-  assert.ok(submit.indexOf('git ls-remote') < submit.indexOf('npm stage publish'));
-  assert.ok(submit.indexOf('gh release view') < submit.indexOf('npm stage publish'));
+  assert.match(submit, /product-release-authority\.mjs verify-draft/u);
+  assert.ok(submit.indexOf('verify-draft') < submit.indexOf('npm stage publish'));
   assert.match(submit, /npm stage publish/u);
   assert.match(submit, /--provenance/u);
 });
@@ -63,13 +60,12 @@ test('stage builds the npm candidate from the exact product release commit', () 
   );
   assert.match(workflow, /source_commit: \$\{\{ needs\.authorize\.outputs\.source_commit \}\}/u);
   assert.match(workflow, /ref: \$\{\{ needs\.authorize\.outputs\.source_commit \}\}/u);
-  assert.match(workflow, /gh release view "\$PRODUCT_TAG"/u);
+  assert.match(workflow, /product-release-authority\.mjs verify-draft/u);
   assert.match(workflow, /node scripts\/release-version\.mjs "\$EXPECTED_VERSION"/u);
   assert.doesNotMatch(workflow, /EXPECTED_VERSION.*=~/u);
   assert.match(workflow, /EXPECTED_PRODUCT_SOURCE_COMMIT/u);
   assert.match(workflow, /RELEASE_SHA: \$\{\{ github\.sha \}\}/u);
   assert.doesNotMatch(workflow, /RELEASE_WORKFLOW_SHA/u);
-  assert.match(workflow, /git merge-base --is-ancestor "\$source_commit" origin\/main/u);
   const bind = namedStep(workflowSteps(workflow), 'Bind the candidate to this workflow run');
   assert.match(bind, /PRODUCT_TAG: \$\{\{ needs\.authorize\.outputs\.product_tag \}\}/u);
 });
@@ -78,23 +74,12 @@ test('finalize validates one exact stage attempt before running the current veri
   const workflow = readWorkflow('release-cli-finalize.yml');
   const steps = workflowSteps(workflow);
   assert.match(workflow, /stage_run_attempt:[\s\S]*?required: true/u);
-  const loadIndex = workflow.indexOf('id: stage-run');
+  const loadIndex = workflow.indexOf('name: Load the exact stage workflow run');
   const checkoutIndex = workflow.indexOf('uses: actions/checkout@');
   assert.ok(loadIndex >= 0 && checkoutIndex > loadIndex);
   assert.match(workflow, /actions\/runs\/\$STAGE_RUN_ID\/attempts\/\$STAGE_RUN_ATTEMPT/u);
-  assert.match(workflow, /run\.head_branch !== "v" \+ process\.env\.EXPECTED_VERSION/u);
-  for (const field of [
-    'run.id',
-    'run.run_attempt',
-    'run.path',
-    'run.event',
-    'run.head_branch',
-    'run.head_sha',
-    'run.conclusion',
-    'run.head_repository?.full_name',
-  ]) {
-    assert.ok(workflow.includes(field), `missing pre-check for ${field}`);
-  }
+  assert.doesNotMatch(workflow, /id: stage-run/u);
+  assert.doesNotMatch(workflow, /node -e/u);
   const checkout = namedStep(steps, 'Check out the current release verifier');
   assert.match(checkout, /ref: \$\{\{ github\.sha \}\}/u);
   assert.doesNotMatch(checkout, /steps\.stage-run\.outputs\.source_sha/u);
@@ -107,9 +92,7 @@ test('finalize revalidates the live product release before trusting public npm b
   assert.match(record, /id: release/u);
   assert.match(record, /"\$GITHUB_OUTPUT"/u);
   const authority = namedStep(steps, 'Revalidate the product release authority');
-  assert.match(authority, /git ls-remote --tags --refs origin/u);
-  assert.match(authority, /git merge-base --is-ancestor "\$PRODUCT_SOURCE_COMMIT" origin\/main/u);
-  assert.match(authority, /gh release view "\$PRODUCT_TAG"/u);
+  assert.match(authority, /product-release-authority\.mjs verify-draft/u);
   assert.ok(
     workflow.indexOf(authority) < workflow.indexOf('Fetch and verify the public registry bytes'),
   );

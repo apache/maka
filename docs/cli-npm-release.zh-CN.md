@@ -115,15 +115,13 @@ npm stage download "$stage_id" --registry https://registry.npmjs.org/
 
 ```sh
 set -eu
-git fetch --no-tags origin main:refs/remotes/origin/main "refs/tags/v$version:refs/tags/v$version"
 source_commit=replace-with-stage-recorded-commit
-tag_commit="$(git rev-parse "refs/tags/v$version^{commit}")"
-test "$tag_commit" = "$source_commit"
-git merge-base --is-ancestor "$source_commit" origin/main
-gh release view "v$version" --json tagName --jq .tagName
+node scripts/product-release-authority.mjs verify-draft \
+  "v$version" "$source_commit" apache/maka
 ```
 
-最后一条命令必须输出 `v<version>`。tag 不存在、已移动、不再位于 `main`，或不存在匹配的 GitHub Release 时都必须停止。
+verifier 必须成功。tag 不存在、已移动、不再位于 `main`，匹配的 GitHub Release 不再是 Draft，
+或 prerelease 分类与版本不一致时都必须停止。
 
 只批准这个 stage ID。npm 会要求 2FA，并在批准时将 package 公开：
 

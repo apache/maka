@@ -127,15 +127,13 @@ Immediately before approval, recheck the live product authority recorded by the 
 
 ```sh
 set -eu
-git fetch --no-tags origin main:refs/remotes/origin/main "refs/tags/v$version:refs/tags/v$version"
 source_commit=replace-with-stage-recorded-commit
-tag_commit="$(git rev-parse "refs/tags/v$version^{commit}")"
-test "$tag_commit" = "$source_commit"
-git merge-base --is-ancestor "$source_commit" origin/main
-gh release view "v$version" --json tagName --jq .tagName
+node scripts/product-release-authority.mjs verify-draft \
+  "v$version" "$source_commit" apache/maka
 ```
 
-The last command must print `v<version>`. Stop if the tag is absent, moved, no longer on `main`, or no matching GitHub Release exists.
+The verifier must succeed. Stop if the tag is absent, moved, no longer on `main`, the matching
+GitHub Release is no longer a Draft, or its prerelease classification does not match the version.
 
 Approve only that stage ID. npm requires 2FA and makes the package public as part of approval:
 

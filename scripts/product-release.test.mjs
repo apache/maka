@@ -523,10 +523,9 @@ test('one product workflow gates one draft release on every required artifact', 
       .IS_PRERELEASE,
     '${{ needs.release-identity.outputs.is_prerelease }}',
   );
-  assert.match(publishRelease, /create_classification=\(--latest\)/u);
-  assert.match(publishRelease, /edit_classification=\(--prerelease=false --latest\)/u);
-  assert.match(publishRelease, /--prerelease --latest=false/u);
-  assert.match(publishRelease, /--prerelease=false/u);
+  assert.match(publishRelease, /classification=\(--prerelease=false --latest=false\)/u);
+  assert.match(publishRelease, /classification=\(--prerelease --latest=false\)/u);
+  assert.doesNotMatch(publishRelease, /--latest(?:\s|\\|$)/u);
   assert.match(publishRelease, /--json isPrerelease/u);
   assert.doesNotMatch(publishRelease, /gh release delete-asset/u);
   assert.match(publishRelease, /gh release download/u);

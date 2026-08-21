@@ -5,22 +5,26 @@ import { parseProductReleaseVersion } from './release-version.mjs';
 
 const execFileAsync = promisify(execFile);
 
-function validateInputs(tag, source) {
-  if (!tag.startsWith('v')) {
+export function parseProductTag(tag) {
+  if (typeof tag !== 'string' || !tag.startsWith('v')) {
     throw new Error(`Product tag must be an exact version tag; found ${tag}`);
   }
   try {
-    parseProductReleaseVersion(tag.slice(1));
+    return parseProductReleaseVersion(tag.slice(1));
   } catch (error) {
     throw new Error(`Product tag must be an exact version tag; found ${tag}`, { cause: error });
   }
+}
+
+function validateInputs(tag, source) {
+  parseProductTag(tag);
   if (!/^[0-9a-f]{40}$/u.test(source)) {
     throw new Error(`Product tag source must be an exact commit SHA; found ${source}`);
   }
 }
 
-async function remoteTagCommit({ cwd, remote, tag }) {
-  const { stdout } = await execFileAsync(
+export async function remoteProductTagCommit({ cwd, remote, tag, run = execFileAsync }) {
+  const { stdout } = await run(
     'git',
     ['ls-remote', '--tags', '--refs', remote, `refs/tags/${tag}`],
     { cwd },
@@ -47,7 +51,7 @@ export async function ensureProductTag({ cwd = process.cwd(), remote = 'origin',
     throw new Error(`Product source ${source} is not the exact checked-out commit`);
   }
 
-  const existing = await remoteTagCommit({ cwd, remote, tag });
+  const existing = await remoteProductTagCommit({ cwd, remote, tag });
   if (existing) {
     if (existing !== source) {
       throw new Error(`Product tag ${tag} points to ${existing} instead of ${source}`);
@@ -59,7 +63,7 @@ export async function ensureProductTag({ cwd = process.cwd(), remote = 'origin',
     await execFileAsync('git', ['push', remote, `${source}:refs/tags/${tag}`], { cwd });
     return 'created';
   } catch (error) {
-    const raced = await remoteTagCommit({ cwd, remote, tag });
+    const raced = await remoteProductTagCommit({ cwd, remote, tag });
     if (raced === source) return 'existing';
     if (raced) throw new Error(`Product tag ${tag} points to ${raced} instead of ${source}`);
     throw new Error(`Could not create product tag ${tag}`, { cause: error });
