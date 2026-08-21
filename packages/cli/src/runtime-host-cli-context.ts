@@ -24,7 +24,7 @@ import {
   type HostRegistration,
   type HostIncompatible,
 } from '@maka/runtime-host/protocol';
-import { resolveMakaClientDataRoot } from '@maka/storage';
+import { resolveMakaClientDataRoot } from '@maka/storage/workspace-root';
 
 export class RuntimeHostCliConflictError extends RuntimeHostPermanentReconnectError {
   readonly code = 'RUNTIME_HOST_RESTART_REQUIRED';

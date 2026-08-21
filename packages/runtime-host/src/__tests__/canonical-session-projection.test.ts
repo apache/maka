@@ -10,7 +10,7 @@ import {
   type ExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
 import type { StoredInteractionRequest } from '@maka/storage/interaction-store';
-import { acquireOperationalStateDatabase } from '@maka/storage';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import {
   createSessionEventMapMemory,
   mapSessionEventToRuntimeEvent,

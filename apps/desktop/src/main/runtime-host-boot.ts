@@ -23,10 +23,8 @@ import {
 } from "@maka/runtime-host/client";
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { McpClientManager } from "@maka/mcp";
-import {
-  createSettingsStore,
-  createMcpConfigStore,
-} from "@maka/storage";
+import { createMcpConfigStore } from "@maka/storage/mcp-config-store";
+import { createSettingsStore } from "@maka/storage/settings-store";
 import { resolveStorageRoot } from "@maka/storage/root-authority";
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";

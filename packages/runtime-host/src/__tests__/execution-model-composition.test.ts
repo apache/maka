@@ -43,7 +43,7 @@ import { createToolResultArchiveCapability } from '@maka/runtime/tool-result-arc
 import { loadHistoryCompactCheckpointsFromRunLedger } from '@maka/runtime/history-compact-ledger';
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
-import { createSqliteRuntimeStore } from '@maka/storage';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';

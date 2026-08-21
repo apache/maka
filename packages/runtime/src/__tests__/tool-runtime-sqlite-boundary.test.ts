@@ -9,7 +9,7 @@ import { type LlmConnection } from '@maka/core/llm-connections';
 import { type SessionEvent } from '@maka/core/events';
 import { type SessionHeader } from '@maka/core/session';
 import type { McpToolBinding } from '@maka/core/mcp';
-import { createSqliteRuntimeStore } from '@maka/storage';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
 import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
 import { buildMcpTools } from '../mcp-tools.js';
