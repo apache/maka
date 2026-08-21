@@ -129,6 +129,7 @@ export function WorkBoardPanel(props: {
   const [newTitle, setNewTitle] = useState('');
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState('');
+  const [renamingRevision, setRenamingRevision] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | undefined>();
 
   useEffect(() => {
@@ -166,13 +167,19 @@ export function WorkBoardPanel(props: {
   const startRename = (item: WorkBoardItem): void => {
     setRenamingId(item.id);
     setRenamingTitle(item.title);
+    setRenamingRevision(item.revision);
   };
 
   const saveRename = async (item: WorkBoardItem): Promise<void> => {
     const title = renamingTitle.trim();
     if (!title) return;
-    if (await runAction(() => board.update(item.id, { title }, { expectedRevision: item.revision }))) {
+    if (
+      await runAction(() =>
+        board.update(item.id, { title }, { expectedRevision: renamingRevision ?? item.revision }),
+      )
+    ) {
       setRenamingId(null);
+      setRenamingRevision(null);
     }
   };
 
@@ -286,7 +293,10 @@ export function WorkBoardPanel(props: {
                   onRenameStart={() => startRename(item)}
                   onRenameChange={setRenamingTitle}
                   onRenameSave={() => void saveRename(item)}
-                  onRenameCancel={() => setRenamingId(null)}
+                  onRenameCancel={() => {
+                    setRenamingId(null);
+                    setRenamingRevision(null);
+                  }}
                   onComplete={() =>
                     void runAction(() => board.update(item.id, { state: 'done' }, { expectedRevision: item.revision }))
                   }
