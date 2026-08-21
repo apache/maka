@@ -39,6 +39,7 @@ const DEFAULT_BACKOFF_MIN_MS = 20;
 const DEFAULT_BACKOFF_MAX_MS = 250;
 const CANDIDATE_RETRY_MIN_MS = 1_000;
 const CANDIDATE_RETRY_MAX_MS = 5_000;
+const MAX_PENDING_CANDIDATE_REPORTS = 2;
 
 export interface ConnectOrSpawnRuntimeHostInput {
   rootPath: string;
@@ -268,6 +269,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
       if (
         shouldLaunchCandidate(result) &&
         !isPermanentCandidateStartupFailure(startupFailure) &&
+        pendingCandidateReports < MAX_PENDING_CANDIDATE_REPORTS &&
         now >= nextCandidateAt
       ) {
         try {
