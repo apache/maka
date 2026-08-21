@@ -72,7 +72,15 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 30 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 33 as const;
+// 33: Live tool results may carry the bounded sandbox failure reason. Older
+// Clients reject that closed-frame addition, so mixed peers must not connect.
+// 32: `request_authorization_code` leaves the OAuth presentation wire. An older
+// Client still offers it and an older Host still asks for it, and neither side
+// can carry the authorization code the other expects.
+// 31: `claude-subscription` leaves `OAUTH_LOGIN_PROVIDERS` and the
+// `oauth.account.usage.fetch` operation is removed with the provider that
+// needed its client identity. An older peer still offers both.
 // 30: Access credential pairing adds prepare/finalize operations. Older Hosts
 // cannot complete the staged credential handoff used by managed onboarding.
 // 29: `goal.arm` is a new wire operation. An older Host decodes it as unknown

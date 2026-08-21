@@ -260,7 +260,7 @@ export async function runMakaTextCliCore(
   }
 
   let outcome: MakaRunOutcome | undefined;
-  let streamBoundaryFailure = false;
+  let unclassifiedBoundaryFailure = false;
   const boundaryFailureInvocationIds = new Set<string>();
   let context: MakaRunContext;
   try {
@@ -293,8 +293,10 @@ export async function runMakaTextCliCore(
       runOutcomeObserver: (result) => {
         if (result.sandboxBoundary === 'recovered') {
           boundaryFailureInvocationIds.delete(result.outcomeId);
+          unclassifiedBoundaryFailure = false;
         } else if (result.sandboxBoundary === 'unresolved') {
           boundaryFailureInvocationIds.add(result.outcomeId);
+          unclassifiedBoundaryFailure = false;
         }
         outcome = result;
       },
@@ -377,7 +379,7 @@ export async function runMakaTextCliCore(
         : {}),
     })) {
       if (event.type === 'sandbox_boundary_request') {
-        streamBoundaryFailure = true;
+        unclassifiedBoundaryFailure = true;
         deps.writeStderr(
           'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
         );
@@ -388,7 +390,7 @@ export async function runMakaTextCliCore(
       }
       const sandboxFailureReason = sessionEventSandboxBoundaryFailureReason(event);
       if (sandboxFailureReason) {
-        streamBoundaryFailure = true;
+        unclassifiedBoundaryFailure = true;
         deps.writeStderr(
           sandboxFailureReason === 'requires_bypass'
             ? 'maka run: sandbox bypass requires an explicit --yolo\n'
@@ -420,10 +422,7 @@ export async function runMakaTextCliCore(
     return 1;
   }
   if (streamFailed) return 1;
-  if (
-    (streamBoundaryFailure && outcome?.sandboxBoundary !== 'recovered') ||
-    boundaryFailureInvocationIds.size > 0
-  ) {
+  if (unclassifiedBoundaryFailure || boundaryFailureInvocationIds.size > 0) {
     return 1;
   }
   if (!outcome) {

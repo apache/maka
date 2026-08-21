@@ -13,6 +13,7 @@ import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
 } from '@maka/core/sandbox-boundary';
+import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
@@ -409,16 +410,14 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
   let transports: ReturnType<typeof controlledOAuthTransports> | undefined;
   try {
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
-    // claude-subscription discovery is fallback-only (session-scoped OAuth
-    // tokens cannot call GET /v1/models). Create seeds the curated inventory;
-    // pick an id from that inventory rather than opening a fetch ticket.
-    const subscriptionModelId = 'claude-sonnet-5';
+    const subscriptionModelId = PROVIDER_DEFAULTS['openai-codex'].fallbackModels[0] ?? '';
+    assert.ok(subscriptionModelId);
     const created = await policy.connectionCatalog.create({
       expectedCatalogRevision: 0,
       connection: {
         slug: 'backend-creation-connection',
         name: 'OAuth backend creation',
-        providerType: 'claude-subscription',
+        providerType: 'openai-codex',
         enabled: true,
         enabledModelIds: [subscriptionModelId],
       },
@@ -428,40 +427,37 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
     const connection = created.snapshot.connections[0];
     assert.ok(connection);
     if (!connection) return;
-    assert.ok(
-      connection.models.some((model) => model.id === subscriptionModelId),
-      'create must seed the curated claude-subscription inventory',
-    );
     const tokens: OAuthSubscriptionTokens = {
       access_token: 'expired-oauth-access',
       refresh_token: 'rotating-oauth-refresh',
       expires_at: 0,
-      account_uuid: 'oauth-account-v1',
+      account_id: 'oauth-account-v1',
     };
-    await writeFile(
-      join(capability.canonicalPath, 'credential-vault.json'),
-      `${JSON.stringify(
-        {
-          schemaVersion: 1,
-          revision: 1,
-          entries: [
-            {
-              locator: {
-                scope: 'connection',
-                connectionId: connection.connectionId,
-                kind: 'oauth_token',
-              },
-              credentialId: randomUUID(),
-              revision: 1,
-              secret: serializeOAuthSubscriptionTokens(tokens),
-              updatedAt: Date.now(),
-            },
-          ],
-        },
-        null,
-        2,
-      )}\n`,
-      { encoding: 'utf8', mode: 0o600 },
+    const login = await policy.operations.beginInteractiveOAuthLogin(connection.connectionId);
+    assert.equal(login.kind, 'ready');
+    if (login.kind !== 'ready') return;
+    const storedToken = await policy.operations.completeInteractiveOAuthLogin(
+      login.ticket,
+      serializeOAuthSubscriptionTokens(tokens),
+    );
+    assert.equal(storedToken.kind, 'committed');
+    // Codex model discovery is a live call, so seed the inventory through the
+    // fetch operations instead. This used to lean on create seeding a curated
+    // catalog, which only the retired subscription provider had. The fetch
+    // needs the credential above, so it has to come after the login.
+    const fetchTicket = await policy.operations.beginModelFetch(connection.connectionId);
+    assert.equal(fetchTicket.kind, 'ready');
+    if (fetchTicket.kind !== 'ready') return;
+    const seeded = await policy.operations.completeModelFetch(fetchTicket.ticket, {
+      models: [{ id: subscriptionModelId }],
+      source: 'fetched',
+      fetchedAt: 1_800_000_000_000,
+    });
+    assert.equal(seeded.kind, 'committed');
+    if (seeded.kind !== 'committed') return;
+    assert.ok(
+      seeded.snapshot.connections[0]?.models.some((model) => model.id === subscriptionModelId),
+      'the fetch must seed the inventory the backend resolves against',
     );
     transports = controlledOAuthTransports();
     const authority = new HostOAuthExecutionAuthority(policy);
@@ -474,7 +470,6 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
           policy.operations.resolveExecutionConnection('backend-creation-connection'),
         runtimePolicy: policy,
         oauthCredentials: authority,
-        claudeDeviceId: capability.rootId,
         readPricing: async () => ({ revision: 0, overrides: [] }),
         createFetchTransport: transports.create,
       }),
@@ -499,7 +494,6 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
           policy.operations.resolveExecutionConnection('backend-creation-connection'),
         runtimePolicy: policy,
         oauthCredentials: authority,
-        claudeDeviceId: capability.rootId,
         readPricing: async () => ({ revision: 0, overrides: [] }),
         createFetchTransport: transports.create,
       }),
@@ -516,7 +510,10 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
       ) as OAuthSubscriptionTokens;
       assert.equal(persisted.access_token, 'refreshed-oauth-access');
       assert.equal(persisted.refresh_token, 'rotated-oauth-refresh');
-      assert.equal(persisted.account_uuid, 'oauth-account-v2');
+      assert.equal(persisted.id_token, 'rotated-id-token');
+      // The token endpoint does not re-state the account, so the refresh has to
+      // carry the identity forward rather than drop it.
+      assert.equal(persisted.account_id, 'oauth-account-v1');
       assert.ok((persisted.expires_at ?? 0) > Date.now());
     }
   } finally {
@@ -2015,7 +2012,6 @@ test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async
     const effects = createHostSessionEffectModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('Auxiliary telemetry must not drain the Host'),
       newId: () => 'deepseek-title-call',
@@ -2092,7 +2088,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const evaluatorInput = {
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('Goal evaluator telemetry must not drain the Host'),
       readSessionHeader: (sessionId: string) =>
@@ -2118,7 +2113,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const sessionEffects = createHostSessionEffectModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('Session effect telemetry must not drain the Host'),
       newId: () => 'effect-call-1',
@@ -2163,7 +2157,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const dailyReview = createHostDailyReviewModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('Daily Review telemetry must not drain the Host'),
       newId: () => 'daily-review-call-1',
@@ -2189,7 +2182,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const memoryModel = createHostMemoryExtractionModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('Memory extraction telemetry must not drain the Host'),
       newId: () => 'memory-call-1',
@@ -2264,7 +2256,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const failingPreflightEffects = createHostSessionEffectModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage: {
         pricing: {
           snapshot: async () => {
@@ -2338,7 +2329,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
           },
         }),
       } as unknown as HostOAuthExecutionAuthority,
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => {
         oauthDrainRequests += 1;
@@ -2371,7 +2361,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const accountingFailure = createHostSessionEffectModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage: {
         pricing: usage.pricing,
         telemetry: {
@@ -2408,7 +2397,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const stalledEffect = createHostSessionEffectModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('A provider timeout must not drain the Host'),
       createFetchTransport: () => ({
@@ -3154,7 +3142,6 @@ function backendCreationFixture(input: {
   readPricing: () => Promise<unknown>;
   runtimePolicy?: RuntimePolicyStoresWriter;
   oauthCredentials?: HostOAuthExecutionAuthority;
-  claudeDeviceId?: string;
   tools?: readonly MakaTool[];
   modelId?: string;
   snapshotClientCapabilities?: () => unknown;
@@ -3237,7 +3224,6 @@ function backendCreationFixture(input: {
     } as unknown as BackendFactoryContext,
     runtimePolicy,
     ...(input.oauthCredentials ? { oauthCredentials: input.oauthCredentials } : {}),
-    ...(input.claudeDeviceId ? { claudeDeviceId: input.claudeDeviceId } : {}),
     createRunComposer,
     artifacts: {},
     executionArtifacts: {
@@ -3385,7 +3371,7 @@ function controlledOAuthTransports(): {
     let closed = false;
     return {
       fetch: async (url) => {
-        assert.equal(String(url), 'https://platform.claude.com/v1/oauth/token');
+        assert.equal(String(url), 'https://auth.openai.com/oauth/token');
         usedForRefresh = true;
         refreshCalls += 1;
         markRefreshStarted();
@@ -3429,7 +3415,7 @@ function controlledOAuthTransports(): {
           access_token: 'refreshed-oauth-access',
           refresh_token: 'rotated-oauth-refresh',
           expires_in: 3_600,
-          account: { uuid: 'oauth-account-v2' },
+          id_token: 'rotated-id-token',
         }),
       );
     },

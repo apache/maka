@@ -20,6 +20,15 @@ const TURN_QUERY_REPLACEMENT_GRANTS = [
   TURN_QUERY_GRANT,
   'session.turn_landmarks.query',
 ] as const satisfies readonly OperationKey[];
+// Operations that left the protocol entirely. A previously issued access file
+// may still grant them; the grant is released on decode — there is nothing to
+// migrate it to — because failing the whole file would keep the Host from
+// starting over a capability it could not serve anyway.
+const RETIRED_OPERATION_GRANTS = new Set([
+  // Retired with the Claude subscription provider, whose client identity the
+  // usage report required.
+  'oauth.account.usage.fetch',
+]);
 
 export const ACCESS_FILE_NAME = 'runtime-host-access.json';
 
@@ -231,8 +240,9 @@ function migrateStoredOperationGrants(grants: readonly string[]): readonly strin
   const migrated: string[] = [];
   const seen = new Set<string>();
   for (const stored of grants) {
-    const replacements =
-      stored === LEGACY_TRANSCRIPT_QUERY_GRANT
+    const replacements = RETIRED_OPERATION_GRANTS.has(stored)
+      ? []
+      : stored === LEGACY_TRANSCRIPT_QUERY_GRANT
         ? TRANSCRIPT_QUERY_REPLACEMENT_GRANTS
         : stored === TURN_QUERY_GRANT
           ? TURN_QUERY_REPLACEMENT_GRANTS

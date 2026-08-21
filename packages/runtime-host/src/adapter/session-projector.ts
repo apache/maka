@@ -506,7 +506,13 @@ function projectToolEvent(
     type: 'tool_result',
     ...base,
     isError: event.status === 'errored',
-    content: { kind: 'text', text: '' },
+    content: {
+      kind: 'text',
+      text: '',
+      ...(event.sandboxFailureReason
+        ? { sandboxFailure: { reason: event.sandboxFailureReason } }
+        : {}),
+    },
     ...(event.operationId ? { operationId: event.operationId } : {}),
     ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
   };

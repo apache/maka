@@ -164,8 +164,8 @@ describe('OAuth refresh response validation', () => {
     test(`a 200 refresh with ${name} never replaces the stored token`, async () => {
       const writes: string[] = [];
       const tokens = await resolveOAuthSubscriptionTokens({
-        providerType: 'claude-subscription',
-        slug: 'claude-subscription',
+        providerType: 'openai-codex',
+        slug: 'openai-codex',
         credentialStore: {
           getSecret: async () => nearExpiryStored,
           setSecret: async (_slug, _kind, value) => {
@@ -188,8 +188,8 @@ describe('OAuth refresh response validation', () => {
   test('a rotated refresh token that is an empty string keeps the previous refresh token', async () => {
     const writes: string[] = [];
     const tokens = await resolveOAuthSubscriptionTokens({
-      providerType: 'claude-subscription',
-      slug: 'claude-subscription',
+      providerType: 'openai-codex',
+      slug: 'openai-codex',
       credentialStore: {
         getSecret: async () => nearExpiryStored,
         setSecret: async (_slug, _kind, value) => {
@@ -217,7 +217,7 @@ describe('OAuth refresh persistence transaction', () => {
     let refreshCalls = 0;
 
     const result = await refreshAndPersistOAuthSubscriptionTokens({
-      slug: 'claude-subscription',
+      slug: 'openai-codex',
       credentialStore: { getSecret: async () => stored },
       refreshTokens: async () => {
         refreshCalls += 1;
@@ -241,8 +241,8 @@ describe('OAuth refresh persistence transaction', () => {
     });
     let current: string | null = stored;
     const tokens = await resolveOAuthSubscriptionTokens({
-      providerType: 'claude-subscription',
-      slug: 'claude-subscription',
+      providerType: 'openai-codex',
+      slug: 'openai-codex',
       credentialStore: {
         getSecret: async () => current,
         compareAndSetSecret: async (_slug, _kind, expected, value) => {
@@ -283,8 +283,8 @@ describe('OAuth refresh persistence transaction', () => {
     let reads = 0;
     const committedValues: string[] = [];
     const tokens = await resolveOAuthSubscriptionTokens({
-      providerType: 'claude-subscription',
-      slug: 'claude-subscription',
+      providerType: 'openai-codex',
+      slug: 'openai-codex',
       credentialStore: {
         getSecret: async () => {
           reads += 1;
@@ -386,7 +386,7 @@ describe('OAuth refresh persistence transaction', () => {
         refresh_token: 'old-refresh',
         expires_at: 1_000,
       });
-      await refreshingStore.setSecret('claude-subscription', 'oauth_token', stored);
+      await refreshingStore.setSecret('openai-codex', 'oauth_token', stored);
 
       let releaseRefresh!: (response: Response) => void;
       let markRefreshStarted!: () => void;
@@ -397,8 +397,8 @@ describe('OAuth refresh persistence transaction', () => {
         releaseRefresh = resolve;
       });
       const resolving = resolveOAuthSubscriptionTokens({
-        providerType: 'claude-subscription',
-        slug: 'claude-subscription',
+        providerType: 'openai-codex',
+        slug: 'openai-codex',
         credentialStore: refreshingStore,
         now: () => 10_000_000,
         fetchFn: async () => {
@@ -408,7 +408,7 @@ describe('OAuth refresh persistence transaction', () => {
       });
 
       await refreshStarted;
-      await logoutStore.deleteSecret('claude-subscription', 'oauth_token');
+      await logoutStore.deleteSecret('openai-codex', 'oauth_token');
       releaseRefresh({
         ok: true,
         status: 200,
@@ -420,7 +420,7 @@ describe('OAuth refresh persistence transaction', () => {
       } as unknown as Response);
 
       assert.equal(await resolving, null);
-      assert.equal(await logoutStore.getSecret('claude-subscription', 'oauth_token'), null);
+      assert.equal(await logoutStore.getSecret('openai-codex', 'oauth_token'), null);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -431,7 +431,7 @@ describe('OAuth refresh persistence transaction', () => {
     try {
       const store = createFileCredentialStore(dir);
       await store.setSecret(
-        'claude-subscription',
+        'openai-codex',
         'oauth_token',
         JSON.stringify({
           access_token: 'old-access',
@@ -443,7 +443,7 @@ describe('OAuth refresh persistence transaction', () => {
       let refreshCalls = 0;
 
       const result = await refreshAndPersistOAuthSubscriptionTokens({
-        slug: 'claude-subscription',
+        slug: 'openai-codex',
         credentialStore: store,
         refreshTokens: async () => {
           refreshCalls += 1;
@@ -458,9 +458,8 @@ describe('OAuth refresh persistence transaction', () => {
       assert.equal(result.outcome, 'refreshed');
       assert.equal(refreshCalls, 1);
       assert.equal(
-        parseOAuthSubscriptionTokens(
-          (await store.getSecret('claude-subscription', 'oauth_token')) ?? '',
-        )?.access_token,
+        parseOAuthSubscriptionTokens((await store.getSecret('openai-codex', 'oauth_token')) ?? '')
+          ?.access_token,
         'new-access',
       );
     } finally {
@@ -477,20 +476,20 @@ describe('OAuth refresh persistence transaction', () => {
         refresh_token: 'old-refresh',
         expires_at: 1_000,
       });
-      await store.setSecret('claude-subscription', 'oauth_token', stored);
+      await store.setSecret('openai-codex', 'oauth_token', stored);
 
       const failed = await refreshAndPersistOAuthSubscriptionTokens({
-        slug: 'claude-subscription',
+        slug: 'openai-codex',
         credentialStore: store,
         refreshTokens: async () => {
           throw new Error('temporary network failure');
         },
       });
       assert.equal(failed.outcome, 'refresh-failed');
-      assert.equal(await store.getSecret('claude-subscription', 'oauth_token'), stored);
+      assert.equal(await store.getSecret('openai-codex', 'oauth_token'), stored);
 
       const retried = await refreshAndPersistOAuthSubscriptionTokens({
-        slug: 'claude-subscription',
+        slug: 'openai-codex',
         credentialStore: store,
         refreshTokens: async () => ({
           access_token: 'new-access',
@@ -619,7 +618,7 @@ describe('OAuth refresh persistence transaction', () => {
         refresh_token: 'old-refresh',
         expires_at: 1_000,
       });
-      await storeA.setSecret('claude-subscription', 'oauth_token', stored);
+      await storeA.setSecret('openai-codex', 'oauth_token', stored);
 
       let refreshCalls = 0;
       let markRefreshStarted!: () => void;
@@ -632,7 +631,7 @@ describe('OAuth refresh persistence transaction', () => {
       });
       const run = (store: typeof storeA) =>
         refreshAndPersistOAuthSubscriptionTokens({
-          slug: 'claude-subscription',
+          slug: 'openai-codex',
           credentialStore: store,
           refreshTokens: async () => {
             refreshCalls += 1;
@@ -665,9 +664,7 @@ describe('OAuth refresh persistence transaction', () => {
       assert.ok(loser?.outcome === 'superseded');
       assert.deepEqual(loser.tokens, winner.tokens);
       assert.deepEqual(
-        parseOAuthSubscriptionTokens(
-          (await storeA.getSecret('claude-subscription', 'oauth_token')) ?? '',
-        ),
+        parseOAuthSubscriptionTokens((await storeA.getSecret('openai-codex', 'oauth_token')) ?? ''),
         winner.tokens,
       );
     } finally {

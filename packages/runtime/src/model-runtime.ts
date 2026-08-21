@@ -7,6 +7,7 @@ import {
   type ProviderType,
 } from '@maka/core/llm-connections';
 import { lookupModelProviderOverride, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 import { resolveApplyPatchProfile, type ApplyPatchProfile } from './apply-patch-profile.js';
 
 export type ModelRuntimeWire =
@@ -45,6 +46,16 @@ export function resolveModelRuntime(
   connection: ModelRuntimeConnection,
   modelId: string,
 ): ResolvedModelRuntime {
+  // Ahead of the override lookup: an override builds its own active adapter,
+  // so consulting it first would let a per-model entry hand a retired provider
+  // a working adapter and skip the `unavailable` refusal below entirely. No
+  // such entry exists today, but that table is generated from an external
+  // source — one row should not be able to undo a retirement.
+  if (isRetiredProvider(connection.providerType)) {
+    throw new Error(
+      `"${connection.providerType}" is retired and can no longer resolve a model runtime.`,
+    );
+  }
   const override = lookupModelProviderOverride(connection.providerType, modelId);
   const defaults = PROVIDER_DEFAULTS[connection.providerType];
   // Unknown providerType with no per-model override → can't resolve an adapter.
@@ -126,8 +137,12 @@ function resolveModelRuntimeWire(
 ): ModelRuntimeWire {
   switch (adapter.kind) {
     case 'anthropic':
-    case 'claude-subscription':
       return 'anthropic-messages';
+    case 'unavailable':
+      // Reached only if something selected a retired provider despite the
+      // pickers filtering it out; failing here beats sending on a wire we
+      // cannot name.
+      throw new Error('This provider has no Runtime adapter and cannot resolve a wire.');
     case 'openai-codex':
       return 'openai-responses';
     case 'github-copilot':

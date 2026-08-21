@@ -54,6 +54,7 @@ import {
 } from './settings-section.js';
 import { SettingRow } from './settings-rows.js';
 import {
+  isSelectableSubagentConnection,
   nextSubagentDraftForName,
   resolveSubagentRoute,
   subagentPresetAvailability,
@@ -251,6 +252,7 @@ export function SubagentSettingsPage(props: {
             available: null,
             disabled: null,
             missing_connection: copy.status.missingConnection,
+            provider_retired: copy.status.providerRetired,
             connection_disabled: copy.status.connectionDisabled,
             model_disabled: copy.status.modelDisabled,
           }[availability.kind];
@@ -315,7 +317,7 @@ function SubagentPresetEditor(props: {
   const locale = useUiLocale();
   const copy = getSubagentSettingsCopy(locale);
   const usableConnections = useMemo(
-    () => props.connections.filter((connection) => connection.enabled),
+    () => props.connections.filter(isSelectableSubagentConnection),
     [props.connections],
   );
   const existingIds = useMemo(
@@ -325,7 +327,7 @@ function SubagentPresetEditor(props: {
   const initialConnection = props.preset
     ? props.connections.find((connection) => connection.slug === props.preset?.connectionSlug)
     : usableConnections[0];
-  const initialModels = initialConnection && initialConnection.enabled
+  const initialModels = initialConnection && isSelectableSubagentConnection(initialConnection)
     ? connectionEnabledModelIds(initialConnection)
     : [];
   const [draft, setDraft] = useState<SubagentEditorDraft>(() => ({
@@ -345,7 +347,7 @@ function SubagentPresetEditor(props: {
   const selectedConnection = props.connections.find(
     (connection) => connection.slug === draft.connectionSlug,
   );
-  const enabledModels = selectedConnection?.enabled
+  const enabledModels = selectedConnection && isSelectableSubagentConnection(selectedConnection)
     ? connectionEnabledModelIds(selectedConnection)
     : [];
   const thinkingLevels = selectedConnection
@@ -354,7 +356,9 @@ function SubagentPresetEditor(props: {
   const profileCopy = copy.profiles[draft.profile];
   const validId = isSafeSubagentPresetId(draft.id.trim());
   const duplicateId = existingIds.has(draft.id.trim());
-  const validConnection = Boolean(selectedConnection?.enabled);
+  const validConnection = Boolean(
+    selectedConnection && isSelectableSubagentConnection(selectedConnection),
+  );
   const validModel = enabledModels.includes(draft.model);
   const canSave = Boolean(
     draft.name.trim() &&
@@ -362,11 +366,18 @@ function SubagentPresetEditor(props: {
     validConnection &&
     validModel,
   );
-  const connectionOptions = props.connections.map((connection) => ({
-    value: connection.slug,
-    label: connection.name,
-    disabled: !connection.enabled,
-  }));
+  const connectionOptions = props.connections.map((connection) => {
+    // Enabled yet unselectable means retired. Its option says why it cannot
+    // be picked, the way a vanished connection's placeholder below does — a
+    // silently disabled row would be exactly the unexplained state this
+    // retirement is meant to avoid.
+    const retired = connection.enabled && !isSelectableSubagentConnection(connection);
+    return {
+      value: connection.slug,
+      label: retired ? `${connection.name} · ${copy.status.providerRetired}` : connection.name,
+      disabled: !isSelectableSubagentConnection(connection),
+    };
+  });
   if (
     draft.connectionSlug &&
     !props.connections.some((connection) => connection.slug === draft.connectionSlug)

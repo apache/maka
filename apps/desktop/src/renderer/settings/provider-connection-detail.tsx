@@ -134,6 +134,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     detailActionBusy,
     supportsApiKey,
     needsOAuth,
+    retired,
     usesGitHubCopilotLogin,
     oauthLoginService,
     supportsRemoteDiscovery,
@@ -296,7 +297,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
            machine. The endpoint is not a secret, so it did not need a variant. */
         description={supportsApiKey ? copy.credentialsHelp : copy.credentialsHelpAccount}
       >
-        {issue && (
+        {/* The list row needs a compact status to mark itself with; here the
+            retirement notice below already carries it, in full sentences. Two
+            stacked red banners saying the same thing is not twice as clear. */}
+        {issue && !retired && (
           <Banner
             status={connectionIssueStatus(issue.tone)}
             role="status"
@@ -311,7 +315,9 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           />
         )}
         {needsOAuth && (
-          usesGitHubCopilotLogin ? (
+          retired ? (
+            <Banner status="error" role="alert" title={copy.oauthRetired} description={copy.oauthRetiredDetail} />
+          ) : usesGitHubCopilotLogin ? (
             <GitHubCopilotReloginNotice hasSecret={hasSecret} onRelogin={refreshAfterRelogin} />
           ) : oauthLoginService ? (
             <OAuthReloginNotice
@@ -420,7 +426,14 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       {/* The rows draw the closing rule themselves; without them the section
           still needs one. Two rules with a gap between them read as an empty
           row, so only ever one. */}
-      {!supportsApiKey && !showsEndpoint && <Divider />}
+      {!supportsApiKey && !showsEndpoint && !retired && <Divider />}
+      {/* Everything below writes to the connection, and a retired one accepts
+          no writes: the catalog refuses a model or request-body change, and the
+          credential vault refuses a request header. Rendering the editors would
+          offer work that either fails or — worse, before the vault refused it —
+          saves something that can never reach a request. What remains is the
+          retirement notice above and the deletion below. */}
+      {!retired && (
       <DetailSection title={copy.advancedRequest} description={copy.advancedRequestHelp}>
         <VStack gap={0}>
               <SettingsExpandableRow
@@ -491,6 +504,8 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               <Divider />
         </VStack>
       </DetailSection>
+      )}
+      {!retired && (
       <DetailSection title={copy.modelManagement} description={copy.modelManagementHelp}>
         <EnabledModelManager
           modelChoices={modelChoices}
@@ -511,7 +526,8 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           )}
         </HStack>
       </DetailSection>
-      {showsCapabilities && (
+      )}
+      {showsCapabilities && !retired && (
         <>
           <Divider />
           <DetailSection title={copy.capabilities} description={copy.capabilitiesHelp}>

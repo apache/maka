@@ -6,6 +6,7 @@ import type { StoredMessage } from '@maka/core/session';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type SessionContinuitySnapshot,
+  type SessionTranscriptPage,
   type SubscriptionFrame,
 } from "@maka/runtime-host/protocol";
 import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
@@ -458,6 +459,190 @@ test('restores transcript consumers across Host replacement', async () => {
   );
   assert.deepEqual(scopes, ['first', 'second', 'third']);
   await observations.close();
+});
+
+test('fences transcript range failures to the current registration and Host source', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const target: RuntimeHostTranscriptTarget = {
+    id: 19,
+    send() {},
+    once() {},
+    off() {},
+  };
+  const source = (
+    generation: string,
+    loadTranscriptBefore: () => Promise<void>,
+  ) => ({
+    async observe() {},
+    async unobserve() {},
+    async openTranscript(sessionId: string) {
+      return {
+        sessionId,
+        generation,
+        hostEpoch: `host-${generation}`,
+        readThroughMessageId: null,
+      };
+    },
+    loadTranscriptBefore,
+    async loadTranscriptAround() {},
+    async closeTranscript() {},
+  });
+  const request = (consumerId: string, generation: string) => ({
+    consumerId,
+    generation,
+    anchorSequence: null,
+    maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+  });
+
+  const closedFailure = deferred<void>();
+  const first = source('first', () => closedFailure.promise);
+  await observations.attach(first);
+  await observations.openTranscript('session-1', 'consumer-closed', target);
+  const closedRange = observations.loadTranscriptBefore(
+    request('consumer-closed', 'first'),
+    target.id,
+  );
+  await observations.closeTranscript('consumer-closed', target.id);
+  closedFailure.reject(new Error('closed source rejected its range'));
+  await assert.doesNotReject(closedRange);
+  observations.detach(first);
+
+  const replacedFailure = deferred<void>();
+  const second = source('second', () => replacedFailure.promise);
+  await observations.attach(second);
+  await observations.openTranscript('session-1', 'consumer-replaced', target);
+  const replacedRange = observations.loadTranscriptBefore(
+    request('consumer-replaced', 'second'),
+    target.id,
+  );
+  observations.detach(second);
+
+  const currentFailure = new Error('current source failed its range');
+  const third = source('third', async () => {
+    throw currentFailure;
+  });
+  await observations.attach(third);
+  replacedFailure.reject(new Error('replaced source rejected its range'));
+  await assert.doesNotReject(replacedRange);
+  await assert.rejects(
+    observations.loadTranscriptBefore(
+      request('consumer-replaced', 'third'),
+      target.id,
+    ),
+    (error) => error === currentFailure,
+  );
+  await observations.close();
+});
+
+test('fences transcript range failures across same-source replica recovery', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const secondEvents = new AsyncFrameQueue();
+  const staleRange = deferred<SessionTranscriptPage>();
+  const currentFailure = new Error('current replica failed its range');
+  const message: StoredMessage = {
+    type: 'assistant',
+    id: 'assistant-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'current',
+    modelId: 'test-model',
+  };
+  let opens = 0;
+  let staleRangeStarted = false;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => {
+        opens += 1;
+        const first = opens === 1;
+        const events = first ? firstEvents : secondEvents;
+        const bootstrap: SessionTranscriptPage = {
+          kind: 'page',
+          sessionId: 'session-1',
+          source: 'durable',
+          direction: 'older',
+          throughSequence: 1,
+          rawBytes: 1,
+          fragments: [],
+          nextCursor: 'older',
+        };
+        return runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: Promise.resolve([]),
+          events,
+          transcriptBootstrap: {
+            throughSequence: 1,
+            overlayMessageCount: 0,
+            durable: bootstrap,
+            overlay: { ...bootstrap, source: 'overlay', nextCursor: null },
+          },
+          decodeTranscriptPage: async (page) => ({
+            messages: page === bootstrap ? [{ identity: 1, message }] : [],
+            nextCursor: page === bootstrap ? 'older' : null,
+          }),
+          loadTranscriptPage: first
+            ? () => {
+                staleRangeStarted = true;
+                return staleRange.promise;
+              }
+            : async () => {
+                throw currentFailure;
+              },
+          async close() {
+            events.end();
+          },
+        });
+      },
+    },
+    emitSessionsChanged() {},
+  });
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const batches: DesktopTranscriptBatch[] = [];
+  const consumerId = 'consumer-replica-recovery';
+  const request = (generation: string) => ({
+    consumerId,
+    generation,
+    anchorSequence: 1,
+    maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+  });
+  const target: RuntimeHostTranscriptTarget = {
+    id: 20,
+    send(_channel, batch) {
+      batches.push(batch);
+      queueMicrotask(() =>
+        observations.acknowledgeTranscript(
+          consumerId,
+          batch.generation,
+          batch.deliverySequence,
+          20,
+        ),
+      );
+    },
+    once() {},
+    off() {},
+  };
+  await observations.attach(observer);
+  const opened = await observations.openTranscript('session-1', consumerId, target);
+  const staleLoad = observations.loadTranscriptBefore(request(opened.generation), target.id);
+  await waitFor(() => staleRangeStarted);
+
+  firstEvents.push({
+    kind: 'subscription.closed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-session-1',
+    sequence: 1,
+    reason: 'slow_consumer',
+  });
+  await waitFor(() => batches.at(-1)?.generation !== opened.generation);
+  staleRange.reject(new Error('stale replica rejected its range'));
+  await assert.doesNotReject(staleLoad);
+
+  const generation = batches.at(-1)!.generation;
+  await assert.rejects(
+    observations.loadTranscriptBefore(request(generation), target.id),
+    (error) => error === currentFailure,
+  );
+  await observations.close();
+  await observer.close();
 });
 
 test('cancels a transcript consumer while its replica is still preparing', async () => {
@@ -2396,12 +2581,15 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
 function deferred<T>(): {
   promise: Promise<T>;
   resolve(value: T): void;
+  reject(error: Error): void;
 } {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((settle, rejectPromise) => {
     resolve = settle;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {

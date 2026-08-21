@@ -12,7 +12,7 @@ import {
   normalizeConnectionModelDiscoveryResult,
 } from '@maka/core/runtime-policy';
 import { anthropicV1Url, googleApiUrl } from './provider-urls.js';
-import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
+import { openAiCodexHeaders } from './subscription-auth.js';
 import {
   GITHUB_COPILOT_API_VERSION,
   GITHUB_COPILOT_COMPAT_HEADERS,
@@ -205,10 +205,7 @@ async function fetchProviderModelsStrict(
   switch (definition.protocol) {
     case 'anthropic': {
       const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/models'), {
-        headers: anthropicModelHeaders(
-          discovery.auth === 'claude-subscription' ? discovery.auth : undefined,
-          apiKey,
-        ),
+        headers: anthropicModelHeaders(apiKey),
         timeoutMs: MODEL_FETCH_TIMEOUT_MS,
       });
       if (!r.ok) {
@@ -794,17 +791,7 @@ function toModelInfo(model: RawProviderModel): ModelInfo | null {
   };
 }
 
-function anthropicModelHeaders(
-  auth: 'claude-subscription' | undefined,
-  apiKey: string,
-): Record<string, string> {
-  if (auth === 'claude-subscription') {
-    return {
-      ...claudeSubscriptionHeaders(),
-      Authorization: `Bearer ${apiKey}`,
-      'anthropic-version': '2023-06-01',
-    };
-  }
+function anthropicModelHeaders(apiKey: string): Record<string, string> {
   return {
     'x-api-key': apiKey,
     'anthropic-version': '2023-06-01',

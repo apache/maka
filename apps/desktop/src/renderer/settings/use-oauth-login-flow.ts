@@ -6,17 +6,15 @@ import { createOneShotActionGuard, teardownPendingAuthorization } from './oauth-
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
 
-// Shared browser-assisted OAuth login-flow controller (device-code
-// polling / loopback PKCE depending on the provider).
+// Shared browser-assisted OAuth login-flow controller (device-code polling).
 //
 // Extracted from the SubscriptionLoginModal `startLogin` flow so BOTH the
 // OAuth catalog login modals (Codex / xAI) AND the model
 // connection detail sheet's 重新登录 affordance drive the same
 // getAuthUrl -> openAuthUrl -> refresh -> completeAuthorization sequence with
 // one authRequestId lifecycle, one synchronous pending-action guard, and
-// cancellation-on-unmount. Claude's paste-code flow is deliberately NOT
-// routed through this hook -- it needs a manual authorization-code step and
-// its own experimental gate, so it keeps its bespoke card.
+// cancellation-on-unmount. Every OAuth provider hands authorization to the
+// browser, so this is the only login shape the renderer drives.
 //
 // GitHub Copilot rides the same controller through the `direct` account
 // flow (#1042): importing an existing GitHub login is one bridge call, so
@@ -206,7 +204,7 @@ export function useOAuthLoginFlow(params: {
       }
       const refreshed = await refresh();
       if (!oauthLoginFlowMountedRef.current || !refreshed) return;
-      // Loopback / polling -- wait for the backend to complete.
+      // Wait for the backend to finish polling the provider.
       const result = await bridge.completeAuthorization(payload.authRequestId);
       if (!oauthLoginFlowMountedRef.current) return;
       authRequestIdRef.current = null;

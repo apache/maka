@@ -7,7 +7,6 @@ import {
 } from '@maka/core/llm-connections';
 import { anthropicV1Url, googleApiUrl, openResponsesUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
-import { claudeSubscriptionHeaders } from './subscription-auth.js';
 import { fetchGitHubCopilotModels } from './model-fetcher.js';
 import {
   CONNECTION_EFFECT_ERROR_BODY_MAX_BYTES,
@@ -182,12 +181,22 @@ async function testConnectionModel(
   t0: number,
   timeoutMs = CONNECTION_TEST_TIMEOUT_MS,
 ): Promise<ConnectionTestResult> {
+  // Ahead of `resolveModelRuntime`, which throws for an adapter it cannot name.
+  // A stored connection can still be opened long after its provider stopped
+  // being offered, and the caller renders this result — so a retired provider
+  // has to fail the test, not crash it.
+  if (PROVIDER_DEFAULTS[connection.providerType]?.runtimeAdapter.kind === 'unavailable') {
+    return retiredProviderTestResult(connection.providerType);
+  }
   const { adapter, baseUrl, wire } = resolveModelRuntime(connection, testModel);
 
   switch (adapter.kind) {
     case 'anthropic':
-    case 'claude-subscription':
       return await probeAnthropic(connection, baseUrl, secret, testModel, t0, fetchFn);
+    case 'unavailable':
+      // Unreachable: the guard above returns first. The arm keeps the switch
+      // exhaustive so a newly retired provider cannot slip past it.
+      return retiredProviderTestResult(connection.providerType);
     case 'openai':
       return wire === 'openai-responses'
         ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn)
@@ -282,6 +291,10 @@ async function probeCohere(
   return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
 }
 
+function retiredProviderTestResult(providerType: string): ConnectionTestResult {
+  return { ok: false, errorMessage: `"${providerType}" is retired and can no longer be used.` };
+}
+
 async function probeAnthropic(
   connection: Pick<ConnectionEffectConnection, 'providerType'>,
   baseUrl: string,
@@ -290,29 +303,11 @@ async function probeAnthropic(
   t0: number,
   fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ConnectionTestResult> {
-  const headers: Record<string, string> =
-    connection.providerType === 'claude-subscription'
-      ? {
-          ...claudeSubscriptionHeaders(),
-          Authorization: `Bearer ${secret}`,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        }
-      : {
-          'x-api-key': secret,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        };
-
-  if (connection.providerType === 'claude-subscription') {
-    // Claude Subscription credentials are account-scoped OAuth tokens.
-    // The real send path has to use the Claude Code cloak shape; a
-    // separate `/api/oauth/profile` probe can fail with "Invalid
-    // request format" even when the stored login is usable. Treat the
-    // presence of a resolved main-process OAuth token as the connection
-    // test and let send-path failures surface during an actual turn.
-    return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
-  }
+  const headers: Record<string, string> = {
+    'x-api-key': secret,
+    'anthropic-version': '2023-06-01',
+    'content-type': 'application/json',
+  };
 
   const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/messages'), {
     method: 'POST',

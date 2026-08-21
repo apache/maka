@@ -1,17 +1,4 @@
 export const CODEX_SUBSCRIPTION_USER_AGENT = 'codex_cli_rs/0.0.0 (Maka)';
-export const CLAUDE_SUBSCRIPTION_BETA =
-  'oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219';
-export const CLAUDE_SUBSCRIPTION_USER_AGENT = 'claude-cli/2.1.153 (external, cli)';
-
-export function claudeSubscriptionHeaders(): Record<string, string> {
-  return {
-    'User-Agent': CLAUDE_SUBSCRIPTION_USER_AGENT,
-    'anthropic-beta': CLAUDE_SUBSCRIPTION_BETA,
-    'anthropic-dangerous-direct-browser-access': 'true',
-    'x-app': 'cli',
-  };
-}
-
 export function openAiCodexHeaders(accessToken: string): Record<string, string> {
   const accountId = extractCodexAccountId(accessToken);
   return {

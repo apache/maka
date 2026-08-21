@@ -320,18 +320,8 @@ export function createHostOAuthModelFetch(input: {
   connection: RuntimeExecutionConnection;
   sessionId: string;
   modelId: string;
-  claudeDeviceId: string;
   fetchFn: typeof fetch;
 }): typeof fetch {
-  if (
-    input.binding.providerType === 'claude-subscription' &&
-    !input.initialTokens.account_uuid?.trim()
-  ) {
-    throw new OAuthExecutionCredentialError(
-      'credential_unavailable',
-      'Claude OAuth credential is missing its canonical account identity',
-    );
-  }
   return async (url, init) => {
     const signal = effectiveRequestSignal(url, init);
     signal?.throwIfAborted();
@@ -348,14 +338,6 @@ export function createHostOAuthModelFetch(input: {
         ? {
             refreshOAuthAccessToken: async () =>
               (tokens = await input.binding.forceRefresh!()).access_token,
-          }
-        : {}),
-      ...(input.binding.providerType === 'claude-subscription'
-        ? {
-            claude: {
-              deviceId: input.claudeDeviceId,
-              accountUuid: tokens.account_uuid ?? '',
-            },
           }
         : {}),
     });

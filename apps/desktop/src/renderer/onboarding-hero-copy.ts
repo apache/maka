@@ -58,13 +58,17 @@ export function getOnboardingHeroCopy(
           target: { kind: 'connection', connectionSlug: state.connectionSlug },
         },
       };
-    case 'blocked':
-      acknowledgeBlockedReason(state.reason);
+    case 'blocked': {
+      // Retirement gets its own copy: the generic text tells the user to
+      // re-check credentials and sign-in, and for a retired provider both of
+      // those lead nowhere.
+      const blocked = copy.hero[`blocked:${state.reason}`];
       return {
         kind: state.kind,
-        ...copy.hero.blocked,
-        cta: { ...copy.hero.blocked.cta, target: { kind: 'models' } },
+        ...blocked,
+        cta: { ...blocked.cta, target: { kind: 'models' } },
       };
+    }
     case 'ready_empty':
     case 'ready_with_history':
       return null;
@@ -76,8 +80,4 @@ export function getOnboardingHeroCopy(
 function assertNever(state: never): never {
   void state;
   throw new Error('getOnboardingHeroCopy: unexhausted OnboardingState variant');
-}
-
-function acknowledgeBlockedReason(reason: 'all_connections_unhealthy') {
-  void reason;
 }
