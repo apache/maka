@@ -19,6 +19,25 @@ function renderComposer(streaming: boolean): string {
   );
 }
 
+function renderComposerWithDictation(state: 'idle' | 'recording' = 'idle'): string {
+  return renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        onSend={() => undefined}
+        onStop={() => undefined}
+        dictation={{
+          state,
+          elapsedSeconds: state === 'recording' ? 7 : 0,
+          audioLevels: [0, 0.25, 0.75, 0.5],
+          onStart: () => undefined,
+          onStop: () => undefined,
+          onCancel: () => undefined,
+        }}
+      />
+    </LocaleProvider>,
+  );
+}
+
 function sendSlotButtons(markup: string): string[] {
   const slot = markup.split('class="maka-composer-right-controls"').pop() ?? '';
   return slot.match(/aria-label="[^"]*"/g) ?? [];
@@ -32,4 +51,22 @@ test('an idle composer offers Send alone', () => {
 test('a turn in flight turns the same single control into Stop', () => {
   const buttons = sendSlotButtons(renderComposer(true));
   assert.deepEqual(buttons, ['aria-label="Stop"']);
+});
+
+test('desktop dictation adds a voice action without changing the send control', () => {
+  const buttons = sendSlotButtons(renderComposerWithDictation());
+  assert.deepEqual(buttons, ['aria-label="Voice input"', 'aria-label="Send"']);
+});
+
+test('recording dictation offers live waveform controls for cancel and transcribe', () => {
+  const markup = renderComposerWithDictation('recording');
+  const buttons = sendSlotButtons(markup);
+  assert.deepEqual(buttons, [
+    'aria-label="Voice input"',
+    'aria-label="Cancel voice input"',
+    'aria-label="Stop recording"',
+    'aria-label="Send"',
+  ]);
+  assert.match(markup, /maka-composer-dictation-waveform/);
+  assert.match(markup, />0:07</);
 });

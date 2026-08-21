@@ -17,7 +17,9 @@ import {
   ICON_SIZE,
   ArrowUp,
   FileText,
+  Loader2,
   ListTodo,
+  Mic,
   Network,
   Pencil,
   Plus,
@@ -26,6 +28,7 @@ import {
   Target,
   Upload,
   Workflow,
+  X,
 } from './icons.js';
 import {
   ChatModelSwitcher,
@@ -184,6 +187,16 @@ export interface ComposerHandle {
   focus(): void;
 }
 
+export interface ComposerDictation {
+  state: 'idle' | 'requesting' | 'recording' | 'transcribing';
+  elapsedSeconds: number;
+  loadProgress?: number;
+  audioLevels: readonly number[];
+  onStart(): void | Promise<void>;
+  onStop(): void | Promise<void>;
+  onCancel(): void | Promise<void>;
+}
+
 export interface ComposerSendMetadata {
   workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
 }
@@ -194,6 +207,8 @@ export const Composer = forwardRef<
   ComposerHandle,
   {
     disabled?: boolean;
+    /** Desktop-owned, local speech-to-text control. Composer only renders it. */
+    dictation?: ComposerDictation;
     /**
      * Prevent submission while leaving the draft and recovery controls usable.
      * Hosts use this for configuration failures that the model picker can fix.
@@ -1891,7 +1906,85 @@ export const Composer = forwardRef<
             </div>
           )}
           sendActions={(
-            <div className="maka-composer-right-controls" />
+            <div className="maka-composer-right-controls">
+              {props.dictation ? (
+                props.dictation.state === 'recording' ? (
+                  <div className="maka-composer-dictation-recording" role="group" aria-label={copy.startVoiceInput}>
+                    <IconButton
+                      variant="ghost"
+                      type="button"
+                      className="maka-composer-dictation-cancel"
+                      label={copy.cancelVoiceInput}
+                      tooltip={copy.cancelVoiceInput}
+                      onClick={() => void props.dictation?.onCancel()}
+                      icon={<X size={ICON_SIZE.control} aria-hidden="true" />}
+                    />
+                    <span className="maka-composer-dictation-waveform" aria-hidden="true">
+                      {props.dictation.audioLevels.map((level, index) => (
+                        <span
+                          // The waveform is an ordered time window, so position is its identity.
+                          key={index}
+                          className="maka-composer-dictation-waveform-bar"
+                          style={{ height: `${3 + Math.round(level * 13)}px` }}
+                        />
+                      ))}
+                    </span>
+                    <span className="maka-composer-dictation-time" aria-hidden="true">
+                      {Math.floor(props.dictation.elapsedSeconds / 60)}:{String(props.dictation.elapsedSeconds % 60).padStart(2, '0')}
+                    </span>
+                    <IconButton
+                      variant="ghost"
+                      type="button"
+                      className="maka-composer-dictation-stop"
+                      label={copy.stopRecording}
+                      tooltip={copy.stopRecording}
+                      onClick={() => void props.dictation?.onStop()}
+                      icon={<Square size={ICON_SIZE.control} aria-hidden="true" />}
+                    />
+                  </div>
+                ) : (
+                  <IconButton
+                    variant="ghost"
+                    type="button"
+                    className="maka-composer-dictation-button"
+                    data-state={props.dictation.state}
+                    isDisabled={
+                      props.disabled
+                      || props.dictation.state === 'requesting'
+                      || props.dictation.state === 'transcribing'
+                    }
+                    aria-busy={
+                      props.dictation.state === 'requesting'
+                      || props.dictation.state === 'transcribing'
+                        ? 'true'
+                        : undefined
+                    }
+                    label={
+                      props.dictation.state === 'requesting'
+                        ? copy.requestingMicrophone
+                        : props.dictation.state === 'transcribing'
+                          ? props.dictation.loadProgress === undefined
+                            ? copy.transcribing
+                            : `${copy.loadingSpeechModel} ${props.dictation.loadProgress}%`
+                          : copy.startVoiceInput
+                    }
+                    tooltip={
+                      props.dictation.state === 'transcribing'
+                        ? copy.transcribing
+                        : copy.startVoiceInput
+                    }
+                    onClick={() => {
+                      if (props.dictation?.state === 'idle') void props.dictation.onStart();
+                    }}
+                    icon={
+                      props.dictation.state === 'requesting' || props.dictation.state === 'transcribing'
+                        ? <Loader2 size={ICON_SIZE.control} className="maka-spin" aria-hidden="true" />
+                        : <Mic size={ICON_SIZE.control} aria-hidden="true" />
+                    }
+                  />
+                )
+              ) : null}
+            </div>
           )}
           sendButton={stopShown ? (
             <IconButton

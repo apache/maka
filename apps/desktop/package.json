@@ -17,7 +17,8 @@
     "build-storybook": "storybook build -c .storybook --output-dir storybook-static",
     "smoke:storybook": "node ../../scripts/storybook-visual-smoke.mjs",
     "build": "npm run build:resources && npm run build:main && npm run build:preload && npm run build:overlay && npm run build:renderer",
-    "build:resources": "node scripts/copy-runtime-filesystem-worker.mjs",
+    "build:resources": "node scripts/copy-runtime-filesystem-worker.mjs && node scripts/prepare-sensevoice-asr.mjs",
+    "prepare:asr": "node scripts/prepare-sensevoice-asr.mjs",
     "build:test": "npm run build:main && npm run build:preload && npm run build:overlay",
     "build:smoke": "npm run build:resources && npm run build:renderer",
     "clean:main": "node ../../scripts/clean-paths.mjs dist/main tsconfig.main.tsbuildinfo",
@@ -38,7 +39,8 @@
     "smoke:real-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs",
     "smoke:programmatic-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --programmatic-only",
     "launch:fixture": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --manual",
-    "smoke:browser": "npm run build:workspace-deps && npm run build:main && electron scripts/browser-observe-act-smoke.mjs"
+    "smoke:browser": "npm run build:workspace-deps && npm run build:main && electron scripts/browser-observe-act-smoke.mjs",
+    "smoke:asr": "npm run prepare:asr && npm run build:renderer && node scripts/smoke-sensevoice-asr.mjs"
   },
   "dependencies": {
     "@astryxdesign/core": "0.4.0",

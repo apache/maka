@@ -123,6 +123,7 @@ import {
 import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
+import { useVoiceDictation } from './voice-input/use-voice-dictation';
 import { useShellSearch } from './use-shell-search';
 import { useSessionGoal } from './use-session-goal';
 import { deriveStaleSessionIds } from './stale-sessions';
@@ -404,6 +405,19 @@ function AppShellContent({
   const newTask = useNewTaskTarget({ toastApi, uiLocale });
   const currentNewTaskDraftKey = newTaskDraftKey(newTask.target);
   const attachmentDraftKey = activeId ?? currentNewTaskDraftKey;
+  const composerRef = useRef<ComposerHandle>(null);
+  const appendVoiceTranscript = useCallback((draftKey: string, text: string) => {
+    const composer = composerRef.current;
+    if (!composer) return;
+    if (composer.appendDraft) {
+      composer.appendDraft(draftKey, text);
+      return;
+    }
+    if (draftKey === attachmentDraftKey) composer.appendText(text);
+  }, [attachmentDraftKey]);
+  const showVoiceInputError = useCallback((title: string, detail: string) => {
+    toastApi.error(title, detail);
+  }, [toastApi]);
   const {
     pendingAttachments,
     pickAttachments,
@@ -441,6 +455,13 @@ function AppShellContent({
   const [, setLiveBrowserSessionIds] = useState<string[]>([]);
   const [navigationState, setNavigationState] = useState(() => readNavigationState());
   const navSelection = navigationState.selection;
+  const voiceDictation = useVoiceDictation({
+    enabled: navSelection.section === 'sessions',
+    draftKey: attachmentDraftKey,
+    locale: uiLocale,
+    appendTranscript: appendVoiceTranscript,
+    showError: showVoiceInputError,
+  });
   const setNavSelection = useCallback<Dispatch<SetStateAction<NavSelection>>>((nextSelection) => {
     setNavigationState((current) => selectNavigation(
       current,
@@ -686,7 +707,6 @@ function AppShellContent({
   const [helpOpen, closeHelp, openHelp] = useKeyboardHelp();
   const [paletteOpen, openPalette, closePalette] = useCommandPalette();
   const [viewMode, setViewMode] = useState<SessionViewMode>(() => readSessionListViewMode());
-  const composerRef = useRef<ComposerHandle>(null);
   // The rail's toggle has to reach Astryx's resizable state, not just this
   // boolean — see the prop's note on SessionListPanel. The sidenav is mounted
   // for the whole shell, so the handle is always live by the time it is called.
@@ -3134,6 +3154,7 @@ function AppShellContent({
                     ) : null}
                     {navSelection.section === 'sessions' ? <PlanExecutionPanel planMode={planMode} /> : null}
                     <ChatComposerRegion
+                  dictation={voiceDictation}
                   workspacePicker={workspacePicker}
                   composerRef={composerRef}
                   active={navSelection.section === 'sessions'}

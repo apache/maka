@@ -26,21 +26,21 @@ describe('main window Chromium permission policy', () => {
     }
   });
 
-  it('denies media, subframes, auxiliary windows, and unrelated permissions', () => {
+  it('allows audio-only capture and denies camera capture', () => {
     assert.equal(allowsMainWindowPermissionCheck({
       ownerMatches: true,
       rendererUrlMatches: true,
       permission: 'media',
       isMainFrame: true,
       mediaType: 'audio',
-    }), false);
+    }), true);
     assert.equal(allowsMainWindowPermissionRequest({
       ownerMatches: true,
       rendererUrlMatches: true,
       permission: 'media',
       isMainFrame: true,
       mediaTypes: ['audio'],
-    }), false);
+    }), true);
     assert.equal(allowsMainWindowPermissionRequest({
       ownerMatches: true,
       rendererUrlMatches: true,
@@ -48,6 +48,16 @@ describe('main window Chromium permission policy', () => {
       isMainFrame: true,
       mediaTypes: ['audio', 'video'],
     }), false);
+    assert.equal(allowsMainWindowPermissionCheck({
+      ownerMatches: true,
+      rendererUrlMatches: true,
+      permission: 'media',
+      isMainFrame: true,
+      mediaType: 'video',
+    }), false);
+  });
+
+  it('denies subframes, auxiliary windows, and unrelated permissions', () => {
     assert.equal(allowsMainWindowPermissionRequest({
       ownerMatches: true,
       rendererUrlMatches: true,
@@ -179,7 +189,7 @@ describe('main window Chromium permission policy', () => {
       isMainFrame: true,
       mediaType: 'audio',
       requestingUrl: 'file:///Applications/Maka.app/index.html',
-    }), false);
+    }), true);
     assert.equal(checkHandler(other, 'clipboard-sanitized-write', 'file://', {
       isMainFrame: true,
       requestingUrl: 'file:///Applications/Maka.app/index.html',
@@ -197,7 +207,7 @@ describe('main window Chromium permission policy', () => {
       mediaTypes: ['audio'],
       requestingUrl: 'file:///Applications/Maka.app/index.html',
     });
-    assert.equal(granted, false);
+    assert.equal(granted, true);
 
     let clipboardGranted: boolean | undefined;
     requestHandler(owner, 'clipboard-sanitized-write', (next) => {

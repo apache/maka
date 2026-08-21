@@ -49,6 +49,10 @@ export default {
       from: 'resources/workers/filesystem-worker.js',
       to: 'workers/filesystem-worker.js',
     },
+    {
+      from: 'resources/asr/sensevoice',
+      to: 'asr/sensevoice',
+    },
     ...(process.platform === 'win32'
       ? [
           {
@@ -159,6 +163,8 @@ export default {
     extendInfo: {
       NSAppleEventsUsageDescription:
       'Maka may automate other applications when you explicitly run an agent task.',
+      NSMicrophoneUsageDescription:
+      'Maka uses the microphone only when you start local voice input.',
     },
   },
   dmg: {

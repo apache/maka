@@ -92,6 +92,12 @@ export interface ConversationCopy {
     steerLabel: string;
     stopLabel: string;
     stopping: string;
+    startVoiceInput: string;
+    requestingMicrophone: string;
+    stopRecording: string;
+    cancelVoiceInput: string;
+    transcribing: string;
+    loadingSpeechModel: string;
     streaming: string;
     processing: string;
     continuing: string;
@@ -385,6 +391,7 @@ const CONVERSATION_COPY = {
     composer: {
       placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送', steerLabel: '插入消息', stopLabel: '停止', stopping: '停止中…',
+      startVoiceInput: '语音输入', requestingMicrophone: '正在请求麦克风…', stopRecording: '停止录音', cancelVoiceInput: '取消语音输入', transcribing: '正在转写…', loadingSpeechModel: '正在加载本地语音模型',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
       interruptHint: '或点停止中断', addContext: '添加上下文', stagedContext: '附加内容',
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件或目录',
@@ -526,6 +533,7 @@ const CONVERSATION_COPY = {
     composer: {
       placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send', steerLabel: 'Steer', stopLabel: 'Stop', stopping: 'Stopping…',
+      startVoiceInput: 'Voice input', requestingMicrophone: 'Requesting microphone…', stopRecording: 'Stop recording', cancelVoiceInput: 'Cancel voice input', transcribing: 'Transcribing…', loadingSpeechModel: 'Loading local speech model',
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
       interruptHint: 'or click Stop to interrupt', addContext: 'Add context', stagedContext: 'staged items',
       selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add file or directory',

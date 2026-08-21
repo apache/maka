@@ -1,6 +1,19 @@
-import { app, dialog } from 'electron';
+import { app, dialog, protocol } from 'electron';
 import { installMainProcessLogCapture } from './main-process-diagnostics.js';
 import { isIsolatedE2e } from './startup-context.js';
+import { SENSEVOICE_ASSET_SCHEME } from './asr-assets-protocol.js';
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: SENSEVOICE_ASSET_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+    },
+  },
+]);
 
 installMainProcessLogCapture();
 

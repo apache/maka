@@ -70,7 +70,7 @@ const DEV_USER_DATA_DIR = join(
  * ordinary `npm run dev` — and that is the cheaper side of the trade.
  */
 const DEV_BUNDLE_ID = `com.maka.dev.${WORKTREE_ID}`;
-const RUNTIME_SCHEMA_VERSION = 7;
+const RUNTIME_SCHEMA_VERSION = 8;
 const DEV_ENV_SCHEMA_VERSION = 1;
 
 export const developmentAppPath = DEV_APP;
@@ -430,6 +430,11 @@ export async function prepareDevelopmentApp() {
         setPlistString(plist, 'CFBundleIdentifier', DEV_BUNDLE_ID);
         setPlistString(plist, 'CFBundleName', 'Maka Dev');
         setPlistString(plist, 'CFBundleDisplayName', 'Maka Dev');
+        setPlistString(
+          plist,
+          'NSMicrophoneUsageDescription',
+          'Maka uses the microphone only when you start local voice input.',
+        );
         // Stock Electron seals a SHA256 of its own default_app.asar here. We
         // replace that payload, so the record would describe a file that no
         // longer exists — inert today only because the integrity fuse is off.

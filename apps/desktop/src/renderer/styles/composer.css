@@ -148,6 +148,50 @@
   justify-content: flex-end;
 }
 
+.maka-composer-dictation-recording {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px;
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--muted);
+  color: var(--foreground-secondary);
+}
+
+.maka-composer-dictation-waveform {
+  display: inline-flex;
+  width: 62px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: var(--accent);
+}
+
+.maka-composer-dictation-waveform-bar {
+  display: block;
+  width: 2px;
+  min-height: 3px;
+  max-height: 16px;
+  flex: 0 0 2px;
+  border-radius: 999px;
+  background: currentColor;
+  transition: height 80ms linear;
+}
+
+.maka-composer-dictation-time {
+  min-width: 32px;
+  font: var(--maka-text-supporting);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.maka-composer-dictation-stop {
+  color: var(--color-danger-fg, #dc2626);
+}
+
 /* Quiet footer: ＋ and permission are both ghost icon buttons. */
 .maka-composer-left-controls .permissionModeIcon,
 .maka-composer-left-controls .maka-composer-plus-menu {

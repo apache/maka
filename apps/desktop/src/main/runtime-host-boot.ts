@@ -1,4 +1,4 @@
-import { app, clipboard, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
+import { app, clipboard, dialog, ipcMain, powerSaveBlocker, protocol, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { arch as osArch, homedir, release as osRelease } from "node:os";
@@ -32,6 +32,7 @@ import {
 } from "@maka/storage";
 import { resolveStorageRoot } from "@maka/storage/root-authority";
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
+import { registerSenseVoiceAssetProtocol } from './asr-assets-protocol.js';
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import { createAppUpdateService } from "./app-update-service.js";
 import { createAttachmentApprovalRegistry } from "./attachment-approval.js";
@@ -165,6 +166,10 @@ await resolveShellEnv();
 
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
 const userDataDir = app.getPath("userData");
+const senseVoiceAssetRoot = app.isPackaged
+  ? join(process.resourcesPath, 'asr', 'sensevoice')
+  : join(import.meta.dirname, '..', '..', 'resources', 'asr', 'sensevoice');
+registerSenseVoiceAssetProtocol(protocol, senseVoiceAssetRoot);
 const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
   join(userDataDir, "runtime-host-client.json"),
 );

@@ -29,6 +29,7 @@ const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const REPO_ROOT    = resolve(DESKTOP_DIR, '..', '..');
 const TSC_CLI      = join(REPO_ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
 const RUNTIME_WORKER_BUILD = join(REPO_ROOT, 'packages', 'runtime', 'scripts', 'build-filesystem-worker.mjs');
+const SENSEVOICE_ASR_PREPARE = join(DESKTOP_DIR, 'scripts', 'prepare-sensevoice-asr.mjs');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -68,6 +69,10 @@ const librariesBuild = runNodeTool(REPO_ROOT, TSC_CLI, ['--build', 'tsconfig.lib
 );
 await Promise.all([
   librariesBuild,
+  runNodeTool(DESKTOP_DIR, SENSEVOICE_ASR_PREPARE, []).then(
+    () => log('build', 'SenseVoice ASR assets — done'),
+    (e) => { log('build', `SenseVoice ASR assets — FAILED: ${e.message}`); throw e; },
+  ),
   librariesBuild.then(() => runNodeTool(REPO_ROOT, RUNTIME_WORKER_BUILD, [])).then(
     () => log('build', 'filesystem worker bundle — done'),
     (e) => { log('build', `filesystem worker bundle — FAILED: ${e.message}`); throw e; },
