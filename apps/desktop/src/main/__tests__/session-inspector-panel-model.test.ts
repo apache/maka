@@ -7,6 +7,7 @@ import {
 } from '@maka/core/session-trace';
 import { deriveInspectorPanelModel } from '../../renderer/session-inspector-panel-model.js';
 import {
+  deriveInspectorOverviewModel,
   estimatedSessionCost,
   hasUnavailableSessionUsage,
 } from '../../renderer/session-inspector-overview-model.js';
@@ -80,6 +81,41 @@ test('reports zero recorded requests with incomplete provenance as unavailable',
     }),
     true,
   );
+});
+
+test('does not estimate a cache-hit ratio from partial usage', () => {
+  const overview = deriveInspectorOverviewModel(undefined, {
+    range: { from: 0, to: 1 },
+    totalRequests: 1,
+    totalCostUsd: 0,
+    totalTokens: {
+      input: 10,
+      output: 0,
+      cacheMiss: 0,
+      cacheRead: 10,
+      cacheWrite: 0,
+      reasoning: 0,
+      total: 10,
+    },
+    cacheHitRequests: 1,
+    cacheCreateRequests: 0,
+    errorRequests: 0,
+    provenance: {
+      coverage: {
+        attempts: 1,
+        pricedAttempts: 1,
+        unpricedAttempts: 0,
+        usageReportedAttempts: 0,
+        usagePartialAttempts: 1,
+        usageMissingAttempts: 0,
+      },
+      legacyRecords: 0,
+      unreadableRecords: 0,
+      pendingRepairs: 0,
+    },
+  });
+
+  assert.equal(overview.cacheHitRate, undefined);
 });
 
 test('shows one compact diagnostic line for a failed history-compaction call', () => {

@@ -141,6 +141,30 @@ describe('model-call usage projection', () => {
     assert.equal(summary.totalTokens.cacheRead, 100);
   });
 
+  test('preserves provider cache-only evidence without inventing an input total', () => {
+    const cacheOnly = attempt({
+      attemptId: 'cache-only',
+      usageBasis: 'partial',
+      inputTokens: undefined,
+      outputTokens: undefined,
+      cacheReadInputTokens: 10,
+    });
+    const summary = projectModelCallUsageSummary([cacheOnly], { range: 'all' }, NOW);
+
+    assert.equal(summary.totalTokens.input, 0);
+    assert.equal(summary.totalTokens.cacheRead, 10);
+    assert.equal(summary.cacheHitRequests, 1);
+    assert.equal(summary.coverage.usagePartialAttempts, 1);
+
+    const bucket = projectModelCallUsageBuckets([cacheOnly], { range: 'all' }, 'provider', NOW)[0];
+    assert.equal(bucket?.inputTokens, 0);
+    assert.equal(bucket?.cacheReadTokens, 10);
+
+    const log = projectModelCallUsageLogs([cacheOnly], { range: 'all' }, NOW).rows[0];
+    assert.equal(log?.inputTokens, 0);
+    assert.equal(log?.cacheReadTokens, 10);
+  });
+
   test('a replayed attemptId is counted once', () => {
     const row = attempt({ attemptId: 'dup' });
     const summary = projectModelCallUsageSummary([row, row], { range: 'all' }, NOW);

@@ -106,10 +106,17 @@ function tokens(attempt: ModelCallAttempt): {
   reasoning: number;
   total: number;
 } {
+  const reportedCacheRead = attempt.cacheReadInputTokens ?? 0;
   const input = attempt.inputTokens ?? 0;
   const output = attempt.outputTokens ?? 0;
   const cacheMiss = attempt.cacheMissInputTokens ?? 0;
-  const cacheRead = clampCacheReadTokens(input, attempt.cacheReadInputTokens ?? 0);
+  // With no reported prompt total there is no denominator to validate against,
+  // but the provider's cache evidence remains authoritative. Presentation code
+  // must leave ratios unavailable while Usage coverage is partial.
+  const cacheRead =
+    attempt.inputTokens === undefined
+      ? reportedCacheRead
+      : clampCacheReadTokens(input, reportedCacheRead);
   const cacheWrite = attempt.cacheWriteInputTokens ?? 0;
   const reasoning = attempt.reasoningTokens ?? 0;
   return { input, output, cacheMiss, cacheRead, cacheWrite, reasoning, total: input + output };

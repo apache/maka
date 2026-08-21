@@ -5,6 +5,8 @@ import type {
 import type { UsageSummaryV2 } from '@maka/core/usage-stats/types';
 import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
 
+type SessionUsageSummary = UsageSummaryV2 & { readonly provenance?: UsageProvenance };
+
 /**
  * Overview view model for the Inspector panel's summary sections.
  *
@@ -154,7 +156,7 @@ export function hasUnavailableSessionUsage(
  */
 export function deriveInspectorOverviewModel(
   diagnostics?: ContextDiagnosticsResult,
-  usage?: UsageSummaryV2,
+  usage?: SessionUsageSummary,
 ): InspectorOverviewModel {
   // Both halves of the context block come from the SAME snapshot. They used to
   // be picked separately — the bar from the latest trace attempt that carried a
@@ -171,8 +173,15 @@ export function deriveInspectorOverviewModel(
   };
 }
 
-function usageCacheHitRate(usage: UsageSummaryV2 | undefined): number | undefined {
+function usageCacheHitRate(usage: SessionUsageSummary | undefined): number | undefined {
   if (!usage || usage.totalTokens.input === 0) return undefined;
+  if (
+    usage.provenance &&
+    (usage.provenance.coverage.usagePartialAttempts > 0 ||
+      usage.provenance.coverage.usageMissingAttempts > 0)
+  ) {
+    return undefined;
+  }
   return usage.totalTokens.cacheRead / usage.totalTokens.input;
 }
 
