@@ -142,6 +142,70 @@ describe('GitHubCopilotSubscriptionService', () => {
     });
   });
 
+  test('signs in with a GitHub device grant and adopts the account it authorizes', async () => {
+    let stored: string | null = null;
+    let modelsAuthorization = '';
+    let polls = 0;
+    const service = new GitHubCopilotSubscriptionService({
+      credentialStore: {
+        getSecret: async () => stored,
+        setSecret: async (_slug, _kind, value) => { stored = value; },
+        deleteSecret: async () => { stored = null; },
+      },
+      // The device grant must never fall back to a locally discovered token:
+      // a login the user did not authorize here would be the old behaviour.
+      resolveGitHubToken: async () => { throw new Error('local discovery must not run'); },
+      fetchFn: async (url, init) => {
+        const target = String(url);
+        if (target === 'https://github.com/login/device/code') {
+          return Response.json({
+            device_code: 'device-code',
+            user_code: 'ABCD-1234',
+            verification_uri: 'https://github.com/login/device',
+            expires_in: 900,
+            interval: 1,
+          });
+        }
+        if (target === 'https://github.com/login/oauth/access_token') {
+          polls += 1;
+          return polls === 1
+            ? Response.json({ error: 'authorization_pending' })
+            : Response.json({ access_token: 'gho_device_granted' });
+        }
+        assert.equal(target, 'https://api.githubcopilot.com/models');
+        modelsAuthorization = new Headers(init?.headers).get('authorization') ?? '';
+        return copilotModelsResponse();
+      },
+    });
+
+    const started = await service.beginDeviceLogin();
+    assert.equal(started.ok, true);
+    if (started.ok) {
+      assert.equal(started.userCode, 'ABCD-1234');
+      assert.equal(started.verificationUrl, 'https://github.com/login/device');
+    }
+
+    const completed = await service.completeDeviceLogin();
+    assert.equal(completed.ok, true);
+    if (completed.ok) assert.deepEqual(completed.models.map(({ id }) => id), ['gpt-5.4']);
+    assert.equal(polls, 2);
+    assert.equal(modelsAuthorization, 'Bearer gho_device_granted');
+    assert.ok(stored);
+    // The grant is spent: a second completion must not replay it.
+    assert.equal((await service.completeDeviceLogin()).ok, false);
+  });
+
+  test('reports a completion with no pending device grant instead of starting one', async () => {
+    const service = new GitHubCopilotSubscriptionService({
+      credentialStore: {
+        getSecret: async () => null,
+        setSecret: async () => {},
+        deleteSecret: async () => {},
+      },
+      fetchFn: async () => { throw new Error('no request may be issued'); },
+    });
+    assert.equal((await service.completeDeviceLogin()).ok, false);
+  });
 });
 
 function copilotModelsResponse(): Response {

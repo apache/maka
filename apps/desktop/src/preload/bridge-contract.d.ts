@@ -961,6 +961,12 @@ export interface MakaBridge {
   };
   githubCopilotSubscription: {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    beginDeviceLogin(host?: DesktopRuntimeHostRef): Promise<
+      | { ok: true; userCode: string; verificationUrl: string; expiresAt: number }
+      | Exclude<SubscriptionActionResult, { ok: true }>
+    >;
+    completeDeviceLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    cancelDeviceLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     getAccountState(host?: DesktopRuntimeHostRef): Promise<{
       provider: 'github-copilot';
       runtimeState: 'not_logged_in' | 'authenticated' | 'refreshing' | 'refresh_failed' | 'storage_failed';

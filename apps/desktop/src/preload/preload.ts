@@ -2250,6 +2250,20 @@ const makaBridge = {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'github-copilot:connect-existing-login');
     },
+    beginDeviceLogin(
+      host?: DesktopRuntimeHostRef,
+    ): Promise<
+      | { ok: true; userCode: string; verificationUrl: string; expiresAt: number }
+      | Exclude<SubscriptionActionResult, { ok: true }>
+    > {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:begin-device-login');
+    },
+    completeDeviceLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:complete-device-login');
+    },
+    cancelDeviceLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:cancel-device-login');
+    },
     getAccountState(host?: DesktopRuntimeHostRef): Promise<{
       provider: 'github-copilot';
       runtimeState: 'not_logged_in' | 'authenticated' | 'refreshing' | 'refresh_failed' | 'storage_failed';

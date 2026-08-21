@@ -232,6 +232,14 @@ function SubscriptionLoginPanel(props: {
 function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void> }) {
   const host = useRuntimeHostSettingsTarget();
   const copy = getProviderSettingsCopy(useUiLocale()).oauthSection;
+  const [devicePrompt, setDevicePrompt] = useState<{
+    userCode: string;
+    verificationUrl: string;
+  } | null>(null);
+  // Both sign-in paths are one bridge action from the flow's point of view, so
+  // they share its pending guard and snapshot refresh. The mode is read at call
+  // time rather than bound per button to avoid a second login controller.
+  const loginMode = useRef<'device' | 'import'>('device');
   // The shared login-flow controller owns the snapshot refresh, the
   // synchronous one-shot pending guard, and the unmount safety; Copilot
   // rides it through the direct account flow (one bridge call per action,
@@ -245,12 +253,35 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
     display: { name: 'GitHub Copilot', shortName: 'GitHub Copilot' },
     onLoginSuccess: props.onLoginSuccess,
     direct: {
-      login: () => window.maka.githubCopilotSubscription.connectExistingLogin(host),
+      login: async () => {
+        if (loginMode.current === 'import') {
+          return window.maka.githubCopilotSubscription.connectExistingLogin(host);
+        }
+        const started = await window.maka.githubCopilotSubscription.beginDeviceLogin(host);
+        if (!started.ok) return started;
+        setDevicePrompt({
+          userCode: started.userCode,
+          verificationUrl: started.verificationUrl,
+        });
+        try {
+          return await window.maka.githubCopilotSubscription.completeDeviceLogin(host);
+        } finally {
+          setDevicePrompt(null);
+        }
+      },
       refreshTokens: () => window.maka.githubCopilotSubscription.refreshTokens(host),
     },
   });
   const refreshTokens = flow.refreshTokens;
   const loggedIn = flow.state?.runtimeState === 'authenticated' || flow.state?.runtimeState === 'refreshing';
+  const startLogin = (mode: 'device' | 'import') => {
+    loginMode.current = mode;
+    void flow.startLogin();
+  };
+  const cancelDeviceLogin = () => {
+    void window.maka.githubCopilotSubscription.cancelDeviceLogin(host);
+    setDevicePrompt(null);
+  };
   return (
     <VStack gap={3} data-status={flow.runtimeState}>
       <Text type="body">
@@ -260,8 +291,20 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
             ? flow.state.errorMessage
             : copy.copilotSetup}
       </Text>
+      {devicePrompt && (
+        <VStack gap={1} data-testid="github-copilot-device-prompt">
+          <Text type="body">{copy.copilotDevicePrompt(devicePrompt.verificationUrl)}</Text>
+          <Text type="code">{devicePrompt.userCode}</Text>
+          <Text type="body">{copy.copilotDeviceWaiting}</Text>
+        </VStack>
+      )}
       <HStack gap={2} hAlign="end">
-        <Button variant="primary" onClick={() => void flow.startLogin()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'login' ? copy.importing : loggedIn ? copy.reimport : copy.importCredential} />
+        {devicePrompt ? (
+          <Button variant="ghost" onClick={cancelDeviceLogin} label={copy.copilotDeviceCancel} />
+        ) : (
+          <Button variant="primary" onClick={() => startLogin('device')} isDisabled={flow.actionBusy} label={flow.pendingAction === 'login' ? copy.importing : copy.copilotSignIn} />
+        )}
+        <Button variant="secondary" onClick={() => startLogin('import')} isDisabled={flow.actionBusy} label={loggedIn ? copy.reimport : copy.importCredential} />
         {loggedIn && (
           <>
             <Button variant="secondary" onClick={() => void refreshTokens?.()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'refresh' ? copy.verifying : copy.reverify} />

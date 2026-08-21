@@ -34,16 +34,27 @@ export interface RuntimeHostGitHubCopilotIpcDeps {
   readonly client: GitHubCopilotClient;
   readonly emitConnectionListChanged: () => void;
   readonly importExistingLogin?: () => Promise<ImportedGitHubCopilotCredential>;
+  readonly createDeviceLogin?: () => CapturingGitHubCopilotService;
+}
+
+/**
+ * A service whose credential never reaches disk in Desktop: the secret is held
+ * in memory only long enough to be committed to the Host vault.
+ */
+interface CapturingGitHubCopilotService {
+  readonly service: GitHubCopilotSubscriptionService;
+  readonly takeSecret: () => string | undefined;
 }
 
 /** Keeps local `gh` discovery in Desktop while committing its credential only to the Host vault. */
-export function registerRuntimeHostGitHubCopilotIpc(
-  deps: RuntimeHostGitHubCopilotIpcDeps,
-): void {
+export function registerRuntimeHostGitHubCopilotIpc(deps: RuntimeHostGitHubCopilotIpcDeps): void {
   const importExistingLogin = deps.importExistingLogin ?? importGitHubCopilotCredential;
+  const createDeviceLogin = deps.createDeviceLogin ?? createCapturingGitHubCopilotService;
+  // One device login at a time. The pending grant lives here rather than in the
+  // renderer so a closed settings pane cannot strand a poll holding a secret.
+  let deviceLogin: CapturingGitHubCopilotService | null = null;
 
-  deps.ipcMain.handle('github-copilot:connect-existing-login', async () => {
-    const imported = await importExistingLogin();
+  const commitCredential = async (imported: ImportedGitHubCopilotCredential) => {
     if (!imported.result.ok) return imported.result;
     if (!imported.secret) return storageFailure('GitHub Copilot login produced no credential');
     try {
@@ -53,14 +64,45 @@ export function registerRuntimeHostGitHubCopilotIpc(
         imported.result.models.map(({ id }) => id),
       );
       await setRuntimeHostAccountCredential(deps.client, connection, imported.secret);
-      await synchronizeRuntimeHostAccountConnection(deps.client, PROVIDER).catch(
-        () => undefined,
-      );
+      await synchronizeRuntimeHostAccountConnection(deps.client, PROVIDER).catch(() => undefined);
       deps.emitConnectionListChanged();
       return { ok: true as const };
     } catch {
       return storageFailure('GitHub Copilot login could not be committed to Runtime Host');
     }
+  };
+
+  deps.ipcMain.handle('github-copilot:connect-existing-login', async () =>
+    commitCredential(await importExistingLogin()),
+  );
+
+  deps.ipcMain.handle('github-copilot:begin-device-login', async () => {
+    deviceLogin?.service.cancelDeviceLogin();
+    const session = createDeviceLogin();
+    const started = await session.service.beginDeviceLogin();
+    if (!started.ok) {
+      deviceLogin = null;
+      return started;
+    }
+    deviceLogin = session;
+    return started;
+  });
+
+  deps.ipcMain.handle('github-copilot:complete-device-login', async () => {
+    const session = deviceLogin;
+    if (!session) return storageFailure('No GitHub Copilot device login is in progress');
+    try {
+      const result = await session.service.completeDeviceLogin();
+      return await commitCredential({ result, ...(result.ok ? { secret: session.takeSecret() } : {}) });
+    } finally {
+      if (deviceLogin === session) deviceLogin = null;
+    }
+  });
+
+  deps.ipcMain.handle('github-copilot:cancel-device-login', async () => {
+    deviceLogin?.service.cancelDeviceLogin();
+    deviceLogin = null;
+    return { ok: true as const };
   });
 
   handleReconnectableRead(deps.ipcMain, 'github-copilot:get-account-state', async () => {
@@ -106,7 +148,7 @@ export function registerRuntimeHostGitHubCopilotIpc(
   });
 }
 
-async function importGitHubCopilotCredential(): Promise<ImportedGitHubCopilotCredential> {
+function createCapturingGitHubCopilotService(): CapturingGitHubCopilotService {
   let secret: string | undefined;
   const service = new GitHubCopilotSubscriptionService({
     credentialStore: {
@@ -119,7 +161,13 @@ async function importGitHubCopilotCredential(): Promise<ImportedGitHubCopilotCre
       },
     },
   });
+  return { service, takeSecret: () => secret };
+}
+
+async function importGitHubCopilotCredential(): Promise<ImportedGitHubCopilotCredential> {
+  const { service, takeSecret } = createCapturingGitHubCopilotService();
   const result = await service.connectExistingLogin();
+  const secret = takeSecret();
   return { result, ...(result.ok && secret ? { secret } : {}) };
 }
 
