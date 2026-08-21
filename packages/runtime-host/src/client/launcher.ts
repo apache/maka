@@ -21,7 +21,14 @@ export interface DetachedCandidateInput {
 
 export interface DetachedCandidateAttempt {
   pid: number;
+  startupAttemptId?: string;
+  exited?: Promise<CandidateProcessExit>;
   startupFailure?: Promise<CandidateStartupFailureReport | undefined>;
+}
+
+export interface CandidateProcessExit {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
 }
 
 export interface OwnedCandidateAttempt extends DetachedCandidateAttempt {
@@ -40,10 +47,11 @@ export function launchDetachedRuntimeHostCandidate(
 ): DetachedCandidateLaunch {
   const startupAttemptId = randomUUID();
   const child = spawnCandidate(input, true, startupAttemptId);
-  const startupFailure = readStartupFailure(child, startupAttemptId);
+  const exited = candidateExit(child);
+  const startupFailure = readStartupFailure(child, exited, startupAttemptId);
   const spawned = spawnedPid(child).then(({ pid }) => {
     child.unref();
-    return { pid, startupFailure };
+    return { pid, startupAttemptId, exited, startupFailure };
   });
   return { spawned };
 }
@@ -53,13 +61,13 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
 } {
   const startupAttemptId = randomUUID();
   const child = spawnCandidate(input, false, startupAttemptId);
-  const startupFailure = readStartupFailure(child, startupAttemptId);
-  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-    child.once('exit', (code, signal) => resolve({ code, signal }));
-  });
+  const exited = candidateExit(child);
+  const startupFailure = readStartupFailure(child, exited, startupAttemptId);
   return {
     spawned: spawnedPid(child).then(({ pid }) => ({
       pid,
+      startupAttemptId,
+      exited,
       startupFailure,
       releaseToEnvironment(): void {
         child.unref();
@@ -132,14 +140,21 @@ function spawnedPid(child: ReturnType<typeof spawn>): Promise<{ pid: number }> {
 
 function readStartupFailure(
   child: ReturnType<typeof spawn>,
+  exited: Promise<CandidateProcessExit>,
   startupAttemptId: string,
 ): Promise<CandidateStartupFailureReport | undefined> {
   return new Promise((resolve) => {
-    child.once('exit', (code) => {
+    void exited.then(({ code }) => {
       const failure = candidateStartupFailureForExitCode(code);
       resolve(failure ? { ...failure, startupAttemptId } : undefined);
     });
     child.once('error', () => resolve(undefined));
+  });
+}
+
+function candidateExit(child: ReturnType<typeof spawn>): Promise<CandidateProcessExit> {
+  return new Promise((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }));
   });
 }
 

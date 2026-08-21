@@ -202,6 +202,7 @@ type ConnectResolvedRuntimeHostResult =
   | {
       kind: 'election_deadline_elapsed';
       endpointConnected: boolean;
+      registration?: HostRegistration;
     };
 
 class ElectionDeadlineElapsedError extends Error {
@@ -1235,7 +1236,7 @@ export async function connectResolvedRuntimeHost(
     );
   } catch (error) {
     if (error instanceof ElectionDeadlineElapsedError) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: false };
+      return { kind: 'election_deadline_elapsed', endpointConnected: false, registration };
     }
     if (error instanceof RuntimeHostRegistrationError && error.code === 'invalid_registration') {
       return { kind: 'unavailable', reason: 'invalid_registration' };
@@ -1250,7 +1251,7 @@ export async function connectResolvedRuntimeHost(
   const connectBudget = remainingTimeout(connectDeadline.at);
   if (connectBudget === undefined) {
     if (connectDeadline.exhaustsElection) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: false };
+      return { kind: 'election_deadline_elapsed', endpointConnected: false, registration };
     }
     return { kind: 'unavailable', reason: 'connect_failed', registration };
   }
@@ -1263,7 +1264,7 @@ export async function connectResolvedRuntimeHost(
     );
   } catch (error) {
     if (error instanceof ElectionDeadlineElapsedError) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: false };
+      return { kind: 'election_deadline_elapsed', endpointConnected: false, registration };
     }
     return { kind: 'unavailable', reason: 'connect_failed', registration };
   }
@@ -1272,7 +1273,7 @@ export async function connectResolvedRuntimeHost(
   if (handshakeBudget === undefined) {
     transport.abort();
     if (handshakeDeadline.exhaustsElection) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: true };
+      return { kind: 'election_deadline_elapsed', endpointConnected: true, registration };
     }
     return { kind: 'unavailable', reason: 'handshake_failed', registration };
   }
@@ -1361,7 +1362,7 @@ export async function connectResolvedRuntimeHost(
       return { kind: 'unavailable', reason: 'composition_mismatch', registration };
     }
     if (failure instanceof ElectionDeadlineElapsedError) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: true };
+      return { kind: 'election_deadline_elapsed', endpointConnected: true, registration };
     }
     return { kind: 'unavailable', reason: 'handshake_failed', registration };
   } finally {
