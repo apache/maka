@@ -1022,16 +1022,37 @@ export function TurnRunningStatus(props: { startedAt?: number }) {
 
 export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }) {
   const copy = getConversationCopy(useUiLocale()).messages;
+  const { retry } = props;
+  const rootRef = useRef<HTMLDivElement>(null);
+  // Undefined until an effect measures it — the same determinism contract as
+  // the elapsed clock above: frozen fixtures keep the provider's original
+  // delay; live, the banner counts down from the event's timestamp so a long
+  // provider-mandated wait (a subscription quota window can be hours) shows
+  // progress instead of a frozen number.
+  const [nowMs, setNowMs] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    if (retry.phase !== 'scheduled' || !isTimeDrivenMotionEnabled(rootRef.current)) return;
+    setNowMs(Date.now());
+    const tick = window.setInterval(() => setNowMs(Date.now()), ELAPSED_TICK_MS);
+    return () => window.clearInterval(tick);
+  }, [retry.phase, retry.ts]);
+  const remainingMs =
+    retry.phase !== 'scheduled'
+      ? 0
+      : nowMs === undefined
+        ? retry.delayMs
+        : Math.max(0, retry.delayMs - (nowMs - retry.ts));
   const title =
-    props.retry.phase === 'scheduled'
+    retry.phase === 'scheduled'
       ? copy.providerRetryScheduled(
-          Math.max(1, Math.ceil(props.retry.delayMs / 1_000)),
-          props.retry.attempt,
-          props.retry.maxAttempts,
+          Math.max(1, Math.ceil(remainingMs / 1_000)),
+          retry.attempt,
+          retry.maxAttempts,
         )
-      : copy.providerRetryStarted(props.retry.attempt, props.retry.maxAttempts);
+      : copy.providerRetryStarted(retry.attempt, retry.maxAttempts);
   return (
     <Banner
+      ref={rootRef}
       status="warning"
       container="section"
       role="status"

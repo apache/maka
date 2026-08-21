@@ -1,6 +1,7 @@
 import { Markdown } from '@earendil-works/pi-tui';
 import type {
   ProviderRetryEvent,
+  ProviderRetryScheduledEvent,
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
   SessionEvent,
@@ -1404,12 +1405,24 @@ export function renderMakaPiActivityStrip(
     const retry = metadata.providerRetry;
     const text =
       retry.phase === 'scheduled'
-        ? `Retrying in ${Math.max(1, Math.ceil(retry.delayMs / 1_000))}s (${retry.attempt}/${retry.maxAttempts})`
+        ? `Retrying in ${formatRetryCountdown(retry)} (${retry.attempt}/${retry.maxAttempts})`
         : `Retrying (${retry.attempt}/${retry.maxAttempts})`;
     return fitLine(ansi.dim(text), safeWidth);
   }
   if (metadata.turnElapsedMs === undefined) return '';
   return fitLine(ansi.dim(`Working… ${formatElapsedDuration(metadata.turnElapsedMs)}`), safeWidth);
+}
+
+/**
+ * Remaining wait for a scheduled provider retry, measured from the event's own
+ * timestamp so the strip counts down on the 1s ticker instead of pinning the
+ * original delay for the whole sleep. Long provider-mandated waits (a
+ * subscription quota window can be hours) render as `4h 28m 3s` via the shared
+ * duration formatter rather than a raw five-digit second count.
+ */
+function formatRetryCountdown(retry: ProviderRetryScheduledEvent): string {
+  const remainingMs = Math.max(0, retry.delayMs - (Date.now() - retry.ts));
+  return formatElapsedDuration(remainingMs);
 }
 
 function formatElapsedDuration(elapsedMs: number): string {
