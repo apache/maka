@@ -399,17 +399,41 @@ describe('terminateInstalledProcesses', () => {
     assert.deepEqual(events, ['taskkill:7', 'taskkill:8', 'wait']);
   });
 
-  it('rethrows a kill failure that is not a benign mechanism shape', async () => {
+  it('lets the exit proof decide after any taskkill mechanism failure', async () => {
+    let exitProofRan = false;
+    await terminateInstalledProcesses('C:/nowhere/installed', {
+      listProcesses: async () => [process7],
+      run: async () => {
+        throw new Error('taskkill /PID 7 /T /F failed with exit code 255');
+      },
+      waitForExit: async () => {
+        exitProofRan = true;
+      },
+    });
+    assert.equal(exitProofRan, true);
+  });
+
+  it('reports the exit proof and taskkill failures together when residue remains', async () => {
     await assert.rejects(
       () =>
         terminateInstalledProcesses('C:/nowhere/installed', {
           listProcesses: async () => [process7],
           run: async () => {
-            throw new Error('taskkill /PID 7 /T /F failed with exit code 1');
+            throw new Error('taskkill failed with exit code 255');
           },
-          waitForExit: async () => assert.fail('must not reach the exit wait'),
+          waitForExit: async () => {
+            throw new Error('Maka.exe (7) is still running');
+          },
         }),
-      /exit code 1/,
+      (error) => {
+        assert.ok(error instanceof AggregateError);
+        assert.match(error.message, /did not exit after taskkill failures/);
+        assert.deepEqual(
+          error.errors.map((failure) => failure.message),
+          ['Maka.exe (7) is still running', 'taskkill failed with exit code 255'],
+        );
+        return true;
+      },
     );
   });
 

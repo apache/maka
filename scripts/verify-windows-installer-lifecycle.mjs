@@ -185,19 +185,26 @@ export async function terminateInstalledProcesses(
       await sleep(pollIntervalMs);
     }
   }
+  const killErrors = [];
   for (const processInfo of processes) {
     try {
       await run('taskkill', ['/PID', String(processInfo.processId), '/T', '/F'], {
         timeoutMs: 30_000,
       });
     } catch (error) {
-      const message = String(error?.message);
-      if (!/exit code 128/.test(message) && !/did not finish within/.test(message)) {
-        throw error;
-      }
+      killErrors.push(error);
     }
   }
-  await waitForExit(installDirectory, { listProcesses: enumerate });
+  try {
+    await waitForExit(installDirectory, { listProcesses: enumerate });
+  } catch (exitError) {
+    if (killErrors.length === 0) throw exitError;
+    throw new AggregateError(
+      [exitError, ...killErrors],
+      'Installed Maka processes did not exit after taskkill failures.',
+      { cause: exitError },
+    );
+  }
 }
 
 export async function waitUntilMissing(
