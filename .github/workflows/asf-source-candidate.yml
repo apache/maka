@@ -1,0 +1,137 @@
+name: Prepare ASF source candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact version from the root package.json
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asf-source-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    name: Build and test source archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CANDIDATE_PATH: release/asf/apache-maka-${{ inputs.version }}-incubating-src.tar.gz
+      RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - name: Require main
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          if [[ "$RELEASE_REF" != "refs/heads/main" ]]; then
+            echo "ASF source candidates must be dispatched from main; found $RELEASE_REF" >&2
+            exit 1
+          fi
+
+      - name: Check out the candidate commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Select the repository npm toolchain
+        run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
+
+      - name: Install Linux runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap ripgrep
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if [[ -e /proc/sys/kernel/unprivileged_userns_clone ]]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+
+      - name: Create the unsigned source candidate
+        run: |
+          npm run release:asf:source -- \
+            --version "$RELEASE_VERSION" \
+            --revision "$GITHUB_SHA"
+
+      - name: Extract the exact candidate
+        run: |
+          mkdir candidate-source
+          tar -xzf "$CANDIDATE_PATH" \
+            --strip-components=1 \
+            -C candidate-source
+
+      - name: Install from the committed lockfile
+        working-directory: candidate-source
+        run: npm ci
+
+      - name: Audit production dependencies
+        working-directory: candidate-source
+        run: npm audit --omit=dev --audit-level=moderate
+
+      - name: Verify source attribution inventories
+        working-directory: candidate-source
+        run: |
+          npm run check:third-party-notices
+          npm run check:cli-third-party-notices
+          npm run check:windows-cargo-notices
+
+      - name: Lint and format-check the extracted source
+        working-directory: candidate-source
+        run: |
+          npm run lint
+          npm run format:check
+
+      - name: Build and type-check the extracted source
+        working-directory: candidate-source
+        run: |
+          npm run build
+          npm run typecheck
+
+      - name: Run ASF source checks from the extracted source
+        working-directory: candidate-source
+        run: npm run check:asf-source
+
+      - name: Test the extracted source
+        working-directory: candidate-source
+        run: npm test
+
+      - name: Upload the verified unsigned candidate
+        id: candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apache-maka-${{ inputs.version }}-incubating-${{ github.sha }}-unsigned
+          path: |
+            ${{ env.CANDIDATE_PATH }}
+            ${{ env.CANDIDATE_PATH }}.sha512
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Record Release Manager handoff
+        env:
+          ARTIFACT_URL: ${{ steps.candidate.outputs.artifact-url }}
+          RUNBOOK_URL: ${{ github.server_url }}/${{ github.repository }}/blob/${{ github.sha }}/.github/ASF_SOURCE_RELEASE.md
+        run: |
+          {
+            echo "## Unsigned ASF source candidate"
+            echo
+            echo "- Version: \`$RELEASE_VERSION\`"
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Artifact: $ARTIFACT_URL"
+            echo "- Release Manager runbook: $RUNBOOK_URL"
+            echo
+            echo "This workflow does not create an ASF release candidate by itself."
+          } >> "$GITHUB_STEP_SUMMARY"
