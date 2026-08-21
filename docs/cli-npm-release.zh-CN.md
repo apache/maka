@@ -10,6 +10,8 @@
 - 预发布版本使用 `next`，稳定版本使用 `latest`；`next` 不得指向比 `latest` 更旧的版本；没有
   更新的预发布版本时，两个 tag 都指向稳定版；
 - 不创建 npm 专属 Git tag 或 GitHub Release；产品 `v<version>` tag 与 GitHub Release 只由 `Release` workflow 管理，并且必须先于 npm staging 存在；
+- 在 npm Finalize 与 Desktop 远程 Runtime Host 验收成功前，GitHub Release 必须保持 Draft；
+  Draft 为 npm 提供产品身份，发布 Draft 是最终的产品发布动作；
 - 不运行 `npm publish`。GitHub Actions 只能运行 `npm stage publish`，由人工 package
   maintainer 使用 npm 2FA 批准 staged package；
 - validation、staging、approval 和 finalization 之间不得重新构建；
@@ -169,6 +171,9 @@ npm view maka-agent dist-tags --json
 
 最后，在每个发布平台安装精确的公共版本，并完成一次真实的 TUI/model turn。在支持的 Eval
 host 上完成至少一个真实 experiment cell，检查 score、usage、cost 和 artifacts。
+
+回到[产品发布检查清单](../.github/RELEASE_CHECKLIST.md)，使用打包后的 Desktop 应用完成远程
+Runtime Host setup 验收，再发布 GitHub Release。
 
 ## 失败恢复
 

@@ -88,19 +88,29 @@ test('release metadata selects only the gate that consumes it', () => {
 
 test('release authority changes select their dedicated contract gate', () => {
   for (const path of [
+    'apps/desktop/build/entitlements.mac.plist',
+    'apps/desktop/electron-builder.config.mjs',
+    'apps/desktop/package.json',
     '.github/workflows/cli-package-validation.yml',
     '.github/workflows/release-cli-finalize.yml',
     '.github/workflows/release-cli-stage.yml',
     '.github/workflows/release.yml',
+    'scripts/package-macos-arm64.mjs',
     'scripts/package-macos-arm64-cli.mjs',
+    'scripts/package-windows-x64.mjs',
     'scripts/prepare-windows-upgrade-baseline.mjs',
     'scripts/product-release-identity.mjs',
     'scripts/product-release-tag.mjs',
     'scripts/product-release.test.mjs',
     'scripts/release-checksum.mjs',
+    'scripts/release-eval-smoke-sitecustomize.py',
     'scripts/release-version.mjs',
     'scripts/release-cli-publication.test.mjs',
     'scripts/verify-macos-arm64-cli.mjs',
+    'scripts/verify-macos-arm64-dmg.mjs',
+    'scripts/verify-packaged-app.mjs',
+    'scripts/verify-windows-x64.mjs',
+    'scripts/windows-upgrade-baseline.json',
   ]) {
     assert.equal(planTests([path], { graph }).releaseContract, true, path);
   }

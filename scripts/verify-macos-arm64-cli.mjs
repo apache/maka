@@ -20,11 +20,12 @@ import { promisify, stripVTControlCharacters } from 'node:util';
 import {
   assertMacosArm64CliHost,
   assertNoDanglingSymlinks,
-  extractOfficialNodeEntitlements,
+  DISTRIBUTION_NODE_RUNTIME_ENTITLEMENTS,
+  extractDistributionNodeEntitlements,
   inspectNativeArtifacts,
   isMacosArm64MachO,
   listApplicableDependencyPatchNames,
-  NODE_RUNTIME_ENTITLEMENTS,
+  OFFICIAL_NODE_RUNTIME_ENTITLEMENTS,
   resolveCliWorkspacePackages,
   resolveMacosArm64CliArtifactPaths,
 } from './package-macos-arm64-cli.mjs';
@@ -475,7 +476,7 @@ async function verifyBinarySignatures(
     }
     if (resolve(binaryPath) === resolve(nodePath)) {
       const entitlements = await run('codesign', ['-d', '--entitlements', ':-', binaryPath]);
-      extractOfficialNodeEntitlements(`${entitlements.stdout}\n${entitlements.stderr}`);
+      extractDistributionNodeEntitlements(`${entitlements.stdout}\n${entitlements.stderr}`);
     }
   }
   return expectedTeamIdentifier;
@@ -567,7 +568,12 @@ export async function verifyMacosArm64Cli(
       metadata.node?.sourceUrl !== toolchain.nodeSourceUrl ||
       metadata.node?.archive !== toolchain.nodeArchive ||
       metadata.node?.archiveSha256 !== toolchain.nodeArchiveSha256 ||
-      JSON.stringify(metadata.node?.entitlements) !== JSON.stringify(NODE_RUNTIME_ENTITLEMENTS) ||
+      JSON.stringify(metadata.node?.entitlements) !==
+        JSON.stringify(
+          requireReleaseSigning
+            ? DISTRIBUTION_NODE_RUNTIME_ENTITLEMENTS
+            : OFFICIAL_NODE_RUNTIME_ENTITLEMENTS,
+        ) ||
       metadata.npmVersion !== toolchain.npmVersion ||
       (requireReleaseSigning && metadata.signingTeamIdentifier !== toolchain.appleTeamIdentifier) ||
       JSON.stringify(metadata.publicCommands) !== JSON.stringify(['maka'])

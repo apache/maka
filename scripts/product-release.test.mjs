@@ -6,17 +6,22 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
 import { parse as parseYaml } from 'yaml';
+import desktopBuilderConfig from '../apps/desktop/electron-builder.config.mjs';
 import { parseCliReleaseVersion } from './release-cli-publication.mjs';
 import { planTests } from './ci-test-plan.mjs';
 import {
   assertProductReleaseExpectation,
   parseAsfSourceReferenceTag,
   releaseToolchainFromManifest,
+  resolveProductManifestIdentity,
   resolveProductReleaseIdentity,
 } from './product-release-identity.mjs';
 import {
   assertExpectedAppleTeam,
   decodeSigningCertificate,
+  DISTRIBUTION_NODE_RUNTIME_ENTITLEMENTS,
+  distributionNodeEntitlements,
+  extractDistributionNodeEntitlements,
   extractOfficialNodeEntitlements,
   macosArm64MachOAction,
   parseDeveloperIdApplicationIdentity,
@@ -28,6 +33,7 @@ import {
 } from './package-macos-arm64-cli.mjs';
 import { resolveWorkspaceReleaseFiles } from './release-cli-file-policy.mjs';
 import { isTuiReadyOutput } from './verify-macos-arm64-cli.mjs';
+import { makePtyProbe } from './verify-packaged-app.mjs';
 import { ensureProductTag } from './product-release-tag.mjs';
 import { writeSha256Sidecar } from './release-checksum.mjs';
 
@@ -57,10 +63,59 @@ test('one root version defines every product artifact from one source commit', (
   assert.equal(identity.tag, 'v1.2.3');
   assert.equal(identity.sourceCommit, 'a'.repeat(40));
   assert.equal(identity.sourceReferenceTag, 'v1.2.3-incubating-rc2');
+  assert.equal(identity.runtimeHostSetupPackage, 'maka-agent@1.2.3');
   assert.equal(identity.dmg, 'Maka-1.2.3-mac-arm64.dmg');
   assert.equal(identity.exe, 'Maka-1.2.3-win-x64.exe');
   assert.equal(identity.cliArchive, 'Maka-1.2.3-cli-mac-arm64.zip');
   assert.equal(identity.sourceArchive, 'Maka-1.2.3-bundled-git-source.tar.gz');
+});
+
+test('Desktop packaging derives the Runtime Host setup package from product manifests', async () => {
+  const manifestIdentity = resolveProductManifestIdentity({
+    rootManifest,
+    desktopManifest: { version: '1.2.3' },
+    cliManifest: { version: '1.2.3', bin: { maka: './dist/cli.js' } },
+  });
+  assert.equal(manifestIdentity.runtimeHostSetupPackage, 'maka-agent@1.2.3');
+
+  const checkedRootManifest = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
+  assert.deepEqual(desktopBuilderConfig.extraMetadata, {
+    runtimeHostSetupPackage: `maka-agent@${checkedRootManifest.version}`,
+  });
+});
+
+test('the packaged-app probe rejects a mismatched Runtime Host setup package', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'maka-packaged-manifest-'));
+  try {
+    const manifestPath = join(fixture, 'package.json');
+    const ptyDirectory = join(fixture, 'node_modules', 'node-pty');
+    await mkdir(ptyDirectory, { recursive: true });
+    await Promise.all([
+      writeFile(manifestPath, JSON.stringify({ runtimeHostSetupPackage: 'maka-agent@1.2.3' })),
+      writeFile(
+        join(ptyDirectory, 'index.js'),
+        `module.exports = { spawn() { return {
+  onData(listener) { queueMicrotask(() => listener('maka-node-pty-ok')); },
+  onExit(listener) { setImmediate(() => listener({ exitCode: 0 })); },
+}; } };\n`,
+      ),
+    ]);
+    await execFileAsync(process.execPath, [
+      '-e',
+      makePtyProbe('/bin/echo', ['maka-node-pty-ok'], 'maka-agent@1.2.3'),
+      manifestPath,
+    ]);
+    await assert.rejects(
+      execFileAsync(process.execPath, [
+        '-e',
+        makePtyProbe('/bin/echo', ['maka-node-pty-ok'], 'maka-agent@1.2.4'),
+        manifestPath,
+      ]),
+      /Packaged Runtime Host setup package mismatch/u,
+    );
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 });
 
 test('product releases accept only an exact same-version ASF source reference', () => {
@@ -269,7 +324,7 @@ test('CLI signing accepts one base64 PKCS12 and one isolated Developer ID identi
   );
 });
 
-test('CLI signing preserves the reviewed official Node entitlement contract', () => {
+test('CLI signing removes development-only access from the official Node entitlements', () => {
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
 <key>com.apple.security.cs.allow-jit</key><true/>
@@ -281,6 +336,16 @@ test('CLI signing preserves the reviewed official Node entitlement contract', ()
 </dict></plist>`;
 
   assert.equal(extractOfficialNodeEntitlements(`Executable=/node\n${plist}`), plist);
+  const distributionPlist = distributionNodeEntitlements(plist);
+  assert.deepEqual(DISTRIBUTION_NODE_RUNTIME_ENTITLEMENTS, [
+    'com.apple.security.cs.allow-dyld-environment-variables',
+    'com.apple.security.cs.allow-jit',
+    'com.apple.security.cs.allow-unsigned-executable-memory',
+    'com.apple.security.cs.disable-executable-page-protection',
+    'com.apple.security.cs.disable-library-validation',
+  ]);
+  assert.doesNotMatch(distributionPlist, /get-task-allow/u);
+  assert.equal(extractDistributionNodeEntitlements(distributionPlist), distributionPlist);
   assert.throws(
     () =>
       extractOfficialNodeEntitlements(
@@ -288,6 +353,7 @@ test('CLI signing preserves the reviewed official Node entitlement contract', ()
       ),
     /entitlements do not match/u,
   );
+  assert.throws(() => extractDistributionNodeEntitlements(plist), /entitlements do not match/u);
 });
 
 test('the Eval workspace owns the complete runtime asset declaration', async () => {

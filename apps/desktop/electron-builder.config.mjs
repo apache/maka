@@ -1,19 +1,22 @@
-const runtimeHostSetupPackage = process.env.MAKA_RUNTIME_HOST_SETUP_PACKAGE?.trim();
-if (
-  runtimeHostSetupPackage !== undefined &&
-  !/^maka-agent@[0-9][0-9A-Za-z.+-]*$/u.test(runtimeHostSetupPackage)
-) {
-  throw new Error('MAKA_RUNTIME_HOST_SETUP_PACKAGE must name an exact Maka CLI version');
+import { readFileSync } from 'node:fs';
+import { resolveProductManifestIdentity } from '../../scripts/product-release-identity.mjs';
+
+function readManifest(relativePath) {
+  return JSON.parse(readFileSync(new URL(relativePath, import.meta.url), 'utf8'));
 }
+
+const { runtimeHostSetupPackage } = resolveProductManifestIdentity({
+  rootManifest: readManifest('../../package.json'),
+  desktopManifest: readManifest('./package.json'),
+  cliManifest: readManifest('../../packages/cli/package.json'),
+});
 
 export default {
   appId: 'com.maka.desktop',
   productName: 'Maka',
   artifactName: 'Maka-${version}-mac-${arch}.${ext}',
   asar: true,
-  ...(runtimeHostSetupPackage
-    ? { extraMetadata: { runtimeHostSetupPackage } }
-    : {}),
+  extraMetadata: { runtimeHostSetupPackage },
   directories: {
     output: 'release',
   },

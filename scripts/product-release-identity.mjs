@@ -47,13 +47,7 @@ export function parseAsfSourceReferenceTag(tag) {
   return { rcNumber: match[2], tag, version: match[1] };
 }
 
-export function resolveProductReleaseIdentity({
-  rootManifest,
-  desktopManifest,
-  cliManifest,
-  sha,
-  sourceReferenceTag,
-}) {
+export function resolveProductManifestIdentity({ rootManifest, desktopManifest, cliManifest }) {
   const { version } = parseProductReleaseVersion(rootManifest.version);
   for (const [label, manifest] of [
     ['Desktop', desktopManifest],
@@ -68,6 +62,27 @@ export function resolveProductReleaseIdentity({
   if (JSON.stringify(cliManifest.bin) !== JSON.stringify({ maka: './dist/cli.js' })) {
     throw new Error('The only public CLI command must be maka');
   }
+
+  return {
+    version,
+    runtimeHostSetupPackage: `maka-agent@${version}`,
+    publicCommands: ['maka'],
+  };
+}
+
+export function resolveProductReleaseIdentity({
+  rootManifest,
+  desktopManifest,
+  cliManifest,
+  sha,
+  sourceReferenceTag,
+}) {
+  const manifestIdentity = resolveProductManifestIdentity({
+    rootManifest,
+    desktopManifest,
+    cliManifest,
+  });
+  const { version } = manifestIdentity;
   if (typeof sha !== 'string' || !/^[0-9a-f]{40}$/u.test(sha)) {
     throw new Error('Product releases require an exact 40-character source commit SHA');
   }
@@ -85,7 +100,7 @@ export function resolveProductReleaseIdentity({
 
   return {
     ...toolchain,
-    version,
+    ...manifestIdentity,
     tag: `v${version}`,
     sourceCommit: sha,
     sourceReferenceTag,
@@ -94,7 +109,6 @@ export function resolveProductReleaseIdentity({
     cliArchive,
     cliChecksum: `${cliArchive}.sha256`,
     sourceArchive: `Maka-${version}-bundled-git-source.tar.gz`,
-    publicCommands: ['maka'],
   };
 }
 
@@ -111,15 +125,24 @@ export function assertProductReleaseExpectation(identity, { version, tag, source
   return identity;
 }
 
-export async function readProductReleaseIdentity({
-  sha,
-  sourceReferenceTag = process.env.SOURCE_REFERENCE_TAG,
-} = {}) {
+async function readProductManifests() {
   const [rootManifest, desktopManifest, cliManifest] = await Promise.all([
     readFile(join(repoRoot, 'package.json'), 'utf8').then(JSON.parse),
     readFile(join(repoRoot, 'apps/desktop/package.json'), 'utf8').then(JSON.parse),
     readFile(join(repoRoot, 'packages/cli/package.json'), 'utf8').then(JSON.parse),
   ]);
+  return { rootManifest, desktopManifest, cliManifest };
+}
+
+export async function readProductManifestIdentity() {
+  return resolveProductManifestIdentity(await readProductManifests());
+}
+
+export async function readProductReleaseIdentity({
+  sha,
+  sourceReferenceTag = process.env.SOURCE_REFERENCE_TAG,
+} = {}) {
+  const { rootManifest, desktopManifest, cliManifest } = await readProductManifests();
   const sourceCommit =
     sha ??
     process.env.GITHUB_SHA ??

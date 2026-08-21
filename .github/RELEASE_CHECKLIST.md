@@ -14,6 +14,10 @@ Phase 1 requires:
 - bundled Git source materials;
 - checksums generated after each artifact reaches its final form.
 
+The first product release also requires the exact `maka-agent@<version>` npm package. The product
+tag and Draft must exist before npm staging, but the Draft must remain unpublished until npm is
+public, Finalize has verified it, and Desktop acceptance has exercised remote Runtime Host setup.
+
 ## One-time repository setup
 
 Create a protected GitHub Environment named `release`, require the appropriate reviewers, and
@@ -64,7 +68,10 @@ These controls close the check-to-upload and check-to-stage windows. Keep the Re
 8. Confirm `RELEASE.json` records the Draft's product version and source SHA, Apple Team ID
    `FABM2QUA8Q`, the official Node
    URL/archive/digest, npm version, workspace and production dependency closures, dependency
-   patches, Mach-O inventory, and `developer-id-notarized` signing state.
+   patches, Mach-O inventory, and `developer-id-notarized` signing state. Its final Node
+   entitlements must retain the required hardened-runtime capabilities and omit
+   `com.apple.security.get-task-allow`, as required by Apple's
+   [notarization guidance](https://developer.apple.com/documentation/security/resolving-common-notarization-issues).
 9. Extract the bundled Git source-materials archive. Confirm `SOURCE_MANIFEST.json`, `README.txt`,
    all manifest archives, and the expected Dugite native release are present.
 
@@ -74,6 +81,19 @@ rerun `Release` from the same approved ASF source candidate tag with the same
 match the newly verified bytes; the retry keeps matching assets and uploads only missing ones. If an
 asset conflicts or is unexpected, inspect and remove it manually while the Release is still a Draft,
 then rerun. If only the tag exists, the retry creates the missing Draft.
+
+## Publish and verify the npm channel
+
+Follow [the npm release runbook](../docs/cli-npm-release.md) against the exact product tag and Draft:
+
+1. Run **Stage CLI npm release** from `v<version>` and record its successful run ID and attempt.
+2. Inspect the staged tarball and provenance, then approve that exact stage with npm 2FA.
+3. Run **Finalize CLI npm channel** from `main` and confirm it verifies the public package bytes,
+   provenance, signature, and release dist-tag.
+4. Install the exact public version on each release platform and complete the npm acceptance steps.
+
+Keep the GitHub Release in Draft throughout this sequence. A failed or rejected npm candidate
+requires a new product version; never publish the Draft to work around npm state.
 
 ## Acceptance on another Apple Silicon Mac
 
@@ -96,6 +116,8 @@ boundary.
    tool-call path against the packaged artifact.
 8. Configure a Desktop model connection, send one prompt, and run one representative file-tool
    task. Confirm the documented Computer Use limitation remains accurate.
+9. Add a clean remote Runtime Host from the packaged Desktop app. Confirm setup installs the exact
+   public `maka-agent@<version>` package and the remote session completes one model turn.
 
 ## Acceptance on a Windows x64 machine
 
@@ -107,9 +129,11 @@ Download the installer, Windows Desktop ZIP, and both checksum files through a b
 4. Launch Maka from the Start menu, configure a model connection, send one prompt, and run one representative file-tool task.
 5. Run one terminal task and confirm packaged `node-pty` behavior.
 6. Confirm the documented Computer Use limitation remains accurate.
+7. Add a clean remote Runtime Host from the packaged Desktop app. Confirm setup installs the exact
+   public `maka-agent@<version>` package and the remote session completes one model turn.
 
 Immediately before publication, reverify that the approved ASF candidate tag and convenience
-`v<version>` tag still resolve to the same recorded commit. Publish only after both
-independent-machine acceptance passes. If any required artifact or
+`v<version>` tag still resolve to the same recorded commit. Publish only after npm Finalize and both
+independent-machine acceptance passes. If any required artifact, npm step, or
 acceptance step fails, keep the Draft unpublished, fix the issue, increment the root product
 version, and run the full workflow again. Never replace an existing release identity.

@@ -12,6 +12,8 @@ This runbook is the operational authority for publishing the `maka-agent` npm in
   a version older than `latest`; when no newer prerelease exists, both tags point to the stable
   version.
 - Do not create an npm-specific Git tag or GitHub Release. The product `v<version>` tag and GitHub Release are owned only by the `Release` workflow, and must already exist before npm staging.
+- Keep that GitHub Release in Draft until npm Finalize and Desktop remote Runtime Host acceptance
+  succeed. The Draft supplies npm's product identity; its publication is the final product action.
 - Do not run `npm publish`. GitHub Actions may only run `npm stage publish`; a human package
   maintainer approves the staged package with npm 2FA.
 - Do not rebuild between validation, staging, approval, and finalization.
@@ -183,6 +185,9 @@ npm view maka-agent dist-tags --json
 Finally, install the exact public version on each release platform and complete one real TUI/model
 turn. On the supported Eval host, complete at least one real experiment cell and inspect score,
 usage, cost, and artifacts.
+
+Return to the [product release checklist](../.github/RELEASE_CHECKLIST.md) and exercise remote Runtime
+Host setup from the packaged Desktop apps before publishing the GitHub Release.
 
 ## Failure recovery
 

@@ -509,6 +509,7 @@ export async function verifyWindowsAutoupdate(
       requireWindowsSandbox: true,
       requireDisclaimer: true,
       requireDependencyClosure: true,
+      requireRuntimeHostSetupPackage: true,
       smokeRenderer: async (executable, { workingDirectory }) => {
         const smokeHome = join(workingDirectory, 'home');
         const smokeUserData = join(workingDirectory, 'user-data');

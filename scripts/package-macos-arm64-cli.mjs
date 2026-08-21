@@ -45,7 +45,7 @@ const requiredSigningEnvironment = [
   'APPLE_API_KEY_ID',
   'APPLE_API_ISSUER',
 ];
-export const NODE_RUNTIME_ENTITLEMENTS = Object.freeze([
+export const OFFICIAL_NODE_RUNTIME_ENTITLEMENTS = Object.freeze([
   'com.apple.security.cs.allow-dyld-environment-variables',
   'com.apple.security.cs.allow-jit',
   'com.apple.security.cs.allow-unsigned-executable-memory',
@@ -53,6 +53,14 @@ export const NODE_RUNTIME_ENTITLEMENTS = Object.freeze([
   'com.apple.security.cs.disable-library-validation',
   'com.apple.security.get-task-allow',
 ]);
+// The official archive is validated verbatim above, but Apple rejects
+// distribution software that keeps get-task-allow. Re-sign only the Node
+// executable with the same runtime capabilities minus that development grant.
+export const DISTRIBUTION_NODE_RUNTIME_ENTITLEMENTS = Object.freeze(
+  OFFICIAL_NODE_RUNTIME_ENTITLEMENTS.filter(
+    (entitlement) => entitlement !== 'com.apple.security.get-task-allow',
+  ),
+);
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
@@ -339,11 +347,11 @@ export function assertOfficialNodeRuntime({
   }
 }
 
-export function extractOfficialNodeEntitlements(output) {
+function extractNodeEntitlements(output, expectedEntitlements, description) {
   const start = output.indexOf('<?xml');
   const end = output.indexOf('</plist>');
   if (start < 0 || end < start) {
-    throw new Error('Official Node runtime has no readable entitlement plist.');
+    throw new Error(`${description} has no readable entitlement plist.`);
   }
   const plist = output.slice(start, end + '</plist>'.length);
   const allKeys = [...plist.matchAll(/<key>([^<]+)<\/key>/gu)].map((match) => match[1]).sort();
@@ -351,12 +359,37 @@ export function extractOfficialNodeEntitlements(output) {
     .map((match) => match[1])
     .sort();
   if (
-    JSON.stringify(allKeys) !== JSON.stringify(NODE_RUNTIME_ENTITLEMENTS) ||
-    JSON.stringify(keys) !== JSON.stringify(NODE_RUNTIME_ENTITLEMENTS)
+    JSON.stringify(allKeys) !== JSON.stringify(expectedEntitlements) ||
+    JSON.stringify(keys) !== JSON.stringify(expectedEntitlements)
   ) {
-    throw new Error('Official Node runtime entitlements do not match the reviewed contract.');
+    throw new Error(`${description} entitlements do not match the reviewed contract.`);
   }
   return plist;
+}
+
+export function extractOfficialNodeEntitlements(output) {
+  return extractNodeEntitlements(
+    output,
+    OFFICIAL_NODE_RUNTIME_ENTITLEMENTS,
+    'Official Node runtime',
+  );
+}
+
+export function extractDistributionNodeEntitlements(output) {
+  return extractNodeEntitlements(
+    output,
+    DISTRIBUTION_NODE_RUNTIME_ENTITLEMENTS,
+    'Distribution Node runtime',
+  );
+}
+
+export function distributionNodeEntitlements(officialEntitlements) {
+  const plist = extractOfficialNodeEntitlements(officialEntitlements);
+  const distributionPlist = plist.replace(
+    /\s*<key>com\.apple\.security\.get-task-allow<\/key>\s*<true\s*\/>/u,
+    '',
+  );
+  return extractDistributionNodeEntitlements(distributionPlist);
 }
 
 async function inspectReleaseToolchain({ execPath, env, inspect, toolchain }) {
@@ -713,7 +746,7 @@ async function signCliBinaries(
       ['-d', '--entitlements', ':-', nodePath],
       { env },
     );
-    extractOfficialNodeEntitlements(
+    extractDistributionNodeEntitlements(
       `${signedNodeEntitlements.stdout}\n${signedNodeEntitlements.stderr}`,
     );
     return {
@@ -819,12 +852,13 @@ export async function packageMacosArm64Cli({
       toolchain,
       { env, run },
     );
-    const nodeEntitlements = await inspectReleaseToolchain({
+    const officialNodeEntitlements = await inspectReleaseToolchain({
       execPath: officialNode.execPath,
       env,
       inspect,
       toolchain,
     });
+    const nodeEntitlements = distributionNodeEntitlements(officialNodeEntitlements);
 
     const installRoot = join(stagingRoot, 'install');
     await mkdir(installRoot, { recursive: true });
@@ -906,7 +940,9 @@ export async function packageMacosArm64Cli({
         sourceUrl: toolchain.nodeSourceUrl,
         archive: toolchain.nodeArchive,
         archiveSha256: toolchain.nodeArchiveSha256,
-        entitlements: NODE_RUNTIME_ENTITLEMENTS,
+        entitlements: releaseSigning
+          ? DISTRIBUTION_NODE_RUNTIME_ENTITLEMENTS
+          : OFFICIAL_NODE_RUNTIME_ENTITLEMENTS,
       },
       npmVersion: toolchain.npmVersion,
       dependencyPatches,

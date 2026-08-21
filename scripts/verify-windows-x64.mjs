@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
-import { access, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { readProductManifestIdentity } from './product-release-identity.mjs';
 import {
   assertMissing,
   assertPackagedDependencyClosure,
@@ -15,14 +16,12 @@ import {
 } from './verify-packaged-app.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const desktopRoot = join(repoRoot, 'apps', 'desktop');
 const executableName = 'Maka.exe';
 const amd64Machine = 0x8664;
 const temporaryCleanupRetries = 20;
 const temporaryCleanupRetryDelayMs = 250;
 // conpty echoes the command and terminates lines with CRLF, so the probe keeps
 // matching on a substring rather than the whole output.
-const ptyProbe = makePtyProbe(process.env.ComSpec || 'cmd.exe', ['/c', 'echo', 'maka-node-pty-ok']);
 
 function runCommandFromRepo(command, args, options = {}) {
   return runCommand(command, args, { cwd: repoRoot, ...options });
@@ -95,15 +94,16 @@ export async function verifyPackagedWindowsApp(
     // caller verifying a *current* build under a different version (the
     // auto-update gate's upgraded install) overrides these to true so the
     // sandbox and disclaimer checks are not silently skipped. `== null`
-    // matches the `expectedVersion ?? desktopManifest.version` fallback below,
+    // matches the `expectedVersion ?? product.version` fallback below,
     // so a `null` cannot disable these checks while also meaning "no expected
     // version".
     requireWindowsSandbox = expectedVersion == null,
     requireDisclaimer = expectedVersion == null,
     requireDependencyClosure = expectedVersion == null,
+    requireRuntimeHostSetupPackage = expectedVersion == null,
   } = {},
 ) {
-  const desktopManifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
+  const product = await readProductManifestIdentity();
   const resources = join(appDirectory, 'resources');
   const executable = join(appDirectory, executableName);
   const appAsar = join(resources, 'app.asar');
@@ -208,9 +208,14 @@ export async function verifyPackagedWindowsApp(
     run,
     `(Get-Item -LiteralPath ${powerShellLiteral(executable)}).VersionInfo.ProductVersion`,
   );
-  assertWindowsProductVersion(stdout, expectedVersion ?? desktopManifest.version);
+  assertWindowsProductVersion(stdout, expectedVersion ?? product.version);
 
   step('smoking node-pty through conpty');
+  const ptyProbe = makePtyProbe(
+    process.env.ComSpec || 'cmd.exe',
+    ['/c', 'echo', 'maka-node-pty-ok'],
+    requireRuntimeHostSetupPackage ? product.runtimeHostSetupPackage : undefined,
+  );
   await run(executable, ['-e', ptyProbe, join(appAsar, 'package.json')], {
     env: {
       ELECTRON_RUN_AS_NODE: '1',
