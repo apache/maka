@@ -47,6 +47,8 @@ export type ConnectionEffectRejectionReason = (typeof CONNECTION_EFFECT_REJECTIO
 
 export const CONNECTION_EFFECT_FAILURE_CLASSES = [
   'auth',
+  'permission',
+  'configuration',
   'timeout',
   'provider_unavailable',
   'network',

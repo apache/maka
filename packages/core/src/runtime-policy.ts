@@ -3,6 +3,7 @@ import type {
   ConnectionTestErrorClass,
   ModelDiscoveryResult,
   ModelInfo,
+  BedrockConnectionConfig,
 } from './llm-connections.js';
 import type { ThinkingLevel } from './model-thinking.js';
 import type { ProviderType } from './provider-registry.js';
@@ -33,6 +34,7 @@ export {
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
   CONNECTION_MODEL_ID_MAX_LENGTH,
   CONNECTION_NAME_MAX_LENGTH,
+  decodeBedrockConfig,
   decodeCanonicalConnectionBaseUrl,
   decodeCanonicalConnectionCatalogEntry,
   decodeConnectionModelId,
@@ -216,6 +218,7 @@ export interface ConnectionConfiguration {
    */
   readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;
   readonly requestBodyOverlay?: JsonObject;
+  readonly bedrock?: BedrockConnectionConfig;
 }
 
 export interface ConnectionCatalogEntry extends ConnectionConfiguration {
@@ -244,6 +247,8 @@ export interface ConnectionCatalogEntryUpdate {
   readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>> | null;
   /** Absent leaves the overlay unchanged; null clears it; an object replaces it. */
   readonly requestBodyOverlay?: JsonObject | null;
+  /** Absent leaves Bedrock configuration unchanged. */
+  readonly bedrock?: BedrockConnectionConfig;
 }
 
 export interface ConnectionVersionBasis {
@@ -299,7 +304,7 @@ export type CredentialLocator =
   | {
       readonly scope: 'connection';
       readonly connectionId: EntityId;
-      readonly kind: 'api_key' | 'oauth_token' | 'request_headers';
+      readonly kind: 'api_key' | 'oauth_token' | 'aws_sso' | 'request_headers';
     }
   | {
       readonly scope: 'web_search';

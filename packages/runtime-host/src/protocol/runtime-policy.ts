@@ -2,6 +2,7 @@ import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
+  decodeBedrockConfig,
   decodeCanonicalConnectionBaseUrl,
   decodeCanonicalRuntimePolicy,
   decodeConnectionModel,
@@ -592,6 +593,7 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       'modelsFetchedAt',
       'lastTest',
       'requestBodyOverlay',
+      'bedrock',
       'enabledModelIdCount',
       'modelCount',
     ],
@@ -631,6 +633,13 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       revision: header.revision,
     }),
   );
+  const bedrock =
+    header.bedrock === undefined
+      ? undefined
+      : decodeDomain(() => decodeBedrockConfig(header.bedrock));
+  if ((provider === 'amazon-bedrock') !== (bedrock !== undefined)) {
+    throw invalidProtocolFrame('Invalid Amazon Bedrock connection header');
+  }
   const requestBodyOverlay =
     header.requestBodyOverlay === undefined
       ? undefined
@@ -665,6 +674,7 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       ? {}
       : { lastTest: decodeDomain(() => decodeConnectionTestSummary(header.lastTest)) }),
     ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
+    ...(bedrock === undefined ? {} : { bedrock }),
     enabledModelIdCount: integer(
       header.enabledModelIdCount,
       'enabled model id count',

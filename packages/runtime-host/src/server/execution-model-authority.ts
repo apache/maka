@@ -9,6 +9,7 @@ import {
   buildPricingLookup,
   llmCallUsageFields,
   recordLlmCallStrict,
+  withBedrockSourcePricing,
 } from '@maka/runtime/telemetry';
 import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
 import { buildSessionRecapMessages } from '@maka/runtime/session-recap';
@@ -45,11 +46,16 @@ import {
   type HostOAuthExecutionBinding,
 } from './oauth-execution-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
+import type {
+  BedrockSsoExecutionAuthority,
+  BedrockSsoExecutionBinding,
+} from './bedrock-sso-execution-authority.js';
 import { resolveAdmittedConnectionModel } from './connection-model-admission.js';
 
 export interface HostGoalEvaluatorInput {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
+  readonly bedrockCredentials?: BedrockSsoExecutionAuthority;
   readonly claudeDeviceId: string;
   readonly usage: InteractiveUsageStoresWriter;
   readonly requestDrain: () => void;
@@ -338,6 +344,7 @@ type AuxiliaryModelCallAuthorityInput = Pick<
   HostGoalEvaluatorInput,
   | 'runtimePolicy'
   | 'oauthCredentials'
+  | 'bedrockCredentials'
   | 'claudeDeviceId'
   | 'usage'
   | 'requestDrain'
@@ -349,6 +356,7 @@ type AuxiliaryModelCallAuthorityInput = Pick<
 interface AuxiliaryModelCallAuthority {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
+  readonly bedrockCredentials?: BedrockSsoExecutionAuthority;
   readonly claudeDeviceId: string;
   readonly usage: InteractiveUsageStoresWriter;
   readonly createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
@@ -401,6 +409,7 @@ function createAuxiliaryModelCallAuthority(
   return {
     runtimePolicy: input.runtimePolicy,
     oauthCredentials: input.oauthCredentials,
+    bedrockCredentials: input.bedrockCredentials,
     claudeDeviceId: input.claudeDeviceId,
     usage: input.usage,
     createFetchTransport: input.createFetchTransport ?? createProxiedFetchTransport,
@@ -436,6 +445,7 @@ async function runHostAuxiliaryModelCall(
           authority.runtimePolicy,
           authority.oauthCredentials,
           authority.createFetchTransport,
+          authority.bedrockCredentials,
         ),
       input.abortSignal,
     ),
@@ -444,7 +454,11 @@ async function runHostAuxiliaryModelCall(
     readDuringBackendCreation(() => authority.usage.pricing.snapshot(), input.abortSignal),
   );
   const request = input.buildRequest(target);
-  const pricing = buildPricingLookup(pricingSnapshot.overrides);
+  const pricing = withBedrockSourcePricing(
+    buildPricingLookup(pricingSnapshot.overrides),
+    target.connection,
+    target.model,
+  );
   const transport = authority.createFetchTransport(
     toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
   );
@@ -496,6 +510,9 @@ async function runHostAuxiliaryModelCall(
           modelId: target.model,
           fetch: modelFetch,
           requestHeaders: target.requestHeaders,
+          ...(target.bedrockBinding
+            ? { awsCredentialProvider: () => target.bedrockBinding!.credentials() }
+            : {}),
         });
         return request.tools !== undefined
           ? generateProviderPrefixModelCall({
@@ -715,6 +732,7 @@ interface ResolvedExecutionTarget {
   readonly apiKey: string;
   readonly requestHeaders: Readonly<Record<string, string>>;
   readonly oauthBinding?: HostOAuthExecutionBinding;
+  readonly bedrockBinding?: BedrockSsoExecutionBinding;
   readonly networkProxy: RuntimePolicy['networkProxy'];
   readonly proxySecret?: string;
 }
@@ -773,6 +791,7 @@ export async function resolveExecutionTarget(
   },
   oauthCredentials: HostOAuthExecutionAuthority,
   createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport,
+  bedrockCredentials?: BedrockSsoExecutionAuthority,
 ): Promise<ResolvedExecutionTarget> {
   const resolved = await runtimePolicy.operations.resolveExecutionConnection(
     header.llmConnectionSlug,
@@ -816,10 +835,40 @@ export async function resolveExecutionTarget(
     ...(resolved.connection.requestBodyOverlay === undefined
       ? {}
       : { requestBodyOverlay: resolved.connection.requestBodyOverlay }),
+    ...(resolved.connection.bedrock === undefined ? {} : { bedrock: resolved.connection.bedrock }),
   };
   const requestHeaders = resolved.secretMaterial.requestHeaders
     ? parseRequestHeaders(resolved.secretMaterial.requestHeaders.secret)
     : {};
+  if (provider.authKind === 'aws_sso') {
+    const material = resolved.secretMaterial.connection;
+    const config = resolved.connection.bedrock;
+    if (!material || !config) {
+      throw new AuxiliaryModelCallConfigurationError(
+        'Runtime Host Amazon Bedrock SSO connection is not configured',
+      );
+    }
+    const refreshProxy = toRuntimePolicyProxy(
+      resolved.networkProxy,
+      resolved.secretMaterial.networkProxy?.secret,
+    );
+    return {
+      connection,
+      model,
+      apiKey: '',
+      requestHeaders,
+      bedrockBinding: requireBedrockAuthority(bedrockCredentials).bind({
+        connectionSlug: resolved.connection.slug,
+        config,
+        material,
+        createTransport: () => createFetchTransport(refreshProxy),
+      }),
+      networkProxy: resolved.networkProxy,
+      ...(resolved.secretMaterial.networkProxy
+        ? { proxySecret: resolved.secretMaterial.networkProxy.secret }
+        : {}),
+    };
+  }
   if (provider.authKind === 'oauth_token') {
     const material = resolved.secretMaterial.connection;
     if (!material) {
@@ -859,6 +908,17 @@ export async function resolveExecutionTarget(
       ? { proxySecret: resolved.secretMaterial.networkProxy.secret }
       : {}),
   };
+}
+
+function requireBedrockAuthority(
+  authority: BedrockSsoExecutionAuthority | undefined,
+): BedrockSsoExecutionAuthority {
+  if (!authority) {
+    throw new AuxiliaryModelCallConfigurationError(
+      'Runtime Host Amazon Bedrock credential authority is unavailable',
+    );
+  }
+  return authority;
 }
 
 export function readDuringBackendCreation<T>(

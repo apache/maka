@@ -1,5 +1,6 @@
 import type { ModelInfo, ProviderType } from './llm-connections.js';
 import type { ThinkingOptions } from './model-thinking.js';
+import { BEDROCK_MODEL_METADATA } from './bedrock-model-metadata.generated.js';
 import {
   GENERATED_MODELS_DEV_METADATA,
   GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES,
@@ -85,6 +86,9 @@ export function lookupModelProviderOverride(
   providerType: ProviderType,
   modelId: string,
 ): { npm: string; api?: string } | undefined {
+  if (providerType === 'amazon-bedrock' && modelId.trim()) {
+    return { npm: '@ai-sdk/amazon-bedrock' };
+  }
   return generatedModelProviderOverrides[providerType]?.[modelId.trim()];
 }
 
@@ -314,7 +318,46 @@ const ollamaCloudThinkingModels: Record<string, ModelMetadata> = Object.fromEntr
 
 // Facts that models.dev cannot express: provider wire controls and
 // access-path-specific aliases/limits. Standard model facts stay generated.
+const BEDROCK_DEFAULT_METADATA = Object.fromEntries(
+  Object.entries(BEDROCK_MODEL_METADATA).map(([id, metadata]) => {
+    // The first release deliberately uses provider-default reasoning behavior.
+    const { thinkingOptions: _thinkingOptions, ...withoutThinkingControls } = metadata;
+    return [id, withoutThinkingControls];
+  }),
+);
+
 const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMetadata>>> = {
+  'amazon-bedrock': {
+    ...BEDROCK_DEFAULT_METADATA,
+    'amazon.nova-pro-v1:0': {
+      displayName: 'Amazon Nova Pro',
+      contextWindow: 300_000,
+      maxOutputTokens: 8_192,
+      capabilities: { chat: true, vision: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'amazon.nova-lite-v1:0': {
+      displayName: 'Amazon Nova Lite',
+      contextWindow: 300_000,
+      maxOutputTokens: 8_192,
+      capabilities: { chat: true, vision: true, functionCalling: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    },
+    'amazon.nova-micro-v1:0': {
+      displayName: 'Amazon Nova Micro',
+      contextWindow: 128_000,
+      maxOutputTokens: 8_192,
+      capabilities: { chat: true, vision: false, functionCalling: true },
+      modalities: { input: ['text'], output: ['text'] },
+    },
+    'anthropic.claude-sonnet-4-5-20250929-v1:0': {
+      displayName: 'Claude Sonnet 4.5',
+      contextWindow: 200_000,
+      maxOutputTokens: 64_000,
+      capabilities: { chat: true, vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
+    },
+  },
   anthropic: ANTHROPIC_MODEL_OVERRIDES,
   'claude-subscription': CLAUDE_SUBSCRIPTION_MODEL_METADATA,
   'alibaba-token-plan-cn': {

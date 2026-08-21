@@ -49,12 +49,13 @@ export type ProviderContractWire =
   | 'openai-chat'
   | 'anthropic-messages'
   | 'google-generate'
-  | 'cohere-v2';
+  | 'cohere-v2'
+  | 'bedrock-converse';
 
 /** Runtime-adapter kinds whose request wire is provider-specific (auth, headers,
  * per-model protocol) and therefore cannot be generated from the declaration. */
 export const SUBSCRIPTION_WIRE_ADAPTER_KINDS: ReadonlySet<ProviderRuntimeAdapter['kind']> = new Set(
-  ['claude-subscription', 'openai-codex', 'github-copilot'],
+  ['claude-subscription', 'openai-codex', 'github-copilot', 'amazon-bedrock'],
 );
 
 /** Derived expectation for a generated `discovery` cell. */
@@ -164,6 +165,8 @@ function wireForProtocol(protocol: ProviderDefaults['protocol']): ProviderContra
       return 'google-generate';
     case 'cohere':
       return 'cohere-v2';
+    case 'bedrock':
+      return 'bedrock-converse';
   }
 }
 
@@ -296,6 +299,13 @@ function discoveryCell(providerType: ProviderType, def: ProviderDefaults): Provi
         dimension: 'discovery',
         overrideKey: overrideKeyFor(providerType, 'discovery'),
         contract: 'Ollama native /api/tags discovery',
+      };
+    case 'amazon-bedrock':
+      return {
+        state: 'override',
+        dimension: 'discovery',
+        overrideKey: overrideKeyFor(providerType, 'discovery'),
+        contract: 'AWS account/role/region Bedrock control-plane discovery',
       };
     case 'protocol':
       if (discovery.auth === 'github-copilot') {

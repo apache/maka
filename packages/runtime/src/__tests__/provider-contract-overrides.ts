@@ -19,6 +19,7 @@ import { z } from 'zod';
 import { fetchProviderModels } from '../model-fetcher.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { buildSubscriptionModelFetch } from '../subscription-model-fetch.js';
+import { manualBedrockModel } from '../bedrock-model-discovery.js';
 import {
   readBody,
   respondJson,
@@ -35,6 +36,44 @@ export interface ProviderContractOverrideBinding {
 }
 
 export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverrideBinding[] = [
+  {
+    keys: [
+      'amazon-bedrock:discovery',
+      'amazon-bedrock:exact-model-id',
+      'amazon-bedrock:tool-loop',
+      'amazon-bedrock:reasoning-replay',
+    ],
+    title: 'Amazon Bedrock binds exact Converse ids to a dynamic AWS credential provider',
+    run: async () => {
+      const modelId = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0';
+      const model = getAIModel({
+        connection: {
+          slug: 'amazon-bedrock',
+          providerType: 'amazon-bedrock',
+          defaultModel: modelId,
+          models: [manualBedrockModel(modelId)],
+          bedrock: {
+            ssoStartUrl: 'https://example.awsapps.com/start',
+            ssoRegion: 'us-east-1',
+            region: 'us-west-2',
+            accountId: '123456789012',
+            roleName: 'BedrockDeveloper',
+          },
+        },
+        apiKey: '',
+        modelId,
+        fetch: async () => {
+          throw new Error('contract construction must not dispatch');
+        },
+        awsCredentialProvider: async () => ({
+          accessKeyId: 'not-dispatched',
+          secretAccessKey: 'not-dispatched',
+          sessionToken: 'not-dispatched',
+        }),
+      });
+      assert.equal(model.modelId, modelId);
+    },
+  },
   {
     keys: ['github-copilot:discovery'],
     title:

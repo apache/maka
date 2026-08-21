@@ -2191,6 +2191,46 @@ const makaBridge = {
       return invokeSelectedRuntimeHost(host, 'claude-subscription:logout');
     },
   },
+  amazonBedrockSso: {
+    getState(host?: DesktopRuntimeHostRef): Promise<{
+      runtimeState: 'not_logged_in' | 'authenticated';
+      accountId?: string;
+      roleName?: string;
+      region?: string;
+    }> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:get-state');
+    },
+    start(
+      configuration: { ssoStartUrl: string; ssoRegion: string; region: string },
+      host?: DesktopRuntimeHostRef,
+    ): Promise<OperationOutput<'bedrock.sso.login.start'>> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:start', configuration);
+    },
+    query(attemptId: string, host?: DesktopRuntimeHostRef): Promise<OperationOutput<'bedrock.sso.login.query'>> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:query', attemptId);
+    },
+    cancel(attemptId: string, host?: DesktopRuntimeHostRef): Promise<OperationOutput<'bedrock.sso.login.cancel'>> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:cancel', attemptId);
+    },
+    listAccounts(attemptId: string, host?: DesktopRuntimeHostRef): Promise<OperationOutput<'bedrock.sso.accounts.list'>> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:list-accounts', attemptId);
+    },
+    listRoles(attemptId: string, accountId: string, host?: DesktopRuntimeHostRef): Promise<OperationOutput<'bedrock.sso.roles.list'>> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:list-roles', attemptId, accountId);
+    },
+    fetchModels(
+      attemptId: string,
+      accountId: string,
+      roleName: string,
+      manualModelIds: string[],
+      host?: DesktopRuntimeHostRef,
+    ): Promise<OperationOutput<'bedrock.sso.models.fetch'>> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:fetch-models', attemptId, accountId, roleName, manualModelIds);
+    },
+    commit(attemptId: string, enabledModelIds: string[], host?: DesktopRuntimeHostRef): Promise<OperationOutput<'bedrock.sso.onboarding.commit'>> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:commit', attemptId, enabledModelIds);
+    },
+  },
   // Browser-assisted Codex account bridge. Same shape as
   // `claudeSubscription`: no token-shaped fields cross preload, the
   // authorization attempt stays opaque, and actions return envelopes.

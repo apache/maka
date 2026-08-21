@@ -383,7 +383,8 @@ function connectionCredential(connection: ConnectionCatalogEntry): CredentialLoc
   return {
     scope: 'connection',
     connectionId: connection.connectionId,
-    kind: authKind === 'oauth_token' ? 'oauth_token' : 'api_key',
+    kind:
+      authKind === 'oauth_token' ? 'oauth_token' : authKind === 'aws_sso' ? 'aws_sso' : 'api_key',
   };
 }
 

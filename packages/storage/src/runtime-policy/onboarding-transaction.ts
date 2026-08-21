@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import {
   decodeProviderType,
   decodeRuntimePolicyEntityId,
+  decodeBedrockConfig,
   normalizeConnectionCatalogEntryUpdateForProvider,
   normalizeConnectionModelDiscoveryResult,
   normalizeCredentialSecret,
@@ -11,6 +12,7 @@ import {
 import {
   PROVIDER_DEFAULTS,
   providerAuthSupportsApiKey,
+  type BedrockConnectionConfig,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import { syncDirectory } from '../stable-storage.js';
@@ -35,6 +37,7 @@ export interface ConnectionOnboardingTransactionInput {
   readonly enabledModelIds: unknown;
   readonly discovery: unknown;
   readonly invalidateLastTest: unknown;
+  readonly bedrock?: unknown;
 }
 
 export interface ConnectionOnboardingIntent {
@@ -45,6 +48,7 @@ export interface ConnectionOnboardingIntent {
   readonly enabledModelIds: readonly string[];
   readonly discovery: ConnectionModelDiscoveryResult;
   readonly invalidateLastTest: boolean;
+  readonly bedrock?: BedrockConnectionConfig;
 }
 
 export function prepareConnectionOnboardingIntent(
@@ -53,10 +57,18 @@ export function prepareConnectionOnboardingIntent(
 ): ConnectionOnboardingIntent {
   const decode = source === 'persisted' ? decodePersistedDomain : decodeConnectionInput;
   const providerType = decode(() => decodeProviderType(input.providerType));
-  if (!providerAuthSupportsApiKey(providerType)) {
+  if (!providerAuthSupportsApiKey(providerType) && providerType !== 'amazon-bedrock') {
     throw codecError(
       source === 'persisted' ? 'invalid_document' : 'invalid_connection_input',
-      'Onboarding requires an API-key provider',
+      'Onboarding requires an API-key or Amazon Bedrock provider',
+    );
+  }
+  const bedrock =
+    input.bedrock === undefined ? undefined : decode(() => decodeBedrockConfig(input.bedrock));
+  if ((providerType === 'amazon-bedrock') !== (bedrock !== undefined)) {
+    throw codecError(
+      source === 'persisted' ? 'invalid_document' : 'invalid_connection_input',
+      'Amazon Bedrock onboarding configuration does not match the provider',
     );
   }
   const definition = PROVIDER_DEFAULTS[providerType];
@@ -74,6 +86,7 @@ export function prepareConnectionOnboardingIntent(
         ...(definition.baseUrl ? { baseUrl: definition.baseUrl } : {}),
         enabled: true,
         enabledModelIds: input.enabledModelIds,
+        ...(bedrock ? { bedrock } : {}),
       },
       providerType,
     ),
@@ -108,6 +121,7 @@ export function prepareConnectionOnboardingIntent(
     enabledModelIds: normalized.enabledModelIds,
     discovery,
     invalidateLastTest: input.invalidateLastTest,
+    ...(bedrock ? { bedrock } : {}),
   };
 }
 
@@ -116,15 +130,30 @@ export async function readConnectionOnboardingIntent(
 ): Promise<ConnectionOnboardingIntent | undefined> {
   const value = await readBoundedJsonDocument(root, FILE, MAX_BYTES);
   if (value === undefined) return undefined;
-  const raw = record(value, FILE, 'invalid_document', [
-    'schemaVersion',
-    'connectionId',
-    'providerType',
-    'suppliedSecret',
-    'enabledModelIds',
-    'discovery',
-    'invalidateLastTest',
-  ]);
+  const raw = record(
+    value,
+    FILE,
+    'invalid_document',
+    [
+      'schemaVersion',
+      'connectionId',
+      'providerType',
+      'suppliedSecret',
+      'enabledModelIds',
+      'discovery',
+      'invalidateLastTest',
+      'bedrock',
+    ],
+    [
+      'schemaVersion',
+      'connectionId',
+      'providerType',
+      'suppliedSecret',
+      'enabledModelIds',
+      'discovery',
+      'invalidateLastTest',
+    ],
+  );
   if (raw.schemaVersion !== SCHEMA_VERSION) {
     throw codecError('invalid_document', `${FILE} has an unsupported schema version`);
   }
@@ -136,6 +165,7 @@ export async function readConnectionOnboardingIntent(
       enabledModelIds: raw.enabledModelIds,
       discovery: raw.discovery,
       invalidateLastTest: raw.invalidateLastTest,
+      bedrock: raw.bedrock,
     },
     'persisted',
   );

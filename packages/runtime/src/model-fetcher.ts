@@ -195,6 +195,9 @@ async function fetchProviderModelsStrict(
   if (discovery.kind === 'cloudflare') {
     return fetchCloudflareModels(baseUrl, apiKey, fetchFn);
   }
+  if (discovery.kind === 'amazon-bedrock') {
+    throw new Error('Amazon Bedrock discovery requires the Runtime Host AWS credential authority');
+  }
   if (discovery.auth === 'github-copilot') {
     return fetchGitHubCopilotModels(baseUrl, apiKey, fetchFn);
   }
@@ -277,6 +280,10 @@ async function fetchProviderModelsStrict(
     }
     case 'cohere':
       throw new Error('Cohere requires native model discovery');
+    case 'bedrock':
+      throw new Error(
+        'Amazon Bedrock discovery requires the Runtime Host AWS credential authority',
+      );
   }
 }
 

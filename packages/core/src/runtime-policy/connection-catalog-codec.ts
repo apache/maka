@@ -3,6 +3,7 @@ import {
   PROVIDER_DEFAULTS,
   providerDefaultsOf,
   validateSlug,
+  type BedrockConnectionConfig,
   type ProviderType,
 } from '../llm-connections.js';
 import {
@@ -111,6 +112,7 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
       'enabledModelIds',
       'relayModelProfiles',
       'requestBodyOverlay',
+      'bedrock',
     ],
     ['slug', 'name', 'providerType', 'enabled', 'enabledModelIds'],
   );
@@ -121,6 +123,10 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
     item.requestBodyOverlay === undefined
       ? undefined
       : decodeRequestBodyOverlay(item.requestBodyOverlay);
+  const bedrock = decodeBedrockConfigForProvider(item.bedrock, providerType);
+  if (providerType === 'amazon-bedrock' && requestBodyOverlay !== undefined) {
+    throw domainError('Amazon Bedrock does not support request body customization');
+  }
   const profiles =
     item.relayModelProfiles === undefined
       ? {}
@@ -128,8 +134,12 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
   if (profiles.relayModelProfiles !== undefined) {
     rejectForeignProfiles(providerType);
   }
+  const slug = decodeConnectionSlug(item.slug);
+  if (providerType === 'amazon-bedrock' && slug !== 'amazon-bedrock') {
+    throw domainError('Amazon Bedrock connection must use the stable amazon-bedrock slug');
+  }
   return {
-    slug: decodeConnectionSlug(item.slug),
+    slug,
     name: decodeConnectionName(item.name),
     providerType,
     ...(baseUrl === undefined ? {} : { baseUrl }),
@@ -137,6 +147,7 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
     enabledModelIds,
     ...profiles,
     ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
+    ...(bedrock === undefined ? {} : { bedrock }),
   };
 }
 
@@ -146,7 +157,15 @@ export function normalizeConnectionCatalogEntryUpdate(
   const item = exactRecord(
     value,
     'connection update',
-    ['name', 'baseUrl', 'enabled', 'enabledModelIds', 'relayModelProfiles', 'requestBodyOverlay'],
+    [
+      'name',
+      'baseUrl',
+      'enabled',
+      'enabledModelIds',
+      'relayModelProfiles',
+      'requestBodyOverlay',
+      'bedrock',
+    ],
     ['name', 'enabled', 'enabledModelIds'],
   );
   const baseUrl = normalizeCatalogConnectionBaseUrl(item.baseUrl);
@@ -169,6 +188,7 @@ export function normalizeConnectionCatalogEntryUpdate(
       ? {}
       : profilesUpdateInstruction(item.relayModelProfiles, enabledModelIds)),
     ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
+    ...(item.bedrock === undefined ? {} : { bedrock: decodeBedrockConfig(item.bedrock) }),
   };
 }
 
@@ -195,6 +215,12 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
   if (update.relayModelProfiles !== undefined && update.relayModelProfiles !== null) {
     rejectForeignProfiles(providerType);
   }
+  if (providerType === 'amazon-bedrock' && update.requestBodyOverlay) {
+    throw domainError('Amazon Bedrock does not support request body customization');
+  }
+  if (providerType !== 'amazon-bedrock' && update.bedrock !== undefined) {
+    throw domainError('Bedrock configuration is only supported for Amazon Bedrock connections');
+  }
   return {
     name: update.name,
     ...(baseUrl === undefined ? {} : { baseUrl }),
@@ -206,6 +232,7 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
     ...(update.requestBodyOverlay === undefined
       ? {}
       : { requestBodyOverlay: update.requestBodyOverlay }),
+    ...(update.bedrock === undefined ? {} : { bedrock: update.bedrock }),
   };
 }
 
@@ -329,6 +356,7 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
       'enabledModelIds',
       'relayModelProfiles',
       'requestBodyOverlay',
+      'bedrock',
       'models',
       'modelSource',
       'modelsFetchedAt',
@@ -358,6 +386,7 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
     ...(item.requestBodyOverlay === undefined
       ? {}
       : { requestBodyOverlay: item.requestBodyOverlay }),
+    ...(item.bedrock === undefined ? {} : { bedrock: item.bedrock }),
   });
   if (
     !Array.isArray(item.models) ||
@@ -426,7 +455,21 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
   const item = exactRecord(
     value,
     'connection model',
-    ['id', 'displayName', 'apiProtocol', 'contextWindow', 'maxOutputTokens', 'capabilities'],
+    [
+      'id',
+      'displayName',
+      'description',
+      'apiProtocol',
+      'contextWindow',
+      'inputLimit',
+      'maxOutputTokens',
+      'knowledgeCutoff',
+      'structuredOutput',
+      'lastUpdated',
+      'capabilities',
+      'modalities',
+      'bedrock',
+    ],
     ['id'],
   );
   if (
@@ -453,11 +496,17 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
       );
     }
   }
+  const modalities =
+    item.modalities === undefined ? undefined : decodeConnectionModelModalities(item.modalities);
+  const bedrock = item.bedrock === undefined ? undefined : decodeBedrockModelInfo(item.bedrock);
   return {
     id: decodeConnectionModelId(item.id),
     ...(item.displayName === undefined
       ? {}
       : { displayName: stringValue(item.displayName, 'model display name', 512) }),
+    ...(item.description === undefined
+      ? {}
+      : { description: stringValue(item.description, 'model description', 2_048) }),
     ...(item.apiProtocol === undefined ? {} : { apiProtocol: item.apiProtocol }),
     ...(item.contextWindow === undefined
       ? {}
@@ -465,6 +514,16 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
           contextWindow: integerValue(
             item.contextWindow,
             'model context window',
+            1,
+            Number.MAX_SAFE_INTEGER,
+          ),
+        }),
+    ...(item.inputLimit === undefined
+      ? {}
+      : {
+          inputLimit: integerValue(
+            item.inputLimit,
+            'model input limit',
             1,
             Number.MAX_SAFE_INTEGER,
           ),
@@ -479,8 +538,46 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
             Number.MAX_SAFE_INTEGER,
           ),
         }),
+    ...(item.knowledgeCutoff === undefined
+      ? {}
+      : { knowledgeCutoff: stringValue(item.knowledgeCutoff, 'model knowledge cutoff', 128) }),
+    ...(item.structuredOutput === undefined
+      ? {}
+      : {
+          structuredOutput: booleanValue(item.structuredOutput, 'model structured output'),
+        }),
+    ...(item.lastUpdated === undefined
+      ? {}
+      : { lastUpdated: stringValue(item.lastUpdated, 'model last updated', 128) }),
     ...(capabilities === undefined ? {} : { capabilities }),
+    ...(modalities === undefined ? {} : { modalities }),
+    ...(bedrock === undefined ? {} : { bedrock }),
   };
+}
+
+function decodeConnectionModelModalities(
+  value: unknown,
+): NonNullable<ConnectionModel['modalities']> {
+  const item = exactRecord(value, 'connection model modalities', ['input', 'output']);
+  if (!Array.isArray(item.input) || !Array.isArray(item.output)) {
+    throw domainError('connection model modalities must be arrays');
+  }
+  const input = item.input.map((modality) => {
+    if (modality !== 'text' && modality !== 'image' && modality !== 'audio' && modality !== 'pdf') {
+      throw domainError('connection model input modality is invalid');
+    }
+    return modality;
+  });
+  const output = item.output.map((modality) => {
+    if (modality !== 'text' && modality !== 'image' && modality !== 'audio') {
+      throw domainError('connection model output modality is invalid');
+    }
+    return modality;
+  });
+  if (new Set(input).size !== input.length || new Set(output).size !== output.length) {
+    throw domainError('connection model modalities must be unique');
+  }
+  return { input, output };
 }
 
 export function decodeConnectionTestSummary(value: unknown): ConnectionTestSummary {
@@ -496,6 +593,8 @@ export function decodeConnectionTestSummary(value: unknown): ConnectionTestSumma
   if (
     item.errorClass !== undefined &&
     item.errorClass !== 'auth' &&
+    item.errorClass !== 'permission' &&
+    item.errorClass !== 'configuration' &&
     item.errorClass !== 'timeout' &&
     item.errorClass !== 'provider_unavailable' &&
     item.errorClass !== 'network' &&
@@ -548,6 +647,92 @@ export function decodeConnectionSlug(value: unknown): string {
 
 export function decodeConnectionName(value: unknown): string {
   return stringValue(value, 'connection name', CONNECTION_NAME_MAX_LENGTH);
+}
+
+function decodeBedrockConfigForProvider(
+  value: unknown,
+  providerType: ProviderType,
+): BedrockConnectionConfig | undefined {
+  if (value === undefined) {
+    if (providerType === 'amazon-bedrock') {
+      throw domainError('Amazon Bedrock connection requires Bedrock configuration');
+    }
+    return undefined;
+  }
+  if (providerType !== 'amazon-bedrock') {
+    throw domainError('Bedrock configuration is only supported for Amazon Bedrock connections');
+  }
+  return decodeBedrockConfig(value);
+}
+
+export function decodeBedrockConfig(value: unknown): BedrockConnectionConfig {
+  const item = exactRecord(value, 'Amazon Bedrock connection configuration', [
+    'ssoStartUrl',
+    'ssoRegion',
+    'region',
+    'accountId',
+    'roleName',
+  ]);
+  const startUrl = nonEmptyStringValue(item.ssoStartUrl, 'SSO Start URL', 2_048).trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(startUrl);
+  } catch {
+    throw domainError('SSO Start URL must be a valid URL');
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    !parsed.hostname.toLowerCase().endsWith('.awsapps.com') ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw domainError('SSO Start URL must be an HTTPS AWS access portal URL');
+  }
+  const ssoStartUrl = parsed.toString().replace(/\/$/, '');
+  const ssoRegion = decodeAwsRegion(item.ssoRegion, 'SSO Region');
+  const region = decodeAwsRegion(item.region, 'Bedrock Region');
+  const accountId = nonEmptyStringValue(item.accountId, 'AWS account ID', 12);
+  if (!/^\d{12}$/.test(accountId)) throw domainError('AWS account ID must contain 12 digits');
+  const roleName = nonEmptyStringValue(item.roleName, 'AWS role name', 64);
+  if (!/^[\w+=,.@-]{1,64}$/.test(roleName)) throw domainError('AWS role name is invalid');
+  return { ssoStartUrl, ssoRegion, region, accountId, roleName };
+}
+
+function decodeAwsRegion(value: unknown, label: string): string {
+  const region = nonEmptyStringValue(value, label, 64).trim().toLowerCase();
+  if (!/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/.test(region)) {
+    throw domainError(`${label} is invalid`);
+  }
+  return region;
+}
+
+function decodeBedrockModelInfo(value: unknown): NonNullable<ConnectionModel['bedrock']> {
+  const item = exactRecord(
+    value,
+    'Bedrock model information',
+    ['kind', 'sourceModelIds'],
+    ['kind'],
+  );
+  if (
+    item.kind !== 'foundation-model' &&
+    item.kind !== 'inference-profile' &&
+    item.kind !== 'manual'
+  ) {
+    throw domainError('Bedrock model kind is invalid');
+  }
+  let sourceModelIds: string[] | undefined;
+  if (item.sourceModelIds !== undefined) {
+    if (!Array.isArray(item.sourceModelIds) || item.sourceModelIds.length > 32) {
+      throw domainError('Bedrock source model ids must be a bounded array');
+    }
+    sourceModelIds = item.sourceModelIds.map(decodeConnectionModelId);
+    if (new Set(sourceModelIds).size !== sourceModelIds.length) {
+      throw domainError('Bedrock source model ids must be unique');
+    }
+  }
+  return { kind: item.kind, ...(sourceModelIds ? { sourceModelIds } : {}) };
 }
 
 function decodeRequestBodyOverlay(value: unknown): JsonObject | undefined {
@@ -616,9 +801,10 @@ export function normalizeCatalogConnectionBaseUrl(
   if (
     override !== undefined &&
     providerType &&
-    PROVIDER_DEFAULTS[providerType].authKind === 'oauth_token'
+    (PROVIDER_DEFAULTS[providerType].authKind === 'oauth_token' ||
+      PROVIDER_DEFAULTS[providerType].authKind === 'aws_sso')
   ) {
-    throw domainError('OAuth provider endpoint cannot be overridden');
+    throw domainError('Account provider endpoint cannot be overridden');
   }
   return override;
 }

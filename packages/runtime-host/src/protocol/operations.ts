@@ -1,4 +1,5 @@
 import { ARTIFACT_OPERATION_SPECS } from './artifact.js';
+import { BEDROCK_SSO_OPERATION_SPECS } from './bedrock-sso.js';
 import { ACCESS_AUTHORITY_OPERATION_SPECS } from './access-authority.js';
 import { AGENT_GRAPH_OPERATION_SPECS } from './agent-graph.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
@@ -127,6 +128,7 @@ export type {
   TurnStopInput,
 } from './turn.js';
 export * from './connection-effects.js';
+export * from './bedrock-sso.js';
 export * from './access-authority.js';
 export * from './configuration.js';
 export * from './deep-research.js';
@@ -188,6 +190,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   USAGE_PRICING_OPERATION_SPECS,
   MEMORY_OPERATION_SPECS,
   OAUTH_OPERATION_SPECS,
+  BEDROCK_SSO_OPERATION_SPECS,
   CLIENT_CAPABILITY_OPERATION_SPECS,
   WEB_SEARCH_OPERATION_SPECS,
   NETWORK_PROXY_OPERATION_SPECS,
@@ -207,6 +210,13 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'artifact.delete',
   'artifact.ingest',
   'artifact.query',
+  'bedrock.sso.accounts.list',
+  'bedrock.sso.login.cancel',
+  'bedrock.sso.login.query',
+  'bedrock.sso.login.start',
+  'bedrock.sso.models.fetch',
+  'bedrock.sso.onboarding.commit',
+  'bedrock.sso.roles.list',
   'client.capability.replace',
   'client.capability.unregister',
   'configuration.credentials.export',

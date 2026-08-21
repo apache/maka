@@ -20,6 +20,7 @@ import { Button, TextInput, useUiLocale } from '@maka/ui';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { OAuthLoginPanel, useOAuthCards, type OAuthCardId } from './provider-oauth-section';
+import { BedrockSsoSetup } from './bedrock-sso-setup';
 import { type ConnectionsBridge } from './provider-panel-shared';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
@@ -201,7 +202,14 @@ export function ProviderSetupPage(props: {
   if (props.target.method === 'account') {
     return (
       <div tabIndex={-1} className="settingsRouteLevel" data-maka-contract="provider-setup">
-        <OAuthLoginPanel cardId={props.target.cardId} onLoginSuccess={props.onAccountChanged} />
+        {props.target.cardId === 'bedrock' ? (
+          <BedrockSsoSetup
+            onCancel={props.onCancel}
+            onCreated={(slug) => props.onCreated(slug)}
+          />
+        ) : (
+          <OAuthLoginPanel cardId={props.target.cardId} onLoginSuccess={props.onAccountChanged} />
+        )}
       </div>
     );
   }
@@ -226,6 +234,8 @@ function providersForCategory(category: CatalogCategory, query: string, locale: 
   const source = category === 'recommended' ? RECOMMENDED_PROVIDER_TYPES : CATALOG_PROVIDER_TYPES;
   const normalizedQuery = query.trim().toLocaleLowerCase();
   return source.filter((type) => {
+    // Amazon Bedrock has a dedicated IAM Identity Center account flow above.
+    if (type === 'amazon-bedrock') return false;
     if (!CATALOG_PROVIDER_TYPES.includes(type)) return false;
     if (PROVIDER_DEFAULTS[type].status !== 'ready') return false;
     if (

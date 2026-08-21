@@ -74,6 +74,7 @@ import {
   type BeginConnectionTestResult,
   type BeginModelFetchResult,
   type BeginInteractiveOAuthLoginResult,
+  type CompareAndSetAwsSsoCredentialInput,
   type CompareAndSetOAuthCredentialInput,
   type ConnectionEffectChangedDomain,
   type ConnectionEffectCompletionResult,
@@ -335,12 +336,12 @@ export class RuntimePolicyCoordinator {
         }
         if (
           authority === 'client' &&
-          locator.kind === 'oauth_token' &&
-          connection.providerType !== 'github-copilot'
+          ((locator.kind === 'oauth_token' && connection.providerType !== 'github-copilot') ||
+            locator.kind === 'aws_sso')
         ) {
           throw codecError(
             'invalid_credential_input',
-            'Client-supplied OAuth credentials are only accepted for GitHub Copilot',
+            'Client-supplied account credentials are not accepted for this provider',
           );
         }
       }
@@ -385,6 +386,39 @@ export class RuntimePolicyCoordinator {
         throw codecError(
           'invalid_credential_input',
           'OAuth refresh credential does not match the provider auth contract',
+        );
+      }
+      const prepared = this.vault.prepareSet(await this.vault.read(root), input);
+      if (prepared.kind !== 'ready') return deepFreeze({ kind: 'superseded' as const });
+      await this.vault.commitSet(root, prepared);
+      return deepFreeze({
+        kind: 'committed' as const,
+        credentialId: prepared.entry.credentialId,
+        revision: prepared.entry.revision,
+      });
+    });
+  }
+
+  compareAndSetAwsSsoCredential(rawInput: CompareAndSetAwsSsoCredentialInput) {
+    return this.inLane(async (root) => {
+      const input = decodeCredentialInput(() => normalizeSetCredentialInput(rawInput));
+      if (
+        input.locator.scope !== 'connection' ||
+        input.locator.kind !== 'aws_sso' ||
+        input.expected === null
+      ) {
+        throw codecError(
+          'invalid_credential_input',
+          'AWS SSO refresh requires an existing connection credential generation',
+        );
+      }
+      const catalog = await this.catalog.read(root);
+      const connection = findConnection(catalog, input.locator);
+      if (!connection) return deepFreeze({ kind: 'superseded' as const });
+      if (PROVIDER_DEFAULTS[connection.providerType].authKind !== 'aws_sso') {
+        throw codecError(
+          'invalid_credential_input',
+          'AWS SSO credential does not match the provider auth contract',
         );
       }
       const prepared = this.vault.prepareSet(await this.vault.read(root), input);
@@ -626,8 +660,15 @@ export class RuntimePolicyCoordinator {
       );
       const updates = decodeRequestHeaderUpdates(rawUpdates);
       const catalog = await this.catalog.read(root);
-      if (!findConnection(catalog, { connectionId })) {
+      const connection = findConnection(catalog, { connectionId });
+      if (!connection) {
         return deepFreeze({ kind: 'connection_not_found' as const });
+      }
+      if (connection.providerType === 'amazon-bedrock' && updates.length > 0) {
+        throw codecError(
+          'invalid_credential_input',
+          'Amazon Bedrock does not support custom request headers',
+        );
       }
 
       const locator = connectionRequestHeadersLocator(connectionId);
@@ -900,7 +941,7 @@ export class RuntimePolicyCoordinator {
         const locator = {
           scope: 'connection',
           connectionId,
-          kind: 'api_key',
+          kind: input.providerType === 'amazon-bedrock' ? 'aws_sso' : 'api_key',
         } as const;
         const vault = await this.vault.read(root);
         const credential = findCredential(vault, locator);
@@ -933,6 +974,7 @@ export class RuntimePolicyCoordinator {
         intent.enabledModelIds,
         intent.discovery,
         intent.invalidateLastTest,
+        intent.bedrock,
       );
       if (catalogPreflight.kind === 'slug_conflict') {
         return deepFreeze({ kind: 'slug_conflict' as const });
@@ -1298,7 +1340,7 @@ export class RuntimePolicyCoordinator {
       const locator = {
         scope: 'connection',
         connectionId: intent.connectionId,
-        kind: 'api_key',
+        kind: intent.providerType === 'amazon-bedrock' ? 'aws_sso' : 'api_key',
       } as const;
       const vault = await this.vault.read(root);
       const existing = findCredential(vault, locator);
@@ -1329,6 +1371,7 @@ export class RuntimePolicyCoordinator {
       intent.enabledModelIds,
       intent.discovery,
       intent.invalidateLastTest,
+      intent.bedrock,
     );
     if (prepared.kind === 'slug_conflict') {
       throw codecError('invalid_document', 'Onboarding intent conflicts with the connection slug');

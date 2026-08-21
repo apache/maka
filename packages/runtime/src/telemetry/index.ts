@@ -1,6 +1,6 @@
 export { BUILTIN_PRICING, getBuiltinPricing } from './builtin-pricing.js';
 export { computeCost } from './cost.js';
-export { buildPricingLookup } from './pricing.js';
+export { buildPricingLookup, withBedrockSourcePricing } from './pricing.js';
 export { recordLlmCall, recordLlmCallStrict } from './record-llm-call.js';
 export { llmCallUsageFields } from './llm-call-usage.js';
 export { recordToolInvocation } from './record-tool-invocation.js';

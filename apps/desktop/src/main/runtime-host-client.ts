@@ -406,6 +406,49 @@ export class DesktopRuntimeHostClient {
     return this.request("oauth.account.usage.fetch", { connectionId });
   }
 
+  startBedrockSsoLogin(
+    input: OperationInput<"bedrock.sso.login.start">,
+  ): Promise<OperationOutput<"bedrock.sso.login.start">> {
+    return this.request("bedrock.sso.login.start", input);
+  }
+
+  queryBedrockSsoLogin(
+    attemptId: string,
+  ): Promise<OperationOutput<"bedrock.sso.login.query">> {
+    return this.request("bedrock.sso.login.query", { attemptId });
+  }
+
+  cancelBedrockSsoLogin(
+    attemptId: string,
+  ): Promise<OperationOutput<"bedrock.sso.login.cancel">> {
+    return this.request("bedrock.sso.login.cancel", { attemptId });
+  }
+
+  listBedrockSsoAccounts(
+    attemptId: string,
+  ): Promise<OperationOutput<"bedrock.sso.accounts.list">> {
+    return this.request("bedrock.sso.accounts.list", { attemptId });
+  }
+
+  listBedrockSsoRoles(
+    attemptId: string,
+    accountId: string,
+  ): Promise<OperationOutput<"bedrock.sso.roles.list">> {
+    return this.request("bedrock.sso.roles.list", { attemptId, accountId });
+  }
+
+  fetchBedrockSsoModels(
+    input: OperationInput<"bedrock.sso.models.fetch">,
+  ): Promise<OperationOutput<"bedrock.sso.models.fetch">> {
+    return this.request("bedrock.sso.models.fetch", input);
+  }
+
+  commitBedrockSsoOnboarding(
+    input: OperationInput<"bedrock.sso.onboarding.commit">,
+  ): Promise<OperationOutput<"bedrock.sso.onboarding.commit">> {
+    return this.request("bedrock.sso.onboarding.commit", input);
+  }
+
   async loadSkillCatalog(
     context: SkillCatalogWorkspaceContext,
     view: SkillCatalogView,

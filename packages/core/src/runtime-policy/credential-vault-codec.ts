@@ -32,7 +32,12 @@ export function decodeCredentialLocator(value: unknown): CredentialLocator {
       'connectionId',
       'kind',
     ]);
-    if (item.kind !== 'api_key' && item.kind !== 'oauth_token' && item.kind !== 'request_headers') {
+    if (
+      item.kind !== 'api_key' &&
+      item.kind !== 'oauth_token' &&
+      item.kind !== 'aws_sso' &&
+      item.kind !== 'request_headers'
+    ) {
       throw domainError('connection credential kind is invalid');
     }
     return {

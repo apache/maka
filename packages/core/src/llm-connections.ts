@@ -59,7 +59,16 @@ export type ConnectionAuth =
   | { kind: 'api_key'; apiKey: string }
   | { kind: 'optional_api_key'; apiKey?: string }
   | { kind: 'oauth_token'; oauthToken: string; expiresAt?: number }
+  | { kind: 'aws_sso'; session: string }
   | { kind: 'none' };
+
+export interface BedrockConnectionConfig {
+  ssoStartUrl: string;
+  ssoRegion: string;
+  region: string;
+  accountId: string;
+  roleName: string;
+}
 
 export interface ModelInfo {
   id: string;
@@ -91,6 +100,11 @@ export interface ModelInfo {
   modalities?: {
     input: Array<'text' | 'image' | 'audio' | 'pdf'>;
     output: Array<'text' | 'image' | 'audio'>;
+  };
+  /** Bedrock-specific inventory facts. Temporary AWS credentials never belong here. */
+  bedrock?: {
+    kind: 'foundation-model' | 'inference-profile' | 'manual';
+    sourceModelIds?: string[];
   };
 }
 
@@ -126,6 +140,8 @@ export interface RuntimeExecutionConnection {
   relayModelProfiles?: RelayModelProfiles;
   /** Additional top-level JSON properties added to model request bodies. */
   requestBodyOverlay?: JsonObject;
+  /** Typed, non-secret IAM Identity Center and inference configuration. */
+  bedrock?: BedrockConnectionConfig;
   /** Free-form, non-secret per-connection data; nothing reads a key unless it is shaped for the connection's provider type. */
   extras?: Record<string, unknown>;
 }
@@ -339,6 +355,8 @@ export function reconcileConnectionAfterModelFetch(
 
 export type ConnectionTestErrorClass =
   | 'auth'
+  | 'permission'
+  | 'configuration'
   | 'timeout'
   | 'provider_unavailable'
   | 'network'
@@ -379,7 +397,7 @@ export function defaultEnabledModelIdsWhenOmitted(
 
 export function providerAuthRequiresSecret(providerType: ProviderType): boolean {
   const authKind = PROVIDER_DEFAULTS[providerType]?.authKind;
-  return authKind === 'api_key' || authKind === 'oauth_token';
+  return authKind === 'api_key' || authKind === 'oauth_token' || authKind === 'aws_sso';
 }
 
 export function providerAuthSupportsApiKey(providerType: ProviderType): boolean {

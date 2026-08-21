@@ -219,6 +219,7 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
       resolveWebFetchExecution: () => coordinator.resolveWebFetchExecution(),
       resolveNetworkProxyExecution: (input) => coordinator.resolveNetworkProxyExecution(input),
       compareAndSetOAuthCredential: (input) => coordinator.compareAndSetOAuthCredential(input),
+      compareAndSetAwsSsoCredential: (input) => coordinator.compareAndSetAwsSsoCredential(input),
       importConnectionCredential: (input) => coordinator.importConnectionCredential(input),
       beginInteractiveOAuthLogin: (connectionId) =>
         coordinator.beginInteractiveOAuthLogin(connectionId),

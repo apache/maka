@@ -28,6 +28,7 @@ import { withFileUpdateLock } from './file-update-lock.js';
 type StoredCredentialKind =
   | 'apiKey'
   | 'oauthToken'
+  | 'awsSso'
   | 'requestHeaders'
   | 'botToken'
   | 'botAppSecret'
@@ -37,6 +38,7 @@ type StoredCredentialKind =
 export type CredentialKind =
   | 'api_key'
   | 'oauth_token'
+  | 'aws_sso'
   | 'request_headers'
   | 'bot_token'
   | 'app_secret'
@@ -307,6 +309,7 @@ export async function withCredentialFileLock<T>(
 const STORED_CREDENTIAL_KINDS = [
   'apiKey',
   'oauthToken',
+  'awsSso',
   'requestHeaders',
   'botToken',
   'botAppSecret',
@@ -321,6 +324,8 @@ function toStoredKind(kind: CredentialKind): StoredCredentialKind {
       return 'apiKey';
     case 'oauth_token':
       return 'oauthToken';
+    case 'aws_sso':
+      return 'awsSso';
     case 'request_headers':
       return 'requestHeaders';
     case 'bot_token':

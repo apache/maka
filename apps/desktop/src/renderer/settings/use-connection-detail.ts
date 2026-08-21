@@ -113,8 +113,8 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const connectionDetailLifecycleRef = useRef(0);
   const toast = useToast();
   const supportsApiKey = providerAuthSupportsApiKey(connection.providerType);
-  const needsOAuth = defaults.authKind === 'oauth_token';
-  const oauthLoginService = needsOAuth
+  const needsOAuth = defaults.authKind === 'oauth_token' || defaults.authKind === 'aws_sso';
+  const oauthLoginService = defaults.authKind === 'oauth_token'
     ? oauthLoginServiceFor(connection.providerType, host)
     : null;
   const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
@@ -568,7 +568,8 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     if (!releaseDelete) return;
     const lifecycle = connectionDetailLifecycleRef.current;
     setDeleting(true);
-    const usesOAuth = PROVIDER_DEFAULTS[connection.providerType].authKind === 'oauth_token';
+    const accountAuthKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+    const usesOAuth = accountAuthKind === 'oauth_token' || accountAuthKind === 'aws_sso';
     const ok = await toast.confirm({
       title: copy.deleteConnectionTitle(connection.name),
       description: copy.deleteDescription(props.isDefault, usesOAuth),
