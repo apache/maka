@@ -126,6 +126,44 @@ describe('uncertain tool outcome metadata', () => {
   });
 });
 
+describe('retired permission modes in stored subagent results', () => {
+  const stored = {
+    kind: 'subagent',
+    childSessionId: 'child-1',
+    agentName: 'Explore',
+    turnId: 'turn-1',
+    status: 'completed',
+    permissionMode: 'execute',
+    summary: 'done',
+    artifactIds: [],
+  } as const;
+
+  test('folds a legacy mode to its live equivalent instead of returning it verbatim', () => {
+    const decoded = decodeCanonicalToolResultContent(stored);
+    assert.equal(decoded.kind === 'subagent' ? decoded.permissionMode : undefined, 'ask');
+    assert.deepEqual(decoded, { ...stored, permissionMode: 'ask' });
+  });
+
+  test('folds through the stored-message decoder as well', () => {
+    assert.deepEqual(toolResultContent(decodeStoredMessage(storedToolResult(stored))), {
+      ...stored,
+      permissionMode: 'ask',
+    });
+  });
+
+  test('leaves a live mode untouched', () => {
+    const live = { ...stored, permissionMode: 'bypass' } as const;
+    assert.deepEqual(decodeCanonicalToolResultContent(live), live);
+  });
+
+  test('still rejects a mode that never existed', () => {
+    assert.throws(
+      () => decodeCanonicalToolResultContent({ ...stored, permissionMode: 'nonsense' }),
+      /Invalid tool result content/,
+    );
+  });
+});
+
 function storedToolResult(content: unknown) {
   return {
     type: 'tool_result',

@@ -215,7 +215,21 @@ export function decodeCanonicalToolResultContent(value: unknown): ToolResultCont
   if (!isNonShellToolResultContent(value)) {
     throw new Error('Invalid tool result content');
   }
-  return value;
+  return foldRetiredPermissionMode(value);
+}
+
+/**
+ * Transcript records written before a permission mode was retired still carry
+ * the old spelling. The shape validators accept it on purpose — rejecting would
+ * make the Turn unreadable — so canonicalize it here, at the single exit every
+ * stored tool result passes through, rather than leaving a value the return
+ * type forbids.
+ */
+function foldRetiredPermissionMode(content: ToolResultContent): ToolResultContent {
+  if (content.kind !== 'subagent') return content;
+  const permissionMode = decodePersistedPermissionMode(content.permissionMode);
+  if (permissionMode === undefined || permissionMode === content.permissionMode) return content;
+  return { ...content, permissionMode };
 }
 
 function isNonShellToolResultContent(value: unknown): value is ToolResultContent {
