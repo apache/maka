@@ -63,8 +63,27 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
     createConnection: async () => {
       throw new Error('Existing OAuth Connection must be reused');
     },
-    updateConnection: async () => {
-      throw new Error('Enabled OAuth Connection must not be rewritten');
+    // The login path creates the Connection before a credential exists, so its
+    // enabled ids are the curated fallback guess. Discovery is what corrects
+    // them, and that correction is the only rewrite this flow may make.
+    updateConnection: async (expected, changes) => {
+      const current = catalog.connections[0];
+      assert.ok(current);
+      assert.deepEqual(expected, {
+        connectionId: current.connectionId,
+        revision: current.revision,
+      });
+      const updated = {
+        ...current,
+        ...(changes.enabledModelIds ? { enabledModelIds: changes.enabledModelIds } : {}),
+        revision: current.revision + 1,
+      };
+      catalog = { ...catalog, revision: catalog.revision + 1, connections: [updated] };
+      return {
+        kind: 'committed' as const,
+        catalogRevision: catalog.revision,
+        connection: { connectionId: updated.connectionId, revision: updated.revision },
+      };
     },
     startOAuthLogin: async (nextAttemptId, connectionId) => {
       attemptId = nextAttemptId;
@@ -182,6 +201,10 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
     { ok: true },
   );
   assert.equal(changed, 1);
+  // Only what the account actually exposes stays enabled: the rest of the
+  // curated fallback list would otherwise be selectable, testable, and sendable
+  // while the provider has never heard of it.
+  assert.deepEqual(catalog.connections[0]?.enabledModelIds, [modelId]);
   assert.deepEqual(catalog.defaultTarget, {
     connectionId: catalog.connections[0]?.connectionId,
     modelId,

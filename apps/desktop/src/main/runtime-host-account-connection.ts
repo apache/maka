@@ -96,6 +96,7 @@ export async function synchronizeRuntimeHostAccountConnection(
   // needs a default — new Session, send, external Session import — fail with a
   // reason the user cannot see from the error it produces.
   await client.fetchConnectionModels(connection.connectionId).catch(() => undefined);
+  await adoptDiscoveredAccountModels(client, providerType);
   const catalog = await client.loadConnectionCatalog();
   if (catalog.defaultTarget !== null) return;
   const updated = findRuntimeHostAccountConnection(catalog, providerType);
@@ -107,6 +108,45 @@ export async function synchronizeRuntimeHostAccountConnection(
   });
   if (selected.kind !== 'committed') {
     throw new Error(`Unable to select account default: ${selected.kind}`);
+  }
+}
+
+/**
+ * An account Connection is created before anyone can ask the account what it
+ * has: the OAuth login path has no credential yet at that point, so the
+ * enabled ids start as the provider's curated fallback list. Once discovery
+ * answers, the account's own catalog is the authority — an id it does not list
+ * cannot be selected, tested, or sent to, and leaving it enabled only produces
+ * failures naming a model the user never chose.
+ *
+ * A deliberate narrower selection survives: ids are dropped, never added, and
+ * the discovered list is adopted whole only when nothing the user kept remains.
+ */
+async function adoptDiscoveredAccountModels(
+  client: RuntimeHostAccountConnectionClient,
+  providerType: ProviderType,
+): Promise<void> {
+  const connection = findRuntimeHostAccountConnection(
+    await client.loadConnectionCatalog(),
+    providerType,
+  );
+  // Only a fetched inventory is authoritative. A fallback one is the same guess
+  // the enabled ids already are, so it can prove nothing about them.
+  if (!connection || connection.modelSource !== 'fetched') return;
+  const discovered = (connection.models ?? [])
+    .map(({ id }) => id.trim())
+    .filter((id) => id.length > 0);
+  if (discovered.length === 0) return;
+  const available = new Set(discovered);
+  const retained = connection.enabledModelIds.filter((id) => available.has(id));
+  const next = retained.length > 0 ? retained : discovered;
+  if (sameStrings(connection.enabledModelIds, next)) return;
+  const updated = await client.updateConnection(
+    { connectionId: connection.connectionId, revision: connection.revision },
+    accountConnectionChanges(connection, connection.enabled, next),
+  );
+  if (updated.kind !== 'committed') {
+    throw new Error(`Unable to adopt discovered account models: ${updated.kind}`);
   }
 }
 
