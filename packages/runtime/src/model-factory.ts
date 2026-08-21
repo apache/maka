@@ -1,4 +1,5 @@
 import { createAnthropic } from '@ai-sdk/anthropic';
+import { createAmazonBedrock } from '@ai-sdk/amazon-bedrock';
 import { createCohere } from '@ai-sdk/cohere';
 import { createGoogle } from '@ai-sdk/google';
 import { createOpenResponses } from '@ai-sdk/open-responses';
@@ -38,6 +39,13 @@ import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.
 import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
 
+export interface AwsCredentialIdentity {
+  readonly accessKeyId: string;
+  readonly secretAccessKey: string;
+  readonly sessionToken?: string;
+  readonly expiration?: Date;
+}
+
 export interface ModelFactoryInput {
   connection: RuntimeExecutionConnection;
   apiKey: string;
@@ -47,6 +55,7 @@ export interface ModelFactoryInput {
   resolvedRuntime?: ResolvedModelRuntime;
   openAiChatReasoningTransportState?: OpenAiChatReasoningTransportState;
   openAiResponsesTransportState?: OpenAiResponsesTransportState;
+  awsCredentialProvider?: () => PromiseLike<AwsCredentialIdentity>;
 }
 
 const ANTHROPIC_BETA = 'interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14';
@@ -60,6 +69,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
     resolvedRuntime,
     openAiChatReasoningTransportState,
     openAiResponsesTransportState,
+    awsCredentialProvider,
   } = input;
   const runtime = resolvedRuntime ?? resolveModelRuntime(connection, modelId);
   const { adapter, baseUrl: baseURL, wire, reasoningReplay } = runtime;
@@ -76,6 +86,23 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
   }
 
   switch (adapter.kind) {
+    case 'amazon-bedrock': {
+      const config = connection.bedrock;
+      if (!config || !awsCredentialProvider) {
+        throw new Error(
+          'Amazon Bedrock requires IAM Identity Center configuration and credentials',
+        );
+      }
+      if (hasRequestCustomization) {
+        throw new Error('Amazon Bedrock does not support custom request headers or body overlays');
+      }
+      return createAmazonBedrock({
+        region: config.region,
+        credentialProvider: awsCredentialProvider,
+        fetch: requestFetch,
+      })(modelId);
+    }
+
     case 'anthropic':
       return createAnthropic({
         ...(adapter.auth === 'bearer' ? { authToken: apiKey } : { apiKey }),

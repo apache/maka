@@ -256,6 +256,10 @@ export const PROVIDER_DISPLAY_COPY = {
   },
   // OAuth account providers (not in CATALOG_PROVIDER_TYPES; shown in the
   // accounts section and on connection rows).
+  'amazon-bedrock': {
+    zh: { name: 'Amazon Bedrock', description: '使用 AWS IAM Identity Center SSO 登录并调用 Bedrock Converse 模型。', badge: 'Account' },
+    en: { name: 'Amazon Bedrock', description: 'Sign in with AWS IAM Identity Center and use Bedrock Converse models.', badge: 'Account' },
+  },
   'github-copilot': {
     zh: { name: 'GitHub Copilot', description: 'GitHub Copilot 订阅接入，复用本机 GitHub 登录', badge: 'Account' },
     en: { name: 'GitHub Copilot', description: 'GitHub Copilot subscription access using an existing GitHub login.', badge: 'Account' },

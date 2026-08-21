@@ -103,7 +103,8 @@ async function readHasSecret(
 ): Promise<boolean | undefined> {
   if (!providerAuthRequiresSecret(entry.providerType)) return false;
   const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
-  const kind = authKind === 'oauth_token' ? 'oauth_token' : 'api_key';
+  const kind =
+    authKind === 'oauth_token' ? 'oauth_token' : authKind === 'aws_sso' ? 'aws_sso' : 'api_key';
   try {
     const result = await connection.request('credential.vault.query', {
       locator: { scope: 'connection', connectionId: entry.connectionId, kind },

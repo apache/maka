@@ -100,6 +100,7 @@ export type SkillCatalogOperationKey = Extract<OperationKey, `skill.catalog.${st
 export type UsagePricingOperationKey = Extract<OperationKey, 'usage.query' | `pricing.${string}`>;
 export type MemoryOperationKey = Extract<OperationKey, `memory.${string}`>;
 export type OAuthOperationKey = Extract<OperationKey, `oauth.${string}`>;
+export type BedrockSsoOperationKey = Extract<OperationKey, `bedrock.sso.${string}`>;
 export type RuntimeResourceOperationKey = Extract<OperationKey, `runtime.resource.${string}`>;
 export type ClientCapabilityOperationKey = Extract<OperationKey, `client.capability.${string}`>;
 export type ScheduledTaskOperationKey = Extract<OperationKey, `scheduled-task.${string}`>;
@@ -157,6 +158,7 @@ export type SkillCatalogOperationHandlerMap = Pick<OperationHandlerMap, SkillCat
 export type UsagePricingOperationHandlerMap = Pick<OperationHandlerMap, UsagePricingOperationKey>;
 export type MemoryOperationHandlerMap = Pick<OperationHandlerMap, MemoryOperationKey>;
 export type OAuthOperationHandlerMap = Pick<OperationHandlerMap, OAuthOperationKey>;
+export type BedrockSsoOperationHandlerMap = Pick<OperationHandlerMap, BedrockSsoOperationKey>;
 export type RuntimeResourceOperationHandlerMap = Pick<
   OperationHandlerMap,
   RuntimeResourceOperationKey

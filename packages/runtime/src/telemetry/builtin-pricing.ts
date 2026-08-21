@@ -1,5 +1,6 @@
 import type { PricingConfig } from '@maka/core/usage-stats/types';
 import { GENERATED_MODEL_PRICING } from './model-pricing.generated.js';
+import { BEDROCK_MODEL_PRICING } from './bedrock-pricing.generated.js';
 
 // Access-path-specific pricing that models.dev cannot represent. The generated
 // table is authoritative for ordinary overlapping keys; these rows only fill
@@ -64,6 +65,7 @@ const generatedPricingKeys = new Set(GENERATED_MODEL_PRICING.map(({ modelKey }) 
 
 export const BUILTIN_PRICING: readonly PricingConfig[] = [
   ...GENERATED_MODEL_PRICING,
+  ...BEDROCK_MODEL_PRICING,
   ...LOCAL_PRICING_SUPPLEMENT.filter(({ modelKey }) => !generatedPricingKeys.has(modelKey)),
 ];
 

@@ -19,6 +19,9 @@ import { createRequestCustomizationFetch } from '@maka/runtime/request-customiza
 import { isOAuthSubscriptionProvider } from '@maka/runtime/subscription-credentials';
 import { runConnectionModelDiscoveryEffect } from '@maka/runtime/model-fetcher';
 import { runConnectionTestEffect } from '@maka/runtime/test-connection';
+import { discoverBedrockModels } from '@maka/runtime/bedrock-model-discovery';
+import { getAIModel } from '@maka/runtime/model-factory';
+import { generateText } from 'ai';
 import {
   type ConnectionEffectErrorKind,
   type ConnectionModelDiscoveryEffectOutcome,
@@ -49,6 +52,10 @@ import type {
 } from '../protocol/index.js';
 import type { ConnectionEffectOperationHandlerMap } from './operation-dispatcher.js';
 import type { HostOAuthExecutionAuthority } from './oauth-execution-authority.js';
+import {
+  BedrockSsoCredentialError,
+  type BedrockSsoExecutionAuthority,
+} from './bedrock-sso-execution-authority.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
@@ -69,6 +76,7 @@ export interface HostConnectionEffectCoordinatorOptions {
   readonly stores: RuntimePolicyStoresWriter;
   readonly activation: RuntimePolicyActivationGate;
   readonly oauthCredentials: Pick<HostOAuthExecutionAuthority, 'bind'>;
+  readonly bedrockCredentials?: Pick<BedrockSsoExecutionAuthority, 'bind'>;
   readonly onCommittedMutation?: () => void;
   readonly now?: () => number;
   readonly runModelDiscovery?: ModelDiscoveryRunner;
@@ -90,6 +98,7 @@ export class HostConnectionEffectCoordinator {
   readonly #stores: RuntimePolicyStoresWriter;
   readonly #activation: RuntimePolicyActivationGate;
   readonly #oauthCredentials: Pick<HostOAuthExecutionAuthority, 'bind'>;
+  readonly #bedrockCredentials?: Pick<BedrockSsoExecutionAuthority, 'bind'>;
   readonly #onCommittedMutation: () => void;
   readonly #now: () => number;
   readonly #runModelDiscovery: ModelDiscoveryRunner;
@@ -105,6 +114,7 @@ export class HostConnectionEffectCoordinator {
     this.#stores = authenticateRuntimePolicyStoresWriter(options.stores);
     this.#activation = options.activation;
     this.#oauthCredentials = options.oauthCredentials;
+    this.#bedrockCredentials = options.bedrockCredentials;
     this.#onCommittedMutation = options.onCommittedMutation ?? (() => {});
     this.#now = options.now ?? Date.now;
     this.#runModelDiscovery = options.runModelDiscovery ?? runConnectionModelDiscoveryEffect;
@@ -130,9 +140,12 @@ export class HostConnectionEffectCoordinator {
       const prepared = await this.#stores.operations.beginModelFetch(input.connectionId);
       if (prepared.kind !== 'ready') return preparationResult(prepared);
 
-      const effect = await this.#withTransport(prepared, (fetch, secret) =>
-        this.#runModelDiscovery(prepared.connection, secret, { fetch }),
-      );
+      const effect =
+        prepared.connection.providerType === 'amazon-bedrock'
+          ? await this.#runBedrockDiscovery(prepared)
+          : await this.#withTransport(prepared, (fetch, secret) =>
+              this.#runModelDiscovery(prepared.connection, secret, { fetch }),
+            );
       if (!effect.ok || effect.models.length === 0) {
         return {
           kind: 'failed',
@@ -274,14 +287,17 @@ export class HostConnectionEffectCoordinator {
       );
       if (prepared.kind !== 'ready') return preparationResult(prepared);
 
-      const effect = await this.#withTransport(prepared, (fetch, secret) =>
-        this.#runConnectionTest(
-          prepared.connection,
-          secret,
-          { fetch },
-          prepared.modelId ?? undefined,
-        ),
-      );
+      const effect =
+        prepared.connection.providerType === 'amazon-bedrock'
+          ? await this.#runBedrockTest(prepared)
+          : await this.#withTransport(prepared, (fetch, secret) =>
+              this.#runConnectionTest(
+                prepared.connection,
+                secret,
+                { fetch },
+                prepared.modelId ?? undefined,
+              ),
+            );
       const projected = projectConnectionTest(effect, this.#now());
       const completion = await this.#complete(() =>
         this.#stores.operations.completeConnectionTest(
@@ -327,6 +343,88 @@ export class HostConnectionEffectCoordinator {
         return storeFailure<K>(error);
       }
     });
+  }
+
+  async #runBedrockDiscovery(
+    prepared: BeginModelFetchReady,
+  ): Promise<ConnectionModelDiscoveryEffectOutcome> {
+    try {
+      return {
+        ok: true,
+        models: await this.#withBedrockBinding(prepared, ({ fetch, credentials }) =>
+          discoverBedrockModels({
+            region: prepared.connection.bedrock!.region,
+            credentialProvider: credentials,
+            fetchFn: fetch,
+          }),
+        ),
+      };
+    } catch (error) {
+      return { ok: false, error: classifyAwsEffectError(error) };
+    }
+  }
+
+  async #runBedrockTest(prepared: BeginConnectionTestReady): Promise<ConnectionTestEffectOutcome> {
+    const modelId = prepared.modelId ?? prepared.connection.enabledModelIds[0];
+    const startedAt = this.#now();
+    if (!modelId) return { ok: false, error: { kind: 'configuration' } };
+    try {
+      await this.#withBedrockBinding(prepared, async ({ fetch, credentials }) => {
+        const model = getAIModel({
+          connection: {
+            ...prepared.connection,
+            defaultModel: modelId,
+            models: [...prepared.connection.models],
+            ...(prepared.connection.bedrock ? { bedrock: prepared.connection.bedrock } : {}),
+          },
+          apiKey: '',
+          modelId,
+          fetch,
+          awsCredentialProvider: credentials,
+        });
+        await generateText({ model, prompt: 'Hi', maxOutputTokens: 1 });
+      });
+      return { ok: true, modelId, latencyMs: this.#now() - startedAt };
+    } catch (error) {
+      return {
+        ok: false,
+        error: classifyAwsEffectError(error),
+        modelId,
+        latencyMs: this.#now() - startedAt,
+      };
+    }
+  }
+
+  async #withBedrockBinding<T>(
+    prepared: Pick<
+      BeginModelFetchReady | BeginConnectionTestReady,
+      'connection' | 'networkProxy' | 'secretMaterial'
+    >,
+    run: (input: {
+      fetch: typeof globalThis.fetch;
+      credentials: () => Promise<import('@maka/runtime/model-factory').AwsCredentialIdentity>;
+    }) => Promise<T>,
+  ): Promise<T> {
+    const authority = this.#bedrockCredentials;
+    const config = prepared.connection.bedrock;
+    const material = prepared.secretMaterial.connection;
+    if (!authority || !config || !material) throw new Error('Amazon Bedrock SSO is not configured');
+    const proxy = toRuntimePolicyProxy(
+      prepared.networkProxy,
+      prepared.secretMaterial.networkProxy?.secret,
+    );
+    const transport = this.#createTransport(proxy);
+    const binding = authority.bind({
+      connectionSlug: prepared.connection.slug,
+      config,
+      material,
+      createTransport: () => this.#createTransport(proxy),
+    });
+    try {
+      return await run({ fetch: transport.fetch, credentials: () => binding.credentials() });
+    } finally {
+      await transport.close();
+    }
   }
 
   async #withTransport<T>(
@@ -446,6 +544,40 @@ function projectSuperseded(
     kind: 'superseded',
     changed: completion.changed.map((domain) => domain satisfies ConnectionEffectChangedDomain),
   };
+}
+
+function classifyAwsEffectError(error: unknown): { kind: ConnectionEffectErrorKind } {
+  if (error instanceof BedrockSsoCredentialError) {
+    return {
+      kind: error.code === 'credential_superseded' ? 'configuration' : 'auth',
+    };
+  }
+  if (!(error instanceof Error)) return { kind: 'unknown' };
+  if (error.name === 'AbortError') return { kind: 'network' };
+  if (
+    /ExpiredToken|InvalidGrant|Unauthorized|registration expired|authorized again/i.test(
+      `${error.name} ${error.message}`,
+    )
+  ) {
+    return { kind: 'auth' };
+  }
+  if (/AccessDenied|Forbidden/i.test(`${error.name} ${error.message}`)) {
+    return { kind: 'permission' };
+  }
+  if (
+    /Validation|ResourceNotFound|UnknownEndpoint|region|model/i.test(
+      `${error.name} ${error.message}`,
+    )
+  ) {
+    return { kind: 'configuration' };
+  }
+  if (/Throttl|ServiceUnavailable|InternalServer|TooManyRequests/i.test(error.name)) {
+    return { kind: 'provider_unavailable' };
+  }
+  if (/Timeout/i.test(error.name)) return { kind: 'timeout' };
+  if (/fetch|network|socket|ECONN/i.test(`${error.name} ${error.message}`))
+    return { kind: 'network' };
+  return { kind: 'unknown' };
 }
 
 function projectConnectionTest(

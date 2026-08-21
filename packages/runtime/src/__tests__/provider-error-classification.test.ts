@@ -225,6 +225,26 @@ describe('Provider error classification', () => {
       classifyError({ type: 'invalid_request_error', message: 'missing required field' }),
       'Other',
     );
+    assert.equal(
+      classifyError(
+        Object.assign(new Error('not authorized for bedrock:Converse'), {
+          name: 'AI_APICallError',
+          statusCode: 403,
+          data: { code: 'AccessDeniedException', message: 'not authorized for bedrock:Converse' },
+        }),
+      ),
+      'Permission',
+    );
+    assert.equal(
+      classifyError(
+        Object.assign(new Error('invalid model identifier'), {
+          name: 'AI_APICallError',
+          statusCode: 400,
+          data: { code: 'ValidationException', message: 'invalid model identifier' },
+        }),
+      ),
+      'Configuration',
+    );
 
     assert.equal(
       overflow('Service Unavailable', {

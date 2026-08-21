@@ -78,7 +78,12 @@ const LICENSE_METADATA_OVERRIDES = new Map([
 ]);
 // The published tarball omits the repository LICENSE; package.json declares Apache-2.0.
 // Keyed by exact version so a bump re-checks the license rather than inheriting this.
-const APACHE_TEXT_OVERRIDE_KEYS = new Set(['@ai-sdk/provider-utils@5.0.27']);
+const APACHE_TEXT_OVERRIDE_KEYS = new Set([
+  '@ai-sdk/provider-utils@5.0.27',
+  '@aws-sdk/credential-provider-http@3.972.71',
+  '@aws-sdk/credential-provider-login@3.972.76',
+  '@aws-sdk/nested-clients@3.997.43',
+]);
 const EMBEDDED_COMPONENT_LICENSES = new Map([
   [
     '@ai-sdk/code-mode',

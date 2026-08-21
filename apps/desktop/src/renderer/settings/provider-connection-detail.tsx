@@ -166,6 +166,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   // declaration is per model — a relay can front both a reasoner and a plain
   // instruct model.
   const showsCapabilities = isRelayProviderType(connection.providerType);
+  const supportsRequestCustomization = connection.providerType !== 'amazon-bedrock';
   // Rows are the enabled models, exactly — the store prunes a model's profile
   // the moment it is disabled, so no declaration can ever belong to a row
   // this list does not show. The editor edits the per-model draft; 保存
@@ -421,6 +422,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           still needs one. Two rules with a gap between them read as an empty
           row, so only ever one. */}
       {!supportsApiKey && !showsEndpoint && <Divider />}
+      {supportsRequestCustomization && (
       <DetailSection title={copy.advancedRequest} description={copy.advancedRequestHelp}>
         <VStack gap={0}>
               <SettingsExpandableRow
@@ -491,6 +493,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               <Divider />
         </VStack>
       </DetailSection>
+      )}
       <DetailSection title={copy.modelManagement} description={copy.modelManagementHelp}>
         <EnabledModelManager
           modelChoices={modelChoices}

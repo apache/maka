@@ -8,7 +8,7 @@ import {
   type ProviderType,
 } from './llm-connections.js';
 
-export const PROVIDER_AUTH_SETUP_MODES = ['api_key', 'oauth', 'none'] as const;
+export const PROVIDER_AUTH_SETUP_MODES = ['api_key', 'oauth', 'sso', 'none'] as const;
 export type ProviderAuthSetupMode = (typeof PROVIDER_AUTH_SETUP_MODES)[number];
 
 export const PROVIDER_AUTH_STATES = [
@@ -27,6 +27,8 @@ export const PROVIDER_AUTH_ACTIONS = [
   'fetch_models',
   'start_oauth',
   'refresh_oauth',
+  'start_sso',
+  'refresh_sso',
   'revoke_auth',
 ] as const;
 export type ProviderAuthAction = (typeof PROVIDER_AUTH_ACTIONS)[number];
@@ -101,6 +103,28 @@ export function deriveProviderAuthContract(input: ProviderAuthContractInput): Pr
         label: `${defaults.label} 已关闭`,
         detail: '连接被显式关闭；不会作为发送默认连接，也不会触发凭据测试。',
       },
+    };
+  }
+
+  if (defaults.authKind === 'aws_sso') {
+    const validationStatus = input.lastTestStatus ?? 'not_run';
+    const state: ProviderAuthState = authStateFromSecretAndTest(hasSecret, input.lastTestStatus);
+    return {
+      providerType: input.providerType,
+      setupMode: 'sso',
+      state,
+      validationStatus,
+      requiresSecret: true,
+      sendMayUseWithoutSecret: false,
+      actionAvailability: {
+        ...actionAvailability,
+        test_credentials: hasSecret ? 'available' : 'hidden',
+        fetch_models: hasSecret && supportsModelDiscovery ? 'available' : 'hidden',
+        start_sso: hasSecret ? 'hidden' : 'available',
+        refresh_sso: hasSecret ? 'available' : 'hidden',
+        revoke_auth: hasSecret ? 'available' : 'hidden',
+      },
+      copy: copyForSso(defaults.label, state),
     };
   }
 
@@ -220,6 +244,8 @@ function hiddenActions(): Record<ProviderAuthAction, ProviderAuthActionAvailabil
     fetch_models: 'hidden',
     start_oauth: 'hidden',
     refresh_oauth: 'hidden',
+    start_sso: 'hidden',
+    refresh_sso: 'hidden',
     revoke_auth: 'hidden',
   };
 }
@@ -227,6 +253,7 @@ function hiddenActions(): Record<ProviderAuthAction, ProviderAuthActionAvailabil
 function setupModeForAuthKind(authKind: ConnectionAuth['kind']): ProviderAuthSetupMode {
   if (authKind === 'none') return 'none';
   if (authKind === 'oauth_token') return 'oauth';
+  if (authKind === 'aws_sso') return 'sso';
   return 'api_key';
 }
 
@@ -305,6 +332,14 @@ function copyForOptionalApiKey(
         detail: '当前状态不走可选模型密钥流程。',
       };
   }
+}
+
+function copyForSso(label: string, state: ProviderAuthState): ProviderAuthContract['copy'] {
+  const copy = copyForOAuth(label, state);
+  return {
+    label: copy.label.replace('OAuth', 'SSO'),
+    detail: copy.detail.replaceAll('OAuth', 'SSO').replace('账号令牌', 'IAM Identity Center 会话'),
+  };
 }
 
 function copyForOAuth(label: string, state: ProviderAuthState): ProviderAuthContract['copy'] {

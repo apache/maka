@@ -585,6 +585,20 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   if (code === OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR) return 'Network';
   if (statusCode === '402' || code === '402') return 'ProviderBilling';
   if (statusCode === '429' || code === '429') return 'RateLimit';
+  if (
+    structuredCodes.some((value) =>
+      /^(?:accessdenied|access_denied|accessdeniedexception|forbiddenexception)$/.test(value),
+    )
+  ) {
+    return 'Permission';
+  }
+  if (
+    structuredCodes.some((value) =>
+      /^(?:validationexception|resourcenotfoundexception|modelnotreadyexception)$/.test(value),
+    )
+  ) {
+    return 'Configuration';
+  }
   if (statusCode === '401' || statusCode === '403' || code === '401' || code === '403')
     return 'Auth';
   // Structured provider evidence: the parsed error JSON's code/type is the
@@ -621,6 +635,10 @@ export function errorPresentationFromClass(errorClass: string): {
       return { reason: 'timeout', message: 'Request timed out' };
     case 'Auth':
       return { reason: 'auth', message: 'Authentication failed' };
+    case 'Permission':
+      return { reason: 'permission', message: 'Provider permission denied' };
+    case 'Configuration':
+      return { reason: 'configuration', message: 'Provider configuration is invalid' };
     case 'ProviderBilling':
       return { reason: 'provider_billing', message: 'Provider billing required' };
     case 'ProviderUnavailable':

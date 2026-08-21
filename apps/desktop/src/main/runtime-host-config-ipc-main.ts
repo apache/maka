@@ -347,7 +347,9 @@ function connectionCredentialLocator(
   connection: ConnectionCatalogEntry,
 ): Extract<CredentialLocator, { scope: 'connection' }> | null {
   const kind = PROVIDER_DEFAULTS[connection.providerType].authKind;
-  if (kind === 'none') return null;
+  // IAM Identity Center sessions and OIDC client secrets are never exported
+  // through Desktop configuration bundles. Reauthorization is required.
+  if (kind === 'none' || kind === 'aws_sso') return null;
   return {
     scope: 'connection',
     connectionId: connection.connectionId,
