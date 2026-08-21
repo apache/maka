@@ -10,11 +10,11 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import type { AppUpdateStatus } from '../../preload/bridge-contract.js';
-import { SettingsActions, SettingsPage, SettingsSection } from './settings-section';
-import { SettingRow } from './settings-rows';
-import { settingsActionErrorMessage } from './settings-error-copy';
-import { SettingsSkeletonStack } from './settings-skeleton';
-import { useActionGuard } from './use-action-guard';
+import { SettingsActions, SettingsPage, SettingsSection } from './settings-section.js';
+import { SettingRow } from './settings-rows.js';
+import { settingsActionErrorMessage } from './settings-error-copy.js';
+import { SettingsSkeletonStack } from './settings-skeleton.js';
+import { useActionGuard } from './use-action-guard.js';
 import { aboutUpdateStatusDetail } from './about-update-status.js';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
@@ -118,14 +118,17 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
 
   if (!info && !infoError) {
     return (
-      <SettingsSkeletonStack
-        label={copy.loading}
-        lines={[
-          { width: '38%', size: 'lg' },
-          { width: '70%' },
-          { width: '52%' },
-        ]}
-      />
+      <SettingsPage>
+        <SettingsSkeletonStack
+          label={copy.loading}
+          lines={[
+            { width: '38%', size: 'lg' },
+            { width: '70%' },
+            { width: '52%' },
+          ]}
+        />
+        {diagnosticActions}
+      </SettingsPage>
     );
   }
 
