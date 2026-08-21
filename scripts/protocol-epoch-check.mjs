@@ -14,6 +14,8 @@ import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { applyHeader, classifyPath } from './asf-license-headers.mjs';
+
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRepoRoot = dirname(dirname(scriptPath));
 
@@ -76,6 +78,40 @@ export function epochAtRevision(revision, exec = execFileSync) {
   return extractCompatibilityEpoch(git(['show', `${revision}:${EPOCH_FILE}`], exec));
 }
 
+/**
+ * Whether a file changed only by gaining the ASF license header.
+ *
+ * The guard's question is whether the protocol changed. "A file under the
+ * protocol directory was touched" is a conservative proxy for that, and the
+ * asymmetry justifies it: a needless epoch bump costs a number, a missed one
+ * ships two incompatible protocols under one. But inserting a license header
+ * provably does not change the protocol, and answering that with a bump would
+ * tell every peer the wire is incompatible over a comment.
+ *
+ * The test is `applyHeader`, the same authority that writes the headers, so
+ * this exempts exactly the canonical insertion and nothing that resembles it.
+ * A file that gained a header *and* a real edit fails the comparison and still
+ * requires an epoch.
+ *
+ * Everything else is a protocol change. A file that exists on only one side —
+ * added, deleted, or one half of a rename, since the diff is taken with
+ * `--no-renames` — has no pair to compare and is one by definition, so the
+ * failing `git show` resolves to `false` rather than escaping. Every read is
+ * inside the guard for that reason: the exemption has to fail toward requiring
+ * an epoch, never toward crashing the check that would have demanded one.
+ */
+export function isHeaderOnlyChange(file, base, head, exec = execFileSync) {
+  const style = classifyPath(file).style;
+  if (!style) return false;
+  try {
+    const before = git(['show', `${base}:${file}`], exec);
+    const after = git(['show', `${head}:${file}`], exec);
+    return applyHeader(before, style) === after;
+  } catch {
+    return false;
+  }
+}
+
 function parseArgs(args) {
   const parsed = { base: undefined, head: 'HEAD' };
   for (let index = 0; index < args.length; index += 1) {
@@ -92,7 +128,9 @@ function main(args) {
   const verdict = evaluateEpochCheck({
     baseEpoch: epochAtRevision(base),
     headEpoch: epochAtRevision(head),
-    changedProtocolFiles: changedProtocolFilesBetween(base, head),
+    changedProtocolFiles: changedProtocolFilesBetween(base, head).filter(
+      (file) => !isHeaderOnlyChange(file, base, head),
+    ),
   });
   process.stderr.write(`Protocol epoch guard: ${verdict.reason}\n`);
   if (!verdict.ok) process.exitCode = 1;

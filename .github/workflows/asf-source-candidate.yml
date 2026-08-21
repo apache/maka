@@ -73,6 +73,13 @@ jobs:
             --strip-components=1 \
             -C candidate-source
 
+      # Runs before anything installs or builds into the extracted tree, so the
+      # audit classifies the exact bytes a voter downloads. It fails on a file
+      # that carries no header and matches no reviewed exclusion.
+      - name: Audit source headers in the extracted candidate
+        working-directory: candidate-source
+        run: npm run check:asf-headers -- --report
+
       - name: Install from the committed lockfile
         working-directory: candidate-source
         run: npm ci
